@@ -105,14 +105,23 @@ class Agent(Base):
     # means no icon was chosen, and the display layer supplies the fallback, so
     # that fallback can change without touching stored rows.
     icon_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Human-readable name shown to people ("Switch Dev") next to the machine
+    # identifier `name` carries ("switchdev"). NULL means none was chosen and
+    # the display layer falls back to `name`. Never the Matrix client display
+    # name: that stays the identifier, because it is what bridges match on to
+    # recognise an agent's own echo.
+    display_name: Mapped[str | None] = mapped_column(Text, nullable=True)
     agent_type: Mapped[str] = mapped_column(Text, nullable=False)
     connector_type: Mapped[str] = mapped_column(Text, nullable=False)
     integration_profile: Mapped[dict] = mapped_column(JSONB, nullable=False)
     client_id: Mapped[str] = mapped_column(
         Text, ForeignKey("clients.id"), unique=True, nullable=False
     )
+    # Indexed because bearer-token auth resolves the key row and then looks the
+    # agent up by this column on every authenticated request, heartbeats
+    # included — without it that is a sequential scan per beat.
     api_key_id: Mapped[str] = mapped_column(
-        Text, ForeignKey("api_keys.id"), nullable=False
+        Text, ForeignKey("api_keys.id"), nullable=False, index=True
     )
     owner_id: Mapped[str | None] = mapped_column(
         Text, ForeignKey("users.id"), nullable=True
@@ -409,6 +418,21 @@ class Reference(Base):
     description: Mapped[str] = mapped_column(Text, nullable=False)
     instructions: Mapped[str] = mapped_column(Text, nullable=False)
     value: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    created_at: Mapped[str] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class ReferenceType(Base):
+    __tablename__ = "reference_types"
+
+    type: Mapped[str] = mapped_column(Text, primary_key=True)
+    owner_id: Mapped[str] = mapped_column(Text, ForeignKey("users.id"), nullable=False)
+    read_visibility: Mapped[str] = mapped_column(Text, nullable=False)
+    write_visibility: Mapped[str] = mapped_column(Text, nullable=False)
+    display_name: Mapped[str] = mapped_column(Text, nullable=False)
+    instructions: Mapped[str] = mapped_column(Text, nullable=False)
+    value_hint: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[str] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

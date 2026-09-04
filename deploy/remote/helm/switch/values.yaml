@@ -120,6 +120,15 @@ switchCore:
     redirectUrl: ""
     # Set false to disable password login entirely (OIDC-only).
     passwordLoginEnabled: true
+  # Bearer-token resolution runs before every authenticated request and agents
+  # beat continuously, so a successful resolution is memoised in process for
+  # this many seconds. Only successes are cached — an unknown or revoked token
+  # always reads the database — and a key rotation or agent deletion drops the
+  # entry at once rather than waiting for it to expire. This is therefore the
+  # window in which an already-issued credential can outlive its revocation;
+  # it must stay under the 6s agent heartbeat TTL, and 0 disables the cache.
+  authCache:
+    ttlSeconds: 5
   service:
     type: ClusterIP
     port: 8000
@@ -302,6 +311,32 @@ postgresql:
   # managed cloud databases generally require "require" or stricter.
   sslMode: disable
 
+  # switch-core's SQLAlchemy connection pool. Size this against the number of
+  # live agent connections, not human traffic: bearer-token auth hits the
+  # database on every authenticated request and each agent connection beats
+  # every 2s, so roughly N/2 checkouts per second for N connections. When the
+  # pool is exhausted requests queue rather than fail, and a heartbeat delayed
+  # past the server's TTL loses its connection — so under-sizing this shows up
+  # as fleet-wide agent disconnects, not as database errors.
+  # size + maxOverflow must stay under Postgres max_connections, remembering
+  # Mattermost and Keycloak share the same instance.
+  pool:
+    size: 30
+    maxOverflow: 10
+    # Seconds to wait for a free slot before raising. Deliberately short:
+    # SQLAlchemy's 30s default hides starvation as latency.
+    timeout: 5
+
+  # Postgres kills a switch-core connection that sits inside an open
+  # transaction without executing anything for longer than this (e.g. "15s"),
+  # so a leaked checkout becomes a loud, attributable error instead of a slot
+  # that never comes back. Empty (the default) leaves it off, and it must stay
+  # off until switch-core stops holding transactions across Matrix round trips
+  # on the room-membership paths — until then this trades request latency for
+  # membership drift: agents invited on Matrix with no row recording it. Set it
+  # in staging first. Migrations are unaffected; Alembic does not read it.
+  idleInTransactionSessionTimeout: ""
+
   # Password source. By default the password is read from the chart-managed
   # Secret (secrets.postgresPassword). To source it from a pre-existing Secret
   # instead (e.g. synced by external-secrets / sealed-secrets), set
@@ -332,6 +367,18 @@ postgresql:
       memory: 256Mi
     limits:
       memory: 512Mi
+
+  # Postgres server parameters, passed as `-c name=value`. Each client
+  # connection is a backend process costing several MB of non-reclaimable
+  # memory, so raising the pool above without also raising resources.limits
+  # .memory trades a connection-pool stall for an OOMKill — size them together.
+  # effective_cache_size in particular should track the memory limit rather
+  # than being left at the Postgres default, which assumes a far larger host.
+  # Example:
+  #   parameters:
+  #     effective_cache_size: 1536MB
+  #     shared_buffers: 256MB
+  parameters: {}
 
 # ── Backups ───────────────────────────────────────────────────────────────────
 # This chart ships no backup jobs on purpose — an on-cluster backup shares the

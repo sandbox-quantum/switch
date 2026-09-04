@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import hashlib
 import logging
-from typing import Any
 
 import jwt
 from fastapi import HTTPException, Request
@@ -11,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from starlette.responses import Response
 from starlette.types import ASGIApp, Receive, Scope, Send
 
+from switch_core.bridges.agent.api_key_cache import ApiKeyCache
 from switch_core.db.models import Agent, ApiKey
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.api_key_store import ApiKeyStore
@@ -87,12 +87,14 @@ class BearerAuthMiddleware:
         *,
         agent_store: AgentStore,
         api_key_store: ApiKeyStore,
+        api_key_cache: ApiKeyCache,
         session_factory: async_sessionmaker[AsyncSession],
         oidc_validator: OIDCTokenValidator | None = None,
     ) -> None:
         self.app = app
         self._agent_store = agent_store
         self._api_key_store = api_key_store
+        self._api_key_cache = api_key_cache
         self._session_factory = session_factory
         self._oidc_validator = oidc_validator
 
@@ -145,25 +147,40 @@ class BearerAuthMiddleware:
         response = Response("Invalid credentials", status_code=401)
         await response(scope, receive, send)
 
-    async def _resolve_api_key(self, token: str) -> tuple[ApiKey | None, Any | None]:
+    async def _resolve_api_key(self, token: str) -> tuple[ApiKey | None, Agent | None]:
         """Look up the token in api_keys once; return (api_key_row, agent_or_None).
 
         ``agent`` is populated only when the row is an ``agent``-type key that
         resolves to an Agent. For registration tokens (or any key with no
         backing Agent), ``agent`` is ``None`` but ``api_key`` carries the row
         so the caller can decide what to do with it.
+
+        A resolved agent is memoised for a few seconds (see
+        :class:`ApiKeyCache`); everything else — an unknown token, a
+        registration token, an agent key with no agent — always reads the
+        database.
         """
         token_hash = hashlib.sha256(token.encode()).hexdigest()
-        async with self._session_factory() as session:
-            api_key = await self._api_key_store.get_by_hash(session, token_hash)
-            if api_key is None:
-                return None, None
-            if api_key.type == "agent":
-                agent = await self._agent_store.get_by_api_key_id(session, api_key.id)
-                return api_key, agent
-            return api_key, None
+        cached = self._api_key_cache.get(token_hash)
+        if cached is not None:
+            return cached
 
-    async def _try_oidc(self, token: str) -> Any | None:
+        async with self._session_factory() as session:
+            found = await self._api_key_store.get_with_agent_by_hash(
+                session, token_hash
+            )
+            if found is None:
+                return None, None
+            api_key, agent = found
+            if api_key.type != "agent":
+                agent = None
+            session.expunge_all()
+
+        if agent is not None:
+            self._api_key_cache.put(token_hash, api_key, agent)
+        return api_key, agent
+
+    async def _try_oidc(self, token: str) -> Agent | None:
         assert self._oidc_validator is not None
         try:
             claims = self._oidc_validator.validate(token)

@@ -224,7 +224,7 @@ export function AddressingPolicyEditor({
               onChange={(agents) => updateRule(index, withAgents(rule, agents))}
             />
             {deadRuleReason(rule) !== null && (
-              <p className="text-destructive text-xs">{deadRuleReason(rule)}</p>
+              <p className="text-xs text-destructive">{deadRuleReason(rule)}</p>
             )}
             {!disabled && (
               <div className="flex justify-end">
@@ -316,7 +316,7 @@ function RuleSummary({
             {dimLabel(agentsOf(rule), [MY_AGENTS_OPTION, ...agents])}
           </span>
         </div>
-        {dead !== null && <span className="text-destructive text-xs">{dead}</span>}
+        {dead !== null && <span className="text-xs text-destructive">{dead}</span>}
       </div>
       {!disabled && (
         <div className="flex shrink-0 items-center gap-1">

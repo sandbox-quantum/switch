@@ -14,7 +14,7 @@ import uuid
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import insert
+from sqlalchemy import insert, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.bridges.resource.service import ResourceService
@@ -25,6 +25,8 @@ from switch_core.db.models import (
     ClientRoom,
     CollaborationBridge,
     ExternalUser,
+    Reference,
+    ReferenceType,
     Room,
     RoomRole,
     User,
@@ -37,6 +39,7 @@ from switch_core.db.stores.document_store import DocumentStore
 from switch_core.db.stores.external_user_store import ExternalUserStore
 from switch_core.db.stores.package_store import PackageStore
 from switch_core.db.stores.reference_store import ReferenceStore
+from switch_core.db.stores.reference_type_store import ReferenceTypeStore
 from switch_core.db.stores.room_link_store import RoomLinkStore
 from switch_core.db.stores.room_role_store import RoomRoleStore
 from switch_core.db.stores.room_store import RoomStore
@@ -141,6 +144,7 @@ async def env(session_factory: async_sessionmaker[AsyncSession]):
     """Seed a user + two agents, and wire up the YAML service."""
     resource_service = ResourceService(
         reference_store=ReferenceStore(),
+        reference_type_store=ReferenceTypeStore(),
         document_store=DocumentStore(),
         package_store=PackageStore(),
         room_link_store=RoomLinkStore(),
@@ -222,8 +226,8 @@ def test_parse_inline_ref_missing_value_fails(env):
 
 
 def test_parse_inline_ref_bad_value_schema_fails(env):
-    # github value requires a non-empty urls list.
-    with pytest.raises(ValueError, match="Invalid value for type"):
+    # Every reference value requires a non-empty urls list.
+    with pytest.raises(ValueError, match="Invalid reference value"):
         _svc(env).parse(
             """
             room:
@@ -320,12 +324,91 @@ async def test_provision_unknown_agent_fails_loud(env):
 
 
 @pytest.mark.asyncio
+async def test_provision_unknown_reference_type_fails_before_the_room_exists(env):
+    """An inline reference naming an unresolvable type aborts provisioning.
+
+    parse() cannot catch this — it is synchronous and holds neither a session
+    nor a principal — so the check lives in ``_resolve_references``, which runs
+    before ``create_room``. Nothing may be created.
+    """
+    spec = _svc(env).parse(
+        """
+        room:
+          name: "Bad type"
+          description: "d"
+          references:
+            - type: never_registered
+              name: "R"
+              description: "d"
+              instructions: "i"
+              value: { urls: ["https://example.com/thing"] }
+        """
+    )
+    with pytest.raises(ValueError, match="Unknown reference type 'never_registered'"):
+        await _svc(env).provision(spec, user_id=env["user_id"], is_admin=False)
+
+    async with env["session_factory"]() as session:
+        rooms = (
+            (await session.execute(select(Room).where(Room.name == "Bad type")))
+            .scalars()
+            .all()
+        )
+        refs = (
+            (
+                await session.execute(
+                    select(Reference).where(Reference.type == "never_registered")
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert rooms == []
+    assert refs == []
+
+
+@pytest.mark.asyncio
+async def test_provision_inline_ref_of_a_user_defined_type(env):
+    """A type the principal can read provisions like a built-in."""
+    async with env["session_factory"]() as session:
+        session.add(
+            ReferenceType(
+                type="notion",
+                owner_id=env["user_id"],
+                read_visibility="private",
+                write_visibility="private",
+                display_name="Notion",
+                instructions="Read the linked Notion pages.",
+                value_hint="Paste links to Notion pages.",
+            )
+        )
+        await session.commit()
+
+    spec = _svc(env).parse(
+        """
+        room:
+          name: "Custom type"
+          description: "d"
+          references:
+            - type: notion
+              name: "Spec page"
+              description: "d"
+              instructions: "i"
+              value: { urls: ["https://example.com/notion/spec"] }
+        """
+    )
+    result = await _svc(env).provision(spec, user_id=env["user_id"], is_admin=False)
+    assert len(result.created_reference_ids) == 1
+    assert result.failed_attachments == []
+
+
+@pytest.mark.asyncio
 async def test_provision_attach_reference_by_name(env):
     # Seed an existing reference owned by the user.
     async with env["session_factory"]() as session:
         ref = await env["resource_service"].create_reference(
             session,
             owner_id=env["user_id"],
+            is_admin=False,
             read_visibility="private",
             write_visibility="private",
             type="confluence",
@@ -373,6 +456,7 @@ async def test_provision_ambiguous_reference_name_fails(env):
             await env["resource_service"].create_reference(
                 session,
                 owner_id=env["user_id"],
+                is_admin=False,
                 read_visibility="private",
                 write_visibility="private",
                 type="github",

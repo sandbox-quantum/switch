@@ -1,7 +1,19 @@
-from sqlalchemy import delete, func, insert, or_, select
+from sqlalchemy import delete, func, or_, select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from switch_core.db.models import Reference, Room, room_references
+from switch_core.db.models import Reference, Room, User, room_references
+
+_LIKE_ESCAPE = "\\"
+
+
+def _like_needle(text: str) -> str:
+    escaped = (
+        text.replace(_LIKE_ESCAPE, _LIKE_ESCAPE * 2)
+        .replace("%", f"{_LIKE_ESCAPE}%")
+        .replace("_", f"{_LIKE_ESCAPE}_")
+    )
+    return f"%{escaped}%"
 
 
 class ReferenceStore:
@@ -26,6 +38,44 @@ class ReferenceStore:
             )
         )
         return list(result.scalars().all())
+
+    async def list_readable_with_owner_names(
+        self,
+        session: AsyncSession,
+        user_id: str,
+        *,
+        is_admin: bool,
+        name_contains: str | None = None,
+        type: str | None = None,
+        owner_name: str | None = None,
+    ) -> list[tuple[Reference, str]]:
+        """Return (reference, owner_name) pairs the user may read, newest first.
+
+        An admin reads every reference; anyone else reads the ones they own
+        plus the publicly readable ones. The optional filters are ANDed on top
+        of that; a None filter is ignored. `name_contains` is a
+        case-insensitive substring match, `type` and `owner_name` are exact.
+        """
+        query = select(Reference, User.name).join(User, Reference.owner_id == User.id)
+        if not is_admin:
+            query = query.where(
+                or_(
+                    Reference.owner_id == user_id,
+                    Reference.read_visibility == "public",
+                )
+            )
+        if name_contains is not None:
+            query = query.where(
+                Reference.name.ilike(_like_needle(name_contains), escape=_LIKE_ESCAPE)
+            )
+        if type is not None:
+            query = query.where(Reference.type == type)
+        if owner_name is not None:
+            query = query.where(User.name == owner_name)
+        result = await session.execute(
+            query.order_by(Reference.created_at.desc(), Reference.id.asc())
+        )
+        return [(ref, name) for ref, name in result.all()]
 
     async def update_fields(
         self,
@@ -79,8 +129,17 @@ class ReferenceStore:
     async def attach_to_room(
         self, session: AsyncSession, room_id: str, reference_id: str
     ) -> None:
+        """Attach a reference to a room. Idempotent: attaching one that is
+        already attached is a no-op, not a primary-key violation."""
         await session.execute(
-            insert(room_references).values(room_id=room_id, reference_id=reference_id)
+            pg_insert(room_references)
+            .values(room_id=room_id, reference_id=reference_id)
+            .on_conflict_do_nothing(
+                index_elements=[
+                    room_references.c.room_id,
+                    room_references.c.reference_id,
+                ]
+            )
         )
         await session.flush()
 
@@ -107,6 +166,15 @@ class ReferenceStore:
             .where(room_references.c.room_id == room_id)
         )
         return list(result.scalars().all())
+
+    async def list_ids_for_room(self, session: AsyncSession, room_id: str) -> set[str]:
+        """Return the ids of the references attached to a room."""
+        result = await session.execute(
+            select(room_references.c.reference_id).where(
+                room_references.c.room_id == room_id
+            )
+        )
+        return set(result.scalars().all())
 
     async def is_attached_to_room(
         self, session: AsyncSession, room_id: str, reference_id: str

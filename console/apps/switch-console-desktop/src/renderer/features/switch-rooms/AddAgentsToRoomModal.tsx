@@ -105,7 +105,7 @@ export const AddAgentsToRoomModal = observer(function AddAgentsToRoomModal({
       <DialogContentArea className="pt-0">
         <div className="flex w-full flex-col gap-4">
           {!serverId && (
-            <p className="text-destructive text-xs">
+            <p className="text-xs text-destructive">
               This room&apos;s server is not known yet, so its members cannot be changed.
             </p>
           )}
@@ -177,7 +177,7 @@ export const AddAgentsToRoomModal = observer(function AddAgentsToRoomModal({
             )}
           </Field>
 
-          {error && <p className="text-destructive text-xs">{error}</p>}
+          {error && <p className="text-xs text-destructive">{error}</p>}
         </div>
       </DialogContentArea>
       <DialogFooter>

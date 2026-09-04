@@ -18,6 +18,19 @@ from switch_core.bridges.collaboration.slack.adapter import (
     SlackAdapter,
     SlackConnectionConfig,
 )
+from switch_core.bridges.collaboration.slack.agent_groups import (
+    SlackAgentGroupDirectory,
+)
+
+
+@pytest.fixture(autouse=True)
+def _fresh_group_directory() -> Any:
+    """Every Slack bridge in a process shares one directory, so give each test
+    its own rather than letting one test's workspaces answer another's."""
+    original = SlackAdapter.agent_group_directory
+    SlackAdapter.agent_group_directory = SlackAgentGroupDirectory()
+    yield
+    SlackAdapter.agent_group_directory = original
 
 
 def _run(coro: Any) -> Any:
@@ -95,7 +108,10 @@ class FakeWebClient:
 
 
 def _adapter(
-    *, enabled: bool = True, groups: list[dict[str, Any]] | None = None
+    *,
+    enabled: bool = True,
+    groups: list[dict[str, Any]] | None = None,
+    team_id: str = "T123",
 ) -> tuple[SlackAdapter, FakeWebClient]:
     adapter = SlackAdapter(
         config=SlackConnectionConfig(
@@ -105,6 +121,9 @@ def _adapter(
             agent_usergroups=enabled,
         )
     )
+    # Normally set from auth.test; the shared directory keys contributions on
+    # it, so two adapters in one test must not look like the same workspace.
+    adapter._team_id = team_id
     client = FakeWebClient(groups)
     adapter._web_client = client  # type: ignore[assignment]
     return adapter, client
@@ -371,6 +390,71 @@ def test_outbound_prefers_a_real_person_over_an_agent_group() -> None:
     adapter.prime_mention_targets({"ambiguous": "U123"})
 
     assert adapter._translate_mentions_to_slack("@ambiguous") == "<@U123>"
+
+
+# ── Two workspaces in one org ────────────────────────────────────────────────
+#
+# A bot token lists only its own workspace's groups, so each bridge mints its
+# own group per agent. An Enterprise Grid composer ignores that boundary and
+# offers a sibling workspace's group, so the mention arrives naming an id the
+# receiving bridge never minted — and Slack has no call to resolve one by id.
+
+
+def test_a_mention_of_a_sibling_workspaces_group_resolves() -> None:
+    """CHOO-2521: tagging an agent in the org's other workspace did nothing."""
+    home, _ = _adapter(groups=[_agent_group("S001", "flint-tracker")], team_id="T111")
+    _run(home._load_agent_usergroups())
+
+    sibling, _ = _adapter(
+        groups=[_agent_group("S002", "flint-tracker")], team_id="T222"
+    )
+    _run(sibling._load_agent_usergroups())
+
+    assert (
+        sibling.translate_inbound("<!subteam^S001> please run the summary")
+        == "@flint-tracker please run the summary"
+    )
+
+
+def test_a_sibling_workspaces_own_group_is_still_not_an_agent() -> None:
+    home, _ = _adapter(groups=[_plain_group("S900", "designers", "Designers")])
+    _run(home._load_agent_usergroups())
+
+    sibling, _ = _adapter(team_id="T222")
+    _run(sibling._load_agent_usergroups())
+
+    assert sibling.translate_inbound("<!subteam^S900> ping") == "<!subteam^S900> ping"
+
+
+def test_a_reload_withdraws_a_group_that_is_gone() -> None:
+    home, client = _adapter(groups=[_agent_group("S001", "flint-tracker")])
+    _run(home._load_agent_usergroups())
+    sibling, _ = _adapter(team_id="T222")
+
+    client.groups = []
+    _run(home._load_agent_usergroups())
+
+    assert sibling.translate_inbound("<!subteam^S001> hi") == "<!subteam^S001> hi"
+
+
+def test_removing_an_agent_withdraws_it_from_the_other_workspace() -> None:
+    home, _ = _adapter(groups=[_agent_group("S001", "flint-tracker")])
+    _run(home._load_agent_usergroups())
+    sibling, _ = _adapter(team_id="T222")
+
+    _run(home.remove_agent_identity("flint-tracker"))
+
+    assert sibling.translate_inbound("<!subteam^S001> hi") == "<!subteam^S001> hi"
+
+
+def test_a_stopped_bridge_stops_answering_for_its_workspace() -> None:
+    home, _ = _adapter(groups=[_agent_group("S001", "flint-tracker")])
+    _run(home._load_agent_usergroups())
+    sibling, _ = _adapter(team_id="T222")
+
+    _run(home.stop())
+
+    assert sibling.translate_inbound("<!subteam^S001> hi") == "<!subteam^S001> hi"
 
 
 # ── Rate limiting ────────────────────────────────────────────────────────────

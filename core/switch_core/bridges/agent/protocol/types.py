@@ -94,6 +94,10 @@ class RoomDescriptor(BaseModel):
     description: str
     matrix_room_id: str
     archived: bool = False
+    # The room's collaboration bridge, or None for an internal-only room.
+    # Carried so a caller that already resolved the room does not have to read
+    # it again to decide whether an outbound signal has anywhere to go.
+    bridge_id: str | None = None
 
 
 class AgentStatus(StrEnum):

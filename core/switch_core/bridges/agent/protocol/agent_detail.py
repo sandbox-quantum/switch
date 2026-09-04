@@ -62,6 +62,7 @@ async def build_agent_summary(
         name=agent.name,
         description=agent.description,
         icon_url=agent.icon_url,
+        display_name=agent.display_name,
         connector_type=agent.connector_type,
         connection_model=profile.get("connection_model"),
         tool_count=len(tools),

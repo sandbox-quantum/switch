@@ -218,6 +218,10 @@ class AgentSummary(BaseModel):
     # not an error: the caller renders its own fallback rather than Switch
     # inventing a default, so the fallback can change without a data migration.
     icon_url: str | None = None
+    # Human-readable label for the agent, or null when none is set. The caller
+    # falls back to `name`, which is the machine identifier the agent is
+    # addressed by and stays what every bridge matches on.
+    display_name: str | None = None
     connector_type: str
     connection_model: str | None
     tool_count: int
@@ -318,6 +322,17 @@ class UpdateAgentIconRequest(BaseModel):
     icon_url: str | None
 
 
+class UpdateAgentDisplayNameRequest(BaseModel):
+    """Set (or clear) an agent's human display name.
+
+    ``display_name: null`` (or a blank string) clears it — the agent falls back
+    to its identifier. The field is required rather than defaulted so that
+    clearing a display name is always something the client said, never
+    something it forgot to send."""
+
+    display_name: str | None
+
+
 class KnownAgentType(BaseModel):
     key: str
     connector_type: str
@@ -333,6 +348,9 @@ class RegisterKnownAgentRequest(BaseModel):
     # re-registration that omits it keeps whatever icon the agent already has
     # rather than clearing it.
     icon_url: str | None = None
+    # Optional at registration, and re-registration that omits it keeps
+    # whatever the agent already has, exactly like `icon_url`.
+    display_name: str | None = None
     options: dict[str, Any] = {}
     overwrite: bool = False
 
@@ -393,6 +411,7 @@ class RegisterOtherAgentRequest(BaseModel):
     name: str
     description: str
     icon_url: str | None = None
+    display_name: str | None = None
     overwrite: bool = False
 
 
@@ -690,6 +709,9 @@ class ReferenceDetail(BaseModel):
     attached_rooms_count: int = 0
     packages: list[str] = []
     created_at: str
+    # Resolved server-side, unfiltered by the type's visibility: the caller can
+    # already read the raw slug. Null when the slug resolves to no type at all.
+    type_display_name: str | None = None
 
 
 class ReferenceCreateRequest(BaseModel):
@@ -718,10 +740,65 @@ class ReferenceDeleteResponse(BaseModel):
 
 
 class ReferenceTypeInfo(BaseModel):
+    """A type a user may pick, built-in or user-defined.
+
+    The owner pair is the disclosure that makes user-authored types safe to
+    offer: a type's instructions are prose every agent in a room is told to
+    follow, so the picker names who wrote them. Both are null for a built-in.
+    Visibility is not part of picking a type and stays off this shape.
+    """
+
     type: str
     display_name: str
     instructions: str
     value_schema: dict[str, Any]
+    value_hint: str
+    is_builtin: bool
+    owner_id: str | None
+    owner_name: str | None
+
+
+class ReferenceTypeDetail(BaseModel):
+    """A stored reference type, for the management list. Never a built-in."""
+
+    type: str
+    display_name: str
+    instructions: str
+    value_schema: dict[str, Any]
+    value_hint: str
+    is_builtin: bool
+    owner_id: str
+    owner_name: str | None
+    read_visibility: str
+    write_visibility: str
+    shadowed_by_builtin: bool
+    created_at: str
+
+
+class ReferenceTypeCreateRequest(BaseModel):
+    type: str
+    display_name: str
+    instructions: str
+    value_hint: str
+    read_visibility: str = "private"
+    write_visibility: str = "private"
+
+
+class ReferenceTypeUpdateRequest(BaseModel):
+    """A partial update. The slug is immutable, so a body carrying `type` is a
+    422 rather than a silently ignored field."""
+
+    model_config = {"extra": "forbid"}
+
+    display_name: str | None = None
+    instructions: str | None = None
+    value_hint: str | None = None
+    read_visibility: str | None = None
+    write_visibility: str | None = None
+
+
+class ReferenceTypeDeleteResponse(BaseModel):
+    deleted_type: str
 
 
 class ResourceRoom(BaseModel):

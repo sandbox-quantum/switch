@@ -58,8 +58,8 @@ def session_key() -> str | None:
     return bound.session_key if bound is not None else None
 
 
-async def require_connected_room() -> str:
-    """The room this caller is bound to, or a clear error saying it is not.
+async def _bound_rooms() -> set[str]:
+    """The rooms this caller is bound to, empty when it is bound to none.
 
     The live connection is asked first: a connection that has claimed a room is
     in it, whether or not anything was ever written to a table. The table is
@@ -68,21 +68,39 @@ async def require_connected_room() -> str:
     """
     key = session_key()
     if not key:
-        raise ValueError("Not connected to a room. Call connect_to_room first.")
+        return set()
 
     protocol = get_protocol()
     connection = protocol.connections.get(key)
     if connection is not None and connection.rooms:
-        if len(connection.rooms) > 1:
-            raise ValueError(
-                "This connection covers several rooms; the operation needs one "
-                "— pass the room explicitly or use a single-room connection."
-            )
-        return next(iter(connection.rooms))
+        return set(connection.rooms)
 
     async with protocol.session_factory() as db:
         result = await protocol.agent_session_store.get_connected_room(db, key)
     if result is None:
-        raise ValueError("Not connected to a room. Call connect_to_room first.")
+        return set()
     _, room_id = result
-    return room_id
+    return {room_id}
+
+
+async def require_connected_room() -> str:
+    """The room this caller is bound to, or a clear error saying it is not."""
+    rooms = await _bound_rooms()
+    if not rooms:
+        raise ValueError("Not connected to a room. Call connect_to_room first.")
+    if len(rooms) > 1:
+        raise ValueError(
+            "This connection covers several rooms; the operation needs one "
+            "— pass the room explicitly or use a single-room connection."
+        )
+    return next(iter(rooms))
+
+
+async def connected_room() -> str | None:
+    """The room this caller is bound to, or None when there is not exactly one.
+
+    The non-raising counterpart of `require_connected_room`, for operations
+    that work without a room but say something extra when there is one.
+    """
+    rooms = await _bound_rooms()
+    return next(iter(rooms)) if len(rooms) == 1 else None
