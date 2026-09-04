@@ -167,6 +167,12 @@ class BridgeCore:
         # (channel_id, agent_name) -> the last message the agent reported having
         # been handed. Cleared when its turn ends. See _follow_reported_anchor.
         self._reported_anchors: dict[tuple[str, str], str] = {}
+        # Matrix-event -> external-post anchors written synchronously right after
+        # room_send, before the durable _record_message_map commit, so a fast
+        # command reply relayed during that DB await still resolves the command's
+        # thread root instead of dropping to the channel root. Popped on commit.
+        # Same race class as _provisioning_channels. See _prerecord_message_map.
+        self._pending_message_maps: dict[str, str] = {}
         # Identity provisioning runs in the background — see _create_agent_identities.
         self._identity_task: asyncio.Task[None] | None = None
 
@@ -628,7 +634,7 @@ class BridgeCore:
 
         content: dict[str, object] = {
             "command": cmd.command,
-            "args": cmd.args,
+            "args": self._adapter.translate_inbound(cmd.args),
             "user_id": puppet.matrix_user_id,
             "user_name": cmd.sender_name,
         }
@@ -660,11 +666,18 @@ class BridgeCore:
         # Mattermost root post (the command post for a top-level command, or the
         # thread root for an in-thread command whose root we hadn't recorded).
         if existing_matrix_root is None and thread_root_post is not None:
-            await self._record_message_map(
-                external_channel_id=cmd.channel_id,
-                matrix_event_id=resp.event_id,
-                external_post_id=thread_root_post,
-            )
+            # Anchor in memory before the DB write: the write awaits a query that
+            # yields the loop, and a fast reply (e.g. !help) relayed in that gap
+            # would miss the row and land at the channel root. Popped on commit.
+            self._prerecord_message_map(resp.event_id, thread_root_post)
+            try:
+                await self._record_message_map(
+                    external_channel_id=cmd.channel_id,
+                    matrix_event_id=resp.event_id,
+                    external_post_id=thread_root_post,
+                )
+            finally:
+                self._pending_message_maps.pop(resp.event_id, None)
 
     async def _handle_agent_joined_channel(self, join: InboundAgentJoin) -> None:
         lock = self._channel_locks.setdefault(join.channel_id, asyncio.Lock())
@@ -1769,6 +1782,21 @@ class BridgeCore:
 
     # ── Message-map helpers ───────────────────────────────────────────────────
 
+    def _prerecord_message_map(
+        self, matrix_event_id: str, external_post_id: str
+    ) -> None:
+        """Anchor a Matrix-event → external-post mapping in memory, synchronously,
+        so it resolves before the durable _record_message_map write commits.
+
+        _record_message_map awaits a DB round-trip that yields the event loop; a
+        fast command reply (e.g. !help) can be relayed during that yield and miss
+        the not-yet-committed row, dropping the result at the channel root rather
+        than in the command's thread. Callers set this immediately after
+        room_send returns, with NO await in between, and pop it once the row is
+        committed. Same discipline as begin_provisioning for the room-mapping
+        race."""
+        self._pending_message_maps[matrix_event_id] = external_post_id
+
     async def _record_message_map(
         self, *, external_channel_id: str, matrix_event_id: str, external_post_id: str
     ) -> None:
@@ -1800,6 +1828,9 @@ class BridgeCore:
         return mapping.matrix_event_id if mapping is not None else None
 
     async def _external_post_for_matrix_event(self, matrix_event_id: str) -> str | None:
+        pending = self._pending_message_maps.get(matrix_event_id)
+        if pending is not None:
+            return pending
         async with self._session_factory() as session:
             mapping = await self._bridge_message_map_store.get_by_matrix_event_id(
                 session, self._bridge_id, matrix_event_id
