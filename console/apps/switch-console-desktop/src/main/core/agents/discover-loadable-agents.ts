@@ -178,8 +178,10 @@ function blockedReasonFor(agent: DiscoveredConfiguredAgent, serverApiUrl: string
 
 /**
  * Bounded depth-limited scan of `$HOME` on a remote host for directories
- * containing `.switch/agents/*.json`. Prunes `node_modules`, `.git`, and
- * hidden dirs (except `.switch` itself) to keep the scan fast.
+ * containing `.switch/agents/*.json`. Prunes `node_modules` and every hidden
+ * directory except `.switch` itself — dot-trees like `.cargo`, `.npm` or
+ * `.vscode-server` hold hundreds of thousands of entries on a dev box and can
+ * never contain a working directory we would surface.
  *
  * Returns the parent working directories (the dirs that contain `.switch/`),
  * not the `.switch/agents/` paths themselves.
@@ -193,14 +195,20 @@ async function findSwitchAgentDirsOnHost(sshHost: string): Promise<string[]> {
       '-c',
       [
         'find "$HOME" -maxdepth 6',
-        '-type d \\( -name node_modules -o -name .git -o -name .cache -o -name .local \\) -prune',
+        '-type d \\( -name node_modules -o \\( -name ".*" ! -name .switch \\) \\) -prune',
         '-o -type f -path "*/.switch/agents/*.json" -print',
         '2>/dev/null',
         '| sed "s|/\\.switch/agents/.*||"',
         '| sort -u',
       ].join(' '),
     ]);
-  } catch {
+  } catch (error) {
+    // Disclosed fallback: an exec failure must not read as "empty host", so
+    // leave a trace even though discovery continues with the server source.
+    log.warn('findSwitchAgentDirsOnHost: $HOME scan failed', {
+      sshHost,
+      error: error instanceof Error ? error.message : String(error),
+    });
     return [];
   }
   return result.stdout

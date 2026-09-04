@@ -423,7 +423,10 @@ export async function foreignCredentialsOwnerFs(
  * the identity exists on-disk but is unknown to this install's database — i.e.
  * a colleague's agent that would be clobbered by a blind write.
  *
- * Pure: takes the existing file text (or null when absent/unreadable).
+ * Pure: takes the existing file text, or null when no file exists. A failed
+ * read is not null — `PluginFs.read` throws on transport errors, and callers
+ * must let that propagate: mapping it to null would make a transient error
+ * read as "slot free" and clobber real credentials.
  */
 export function existingAgentIdInSlot(
   existingRaw: string | null,
