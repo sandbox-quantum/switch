@@ -6,7 +6,7 @@
  * selects which to load (attach); agents that need a provider pick get one
  * inline. Already-loaded agents appear disabled.
  *
- * Discovery is explicit: the host is only scanned when the user asks.
+ * Discovery runs automatically when the section is expanded.
  */
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -17,7 +17,6 @@ import {
   FolderSearch,
   Info,
   RefreshCw,
-  ScanSearch,
   Trash2,
 } from 'lucide-react';
 import { useCallback, useMemo, useState } from 'react';
@@ -68,14 +67,13 @@ export function LoadExistingAgentsSection({
   initiallyOpen?: boolean;
 }) {
   const [isOpen, setIsOpen] = useState(initiallyOpen);
-  const [scanStarted, setScanStarted] = useState(false);
   const queryClient = useQueryClient();
   const showRemoveConfig = useShowModal('removeAgentConfigModal');
 
   const discovery = useQuery({
     queryKey: [LOAD_AGENTS_QUERY_KEY, sshHost, serverId],
     queryFn: () => rpc.agents.discoverLoadableAgentsOnHost({ sshHost, serverId }),
-    enabled: isOpen && scanStarted,
+    enabled: isOpen,
   });
 
   const [manualAgents, setManualAgents] = useState<LoadableAgentRow[]>([]);
@@ -253,7 +251,6 @@ export function LoadExistingAgentsSection({
   });
 
   const providerOptions = AGENT_PROVIDERS.filter((p) => p.detectable !== false);
-  const hasScanned = scanStarted && !discovery.isLoading && !discovery.isError;
 
   return (
     <section className="pt-2">
@@ -268,17 +265,7 @@ export function LoadExistingAgentsSection({
 
       {isOpen && (
         <div className="space-y-3 px-3 pb-2">
-          {!scanStarted && manualAgents.length === 0 ? (
-            <div className="flex items-center justify-between gap-3">
-              <p className="text-sm text-foreground-muted">
-                Find agents already configured on this host and load them into this Console. Nothing
-                runs until you scan.
-              </p>
-              <Button size="sm" variant="outline" onClick={() => setScanStarted(true)}>
-                <ScanSearch className="size-4" /> Scan this host
-              </Button>
-            </div>
-          ) : discovery.isLoading ? (
+          {discovery.isLoading ? (
             <div className="flex items-center gap-2 text-sm text-foreground-muted">
               <Spinner /> Scanning host for configured agents…
             </div>
@@ -486,7 +473,7 @@ export function LoadExistingAgentsSection({
           )}
 
           {/* Load button */}
-          {(hasScanned || manualAgents.length > 0) && agents.length > 0 && (
+          {agents.length > 0 && (
             <div className="flex justify-end">
               <Button
                 size="sm"
