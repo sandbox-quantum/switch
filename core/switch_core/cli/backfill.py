@@ -61,6 +61,16 @@ def _parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--force",
+        action="store_true",
+        help=(
+            "Walk rooms that have already been backfilled to their start. "
+            "Without it they are skipped: the walk always starts from the "
+            "newest message, so re-reading a finished room costs its whole "
+            "history in pages to learn there is nothing to write."
+        ),
+    )
+    parser.add_argument(
         "--allow-empty",
         action="store_true",
         help=(
@@ -102,10 +112,16 @@ async def _run(args: argparse.Namespace) -> int:
         query = select(Room).where(Room.archived_at.is_(None))
         if args.room:
             query = query.where(Room.id == args.room)
+        if not args.force:
+            query = query.where(Room.history_backfilled_at.is_(None))
         rooms = list((await session.execute(query)).scalars().all())
 
     if not rooms:
-        print("No rooms to backfill.", file=sys.stderr)
+        print(
+            "No rooms to backfill — every room has already been walked to its "
+            "start, or there are none. Use --force to walk them again.",
+            file=sys.stderr,
+        )
         return 0 if args.allow_empty else 2
 
     transport = MatrixTransport(

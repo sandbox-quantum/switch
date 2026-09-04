@@ -39,6 +39,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 from switch_core.db.models import Message, MessageAttachment
+from switch_core.db.models import Room as RoomModel
 from switch_core.db.stores.message_store import MessageStore
 from switch_core.messages.recorded_types import MEMBERSHIP_EVENT_TYPE, should_record
 from switch_core.transport import (
@@ -99,6 +100,22 @@ class BackfillReport:
         return line
 
 
+async def _mark_backfilled(
+    session_factory: async_sessionmaker[AsyncSession], room: Room
+) -> None:
+    """Record that this room has been walked to its start.
+
+    Only on a clean finish. A walk that stopped at the page limit leaves the
+    room partly reconstructed, and marking that as done would strand the rest
+    of its history the next time round.
+    """
+    async with session_factory() as session:
+        row = await session.get(RoomModel, room.id)
+        if row is not None:
+            row.history_backfilled_at = datetime.now(UTC)  # type: ignore[assignment]
+            await session.commit()
+
+
 async def backfill_room(
     transport: MessageTransport,
     session_factory: async_sessionmaker[AsyncSession],
@@ -137,6 +154,7 @@ async def backfill_room(
 
         end = page.next_token
         if not end or end == start:
+            await _mark_backfilled(session_factory, room)
             return report
         start = end
 

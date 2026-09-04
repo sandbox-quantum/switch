@@ -305,6 +305,14 @@ class Room(Base):
     archived_at: Mapped[str | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    # Set when this room's history has been walked to its start and written
+    # into the message log. Null means never completed — including a walk that
+    # stopped at the page limit, which leaves the room partly reconstructed.
+    # The walk always starts from the newest message, so without this a re-run
+    # reads every page of every room again to discover it has nothing to do.
+    history_backfilled_at: Mapped[str | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
 
 # ── Room Groups ─────────────────────────────────────────────────────────────────

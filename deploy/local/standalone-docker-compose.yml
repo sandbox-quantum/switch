@@ -143,17 +143,22 @@ services:
         condition: service_completed_successfully
 
   # One-shot: reconstructs each room's history from the homeserver into the
-  # message log, then exits. switch waits for it to succeed, so the stack
-  # cannot come up having quietly left its history behind — the failure is
-  # loud and, because backfill is idempotent, fixed by starting again.
+  # message log, then exits. switch waits for it to finish, so the copy is
+  # never racing the server that will serve it.
+  #
+  # It always exits 0, so a backfill that fails delays the stack rather than
+  # keeping it down. The trade is deliberate and it is a real one: a failure
+  # here is only visible in this service's log, and the stack above it will
+  # look healthy while missing history. Backfill is idempotent, so re-running
+  # it after fixing the cause costs nothing.
   #
   # It runs alembic first for ordering, not as a second migration owner: the
   # rows it writes need the schema, and switch (which normally migrates on
   # boot) is waiting on this. The upgrade is the same idempotent one.
   #
-  # Nothing to walk is success — a fresh stack has no rooms and no admin
-  # client, and refusing to start over an empty database would be reporting
-  # emptiness as a fault.
+  # Rooms already walked to their start are skipped, so this is cheap on every
+  # boot after the first. Nothing to walk at all is success too — a fresh
+  # stack has no rooms and no admin client.
   backfill:
     image: ${SWITCH_REGISTRY:-ghcr.io}/${SWITCH_IMAGE_NAMESPACE:-sandbox-quantum}/switch-core:${SWITCH_VERSION:?required, set it in .env, there is no default}
     restart: "no"
@@ -175,7 +180,9 @@ services:
     entrypoint: >
       sh -c "
         alembic upgrade head &&
-        python -m switch_core.cli.backfill --allow-empty
+        python -m switch_core.cli.backfill --allow-empty ||
+        echo 'backfill did not complete; starting anyway. Room history from
+        before this release may be missing until it is re-run.' >&2
       "
     depends_on:
       postgres:
