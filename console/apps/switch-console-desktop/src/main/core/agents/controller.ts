@@ -105,6 +105,7 @@ export const agentsController = createRPCController({
   deleteAgent: (params: { agentId: string } & DeleteAgentOptions) =>
     deleteAgent(params.agentId, {
       deleteInSwitch: params.deleteInSwitch,
+      removeProvisionedFiles: params.removeProvisionedFiles,
       trigger: params.trigger,
     }),
   resetRemoteAgent: (params: { agentId: string }) => resetRemoteAgent(params.agentId),
