@@ -79,6 +79,10 @@ export class LocationManagerStore {
     const locationIdsWithAgents = new Set(agents.map((a) => a.locationId));
     const toMount: string[] = [];
     runInAction(() => {
+      // Drop locations whose last agent was removed since the previous load.
+      for (const id of this.locations.keys()) {
+        if (!locationIdsWithAgents.has(id)) this.locations.delete(id);
+      }
       for (const loc of rawLocations) {
         if (!locationIdsWithAgents.has(loc.id)) continue;
         if (this.locations.has(loc.id)) continue;

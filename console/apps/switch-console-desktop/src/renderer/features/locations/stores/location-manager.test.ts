@@ -211,6 +211,41 @@ describe('LocationManagerStore agent onboarding', () => {
   });
 });
 
+describe('LocationManagerStore reload', () => {
+  const stubLocation = {} as LocationStore;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.openLocation.mockResolvedValue({ success: true });
+  });
+
+  it('mounts a newly-appeared location on reload', async () => {
+    const store = new LocationManagerStore();
+    // First load: no locations, no agents.
+    mocks.getLocations.mockResolvedValueOnce([]);
+    mocks.getAgents.mockResolvedValueOnce([]);
+    await store.load();
+    expect(store.locations.size).toBe(0);
+
+    // An agent was loaded externally — reload should pick it up.
+    mocks.getLocations.mockResolvedValueOnce([location({ id: 'new-loc' })]);
+    mocks.getAgents.mockResolvedValueOnce([agent({ locationId: 'new-loc' })]);
+    await store.reload();
+    expect(store.locations.has('new-loc')).toBe(true);
+  });
+
+  it('drops a location whose last agent was removed on reload', async () => {
+    const store = new LocationManagerStore();
+    store.locations.set('stale-loc', stubLocation);
+
+    // The DB still has the location row but no agents point at it.
+    mocks.getLocations.mockResolvedValueOnce([location({ id: 'stale-loc' })]);
+    mocks.getAgents.mockResolvedValueOnce([]);
+    await store.reload();
+    expect(store.locations.has('stale-loc')).toBe(false);
+  });
+});
+
 describe('LocationManagerStore removeAgent', () => {
   // removeAgent only gets/deletes the location by key, so a placeholder stands in
   // for the (heavy) real LocationStore.
