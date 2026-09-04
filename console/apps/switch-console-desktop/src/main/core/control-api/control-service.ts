@@ -87,7 +87,11 @@ class ControlService implements IInitializable, IDisposable {
         startSource: 'auto',
       });
       if (!result.success) {
-        sendJson(res, 422, { error: result.error.type });
+        const message =
+          'message' in result.error && typeof result.error.message === 'string'
+            ? result.error.message
+            : undefined;
+        sendJson(res, 422, { error: result.error.type, ...(message ? { message } : {}) });
         return;
       }
       sendJson(res, 201, { session: result.data });
@@ -127,7 +131,11 @@ class ControlService implements IInitializable, IDisposable {
         const status = await sidecarController.restart(agent.id);
         sendJson(res, 200, { status });
       } catch (err) {
-        sendJson(res, 500, { error: String(err) });
+        log.warn('ControlService: sidecar restart failed', {
+          agentId: agent.id,
+          error: String(err),
+        });
+        sendJson(res, 500, { error: 'sidecar-restart-failed' });
       }
     });
 
@@ -142,7 +150,8 @@ class ControlService implements IInitializable, IDisposable {
         const status = await sidecarController.stop(agent.id);
         sendJson(res, 200, { status });
       } catch (err) {
-        sendJson(res, 500, { error: String(err) });
+        log.warn('ControlService: sidecar stop failed', { agentId: agent.id, error: String(err) });
+        sendJson(res, 500, { error: 'sidecar-stop-failed' });
       }
     });
 
@@ -157,7 +166,11 @@ class ControlService implements IInitializable, IDisposable {
         const status = await sidecarController.getStatus(agent.id);
         sendJson(res, 200, { status });
       } catch (err) {
-        sendJson(res, 500, { error: String(err) });
+        log.warn('ControlService: sidecar status failed', {
+          agentId: agent.id,
+          error: String(err),
+        });
+        sendJson(res, 500, { error: 'sidecar-status-failed' });
       }
     });
   }
