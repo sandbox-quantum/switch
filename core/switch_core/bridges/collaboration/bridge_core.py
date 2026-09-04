@@ -19,7 +19,10 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.aliases import AliasError, validate_alias_format
 from switch_core.attachments import parse_attachment_group
-from switch_core.bridges.collaboration.adapter import CollaborationAdapter
+from switch_core.bridges.collaboration.adapter import (
+    AgentPresentation,
+    CollaborationAdapter,
+)
 from switch_core.bridges.collaboration.models import (
     ChannelType,
     InboundAgentJoin,
@@ -184,7 +187,7 @@ class BridgeCore:
         await self._load_channel_map()
         await self._load_existing_puppets()
         self._adapter.set_channel_migration_handler(self._handle_channel_migrated)
-        self._adapter.set_agent_icon_resolver(self._agent_icon_url)
+        self._adapter.set_agent_presentation_resolver(self._agent_presentation)
         await self._adapter.start(
             on_message=self._handle_inbound_message,
             on_command=self._handle_inbound_command,
@@ -314,17 +317,23 @@ class BridgeCore:
 
     # ── Inbound (platform → room) ───────────────────────────────────────────
 
-    async def _agent_icon_url(self, agent_name: str) -> str | None:
-        """An agent's own icon URL, or None if it has not been given one.
+    async def _agent_presentation(self, agent_name: str) -> AgentPresentation | None:
+        """How an agent is presented — its label and its icon — off one row.
 
-        Installed on the adapter as its icon resolver; None sends the adapter
-        to its existing default. A name matching no agent — an alias, or a bot
-        the platform reports that Switch does not own — also yields None rather
-        than an error, since the caller only wants to know whether to override.
+        Installed on the adapter as its presentation resolver. A name matching
+        no agent — an alias, or a bot the platform reports that Switch does not
+        own — yields None rather than an error, since the caller only wants to
+        know whether to override what it already has. Either field being None
+        within a hit means the same thing one field down: the agent was given
+        no value, and the adapter's default stands.
         """
         async with self._session_factory() as session:
             agent = await self._agent_store.get_by_name(session, agent_name)
-        return agent.icon_url if agent else None
+        if agent is None:
+            return None
+        return AgentPresentation(
+            display_name=agent.display_name, icon_url=agent.icon_url
+        )
 
     async def _is_registered_agent(self, name: str) -> bool:
         """Whether `name` is a registered Switch agent. Switch creates each

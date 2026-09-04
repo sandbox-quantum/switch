@@ -295,7 +295,7 @@ export const AddAgentModal = observer(function AddAgentModal({
     }
     if (result.kind === 'invalid-name') {
       toast({
-        title: 'That agent name cannot be used',
+        title: 'Switch rejected these agent details',
         description: result.message,
         variant: 'destructive',
       });
@@ -325,6 +325,7 @@ export const AddAgentModal = observer(function AddAgentModal({
         providerId: pickState.providerId,
         serverId: pickState.serverId,
         description: form.description.trim(),
+        displayName: form.displayName.trim() || null,
         instructions: form.instructions,
         iconUrl: form.iconUrl,
         autoSession: form.autoSession,

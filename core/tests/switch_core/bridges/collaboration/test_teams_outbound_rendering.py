@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
+from switch_core.bridges.collaboration.adapter import AgentRendering
 from switch_core.bridges.collaboration.teams.adapter import (
     TeamsAdapter,
     TeamsConnectionConfig,
@@ -143,7 +144,11 @@ def test_the_card_carries_mentions_where_teams_looks_for_them() -> None:
 
 
 def test_a_card_with_no_mentions_carries_no_msteams_block() -> None:
-    assert "msteams" not in agent_message_card("james", "hello", "http://icon")
+    agent = AgentRendering(
+        field_label="james", body_label="james", icon_url="http://icon"
+    )
+
+    assert "msteams" not in agent_message_card(agent, "hello", [])
 
 
 # ── the app's own handle ─────────────────────────────────────────────────────

@@ -7,6 +7,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
 from typing import ClassVar
 
+from switch_core.agent_display_name import defuse_label_markup
 from switch_core.agent_icon import default_icon_url
 from switch_core.bridges.collaboration.models import (
     BridgeInstallLink,
@@ -43,6 +44,37 @@ def format_elapsed(seconds: float) -> str:
         return f"{minutes}m{secs:02d}s"
     hours, minutes = divmod(minutes, 60)
     return f"{hours}h{minutes:02d}m"
+
+
+@dataclass(frozen=True)
+class AgentPresentation:
+    """The presentation columns of one agent, exactly as they are stored.
+
+    Raw on purpose: ``None`` in either field means the agent was given no value
+    for it, and what stands in for a missing value is per-platform — Mattermost
+    wants a default icon in a format it can upload, Slack wants one drawn on its
+    own background. Deciding that here would take the choice away from the
+    adapter that has to live with it.
+    """
+
+    display_name: str | None
+    icon_url: str | None
+
+
+@dataclass(frozen=True)
+class AgentRendering:
+    """How one agent is presented on one send, resolved for this platform.
+
+    The two labels are separate members rather than one because they are not
+    interchangeable: ``field_label`` is safe only in a platform field that
+    carries a name on its own, and putting it in message text is how a display
+    name forges markup. A caller building a body string reaches for the member
+    whose name says so.
+    """
+
+    field_label: str
+    body_label: str
+    icon_url: str
 
 
 @dataclass(frozen=True)
@@ -126,11 +158,14 @@ class CollaborationAdapter(ABC):
         # Set by set_channel_migration_handler. Called with (old_id, new_id)
         # when the platform reissues a channel's id.
         self._on_channel_migrated: Callable[[str, str], Awaitable[None]] | None = None
-        # Set by set_agent_icon_resolver. Returns an agent's own icon URL, or
-        # None when it has not been given one. Left unset an adapter still
-        # works — every agent just gets the default — so adapters stay usable
-        # without a bridge core wired up behind them.
-        self._resolve_agent_icon: Callable[[str], Awaitable[str | None]] | None = None
+        # Set by set_agent_presentation_resolver. Returns the agent's stored
+        # presentation, or None for a name that is not an agent. Left unset an
+        # adapter still works — every agent renders under its identifier with
+        # the platform default icon — so adapters stay usable without a bridge
+        # core wired up behind them.
+        self._resolve_agent_presentation: (
+            Callable[[str], Awaitable[AgentPresentation | None]] | None
+        ) = None
         # Inbound attachment size ceiling, set by the lifecycle service from
         # config.agent_media_max_bytes. Adapters check a platform-reported file
         # size against this before downloading so an oversize file is rejected
@@ -603,14 +638,15 @@ class CollaborationAdapter(ABC):
 
         Returns the posted message ref so callers that can remove it (Slack,
         Mattermost) track it for cleanup when the turn ends."""
+        label = await self.agent_label_for_body(agent_name)
         reason = detail.strip() if detail and detail.strip() else ""
         need = f"hit an error: {reason}" if reason else "needs your input"
         lead = "⚠️ " if reason else ""
         if mention_handle:
-            text = f"@{mention_handle} {lead}**{agent_name}** {need}."
+            text = f"@{mention_handle} {lead}**{label}** {need}."
         else:
             text = (
-                f"{lead}**{agent_name}** {need} — but nobody here is linked "
+                f"{lead}**{label}** {need} — but nobody here is linked "
                 f"to its owner, so this pings no one. Link your "
                 f"{self.platform_name} account in Switch Console to be notified."
             )
@@ -825,16 +861,19 @@ class CollaborationAdapter(ABC):
         the platform forwards them, while nothing inbound matches a room again."""
         self._on_channel_migrated = handler
 
-    def set_agent_icon_resolver(
-        self, resolver: Callable[[str], Awaitable[str | None]]
+    def set_agent_presentation_resolver(
+        self, resolver: Callable[[str], Awaitable[AgentPresentation | None]]
     ) -> None:
-        """Install the lookup for an agent's own icon URL (None if it has none).
+        """Install the lookup for how an agent is presented — its label and its
+        icon — returning None for a name that is not an agent at all.
 
         The bridge core supplies this because the adapter has no database of
-        its own. Resolution happens per send rather than being cached, so
-        changing an agent's icon shows up on its next message instead of at the
-        next restart."""
-        self._resolve_agent_icon = resolver
+        its own. One resolver rather than one per field because a send needs
+        both at once and they come off the same row: two would be two round
+        trips for one message. Resolution happens per send rather than being
+        cached, so a renamed or re-iconed agent reads correctly on its next
+        message instead of at the next restart."""
+        self._resolve_agent_presentation = resolver
 
     def default_agent_icon(self, agent_name: str) -> str:
         """The avatar for an agent that has set no icon.
@@ -844,13 +883,87 @@ class CollaborationAdapter(ABC):
         pins the response format."""
         return default_icon_url(agent_name)
 
+    def adapt_icon_url(self, raw: str | None, agent_name: str) -> str:
+        """Turn the stored icon URL into the one this platform should be handed.
+
+        `raw` is the agent's own icon, or None when it has none and the
+        platform default stands in. Pure and synchronous so it composes with a
+        single lookup: an override adjusts the URL, it does not go looking for
+        one."""
+        return raw or self.default_agent_icon(agent_name)
+
+    def escape_label_for_body(self, label: str) -> str:
+        """Neutralise a label's markup before it goes into message text.
+
+        A display name is presentation text an agent's owner chooses, and
+        `_ping_operator` inlines it into a body. Two constructs are near
+        universal across chat platforms and are the ones a name can use to
+        claim something it is not:
+
+        - `@…` addresses somebody. Whether the platform resolves `@channel`,
+          `@here`, a person or one of our own agent handles, the label gets to
+          notify people the message was never aimed at. A zero-width space
+          after every `@` leaves the sigil legible and the resolution dead.
+        - `[text](url)` renders an anchor whose destination the label chose
+          and whose visible text hides it. The zero-width space goes after the
+          `]`, breaking the `](` adjacency every Markdown dialect requires —
+          after the `[` it lands inside the visible text and the link still
+          matches.
+
+        Defused rather than escaped, because the escape has to survive as far
+        as whatever renders it: on most platforms nothing of ours resolves
+        these, so there is no matcher here to defeat, only the platform's own
+        rendering. A zero-width space is also inert in every escaping pipeline
+        it may pass through afterwards, so it cannot compound with one.
+
+        Safe by default and specialised by override: the failure mode of the
+        other order is silent, since a platform whose adapter forgets this
+        renders a forged name correctly and says nothing. An override adds its
+        platform's own rule on top and calls up to this one — Teams its `<at>`
+        tags, Slack and Discord their markup escaping. None of them replaces
+        it, and the `@` rule is why: a platform's escaper defends against the
+        label carrying that platform's syntax, but Switch's own outbound
+        mention pass runs over the finished body and turns a plain `@handle`
+        into a real mention, needing no syntax from the label at all.
+
+        Not covered anywhere: emphasis, where a label's `*` or `_` can
+        unbalance the run around it. That is cosmetic, and the line held here
+        is that forged markup is closed while broken formatting is not worth
+        an escape that would show up in every ordinary name."""
+        return defuse_label_markup(label)
+
+    async def agent_rendering(self, agent_name: str) -> AgentRendering:
+        """Everything a send needs to present an agent, from ONE lookup.
+
+        The paired accessor, for the common case of a post that carries both a
+        name and an avatar. The single-field accessors below are for callers
+        that need one of them alone — an unescaped label is not among them:
+        :attr:`AgentRendering.field_label` is reachable only alongside the
+        escaped one, so choosing it is a choice."""
+        raw = AgentPresentation(display_name=None, icon_url=None)
+        if self._resolve_agent_presentation is not None:
+            found = await self._resolve_agent_presentation(agent_name)
+            if found is not None:
+                raw = found
+        label = raw.display_name or agent_name
+        return AgentRendering(
+            field_label=label,
+            body_label=self.escape_label_for_body(label),
+            icon_url=self.adapt_icon_url(raw.icon_url, agent_name),
+        )
+
     async def agent_icon_url(self, agent_name: str) -> str:
         """The icon URL to render for an agent on this platform.
 
         Adapters call this wherever they need a per-message avatar: the agent's
         own icon when it has one, otherwise this platform's existing default."""
-        if self._resolve_agent_icon is not None:
-            chosen = await self._resolve_agent_icon(agent_name)
-            if chosen:
-                return chosen
-        return self.default_agent_icon(agent_name)
+        return (await self.agent_rendering(agent_name)).icon_url
+
+    async def agent_label_for_body(self, agent_name: str) -> str:
+        """The label to inline into message text, escaped for this platform.
+
+        A display name is free text — punctuation is the point of it — so
+        inlining it raw lets a name break the surrounding markup or forge
+        markup of its own. Every caller that builds a body string must use
+        this, or :attr:`AgentRendering.body_label`."""
+        return (await self.agent_rendering(agent_name)).body_label
