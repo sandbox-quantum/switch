@@ -53,7 +53,7 @@ export class ControlServer {
     this.token = crypto.randomUUID();
 
     this.server = http.createServer((req, res) => {
-      if (req.headers['x-switch-control-token'] !== this.token) {
+      if (!this.tokenMatches(req.headers['x-switch-control-token'])) {
         this.log.warn('ControlServer: rejected request with invalid token');
         res.writeHead(403);
         res.end();
@@ -119,6 +119,14 @@ export class ControlServer {
         reject(err);
       });
     });
+  }
+
+  /** Constant-time token check (hash both sides to a fixed length first). */
+  private tokenMatches(provided: unknown): boolean {
+    if (typeof provided !== 'string' || this.token === '') return false;
+    const a = crypto.createHash('sha256').update(provided).digest();
+    const b = crypto.createHash('sha256').update(this.token).digest();
+    return crypto.timingSafeEqual(a, b);
   }
 
   stop(): void {
