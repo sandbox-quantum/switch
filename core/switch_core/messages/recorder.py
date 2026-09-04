@@ -89,8 +89,15 @@ class MessageRecorder:
         transport_room_id: str,
         event: InboundMembership,
         client_id: str,
+        member_name: str,
     ) -> None:
         """Record an arrival, called by the client that arrived.
+
+        `member_name` is the arriving client's own name rather than the
+        display name on the membership event: the profile behind that name is
+        set from whatever the source platform calls the member, so taking it
+        would make the same participant read one way when they arrive and
+        another way when they speak.
 
         Like `record`, a failure here leaves a gap rather than disturbing
         anything: nothing about a join depends on it having been written.
@@ -100,6 +107,7 @@ class MessageRecorder:
                 transport_room_id=transport_room_id,
                 event=event,
                 client_id=client_id,
+                member_name=member_name,
             )
         except Exception:
             logger.error(
@@ -115,6 +123,7 @@ class MessageRecorder:
         transport_room_id: str,
         event: InboundMembership,
         client_id: str,
+        member_name: str,
     ) -> None:
         async with self._session_factory() as session:
             room_id = await self._resolve_room(session, transport_room_id)
@@ -144,7 +153,7 @@ class MessageRecorder:
                 transport_event_id=event.event_id,
                 sender_matrix_id=event.state_key,
                 sender_client_id=client_id,
-                sender_name=event.display_name,
+                sender_name=member_name,
                 event_type=MEMBERSHIP_EVENT_TYPE,
                 msgtype=None,
                 body=None,

@@ -312,6 +312,7 @@ class ClientBase[ConfigT: ClientConfig]:
                         transport_room_id=room.room_id,
                         event=event,
                         client_id=self.client_id,
+                        member_name=self.display_name,
                     )
                 # A membership-preserving update (display name, avatar) re-fires
                 # m.room.member with membership == "join"; only a transition into

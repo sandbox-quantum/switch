@@ -37,7 +37,38 @@ PERSISTED_ELSEWHERE = frozenset(
 # they want a table shaped for querying them, not the conversation log.
 TELEMETRY = frozenset({"com.switch.report.tool_call", "com.switch.report.llm_call"})
 
-NOT_RECORDED = EPHEMERAL | PERSISTED_ELSEWHERE | TELEMETRY
+# Types no code sends any more. The bus keeps its history forever, so events of
+# a retired type stay readable long after the last line that could produce one
+# was deleted — and anything walking that history has to be able to say what
+# they were. Without this, deleting a type turns every historical event of it
+# into an unclassified event that should have been recorded, which reconcile
+# reports as a missing row for good.
+#
+# APPEND ONLY. A name leaves this set only if the type is revived, in which
+# case it belongs in one of the categories above instead.
+RETIRED = frozenset(
+    {
+        # Deleted with the RPC round trips, which were switch-core talking to
+        # itself over the bus.
+        "com.switch.mediation.tool_request",
+        "com.switch.mediation.tool_result",
+        "com.switch.mediation.llm_request",
+        "com.switch.mediation.llm_response",
+        "com.switch.resource.load_request",
+        "com.switch.resource.load_response",
+        "com.switch.resource.room_document_create_request",
+        "com.switch.resource.room_document_create_response",
+        "com.switch.resource.room_document_update_request",
+        "com.switch.resource.room_document_update_response",
+        "com.switch.resource.room_document_delete_request",
+        "com.switch.resource.room_document_delete_response",
+        # Deleted as dead since the initial import.
+        "com.switch.permission.request",
+        "com.switch.permission.response",
+    }
+)
+
+NOT_RECORDED = EPHEMERAL | PERSISTED_ELSEWHERE | TELEMETRY | RETIRED
 
 # The observe prefix is reserved and unimplemented; no type under it exists to
 # name individually yet.

@@ -20,6 +20,7 @@ from switch_core.addressing import (
 from switch_core.agent_display_name import normalise_display_name
 from switch_core.agent_icon import normalise_icon_url, validate_icon_url
 from switch_core.aliases import check_alias_collisions, validate_alias_format
+from switch_core.attachments import parse_attachment_group
 from switch_core.authz import Action, Principal, require, require_manage
 from switch_core.bridges.agent.api_key_cache import ApiKeyCache
 from switch_core.bridges.agent.mediation import MediationService
@@ -138,6 +139,42 @@ def _from_epoch_ms(when: int | None) -> datetime | None:
     if when is None:
         return None
     return datetime.fromtimestamp(when / 1000, tz=UTC)
+
+
+def _coalesce_attachment_groups(
+    rows: list[Message], attachments: dict[str, list[MessageAttachment]]
+) -> tuple[list[Message], dict[str, list[MessageAttachment]]]:
+    """Put a multi-file message back together.
+
+    A message carrying several files is sent as one event per file sharing a
+    group marker, because the bus has no event that holds more than one. Each
+    of those events is recorded on its own row, so history has to reassemble
+    them the same way a live receiver does — otherwise a two-file post reads
+    back as two posts, the second captioned with a filename.
+
+    The lowest index present leads: it carries the caption and the id the
+    sender was handed, and it stays the lead when a later part is missing. A
+    group split by the window edge is coalesced from the parts inside it, so a
+    page can return fewer entries than rows it read.
+    """
+    members: dict[str, list[tuple[int, Message]]] = {}
+    for row in rows:
+        group = parse_attachment_group(row.content or {})
+        if group is not None:
+            members.setdefault(group[0], []).append((group[1], row))
+    if not members:
+        return rows, attachments
+
+    merged = dict(attachments)
+    absorbed: set[str] = set()
+    for parts in members.values():
+        parts.sort(key=lambda part: part[0])
+        lead = parts[0][1]
+        merged[lead.id] = [
+            attachment for _, row in parts for attachment in attachments.get(row.id, [])
+        ]
+        absorbed.update(row.id for _, row in parts[1:])
+    return [row for row in rows if row.id not in absorbed], merged
 
 
 def _elided_root(root_id: str) -> dict[str, Any]:
@@ -1628,6 +1665,8 @@ class ProtocolService:
             attachments = await self.message_store.attachments_for(
                 session, [row.id for row in rows + roots]
             )
+
+        rows, attachments = _coalesce_attachment_groups(rows, attachments)
 
         entries = {
             row.transport_event_id: self._timeline_entry(

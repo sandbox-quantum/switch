@@ -10,6 +10,7 @@ from switch_core.messages.recorded_types import (
     EPHEMERAL,
     NOT_RECORDED,
     PERSISTED_ELSEWHERE,
+    RETIRED,
     TELEMETRY,
     should_record,
 )
@@ -31,12 +32,25 @@ def test_every_dispatched_type_is_classified():
 
 def test_classification_names_no_type_that_is_never_dispatched():
     dispatched = set(ClientBase._EVENT_DISPATCH)
-    stale = (NOT_RECORDED | RECORDED_CUSTOM_TYPES) - dispatched
+    stale = (NOT_RECORDED | RECORDED_CUSTOM_TYPES) - dispatched - RETIRED
     assert not stale, f"Classified but no longer dispatched: {sorted(stale)}"
 
 
+def test_retired_types_are_the_ones_nothing_dispatches():
+    """The set exists for types the code no longer has. A name that is back in
+    the dispatch table is a live type and belongs in a live bucket."""
+    revived = RETIRED & set(ClientBase._EVENT_DISPATCH)
+    assert not revived, f"Retired but dispatched again: {sorted(revived)}"
+
+
+def test_a_retired_type_is_still_classified():
+    """History outlives the code that wrote it: an event of a deleted type is
+    still on the bus, and a walk over that history has to know what it was."""
+    assert not should_record("com.switch.mediation.tool_result")
+
+
 def test_the_buckets_do_not_overlap():
-    buckets = [EPHEMERAL, PERSISTED_ELSEWHERE, TELEMETRY]
+    buckets = [EPHEMERAL, PERSISTED_ELSEWHERE, TELEMETRY, RETIRED]
     total = sum(len(bucket) for bucket in buckets)
     assert total == len(NOT_RECORDED)
 
