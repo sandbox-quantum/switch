@@ -200,6 +200,20 @@ export interface UpdateRoomInput {
   write_visibility?: "public" | "private";
 }
 
+/** FastAPI's `detail` is a string for HTTPException but an array of
+ * validation objects for a 422; render both as text so no error surfaces
+ * as "[object Object]". */
+function errorText(detail: unknown, fallback: string): string {
+  if (typeof detail === "string") return detail;
+  if (Array.isArray(detail)) {
+    const msgs = detail
+      .map((d) => (d && typeof d === "object" && "msg" in d ? String(d.msg) : null))
+      .filter((m): m is string => m !== null);
+    if (msgs.length > 0) return msgs.join("; ");
+  }
+  return fallback;
+}
+
 async function jsonRequest<T>(
   path: string,
   method: string,
@@ -213,7 +227,7 @@ async function jsonRequest<T>(
   });
   if (!res.ok) {
     const detail = await res.json().catch(() => null);
-    throw new Error(detail?.detail ?? `${res.status} ${res.statusText}`);
+    throw new Error(errorText(detail?.detail, `${res.status} ${res.statusText}`));
   }
   return (await res.json()) as T;
 }
