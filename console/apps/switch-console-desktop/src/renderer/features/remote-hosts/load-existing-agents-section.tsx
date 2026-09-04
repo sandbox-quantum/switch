@@ -240,6 +240,7 @@ export function LoadExistingAgentsSection({
   const manualScan = useMutation({
     mutationFn: (dir: string) => rpc.agents.discoverLoadableAgentsInDir({ sshHost, dir, serverId }),
     onSuccess: (found) => {
+      setScanStarted(true);
       setManualServerApiUrl(found.serverApiUrl);
       setManualAgents((prev) => {
         const keys = new Set(prev.map((a) => `${a.dir}\0${a.name}`));
