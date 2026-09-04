@@ -22,6 +22,9 @@ importers:
       '@sandboxaq/switch-agent-runtime':
         specifier: workspace:*
         version: link:../../packages/switch-agent-runtime
+      '@switch-console/agent-providers':
+        specifier: workspace:*
+        version: link:../../packages/agent-providers
       '@switch-console/core':
         specifier: workspace:*
         version: link:../../packages/core
