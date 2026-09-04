@@ -878,11 +878,13 @@ async def test_message_activity_falls_back_to_the_default_icon() -> None:
 class _CountingConnector:
     """Connector fake that returns a distinct id per posted message."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, reaction_error: Exception | None = None) -> None:
         self.threads: list[dict[str, Any]] = []
         self.sends: list[dict[str, Any]] = []
         self.updates: list[dict[str, Any]] = []
         self.deletes: list[str] = []
+        self.reactions: list[tuple[str, str, str, str]] = []
+        self._reaction_error = reaction_error
         self._n = 0
 
     def _next(self) -> str:
@@ -916,6 +918,30 @@ class _CountingConnector:
         self, *, service_url: str, conversation_id: str, activity_id: str
     ) -> None:
         self.deletes.append(activity_id)
+
+    async def add_reaction(
+        self,
+        *,
+        service_url: str,
+        conversation_id: str,
+        activity_id: str,
+        reaction: str,
+    ) -> None:
+        if self._reaction_error is not None:
+            raise self._reaction_error
+        self.reactions.append(("add", conversation_id, activity_id, reaction))
+
+    async def remove_reaction(
+        self,
+        *,
+        service_url: str,
+        conversation_id: str,
+        activity_id: str,
+        reaction: str,
+    ) -> None:
+        if self._reaction_error is not None:
+            raise self._reaction_error
+        self.reactions.append(("remove", conversation_id, activity_id, reaction))
 
 
 def _card_text(activity: dict[str, Any]) -> str:
@@ -1057,3 +1083,213 @@ def test_awaiting_input_keeps_working_and_pings() -> None:
     assert {u["activity_id"] for u in fake.updates} == {"M1", "M2"}
     assert key not in adapter._working_msg
     assert key not in adapter._input_pings
+
+
+# ── The eyes on the message being worked on ──────────────────────────────────
+
+CHANNEL = "19:abc@thread.tacv2"
+CHAT = "19:meeting-chat@thread.v2"
+EYES = "1f440_eyes"
+
+
+def _inbound(
+    adapter: TeamsAdapter,
+    *,
+    channel_id: str = CHANNEL,
+    activity_id: str,
+    root_id: str | None = None,
+    channel_type: str = "channel_public",
+) -> None:
+    """Drive one inbound message through the real Bot Framework dispatch path."""
+    conv_id = channel_id
+    if channel_type.startswith("channel"):
+        conv_id = f"{channel_id};messageid={root_id or activity_id}"
+    activity = {
+        "id": activity_id,
+        "type": "message",
+        "text": "@Bot do the thing",
+        "from": {"id": "user-1", "name": "louis"},
+        "conversation": {"id": conv_id, "conversationType": "channel"},
+        "channelData": {"channel": {"id": channel_id}},
+    }
+    _capture_messages(adapter)
+    _run(adapter._dispatch_message(activity, channel_id, channel_type))  # type: ignore[arg-type]
+
+
+def test_the_message_being_worked_on_gets_the_eyes() -> None:
+    adapter = _adapter()
+    fake = _CountingConnector()
+    _wire_counting(adapter, fake)
+    _inbound(adapter, activity_id="100")
+
+    _run(
+        adapter.apply_runtime_state(
+            CHANNEL, "worker", "working", mention_handle=None, thread_root_id="100"
+        )
+    )
+
+    assert ("add", f"{CHANNEL};messageid=100", "100", EYES) in fake.reactions
+
+
+def test_the_eyes_come_off_when_the_turn_ends() -> None:
+    adapter = _adapter()
+    fake = _CountingConnector()
+    _wire_counting(adapter, fake)
+    _inbound(adapter, activity_id="100")
+
+    _run(
+        adapter.apply_runtime_state(
+            CHANNEL, "worker", "working", mention_handle=None, thread_root_id="100"
+        )
+    )
+    _run(
+        adapter.apply_runtime_state(
+            CHANNEL, "worker", "idle", mention_handle=None, thread_root_id="100"
+        )
+    )
+
+    assert [kind for kind, _, _, _ in fake.reactions] == ["add", "remove"]
+    assert (CHANNEL, "100") not in adapter._eyes
+
+
+def test_the_eyes_are_added_once_for_a_turn() -> None:
+    adapter = _adapter()
+    fake = _CountingConnector()
+    _wire_counting(adapter, fake)
+    _inbound(adapter, activity_id="100")
+
+    for _ in range(5):
+        _run(
+            adapter.apply_runtime_state(
+                CHANNEL,
+                "worker",
+                "working",
+                mention_handle=None,
+                thread_root_id="100",
+                detail="still going",
+            )
+        )
+
+    assert [kind for kind, _, _, _ in fake.reactions] == ["add"]
+
+
+def test_the_eyes_go_on_the_message_that_asked_not_the_thread_root() -> None:
+    adapter = _adapter()
+    fake = _CountingConnector()
+    _wire_counting(adapter, fake)
+    _inbound(adapter, activity_id="100")
+    _inbound(adapter, activity_id="555", root_id="100")
+
+    _run(
+        adapter.apply_runtime_state(
+            CHANNEL, "worker", "working", mention_handle=None, thread_root_id="100"
+        )
+    )
+
+    # The reply asked, so the reply carries the mark — and it is addressed in
+    # the thread's conversation, not its own.
+    assert fake.reactions == [("add", f"{CHANNEL};messageid=100", "555", EYES)]
+
+
+def test_a_chat_message_is_marked_even_though_it_has_no_thread() -> None:
+    """Teams chats have no threads, so a report carries no root at all."""
+    adapter = _adapter()
+    fake = _CountingConnector()
+    _wire_counting(adapter, fake)
+    adapter._channel_type[CHAT] = "direct"
+    _inbound(adapter, channel_id=CHAT, activity_id="777", channel_type="direct")
+
+    _run(
+        adapter.apply_runtime_state(
+            CHAT, "worker", "working", mention_handle=None, thread_root_id=None
+        )
+    )
+
+    assert fake.reactions == [("add", CHAT, "777", EYES)]
+
+
+def test_awaiting_input_keeps_the_eyes_on() -> None:
+    adapter = _adapter()
+    fake = _CountingConnector()
+    _wire_counting(adapter, fake)
+    _inbound(adapter, activity_id="100")
+
+    _run(
+        adapter.apply_runtime_state(
+            CHANNEL, "worker", "working", mention_handle=None, thread_root_id="100"
+        )
+    )
+    _run(
+        adapter.apply_runtime_state(
+            CHANNEL,
+            "worker",
+            "awaiting-input",
+            mention_handle="louis",
+            thread_root_id="100",
+        )
+    )
+
+    assert [kind for kind, _, _, _ in fake.reactions] == ["add"]
+    assert (CHANNEL, "100") in adapter._eyes
+
+
+def test_every_message_the_agent_marked_is_cleared_when_the_turn_ends() -> None:
+    adapter = _adapter()
+    fake = _CountingConnector()
+    _wire_counting(adapter, fake)
+    _inbound(adapter, activity_id="100")
+    _inbound(adapter, activity_id="200")
+
+    for root in ("100", "200"):
+        _run(
+            adapter.apply_runtime_state(
+                CHANNEL, "worker", "working", mention_handle=None, thread_root_id=root
+            )
+        )
+    _run(
+        adapter.apply_runtime_state(
+            CHANNEL, "worker", "idle", mention_handle=None, thread_root_id="100"
+        )
+    )
+
+    removed = {mid for kind, _, mid, _ in fake.reactions if kind == "remove"}
+    assert removed == {"100", "200"}
+
+
+def test_a_tenant_that_refuses_the_reaction_still_gets_its_card(
+    caplog: Any,
+) -> None:
+    """The reaction is cosmetic — a Teams service without it must not break a turn."""
+    adapter = _adapter()
+    fake = _CountingConnector(reaction_error=RuntimeError("404 not found"))
+    _wire_counting(adapter, fake)
+    _inbound(adapter, activity_id="100")
+
+    _run(
+        adapter.apply_runtime_state(
+            CHANNEL, "worker", "working", mention_handle=None, thread_root_id="100"
+        )
+    )
+
+    assert adapter._working_msg[(CHANNEL, "worker")].message_ref == "M1"
+    assert (CHANNEL, "100") not in adapter._eyes
+
+
+def test_a_turn_with_nothing_to_mark_reacts_to_nothing() -> None:
+    """No inbound message has been seen, so there is no message that asked."""
+    adapter = _adapter()
+    fake = _CountingConnector()
+    _wire_counting(adapter, fake)
+
+    _run(
+        adapter.apply_runtime_state(
+            CHANNEL, "worker", "working", mention_handle=None, thread_root_id=None
+        )
+    )
+
+    assert fake.reactions == []
+
+
+def test_the_status_follows_the_message_being_worked_on() -> None:
+    """A Teams thread renders inline, so the status belongs in it, not at the root."""
+    assert TeamsAdapter.runtime_state_follows_anchor is True

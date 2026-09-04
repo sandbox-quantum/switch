@@ -340,6 +340,89 @@ def test_delete_activity_success_is_silent() -> None:
     assert rec.last.method == "DELETE"
 
 
+# ── Reactions ─────────────────────────────────────────────────────────────────
+
+
+def test_add_reaction_puts_an_empty_body_at_the_reaction_path() -> None:
+    rec = _Recorder(200, {})
+    connector = _connector(rec)
+
+    _run(
+        connector.add_reaction(
+            service_url="https://smba.example/amer/",
+            conversation_id="19:abc@thread.tacv2;messageid=100",
+            activity_id="act-1",
+            reaction="1f440_eyes",
+        )
+    )
+
+    assert rec.last.method == "PUT"
+    assert str(rec.last.url) == (
+        "https://smba.example/amer/v3/conversations/"
+        "19:abc@thread.tacv2;messageid=100/activities/act-1/reactions/1f440_eyes"
+    )
+    assert rec.last.content == b""
+
+
+def test_remove_reaction_deletes_the_same_path() -> None:
+    rec = _Recorder(200, {})
+    connector = _connector(rec)
+
+    _run(
+        connector.remove_reaction(
+            service_url="https://smba.example/amer/",
+            conversation_id="conv-1",
+            activity_id="act-1",
+            reaction="1f440_eyes",
+        )
+    )
+
+    assert rec.last.method == "DELETE"
+    assert str(rec.last.url).endswith("/activities/act-1/reactions/1f440_eyes")
+
+
+def test_a_reaction_id_is_escaped_into_the_path() -> None:
+    rec = _Recorder(200, {})
+    connector = _connector(rec)
+
+    _run(
+        connector.add_reaction(
+            service_url="https://smba.example/amer/",
+            conversation_id="conv-1",
+            activity_id="act-1",
+            reaction="odd/id",
+        )
+    )
+
+    assert str(rec.last.url).endswith("/reactions/odd%2Fid")
+
+
+def test_add_reaction_error_raises() -> None:
+    connector = _connector(_Recorder(404, {"error": "not found"}))
+    with pytest.raises(BotConnectorError):
+        _run(
+            connector.add_reaction(
+                service_url="https://smba.example/amer/",
+                conversation_id="conv-1",
+                activity_id="act-1",
+                reaction="1f440_eyes",
+            )
+        )
+
+
+def test_remove_reaction_error_raises() -> None:
+    connector = _connector(_Recorder(429, {"error": "throttled"}))
+    with pytest.raises(BotConnectorError):
+        _run(
+            connector.remove_reaction(
+                service_url="https://smba.example/amer/",
+                conversation_id="conv-1",
+                activity_id="act-1",
+                reaction="1f440_eyes",
+            )
+        )
+
+
 # ── a permission granted while we hold a token ───────────────────────────────
 
 

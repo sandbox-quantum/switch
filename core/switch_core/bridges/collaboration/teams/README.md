@@ -127,6 +127,32 @@ A bridge created before Switch generated this material may hold no encryption
 material at all. It still runs — outbound, chats and @mention capture work —
 but per-channel Graph subscriptions are skipped and an error is logged.
 
+## Showing that an agent is working
+
+Two signals, both anchored to the message that asked:
+
+- **👀 on that message** for the length of the turn, added when the agent starts
+  and removed when it goes idle. It is a plain Bot Connector call —
+  `PUT/DELETE /v3/conversations/{conversation}/activities/{activity}/reactions/1f440_eyes`
+  on the same regional host and app-only token as sending a message, so it needs
+  no Graph permission and no delegated user, and it is the one signal that works
+  in a channel, a group chat and a 1:1 alike. Microsoft documents the capability
+  through the Teams SDK rather than the Bot Connector REST reference, so a
+  tenant whose Teams service has not shipped it answers an error; the mark is
+  then skipped with a warning and the turn carries on.
+- **A status card** posted as the agent and edited in place as the work
+  progresses, removed when the turn ends. In a channel it lands in the thread of
+  the message being worked on rather than at the channel root
+  (`runtime_state_follows_anchor`), because Teams renders a thread inline under
+  its root post.
+
+Two Teams affordances were considered and **not** used. Native streaming
+(`streaminfo` / "informative update") is documented as one-on-one chats only,
+one request per second, with a hard two-minute cap — a response-latency
+surface, not a signal for work that runs for minutes. The typing indicator is
+transient, undocumented as to scope, and in practice does not render in
+channels.
+
 ## Known limitations / follow-ups
 
 - **Switch-initiated DM rooms** are user-initiated (as on Mattermost);
@@ -146,5 +172,12 @@ but per-channel Graph subscriptions are skipped and an error is logged.
   manifest taking the `team` scope) but are not exercised: they must be added
   to per channel, and Graph refuses message subscriptions on them for
   RSC-consented apps.
+- **No per-agent @-handle.** Slack gives each agent a user group so `@agent-name`
+  autocompletes; Teams has no equivalent. A Teams app manifest admits one bot
+  (`bots` is `maxItems: 1`), and a tag — the nearest analogue — takes user ids
+  only, so a bot cannot be a member of one. Agents are addressed by mentioning
+  the one Switch bot and naming the agent. The exception is an Entra agent user
+  account, which is @-mentionable like a person, but it is preview-gated and
+  costs a directory object and a licence per agent.
 - **One Teams bridge per listener port** — run multiple Teams bridges on distinct
   ports (and ingress routes) if needed.

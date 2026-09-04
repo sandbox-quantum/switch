@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 
@@ -103,5 +104,56 @@ class BotConnectorClient:
         if resp.status_code >= 300:
             raise BotConnectorError(
                 f"delete activity {activity_id} failed "
+                f"({resp.status_code}): {resp.text}"
+            )
+
+    def _reaction_url(
+        self, service_url: str, conversation_id: str, activity_id: str, reaction: str
+    ) -> str:
+        return (
+            f"{self._base(service_url)}v3/conversations/"
+            f"{conversation_id}/activities/{activity_id}/reactions/"
+            f"{quote(reaction, safe='')}"
+        )
+
+    async def add_reaction(
+        self,
+        *,
+        service_url: str,
+        conversation_id: str,
+        activity_id: str,
+        reaction: str,
+    ) -> None:
+        """Put ``reaction`` on a message, as the bot.
+
+        The reaction id is a path segment and the body is empty. Teams serves
+        this off the same regional connector host and app-only token as sending
+        a message, so it needs no Graph permission and no delegated user — but
+        it carries no page in the Bot Connector REST reference, and a tenant
+        whose Teams service has not shipped it answers 404. Callers treat a
+        failure as cosmetic.
+        """
+        url = self._reaction_url(service_url, conversation_id, activity_id, reaction)
+        resp = await self._http.put(url, headers=await self._headers())
+        if resp.status_code >= 300:
+            raise BotConnectorError(
+                f"add reaction {reaction} to {activity_id} failed "
+                f"({resp.status_code}): {resp.text}"
+            )
+
+    async def remove_reaction(
+        self,
+        *,
+        service_url: str,
+        conversation_id: str,
+        activity_id: str,
+        reaction: str,
+    ) -> None:
+        """Take the bot's own ``reaction`` back off a message."""
+        url = self._reaction_url(service_url, conversation_id, activity_id, reaction)
+        resp = await self._http.delete(url, headers=await self._headers())
+        if resp.status_code >= 300:
+            raise BotConnectorError(
+                f"remove reaction {reaction} from {activity_id} failed "
                 f"({resp.status_code}): {resp.text}"
             )

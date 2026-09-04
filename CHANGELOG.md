@@ -44,6 +44,17 @@ version of their own to them without also giving them a release of their own.
 
 ### [Unreleased]
 
+#### Added
+- Microsoft Teams shows that an agent is working, the way Slack does. The
+  message that asked carries 👀 for the length of the turn — in a channel, a
+  group chat and a 1:1 alike — and the status card now sits in that message's
+  thread instead of at the bottom of the channel. The reaction is a plain Bot
+  Connector call on the token the bridge already holds, so it needs no Graph
+  permission and no service account; a tenant whose Teams service does not
+  serve it logs a warning and the turn carries on with the card alone. Teams
+  has no per-agent `@handle` to match Slack's user groups, and its native
+  streaming indicator is one-on-one only with a two-minute cap — both are
+  written down in the bridge's README rather than faked.
 ### [0.23.0] - 2026-09-03
 
 #### Performance

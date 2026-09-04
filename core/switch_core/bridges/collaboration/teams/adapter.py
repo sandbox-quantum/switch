@@ -163,6 +163,11 @@ def _strip_leading_mention(text: str) -> str:
     return _LEADING_MENTION_TAG.sub("", text, count=1)
 
 
+# Teams reaction id for 👀, put on the message an agent is working on for the
+# whole turn. Teams names reactions by id, not by unicode.
+_WORKING_REACTION = "1f440_eyes"
+
+
 def _aad_failure_message(exc: Exception) -> str:
     """Reduce an AAD token failure to the sentence an operator can act on.
 
@@ -311,6 +316,10 @@ class TeamsAdapter(CollaborationAdapter):
     Microsoft Graph change-notification subscriptions.
     """
 
+    # Teams renders a channel thread inline under its root post rather than in
+    # a side panel, so pinning the status to the message being worked on puts it
+    # where the answer will land instead of at the bottom of the channel.
+    runtime_state_follows_anchor: ClassVar[bool] = True
     # Teams keeps only http(s) anchors: a link on any other scheme is stripped
     # whole, label and all, so a `switchdash://` deeplink left the literal
     # brackets around it and rendered as "()". It needs the https redirect,
@@ -433,6 +442,20 @@ class TeamsAdapter(CollaborationAdapter):
         self._channel_layouts: dict[str, str] = {}
         # message id -> (service_url, conversation_id) for later edit/delete.
         self._sent: dict[str, tuple[str, str]] = {}
+        # (channel id, thread root id) -> id of the last message that asked in
+        # that thread. Inside a thread that is a reply, not the root, and the
+        # mark belongs on what was actually said.
+        self._thread_trigger: dict[tuple[str, str], str] = {}
+        # channel/chat id -> (message id, thread root id) of the last inbound
+        # message anywhere in it. Teams chats have no threads, so this is the
+        # only anchor a 1:1 or group conversation has.
+        self._channel_trigger: dict[str, tuple[str, str | None]] = {}
+        # Messages currently carrying the working reaction, keyed
+        # (channel id, message id) — the idempotency guard.
+        self._eyes: set[tuple[str, str]] = set()
+        # (channel id, agent name) -> every message that agent has marked. A
+        # turn ends once but may have marked several.
+        self._agent_eyes: dict[tuple[str, str], set[str]] = {}
         # Inbound de-duplication — the Bot Framework and Graph capture paths can
         # both deliver the same channel message, keyed on the Teams message id.
         self._seen: OrderedDict[str, None] = OrderedDict()
@@ -967,6 +990,114 @@ class TeamsAdapter(CollaborationAdapter):
         except Exception:
             logger.warning("Failed to send typing indicator to %s", channel_id)
 
+    # ── The eyes on the message being worked on ───────────────────────────────
+
+    def _record_trigger(
+        self, channel_id: str, message_ref: str, root_id: str | None
+    ) -> None:
+        """Remember which message asked, so the turn can be marked on it."""
+        if not message_ref:
+            return
+        self._thread_trigger[(channel_id, root_id or message_ref)] = message_ref
+        self._channel_trigger[channel_id] = (message_ref, root_id)
+
+    def _trigger_for(
+        self, channel_id: str, thread_root_id: str | None
+    ) -> tuple[str, str | None] | None:
+        """The message a turn in this thread should be marked on, and its root.
+
+        A runtime-state report names the thread, not the message inside it, so
+        the message that asked is recovered from what came in. Outside a thread
+        — every 1:1 and group chat, where Teams has no threads at all — the last
+        message in the conversation is the only anchor there is.
+        """
+        if thread_root_id:
+            trigger = self._thread_trigger.get((channel_id, thread_root_id))
+            return (trigger or thread_root_id, thread_root_id)
+        return self._channel_trigger.get(channel_id)
+
+    async def _track_turn(
+        self, channel_id: str, agent_name: str, state: str, thread_root_id: str | None
+    ) -> None:
+        akey = (channel_id, agent_name)
+        if state in ("working", "awaiting-input"):
+            found = self._trigger_for(channel_id, thread_root_id)
+            if found is None:
+                return
+            message_ref, root_id = found
+            self._agent_eyes.setdefault(akey, set()).add(message_ref)
+            await self._mark_being_read(channel_id, message_ref, root_id, working=True)
+            return
+        for message_ref in sorted(self._agent_eyes.pop(akey, set())):
+            root_id = self._root_of_marked(channel_id, message_ref)
+            await self._mark_being_read(channel_id, message_ref, root_id, working=False)
+
+    def _root_of_marked(self, channel_id: str, message_ref: str) -> str | None:
+        for (marked_channel, root), trigger in self._thread_trigger.items():
+            if marked_channel == channel_id and trigger == message_ref:
+                return root
+        return None
+
+    async def _mark_being_read(
+        self,
+        channel_id: str,
+        message_ref: str,
+        root_id: str | None,
+        *,
+        working: bool,
+    ) -> None:
+        """Put 👀 on the message being worked on, or take it off again.
+
+        Unlike the status card this needs no thread and no Graph permission, so
+        it is the one progress signal available in every Teams conversation
+        type. A tenant whose Teams service does not serve the reaction endpoint
+        answers an error; the turn carries on without the mark rather than
+        failing, and the card still says what is happening.
+        """
+        if self._connector is None:
+            return
+        key = (channel_id, message_ref)
+        if working == (key in self._eyes):
+            return
+        conversation_id = self._reaction_conversation(channel_id, message_ref, root_id)
+        try:
+            if working:
+                await self._connector.add_reaction(
+                    service_url=self._service_url_for(channel_id),
+                    conversation_id=conversation_id,
+                    activity_id=message_ref,
+                    reaction=_WORKING_REACTION,
+                )
+                self._eyes.add(key)
+            else:
+                await self._connector.remove_reaction(
+                    service_url=self._service_url_for(channel_id),
+                    conversation_id=conversation_id,
+                    activity_id=message_ref,
+                    reaction=_WORKING_REACTION,
+                )
+                self._eyes.discard(key)
+        except Exception as exc:
+            logger.warning(
+                "Could not %s the working reaction on %s in %s: %s",
+                "add" if working else "remove",
+                message_ref,
+                channel_id,
+                exc,
+            )
+
+    def _reaction_conversation(
+        self, channel_id: str, message_ref: str, root_id: str | None
+    ) -> str:
+        """The conversation a message lives in, for a reaction on it.
+
+        In a channel every message belongs to a thread conversation — a root
+        post to its own. A chat message is addressed by the chat itself.
+        """
+        if self._is_channel(channel_id):
+            return self._thread_conversation(channel_id, root_id or message_ref)
+        return channel_id
+
     # ── Runtime state ──────────────────────────────────────────────────────────
 
     async def _apply_runtime_state(
@@ -987,6 +1118,12 @@ class TeamsAdapter(CollaborationAdapter):
         A "working on it…" card is posted (as the agent) while the agent works
         and edited in place as the activity detail changes; it stays up through
         ``awaiting-input`` — where a "needs your input" ping is added — and both
+        are removed when the turn goes ``idle`` (or resumes to ``working``,
+        since the requested input was provided). Teams messages are truly
+        deletable, so no tombstone is left behind.
+
+        Alongside the card, the message that asked carries 👀 for the length of
+        the turn — the ack that costs the reader nothing and needs no thread.
         are retired when the turn goes ``idle`` (or resumes to ``working``,
         since the requested input was provided).
 
@@ -1000,6 +1137,7 @@ class TeamsAdapter(CollaborationAdapter):
         status is never deleted: it is edited into a small terminal marker and
         left as the record of a turn that is over.
         """
+        await self._track_turn(channel_id, agent_name, state, thread_root_id)
         key = (channel_id, agent_name)
         if state == "working":
             await self._clear_input_pings(channel_id, agent_name)
@@ -1667,6 +1805,7 @@ class TeamsAdapter(CollaborationAdapter):
         used only to detect and parse ``!``-commands (a channel command arrives as
         ``@Bot !cmd``), while ``text`` — mention intact — is what a plain message
         is bridged as. Defaults to ``text`` when the caller has nothing to strip."""
+        self._record_trigger(channel_id, message_ref, root_id)
         # The post this message sits in — itself, when it opened the post.
         # Remembered so an untied reply lands under the question rather than
         # starting a conversation of its own; see _post_to_answer_in.
