@@ -17,9 +17,10 @@ import {
   FolderSearch,
   Info,
   RefreshCw,
+  ScanSearch,
   Trash2,
 } from 'lucide-react';
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { toast } from '@renderer/lib/hooks/use-toast';
 import { rpc } from '@renderer/lib/ipc';
@@ -250,6 +251,33 @@ export function LoadExistingAgentsSection({
     },
   });
 
+  // Alt-reveal: show the "Deep scan" button while the modifier key is held.
+  const [altHeld, setAltHeld] = useState(false);
+  useEffect(() => {
+    if (!isOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.repeat) return;
+      setAltHeld(e.altKey);
+    };
+    const onBlur = () => setAltHeld(false);
+    window.addEventListener('keydown', onKey);
+    window.addEventListener('keyup', onKey);
+    window.addEventListener('blur', onBlur);
+    return () => {
+      window.removeEventListener('keydown', onKey);
+      window.removeEventListener('keyup', onKey);
+      window.removeEventListener('blur', onBlur);
+    };
+  }, [isOpen]);
+
+  const deepScan = useMutation({
+    mutationFn: () =>
+      rpc.agents.discoverLoadableAgentsOnHost({ sshHost, serverId, includeHomeScan: true }),
+    onSuccess: (result) => {
+      queryClient.setQueryData([LOAD_AGENTS_QUERY_KEY, sshHost, serverId], result);
+    },
+  });
+
   const providerOptions = AGENT_PROVIDERS.filter((p) => p.detectable !== false);
 
   return (
@@ -265,19 +293,35 @@ export function LoadExistingAgentsSection({
 
       {isOpen && (
         <div className="space-y-3 px-3 pb-2">
-          {discovery.isLoading ? (
+          {discovery.isLoading || deepScan.isPending ? (
             <div className="flex items-center gap-2 text-sm text-foreground-muted">
-              <Spinner /> Scanning host for configured agents…
+              <Spinner />{' '}
+              {deepScan.isPending
+                ? `Walking home directory on ${sshHost}… this can take a while`
+                : 'Checking registered agents on this host…'}
             </div>
           ) : discovery.isError ? (
             <p className="text-xs text-destructive">
               {failureText(discovery.error, 'Could not scan the host.')}
             </p>
           ) : agents.length === 0 ? (
-            <p className="text-sm text-foreground-muted">
-              No unclaimed agents found on this host. Use "Scan a directory" below if the agent is
-              outside <code>$HOME</code>.
-            </p>
+            <div className="space-y-1">
+              <p className="text-sm text-foreground-muted">
+                No registered agents found in this host's known directories. Scan a specific
+                directory below.
+              </p>
+              <p className="text-xs text-foreground-muted/60">Hold Alt to reveal a deep scan.</p>
+              {altHeld && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => deepScan.mutate()}
+                  title={`Walk the whole home directory on ${sshHost} for agent configs. Can be slow on large VMs.`}
+                >
+                  <ScanSearch className="size-4" /> Deep scan ~
+                </Button>
+              )}
+            </div>
           ) : (
             <>
               <div className="flex items-center justify-between">
@@ -292,19 +336,31 @@ export function LoadExistingAgentsSection({
                       : 'Select all'}
                   </button>
                 )}
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  disabled={discovery.isFetching}
-                  onClick={() =>
-                    void queryClient.invalidateQueries({
-                      queryKey: [LOAD_AGENTS_QUERY_KEY, sshHost, serverId],
-                    })
-                  }
-                >
-                  <RefreshCw className={`size-3 ${discovery.isFetching ? 'animate-spin' : ''}`} />
-                  Rescan
-                </Button>
+                <div className="flex items-center gap-1">
+                  {altHeld && (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => deepScan.mutate()}
+                      title={`Walk the whole home directory on ${sshHost} for agent configs. Can be slow on large VMs.`}
+                    >
+                      <ScanSearch className="size-3" /> Deep scan ~
+                    </Button>
+                  )}
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    disabled={discovery.isFetching}
+                    onClick={() =>
+                      void queryClient.invalidateQueries({
+                        queryKey: [LOAD_AGENTS_QUERY_KEY, sshHost, serverId],
+                      })
+                    }
+                  >
+                    <RefreshCw className={`size-3 ${discovery.isFetching ? 'animate-spin' : ''}`} />
+                    Rescan
+                  </Button>
+                </div>
               </div>
 
               <div className="divide-y divide-border rounded-md border">
