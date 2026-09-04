@@ -185,8 +185,8 @@ async function runAddAgent(params: AddAgentParams): Promise<AddAgentResult> {
   }
 
   // The cross-deployment check above passes when the slot belongs to the SAME
-  // server. That is safe when this install already manages the agent (the name
-  // check on L160 covers it), but not when the file was written by another
+  // server. That is safe when this install already manages the agent (the
+  // agentNameTaken check above covers it), but not when the file was written by another
   // Console — its agent is in this install's blind spot. Minting here would
   // overwrite the existing identity and destroy its token (CHOO-2560).
   const slotAgentId = await sameEndpointAgentId(

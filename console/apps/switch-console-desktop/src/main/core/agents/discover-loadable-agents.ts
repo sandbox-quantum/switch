@@ -73,8 +73,7 @@ export async function discoverLoadableAgentsOnHost(
   // --- Source 1: Server-assisted discovery ---
   try {
     const remoteAgents = await fetchAgents(server);
-    // Who am I on this server? Used only to soften the owner/policy line for
-    // agents the viewer already owns; an auth hiccup degrades to "not owner".
+    // Marks rows the signed-in user owns; an auth failure degrades to not-owner.
     const me = await fetchMe(server).catch(() => null);
 
     // Collect distinct repo_dirs from agents whose known_agent_options carry one.
@@ -101,7 +100,6 @@ export async function discoverLoadableAgentsOnHost(
       });
     }
 
-    // For each dir, run discover on the host and merge.
     for (const [dir, nameOwners] of dirOwners) {
       try {
         const discovered = await discoverConfiguredAgents({
@@ -155,7 +153,6 @@ export async function discoverLoadableAgentsOnHost(
         });
         for (const agent of discovered) {
           const key = `${dir}\0${agent.name}`;
-          // Server entry wins — only insert if not already present.
           if (!seen.has(key)) {
             seen.set(key, {
               name: agent.name,
