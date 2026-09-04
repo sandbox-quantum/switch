@@ -24,7 +24,6 @@ async def _client_and_room(session: AsyncSession) -> tuple[str, str]:
         matrix_user_id=f"@someone-{uuid.uuid4().hex[:8]}:test",
         display_name="someone",
         type="agent",
-        password="x",
     )
     room = Room(
         matrix_room_id=f"!{uuid.uuid4().hex[:8]}:test",

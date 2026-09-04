@@ -12,13 +12,13 @@ class BridgeMessageMapStore:
         await session.flush()
         return mapping
 
-    async def get_by_matrix_event_id(
-        self, session: AsyncSession, bridge_id: str, matrix_event_id: str
+    async def get_by_transport_event_id(
+        self, session: AsyncSession, bridge_id: str, transport_event_id: str
     ) -> BridgeMessageMap | None:
         result = await session.execute(
             select(BridgeMessageMap).where(
                 BridgeMessageMap.bridge_id == bridge_id,
-                BridgeMessageMap.matrix_event_id == matrix_event_id,
+                BridgeMessageMap.transport_event_id == transport_event_id,
             )
         )
         return result.scalar_one_or_none()
@@ -34,13 +34,13 @@ class BridgeMessageMapStore:
         )
         return result.scalar_one_or_none()
 
-    async def delete_by_matrix_event_id(
-        self, session: AsyncSession, bridge_id: str, matrix_event_id: str
+    async def delete_by_transport_event_id(
+        self, session: AsyncSession, bridge_id: str, transport_event_id: str
     ) -> None:
         await session.execute(
             delete(BridgeMessageMap).where(
                 BridgeMessageMap.bridge_id == bridge_id,
-                BridgeMessageMap.matrix_event_id == matrix_event_id,
+                BridgeMessageMap.transport_event_id == transport_event_id,
             )
         )
         await session.flush()

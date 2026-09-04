@@ -30,7 +30,6 @@ async def add_agent(
         type="agent",
         matrix_user_id=f"@{name}:test",
         display_name=name,
-        password=f"pw-{name}",
     )
     session.add(client)
     await session.flush()

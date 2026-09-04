@@ -55,8 +55,8 @@ class ClientBaseKwargs[ConfigT: ClientConfig](TypedDict):
     sides: the subclass cannot be told it is missing something, and a caller
     cannot be told it is passing something that no longer exists. A stale
     `device_id=` type-checked clean that way and took all four collaboration
-    bridges down at startup — the credential had moved into `session_state`
-    and nothing said so until the process refused to start.
+    bridges down at startup — the credential had moved elsewhere and nothing
+    said so until the process refused to start.
 
     Declaring the shape here and unpacking it restores both checks without
     making every subclass restate eleven parameters.
@@ -137,15 +137,13 @@ class ClientBase[ConfigT: ClientConfig]:
         """Block until this client is a member of `room_id`, up to `timeout`
         seconds. Returns True if joined, False on timeout. Callers that need to
         *send* into a room they have only just been invited to must await this
-        first — a send issued before the join lands is rejected by the
-        homeserver, and any event that does land before a member's join is
-        filtered out by `_should_ignore`.
+        first: any event that lands before a member's join is filtered out by
+        `_should_ignore`.
 
-        A join observed through sync sets the event, but a join that predates
-        this process never replays: the client resumes from a stored
-        `next_batch` token, so an incremental sync carries no member event for a
-        room it joined in an earlier run, and re-inviting an existing member is
-        a no-op. The homeserver is therefore asked directly before waiting."""
+        A join delivered to this client sets the event, but a join that
+        predates the process is never redelivered — delivery starts at each
+        room's head — and re-inviting an existing member is a no-op. Membership
+        is therefore read directly before waiting."""
         event = self._joined_event(room_id)
         if event.is_set():
             return True

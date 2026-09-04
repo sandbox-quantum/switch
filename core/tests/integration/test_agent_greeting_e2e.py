@@ -51,7 +51,7 @@ async def _wait_for_message_from(
     deadline = asyncio.get_event_loop().time() + timeout
     while asyncio.get_event_loop().time() < deadline:
         for row in await _timeline_messages(harness, session_env, room_id):
-            if row.sender_matrix_id.startswith(f"@{sender_localpart}"):
+            if row.sender_id.startswith(f"@{sender_localpart}"):
                 return row
         await asyncio.sleep(0.5)
     return None

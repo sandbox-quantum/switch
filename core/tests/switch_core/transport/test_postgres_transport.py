@@ -47,7 +47,6 @@ async def _make_room(session: AsyncSession) -> tuple[str, str, str, str]:
         matrix_user_id=f"@agent-{suffix}:test",
         display_name="agent one",
         type="agent",
-        password="x",
     )
     session.add(client)
     await session.flush()
@@ -185,7 +184,7 @@ class TestSending:
         assert message.msgtype == "m.text"
         assert message.event_type == "m.room.message"
         assert message.sender_client_id == client_id
-        assert message.sender_matrix_id == user_id
+        assert message.sender_id == user_id
         # The id the caller got back is the row's, so a caller that quotes it
         # in a reply or a thread is naming something that exists.
         assert message.transport_event_id == result.event_id
@@ -533,7 +532,6 @@ class TestReceiving:
                 matrix_user_id=f"@later-{uuid.uuid4().hex[:8]}:test",
                 display_name="the newcomer",
                 type="agent",
-                password="x",
             )
             session.add(newcomer)
             await session.commit()

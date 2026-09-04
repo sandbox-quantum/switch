@@ -467,7 +467,7 @@ class PostgresTransport:
             message = Message(
                 room_id=room_id,
                 transport_event_id=result.event_id,
-                sender_matrix_id=self.user_id,
+                sender_id=self.user_id,
                 sender_client_id=self.client_id,
                 sender_name=sender_name,
                 event_type=event_type,
@@ -585,7 +585,7 @@ class PostgresTransport:
             arrival = Message(
                 room_id=switch_room_id,
                 transport_event_id=new_event_id(),
-                sender_matrix_id=self.user_id,
+                sender_id=self.user_id,
                 sender_client_id=self.client_id,
                 sender_name=self.display_name,
                 event_type=MEMBERSHIP_EVENT_TYPE,
@@ -646,7 +646,7 @@ def to_inbound(
     content = dict(row.content)
     room_id = transport_room_id
     event_id = row.transport_event_id
-    sender = row.sender_matrix_id
+    sender = row.sender_id
     timestamp = _epoch_ms(row.sent_at)
 
     if row.event_type == MEMBERSHIP_EVENT_TYPE:
@@ -656,7 +656,7 @@ def to_inbound(
             sender=sender,
             timestamp=timestamp,
             content=content,
-            state_key=row.sender_matrix_id,
+            state_key=row.sender_id,
             membership=text_field(content.get("membership")) or "join",
             # Only an arrival is ever written, so there is no previous state
             # to read back — and a row that carries one is honoured rather

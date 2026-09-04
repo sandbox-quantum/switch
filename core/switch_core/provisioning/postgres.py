@@ -1,20 +1,4 @@
-"""Provisioning without a homeserver: every operation is a row.
-
-What the Matrix implementation did over HTTP, this does against the same
-database Switch already keeps the answer in. Two of the six turn out to be
-almost nothing, and that is the finding rather than a shortcut:
-
-- **An account is the `clients` row.** `register_user` created a homeserver
-  account so that a row Switch was about to write would have something to
-  authenticate as. There is no second system to register with now, so there is
-  nothing to do — the caller writes the row immediately afterwards, and that
-  row is the account.
-- **A password is a Switch password.** `verify_login` asked the homeserver
-  whether a password worked; it asks the `clients` table instead. Its one
-  caller is a cutover check for a target server that already has accounts,
-  which no longer has a homeserver to be true of.
-
-The other four are writes:
+"""Provisioning: every operation is a row.
 
 - **A room** gets an id minted here and stored by the caller, exactly as the
   homeserver's `room_id` was.
@@ -84,20 +68,6 @@ class PostgresProvisioning:
         self._message_store = message_store
         self._invites = invites
 
-    async def register_user(
-        self,
-        user_id: str,
-        password: str,
-        display_name: str | None = None,
-        is_admin: bool = False,
-    ) -> None:
-        """Nothing to register: the caller's `clients` row is the account."""
-
-    async def verify_login(self, user_id: str, password: str) -> bool:
-        async with self._session_factory() as session:
-            client = await self._client_store.get_by_matrix_user_id(session, user_id)
-        return client is not None and client.password == password
-
     async def create_room(self, name: str, topic: str) -> str:
         """Mint the id the caller will store on its own room row.
 
@@ -138,7 +108,7 @@ class PostgresProvisioning:
             arrival = Message(
                 room_id=switch_room_id,
                 transport_event_id=f"sw_{uuid.uuid4().hex}",
-                sender_matrix_id=user_id,
+                sender_id=user_id,
                 sender_client_id=client_id,
                 sender_name=display_name,
                 event_type=MEMBERSHIP_EVENT_TYPE,

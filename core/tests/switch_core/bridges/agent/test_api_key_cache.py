@@ -64,7 +64,6 @@ class _FakeClientLifecycle:
                 matrix_user_id=f"@{display_name}:test",
                 display_name=display_name,
                 type=client_type,
-                password="x",
             )
             session.add(client)
             await session.commit()
@@ -129,7 +128,6 @@ async def _seed_agent(
                 matrix_user_id=f"@{name}:test",
                 display_name=name,
                 type="agent",
-                password="x",
             )
             session.add(client)
             await session.flush()

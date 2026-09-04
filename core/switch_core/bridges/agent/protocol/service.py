@@ -1581,12 +1581,12 @@ class ProtocolService:
         decide, not the writer's — so the sentence is composed here and can be
         changed without rewriting history.
         """
-        name = message.sender_name or message.sender_matrix_id
+        name = message.sender_name or message.sender_id
         if message.event_type == MEMBERSHIP_EVENT_TYPE:
             return {
                 "id": message.transport_event_id,
                 "kind": "room_join",
-                "sender": message.sender_matrix_id,
+                "sender": message.sender_id,
                 "sender_name": name,
                 "body": f"{name} joined the room",
                 "timestamp": _epoch_ms(message.sent_at),
@@ -1595,7 +1595,7 @@ class ProtocolService:
         return {
             "id": message.transport_event_id,
             "kind": "message",
-            "sender": message.sender_matrix_id,
+            "sender": message.sender_id,
             "sender_name": name,
             "body": message.body,
             "timestamp": _epoch_ms(message.sent_at),

@@ -78,10 +78,6 @@ class Client(Base):
     matrix_user_id: Mapped[str] = mapped_column(Text, unique=True, nullable=False)
     display_name: Mapped[str] = mapped_column(Text, nullable=False)
     type: Mapped[str] = mapped_column(Text, nullable=False)
-    password: Mapped[str] = mapped_column(Text, nullable=False)
-    device_id: Mapped[str | None] = mapped_column(Text, nullable=True)
-    access_token: Mapped[str | None] = mapped_column(Text, nullable=True)
-    next_batch_token: Mapped[str | None] = mapped_column(Text, nullable=True)
     config: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     created_at: Mapped[str] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
@@ -303,14 +299,6 @@ class Room(Base):
     # members, Matrix room, and bridge channel are untouched. NULL = active.
     # Archiving is metadata-only and reversible (unarchive clears this).
     archived_at: Mapped[str | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
-    # Set when this room's history has been walked to its start and written
-    # into the message log. Null means never completed — including a walk that
-    # stopped at the page limit, which leaves the room partly reconstructed.
-    # The walk always starts from the newest message, so without this a re-run
-    # reads every page of every room again to discover it has nothing to do.
-    history_backfilled_at: Mapped[str | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
 
@@ -828,18 +816,18 @@ class RoleLease(Base):
 
 
 class BridgeMessageMap(Base):
-    """Durable correlation between a Matrix event and its external counterpart.
+    """Durable correlation between a Switch event and its external counterpart.
 
-    One row per bridged message, written in both directions (Matrix→external
-    and external→Matrix). Powers thread bridging (resolving a Matrix thread
-    root to its external post and vice versa) and the edit/delete sync that
-    previously relied on a volatile in-memory dict. Unique in both directions
-    per bridge so either id resolves the other.
+    One row per bridged message, written in both directions. Powers thread
+    bridging (resolving a Switch thread root to its external post and vice
+    versa) and the edit/delete sync that previously relied on a volatile
+    in-memory dict. Unique in both directions per bridge so either id resolves
+    the other.
     """
 
     __tablename__ = "bridge_message_map"
     __table_args__ = (
-        UniqueConstraint("bridge_id", "matrix_event_id"),
+        UniqueConstraint("bridge_id", "transport_event_id"),
         UniqueConstraint("bridge_id", "external_post_id"),
     )
 
@@ -848,7 +836,7 @@ class BridgeMessageMap(Base):
         Text, ForeignKey("collaboration_bridges.id", ondelete="CASCADE"), nullable=False
     )
     external_channel_id: Mapped[str] = mapped_column(Text, nullable=False)
-    matrix_event_id: Mapped[str] = mapped_column(Text, nullable=False)
+    transport_event_id: Mapped[str] = mapped_column(Text, nullable=False)
     external_post_id: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[str] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
@@ -926,7 +914,7 @@ class Message(Base):
         Text, ForeignKey("rooms.id", ondelete="CASCADE"), nullable=False
     )
     transport_event_id: Mapped[str] = mapped_column(Text, unique=True, nullable=False)
-    sender_matrix_id: Mapped[str] = mapped_column(Text, nullable=False)
+    sender_id: Mapped[str] = mapped_column(Text, nullable=False)
     sender_client_id: Mapped[str | None] = mapped_column(
         Text, ForeignKey("clients.id", ondelete="SET NULL"), nullable=True
     )

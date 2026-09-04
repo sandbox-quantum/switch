@@ -146,7 +146,7 @@ async def test_three_attachments_are_stamped_as_one_group() -> None:
     assert bridge.recorded == [
         {
             "external_channel_id": "chan-1",
-            "matrix_event_id": "$evt-0",
+            "transport_event_id": "$evt-0",
             "external_post_id": "post-1",
         }
     ]

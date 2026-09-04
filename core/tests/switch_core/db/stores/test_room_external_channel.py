@@ -26,7 +26,6 @@ async def _make_bridge(session: AsyncSession, name: str) -> CollaborationBridge:
         matrix_user_id=f"@bridge-{uuid.uuid4().hex[:8]}:test",
         display_name=f"{name} client",
         type="bridge",
-        password="x",
     )
     session.add(client)
     await session.flush()

@@ -111,7 +111,6 @@ async def _seed(
                 matrix_user_id=f"@a{i}:test",
                 display_name=f"a{i}",
                 type="agent",
-                password="x",
             )
             session.add_all([key, client])
             await session.flush()

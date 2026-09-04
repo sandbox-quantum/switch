@@ -550,7 +550,7 @@ class BridgeCore:
             # Record the correlation so a later reply (either direction) threads.
             await self._record_message_map(
                 external_channel_id=msg.channel_id,
-                matrix_event_id=event_id,
+                transport_event_id=event_id,
                 external_post_id=msg.message_ref,
             )
             return
@@ -601,7 +601,7 @@ class BridgeCore:
         if first_event_id is not None:
             await self._record_message_map(
                 external_channel_id=msg.channel_id,
-                matrix_event_id=first_event_id,
+                transport_event_id=first_event_id,
                 external_post_id=msg.message_ref,
             )
 
@@ -685,7 +685,7 @@ class BridgeCore:
             try:
                 await self._record_message_map(
                     external_channel_id=cmd.channel_id,
-                    matrix_event_id=event_id,
+                    transport_event_id=event_id,
                     external_post_id=thread_root_post,
                 )
             finally:
@@ -1322,7 +1322,7 @@ class BridgeCore:
         if message_ref is not None:
             await self._record_message_map(
                 external_channel_id=channel_id,
-                matrix_event_id=event.event_id,
+                transport_event_id=event.event_id,
                 external_post_id=message_ref,
             )
 
@@ -1475,7 +1475,7 @@ class BridgeCore:
         if message_ref is not None:
             await self._record_message_map(
                 external_channel_id=channel_id,
-                matrix_event_id=event.event_id,
+                transport_event_id=event.event_id,
                 external_post_id=message_ref,
             )
 
@@ -1559,7 +1559,7 @@ class BridgeCore:
         if message_ref is not None and pending.first_event_id is not None:
             await self._record_message_map(
                 external_channel_id=channel_id,
-                matrix_event_id=pending.first_event_id,
+                transport_event_id=pending.first_event_id,
                 external_post_id=message_ref,
             )
 
@@ -1714,7 +1714,7 @@ class BridgeCore:
         self, event_id: str, new_content: str | None
     ) -> None:
         async with self._session_factory() as session:
-            mapping = await self._bridge_message_map_store.get_by_matrix_event_id(
+            mapping = await self._bridge_message_map_store.get_by_transport_event_id(
                 session, self._bridge_id, event_id
             )
         if mapping is None:
@@ -1726,7 +1726,7 @@ class BridgeCore:
             await self._adapter.delete_message(channel_id, message_ref)
             # The post is gone; drop the mapping so it can't resolve later.
             async with self._session_factory() as session:
-                await self._bridge_message_map_store.delete_by_matrix_event_id(
+                await self._bridge_message_map_store.delete_by_transport_event_id(
                     session, self._bridge_id, event_id
                 )
                 await session.commit()
@@ -1809,12 +1809,16 @@ class BridgeCore:
         self._pending_message_maps[matrix_event_id] = external_post_id
 
     async def _record_message_map(
-        self, *, external_channel_id: str, matrix_event_id: str, external_post_id: str
+        self,
+        *,
+        external_channel_id: str,
+        transport_event_id: str,
+        external_post_id: str,
     ) -> None:
         """Persist a Matrix-event ↔ external-post correlation (idempotent)."""
         async with self._session_factory() as session:
-            existing = await self._bridge_message_map_store.get_by_matrix_event_id(
-                session, self._bridge_id, matrix_event_id
+            existing = await self._bridge_message_map_store.get_by_transport_event_id(
+                session, self._bridge_id, transport_event_id
             )
             if existing is not None:
                 return
@@ -1823,7 +1827,7 @@ class BridgeCore:
                 BridgeMessageMap(
                     bridge_id=self._bridge_id,
                     external_channel_id=external_channel_id,
-                    matrix_event_id=matrix_event_id,
+                    transport_event_id=transport_event_id,
                     external_post_id=external_post_id,
                 ),
             )
@@ -1836,15 +1840,17 @@ class BridgeCore:
             mapping = await self._bridge_message_map_store.get_by_external_post_id(
                 session, self._bridge_id, external_post_id
             )
-        return mapping.matrix_event_id if mapping is not None else None
+        return mapping.transport_event_id if mapping is not None else None
 
-    async def _external_post_for_matrix_event(self, matrix_event_id: str) -> str | None:
-        pending = self._pending_message_maps.get(matrix_event_id)
+    async def _external_post_for_matrix_event(
+        self, transport_event_id: str
+    ) -> str | None:
+        pending = self._pending_message_maps.get(transport_event_id)
         if pending is not None:
             return pending
         async with self._session_factory() as session:
-            mapping = await self._bridge_message_map_store.get_by_matrix_event_id(
-                session, self._bridge_id, matrix_event_id
+            mapping = await self._bridge_message_map_store.get_by_transport_event_id(
+                session, self._bridge_id, transport_event_id
             )
         return mapping.external_post_id if mapping is not None else None
 
