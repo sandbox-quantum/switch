@@ -128,14 +128,17 @@ export function LoadExistingAgentsSection({
   }, [selectableAgents, selected.size]);
 
   const selectedByDir = useMemo(() => {
-    const byDir = new Map<string, Array<{ name: string; providerId: AgentProviderId }>>();
+    const byDir = new Map<
+      string,
+      Array<{ name: string; providerId: AgentProviderId; ownerName?: string | null }>
+    >();
     for (const key of selected) {
       const agent = agents.find((a) => `${a.dir}\0${a.name}` === key);
       if (!agent) continue;
       const pid = providerOverrides[key] ?? agent.providerId;
       if (!pid) continue;
       if (!byDir.has(agent.dir)) byDir.set(agent.dir, []);
-      byDir.get(agent.dir)!.push({ name: agent.name, providerId: pid });
+      byDir.get(agent.dir)!.push({ name: agent.name, providerId: pid, ownerName: agent.ownerName });
     }
     return byDir;
   }, [selected, agents, providerOverrides]);

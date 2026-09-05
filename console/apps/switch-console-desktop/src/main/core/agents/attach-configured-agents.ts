@@ -28,7 +28,7 @@ export type AttachConfiguredAgentsParams = {
    * taken from the scan: discovery infers it best-effort and reports `null` when
    * the directory names none, in which case the user picks.
    */
-  agents: Array<{ name: string; providerId: AgentProviderId }>;
+  agents: Array<{ name: string; providerId: AgentProviderId; ownerName?: string | null }>;
 };
 
 export type AttachConfiguredAgentsResult = Result<Agent[], OnboardAgentError>;
@@ -81,7 +81,8 @@ export async function attachConfiguredAgents(
     ).map((d) => [d.name, d])
   );
 
-  const selected: Array<{ name: string; providerId: AgentProviderId }> = [];
+  const selected: Array<{ name: string; providerId: AgentProviderId; ownerName?: string | null }> =
+    [];
   for (const requested of params.agents) {
     const found = discovered.get(requested.name);
     if (!found) {
@@ -110,7 +111,7 @@ export async function attachConfiguredAgents(
   });
 
   const created: Agent[] = [];
-  for (const { name, providerId } of selected) {
+  for (const { name, providerId, ownerName } of selected) {
     const found = discovered.get(name);
     if (!found) continue;
 
@@ -159,6 +160,7 @@ export async function attachConfiguredAgents(
       apiEndpoint: found.apiEndpoint,
       serverId: params.serverId,
       autoApprove: params.sshHost !== null,
+      ownerName: ownerName ?? null,
     });
     created.push(agent);
 
