@@ -152,7 +152,9 @@ def test_nothing_checked_is_not_authenticated() -> None:
 
 def test_the_reply_points_at_the_message_it_answers() -> None:
     reply = build_reply(
-        _received(), body="Thanks — we will take it.", from_address="atlas@agents.example.com"
+        _received(),
+        body="Thanks — we will take it.",
+        from_address="atlas@agents.example.com",
     )
 
     assert reply["In-Reply-To"] == "<orig-1@harborview.example>"
