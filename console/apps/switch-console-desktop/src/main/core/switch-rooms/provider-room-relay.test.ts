@@ -232,6 +232,36 @@ describe('ProviderRoomRelay', () => {
     );
   });
 
+  it('collects every room answer before resolving a multi-question form', async () => {
+    providerRoomRelay.onRequestOpened('session-1', {
+      type: 'user-input.requested',
+      requestId: 'q2',
+      questions: [QUESTION, { ...QUESTION, id: '1', question: 'Which other colour?' }],
+    });
+    expect(providerRoomRelay.consume('session-1', message('1'))).toBe(true);
+    expect(runtime.respondToUserInput).not.toHaveBeenCalled();
+    await vi.waitFor(() =>
+      expect(postedBodies().some((b) => b.includes('Which other colour?'))).toBe(true)
+    );
+    expect(providerRoomRelay.consume('session-1', message('2'))).toBe(true);
+    await vi.waitFor(() =>
+      expect(runtime.respondToUserInput).toHaveBeenCalledWith('q2', { '0': 'green', '1': 'blue' })
+    );
+    expect(providerRoomRelay.consume('session-1', message('new turn'))).toBe(false);
+  });
+
+  it('stops collecting when the Console resolves a partially answered form', () => {
+    providerRoomRelay.onRequestOpened('session-1', {
+      type: 'user-input.requested',
+      requestId: 'q2',
+      questions: [QUESTION, { ...QUESTION, id: '1' }],
+    });
+    providerRoomRelay.consume('session-1', message('1'));
+    providerRoomRelay.onRequestResolved('session-1', 'q2');
+    expect(providerRoomRelay.consume('session-1', message('2'))).toBe(false);
+    expect(runtime.respondToUserInput).not.toHaveBeenCalled();
+  });
+
   it('leaves an ordinary message alone when nothing is pending', () => {
     expect(providerRoomRelay.consume('session-1', message('do the thing'))).toBe(false);
   });

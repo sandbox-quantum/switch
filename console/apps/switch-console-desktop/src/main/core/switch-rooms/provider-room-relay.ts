@@ -42,6 +42,7 @@ interface Binding {
   room: () => string | null;
   runtime: ProviderSessionRuntime;
   pending: PendingRequest | null;
+  answers: UserInputAnswers;
 }
 
 /** Words a person uses instead of picking a number. */
@@ -83,10 +84,7 @@ export function parseRequestAnswer(text: string, pending: PendingRequest): Parse
     return { kind: 'unparsed' };
   }
 
-  // One question is the overwhelmingly common case and the only one a single
-  // room message can answer unambiguously; a multi-question ask is answered
-  // question-by-question, which the room cannot express, so the reply answers
-  // the first and the rest are left to the console.
+  // Each room reply answers the first remaining question.
   const question = pending.questions[0];
   if (!question) return { kind: 'unparsed' };
 
@@ -140,7 +138,7 @@ export function renderRequest(pending: PendingRequest): string {
     );
   }
 
-  const blocks = pending.questions.map((question) => {
+  const blocks = pending.questions.slice(0, 1).map((question) => {
     const header = question.header ? `**${question.header}**\n` : '';
     const options = question.options
       .map((option, index) => `${index + 1}. ${option.label}`)
@@ -173,6 +171,7 @@ class ProviderRoomRelay {
       room: params.room,
       runtime: params.runtime,
       pending: null,
+      answers: {},
     });
   }
 
@@ -226,6 +225,7 @@ class ProviderRoomRelay {
     // not forgotten — it stays answerable from the console — but the room can
     // only be waiting on one thing at a time.
     binding.pending = pending;
+    binding.answers = {};
 
     void this.post(binding, room, renderRequest(pending)).catch((error: unknown) => {
       log.warn('ProviderRoomRelay: could not post a request into the room', {
@@ -257,7 +257,14 @@ class ProviderRoomRelay {
     const room = binding.room();
     if (room === null) return false;
 
-    const parsed = parseRequestAnswer(message.body ?? '', pending);
+    const remaining =
+      pending.kind === 'question'
+        ? {
+            ...pending,
+            questions: pending.questions.filter((q) => binding.answers[q.id] === undefined),
+          }
+        : pending;
+    const parsed = parseRequestAnswer(message.body ?? '', remaining);
     if (parsed.kind === 'unparsed') {
       void this.post(binding, room, UNPARSED_HINT).catch(() => {});
       // Consumed anyway: it was a reply to the question, not a new instruction,
@@ -266,6 +273,24 @@ class ProviderRoomRelay {
       return true;
     }
 
+    if (parsed.kind === 'answers' && pending.kind === 'question') {
+      Object.assign(binding.answers, parsed.answers);
+      const questions = pending.questions.filter((q) => binding.answers[q.id] === undefined);
+      if (questions.length > 0) {
+        void this.post(
+          binding,
+          room,
+          `✅ Recorded: ${parsed.summary}\n\n${renderRequest({ ...pending, questions })}`
+        ).catch((error: unknown) => {
+          log.warn('ProviderRoomRelay: could not post the next question', {
+            sessionId,
+            error: String(error),
+          });
+        });
+        return true;
+      }
+      parsed.answers = { ...binding.answers };
+    }
     binding.pending = null;
     void this.answer(binding, room, pending, parsed).catch((error: unknown) => {
       log.warn('ProviderRoomRelay: failed to answer a request from the room', {

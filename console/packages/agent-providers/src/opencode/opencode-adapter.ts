@@ -94,6 +94,7 @@ interface SessionRecord {
   awaitingBusy: boolean;
   admissionTimer?: ReturnType<typeof setTimeout>;
   suppressAbortError: boolean;
+  interrupting: boolean;
   messageRoles: Map<string, string>;
   partTypes: Map<string, string>;
   emittedText: Map<string, string>;
@@ -178,6 +179,7 @@ export class OpencodeAdapter implements ProviderAdapter {
       exited: false,
       awaitingBusy: false,
       suppressAbortError: false,
+      interrupting: false,
       messageRoles: new Map(),
       partTypes: new Map(),
       emittedText: new Map(),
@@ -262,6 +264,7 @@ export class OpencodeAdapter implements ProviderAdapter {
     const turnId = record.activeTurnId;
     if (turnId === undefined) return;
     record.suppressAbortError = true;
+    record.interrupting = true;
     try {
       await record.transport.abort();
     } catch (error) {
@@ -270,8 +273,15 @@ export class OpencodeAdapter implements ProviderAdapter {
         type: 'runtime.warning',
         message: `could not abort the OpenCode session: ${errorMessage(error)}`,
       });
+      record.suppressAbortError = false;
+      throw new ProviderSessionError('opencode', sessionId, 'could not interrupt the session', {
+        cause: error,
+      });
+    } finally {
+      record.interrupting = false;
     }
     this.completeTurn(record, turnId, 'interrupted');
+    this.emitState(record, 'ready');
   }
 
   async respondToRequest(
@@ -481,6 +491,7 @@ export class OpencodeAdapter implements ProviderAdapter {
       this.emitState(record, 'running');
       return;
     }
+    if (record.interrupting) return;
     this.emitState(record, 'ready');
     if (record.activeTurnId === undefined || record.awaitingBusy) return;
     this.completeTurn(record, record.activeTurnId, 'completed', undefined, event);
@@ -689,6 +700,16 @@ export class OpencodeAdapter implements ProviderAdapter {
     raw?: OpencodeEvent
   ): void {
     if (record.activeTurnId !== turnId) return;
+    if (outcome !== 'completed') {
+      for (const item of record.items.values()) {
+        if (item.status !== 'in_progress') continue;
+        this.upsertItem(record, turnId, {
+          ...item,
+          status: 'failed',
+          text: message ?? (outcome === 'interrupted' ? 'Interrupted.' : 'Turn failed.'),
+        });
+      }
+    }
     record.activeTurnId = undefined;
     record.awaitingBusy = false;
     this.clearAdmissionTimer(record);

@@ -63,6 +63,16 @@ describe('ClaudeAdapter session lifecycle', () => {
     expect(recorder.ofType('runtime.warning')).toHaveLength(0);
   });
 
+  it('keeps a turn running when init arrives after input was sent', async () => {
+    const { sdk, adapter, recorder, session } = await startSession();
+    await recorder.waitFor('session.state.changed', (e) => e.status === 'ready', 1_000);
+    await adapter.sendTurn({ sessionId: SESSION, turnId: 't1', text: 'work' });
+    sdk.latest().emit({ type: 'system', subtype: 'init', session_id: session.nativeSessionId });
+    sdk.latest().emit(assistantMessage('sync', [{ type: 'text', text: 'working' }]));
+    await recorder.waitFor('item.completed', () => true, 1_000);
+    expect(recorder.ofType('session.state.changed').at(-1)?.status).toBe('running');
+  });
+
   it('warns when the CLI reports a different session id than the one requested', async () => {
     const sdk = createFakeSdk();
     const adapter = new ClaudeAdapter({ query: sdk.query, claudeExecutablePath: '/bin/claude' });

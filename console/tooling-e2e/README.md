@@ -148,7 +148,7 @@ agent, and deletes it during teardown — so a manifest never outlives its room.
 | `greet` | An addressed message reaches a session and its answer comes back. | The bot posts `SWITCH_E2E_OK`. |
 | `question` | Two turns: the agent asks, the human answers in the channel, the agent uses the answer. | The bot offers `red`/`green`/`blue`, then replies `green` after the answer. |
 | `approval` | A tool call the session is not pre-authorised to make. | The bot surfaces an approval prompt, `@agent 1` allows it, the bot replies `done`. |
-| `interrupt` | `!interrupt @agent-name` stops a long task. | No further bot posts for 45 s afterwards. |
+| `interrupt` | `!interrupt @agent-name` cancels a running local shell command after its start marker is verified. | No completion marker appears after the command’s 90-second lifetime (observed for 95 seconds). Requires `SWITCH_E2E_AGENT_DIR` on this machine. |
 
 `question` is the one a one-shot reply cannot fake: it only passes if the session
 is still alive and still connected when the second message arrives.

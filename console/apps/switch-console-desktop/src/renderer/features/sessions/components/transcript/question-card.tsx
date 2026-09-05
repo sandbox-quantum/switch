@@ -70,7 +70,7 @@ export const QuestionCard = observer(function QuestionCard({
                   <p className="mt-0.5 text-sm text-foreground-muted">{question.question}</p>
                   <p className="mt-1 text-xs text-foreground">
                     {answered === undefined
-                      ? 'Answered'
+                      ? 'Not answered'
                       : Array.isArray(answered)
                         ? answered.join(', ')
                         : answered}

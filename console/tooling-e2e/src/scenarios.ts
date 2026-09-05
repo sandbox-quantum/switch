@@ -1,3 +1,5 @@
+import { readFile } from 'node:fs/promises';
+import path from 'node:path';
 import type { Harness } from './harness.ts';
 import { sleep, type MattermostPost } from './mattermost-client.ts';
 
@@ -62,10 +64,7 @@ export function isNoSessionNotice(post: MattermostPost): boolean {
  * of a control command.
  *
  * They have to be told apart from agent output for the same reason as the
- * no-session notices — the author is identical. `interrupt` is where it bites:
- * its predicate is "a post containing a digit", and `⚙️ Working on it… · 0s`
- * satisfies that without the agent having started anything, so the scenario
- * passed on a session that was in fact blocked on an approval.
+ * no-session notices — the author is identical. A runtime status message is not evidence that an agent performed a task.
  */
 const RUNTIME_STATUS_MARKERS = [
   '_working on it…_',
@@ -306,68 +305,64 @@ export const approval: Scenario = (harness) =>
 
 // ── interrupt ────────────────────────────────────────────────────────────────
 
-/**
- * `!interrupt @agent-name` — the in-room control command (see
- * `core/switch_core/bridges/agent/commands.py`). Slack exposes the same thing as
- * `/interrupt`; on Mattermost it is the `!` form, and **a target is required** —
- * a bare `!interrupt` addresses nobody and the admin bot replies saying so.
- *
- * For an OpenCode agent `command_capabilities.interrupt` is `session_dependent`:
- * it works only while Switch Console is driving the session and can write to it.
- * A standalone `opencode` answers that it cannot be interrupted from here, which
- * is a legitimate — and detected — outcome rather than a silent pass.
- *
- * The assertion is the absence of further output: once interrupted, the agent
- * must stop producing posts.
- */
+/** Only the command's exact marker proves execution began. */
+export function isStartMarker(text: string): boolean {
+  return text === 'SWITCH_INTERRUPT_STARTED';
+}
+
+async function markerContents(file: string): Promise<string | null> {
+  try {
+    return await readFile(file, 'utf8');
+  } catch (error) {
+    if (error instanceof Error && 'code' in error && error.code === 'ENOENT') return null;
+    throw error;
+  }
+}
+
+/** A real local command must start and then be cancelled before its final write. */
 export const interrupt: Scenario = (harness) =>
   scenario('interrupt', async (record) => {
+    const dir = harness.env.agentRepoDir;
+    if (!dir)
+      throw new Error('The interrupt scenario requires SWITCH_E2E_AGENT_DIR on this machine.');
+    const stem = `interrupt-${harness.runId}-${Date.now()}`;
+    const startedFile = path.join(dir, `${stem}-started.txt`);
+    const finishedFile = path.join(dir, `${stem}-finished.txt`);
+    const command = `printf SWITCH_INTERRUPT_STARTED > ${stem}-started.txt; sleep 90; printf SWITCH_INTERRUPT_FINISHED > ${stem}-finished.txt`;
     const since = await ask(
       harness,
-      'count slowly from 1 to 200, posting each number to this room on its own message, ' +
-        'and do not stop until you reach 200'
+      `Run this exact shell command for a bounded cancellation test: \`${command}\`. Wait for completion before replying. Do not create these files with another tool.`
     );
-
-    // Requiring a digit rather than accepting any post is what keeps this
-    // honest: Switch's own no-session notice is filtered out above, and a bare
-    // acknowledgement is not evidence the task started.
-    const started = await expectBotPost(harness, {
+    await expectBotPost(harness, {
       since,
       record,
-      predicate: (post) => /\d/.test(post.message),
-      describe: 'the agent to start the counting task (a post containing a number)',
-      deadlineMs: Math.min(REPLY_DEADLINE_MS, 3 * 60_000),
+      predicate: (post) => APPROVAL_HINTS.some((hint) => lower(post).includes(hint)),
+      describe: 'permission to run the cancellation command',
     });
-
-    const interruptedAt = Date.now() - 1;
+    await ask(harness, '1');
+    const deadline = Date.now() + 60_000;
+    while (!isStartMarker((await markerContents(startedFile)) ?? '')) {
+      if (Date.now() > deadline)
+        throw new Error('The cancellation command did not write its start marker.');
+      await sleep(500);
+    }
+    const startedAt = Date.now();
     await harness.mattermost.post({
       channelId: harness.channel.id,
       message: `!interrupt @${harness.agent.name}`,
     });
-
-    // The command is not instantaneous — the session has to be told, and posts
-    // already in flight still land. Let it settle, then require silence.
-    await sleep(20_000);
-    const settledAt = Date.now();
-    await sleep(45_000);
-
-    const after = await harness.mattermost.postsFrom(harness.channel.id, harness.bot.id, settledAt);
-    const sinceInterrupt = await harness.mattermost.postsSince(harness.channel.id, interruptedAt);
-    record(sinceInterrupt);
-
-    // `interrupt` is `session_dependent` for OpenCode: a session Switch Console
-    // is not driving answers that it cannot be interrupted. That is a real
-    // result, not a pass.
-    assertNotNoSession(sinceInterrupt);
-
-    if (after.length > 0) {
-      throw new Error(
-        `Agent kept posting ${after.length} time(s) more than 20s after \`!interrupt\`: ` +
-          summarise(after)
-      );
+    // Wait beyond the command's complete lifetime; an un-cancelled sleep must finish.
+    while (Date.now() - startedAt < 95_000) {
+      if ((await markerContents(finishedFile)) !== null)
+        throw new Error('The interrupted command wrote its completion marker.');
+      await sleep(1_000);
     }
-
-    return `counting started in ${started.id}; silent for 45s after !interrupt`;
+    const posts = await harness.mattermost.postsSince(harness.channel.id, since);
+    record(posts);
+    assertNotNoSession(posts);
+    if ((await markerContents(finishedFile)) !== null)
+      throw new Error('The interrupted command completed.');
+    return 'command start confirmed; completion marker absent after 95s';
   });
 
 export const SCENARIOS: Scenario[] = [greet, question, approval, interrupt];

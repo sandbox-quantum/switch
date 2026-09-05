@@ -82,7 +82,7 @@ artifacts:
 
   agent-runtime:
     description: The Switch protocol client and MCP runtime, published to a registry.
-    version: 0.4.1
+    version: 0.4.2
     declared_in: console/packages/switch-agent-runtime/package.json
 
   sidecar:
@@ -127,12 +127,12 @@ artifacts:
 
   switch-connector:
     description: The Claude Code connector plugin.
-    version: 0.9.12
+    version: 0.9.13
     declared_in: connectors/claude-code-plugin/.claude-plugin/plugin.json
 
   switch-connector-codex:
     description: The Codex connector plugin.
-    version: 0.3.13
+    version: 0.3.14
     declared_in: connectors/codex-plugin/.codex-plugin/plugin.json
 
   switch-connector-opencode:
@@ -140,7 +140,7 @@ artifacts:
       The OpenCode connector. Unlike the other two it is written by Switch
       Console rather than installed from the marketplace, because OpenCode has
       no plugin marketplace to install it from.
-    version: 0.1.8
+    version: 0.1.9
     declared_in: connectors/opencode-plugin/package.json
 
 contracts:

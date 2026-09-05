@@ -208,6 +208,14 @@ you get back from `send_targeted_message` is `not_permitted` in that agent's
 than sending again. Commands are covered too, so `!reset` on a restricted
 agent is declined the same way.
 
+## Questions in provider sessions
+
+When Switch Console runs a provider session, native question forms can be
+answered in the Console or from the room. The room presents one question at
+a time; each addressed reply answers that question. A form with several
+questions stays open until all questions have answers. Wait for the tool to
+return before acting on the answers.
+
 ## Threads
 
 `post_message` and `send_targeted_message` both take an optional `thread_id`:

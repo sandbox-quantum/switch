@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { ProviderSessionStartInput, RuntimeMode } from '../adapter';
 import { EventRecorder } from '../testing/event-recorder';
 import { mcpConfigFor, parseModelId, permissionConfigFor, permissionRulesFor } from './config';
@@ -137,6 +137,38 @@ describe('OpencodeAdapter turn lifecycle', () => {
     await recorder.waitFor('session.state.changed', (event) => event.status === 'running', 1_000);
     expect(recorder.ofType('runtime.error')).toHaveLength(0);
     expect(recorder.ofType('turn.completed')).toHaveLength(1);
+  });
+
+  it('settles interrupted tools even if idle arrives before abort returns', async () => {
+    const { adapter, session, recorder } = await setup();
+    await adapter.sendTurn({ sessionId: 'switch-session', turnId: 't1', text: 'work' });
+    session.push(sessionStatus(NATIVE, 'busy'));
+    session.push(
+      toolPart(NATIVE, 'm1', 'command', 'bash', {
+        status: 'running',
+        input: { command: 'sleep 120' },
+        time: { start: 0 },
+      })
+    );
+    await recorder.waitFor('item.started', (e) => e.item.id === 'command', 1_000);
+    vi.spyOn(session, 'abort').mockImplementation(async () => {
+      session.push(sessionStatus(NATIVE, 'idle'));
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    });
+    await adapter.interruptTurn('switch-session');
+    expect(recorder.ofType('turn.completed').map((e) => e.outcome)).toEqual(['interrupted']);
+    expect(
+      recorder.ofType('item.completed').find((e) => e.item.id === 'command')?.item
+    ).toMatchObject({ status: 'failed', text: 'Interrupted.' });
+    expect(recorder.ofType('session.state.changed').at(-1)?.status).toBe('ready');
+  });
+
+  it('keeps work active when abort fails', async () => {
+    const { adapter, session, recorder } = await setup();
+    await adapter.sendTurn({ sessionId: 'switch-session', turnId: 't1', text: 'work' });
+    vi.spyOn(session, 'abort').mockRejectedValue(new Error('unreachable'));
+    await expect(adapter.interruptTurn('switch-session')).rejects.toThrow('could not interrupt');
+    expect(recorder.ofType('turn.completed')).toHaveLength(0);
   });
 
   it('fails the turn when the prompt is rejected', async () => {

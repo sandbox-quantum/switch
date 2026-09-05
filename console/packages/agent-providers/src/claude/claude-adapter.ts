@@ -591,7 +591,10 @@ export class ClaudeAdapter implements ProviderAdapter {
               message: `Claude Code chose session id ${message.session_id} instead of the requested one.`,
             });
           }
-          this.emit(session, { type: 'session.state.changed', status: 'ready' });
+          this.emit(session, {
+            type: 'session.state.changed',
+            status: session.turn ? 'running' : 'ready',
+          });
         }
         return;
       case 'stream_event':
