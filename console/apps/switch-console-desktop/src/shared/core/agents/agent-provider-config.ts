@@ -114,7 +114,7 @@ export type AgentProviderConfig = typeof agentProviderConfig.Type;
  * disagreed between them would show a switch that silently does nothing (or
  * hide one that already works). `provider-adapter-registry` reads the same list.
  */
-const PROVIDER_RUNTIME_PROVIDERS: readonly string[] = ['opencode', 'claude'];
+const PROVIDER_RUNTIME_PROVIDERS: readonly string[] = ['opencode', 'claude', 'codex'];
 
 /** Whether this provider has an adapter behind it. */
 export function supportsProviderRuntime(providerId: string | null | undefined): boolean {

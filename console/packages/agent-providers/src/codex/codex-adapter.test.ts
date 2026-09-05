@@ -90,6 +90,19 @@ describe('CodexAdapter', () => {
     ).toMatchObject({ developerInstructions: 'you are in a Switch room' });
   });
 
+  it('sends reasoning effort with model changes', async () => {
+    const { adapter, server } = await start();
+    server.replyAlways('turn/start', () => ({
+      turn: { id: 'native-effort', status: 'inProgress' },
+    }));
+    await adapter.setModel('session-1', { id: 'test-model', options: { effort: 'high' } });
+    await adapter.sendTurn({ sessionId: 'session-1', turnId: 'effort-turn', text: 'hello' });
+    expect(
+      server.received.find((message) => message.method === 'turn/start')?.params
+    ).toMatchObject({ model: 'test-model', effort: 'high' });
+    await adapter.stopAll();
+  });
+
   it('attributes turn events to the caller turn id and streams assistant deltas', async () => {
     const { adapter, server, events } = await start();
     server.replyAlways('turn/start', () => ({ turn: { id: 'native-a', status: 'inProgress' } }));
@@ -152,6 +165,76 @@ describe('CodexAdapter', () => {
 
     server.notify('turn/completed', turnNotification('native-a', 'completed'));
     await vi.waitFor(() => expect(eventsOf(events, 'turn.completed')).toHaveLength(1));
+  });
+
+  it('settles unfinished items when interruption omits item/completed', async () => {
+    const { adapter, server, events } = await start();
+    server.replyAlways('turn/start', () => ({ turn: { id: 'native-a', status: 'inProgress' } }));
+    await adapter.sendTurn({ sessionId: 'session-1', turnId: 'caller-1', text: 'run' });
+    const item = {
+      type: 'commandExecution',
+      id: 'command',
+      command: 'sleep 90',
+      cwd: '/work',
+      status: 'inProgress',
+      aggregatedOutput: null,
+      exitCode: null,
+    };
+    server.notify('item/started', { threadId: THREAD, turnId: 'native-a', item });
+    server.notify('item/commandExecution/outputDelta', {
+      threadId: THREAD,
+      turnId: 'native-a',
+      itemId: 'command',
+      delta: 'started',
+    });
+    server.notify('turn/completed', turnNotification('native-a', 'interrupted'));
+    await vi.waitFor(() => expect(eventsOf(events, 'turn.completed')).toHaveLength(1));
+    expect(eventsOf(events, 'item.completed')).toHaveLength(1);
+    expect(eventsOf(events, 'item.completed')[0]?.item).toMatchObject({
+      id: 'command',
+      status: 'failed',
+      text: 'started\nInterrupted.',
+    });
+    expect(eventsOf(events, 'turn.completed')[0]).toMatchObject({
+      outcome: 'interrupted',
+      message: 'Interrupted.',
+    });
+    await adapter.stopAll();
+  });
+
+  it('terminates only the interrupted turn commands, including paginated terminals', async () => {
+    const { adapter, server } = await start();
+    server.replyAlways('turn/start', () => ({ turn: { id: 'native-a', status: 'inProgress' } }));
+    server.replyAlways('turn/interrupt', () => ({}));
+    let page = 0;
+    server.replyAlways('thread/backgroundTerminals/list', () =>
+      ++page === 1
+        ? { data: [{ itemId: 'older-command', processId: 'keep' }], nextCursor: 'next' }
+        : { data: [{ itemId: 'command', processId: 'stop' }], nextCursor: null }
+    );
+    server.replyAlways('thread/backgroundTerminals/terminate', () => ({ terminated: true }));
+    await adapter.sendTurn({ sessionId: 'session-1', turnId: 'caller-1', text: 'run' });
+    server.notify('turn/started', turnNotification('native-a', 'inProgress'));
+    server.notify('item/started', {
+      threadId: THREAD,
+      turnId: 'native-a',
+      item: {
+        type: 'commandExecution',
+        id: 'command',
+        command: 'sleep 90',
+        cwd: '/work',
+        status: 'inProgress',
+        aggregatedOutput: null,
+        exitCode: null,
+      },
+    });
+    await adapter.interruptTurn('session-1');
+    expect(
+      server.received
+        .filter((message) => message.method === 'thread/backgroundTerminals/terminate')
+        .map((message) => message.params)
+    ).toEqual([{ threadId: THREAD, processId: 'stop' }]);
+    await adapter.stopAll();
   });
 
   it('interrupts the active turn, not a turn that was queued behind it', async () => {

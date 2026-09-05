@@ -12,6 +12,8 @@ export const CODEX_CLIENT_METHODS = {
   turnStart: 'turn/start',
   turnSteer: 'turn/steer',
   turnInterrupt: 'turn/interrupt',
+  backgroundTerminalsList: 'thread/backgroundTerminals/list',
+  backgroundTerminalsTerminate: 'thread/backgroundTerminals/terminate',
 } as const;
 
 export const CODEX_CLIENT_NOTIFICATIONS = {

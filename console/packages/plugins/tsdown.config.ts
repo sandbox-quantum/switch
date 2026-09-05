@@ -8,6 +8,7 @@ export default defineConfig({
     distribution: 'src/distribution.ts',
     // The room-workflow skill, for a session whose config directory the app
     // writes and which therefore cannot see the installed connector's copy.
+    'codex-skill': 'src/agents/impl/codex/skill-file.ts',
     'opencode-skill': 'src/agents/impl/opencode/skill-file.ts',
   },
   format: ['esm'],

@@ -50,6 +50,7 @@ export interface SetupOptions {
 const PREFIX_BY_AGENT_TYPE: Record<HarnessAgentType, string> = {
   opencode: 'e2e-opencode',
   'claude-code': 'e2e-claude',
+  codex: 'e2e-codex',
 };
 
 /**

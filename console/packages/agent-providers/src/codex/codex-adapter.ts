@@ -99,6 +99,7 @@ interface CodexSessionState {
   threadId: string;
   client: AppServerClient;
   model?: string;
+  effort?: string;
   activeNativeTurnId?: string;
   /** Caller turn ids handed to `turn/start` but not yet bound to a native id. */
   unboundTurnIds: string[];
@@ -250,6 +251,7 @@ export class CodexAdapter implements ProviderAdapter {
       threadId: '',
       client,
       model: input.model?.id,
+      effort: input.model?.options?.effort,
       unboundTurnIds: [],
       turnIdByNative: new Map(),
       approvals: new Map(),
@@ -302,7 +304,10 @@ export class CodexAdapter implements ProviderAdapter {
 
   async sendTurn(input: ProviderSendTurnInput): Promise<ProviderTurnStartResult> {
     const state = this.requireSession(input.sessionId);
-    if (input.model?.id) state.model = input.model.id;
+    if (input.model?.id) {
+      state.model = input.model.id;
+      state.effort = input.model.options?.effort;
+    }
     const codexInput = toCodexInput(input.text, input.attachments);
 
     const active = state.activeNativeTurnId;
@@ -321,6 +326,7 @@ export class CodexAdapter implements ProviderAdapter {
           threadId: state.threadId,
           input: codexInput,
           ...(state.model ? { model: state.model } : {}),
+          ...(state.effort ? { effort: state.effort } : {}),
         }
       );
       this.bindTurn(state, response.turn.id);
@@ -343,10 +349,37 @@ export class CodexAdapter implements ProviderAdapter {
     const state = this.requireSession(sessionId);
     const turnId = state.activeNativeTurnId;
     if (!turnId) return;
+    const commandIds = new Set(
+      [...state.items.values()]
+        .filter((item) => item.type === 'commandExecution')
+        .map((item) => item.id)
+    );
     await state.client.request(CODEX_CLIENT_METHODS.turnInterrupt, {
       threadId: state.threadId,
       turnId,
     });
+    // turn/interrupt stops generation, but unified exec commands can outlive it.
+    if (commandIds.size > 0) {
+      let cursor: string | null = null;
+      do {
+        const page: {
+          data: Array<{ itemId: string; processId: string }>;
+          nextCursor: string | null;
+        } = await state.client.request(CODEX_CLIENT_METHODS.backgroundTerminalsList, {
+          threadId: state.threadId,
+          ...(cursor ? { cursor } : {}),
+        });
+        for (const terminal of page.data) {
+          if (commandIds.has(terminal.itemId)) {
+            await state.client.request(CODEX_CLIENT_METHODS.backgroundTerminalsTerminate, {
+              threadId: state.threadId,
+              processId: terminal.processId,
+            });
+          }
+        }
+        cursor = page.nextCursor;
+      } while (cursor);
+    }
   }
 
   async respondToRequest(
@@ -382,6 +415,7 @@ export class CodexAdapter implements ProviderAdapter {
   async setModel(sessionId: string, model: ModelSelection): Promise<void> {
     const state = this.requireSession(sessionId);
     state.model = model.id;
+    state.effort = model.options?.effort;
   }
 
   async stopSession(sessionId: string): Promise<void> {
@@ -489,14 +523,34 @@ export class CodexAdapter implements ProviderAdapter {
       if (state.activeNativeTurnId === payload.turn.id) state.activeNativeTurnId = undefined;
       const turnId = state.turnIdByNative.get(payload.turn.id);
       state.turnIdByNative.delete(payload.turn.id);
+      const outcome = turnOutcomeOf(payload.turn.status);
+      const message =
+        payload.turn.error?.message ?? (outcome === 'interrupted' ? 'Interrupted.' : undefined);
+      if (turnId && outcome !== 'completed') {
+        for (const item of state.items.values()) {
+          const mapped = mapCodexItem(item, 'started');
+          this.emit(state, {
+            type: 'item.completed',
+            turnId,
+            item: {
+              ...mapped,
+              status: 'failed',
+              text: [state.deltaBuffers.get(item.id) ?? mapped.text, message ?? 'Turn failed.']
+                .filter(Boolean)
+                .join('\n'),
+            },
+          });
+        }
+        this.cancelPending(state);
+      }
       state.items.clear();
       state.deltaBuffers.clear();
       if (!turnId) return;
       this.emit(state, {
         type: 'turn.completed',
         turnId,
-        outcome: turnOutcomeOf(payload.turn.status),
-        ...(payload.turn.error?.message ? { message: payload.turn.error.message } : {}),
+        outcome,
+        ...(message ? { message } : {}),
         raw: { source: CODEX_SERVER_NOTIFICATIONS.turnCompleted, payload },
       });
     });
@@ -518,7 +572,7 @@ export class CodexAdapter implements ProviderAdapter {
     client.onNotification(CODEX_SERVER_NOTIFICATIONS.itemCompleted, (params) => {
       const payload = params as CodexItemNotification;
       if (!this.isOwnThread(state, payload.threadId)) return;
-      state.items.set(payload.item.id, payload.item);
+      state.items.delete(payload.item.id);
       state.deltaBuffers.delete(payload.item.id);
       const turnId = this.turnIdFor(state, payload.turnId);
       if (!turnId) return;

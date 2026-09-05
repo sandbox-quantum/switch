@@ -3,9 +3,17 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { sessionTranscriptChannel } from '@shared/core/sessions/session-transcript';
 import type { Session } from '@shared/core/sessions/sessions';
 
+vi.mock('./codex-session-home', () => ({
+  prepareCodexSessionHome: vi.fn(async () => '/isolated-codex'),
+}));
+vi.mock('@main/db/path', () => ({ resolveDatabasePath: () => '/scratch/console.db' }));
+
 const emit = vi.hoisted(() => vi.fn());
 const startSession = vi.hoisted(() => vi.fn(async (_input: unknown) => {}));
 /** Definition files the fake workspace claims to hold, keyed by relative path. */
+const launchProfile = vi.hoisted(() =>
+  vi.fn(() => ({ files: [{ content: 'model_reasoning_effort = "high"' }] }))
+);
 const definitionFiles = vi.hoisted(() => new Set<string>());
 
 // The same narrow stubs the smoke test uses: everything the module reaches for
@@ -44,6 +52,7 @@ vi.mock('@main/core/providers/plugin-fs', () => ({
 vi.mock('@main/core/providers/plugin-registry', () => ({
   getPlugin: (providerId: string) => ({
     behavior: {
+      mcp: { launchProfile },
       // Only a provider with repo-agent definitions has one to launch as, which
       // is the difference the runtime branches on.
       repoAgents:
@@ -59,6 +68,7 @@ vi.mock('@main/core/switch-rooms/switch-credentials', () => ({
 vi.mock('@main/core/pty/pty-env', () => ({ buildAgentEnv: () => ({}) }));
 
 const { agentLaunchSpecialization } = await import('@main/core/agents/agent-launch-config');
+const { prepareCodexSessionHome } = await import('./codex-session-home');
 const { ProviderAgentRuntime } = await import('./provider-agent-runtime');
 
 function runtime(sessionId: string) {
@@ -134,15 +144,38 @@ describe('ProviderAgentRuntime session start input', () => {
     });
 
     startSession.mockClear();
+    expect((await start('codex')).model).toEqual({ id: 'a-model', options: { effort: 'low' } });
+    startSession.mockClear();
     expect((await start('opencode')).model).toEqual({
       id: 'a-model',
       options: { variant: 'thinking' },
     });
   });
 
+  it('loads the Codex profile into the persistent isolated home', async () => {
+    vi.mocked(agentLaunchSpecialization).mockResolvedValue({
+      effort: 'high',
+      instructions: 'Agent instructions',
+    });
+    const input = await start('codex');
+    expect(launchProfile).toHaveBeenLastCalledWith({
+      slug: 'wanda',
+      workingDir: '/repo',
+      values: { effort: 'high', instructions: 'Agent instructions' },
+    });
+    expect(prepareCodexSessionHome).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        root: '/scratch/console.db.provider-homes',
+        sessionId: 'session-2',
+        config: 'model_reasoning_effort = "high"',
+      })
+    );
+    expect(input.env.CODEX_HOME).toBe('/isolated-codex');
+  });
+
   it('registers exactly one Switch MCP server, whatever the provider', async () => {
     vi.mocked(agentLaunchSpecialization).mockResolvedValue(undefined);
-    for (const providerId of ['claude', 'opencode'] as const) {
+    for (const providerId of ['claude', 'opencode', 'codex'] as const) {
       startSession.mockClear();
       expect(Object.keys((await start(providerId)).mcpServers)).toEqual(['switch']);
     }

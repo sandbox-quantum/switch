@@ -1,4 +1,6 @@
 import { randomUUID } from 'node:crypto';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 import type {
   ApprovalDecision,
   McpServerSpec,
@@ -8,6 +10,7 @@ import type {
   UserInputAnswers,
 } from '@switch-console/agent-providers';
 import type { PluginFs } from '@switch-console/core/agents/plugins';
+import { CODEX_SKILL_CONTENT } from '@switch-console/plugins/agents/codex/skill';
 import { SWITCH_AGENT_RUNTIME_PIN } from '@switch-console/plugins/distribution';
 import { agentHookService } from '@main/core/agent-hooks/agent-hook-service';
 import { isAppFocused, maybeShowNotification } from '@main/core/agent-hooks/notification';
@@ -27,6 +30,7 @@ import { providerRoomRelay } from '@main/core/switch-rooms/provider-room-relay';
 import { readAgentSwitchEnvFromFs } from '@main/core/switch-rooms/switch-credentials';
 import { switchNotificationPoller } from '@main/core/switch-rooms/switch-notification-poller';
 import { switchRoomService } from '@main/core/switch-rooms/switch-room-service';
+import { resolveDatabasePath } from '@main/db/path';
 import { events } from '@main/lib/events';
 import { runWithLogContext } from '@main/lib/log-context';
 import { log } from '@main/lib/logger';
@@ -41,6 +45,7 @@ import {
   type TranscriptUserSource,
 } from '@shared/core/sessions/session-transcript';
 import type { Session } from '@shared/core/sessions/sessions';
+import { prepareCodexSessionHome } from './codex-session-home';
 
 /**
  * A session driven through a `@switch-console/agent-providers` adapter instead
@@ -186,6 +191,21 @@ export class ProviderAgentRuntime implements AgentRuntimeProvider, ProviderSessi
     });
 
     try {
+      if (session.providerId === 'codex') {
+        const values = (await agentLaunchSpecialization(session.agentId)) ?? {};
+        const profile = getPlugin('codex').behavior.mcp?.launchProfile?.({
+          slug: agentCredsSlug(session),
+          workingDir: this.params.sessionPath,
+          values,
+        });
+        env.CODEX_HOME = await prepareCodexSessionHome({
+          root: `${resolveDatabasePath()}.provider-homes`,
+          sessionId: this.params.sessionId,
+          sourceHome: env.CODEX_HOME || join(homedir(), '.codex'),
+          config: profile?.files.map((file) => file.content).join('\n') ?? '',
+          skill: CODEX_SKILL_CONTENT,
+        });
+      }
       const model = await this.resolveModel(session);
       const agentName = await this.resolveAgentDefinition(session, workspaceFs);
       await adapter.startSession({
@@ -236,7 +256,7 @@ export class ProviderAgentRuntime implements AgentRuntimeProvider, ProviderSessi
     const specialization = await agentLaunchSpecialization(session.agentId);
     const id = specialization?.model?.trim();
     if (!id) return undefined;
-    const key = session.providerId === 'claude' ? 'effort' : 'variant';
+    const key = session.providerId === 'opencode' ? 'variant' : 'effort';
     const value = specialization?.[key]?.trim();
     return { id, ...(value ? { options: { [key]: value } } : {}) };
   }

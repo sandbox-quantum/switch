@@ -24,6 +24,11 @@ const COPY: Record<string, { label: string; description: string }> = {
     description:
       'Runs sessions through OpenCode’s API instead of a terminal. Shows a transcript with approvals and questions you can answer here or from the room.',
   },
+  codex: {
+    label: 'Drive through the Codex app server (experimental)',
+    description:
+      'Runs sessions with a transcript and approvals you can answer here or from the room. Uses isolated Codex settings and your existing login.',
+  },
   claude: {
     label: 'Drive through the Agent SDK (experimental)',
     description:

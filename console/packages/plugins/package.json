@@ -22,6 +22,10 @@
     "./distribution": {
       "types": "./dist/distribution.d.mts",
       "default": "./dist/distribution.mjs"
+    },
+    "./agents/codex/skill": {
+      "types": "./dist/codex-skill.d.mts",
+      "default": "./dist/codex-skill.mjs"
     }
   },
   "scripts": {
