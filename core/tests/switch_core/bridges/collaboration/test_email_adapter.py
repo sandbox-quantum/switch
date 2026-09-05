@@ -85,9 +85,7 @@ def _mime(
         msg.add_alternative(html, subtype="html")
     for filename, mimetype, data in attachments or []:
         maintype, _, subtype = mimetype.partition("/")
-        msg.add_attachment(
-            data, maintype=maintype, subtype=subtype, filename=filename
-        )
+        msg.add_attachment(data, maintype=maintype, subtype=subtype, filename=filename)
     return msg.as_bytes()
 
 
@@ -386,6 +384,27 @@ async def test_sending_raises_rather_than_dropping_the_agent_s_reply() -> None:
         await adapter.send_message(OWNER, "Atlas", "here is your answer")
 
     assert "inbound" in str(excinfo.value).lower()
+
+
+async def test_an_admin_notice_is_logged_rather_than_raising(caplog: Any) -> None:
+    """The bridge core posts notices through `admin_message`, and one of them
+    fires on the path that auto-creates a room.
+
+    A room auto-created for a new correspondent resolves no agents — email has
+    no channel membership to read them from — so the core posts its "no agents
+    here" notice. Left to the default, that reaches `send_message` and raises,
+    out of the room-creation path, for a bridge working exactly as intended.
+
+    There is no external channel to post a notice to, so this is a disclosed
+    degradation: logged, loudly, rather than sent or silently discarded.
+    """
+    adapter, _ = _adapter()
+
+    with caplog.at_level("WARNING"):
+        result = await adapter.admin_message(OWNER, "No agents are in this room.")
+
+    assert result is None
+    assert any("No agents are in this room." in r.getMessage() for r in caplog.records)
 
 
 async def test_editing_and_deleting_raise_because_email_is_append_only() -> None:

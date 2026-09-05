@@ -367,6 +367,18 @@ class CollaborationBridgeLifecycleService:
         )
         adapter.set_max_attachment_bytes(self._config.agent_media_max_bytes)
 
+        if not adapter_cls.authenticates_senders:
+            logger.warning(
+                "Bridge %s (%s) does not authenticate senders — the identity on "
+                "an inbound message is a claim the platform did not verify. "
+                "Owner-scoped addressing policies must not be satisfied by it "
+                "on the strength of the sender's own say-so; this bridge is "
+                "responsible for admitting only senders an operator has vouched "
+                "for",
+                bridge_id,
+                bridge.type,
+            )
+
         if (
             not adapter_cls.renders_custom_url_schemes
             and not self._config.gateway_public_url

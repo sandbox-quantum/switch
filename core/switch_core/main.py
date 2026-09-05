@@ -34,6 +34,10 @@ from switch_core.bridges.collaboration.discord.adapter import (
     DiscordAdapter,
     DiscordConnectionConfig,
 )
+from switch_core.bridges.collaboration.email.adapter import (
+    EmailAdapter,
+    EmailConnectionConfig,
+)
 from switch_core.bridges.collaboration.lifecycle_service import (
     CollaborationBridgeLifecycleService,
 )
@@ -389,6 +393,7 @@ async def run() -> None:
     collab_lifecycle.register_adapter(
         "telegram", TelegramAdapter, TelegramConnectionConfig
     )
+    collab_lifecycle.register_adapter("email", EmailAdapter, EmailConnectionConfig)
 
     # Health check mounted on the agent bridge app
     @agent_bridge_app.get("/health")

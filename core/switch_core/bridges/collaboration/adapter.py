@@ -77,6 +77,21 @@ class CollaborationAdapter(ABC):
     #: exactly those moments.
     supports_channel_creation: ClassVar[bool] = True
 
+    #: Whether the platform behind this bridge authenticates the sender.
+    #:
+    #: True everywhere it has been true implicitly: when Slack says a message
+    #: came from `U123`, it did, because the platform authenticated that account
+    #: before accepting the message. Every addressing decision Switch makes —
+    #: including the owner-scoped policies a Switch Console agent starts with —
+    #: leans on that being so.
+    #:
+    #: Email is the first bridge where it is not. A `From` header is typed by
+    #: whoever sent the mail, so an adapter that declares False is saying its
+    #: sender identity is a claim rather than a fact, and must not be treated as
+    #: proof of who somebody is. Declared on the class so the lifecycle can say
+    #: so once at startup rather than each bridge discovering it in its own way.
+    authenticates_senders: ClassVar[bool] = True
+
     #: Whether this platform has a user directory Switch can search.
     #:
     #: False where the only people Switch can name are the ones who have
