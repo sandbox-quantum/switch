@@ -228,6 +228,7 @@ class SlackAdapter(CollaborationAdapter):
     # has no thread, so its progress has nowhere to live and no session can be
     # opened for it — which was most turns.
     runtime_state_follows_anchor: ClassVar[bool] = True
+    supports_interactive_stop: ClassVar[bool] = True
 
     # Every Slack bridge in this process shares one, because resolving a
     # mention that crossed a workspace boundary means reading a group another
@@ -762,24 +763,46 @@ class SlackAdapter(CollaborationAdapter):
             # now-resolved pings, then ensure the working indicator is up.
             await self._clear_input_pings(channel_id, agent_name)
             if self._streaming(channel_id, thread_root_id):
-                # Slack is drawing this turn itself, and better: the card is
-                # live, named for the agent, and carries the console link. A
-                # posted message beside it would say the same thing twice, so
-                # any earlier one is taken down.
+                # Slack is drawing this turn itself via a live card.  Post a
+                # minimal button-only message so the turn can be stopped from
+                # Slack — no status text, since the card already tells the
+                # story.  Tracked as a LiveRuntimeIndicator so the existing
+                # idle disposal removes it.
+                existing = self._working_msg.get(key)
+                if existing is not None and existing.body == "":
+                    # Already have a button-only message; nothing to do.
+                    return
+                # Clear any full working message left over from before the
+                # card existed (e.g. sessions were temporarily unavailable).
                 await self._clear_working(channel_id, agent_name)
+                ref = await self._post_stop_button(
+                    channel_id, agent_name, thread_root_id
+                )
+                if ref is not None:
+                    self._working_msg[key] = LiveRuntimeIndicator(
+                        message_ref=ref,
+                        body="",
+                        thread_root_id=thread_root_id,
+                        started_at=time.monotonic(),
+                    )
                 return
             # Posted under the agent's own name/icon, so the body just states
             # the activity — no need to repeat the agent name in the text.
             body = self._working_body(detail, deeplink_url)
+            blocks = self._stop_button_blocks(agent_name, body)
             existing = self._working_msg.get(key)
             if existing is not None:
                 # Refresh the live message in place with the latest activity.
                 # Position is a separate concern — see reposition_runtime_state,
                 # which moves the indicator when the conversation moves on.
-                await self.update_message(channel_id, existing.message_ref, body)
+                await self._update_message_with_blocks(
+                    channel_id, existing.message_ref, body, blocks
+                )
                 self._working_msg[key] = replace(existing, body=body)
                 return
-            ref = await self.send_message(channel_id, agent_name, body, thread_root_id)
+            ref = await self._post_message_with_blocks(
+                channel_id, agent_name, body, blocks, thread_root_id
+            )
             if ref is not None:
                 self._working_msg[key] = LiveRuntimeIndicator(
                     message_ref=ref,
@@ -1297,6 +1320,86 @@ class SlackAdapter(CollaborationAdapter):
             thread_root_id.split(":", 1)[1] if ":" in thread_root_id else thread_root_id
         )
 
+    @staticmethod
+    def _stop_button_blocks(
+        agent_name: str,
+        body: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Slack Block Kit blocks with a Stop button for the given agent.
+
+        When ``body`` is given, a section carries the status text and the
+        actions sit below it.  When omitted (the streaming path, where the
+        card already tells the story), only the actions block is returned.
+        """
+        button: dict[str, Any] = {
+            "type": "button",
+            "action_id": "switch_interrupt",
+            "text": {"type": "plain_text", "text": "Stop"},
+            "style": "danger",
+            "value": agent_name,
+        }
+        blocks: list[dict[str, Any]] = []
+        if body:
+            blocks.append(
+                {
+                    "type": "section",
+                    "text": {"type": "mrkdwn", "text": body},
+                }
+            )
+        blocks.append({"type": "actions", "elements": [button]})
+        return blocks
+
+    async def _handle_block_action(self, payload: dict[str, Any]) -> None:
+        """Route an interactive block action from Slack.
+
+        Only ``switch_interrupt`` is handled; everything else is silently
+        ignored so future actions can be added without touching this handler.
+        """
+        actions = payload.get("actions") or []
+        if not actions:
+            return
+        action = actions[0]
+        if action.get("action_id") != "switch_interrupt":
+            return
+
+        channel_info = payload.get("channel") or {}
+        channel_id = str(channel_info.get("id") or "")
+        message = payload.get("message") or {}
+        thread_ts = str(message.get("thread_ts") or message.get("ts") or "")
+        if not channel_id or not thread_ts or self._on_command is None:
+            return
+
+        # The button carries the agent name in its value, but the turn may
+        # have ended between the click and this handler running.  Check the
+        # session owner to confirm the turn is still live.
+        agent_name = str(action.get("value") or "") or self._session_owner.get(
+            (channel_id, thread_ts), ""
+        )
+        if not agent_name or (channel_id, thread_ts) not in self._session_owner:
+            await self.admin_message(
+                channel_id,
+                "That turn already finished.",
+                thread_root_id=f"{channel_id}:{thread_ts}",
+            )
+            return
+
+        user_info = payload.get("user") or {}
+        user_id = str(user_info.get("id") or "")
+        user = await self._resolve_user_name(user_id) if user_id else None
+        await self._on_command(
+            InboundCommand(
+                channel_id=channel_id,
+                channel_type=await self.get_channel_type(channel_id),
+                sender_id=user_id,
+                sender_name=user.name if user else "slack",
+                command="interrupt",
+                args=f"@{agent_name}",
+                message_ref=None,
+                root_id=f"{channel_id}:{thread_ts}",
+                channel_name=await self._resolve_channel_name(channel_id),
+            )
+        )
+
     async def _handle_session_stopped(self, event: dict[str, object]) -> None:
         """Route Slack's stop button to the agent whose turn it belongs to.
 
@@ -1333,6 +1436,73 @@ class SlackAdapter(CollaborationAdapter):
                 root_id=f"{channel_id}:{thread_ts}",
                 channel_name=await self._resolve_channel_name(channel_id),
             )
+        )
+
+    async def _post_message_with_blocks(
+        self,
+        channel_id: str,
+        agent_name: str,
+        text: str,
+        blocks: list[dict[str, Any]],
+        thread_root_id: str | None,
+    ) -> str | None:
+        """Post a message carrying both ``text`` (fallback) and Block Kit ``blocks``."""
+        if not self._web_client:
+            return None
+        thread_ts: str | None = None
+        if thread_root_id:
+            thread_ts = self._thread_ts_of(thread_root_id)
+        try:
+            result = await self._web_client.chat_postMessage(
+                channel=channel_id,
+                text=text,
+                blocks=blocks,
+                username=agent_name,
+                icon_url=await self.agent_icon_url(agent_name),
+                thread_ts=thread_ts,
+                unfurl_links=False,
+                unfurl_media=False,
+            )
+            ts = result.get("ts", "")
+            return f"{channel_id}:{ts}" if ts else None
+        except SlackApiError as e:
+            logger.error(
+                "Failed to post message with blocks to Slack channel %s: %s",
+                channel_id,
+                e,
+            )
+            return None
+
+    async def _update_message_with_blocks(
+        self,
+        channel_id: str,
+        message_ref: str,
+        text: str,
+        blocks: list[dict[str, Any]],
+    ) -> None:
+        """Update a message, replacing both its ``text`` and ``blocks``."""
+        if not self._web_client:
+            return
+        _, ts = self._parse_message_ref(message_ref)
+        if not ts:
+            return
+        try:
+            await self._web_client.chat_update(
+                channel=channel_id, ts=ts, text=text, blocks=blocks
+            )
+        except SlackApiError as e:
+            logger.error("Failed to update Slack message %s: %s", message_ref, e)
+
+    async def _post_stop_button(
+        self,
+        channel_id: str,
+        agent_name: str,
+        thread_root_id: str | None,
+    ) -> str | None:
+        """Post a minimal button-only message for the streaming path."""
+        blocks = self._stop_button_blocks(agent_name)
+        return await self._post_message_with_blocks(
+            channel_id, agent_name, "Stop", blocks, thread_root_id
         )
 
     async def _clear_working(self, channel_id: str, agent_name: str) -> None:
@@ -1931,6 +2101,12 @@ class SlackAdapter(CollaborationAdapter):
 
         if req.type == "slash_commands":
             await self._handle_slash_command(req.payload)
+            return
+
+        if req.type == "interactive":
+            payload = req.payload
+            if payload.get("type") == "block_actions":
+                await self._handle_block_action(payload)
             return
 
         if req.type != "events_api":
