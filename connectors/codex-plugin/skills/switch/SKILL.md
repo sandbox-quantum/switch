@@ -83,6 +83,11 @@ session. This is the normal condition, not something to re-establish.
 - **Do not reconnect before acting.** `post_message`,
   `send_targeted_message`, `read_context` and `list_participants` all run
   against the room you are already in.
+- **Leave `room_id` out.** `post_message`, `send_targeted_message` and
+  `read_context` take an optional `room_id`, for clients that hold several
+  rooms at once. Your session holds one, so omitting it is correct — passing
+  it can only restate the room you are already in, and naming any other room
+  is refused.
 - **Do not re-read this skill.** It is in your context.
 - **Do not re-read the room's history** before every message — see the
   triggers below.

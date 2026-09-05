@@ -27,14 +27,22 @@ import logging
 import time
 from collections.abc import Iterable
 from dataclasses import dataclass, field
-from typing import Literal
+from typing import Literal, get_args
 
 from switch_core.artifacts import contract_range
 
 logger = logging.getLogger(__name__)
 
-Scope = Literal["single", "all"]
+Scope = Literal["single", "multi", "all"]
 DeliveryFilter = Literal["all", "addressed"]
+
+# `scope` arrives off a query string as a bare string, so the Literal above
+# constrains callers we type-check and nothing else. Checked at open because a
+# value that is neither `all` nor a recognised claiming scope would fall to the
+# explicit-set branch of `covers` and cover nothing: an agent silent everywhere,
+# with a log line saying it connected.
+_SCOPES = frozenset(get_args(Scope))
+_FILTERS = frozenset(get_args(DeliveryFilter))
 
 # Clients tick every HEARTBEAT_INTERVAL_SECONDS; a connection is declared dead
 # once nothing has arrived for HEARTBEAT_TTL_SECONDS. One mechanism replaces
@@ -259,6 +267,15 @@ class ConnectionRegistry:
         connects: unknown is not incompatible, and refusing on silence would
         lock out every client built before it could speak up.
         """
+        if scope not in _SCOPES:
+            raise ValueError(
+                f"unknown scope {scope!r}; expected one of {sorted(_SCOPES)}"
+            )
+        if delivery_filter not in _FILTERS:
+            raise ValueError(
+                f"unknown filter {delivery_filter!r}; expected one of {sorted(_FILTERS)}"
+            )
+
         floor = declaration.protocol_floor
         if declaration.speaks is not None and floor is not None:
             overlaps = (
@@ -490,7 +507,11 @@ class ConnectionRegistry:
         return None
 
     def covers(self, conn: Connection, room_id: str) -> bool:
-        if conn.scope == "single":
+        # Every claiming scope covers exactly what it claimed. `single` holds
+        # one room, `multi` holds the set it declared — and a `multi`
+        # connection that has claimed nothing yet covers nothing, rather than
+        # briefly inheriting every room the agent belongs to.
+        if conn.scope != "all":
             return room_id in conn.rooms
         # An `all` connection covers everything no sibling has claimed.
         if room_id in conn.rooms:

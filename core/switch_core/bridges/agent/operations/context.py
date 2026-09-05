@@ -58,13 +58,42 @@ def session_key() -> str | None:
     return bound.session_key if bound is not None else None
 
 
-async def require_connected_room() -> str:
-    """The room this caller is bound to, or a clear error saying it is not.
+def _resolve_room(covered: frozenset[str], room_id: str | None) -> str:
+    """Pick the room an operation acts on, from what the caller actually holds.
+
+    A room id supplied by a caller is an argument, not a permission: it is
+    checked against the caller's own rooms so that naming a room is never a way
+    into one. Omitted, it is only unambiguous while the caller holds one room —
+    and with several, choosing silently is how an answer meant for a private
+    chat ends up in a channel, so the ambiguity is raised instead.
+    """
+    if room_id is not None:
+        if room_id not in covered:
+            raise ValueError(
+                f"Not connected to room {room_id}. This caller covers "
+                f"{sorted(covered)} — call connect_to_room first."
+            )
+        return room_id
+    if len(covered) > 1:
+        raise ValueError(
+            "This connection covers several rooms; the operation needs one — "
+            f"pass room_id explicitly. Rooms covered: {sorted(covered)}."
+        )
+    return next(iter(covered))
+
+
+async def require_connected_room(room_id: str | None = None) -> str:
+    """The room this call acts on, or a clear error saying why there is none.
 
     The live connection is asked first: a connection that has claimed a room is
     in it, whether or not anything was ever written to a table. The table is
     consulted only for callers that predate connections (an MCP transport
     session), and goes away with them.
+
+    `room_id` names the room when the caller holds more than one, which is what
+    a connection covering several surfaces needs to act at all. It is validated
+    against the caller's rooms either way — including for a single-room caller,
+    where it can only confirm the room already held.
     """
     key = session_key()
     if not key:
@@ -73,16 +102,11 @@ async def require_connected_room() -> str:
     protocol = get_protocol()
     connection = protocol.connections.get(key)
     if connection is not None and connection.rooms:
-        if len(connection.rooms) > 1:
-            raise ValueError(
-                "This connection covers several rooms; the operation needs one "
-                "— pass the room explicitly or use a single-room connection."
-            )
-        return next(iter(connection.rooms))
+        return _resolve_room(frozenset(connection.rooms), room_id)
 
     async with protocol.session_factory() as db:
         result = await protocol.agent_session_store.get_connected_room(db, key)
     if result is None:
         raise ValueError("Not connected to a room. Call connect_to_room first.")
-    _, room_id = result
-    return room_id
+    _, bound_room = result
+    return _resolve_room(frozenset({bound_room}), room_id)
