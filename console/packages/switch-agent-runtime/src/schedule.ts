@@ -26,6 +26,17 @@
  */
 export const MAX_TIMER_MS = 2 ** 31 - 1;
 
+/**
+ * The shortest recurrence that can actually move a wake-up forward.
+ *
+ * A timer cannot honour anything finer, and below roughly 2.4e-4 ms the
+ * increment is smaller than the gap between representable epoch values, so
+ * adding it leaves the moment unchanged and the wake-up fires forever. Only
+ * reachable from a hand-edited schedule document — which is exactly the input
+ * `parseWakeups` is written to survive.
+ */
+export const MIN_PERIOD_MS = 1;
+
 export interface Wakeup {
   /** Stable across restarts, so a wake-up can be replaced or cancelled. */
   id: string;
@@ -61,10 +72,17 @@ export function due(wakeups: readonly Wakeup[], nowMs: number): Wakeup[] {
  */
 export function advance(wakeup: Wakeup, nowMs: number): Wakeup | null {
   const period = wakeup.everyMs;
-  if (period === undefined || period <= 0) return null;
+  if (period === undefined || period < MIN_PERIOD_MS) return null;
 
   const missed = Math.floor((nowMs - wakeup.atMs) / period) + 1;
-  return { ...wakeup, atMs: wakeup.atMs + missed * period };
+  const atMs = wakeup.atMs + missed * period;
+  // Below the ULP of a current epoch value the increment rounds away and `atMs`
+  // lands on `nowMs` itself — `due` fires it, `advance` returns the same moment,
+  // and it spins. The floor above prevents it; this catches anything the
+  // arithmetic still cannot move forward, including a period large enough to
+  // overflow to Infinity.
+  if (!Number.isFinite(atMs) || atMs <= nowMs) return null;
+  return { ...wakeup, atMs };
 }
 
 /** The schedule after the given wake-ups have fired. */
@@ -96,7 +114,10 @@ export function reschedule(
  */
 export function nextDelayMs(wakeups: readonly Wakeup[], nowMs: number): number | null {
   if (wakeups.length === 0) return null;
-  const soonest = Math.min(...wakeups.map((w) => w.atMs));
+  // Reduced rather than spread: `Math.min(...xs)` throws RangeError somewhere
+  // above 100k arguments, and it would escape into the arming loop and stop the
+  // agent waking at all, without any wake-up having been wrong.
+  const soonest = wakeups.reduce((lowest, w) => Math.min(lowest, w.atMs), Infinity);
   return Math.min(Math.max(soonest - nowMs, 0), MAX_TIMER_MS);
 }
 
@@ -141,6 +162,6 @@ function asWakeup(entry: unknown): Wakeup | null {
 
   const wakeup: Wakeup = { id, atMs, note };
   if (typeof roomId === 'string') wakeup.roomId = roomId;
-  if (typeof everyMs === 'number' && Number.isFinite(everyMs)) wakeup.everyMs = everyMs;
+  if (typeof everyMs === 'number' && everyMs >= MIN_PERIOD_MS) wakeup.everyMs = everyMs;
   return wakeup;
 }

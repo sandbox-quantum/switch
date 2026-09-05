@@ -292,6 +292,10 @@ class AgentEvent(BaseModel):
     room_id: str
     bridge_id: str | None = None
     channel_type: str | None = None
+    #: Who can read the room this came from. Computed server-side, where the
+    #: bridge type is known, so a client does not re-derive it from a
+    #: `channel_type` that cannot tell an email room from a DM.
+    audience: str = "unknown"
     payload: Payload
 
     @model_validator(mode="before")

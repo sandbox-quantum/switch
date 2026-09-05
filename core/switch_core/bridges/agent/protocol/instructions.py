@@ -52,9 +52,13 @@ def build_room_instructions(
                 _task_protocol(profile),
                 _agent_statuses(participants),
                 _room_setup(room, bridge),
-                _disclosure(room, bridge),
             ]
         )
+    # Outside the `include_general` gate on purpose. That flag means "this host
+    # already teaches the Switch workflow out-of-band", and all three connector
+    # skills set it — but who can read *this* room is not workflow, it is this
+    # room's state, and a skill written once cannot carry it.
+    sections.append(_disclosure(room, bridge))
     if room.instructions:
         sections.append("## Room-specific instructions\n\n" + room.instructions.strip())
     return "\n\n".join(sections)
@@ -213,16 +217,26 @@ def _disclosure(room: Room, bridge: CollaborationBridge | None) -> str:
         f"- Audience: **{audience}** — {_AUDIENCE_MEANING[audience]}",
         "",
         "You may be connected to several rooms at once, and they will not all "
-        "have the same audience. Content may move into a room whose audience is "
-        "the same or narrower. Repeating it into a **wider** room, or into an "
-        "**external** one, needs the person you are talking to to ask for it in "
-        "that turn — their asking is what makes it their decision rather than "
-        "yours.",
+        "have the same audience. Anything said here may be repeated here. "
+        "Repeating it in a **different** room is free only when this room is "
+        "`open`, because the whole workspace can already read it.",
+        "",
+        "Otherwise — including into another room with the same label — assume "
+        "you may not. **A different DM is a different person; one outside "
+        "correspondent is not another.** Two rooms sharing an audience are "
+        "almost never the same audience.",
+        "",
+        "The permission you need belongs to the people whose room it came "
+        "from, given in that room. It is not the permission of whoever you are "
+        "talking to now: they cannot ask for something they do not know exists, "
+        "and asking them would itself be the disclosure.",
         "",
         "This is about repeating, not knowing. Use everything you know to give "
-        "the best answer you can; just do not quote or attribute what was said "
-        "somewhere narrower. Refusing to use what you know produces a visibly "
-        "worse answer and protects nobody.",
+        "the best answer you can — what you must not do is carry across the "
+        "substance of what was said elsewhere, attributed or not. A paraphrase "
+        "somebody can work backwards from is the same disclosure as a quote. "
+        "Refusing to *use* what you know produces a visibly worse answer and "
+        "protects nobody.",
     ]
     return "\n".join(lines)
 

@@ -67,6 +67,7 @@ from switch_core.db.stores.external_user_store import ExternalUserStore
 from switch_core.db.stores.reference_store import ReferenceStore
 from switch_core.db.stores.room_role_store import RoomRoleStore
 from switch_core.db.stores.room_store import RoomStore
+from switch_core.disclosure import audience_of, bridge_is_external
 from switch_core.events import (
     CommandEvent,
     MediationLlmResponse,
@@ -375,6 +376,7 @@ class AgentClient(ClientBase[ClientConfig]):
                 room_id=meta.room_id,
                 bridge_id=meta.bridge_id,
                 channel_type=meta.channel_type,
+                audience=meta.audience,
                 payload=RoomJoinPayload(
                     member=event.state_key,
                     member_name=member_name,
@@ -454,6 +456,7 @@ class AgentClient(ClientBase[ClientConfig]):
             room_id=meta.room_id,
             bridge_id=meta.bridge_id,
             channel_type=meta.channel_type,
+            audience=meta.audience,
             payload=MessagePayload(
                 addressed=is_addressed,
                 sender=event.sender,
@@ -651,6 +654,7 @@ class AgentClient(ClientBase[ClientConfig]):
             room_id=meta.room_id,
             bridge_id=meta.bridge_id,
             channel_type=meta.channel_type,
+            audience=meta.audience,
             payload=MessagePayload(
                 addressed=is_addressed,
                 sender=event.sender,
@@ -703,6 +707,7 @@ class AgentClient(ClientBase[ClientConfig]):
                 room_id=meta.room_id,
                 bridge_id=meta.bridge_id,
                 channel_type=meta.channel_type,
+                audience=meta.audience,
                 payload=CommandPayload(
                     command=event.command,
                     args=event.args,
@@ -791,10 +796,12 @@ class AgentClient(ClientBase[ClientConfig]):
                 return None
 
             agent_greetings_enabled = True
+            bridge_type: str | None = None
             if room.bridge_id is not None:
                 bridge = await self._bridge_store.get(session, room.bridge_id)
                 if bridge is not None:
                     agent_greetings_enabled = bridge.agent_greetings_enabled
+                    bridge_type = bridge.type
 
         meta = RoomMeta(
             room_id=room.id,
@@ -802,6 +809,10 @@ class AgentClient(ClientBase[ClientConfig]):
             bridge_id=room.bridge_id,
             agent_greetings_enabled=agent_greetings_enabled,
             channel_type=room.channel_type,
+            audience=audience_of(
+                room.channel_type,
+                bridge_is_external=bridge_is_external(bridge_type),
+            ),
         )
         self._room_meta[matrix_room_id] = meta
         return meta
@@ -1052,6 +1063,7 @@ class AgentClient(ClientBase[ClientConfig]):
                 room_id=meta.room_id,
                 bridge_id=meta.bridge_id,
                 channel_type=meta.channel_type,
+                audience=meta.audience,
                 payload=TaskDelegatePayload(
                     task_id=event.task_id,
                     requester_agent_id=event.requester_agent_id,
@@ -1076,6 +1088,7 @@ class AgentClient(ClientBase[ClientConfig]):
                 room_id=meta.room_id,
                 bridge_id=meta.bridge_id,
                 channel_type=meta.channel_type,
+                audience=meta.audience,
                 payload=TaskAcceptPayload(
                     task_id=event.task_id,
                     requester_agent_id=event.requester_agent_id,
@@ -1098,6 +1111,7 @@ class AgentClient(ClientBase[ClientConfig]):
                 room_id=meta.room_id,
                 bridge_id=meta.bridge_id,
                 channel_type=meta.channel_type,
+                audience=meta.audience,
                 payload=TaskUpdatePayload(
                     task_id=event.task_id,
                     requester_agent_id=event.requester_agent_id,
@@ -1121,6 +1135,7 @@ class AgentClient(ClientBase[ClientConfig]):
                 room_id=meta.room_id,
                 bridge_id=meta.bridge_id,
                 channel_type=meta.channel_type,
+                audience=meta.audience,
                 payload=TaskFinalisePayload(
                     task_id=event.task_id,
                     requester_agent_id=event.requester_agent_id,
@@ -1144,6 +1159,7 @@ class AgentClient(ClientBase[ClientConfig]):
                 room_id=meta.room_id,
                 bridge_id=meta.bridge_id,
                 channel_type=meta.channel_type,
+                audience=meta.audience,
                 payload=TaskCancelPayload(
                     task_id=event.task_id,
                     requester_agent_id=event.requester_agent_id,

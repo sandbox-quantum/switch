@@ -28,6 +28,7 @@ def _meta() -> SimpleNamespace:
         name="Some Room",
         bridge_id="bridge-1",
         channel_type="channel_private",
+        audience="restricted",
     )
 
 

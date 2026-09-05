@@ -15,11 +15,16 @@ describe('formatEventForInjection', () => {
     expect(text).toBe('[Switch] alice addressed you in room room-1 (message_id $m1): ping');
   });
 
-  it('marks who can read the room when the type says so', () => {
+  it('marks who can read the room when the server says so', () => {
     /**
      * A session reachable in several rooms at once holds a private DM and an
      * open channel in one context, and this line is the only thing on this
      * delivery path that tells the two apart.
+     *
+     * The label comes from the envelope rather than from `channel_type`: this
+     * side cannot see the bridge's type, so it cannot tell an email room from
+     * an ordinary DM, and guessing wrong in that direction is the disclosure
+     * nobody sees.
      */
     const text = formatEventForInjection(
       {
@@ -29,7 +34,7 @@ describe('formatEventForInjection', () => {
           body: 'ping',
           message_id: '$m1',
         }),
-        channel_type: 'direct',
+        audience: 'private',
       },
       'Alice'
     );
@@ -38,9 +43,10 @@ describe('formatEventForInjection', () => {
     );
   });
 
-  it('says nothing about the audience when the room type does not', () => {
-    /** `[unknown]` on every line of every single-room session is noise, not
-     * information — the structured MCP meta is where the explicit value lives. */
+  it('says nothing about the audience when it is not established', () => {
+    /** `[unknown]` on every line is noise, not information — the structured MCP
+     * meta is where the explicit value lives. This is also what an envelope
+     * from a server predating the field produces. */
     const text = formatEventForInjection(
       {
         ...event('message', {
@@ -49,7 +55,6 @@ describe('formatEventForInjection', () => {
           body: 'ping',
           message_id: '$m1',
         }),
-        channel_type: null,
       },
       'Engineering'
     );

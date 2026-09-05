@@ -55,6 +55,18 @@ describe('audienceOf', () => {
     );
   });
 
+  it('says unknown when the caller cannot tell whether the bridge is external', () => {
+    /**
+     * The flag used to be a required boolean, so that a caller had to answer.
+     * Both callers answered `false` — the envelope carries `bridge_id` and not
+     * the bridge type, so neither can actually tell — which made an email room
+     * read as `private`. A question only answerable by guessing collects
+     * guesses, so not knowing is now sayable.
+     */
+    expect(audienceOf({ channelType: 'direct' })).toBe<Audience>('unknown');
+    expect(audienceOf({ channelType: 'channel_public' })).toBe<Audience>('unknown');
+  });
+
   it('says unknown rather than guessing when the type is missing', () => {
     /**
      * Not `open`, and not `external` either — both would be a claim about who
@@ -68,6 +80,27 @@ describe('audienceOf', () => {
     expect(audienceOf({ bridgeIsExternal: false })).toBe<Audience>('unknown');
     expect(audienceOf({ channelType: null, bridgeIsExternal: false })).toBe<Audience>('unknown');
     expect(audienceOf({ channelType: 'something-new', bridgeIsExternal: false })).toBe<Audience>(
+      'unknown'
+    );
+  });
+});
+
+describe('the server-computed audience', () => {
+  it('is preferred over anything derivable here', () => {
+    /** An email room is `channel_type: direct`. Derived locally that reads
+     * `private`; the server knows the bridge is external and says so. */
+    expect(audienceOf({ audience: 'external', channelType: 'direct' })).toBe<Audience>('external');
+  });
+
+  it('falls back to deriving when an older server sends none', () => {
+    expect(audienceOf({ channelType: 'channel_public', bridgeIsExternal: false })).toBe<Audience>(
+      'open'
+    );
+  });
+
+  it('does not guess at a value it does not recognise', () => {
+    /** A newer server naming something this build has no rule for. */
+    expect(audienceOf({ audience: 'confidential', channelType: 'direct' })).toBe<Audience>(
       'unknown'
     );
   });

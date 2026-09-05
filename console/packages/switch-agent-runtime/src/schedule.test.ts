@@ -111,11 +111,28 @@ describe('advance', () => {
     expect(next?.atMs).toBe(NOW + WEEK);
   });
 
-  it('treats a non-positive interval as one-shot rather than looping', () => {
-    /** `everyMs: 0` advanced by adding zero never passes now, so computing the
-     * next occurrence would spin forever. */
+  it('treats an interval too small to move the moment as one-shot', () => {
+    /**
+     * Zero and negative are the obvious cases, and not the dangerous ones.
+     * Below roughly 2.4e-4 ms the increment is smaller than the gap between
+     * representable epoch values, so the next moment lands on `nowMs` itself —
+     * `due` fires it, `advance` returns the same moment, and it spins. Only
+     * reachable from a hand-edited document, which is precisely the input
+     * `parseWakeups` exists to survive.
+     */
     expect(advance(wakeup({ atMs: NOW, everyMs: 0 }), NOW)).toBeNull();
     expect(advance(wakeup({ atMs: NOW, everyMs: -WEEK }), NOW)).toBeNull();
+    expect(advance(wakeup({ atMs: NOW - WEEK, everyMs: 1e-4 }), NOW)).toBeNull();
+    expect(advance(wakeup({ atMs: NOW - WEEK, everyMs: 5e-324 }), NOW)).toBeNull();
+  });
+
+  it('never returns a moment that is not strictly ahead', () => {
+    /** The invariant the caller depends on: whatever comes back, `due` must not
+     * immediately fire it again. */
+    for (const everyMs of [1, 1000, WEEK, Number.MAX_VALUE]) {
+      const next = advance(wakeup({ atMs: NOW - 4 * WEEK, everyMs }), NOW);
+      if (next !== null) expect(next.atMs).toBeGreaterThan(NOW);
+    }
   });
 });
 
@@ -217,12 +234,33 @@ describe('persistence', () => {
   });
 
   it('drops an entry whose moment is not a real number', () => {
+    /** JSON has no literal for Infinity or NaN — `JSON.stringify` writes `null`
+     * — so these arrive as a string and a null. Both are caught, but note that
+     * means a non-finite number can never actually reach `parseWakeups`. */
     const bad = JSON.stringify([
       { id: 'nan', atMs: 'soon', note: 'x' },
       { id: 'inf', atMs: Number.POSITIVE_INFINITY, note: 'x' },
     ]);
 
     expect(parseWakeups(bad)).toEqual([]);
+  });
+
+  it('drops a recurrence too small for a timer to honour', () => {
+    /** The document is hand-editable, so this is where a spinning wake-up would
+     * come from. Refused at the door rather than relied on `advance` to catch. */
+    const parsed = parseWakeups(
+      JSON.stringify([{ id: 'w1', atMs: NOW, note: 'x', everyMs: 1e-4 }])
+    );
+
+    expect(parsed[0].everyMs).toBeUndefined();
+  });
+
+  it('survives a schedule far larger than a timer call can spread', () => {
+    /** `Math.min(...xs)` throws above ~100k arguments, and the throw would
+     * escape into the arming loop and stop the agent waking at all. */
+    const many = Array.from({ length: 200_000 }, (_, i) => wakeup({ id: `w${i}`, atMs: NOW + i }));
+
+    expect(nextDelayMs(many, NOW)).toBe(0);
   });
 
   it('keeps the newest entry when a document names one id twice', () => {

@@ -35,6 +35,7 @@ change the other.
 from __future__ import annotations
 
 import re
+import unicodedata
 from collections.abc import Iterable
 from typing import Literal
 
@@ -55,12 +56,6 @@ _BY_CHANNEL_TYPE: dict[str, Audience] = {
     "channel_public": "open",
     "lobby": "open",
 }
-
-# How many people can read a room, for the rooms where that is a number. The
-# comparison below is the flow rule: content moves to an equal or smaller
-# audience. `external` and `unknown` are not on this scale and are handled
-# before it.
-_WIDTH: dict[Audience, int] = {"private": 0, "restricted": 1, "open": 2}
 
 
 #: Bridge types whose correspondent is outside the organisation.
@@ -96,38 +91,69 @@ def audience_of(channel_type: str | None, *, bridge_is_external: bool) -> Audien
     return _BY_CHANNEL_TYPE.get(channel_type, "unknown")
 
 
-def may_carry(source: Audience, target: Audience) -> bool:
+def may_carry(source: Audience, target: Audience, *, same_room: bool) -> bool:
     """Whether content known in `source` may be repeated in `target`.
 
-    Content moves to an equal or narrower audience freely. Anything else — wider,
-    outside, or unknown in either direction — is a decision for the human in the
-    turn, not a default.
+    **The audience label is a size, and the question is about people.** An
+    earlier version of this compared the two labels and allowed a move whenever
+    the target was no larger — which permits a DM with one person into a DM with
+    a different person, and one vendor's mail into another vendor's, because
+    both pairs share a label. Two rooms with the same audience are almost never
+    the same audience.
 
-    `external` is symmetric and closed: nothing flows out to an outsider on the
-    agent's own initiative, and what an outsider said is not thereby publishable
-    either. Their mail was sent to us, not released.
+    Soundly, content may move from A to B when everyone who can read B could
+    already read A. Without room membership to compare, exactly two cases are
+    knowable:
 
-    `unknown` is treated as the widest thing the room could be, in both
-    directions, because both assumptions are unsafe. Nothing flows into it (it
-    might be public) and nothing flows out of it (it might be private).
+    - **The same room.** Trivially true, and this is what `same_room` is for —
+      the caller knows the room ids, and this module deliberately does not.
+    - **Out of an `open` room into anywhere else inside the organisation.**
+      `open` means the whole workspace, and every internal room is a subset of
+      it, so nothing is revealed to anyone who could not already look.
+
+    Everything else — including same-label rooms, and anything touching
+    `external` or `unknown` — is a decision for a person, not a default. That is
+    a conservative answer rather than a precise one, and deliberately: the
+    precise model is membership-set inclusion, and until Switch compares
+    membership here, refusing costs a question while permitting costs a
+    disclosure.
     """
-    if source == target:
+    if same_room:
         return True
-    if "external" in (source, target):
-        return False
-    if "unknown" in (source, target):
-        return False
-    return _WIDTH[target] <= _WIDTH[source]
+    if source == "open" and target in ("private", "restricted", "open"):
+        return True
+    return False
+
+
+#: Typographic apostrophes folded to the ASCII one.
+#:
+#: The single likeliest way a verbatim quote escapes this check. A person's mail
+#: client writes `don’t` and a model writes `don't`; split on the wrong one,
+#: `don’t` becomes two tokens and the run breaks in the middle.
+_APOSTROPHES = str.maketrans(
+    {"\u2019": "'", "\u2018": "'", "\u201b": "'", "\uff07": "'"}
+)
 
 
 def _words(text: str) -> list[str]:
     """The text as comparable words.
 
-    Lowercased and stripped of punctuation, so a re-wrapped, re-capitalised,
-    comma-shifted restatement still matches. A model rarely re-emits text byte
-    for byte; it re-emits the words.
+    Normalised, lowercased and stripped of punctuation, so a re-wrapped,
+    re-capitalised, comma-shifted restatement still matches. A model rarely
+    re-emits text byte for byte; it re-emits the words.
+
+    NFKC first, so an accented word and its decomposed form are one word rather
+    than two different ones, and a Unicode word class rather than ``[a-z0-9]``
+    so accented and non-Latin text survives tokenising at all instead of
+    vanishing.
+
+    **A limit worth stating**: this counts words, so it is weak for scripts
+    written without spaces between them, where a whole clause tokenises as one
+    word and rarely reaches the threshold. Like paraphrase, that is a bound on
+    what the check can see rather than a bug, and the suite asserts it.
     """
-    return re.findall(r"[a-z0-9']+", text.lower())
+    normalised = unicodedata.normalize("NFKC", text).translate(_APOSTROPHES)
+    return re.findall(r"[\w']+", normalised.lower(), re.UNICODE)
 
 
 def disclosed_span(
@@ -148,7 +174,10 @@ def disclosed_span(
     scan per pair.
     """
     if min_words <= 0:
-        return None
+        raise ValueError(
+            f"min_words must be positive, got {min_words}; a non-positive "
+            "threshold would report every message as clean"
+        )
 
     out_words = _words(outbound)
     if len(out_words) < min_words:

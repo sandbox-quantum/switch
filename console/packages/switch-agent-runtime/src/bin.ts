@@ -1617,10 +1617,15 @@ async function handleEvent(event: AgentEvent) {
   // cannot be discreet about a boundary it cannot see.
   const surface = surfaceMeta({
     roomId: room_id,
+    audience: event.audience,
     channelType: event.channel_type,
-    // No bridge carries an outside correspondent yet; the email bridge is what
-    // makes this a real question, and it must set it when it lands.
-    bridgeIsExternal: false,
+    // Unresolvable here, and deliberately not guessed. The envelope carries
+    // `bridge_id` but not the bridge *type*, so this side cannot tell an email
+    // room from a Slack DM — while the server can, and labels the email one
+    // `external`. Passing `false` would be the client asserting the one thing
+    // that is unsafe to get wrong. Undefined means the label falls back to
+    // `unknown`, which is what `unknown` is for.
+    bridgeIsExternal: undefined,
   });
 
   if (type === 'message') {

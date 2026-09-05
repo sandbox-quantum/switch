@@ -31,18 +31,33 @@
 export type Audience = 'private' | 'restricted' | 'open' | 'external' | 'unknown';
 
 export interface SurfaceInput {
+  /**
+   * The audience the server computed, when it sent one.
+   *
+   * Preferred over anything derivable here. The server knows the bridge's type
+   * and this side does not, so deriving locally cannot distinguish an email
+   * room from an ordinary DM — and getting that wrong in the narrow direction
+   * is the disclosure nobody sees. The fields below remain only as the fallback
+   * for an envelope from a server that predates this.
+   */
+  audience?: string | null;
   /** The room's `channel_type` from the event envelope, when it has one. */
   channelType?: string | null;
   /**
    * Whether this room's bridge carries someone outside the organisation.
    *
-   * Required, not optional. An omitted flag would default to "internal", which
-   * is the one direction that is unsafe to get wrong — the same failure the
-   * `unknown` label exists to avoid, arriving through the back door. Making
-   * every caller state it means the email bridge cannot be added without
-   * someone answering the question.
+   * Three-valued on purpose: `true`, `false`, or **not known**. Making it a
+   * required boolean was meant to force every caller to answer — and both
+   * callers answered `false`, because the event envelope carries `bridge_id`
+   * but not the bridge *type*, so neither can actually tell. A required flag
+   * that can only be answered with a guess collects guesses.
+   *
+   * Undefined therefore means unknown and yields `unknown`, not `internal`.
+   * The real fix is for the server to send the audience it already computes —
+   * it knows which bridges are external — which would delete this side of a
+   * rule currently written twice in two languages.
    */
-  bridgeIsExternal: boolean;
+  bridgeIsExternal?: boolean;
 }
 
 // A Map, not an object literal: `BY_CHANNEL_TYPE['constructor']` on a literal
@@ -58,7 +73,20 @@ const BY_CHANNEL_TYPE = new Map<string, Audience>([
   ['lobby', 'open'],
 ]);
 
-export function audienceOf({ channelType, bridgeIsExternal }: SurfaceInput): Audience {
+const AUDIENCES: ReadonlySet<string> = new Set([
+  'private',
+  'restricted',
+  'open',
+  'external',
+  'unknown',
+]);
+
+export function audienceOf({ audience, channelType, bridgeIsExternal }: SurfaceInput): Audience {
+  // A value we do not recognise is a newer server naming something this build
+  // has no rule for. `unknown` is the honest answer, not a guess at which of
+  // ours it resembles.
+  if (audience) return AUDIENCES.has(audience) ? (audience as Audience) : 'unknown';
+  if (bridgeIsExternal === undefined) return 'unknown';
   if (bridgeIsExternal) return 'external';
   if (!channelType) return 'unknown';
   return BY_CHANNEL_TYPE.get(channelType) ?? 'unknown';

@@ -34,7 +34,17 @@ from typing import Literal
 
 Result = Literal["pass", "fail", "none"]
 
-_METHOD = re.compile(r"\b(dmarc|spf|dkim)\s*=\s*([a-z]+)", re.IGNORECASE)
+# The `method = result` at the head of one resinfo chunk, and nothing else.
+#
+# Anchored deliberately. Scanning the whole chunk finds `dmarc=pass` anywhere in
+# it — and the `ptype.property=value` pairs that follow the verdict are
+# attacker-controlled. `smtp.mailfrom=dmarc=pass@evil.example` is a legal
+# envelope sender (`=` is valid in a local part), so an unanchored scan reads a
+# genuine `dmarc=fail` header stamped by our own infrastructure as a pass.
+_METHOD = re.compile(r"^\s*(dmarc|spf|dkim)\s*=\s*([a-z]+)", re.IGNORECASE)
+
+# An authserv-id may be a quoted string, and may be preceded by a comment.
+_LEADING_COMMENT = re.compile(r"^\s*\([^)]*\)\s*")
 
 
 @dataclass(frozen=True)
@@ -63,18 +73,32 @@ def parse_authentication_results(
     """
     found: dict[str, Result] = {}
     wanted = trusted_authserv_id.strip().lower()
+    if not wanted:
+        # No configured id means nothing can be trusted, and every header is
+        # somebody's claim about themselves.
+        return AuthVerdict(dmarc="none", spf="none", dkim="none")
 
     for header in headers:
         authserv, separator, rest = header.partition(";")
         if not separator:
             continue
-        # RFC 8601 allows an optional version after the id: "mx.example 1".
-        if authserv.strip().lower().split()[0:1] != [wanted]:
+        if _authserv_id(authserv) != wanted:
             continue
-        for method, result in _METHOD.findall(rest):
-            method = method.lower()
-            value = result.lower()
-            if method not in found and value in ("pass", "fail"):
+        # Split into resinfo chunks and read only the head of each, so the
+        # `ptype.property=value` pairs after a verdict are never mistaken for
+        # one. See `_METHOD`.
+        for chunk in rest.split(";"):
+            match = _METHOD.match(chunk)
+            if match is None:
+                continue
+            method = match.group(1).lower()
+            value = match.group(2).lower()
+            if value not in ("pass", "fail"):
+                continue
+            # Fail beats pass, whatever the order. First-wins would make the
+            # verdict depend on a header's internal ordering, which is not
+            # something the sender is prevented from influencing.
+            if found.get(method) != "fail":
                 found[method] = value  # type: ignore[assignment]
 
     return AuthVerdict(
@@ -82,6 +106,21 @@ def parse_authentication_results(
         spf=found.get("spf", "none"),
         dkim=found.get("dkim", "none"),
     )
+
+
+def _authserv_id(raw: str) -> str:
+    """The id at the head of an `Authentication-Results` header, normalised.
+
+    Tolerates the shapes RFC 8601 permits and a strict split would lose: a
+    leading comment, surrounding quotes, and a trailing version number. Losing
+    them fails closed — no verdict — which is safe but leaves an operator with a
+    bridge that authenticates nobody and no clue why.
+    """
+    without_comment = _LEADING_COMMENT.sub("", raw).strip()
+    head = without_comment.split()[0:1]
+    if not head:
+        return ""
+    return head[0].strip('"').lower()
 
 
 def authenticated_sender(verdict: AuthVerdict) -> bool:

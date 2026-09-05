@@ -94,6 +94,70 @@ def test_the_trusted_header_is_read_even_when_a_forged_one_precedes_it() -> None
     assert verdict.dmarc == "fail"
 
 
+def test_a_value_that_looks_like_a_verdict_cannot_smuggle_one_in() -> None:
+    """The exploit this parser was rewritten for.
+
+    `=` is legal in an address local part, so `smtp.mailfrom=dmarc=pass@evil`
+    puts the text `dmarc=pass` inside a header our own infrastructure genuinely
+    stamped — before the real `dmarc=fail`. Scanning the whole header for
+    `dmarc=...` reads the attacker's copy. Only the token at the head of each
+    `;`-separated chunk is a verdict.
+    """
+    verdict = parse_authentication_results(
+        [
+            f"{AUTHSERV}; spf=pass smtp.mailfrom=dmarc=pass@evil.example; "
+            "dkim=fail; dmarc=fail"
+        ],
+        trusted_authserv_id=AUTHSERV,
+    )
+
+    assert verdict.dmarc == "fail"
+    assert not authenticated_sender(verdict)
+
+
+def test_a_repeated_method_fails_closed() -> None:
+    """Whichever order they arrive in. First-wins makes the verdict depend on a
+    header's internal ordering, which the sender is not prevented from
+    influencing."""
+    assert (
+        parse_authentication_results(
+            [f"{AUTHSERV}; dmarc=pass; dmarc=fail"], trusted_authserv_id=AUTHSERV
+        ).dmarc
+        == "fail"
+    )
+    assert (
+        parse_authentication_results(
+            [f"{AUTHSERV}; dmarc=fail; dmarc=pass"], trusted_authserv_id=AUTHSERV
+        ).dmarc
+        == "fail"
+    )
+
+
+def test_no_configured_authserv_id_trusts_nothing() -> None:
+    """Every header is somebody's claim about themselves until an operator says
+    which one is ours."""
+    verdict = parse_authentication_results(
+        [f"{AUTHSERV}; dmarc=pass"], trusted_authserv_id=""
+    )
+
+    assert verdict.dmarc == "none"
+
+
+@pytest.mark.parametrize(
+    "header",
+    [
+        f'"{AUTHSERV}"; dmarc=pass',
+        f"(checked by us) {AUTHSERV}; dmarc=pass",
+    ],
+)
+def test_the_shapes_rfc_8601_permits_do_not_lose_the_verdict(header: str) -> None:
+    """A quoted id and a leading comment are both legal. Failing to match them
+    is safe but leaves a deployment authenticating nobody with no clue why."""
+    verdict = parse_authentication_results([header], trusted_authserv_id=AUTHSERV)
+
+    assert verdict.dmarc == "pass"
+
+
 def test_no_header_at_all_is_not_a_pass() -> None:
     """Absence is not permission. Mail that reached us through a path that
     checked nothing has been checked by nothing."""
@@ -183,10 +247,28 @@ def test_a_first_reply_starts_the_chain_with_the_message_it_answers() -> None:
     assert reply["References"] == "<orig-1@harborview.example>"
 
 
-def test_the_subject_gains_one_re_and_not_a_pile_of_them() -> None:
+@pytest.mark.parametrize(
+    "subject",
+    [
+        "Re: booking for March",
+        "Re: Re: RE: Re: booking for March",
+        "Re:Re: booking for March",
+        "RE : booking for March",
+    ],
+)
+def test_the_subject_gains_one_re_and_not_a_pile_of_them(subject: str) -> None:
     """`Re: Re: Re: Re: booking` is what a naive prefix produces after four
-    turns, and it is how a thread announces that a machine is writing it."""
-    reply = build_reply(_received(), body="…", from_address="atlas@agents.example.com")
+    turns, and it is how a thread announces that a machine is writing it.
+
+    A single existing prefix does not exercise the loop that strips them — the
+    pile, and the spacing variants a real client produces, are the cases worth
+    pinning.
+    """
+    original = _received()
+    del original["Subject"]
+    original["Subject"] = subject
+
+    reply = build_reply(original, body="…", from_address="atlas@agents.example.com")
 
     assert reply["Subject"] == "Re: booking for March"
 

@@ -12,3 +12,9 @@ class RoomMeta(BaseModel):
     # rooms and when no bridge resolves.
     agent_greetings_enabled: bool = True
     channel_type: str | None = None
+    # Who can read this room, resolved here because it needs the bridge's *type*
+    # and the envelope only carries its id. Sent on every event so the agent's
+    # host does not have to derive it — a second implementation of the same rule
+    # in another language is how an agent gets told one thing and judged by
+    # another.
+    audience: str = "unknown"

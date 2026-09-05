@@ -44,10 +44,12 @@ export function formatEventForInjection(
   // be able to tell a private DM from an open channel, and this is the only
   // thing that tells it.
   const audience = audienceOf({
+    audience: event.audience,
     channelType: event.channel_type,
-    // No bridge carries an outside correspondent yet; the email bridge is what
-    // makes this a real question, and it must set it when it lands.
-    bridgeIsExternal: false,
+    // Not knowable from the envelope — see the note in the runtime's `bin.ts`.
+    // Undefined rather than `false`, so an email room reads as `unknown` here
+    // instead of as `private`.
+    bridgeIsExternal: undefined,
   });
   // Rendered only when it says something. In the structured MCP meta `unknown`
   // is a useful, greppable value; in a line a human and an agent both read it

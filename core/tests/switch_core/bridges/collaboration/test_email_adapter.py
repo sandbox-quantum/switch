@@ -181,6 +181,9 @@ async def test_mail_from_one_person_lands_in_one_room() -> None:
     await adapter.ingest(_mime(subject="first"))
     await adapter.ingest(_mime(subject="second"))
 
+    # Both, explicitly: a set of one is also what a silently dropped second
+    # message produces.
+    assert len(received) == 2
     assert {m.channel_id for m in received} == {OWNER}
 
 
@@ -263,10 +266,11 @@ async def test_an_empty_allowlist_admits_nobody() -> None:
     ("header", "value"),
     [
         ("Auto-Submitted", "auto-replied"),
+        ("Auto-Submitted", "auto-generated"),
         ("Precedence", "bulk"),
-        ("List-Id", "<announce.example.com>"),
-        ("List-Unsubscribe", "<mailto:x@example.com>"),
+        ("Precedence", "junk"),
         ("X-Autoreply", "yes"),
+        ("Return-Path", "<>"),
     ],
 )
 async def test_machine_generated_mail_is_dropped(header: str, value: str) -> None:
@@ -279,14 +283,46 @@ async def test_machine_generated_mail_is_dropped(header: str, value: str) -> Non
     assert received == []
 
 
-async def test_a_person_writing_normally_is_not_mistaken_for_a_machine() -> None:
-    """`Auto-Submitted: no` is the header a well-behaved client sets on real
-    mail, so the check must read the value rather than the key."""
+@pytest.mark.parametrize("value", ["no", "auto-forwarded"])
+async def test_a_person_s_mail_is_not_mistaken_for_a_machine(value: str) -> None:
+    """Both values mean a human wrote it, and the check must read the value.
+
+    `no` is what a well-behaved client puts on ordinary mail. `auto-forwarded`
+    is RFC 3834's value for a human's mail being *relayed* — which is exactly
+    how mail reaches this bridge, so reading it as a loop drops every message on
+    any deployment whose forwarder follows the RFC.
+    """
     adapter, received = _adapter()
 
-    await adapter.ingest(_mime(headers={"Auto-Submitted": "no"}))
+    await adapter.ingest(_mime(headers={"Auto-Submitted": value}))
 
     assert len(received) == 1
+
+
+async def test_a_forwarded_newsletter_is_not_a_loop_on_its_own() -> None:
+    """`List-*` survives a server-side forward.
+
+    A client-side "Forward" strips those headers; a sieve `redirect` or an MTA
+    rule does not. Dropping on them alone loses mail a person deliberately sent,
+    which is the whole use case.
+    """
+    adapter, received = _adapter()
+
+    await adapter.ingest(_mime(headers={"List-Id": "<announce.example.com>"}))
+
+    assert len(received) == 1
+
+
+async def test_a_bulk_list_message_is_still_a_loop() -> None:
+    """The combination is what says a machine sent it to a list, rather than a
+    person forwarding something that once came from one."""
+    adapter, received = _adapter()
+
+    await adapter.ingest(
+        _mime(headers={"List-Id": "<announce.example.com>", "Precedence": "list"})
+    )
+
+    assert received == []
 
 
 # ── Attachments ──────────────────────────────────────────────────────────────
@@ -347,13 +383,62 @@ async def test_a_message_with_no_from_header_is_refused() -> None:
 
 
 async def test_unparseable_bytes_do_not_take_the_listener_down() -> None:
-    """One malformed delivery must not stop the next one arriving."""
+    """One malformed delivery must not stop the next one arriving.
+
+    Note these bytes do not actually raise — `message_from_bytes` returns a
+    defective message with no `From`, so this exits through the ordinary refusal
+    below. The exception path is covered by the handler test instead.
+    """
     adapter, received = _adapter()
 
     await adapter.ingest(b"\xff\xfe not a mime message at all")
     await adapter.ingest(_mime())
 
     assert len(received) == 1
+
+
+async def test_a_message_with_two_from_headers_is_dropped() -> None:
+    """RFC 7489 requires rejecting these, because implementations disagree about
+    which is authoritative — so a receiving MTA could DMARC-pass the second
+    while this bridge attributes the mail to the first."""
+    adapter, received = _adapter()
+    raw = _mime().replace(
+        b"From: ", b"From: Not You <" + STRANGER.encode() + b">\r\nFrom: ", 1
+    )
+
+    await adapter.ingest(raw)
+
+    assert received == []
+
+
+async def test_a_message_forwarded_as_an_attachment_is_still_read() -> None:
+    """Apple Mail's and Outlook's default forward, and every "report this
+    message" flow, arrive as `message/rfc822`.
+
+    That part has no transfer encoding, so decoding it yields nothing: read as
+    an attachment it becomes a failure and the forwarded mail is discarded,
+    leaving only the covering note. The bridge would silently lose the thing it
+    exists to carry.
+    """
+    inner = EmailMessage()
+    inner["From"] = "Vendor <api@vendor.example>"
+    inner["Subject"] = "v1 sunset"
+    inner.set_content("We are retiring v1 on March 1.")
+
+    outer = EmailMessage()
+    outer["From"] = f"Sam Owner <{OWNER}>"
+    outer["Subject"] = "fwd"
+    outer["Message-ID"] = "<fwd@example.com>"
+    outer.set_content("See below.")
+    outer.add_attachment(inner, filename="forwarded.eml")
+
+    adapter, received = _adapter()
+    await adapter.ingest(outer.as_bytes())
+
+    body = received[0].content
+    assert "See below." in body
+    assert "retiring v1 on March 1" in body
+    assert received[0].attachment_failures == []
 
 
 # ── What this adapter declines to do ─────────────────────────────────────────
@@ -421,7 +506,8 @@ async def test_typing_is_a_no_op_so_no_status_email_is_ever_sent() -> None:
     every turn would post "working on it…" to somebody's inbox."""
     adapter, _ = _adapter()
 
-    await adapter.send_typing(OWNER, "Atlas", True)
+    assert await adapter.send_typing(OWNER, "Atlas", True) is None
+    assert await adapter.send_typing(OWNER, "Atlas", False) is None
 
 
 async def test_creating_a_channel_is_declined_before_it_is_attempted() -> None:
@@ -475,6 +561,51 @@ async def test_an_existing_secret_survives_being_prepared_again() -> None:
     )
 
     assert prepared["webhook_secret"] == "keep-me-" + "k" * 24
+
+
+async def test_it_refuses_to_listen_without_a_usable_secret() -> None:
+    """`prepare_config` mints one at registration and nothing re-runs it.
+
+    A config updated afterwards can carry an empty secret, and the route is then
+    `/inbound/` — reachable by anyone who can reach the port, accepting mail as
+    any allowed sender, with the bridge logging "listening on…" and looking
+    healthy. `start` is the last place to catch that.
+    """
+    adapter = EmailAdapter(config=_config(webhook_secret=""))
+
+    async def unused(_msg: Any) -> None:  # pragma: no cover - never called
+        raise AssertionError("nothing should be delivered")
+
+    with pytest.raises(BridgeOperationError) as excinfo:
+        await adapter.start(unused, unused, unused, unused, unused)
+
+    assert "secret" in str(excinfo.value)
+
+
+async def test_a_short_secret_is_refused_too() -> None:
+    """Long enough to be minted, short enough to guess, is still open."""
+    adapter = EmailAdapter(config=_config(webhook_secret="short"))
+
+    async def unused(_msg: Any) -> None:  # pragma: no cover - never called
+        raise AssertionError("nothing should be delivered")
+
+    with pytest.raises(BridgeOperationError):
+        await adapter.start(unused, unused, unused, unused, unused)
+
+
+def test_the_secret_survives_being_nested_in_another_schema() -> None:
+    """Hiding it by overriding `model_json_schema` only worked on a direct call.
+
+    Pydantic builds a nested or `TypeAdapter`-wrapped schema from the core
+    schema and never calls that classmethod, so the secret came back — and
+    FastAPI's OpenAPI generation is one of those paths. `SkipJsonSchema` holds
+    everywhere.
+    """
+    from pydantic import TypeAdapter
+
+    schema = TypeAdapter(EmailConnectionConfig).json_schema()
+
+    assert "webhook_secret" not in schema["properties"]
 
 
 def test_the_secret_is_kept_out_of_the_operator_form() -> None:

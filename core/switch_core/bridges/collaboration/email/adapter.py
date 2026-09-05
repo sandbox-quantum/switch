@@ -45,9 +45,11 @@ from email.header import decode_header, make_header
 from email.message import EmailMessage
 from email.utils import parseaddr
 from html.parser import HTMLParser
+from pathlib import Path
 from typing import Any, ClassVar
 
 from aiohttp import web
+from pydantic.json_schema import SkipJsonSchema
 
 from switch_core.bridges.collaboration.adapter import CollaborationAdapter
 from switch_core.bridges.collaboration.models import (
@@ -67,6 +69,8 @@ from switch_core.bridges.collaboration.models import (
 logger = logging.getLogger(__name__)
 
 WEBHOOK_SECRET_BYTES = 32
+#: Shorter than this and the endpoint is guessable; empty and it is open.
+MIN_WEBHOOK_SECRET_LENGTH = 32
 
 # Headers that mark mail as machine-generated. An agent that answers an
 # autoresponder, whose autoresponder answers the agent, is a loop that costs
@@ -87,15 +91,11 @@ class EmailConnectionConfig(BridgeConnectionConfig):
     #: Empty admits nobody: an unset list on a publicly reachable inbox is a
     #: misconfiguration, and reading it as "open" is the expensive direction.
     allowed_senders: list[str] = []
-    #: Minted at registration, never typed. Excluded from the JSON schema so the
-    #: operator dashboard does not offer it as a field to fill in badly.
-    webhook_secret: str = ""
-
-    @classmethod
-    def model_json_schema(cls, *args: Any, **kwargs: Any) -> dict[str, Any]:
-        schema = super().model_json_schema(*args, **kwargs)
-        schema.get("properties", {}).pop("webhook_secret", None)
-        return schema
+    #: Minted at registration, never typed. `SkipJsonSchema` keeps it out of the
+    #: operator form — the same thing the Teams adapter does with `client_state`,
+    #: and it survives being nested or wrapped in a `TypeAdapter`, which
+    #: overriding `model_json_schema` does not.
+    webhook_secret: SkipJsonSchema[str] = ""
 
 
 class _TextFromHtml(HTMLParser):
@@ -214,11 +214,29 @@ class EmailAdapter(CollaborationAdapter):
         self._on_user_joined = on_user_joined
         self._on_app_joined = on_app_joined
 
+        secret = self._config.webhook_secret
+        if len(secret) < MIN_WEBHOOK_SECRET_LENGTH:
+            # Without one the route is `/inbound/`, reachable by anyone who can
+            # reach the port, accepting mail as any allowed sender. `start` is
+            # the last place to catch it: `prepare_config` mints the secret at
+            # registration, but nothing re-runs it when a config is updated.
+            raise BridgeOperationError(
+                "this email bridge has no usable webhook secret, so its inbound "
+                "endpoint would accept mail from anyone; re-register the bridge "
+                "so one is minted"
+            )
+
+        # Body size is bounded here because attachments are inside it. The
+        # multiplier covers base64's 4/3 inflation plus headers; a message
+        # carrying several max-size attachments is refused by aiohttp before it
+        # reaches us, which is the intended outcome.
         app = web.Application(client_max_size=self._max_attachment_bytes * 2)
-        app.router.add_post(
-            f"/inbound/{self._config.webhook_secret}", self._handle_inbound
-        )
-        self._runner = web.AppRunner(app)
+        app.router.add_post(f"/inbound/{secret}", self._handle_inbound)
+        # access_log=None because the secret is a path segment and aiohttp's
+        # default format logs the request line. A long-lived credential in a log
+        # aggregator is a credential to rotate. A header would avoid the problem
+        # entirely, but the providers this bridge is built for cannot all set one.
+        self._runner = web.AppRunner(app, access_log=None)
         await self._runner.setup()
         site = web.TCPSite(
             self._runner, self._config.listen_host, self._config.listen_port
@@ -238,10 +256,19 @@ class EmailAdapter(CollaborationAdapter):
 
     async def _handle_inbound(self, request: web.Request) -> web.Response:
         raw = await request.read()
-        await self.ingest(raw)
-        # Accepted whatever we decided to do with it. A provider retries on a
-        # non-2xx, and every reason we drop a message — not allowlisted, a loop
-        # marker, unparseable — is permanent, so retrying only repeats it.
+        try:
+            await self._ingest(raw)
+        except Exception:
+            # A policy drop returns normally from `_ingest`; reaching here means
+            # something broke — Matrix unreachable, the room not creatable. That
+            # is transient, and answering 202 would lose the mail for good with
+            # no trace anywhere the sender can see. 500 asks the provider to
+            # deliver it again.
+            logger.exception("[EMAIL] failed to deliver an inbound message")
+            return web.Response(status=500)
+        # Accepted. Every reason `_ingest` declines a message — not allowlisted,
+        # a loop marker, no usable sender — is permanent, so a retry would only
+        # repeat it.
         return web.Response(status=202)
 
     # ── Inbound ──────────────────────────────────────────────────────────────
@@ -263,16 +290,23 @@ class EmailAdapter(CollaborationAdapter):
             logger.warning("[EMAIL] dropped a message that did not parse as mail")
             return
 
-        loop_marker = _loop_marker(message)
-        if loop_marker is not None:
-            logger.info(
-                "[EMAIL] dropped machine-generated mail (%s) from %s",
-                loop_marker,
-                message.get("From", "unknown"),
+        # Exactly one. RFC 7489 requires a message with several to be rejected
+        # precisely because implementations disagree about which is
+        # authoritative: a receiving MTA that evaluated the last one could
+        # DMARC-pass a domain we then attribute to the first.
+        from_headers = message.get_all("From") or []
+        if len(from_headers) != 1:
+            logger.warning(
+                "[EMAIL] dropped a message carrying %d From headers",
+                len(from_headers),
             )
             return
 
-        display_name, address = parseaddr(_decoded(message.get("From")))
+        # `policy.default` has already decoded this. Running the decoder again
+        # over the result is how a display name whose decoded text is itself an
+        # encoded word gets parsed as structure — the classic header-injection
+        # shape, even where it happens to fail closed.
+        display_name, address = parseaddr(str(from_headers[0]))
         address = address.strip().lower()
         if not address:
             logger.warning("[EMAIL] dropped a message with no usable From address")
@@ -285,6 +319,18 @@ class EmailAdapter(CollaborationAdapter):
                 "[EMAIL] refused mail from %s — not an allowed sender for %s",
                 address,
                 self._config.agent_address,
+            )
+            return
+
+        # After the allowlist, not before: a stranger who adds a `List-Id` header
+        # should not be able to swap the "refused mail from X" warning for a
+        # quieter one and hide that the endpoint is being probed.
+        loop_marker = _loop_marker(message)
+        if loop_marker is not None:
+            logger.warning(
+                "[EMAIL] dropped machine-generated mail (%s) from %s",
+                loop_marker,
+                address,
             )
             return
 
@@ -326,7 +372,25 @@ class EmailAdapter(CollaborationAdapter):
         attachments: list[Attachment] = []
         failures: list[AttachmentFailure] = []
         for item in message.iter_attachments():
-            filename = item.get_filename() or "attachment"
+            # `Path(...).name` because this is the first bridge where a filename
+            # is typed by a sender rather than normalised by a platform. It
+            # reaches the Matrix media repository rather than a filesystem
+            # today, so it is not exploitable here — but any later consumer that
+            # writes by name would inherit a traversal.
+            filename = Path(item.get_filename() or "attachment").name or "attachment"
+
+            # "Forward as attachment" — Apple Mail's default, Outlook's, and
+            # every "report this message" flow — arrives as `message/rfc822`,
+            # which has no transfer encoding and so decodes to None. Read as a
+            # failed attachment, the forwarded mail is discarded and the body is
+            # just the covering note: the bridge silently loses the thing it
+            # exists to carry. Flattened into the body instead, whole and
+            # unparsed, which is what happens to an inline forward anyway.
+            if item.get_content_type() == "message/rfc822":
+                nested = item.get_payload(0)
+                body = f"{body}\n\n{nested}".strip() if body else str(nested)
+                continue
+
             payload = item.get_payload(decode=True)
             if payload is None:
                 failures.append(
@@ -470,17 +534,18 @@ def _loop_marker(message: EmailMessage) -> str | None:
     client puts on ordinary mail, and treating that as a loop would drop the
     real messages while admitting the vacation responders.
     """
+    # `auto-forwarded` is not a machine writing to us — it is RFC 3834's value
+    # for a human's mail being relayed, which is exactly how mail reaches this
+    # bridge. Treating it as a loop drops every message on any deployment whose
+    # forwarder follows the RFC, at one log line, with nothing else to go on.
     auto_submitted = (message.get("Auto-Submitted") or "").strip().lower()
-    if auto_submitted and auto_submitted != "no":
+    if auto_submitted and auto_submitted not in ("no", "auto-forwarded"):
         return f"Auto-Submitted: {auto_submitted}"
 
     precedence = (message.get("Precedence") or "").strip().lower()
-    if precedence in _BULK_PRECEDENCE:
+    bulk = precedence in _BULK_PRECEDENCE
+    if bulk:
         return f"Precedence: {precedence}"
-
-    for header in message.keys():
-        if _LIST_HEADER.match(header):
-            return header
 
     for header in _AUTOREPLY_HEADERS:
         if message.get(header):
@@ -488,5 +553,15 @@ def _loop_marker(message: EmailMessage) -> str | None:
 
     if (message.get("Return-Path") or "").strip() == "<>":
         return "Return-Path: <>"
+
+    # `List-*` alone is not enough. A newsletter someone deliberately forwarded
+    # through a server-side rule keeps its list headers — a client-side forward
+    # strips them, a sieve `redirect` does not — so on its own this drops mail a
+    # person meant to send. Only in combination with a bulk marker, which a
+    # deliberate forward does not carry.
+    if bulk:
+        for header in message.keys():
+            if _LIST_HEADER.match(header):
+                return header
 
     return None

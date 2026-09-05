@@ -68,9 +68,12 @@ export interface AgentBridgeEvent {
   /** The collaboration bridge this room is on, or null for an internal room. */
   bridge_id?: string | null;
   /** `direct`, `channel_private`, `group`, `channel_public`, `lobby` — what the
-   * room is, and therefore who can read a reply posted in it. Optional because
-   * the legacy poll does not carry it. */
+   * room is. Optional because the legacy poll does not carry it. */
   channel_type?: string | null;
+  /** Who can read this room, decided server-side where the bridge type is
+   * known. Prefer it over deriving one from `channel_type`, which cannot tell
+   * an email room from a DM. Absent from an older server. */
+  audience?: string | null;
   payload: MessagePayload | CommandPayload | RoomJoinPayload | TaskPayload;
   /**
    * The event's position in the agent's buffer. Present on the push transport,
