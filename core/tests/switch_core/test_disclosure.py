@@ -169,11 +169,15 @@ def test_the_match_survives_reformatting() -> None:
 
 
 def test_it_checks_every_protected_source() -> None:
-    outbound = "the second one mentioned a staged rollout over three weeks"
+    """The quote may come from any room the agent has read, not just the first."""
+    outbound = "they asked for a staged rollout over three weeks starting in March"
 
     span = disclosed_span(
         outbound,
-        ["something entirely unrelated", "we want a staged rollout over three weeks"],
+        [
+            "something entirely unrelated",
+            "we want a staged rollout over three weeks starting in March",
+        ],
     )
 
     assert span is not None

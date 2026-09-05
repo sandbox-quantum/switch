@@ -14,6 +14,17 @@ from switch_core.bridges.agent.protocol.types import (
     ParticipantDescriptor,
 )
 from switch_core.db.models import Agent, CollaborationBridge, Room
+from switch_core.disclosure import audience_of, bridge_is_external
+
+_AUDIENCE_MEANING: dict[str, str] = {
+    "private": "one person and you",
+    "restricted": "a named, closed group",
+    "open": "anyone in the workspace",
+    "external": "includes people outside the organisation",
+    "unknown": (
+        "not established — treat it as the widest it could be, in both directions"
+    ),
+}
 
 
 def build_room_instructions(
@@ -41,6 +52,7 @@ def build_room_instructions(
                 _task_protocol(profile),
                 _agent_statuses(participants),
                 _room_setup(room, bridge),
+                _disclosure(room, bridge),
             ]
         )
     if room.instructions:
@@ -179,6 +191,39 @@ def _agent_statuses(participants: list[ParticipantDescriptor]) -> str:
             lines.append(
                 f"- `{p.name}` (agent_type: `{p.agent_type}`{role_str}){cap_str}"
             )
+    return "\n".join(lines)
+
+
+def _disclosure(room: Room, bridge: CollaborationBridge | None) -> str:
+    """State who can read this room, and what may be repeated into it.
+
+    A connection covering several rooms holds a private DM and an open channel
+    in one context window. The model cannot be discreet about a boundary it
+    cannot see, so the boundary is named here — in the standing instructions,
+    where it applies for the whole session rather than arriving attached to one
+    event.
+    """
+    audience = audience_of(
+        room.channel_type,
+        bridge_is_external=bridge_is_external(bridge.type if bridge else None),
+    )
+    lines = [
+        "## Who can read this room",
+        "",
+        f"- Audience: **{audience}** — {_AUDIENCE_MEANING[audience]}",
+        "",
+        "You may be connected to several rooms at once, and they will not all "
+        "have the same audience. Content may move into a room whose audience is "
+        "the same or narrower. Repeating it into a **wider** room, or into an "
+        "**external** one, needs the person you are talking to to ask for it in "
+        "that turn — their asking is what makes it their decision rather than "
+        "yours.",
+        "",
+        "This is about repeating, not knowing. Use everything you know to give "
+        "the best answer you can; just do not quote or attribute what was said "
+        "somewhere narrower. Refusing to use what you know produces a visibly "
+        "worse answer and protects nobody.",
+    ]
     return "\n".join(lines)
 
 
