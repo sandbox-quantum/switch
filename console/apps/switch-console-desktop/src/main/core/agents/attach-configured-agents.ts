@@ -171,9 +171,22 @@ export async function attachConfiguredAgents(
   }
 
   await locationManager.openLocation(location);
-  // No control to name: an attach is driven by whichever screen offered the
-  // scan, and nothing on the way here says which. `unknown` reports the absence
-  // of a claim rather than inventing one.
   for (const agent of created) agentEvents._emit('agent:created', agent, 'unknown');
+
+  if (params.sshHost !== null) {
+    // Lazy import: remote-watcher transitively loads Electron's `app` module at
+    // the top level, which breaks the unit-test environment where `app` is
+    // undefined. A dynamic import defers that cost to runtime (always Electron).
+    const { startRemoteDiscovery } = await import('./remote-watcher');
+    for (const agent of created) {
+      startRemoteDiscovery(agent.id).catch((error) => {
+        log.warn('attachConfiguredAgents: failed to start session discovery', {
+          agentId: agent.id,
+          error: String(error),
+        });
+      });
+    }
+  }
+
   return ok(created);
 }
