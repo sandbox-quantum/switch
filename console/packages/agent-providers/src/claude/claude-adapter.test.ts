@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { ProviderSessionStartInput, RuntimeMode } from '../adapter';
 import { EventRecorder } from '../testing/event-recorder';
-import { ClaudeAdapter } from './claude-adapter';
+import { ClaudeAdapter, installShadowedWarningFilter } from './claude-adapter';
 import type { FakeSdk } from './fake-sdk';
 import { createFakeSdk } from './fake-sdk';
 
@@ -101,7 +101,7 @@ describe('ClaudeAdapter session lifecycle', () => {
     expect(options.pathToClaudeCodeExecutable).toBe('/bin/claude');
     expect(options.includePartialMessages).toBe(true);
     expect(options.settingSources).toBeUndefined();
-    expect(options.canUseTool).toBeUndefined();
+    expect(typeof options.canUseTool).toBe('function');
     expect(options.systemPrompt).toEqual({
       type: 'preset',
       preset: 'claude_code',
@@ -167,6 +167,25 @@ describe('ClaudeAdapter session lifecycle', () => {
       await adapter.startSession(startInput({ runtimeMode }));
       expect(sdk.options().permissionMode).toBe(permissionMode);
     }
+  });
+
+  it('drops the SDK’s shadowed-callback warning and leaves other warnings alone', async () => {
+    // The callback is registered under bypassPermissions on purpose — it is
+    // what makes the CLI offer AskUserQuestion — so the SDK's warning about it
+    // is filtered rather than obeyed.
+    const seen: string[] = [];
+    const collect = (warning: Error & { code?: string }) => seen.push(warning.code ?? '');
+    process.on('warning', collect);
+    const uninstall = installShadowedWarningFilter();
+    try {
+      process.emitWarning('shadowed', { code: 'CLAUDE_SDK_CAN_USE_TOOL_SHADOWED' });
+      process.emitWarning('unrelated', { code: 'SOMETHING_ELSE' });
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    } finally {
+      uninstall();
+      process.removeListener('warning', collect);
+    }
+    expect(seen).toEqual(['SOMETHING_ELSE']);
   });
 
   it('resumes a native session instead of picking a new id', async () => {
@@ -572,10 +591,26 @@ describe('ClaudeAdapter approvals', () => {
     await recorder.waitFor('request.opened', () => true, 1_000);
   });
 
-  it('registers no permission callback in full access, where the SDK ignores it', async () => {
+  it('registers the permission callback in full access too, where AskUserQuestion needs it', async () => {
+    // Registering it is what makes Claude Code offer `AskUserQuestion` at all,
+    // so it goes on every mode; `bypassPermissions` settles everything else
+    // before the callback is consulted.
     const { sdk } = await startSession('full-access');
-    expect(sdk.options().canUseTool).toBeUndefined();
+    expect(typeof sdk.options().canUseTool).toBe('function');
     expect(sdk.options().permissionMode).toBe('bypassPermissions');
+    expect(sdk.options().allowDangerouslySkipPermissions).toBe(true);
+  });
+
+  it('allows anything that still reaches the callback in full access', async () => {
+    const { sdk, adapter, recorder } = await startSession('full-access');
+    await adapter.sendTurn({ sessionId: SESSION, turnId: 'turn-1', text: 'go' });
+    const allowed = await sdk.canUseTool()(
+      'Bash',
+      { command: 'ls' },
+      toolOptions(new AbortController().signal)
+    );
+    expect(allowed).toEqual({ behavior: 'allow' });
+    expect(recorder.ofType('request.opened')).toEqual([]);
   });
 
   it('takes the decision back from a hook that would settle it, except in full access', async () => {
@@ -596,9 +631,7 @@ describe('ClaudeAdapter approvals', () => {
 
     // In full access nothing is asked, so nothing is reclaimed either.
     const full = await startSession('full-access');
-    expect(
-      full.sdk.options().hooks?.PreToolUse?.some((group) => group.matcher?.includes('Bash'))
-    ).toBe(false);
+    expect(full.sdk.options().hooks).toBeUndefined();
   });
 
   it('cancels an open request when the session stops', async () => {
@@ -641,19 +674,11 @@ describe('ClaudeAdapter user input', () => {
   };
 
   function askUserQuestion(sdk: FakeSdk, controller: AbortController, toolUseId: string) {
-    return sdk.askUserQuestionHook()(
-      {
-        hook_event_name: 'PreToolUse',
-        session_id: 'native-1',
-        transcript_path: '/tmp/transcript.jsonl',
-        cwd: '/tmp/switch-claude',
-        tool_name: 'AskUserQuestion',
-        tool_input: askInput,
-        tool_use_id: toolUseId,
-      },
-      toolUseId,
-      { signal: controller.signal }
-    );
+    return sdk.canUseTool()('AskUserQuestion', askInput, {
+      signal: controller.signal,
+      toolUseID: toolUseId,
+      requestId: `control-${toolUseId}`,
+    });
   }
 
   it('surfaces AskUserQuestion and answers it keyed by question text', async () => {
@@ -680,11 +705,8 @@ describe('ClaudeAdapter user input', () => {
 
     await adapter.respondToUserInput(SESSION, requested.requestId, { q0: 'green' });
     expect(await decision).toEqual({
-      hookSpecificOutput: {
-        hookEventName: 'PreToolUse',
-        permissionDecision: 'allow',
-        updatedInput: { questions: askInput.questions, answers: { 'Which color?': 'green' } },
-      },
+      behavior: 'allow',
+      updatedInput: { questions: askInput.questions, answers: { 'Which color?': 'green' } },
     });
     await recorder.waitFor('user-input.resolved', () => true, 1_000);
   });
@@ -696,18 +718,32 @@ describe('ClaudeAdapter user input', () => {
     const requested = await recorder.waitFor('user-input.requested', () => true, 1_000);
     await adapter.respondToUserInput(SESSION, requested.requestId, { q0: ['red', 'green'] });
     expect(await decision).toMatchObject({
-      hookSpecificOutput: { updatedInput: { answers: { 'Which color?': 'red, green' } } },
+      behavior: 'allow',
+      updatedInput: { answers: { 'Which color?': 'red, green' } },
     });
   });
 
-  it('leaves the tool alone when the CLI aborts the question', async () => {
+  it('denies the tool when the CLI aborts the question', async () => {
     const { sdk, adapter, recorder } = await startSession('full-access');
     await adapter.sendTurn({ sessionId: SESSION, turnId: 'turn-1', text: 'go' });
     const controller = new AbortController();
     const decision = askUserQuestion(sdk, controller, 'ask-3');
     await recorder.waitFor('user-input.requested', () => true, 1_000);
     controller.abort();
-    expect(await decision).toEqual({});
+    expect(await decision).toMatchObject({ behavior: 'deny' });
+  });
+
+  it('asks in a mode that prompts as well, without opening an approval card', async () => {
+    const { sdk, adapter, recorder } = await startSession('approval-required');
+    await adapter.sendTurn({ sessionId: SESSION, turnId: 'turn-1', text: 'go' });
+    const decision = askUserQuestion(sdk, new AbortController(), 'ask-5');
+    const requested = await recorder.waitFor('user-input.requested', () => true, 1_000);
+    expect(recorder.ofType('request.opened')).toEqual([]);
+    await adapter.respondToUserInput(SESSION, requested.requestId, { q0: 'red' });
+    expect(await decision).toMatchObject({
+      behavior: 'allow',
+      updatedInput: { answers: { 'Which color?': 'red' } },
+    });
   });
 
   it('answers an open question with nothing when the session stops', async () => {
@@ -717,7 +753,8 @@ describe('ClaudeAdapter user input', () => {
     await recorder.waitFor('user-input.requested', () => true, 1_000);
     await adapter.stopSession(SESSION);
     expect(await decision).toMatchObject({
-      hookSpecificOutput: { updatedInput: { answers: {} } },
+      behavior: 'allow',
+      updatedInput: { answers: {} },
     });
     await recorder.waitFor('user-input.resolved', () => true, 1_000);
   });

@@ -1,6 +1,5 @@
 import type {
   CanUseTool,
-  HookCallback,
   Options,
   query as sdkQuery,
   Query,
@@ -97,7 +96,6 @@ export interface FakeSdk {
   latest(): FakeQuery;
   options(): Options;
   canUseTool(): CanUseTool;
-  askUserQuestionHook(): HookCallback;
 }
 
 /** Mirrors the CLI, which honours `sessionId` and echoes it back on `init`. */
@@ -137,11 +135,5 @@ export function createFakeSdk(): FakeSdk {
     return callback;
   };
 
-  const askUserQuestionHook = () => {
-    const hook = options().hooks?.PreToolUse?.[0]?.hooks[0];
-    if (!hook) throw new Error('The adapter did not register a PreToolUse hook.');
-    return hook;
-  };
-
-  return { query, queries, latest, options, canUseTool, askUserQuestionHook };
+  return { query, queries, latest, options, canUseTool };
 }

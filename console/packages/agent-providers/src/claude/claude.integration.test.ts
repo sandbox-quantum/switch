@@ -38,8 +38,4 @@ describeConformance('claude', {
   unavailableReason,
   model: { id: 'claude-sonnet-5' },
   mcpServers: { switch_echo: echoMcpServerSpec() },
-  skip: {
-    'user-input':
-      'Claude Code 2.1.260 does not offer AskUserQuestion to an SDK session: it is absent from the init tool list with the default tools, with the claude_code preset, when named in tools or allowedTools, and with toolConfig.askUserQuestion set. The adapter answers it from a PreToolUse hook, so nothing changes here when the CLI starts offering it.',
-  },
 });

@@ -61,7 +61,7 @@ beside this file. Never commit one.
 | `SWITCH_E2E_REPLY_TIMEOUT_MS` | no | How long a scenario waits for the agent (default 5 min). |
 | `SWITCH_E2E_SESSION_TIMEOUT_MS` | no | How long setup waits for a live session (default 2 min). |
 | `SWITCH_E2E_AGENT_TYPE` | no | `opencode` (default) or `claude-code` — which provider's runtime is under test. Decides the agent name prefix, the Switch known-agent type, and (for `claude-code`) the extra files written into the working dir. |
-| `SWITCH_E2E_QUESTION_MODE` | no | `numbered` or `prose`. Defaults to `prose` for `claude-code` and `numbered` otherwise; see the `question` row below. |
+| `SWITCH_E2E_QUESTION_MODE` | no | `numbered` (default, every agent type) or `prose`; see the `question` row below. |
 
 The suite **skips, with the reason printed**, when `SWITCH_E2E` is unset, when
 configuration is missing (it names every missing variable at once), or when
@@ -159,8 +159,8 @@ that tool, the console relays it into the room as a numbered list, and the
 answer goes back as `@agent 2` — the numbering is what proves the relay path was
 taken. In `prose` mode the agent asks in an ordinary message and is answered
 with `@agent green`; the two-turn round trip is still proved, the relay is not.
-Claude Code 2.1.260 does not offer `AskUserQuestion` to an SDK session (verified
-in the adapter's conformance run), so `claude-code` defaults to `prose`.
+Every agent type defaults to `numbered` — both providers offer the tool — and
+`prose` is an explicit override for a provider or CLI version that does not.
 
 `approval` is the most tightly coupled to the new runtime. An OpenCode agent's
 registered profile declares **no `pre_invocation_mediation`**, so the prompt does

@@ -66,6 +66,49 @@ const ASK_USER_QUESTION = 'AskUserQuestion';
 const APPROVAL_TOOLS = 'Bash|Edit|Write|MultiEdit|NotebookEdit';
 const EFFORT_LEVELS: readonly EffortLevel[] = ['low', 'medium', 'high', 'xhigh', 'max'];
 
+/**
+ * The warning the SDK emits when `canUseTool` is registered alongside a
+ * permission mode that auto-approves — `bypassPermissions` here.
+ *
+ * The callback is registered in every mode on purpose: measured against Claude
+ * Code 2.1.260, the CLI offers `AskUserQuestion` to a session *exactly when*
+ * one is registered, in `default` and `bypassPermissions` alike, so dropping it
+ * to quiet this warning is what makes the tool disappear. The warning is
+ * accurate about ordinary tools and irrelevant to the one reason it is there,
+ * so it is filtered out rather than obeyed.
+ */
+const SHADOWED_WARNING_CODE = 'CLAUDE_SDK_CAN_USE_TOOL_SHADOWED';
+
+let shadowedWarningFiltered = false;
+
+/**
+ * Drop `CLAUDE_SDK_CAN_USE_TOOL_SHADOWED` from this process's warnings.
+ *
+ * Node's own printer is an ordinary `warning` listener installed at bootstrap,
+ * and adding a listener does not replace it — so the listeners are taken over
+ * and every warning but this one is handed back to them unchanged. Returns the
+ * undo, which puts them back.
+ */
+export function installShadowedWarningFilter(): () => void {
+  const inherited = process.listeners('warning');
+  process.removeAllListeners('warning');
+  const filter = (warning: Error & { code?: string }) => {
+    if (warning.code === SHADOWED_WARNING_CODE) return;
+    for (const listener of inherited) listener(warning);
+  };
+  process.on('warning', filter);
+  return () => {
+    process.removeListener('warning', filter);
+    for (const listener of inherited) process.on('warning', listener);
+  };
+}
+
+function filterShadowedWarningOnce(): void {
+  if (shadowedWarningFiltered) return;
+  shadowedWarningFiltered = true;
+  installShadowedWarningFilter();
+}
+
 const APPROVAL_OPTIONS: ApprovalOption[] = [
   { decision: 'accept', label: 'Allow once' },
   { decision: 'acceptForSession', label: 'Allow for this session' },
@@ -251,11 +294,10 @@ export class ClaudeAdapter implements ProviderAdapter {
   readonly provider = PROVIDER;
 
   /**
-   * `userInput` describes the round trip this adapter implements, not how often
-   * it fires: Claude Code 2.1.260 does not offer `AskUserQuestion` to an SDK
-   * session, so nothing asks today. The PreToolUse hook that answers it is
-   * registered regardless, so a CLI that starts offering the tool is handled
-   * without a change here.
+   * `userInput` is real on every mode: `AskUserQuestion` reaches `canUseTool`,
+   * which this adapter registers whatever the permission mode — and which is
+   * what makes Claude Code offer the tool at all (see
+   * {@link SHADOWED_WARNING_CODE}).
    */
   readonly capabilities: ProviderCapabilities = {
     modelSwitchInSession: true,
@@ -316,13 +358,14 @@ export class ClaudeAdapter implements ProviderAdapter {
 
     const nativeSessionId = input.resume?.nativeSessionId ?? randomUUID();
 
+    filterShadowedWarningOnce();
+
     const options: Options = {
       cwd: input.cwd,
       env: input.env,
       permissionMode,
-      ...(permissionMode === 'bypassPermissions'
-        ? { allowDangerouslySkipPermissions: true }
-        : { canUseTool: this.makeCanUseTool(input.sessionId) }),
+      canUseTool: this.makeCanUseTool(input.sessionId),
+      ...(permissionMode === 'bypassPermissions' ? { allowDangerouslySkipPermissions: true } : {}),
       ...(executable ? { pathToClaudeCodeExecutable: executable } : {}),
       ...(input.agentName ? { agent: input.agentName } : {}),
       ...(input.model ? { model: input.model.id } : {}),
@@ -334,14 +377,9 @@ export class ClaudeAdapter implements ProviderAdapter {
         preset: 'claude_code',
         ...(input.systemContext ? { append: input.systemContext } : {}),
       },
-      hooks: {
-        PreToolUse: [
-          { matcher: ASK_USER_QUESTION, hooks: [this.makeAskUserQuestionHook(input.sessionId)] },
-          ...(permissionMode === 'bypassPermissions'
-            ? []
-            : [{ matcher: APPROVAL_TOOLS, hooks: [reclaimPermission] }]),
-        ],
-      },
+      ...(permissionMode === 'bypassPermissions'
+        ? {}
+        : { hooks: { PreToolUse: [{ matcher: APPROVAL_TOOLS, hooks: [reclaimPermission] }] } }),
       includePartialMessages: true,
       stderr: (data) => this.logger?.debug('claude stderr', { sessionId: input.sessionId, data }),
     };
@@ -752,11 +790,29 @@ export class ClaudeAdapter implements ProviderAdapter {
     this.emit(session, { type: 'session.state.changed', status: 'ready' });
   }
 
+  /**
+   * The permission callback, registered in every mode.
+   *
+   * It is the only route `AskUserQuestion` has — the CLI hands the tool to the
+   * callback and takes the answers back as `updatedInput` — and registering it
+   * is also what makes the CLI offer the tool in the first place. Under
+   * `bypassPermissions` nothing else should reach it, so anything that does is
+   * allowed rather than turned into a card no mode asked for.
+   */
   private makeCanUseTool(sessionId: string): CanUseTool {
     return async (toolName, toolInput, options) => {
       const session = this.sessions.get(sessionId);
       if (!session) return { behavior: 'deny', message: 'The session is gone.' };
-      if (session.runtimeMode === 'full-access') return { behavior: 'allow' };
+      if (toolName === ASK_USER_QUESTION) {
+        return this.answerUserQuestion(session, toolInput, options.toolUseID, options.signal);
+      }
+      if (session.runtimeMode === 'full-access') {
+        this.logger?.debug('Allowing a tool that bypassPermissions did not settle.', {
+          sessionId,
+          toolName,
+        });
+        return { behavior: 'allow' };
+      }
       if (session.registeredMcpPrefixes.some((prefix) => toolName.startsWith(prefix))) {
         return { behavior: 'allow' };
       }
@@ -764,35 +820,19 @@ export class ClaudeAdapter implements ProviderAdapter {
     };
   }
 
-  /**
-   * `AskUserQuestion` is answered from a PreToolUse hook rather than from
-   * `canUseTool`: the SDK skips `canUseTool` entirely under
-   * `bypassPermissions` (it says so on stderr), while hooks run in every
-   * permission mode, and a PreToolUse hook can rewrite the tool input the same
-   * way a permission result can.
-   */
-  private makeAskUserQuestionHook(sessionId: string): HookCallback {
-    return async (input, toolUseID, options) => {
-      if (input.hook_event_name !== 'PreToolUse' || input.tool_name !== ASK_USER_QUESTION) {
-        return {};
-      }
-      const session = this.sessions.get(sessionId);
-      if (!session) return {};
-      const toolInput = isRecord(input.tool_input) ? input.tool_input : {};
-      const answers = await this.awaitUserAnswers(
-        session,
-        toolInput,
-        toolUseID ?? input.tool_use_id,
-        options.signal
-      );
-      if (answers === null) return {};
-      return {
-        hookSpecificOutput: {
-          hookEventName: 'PreToolUse',
-          permissionDecision: 'allow',
-          updatedInput: { questions: toolInput.questions, answers },
-        },
-      };
+  private async answerUserQuestion(
+    session: SessionState,
+    toolInput: Record<string, unknown>,
+    toolUseId: string,
+    signal: AbortSignal
+  ): Promise<PermissionResult> {
+    const answers = await this.awaitUserAnswers(session, toolInput, toolUseId, signal);
+    if (answers === null) {
+      return { behavior: 'deny', message: 'The question could not be put to a user.' };
+    }
+    return {
+      behavior: 'allow',
+      updatedInput: { questions: toolInput.questions, answers },
     };
   }
 
