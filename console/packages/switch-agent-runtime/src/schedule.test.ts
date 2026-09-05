@@ -121,10 +121,7 @@ describe('advance', () => {
 
 describe('reschedule', () => {
   it('drops the one-shots that fired and keeps everything else', () => {
-    const list = [
-      wakeup({ id: 'fired' }),
-      wakeup({ id: 'pending', atMs: NOW + DAY }),
-    ];
+    const list = [wakeup({ id: 'fired' }), wakeup({ id: 'pending', atMs: NOW + DAY })];
 
     const remaining = reschedule(list, [list[0]], NOW);
 

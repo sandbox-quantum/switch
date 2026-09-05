@@ -41,6 +41,16 @@ export {
   type ProcessRow,
   type ReapOutcome,
 } from './reap';
+export {
+  advance,
+  due,
+  MAX_TIMER_MS,
+  nextDelayMs,
+  parseWakeups,
+  reschedule,
+  serialiseWakeups,
+  type Wakeup,
+} from './schedule';
 export { readSse, type SseFrame } from './sse';
 export {
   audienceOf,
