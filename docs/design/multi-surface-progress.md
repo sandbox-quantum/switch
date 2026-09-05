@@ -257,3 +257,107 @@ than synchronising it.
 relay path yet. `handle_protection_verdict` in `bridge_core.py` is still behind
 its TODO. The design's sequencing constraint — enforcement before an outsider is
 in a room — therefore still binds Sprint 5.
+
+---
+
+## Review of Sprints 2–5
+
+Two reviewers, split by subsystem. One confirmed a working exploit; the other
+found the flow rule permitted the disclosure it exists to prevent. Both are
+fixed in `4aac1788`.
+
+### The two that mattered
+
+**A forged DMARC pass — confirmed exploit.** `_METHOD` scanned the whole
+`Authentication-Results` remainder, and `=` is legal in an address local part.
+So `smtp.mailfrom=dmarc=pass@evil.example` puts the text `dmarc=pass` inside a
+header **our own infrastructure genuinely stamped**, ahead of the real
+`dmarc=fail`, and first-match-wins read the attacker's copy. Every other defence
+in the module was bypassed by construction, because the header was authentic.
+
+Now only the token at the head of each `;`-separated chunk counts as a verdict;
+a repeated method fails closed rather than first-wins; an unset `authserv-id`
+trusts nothing.
+
+**`may_carry` compared audience *size*, never audience *identity*.** The
+`source == target` shortcut returned True for `private`→`private` — one person's
+DM into a different person's — and for `external`→`external`, one vendor's mail
+into a rival's. That is the exact disclosure the module was written to prevent
+and the most common shape a multi-room agent has.
+
+The lesson is worth keeping: **an audience label is a size, and the question is
+about people.** Two rooms sharing a label are almost never the same audience.
+Without membership to compare, only two moves are soundly knowable — within a
+room, and out of one the whole workspace can already read. Everything else needs
+a person now. That is conservative rather than precise, deliberately: refusing
+costs a question, permitting costs a disclosure.
+
+The precise model is membership-set inclusion. Until Switch can compare
+membership here, the rule stays blunt.
+
+### The rule reached no agent at all
+
+`_disclosure` shipped inside the `include_general` block — and all three
+connector skills call `connect_to_room(..., include_general_instructions=False)`.
+So the `audience` label reached the model on every event and the rule giving it
+meaning reached nobody. Moved outside the gate: who can read *this room* is room
+state, not general workflow, and a skill written once cannot carry it.
+
+Its wording was wrong in two ways as well. "Do not quote or attribute" invited
+the paraphrase — which is the leak — and the consent it asked for was the
+permission of whoever the agent is talking to *now*, who is in the wider room and
+cannot consent to hearing something they do not know exists.
+
+### The divergence flagged last entry, resolved
+
+The Sprint 4 entry proposed carrying a `bridge_external` boolean on the envelope.
+The reviewer argued for sending the **audience itself**, and was right: the
+boolean leaves `audienceOf`'s channel-type map as a second implementation of the
+same rule, while the label deletes that side of it entirely.
+
+Worse than recorded, too — both TypeScript call sites passed a literal `false`
+under a comment claiming no bridge carried an outsider, which the email bridge
+had already made untrue on the same branch. A required flag that can only be
+answered by guessing collects guesses, so `bridgeIsExternal` is optional again
+and absent now means `unknown` rather than `internal`.
+
+### Everything else fixed
+
+An empty `webhook_secret` made the inbound endpoint public (`prepare_config`
+mints one at registration and nothing re-runs it on update) — `start` refuses
+it. The secret reached the access log, since it is a path segment and aiohttp
+logs the request line. `Auto-Submitted: auto-forwarded` is RFC 3834's value for
+a *relayed human message* and was dropping every message in the deployment this
+bridge is built for. `List-*` alone dropped a newsletter someone deliberately
+forwarded. The loop check ran before the allowlist, letting a stranger choose
+which warning they triggered. A handler failure was answered 202 and the mail
+lost. Two `From` headers were admitted. Forward-as-attachment was discarded as
+an undecodable attachment. A sub-ULP `everyMs` could spin forever.
+
+### The pattern, again
+
+**Six more tests were passing with the behaviour absent** — eleven across the
+branch now. Two the reviewers proved: the malformed-bytes test never entered the
+`try`/`except` it was named for (those bytes parse to a defective message, not
+an exception), and the `Re:` test never saw a pile, so it passed with the
+stripping loop replaced by an `if`.
+
+Mutation testing each module after it goes green — neuter the guard, confirm the
+tests go red — is now part of the process and caught several of these before
+review. It did not catch these, because both tests exercised a *different*
+correct path rather than no path at all.
+
+### Still knowingly left
+
+- The long-lived multi-room host (Sprint 1).
+- D3's egress check is written but wired to nothing; `handle_protection_verdict`
+  is still behind its TODO. The design's constraint — enforcement before an
+  outsider is in a room — is therefore **not yet satisfied**, and Sprint 5's
+  outbound path must not be enabled until it is.
+- SMTP delivery, and wiring `authentication.py` / `reply.py` into the adapter.
+- `authenticates_senders` is declared and warned about at startup, and nothing
+  else consumes it. The startup warning reads like an enforced control; it is
+  not one.
+- No operator-facing way to see the minted webhook URL.
+- The HTTP surface of the email adapter (`start`, routing, the 202/500 split)
+  has no test coverage; every test goes through `bind_message_handler`.
