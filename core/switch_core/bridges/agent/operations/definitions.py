@@ -549,7 +549,7 @@ async def read_context(
     before: str | None = None,
     room_id: str | None = None,
 ) -> dict[str, Any]:
-    """Get the conversation timeline for the connected room, grouped into threads.
+    """Get the conversation timeline for a connected room, grouped into threads.
 
     Returns::
 
@@ -597,9 +597,12 @@ async def read_context(
             time are returned; history is paged backwards to reach them, so
             this genuinely walks into older history. Combine with `since` to
             page through a window. None = no upper bound.
+        room_id: Optional. Which connected room to read. Omit when you are
+            connected to one room — the usual case. Required when you are
+            connected to several: there is no safe default, and this is also
+            how you re-read a specific room after a gap.
 
-    The room is implicit (the session's currently connected room). Reads
-    fail if you have not called connect_to_room first.
+    Reads fail if you have not called connect_to_room first.
     """
     agent_id = get_agent_id()
     room_id = await require_connected_room(room_id)

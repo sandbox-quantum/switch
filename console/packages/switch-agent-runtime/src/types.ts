@@ -65,6 +65,12 @@ export interface TaskPayload {
 export interface AgentBridgeEvent {
   type: string;
   room_id: string;
+  /** The collaboration bridge this room is on, or null for an internal room. */
+  bridge_id?: string | null;
+  /** `direct`, `channel_private`, `group`, `channel_public`, `lobby` — what the
+   * room is, and therefore who can read a reply posted in it. Optional because
+   * the legacy poll does not carry it. */
+  channel_type?: string | null;
   payload: MessagePayload | CommandPayload | RoomJoinPayload | TaskPayload;
   /**
    * The event's position in the agent's buffer. Present on the push transport,

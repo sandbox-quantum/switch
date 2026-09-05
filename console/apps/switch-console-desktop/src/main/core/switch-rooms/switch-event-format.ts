@@ -16,6 +16,7 @@ export type {
   RoomJoinPayload,
   TaskPayload,
 } from '@sandboxaq/switch-agent-runtime';
+import { audienceOf } from '@sandboxaq/switch-agent-runtime';
 import type {
   AgentBridgeEvent,
   CommandPayload,
@@ -38,7 +39,21 @@ export function formatEventForInjection(
   roomName?: string | null
 ): string | null {
   const { type, payload } = event;
-  const room = roomName ?? event.room_id;
+  // The audience travels with the room name, on this path as well as on the
+  // MCP notification one. A session reachable in several rooms at once has to
+  // be able to tell a private DM from an open channel, and this is the only
+  // thing that tells it.
+  const audience = audienceOf({
+    channelType: event.channel_type,
+    // No bridge carries an outside correspondent yet; the email bridge is what
+    // makes this a real question, and it must set it when it lands.
+    bridgeIsExternal: false,
+  });
+  // Rendered only when it says something. In the structured MCP meta `unknown`
+  // is a useful, greppable value; in a line a human and an agent both read it
+  // is noise on every single-room session, which is most of them.
+  const named = roomName ?? event.room_id;
+  const room = audience === 'unknown' ? named : `${named} [${audience}]`;
 
   switch (type) {
     case 'message': {

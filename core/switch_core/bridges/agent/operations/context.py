@@ -74,6 +74,8 @@ def _resolve_room(covered: frozenset[str], room_id: str | None) -> str:
                 f"{sorted(covered)} — call connect_to_room first."
             )
         return room_id
+    if not covered:
+        raise ValueError("Not connected to a room. Call connect_to_room first.")
     if len(covered) > 1:
         raise ValueError(
             "This connection covers several rooms; the operation needs one — "

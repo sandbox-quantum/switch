@@ -155,7 +155,11 @@ async def test_several_rooms_and_no_argument_is_an_error_not_a_guess() -> None:
         with pytest.raises(ValueError) as excinfo:
             await require_connected_room()
 
-    assert "room" in str(excinfo.value).lower()
+    # Named specifically: "room" alone also matches the not-connected error, so
+    # deleting the connection branch outright would leave this test green.
+    message = str(excinfo.value)
+    assert "several rooms" in message
+    assert ROOM_A in message and ROOM_B in message
 
 
 async def test_no_binding_at_all_still_says_to_connect_first() -> None:

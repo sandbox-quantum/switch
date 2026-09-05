@@ -1615,7 +1615,13 @@ async function handleEvent(event: AgentEvent) {
   // Which surface this came from, on every notification. A connection covering
   // several rooms puts a channel and a DM in one context window, and the model
   // cannot be discreet about a boundary it cannot see.
-  const surface = surfaceMeta({ roomId: room_id, channelType: event.channel_type });
+  const surface = surfaceMeta({
+    roomId: room_id,
+    channelType: event.channel_type,
+    // No bridge carries an outside correspondent yet; the email bridge is what
+    // makes this a real question, and it must set it when it lands.
+    bridgeIsExternal: false,
+  });
 
   if (type === 'message') {
     const msg = payload as MessagePayload;

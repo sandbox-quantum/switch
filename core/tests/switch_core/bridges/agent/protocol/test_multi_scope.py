@@ -254,8 +254,10 @@ def test_an_unrecognised_scope_is_refused_at_open() -> None:
     """
     registry = ConnectionRegistry()
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError) as excinfo:
         _open(registry, "typo", scope="al")
+
+    assert "unknown scope" in str(excinfo.value)
 
 
 # ── Delivery: the predicate is not the point, the stream is ──────────────────
@@ -345,6 +347,46 @@ async def test_an_unclaimed_rooms_traffic_never_arrives() -> None:
 
     bodies = [data["payload"]["body"] for _, data in frames[1:]]
     assert bodies == ["yours"]
+
+
+async def test_a_room_less_connection_does_not_consume_its_own_buffer() -> None:
+    """Covering nothing must mean *parking*, not skipping past everything.
+
+    The skip path advances the cursor, so a connection that covers nothing and
+    still reads walks itself to head. `single` has always parked for exactly
+    this reason — a session's connection opens before the session boots and
+    claims its room. `multi` has the same window, twice over: it can open with
+    no rooms and claim them afterwards, and it drops back to none if its last
+    room is taken over.
+
+    Nothing self-corrects afterwards. `connect_to_room` claims server-side
+    without reopening the socket, so the cursor is never rewound and everything
+    buffered before the claim is gone with no gap reported.
+    """
+    registry = ConnectionRegistry()
+    buffer = EventBuffer()
+    conn = _open(registry, "worker")
+
+    buffer.enqueue(AGENT, ROOM_A, _message("before the claim", ROOM_A))
+    buffer.enqueue(AGENT, ROOM_B, _message("also before", ROOM_B))
+
+    # Drained in the background rather than with `_take`: the generator is lazy,
+    # so pulling a fixed number of frames suspends it before the read loop runs
+    # and the assertion passes without the behaviour ever being exercised.
+    stream = event_stream(conn=conn, registry=registry, buffer=buffer)
+    seen: list[tuple[str, dict]] = []
+
+    async def drain() -> None:
+        async for frame in stream:
+            if not frame.startswith(b":"):
+                seen.append(_parse(frame))
+
+    task = asyncio.create_task(drain())
+    await asyncio.sleep(0.1)
+    task.cancel()
+
+    assert [name for name, _ in seen] == ["connection_state"]
+    assert conn.cursor == 0
 
 
 def test_a_multi_connection_that_has_claimed_nothing_covers_nothing() -> None:

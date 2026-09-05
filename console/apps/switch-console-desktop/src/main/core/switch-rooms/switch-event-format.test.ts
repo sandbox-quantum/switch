@@ -15,6 +15,47 @@ describe('formatEventForInjection', () => {
     expect(text).toBe('[Switch] alice addressed you in room room-1 (message_id $m1): ping');
   });
 
+  it('marks who can read the room when the type says so', () => {
+    /**
+     * A session reachable in several rooms at once holds a private DM and an
+     * open channel in one context, and this line is the only thing on this
+     * delivery path that tells the two apart.
+     */
+    const text = formatEventForInjection(
+      {
+        ...event('message', {
+          addressed: true,
+          sender_name: 'alice',
+          body: 'ping',
+          message_id: '$m1',
+        }),
+        channel_type: 'direct',
+      },
+      'Alice'
+    );
+    expect(text).toBe(
+      '[Switch] alice addressed you in room Alice [private] (message_id $m1): ping'
+    );
+  });
+
+  it('says nothing about the audience when the room type does not', () => {
+    /** `[unknown]` on every line of every single-room session is noise, not
+     * information — the structured MCP meta is where the explicit value lives. */
+    const text = formatEventForInjection(
+      {
+        ...event('message', {
+          addressed: true,
+          sender_name: 'alice',
+          body: 'ping',
+          message_id: '$m1',
+        }),
+        channel_type: null,
+      },
+      'Engineering'
+    );
+    expect(text).toBe('[Switch] alice addressed you in room Engineering (message_id $m1): ping');
+  });
+
   it('uses the room name when provided', () => {
     const text = formatEventForInjection(
       event('message', { addressed: true, sender_name: 'alice', body: 'ping', message_id: '$m1' }),

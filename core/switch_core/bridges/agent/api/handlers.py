@@ -731,16 +731,6 @@ async def _open_event_stream(
             "UUID and reuse it when reconnecting so the connection survives the "
             "drop",
         )
-    if scope not in ("single", "all"):
-        raise HTTPException(
-            status_code=400, detail=f"scope must be 'single' or 'all', got {scope!r}"
-        )
-    if event_filter not in ("all", "addressed"):
-        raise HTTPException(
-            status_code=400,
-            detail=f"filter must be 'all' or 'addressed', got {event_filter!r}",
-        )
-
     cursor = _resolve_start_cursor(protocol, agent.id, start_from, last_event_id)
 
     try:
@@ -753,6 +743,12 @@ async def _open_event_stream(
             cursor=cursor,
             declaration=declaration,
         )
+    except ValueError as exc:
+        # Scope and filter are validated in the registry, which is the one place
+        # that knows what they mean. Kept as a 400 because the protocol
+        # documents it as one, and because an unrecognised scope is the client
+        # asking for something that does not exist.
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     except ProtocolVersionError as exc:
         # The refused client never receives a connection_state frame, so this
         # body is the only chance to tell it what the server speaks. Structured

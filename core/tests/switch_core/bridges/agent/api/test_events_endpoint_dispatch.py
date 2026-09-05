@@ -121,6 +121,26 @@ async def test_bad_scope_or_filter_is_refused(field: str, value: str) -> None:
     assert excinfo.value.status_code == 400
 
 
+@pytest.mark.parametrize("scope", ["single", "multi", "all"])
+async def test_every_real_scope_opens_a_stream(scope: str) -> None:
+    """A scope the registry accepts must not be refused by the door in front of it.
+
+    The endpoint validated scope and filter itself, against a hard-coded pair.
+    Adding `multi` to the registry left that check behind, so the new scope was
+    rejected with a 400 the client retries forever — the feature reachable in
+    the protocol and unreachable in a running system.
+    """
+    protocol = _Protocol()
+    resp = await _call(
+        protocol, accept="text/event-stream", connection_id="c1", scope=scope
+    )
+
+    assert isinstance(resp, StreamingResponse)
+    conn = protocol.connections.get("c1")
+    assert conn is not None
+    assert conn.scope == scope
+
+
 async def test_an_incompatible_protocol_version_is_refused() -> None:
     protocol = _Protocol()
     with pytest.raises(HTTPException) as excinfo:

@@ -133,7 +133,12 @@ export class SwitchEventStream {
    *
    * A move, not an addition: this is how a `single`-scope session hops rooms. */
   async repoint(roomId: string): Promise<void> {
-    await this.take(roomId, [roomId]);
+    // Takes over, matching what the reconnect URL does with the same room. A
+    // repoint restores a session to a room it is meant to own, and the holder
+    // is usually that agent's own stale connection — refusing on that is
+    // refusing a case the next socket drop resolves anyway, and a rejected
+    // repoint leaves the connection room-less and the session silent.
+    await this.take(roomId, [roomId], { takeover: true });
   }
 
   /** Take on another room while keeping the ones already held.
@@ -143,6 +148,8 @@ export class SwitchEventStream {
    * would leave the Slack room silent the moment an email room arrived. */
   async claim(roomId: string): Promise<void> {
     const rooms = this.rooms.includes(roomId) ? this.rooms : [...this.rooms, roomId];
+    // Cooperative, unlike `repoint`: gaining a surface is not a claim to a room
+    // someone else is already working in.
     await this.take(roomId, rooms);
   }
 
@@ -161,8 +168,12 @@ export class SwitchEventStream {
   /** Claim server-side, then record it, then reopen so the new room's buffered
    * events arrive as catch-up. Recording only after the claim succeeds keeps a
    * refused room out of the set we re-declare on every future reconnect. */
-  private async take(roomId: string, rooms: string[]): Promise<void> {
-    await this.subscribe(roomId);
+  private async take(
+    roomId: string,
+    rooms: string[],
+    opts: { takeover?: boolean } = {}
+  ): Promise<void> {
+    await this.subscribe(roomId, opts.takeover);
     this.rooms = rooms;
     this.reopen();
   }
@@ -177,10 +188,11 @@ export class SwitchEventStream {
     this.acceptRooms(raw.filter((r): r is string => typeof r === 'string'));
   }
 
-  private async subscribe(roomId: string): Promise<void> {
+  private async subscribe(roomId: string, takeover?: boolean): Promise<void> {
     const resp = await this.post('connection/subscribe', {
       connection_id: this.deps.connectionId,
       room_id: roomId,
+      ...(takeover ? { takeover: true } : {}),
     });
     if (!resp.ok) {
       // 409 means another live connection of this agent already holds the room

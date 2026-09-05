@@ -225,6 +225,19 @@ class Connection:
     declaration: ClientDeclaration = field(default_factory=lambda: ClientDeclaration())
     wake: asyncio.Event = field(default_factory=asyncio.Event)
 
+    @property
+    def claims_rooms(self) -> bool:
+        """Whether this connection covers only the rooms it has claimed.
+
+        True for every scope but `all`. Two places depend on it and must agree:
+        `ConnectionRegistry.covers`, and the delivery loop's decision to park
+        rather than read while holding no rooms. Split across two `scope ==`
+        comparisons they drifted the moment a third scope arrived — the second
+        kept treating `multi` as a supervisor and let a room-less connection
+        skip its way to the end of its own buffer.
+        """
+        return self.scope != "all"
+
     def is_alive(self, now: float) -> bool:
         return (
             self.closed_reason is None
@@ -507,11 +520,7 @@ class ConnectionRegistry:
         return None
 
     def covers(self, conn: Connection, room_id: str) -> bool:
-        # Every claiming scope covers exactly what it claimed. `single` holds
-        # one room, `multi` holds the set it declared — and a `multi`
-        # connection that has claimed nothing yet covers nothing, rather than
-        # briefly inheriting every room the agent belongs to.
-        if conn.scope != "all":
+        if conn.claims_rooms:
             return room_id in conn.rooms
         # An `all` connection covers everything no sibling has claimed.
         if room_id in conn.rooms:

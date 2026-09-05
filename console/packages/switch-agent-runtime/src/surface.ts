@@ -33,22 +33,35 @@ export type Audience = 'private' | 'restricted' | 'open' | 'external' | 'unknown
 export interface SurfaceInput {
   /** The room's `channel_type` from the event envelope, when it has one. */
   channelType?: string | null;
-  /** Whether this room's bridge carries someone outside the organisation. */
-  bridgeIsExternal?: boolean;
+  /**
+   * Whether this room's bridge carries someone outside the organisation.
+   *
+   * Required, not optional. An omitted flag would default to "internal", which
+   * is the one direction that is unsafe to get wrong — the same failure the
+   * `unknown` label exists to avoid, arriving through the back door. Making
+   * every caller state it means the email bridge cannot be added without
+   * someone answering the question.
+   */
+  bridgeIsExternal: boolean;
 }
 
-const BY_CHANNEL_TYPE: Record<string, Audience> = {
-  direct: 'private',
-  channel_private: 'restricted',
-  group: 'restricted',
-  channel_public: 'open',
-  lobby: 'open',
-};
+// A Map, not an object literal: `BY_CHANNEL_TYPE['constructor']` on a literal
+// resolves through the prototype and returns a function, which `?? 'unknown'`
+// never sees. `channel_type` is server-controlled, so that is not a live
+// exposure — but a lookup that can return a non-`Audience` while typed as one
+// is worth not having.
+const BY_CHANNEL_TYPE = new Map<string, Audience>([
+  ['direct', 'private'],
+  ['channel_private', 'restricted'],
+  ['group', 'restricted'],
+  ['channel_public', 'open'],
+  ['lobby', 'open'],
+]);
 
 export function audienceOf({ channelType, bridgeIsExternal }: SurfaceInput): Audience {
   if (bridgeIsExternal) return 'external';
   if (!channelType) return 'unknown';
-  return BY_CHANNEL_TYPE[channelType] ?? 'unknown';
+  return BY_CHANNEL_TYPE.get(channelType) ?? 'unknown';
 }
 
 export interface SurfaceMetaInput extends SurfaceInput {
@@ -73,9 +86,11 @@ export function surfaceMeta({
 }: SurfaceMetaInput): Record<string, string> {
   return {
     room_id: roomId,
-    // Falling back to the id rather than omitting the field: an event labelled
-    // with an audience but no name leaves the agent nothing to call the surface.
-    room_name: roomName || roomId,
+    // Omitted when unknown rather than falling back to the id. The id is
+    // already in the same object, so a fallback adds nothing an agent could
+    // not read — and `room_name: "!abc:server"` does not read as "no name
+    // available", it reads as the room being called that.
+    ...(roomName ? { room_name: roomName } : {}),
     audience: audienceOf({ channelType, bridgeIsExternal }),
   };
 }

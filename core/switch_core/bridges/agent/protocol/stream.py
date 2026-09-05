@@ -190,7 +190,7 @@ async def event_stream(
                     {"rooms": sorted(last_rooms), "reason": "subscription updated"},
                 )
 
-            if conn.scope == "single" and not conn.rooms:
+            if conn.claims_rooms and not conn.rooms:
                 # A session connection that has not claimed a room yet must not
                 # read. It would find every event uncovered — it covers nothing
                 # — and the skip path advances the cursor, so it would consume

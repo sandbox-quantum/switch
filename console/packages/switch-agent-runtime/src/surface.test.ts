@@ -20,17 +20,25 @@ import { type Audience, audienceOf, surfaceMeta } from './surface';
 
 describe('audienceOf', () => {
   it('reads a direct room as private', () => {
-    expect(audienceOf({ channelType: 'direct' })).toBe<Audience>('private');
+    expect(audienceOf({ channelType: 'direct', bridgeIsExternal: false })).toBe<Audience>(
+      'private'
+    );
   });
 
   it('reads a closed group as restricted', () => {
-    expect(audienceOf({ channelType: 'channel_private' })).toBe<Audience>('restricted');
-    expect(audienceOf({ channelType: 'group' })).toBe<Audience>('restricted');
+    expect(audienceOf({ channelType: 'channel_private', bridgeIsExternal: false })).toBe<Audience>(
+      'restricted'
+    );
+    expect(audienceOf({ channelType: 'group', bridgeIsExternal: false })).toBe<Audience>(
+      'restricted'
+    );
   });
 
   it('reads an open channel as open', () => {
-    expect(audienceOf({ channelType: 'channel_public' })).toBe<Audience>('open');
-    expect(audienceOf({ channelType: 'lobby' })).toBe<Audience>('open');
+    expect(audienceOf({ channelType: 'channel_public', bridgeIsExternal: false })).toBe<Audience>(
+      'open'
+    );
+    expect(audienceOf({ channelType: 'lobby', bridgeIsExternal: false })).toBe<Audience>('open');
   });
 
   it('reads a room on an external bridge as external, whatever its type', () => {
@@ -57,9 +65,11 @@ describe('audienceOf', () => {
      * so content does not travel into it unasked. Over-restricting costs a
      * refusal a human can authorize; under-restricting costs a leak.
      */
-    expect(audienceOf({})).toBe<Audience>('unknown');
-    expect(audienceOf({ channelType: null })).toBe<Audience>('unknown');
-    expect(audienceOf({ channelType: 'something-new' })).toBe<Audience>('unknown');
+    expect(audienceOf({ bridgeIsExternal: false })).toBe<Audience>('unknown');
+    expect(audienceOf({ channelType: null, bridgeIsExternal: false })).toBe<Audience>('unknown');
+    expect(audienceOf({ channelType: 'something-new', bridgeIsExternal: false })).toBe<Audience>(
+      'unknown'
+    );
   });
 });
 
@@ -69,6 +79,7 @@ describe('surfaceMeta', () => {
       roomId: '!abc:switch.local',
       roomName: 'Slack: #summit-2027',
       channelType: 'channel_public',
+      bridgeIsExternal: false,
     });
 
     expect(meta).toMatchObject({
@@ -78,23 +89,52 @@ describe('surfaceMeta', () => {
     });
   });
 
-  it('falls back to the room id when the name is not known yet', () => {
+  it('omits the name rather than inventing one from the room id', () => {
     /**
      * `room_name` on the envelope is specified but not implemented, so the
      * client resolves names itself and may not have one for a room it has just
-     * been given. A missing name must not drop the field — the agent would
-     * then have a labelled event with nothing to call the surface.
+     * been given. Falling back to the id would put `room_name: "!abc:server"`
+     * in front of the agent, which does not read as "no name available" — it
+     * reads as the room being called that. The id is already in the same
+     * object, so omitting the key loses nothing and claims nothing.
      */
-    const meta = surfaceMeta({ roomId: '!abc:switch.local', channelType: 'direct' });
+    const meta = surfaceMeta({
+      roomId: '!abc:switch.local',
+      channelType: 'direct',
+      bridgeIsExternal: false,
+    });
 
-    expect(meta.room_name).toBe('!abc:switch.local');
+    expect(meta).not.toHaveProperty('room_name');
+    expect(meta.room_id).toBe('!abc:switch.local');
     expect(meta.audience).toBe('private');
   });
 
+  it('treats an empty name as no name', () => {
+    const meta = surfaceMeta({
+      roomId: '!abc:switch.local',
+      roomName: '',
+      channelType: 'direct',
+      bridgeIsExternal: false,
+    });
+
+    expect(meta).not.toHaveProperty('room_name');
+  });
+
   it('always carries an audience, even for a room it cannot characterise', () => {
-    const meta = surfaceMeta({ roomId: '!abc:switch.local' });
+    const meta = surfaceMeta({ roomId: '!abc:switch.local', bridgeIsExternal: false });
 
     expect(meta.audience).toBe('unknown');
+  });
+
+  it('does not resolve a channel type through the prototype chain', () => {
+    /** An object-literal lookup answers `constructor` with a function, which the
+     * `?? 'unknown'` guard never sees and the return type does not admit. */
+    expect(audienceOf({ channelType: 'constructor', bridgeIsExternal: false })).toBe<Audience>(
+      'unknown'
+    );
+    expect(audienceOf({ channelType: 'toString', bridgeIsExternal: false })).toBe<Audience>(
+      'unknown'
+    );
   });
 
   it('returns only string values, so it can merge into notification meta', () => {
