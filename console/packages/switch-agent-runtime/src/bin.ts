@@ -54,6 +54,7 @@ import {
 } from './credentials';
 import { reapOrphanedRuntimes } from './reap';
 import { readSse, type SseFrame } from './sse';
+import { surfaceMeta } from './surface';
 
 const ENV_ENDPOINT = process.env.SWITCH_API_ENDPOINT ?? '';
 const ENV_TOKEN = process.env.SWITCH_API_TOKEN ?? '';
@@ -1611,6 +1612,10 @@ function startHookListener() {
 
 async function handleEvent(event: AgentEvent) {
   const { type, room_id, payload } = event;
+  // Which surface this came from, on every notification. A connection covering
+  // several rooms puts a channel and a DM in one context window, and the model
+  // cannot be discreet about a boundary it cannot see.
+  const surface = surfaceMeta({ roomId: room_id, channelType: event.channel_type });
 
   if (type === 'message') {
     const msg = payload as MessagePayload;
@@ -1650,7 +1655,7 @@ async function handleEvent(event: AgentEvent) {
 
     const ts = new Date(msg.timestamp).toISOString();
     await emitNotification(`[${msg.sender_name}]: ${msg.body}`, {
-      room_id,
+      ...surface,
       event_type: type,
       sender: msg.sender,
       sender_name: msg.sender_name,
@@ -1668,7 +1673,7 @@ async function handleEvent(event: AgentEvent) {
   if (type === 'command') {
     const cmd = payload as CommandPayload;
     await emitNotification(`Command: ${cmd.command}${cmd.target ? ` target=${cmd.target}` : ''}`, {
-      room_id,
+      ...surface,
       event_type: type,
       user_id: cmd.user_id,
       user_name: cmd.user_name,
@@ -1683,7 +1688,7 @@ async function handleEvent(event: AgentEvent) {
       return;
     }
     await emitNotification(`${join.member_name} joined the room`, {
-      room_id,
+      ...surface,
       event_type: type,
       member: join.member,
       member_name: join.member_name,
@@ -1695,7 +1700,7 @@ async function handleEvent(event: AgentEvent) {
   if (type === 'task_delegate') {
     const task = payload as TaskDelegatePayload;
     await emitNotification(`Task delegated: ${task.summary} — ${task.description}`, {
-      room_id,
+      ...surface,
       event_type: type,
       task_id: task.task_id,
       requester_agent_id: task.requester_agent_id,
@@ -1708,7 +1713,7 @@ async function handleEvent(event: AgentEvent) {
   if (type === 'task_accept') {
     const task = payload as TaskAcceptPayload;
     await emitNotification(`Task accepted by ${task.performer_agent_id}`, {
-      room_id,
+      ...surface,
       event_type: type,
       task_id: task.task_id,
       requester_agent_id: task.requester_agent_id,
@@ -1720,7 +1725,7 @@ async function handleEvent(event: AgentEvent) {
   if (type === 'task_update') {
     const task = payload as TaskUpdatePayload;
     await emitNotification(`Task update: ${task.update}`, {
-      room_id,
+      ...surface,
       event_type: type,
       task_id: task.task_id,
       requester_agent_id: task.requester_agent_id,
@@ -1732,7 +1737,7 @@ async function handleEvent(event: AgentEvent) {
   if (type === 'task_finalise') {
     const task = payload as TaskFinalisePayload;
     await emitNotification(`Task finalised: ${task.outcome ?? '(no outcome provided)'}`, {
-      room_id,
+      ...surface,
       event_type: type,
       task_id: task.task_id,
       requester_agent_id: task.requester_agent_id,
@@ -1744,7 +1749,7 @@ async function handleEvent(event: AgentEvent) {
   if (type === 'task_cancel') {
     const task = payload as TaskCancelPayload;
     await emitNotification(`Task cancelled${task.reason ? `: ${task.reason}` : ''}`, {
-      room_id,
+      ...surface,
       event_type: type,
       task_id: task.task_id,
       requester_agent_id: task.requester_agent_id,

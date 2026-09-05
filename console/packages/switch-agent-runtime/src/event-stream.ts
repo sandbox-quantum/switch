@@ -36,7 +36,13 @@ const BEAT_REQUEST_TIMEOUT_MS = 4000;
 const INITIAL_BACKOFF_MS = 1000;
 const MAX_BACKOFF_MS = 30_000;
 
-export type StreamScope = 'single' | 'all';
+/**
+ * `single` is a session in one room. `all` is a supervisor covering everything
+ * no sibling has claimed. `multi` is an agent working across a declared set of
+ * rooms — it claims each one, so the slot rules that already hand a room to a
+ * session and take it back apply unchanged.
+ */
+export type StreamScope = 'single' | 'multi' | 'all';
 export type DeliveryFilter = 'all' | 'addressed';
 
 export interface EventStreamLogger {
@@ -123,10 +129,41 @@ export class SwitchEventStream {
 
   /** Repoint the stream at a different room without dropping the connection.
    * The room is claimed server-side first, then the socket is reopened so the
-   * new room's buffered events are part of catch-up. */
+   * new room's buffered events are part of catch-up.
+   *
+   * A move, not an addition: this is how a `single`-scope session hops rooms. */
   async repoint(roomId: string): Promise<void> {
-    this.rooms = [roomId];
+    await this.take(roomId, [roomId]);
+  }
+
+  /** Take on another room while keeping the ones already held.
+   *
+   * The additive counterpart to `repoint`, for a `multi`-scope connection. An
+   * agent gaining a surface must not lose the others — replacing the set here
+   * would leave the Slack room silent the moment an email room arrived. */
+  async claim(roomId: string): Promise<void> {
+    const rooms = this.rooms.includes(roomId) ? this.rooms : [...this.rooms, roomId];
+    await this.take(roomId, rooms);
+  }
+
+  /**
+   * Adopt the server's room list as authoritative.
+   *
+   * The local copy is what gets declared on the open URL, so a room claimed
+   * while we were connected is still ours after a drop — and a room taken away
+   * stops being re-declared on every reconnect.
+   */
+  acceptRooms(rooms: string[]): void {
+    this.rooms = [...rooms];
+    this.deps.onRooms?.(rooms);
+  }
+
+  /** Claim server-side, then record it, then reopen so the new room's buffered
+   * events arrive as catch-up. Recording only after the claim succeeds keeps a
+   * refused room out of the set we re-declare on every future reconnect. */
+  private async take(roomId: string, rooms: string[]): Promise<void> {
     await this.subscribe(roomId);
+    this.rooms = rooms;
     this.reopen();
   }
 
@@ -134,19 +171,10 @@ export class SwitchEventStream {
     this.socketAbort?.abort();
   }
 
-  /**
-   * Pass the server's room list on, and keep our own copy in step.
-   *
-   * The local copy matters on reconnect: it is what gets declared on the open
-   * URL, so a room the server claimed while we were connected is still ours
-   * after a drop. Without it a reconnect would re-open with the room we were
-   * first told about — or none — and quietly stop receiving.
-   */
+  /** Pass the server's room list on, once it is known to be a list of rooms. */
   private reportRooms(raw: unknown): void {
     if (!Array.isArray(raw)) return;
-    const rooms = raw.filter((r): r is string => typeof r === 'string');
-    this.rooms = rooms;
-    this.deps.onRooms?.(rooms);
+    this.acceptRooms(raw.filter((r): r is string => typeof r === 'string'));
   }
 
   private async subscribe(roomId: string): Promise<void> {

@@ -42,6 +42,13 @@ export {
   type ReapOutcome,
 } from './reap';
 export { readSse, type SseFrame } from './sse';
+export {
+  audienceOf,
+  surfaceMeta,
+  type Audience,
+  type SurfaceInput,
+  type SurfaceMetaInput,
+} from './surface';
 export type {
   AgentBridgeEvent,
   AttachmentRef,
