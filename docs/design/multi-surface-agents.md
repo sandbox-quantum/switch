@@ -232,9 +232,18 @@ Three layers, weakest to strongest, because no single one is sufficient:
    | `restricted` | a named, closed group | `channel_private`, `group` |
    | `open` | anyone in the workspace | `channel_public`, `lobby` |
    | `external` | includes people outside the organisation | a bridge whose correspondent is outside |
+   | `unknown` | not characterisable | no `channel_type`, or one we do not recognise |
 
    `private < restricted < open` is an ordering. `external` is **orthogonal**: an
    email room with a single vendor in it is tiny but outside the trust boundary.
+
+   `unknown` was added while implementing Sprint 1. The design originally had
+   four labels and no answer for a room carrying no `channel_type`. Defaulting
+   such a room to `open` or `external` looks conservative but is a *claim about
+   who can read it*, and a wrong claim in the narrow direction is a disclosure
+   nobody sees. `unknown` is honest, and the flow rule treats it as the widest
+   audience — so over-restricting costs a refusal a human can authorise, while
+   under-restricting costs a leak.
 
    A stored per-room override can be added later if a room needs to disagree with
    its type. Nothing in these stories requires one.
@@ -310,6 +319,15 @@ for a multi-room connection.
 **A2. `Scope` gains `"multi"`.** *(Sprint 1)* Add the literal; change `covers()`
 so the explicit-set branch applies to everything that is not `all`. `claim_room()`
 already accumulates for any non-`single` scope.
+
+Carries one thing the design did not anticipate: **`scope` and `filter` are now
+validated at open.** Both arrive off a query string as bare strings, so the
+`Literal` types constrained only callers that get type-checked — nothing at
+runtime rejected a bad value. Harmless while `covers` special-cased `single`;
+once it reads "anything that is not `all` covers only what it claimed", a
+misspelled `all` becomes a connection that claims nothing, covers nothing, and
+logs a successful connect. The agent goes silent everywhere with no error
+anywhere.
 
 **A3. `room_name` on the event envelope.** *(deferred)* Implement what §6.1 already
 specifies. Until then the client resolves names from `list_rooms` and caches them,
@@ -464,6 +482,22 @@ convincing version is two bridges.
 C2 is not polish. From this sprint on, two rooms with different audiences share
 one context window, and blocker #7 is live.
 
+**Status: protocol and runtime library done; the long-lived host is not.**
+
+Landed: `multi` scope and the `covers` branch (A2, plus scope/filter validation
+at open, which nothing did before); `room_id` on `post_message`, `read_context`
+and `send_targeted_message` (A1); `StreamScope`, `claim` and `acceptRooms` on
+`SwitchEventStream`, and the derived surface label on every notification (C1
+library half, C2).
+
+Outstanding: the **process** that opens a `multi` connection and stays up. The
+protocol client supports it; nothing yet runs it. `bin.ts` still opens
+`scope: 'single'`, which is correct for a connector session — a Claude Code or
+Codex session is one room — so the long-lived agent is a separate host rather
+than a flag on that one. It needs its own tests, and they cannot be unit tests:
+`bin.ts` reads config at module scope and exits from it, so the existing harness
+spawns the built artifact.
+
 ### Sprint 2 — The agent has an inbox
 
 **Unlocks US-1 and US-6.** Ships B1, B2, B3 (allowlist), B5.
@@ -597,9 +631,15 @@ raw forward reads fine.
    the policy still needs deciding. Re-reading every claimed room is bounded,
    because the set is explicit.
 
-2. **Does a `multi` connection auto-claim, or claim explicitly?** Declaring the set
-   at open is one round trip; N `connect_to_room` calls is consistent with today's
-   flow and composes with A4. Leaning explicit. *(Sprint 1 decides this.)*
+2. ~~**Does a `multi` connection auto-claim, or claim explicitly?**~~ **Resolved —
+   it was already built.** The stream endpoint takes a `rooms` query parameter and
+   claims every room in it before the stream starts
+   (`core/switch_core/bridges/agent/api/handlers.py`), for a reason that applies
+   with equal force to several rooms: catch-up runs immediately, so a room
+   subscribed afterwards arrives too late for the buffered events a resume exists
+   to recover — they are skipped as "not covered" *and* the cursor advanced past
+   them. So the set is declared at open, re-declared on every reconnect, and a
+   room acquired later is added with `connect_to_room`.
 
 3. **How is an audience label recomputed when membership changes?** A private
    channel that becomes public, or a guest added to a restricted one, changes the
