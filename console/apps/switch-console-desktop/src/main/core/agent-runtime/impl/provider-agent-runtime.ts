@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { prepareGeminiHome } from '@switch-console/agent-providers';
 import type {
   ApprovalDecision,
   McpServerSpec,
@@ -11,6 +12,8 @@ import type {
 } from '@switch-console/agent-providers';
 import type { PluginFs } from '@switch-console/core/agents/plugins';
 import { CODEX_SKILL_CONTENT } from '@switch-console/plugins/agents/codex/skill';
+import { CURSOR_SKILL_CONTENT } from '@switch-console/plugins/agents/cursor/skill';
+import { GEMINI_SKILL_CONTENT } from '@switch-console/plugins/agents/gemini/skill';
 import { SWITCH_AGENT_RUNTIME_PIN } from '@switch-console/plugins/distribution';
 import { agentHookService } from '@main/core/agent-hooks/agent-hook-service';
 import { isAppFocused, maybeShowNotification } from '@main/core/agent-hooks/notification';
@@ -101,6 +104,7 @@ export class ProviderAgentRuntime implements AgentRuntimeProvider, ProviderSessi
   private readonly listeners = new Set<(update: TranscriptUpdate) => void>();
   private unsubscribeAdapter: (() => void) | null = null;
   private started = false;
+  private starting: Promise<void> | null = null;
   /** True across a deliberate `stop`, so its exit is not reported as a death. */
   private stopping = false;
   private providerId = '';
@@ -124,7 +128,8 @@ export class ProviderAgentRuntime implements AgentRuntimeProvider, ProviderSessi
     _isResuming?: boolean,
     initialPrompt?: string
   ): Promise<void> {
-    return runWithLogContext(
+    if (this.starting) return this.starting;
+    this.starting = runWithLogContext(
       {
         component: 'provider-agent-runtime',
         sessionId: this.params.sessionId,
@@ -133,6 +138,11 @@ export class ProviderAgentRuntime implements AgentRuntimeProvider, ProviderSessi
       },
       () => this.startInternal(session, initialPrompt)
     );
+    try {
+      await this.starting;
+    } finally {
+      this.starting = null;
+    }
   }
 
   private async startInternal(session: Session, initialPrompt?: string): Promise<void> {
@@ -191,6 +201,16 @@ export class ProviderAgentRuntime implements AgentRuntimeProvider, ProviderSessi
     });
 
     try {
+      if (session.providerId === 'gemini') {
+        const values = (await agentLaunchSpecialization(session.agentId)) ?? {};
+        env.GEMINI_CLI_HOME = await prepareGeminiHome({
+          root: `${resolveDatabasePath()}.gemini-homes`,
+          sessionId: this.params.sessionId,
+          sourceHome: join(env.GEMINI_CLI_HOME || homedir(), '.gemini'),
+          context: [GEMINI_SKILL_CONTENT, values.instructions].filter(Boolean).join('\n\n'),
+          mcpServerNames: Object.keys(mcpServers),
+        });
+      }
       if (session.providerId === 'codex') {
         const values = (await agentLaunchSpecialization(session.agentId)) ?? {};
         const profile = getPlugin('codex').behavior.mcp?.launchProfile?.({
@@ -206,6 +226,12 @@ export class ProviderAgentRuntime implements AgentRuntimeProvider, ProviderSessi
           skill: CODEX_SKILL_CONTENT,
         });
       }
+      const cursorContext =
+        session.providerId === 'cursor'
+          ? [CURSOR_SKILL_CONTENT, (await agentLaunchSpecialization(session.agentId))?.instructions]
+              .filter(Boolean)
+              .join('\n\n')
+          : undefined;
       const model = await this.resolveModel(session);
       const agentName = await this.resolveAgentDefinition(session, workspaceFs);
       await adapter.startSession({
@@ -214,6 +240,7 @@ export class ProviderAgentRuntime implements AgentRuntimeProvider, ProviderSessi
         runtimeMode,
         env,
         mcpServers,
+        ...(cursorContext ? { systemContext: cursorContext } : {}),
         ...(session.providerSessionId
           ? { resume: { nativeSessionId: session.providerSessionId } }
           : {}),

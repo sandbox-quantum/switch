@@ -341,7 +341,7 @@ export const AddAgentModal = observer(function AddAgentModal({
         providerConfig: providerConfigWithRuntime(
           launchProfileConfigRef.current,
           pickState.providerId,
-          providerRuntime
+          providerRuntime || pickState.providerId === 'gemini' || pickState.providerId === 'cursor'
         ),
         entryPoint,
       });
@@ -526,7 +526,12 @@ export const AddAgentModal = observer(function AddAgentModal({
             />
             <ProviderRuntimeToggle
               providerId={pickState.providerId}
-              enabled={providerRuntime}
+              enabled={
+                providerRuntime ||
+                pickState.providerId === 'gemini' ||
+                pickState.providerId === 'cursor'
+              }
+              disabled={pickState.providerId === 'gemini' || pickState.providerId === 'cursor'}
               onChange={setProviderRuntime}
             />
           </>

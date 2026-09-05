@@ -24,6 +24,16 @@ const COPY: Record<string, { label: string; description: string }> = {
     description:
       'Runs sessions through OpenCode’s API instead of a terminal. Shows a transcript with approvals and questions you can answer here or from the room.',
   },
+  cursor: {
+    label: 'Drive through Cursor CLI ACP (experimental)',
+    description:
+      'Runs local sessions with a transcript, tool and plan approvals, and questions you can answer here or from the room. Uses your Cursor login.',
+  },
+  gemini: {
+    label: 'Drive through Gemini CLI ACP (experimental)',
+    description:
+      'Runs local sessions with a transcript and approvals you can answer here or from the room. Uses your Gemini login. Answer questions in the conversation.',
+  },
   codex: {
     label: 'Drive through the Codex app server (experimental)',
     description:

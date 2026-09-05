@@ -1,6 +1,8 @@
 import {
   createClaudeAdapter,
   createCodexAdapter,
+  createGeminiAdapter,
+  createCursorAdapter,
   createOpencodeAdapter,
   type ProviderAdapter,
   type OpencodeSkill,
@@ -72,9 +74,11 @@ class ProviderAdapterRegistry {
       // the one the SDK bundles, and says so on the transcript when it does.
       return createClaudeAdapter({ logger });
     }
+    if (providerId === 'cursor') return createCursorAdapter({ logger });
+    if (providerId === 'gemini') return createGeminiAdapter({ logger });
     if (providerId === 'codex') return createCodexAdapter({ logger });
     throw new Error(
-      `No provider adapter for '${providerId}'. Only OpenCode, Claude Code and Codex can run a provider-backed session today.`
+      `No provider adapter for '${providerId}'. Only OpenCode, Claude Code, Codex and Gemini CLI can run a provider-backed session today.`
     );
   }
 }

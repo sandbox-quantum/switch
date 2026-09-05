@@ -265,6 +265,44 @@ describe('switchSetupService.getStatus', () => {
 });
 
 describe('switchSetupService.listAgentTypeAvailability', () => {
+  it.each([true, false])(
+    'requires a local Gemini binary, not a separate connector: %s',
+    async (installed) => {
+      mocks.listPlugins.mockReturnValue([
+        { metadata: { id: 'gemini' }, capabilities: { switchSetup: { kind: 'none' } } },
+      ]);
+      mocks.resolveCommandPath.mockResolvedValue(installed ? '/usr/local/bin/gemini' : null);
+      expect(await switchSetupService.listAgentTypeAvailability()).toEqual([
+        {
+          agentId: 'gemini',
+          available: installed,
+          blockedReason: installed
+            ? null
+            : 'Install Gemini CLI on this computer to use ACP sessions.',
+        },
+      ]);
+    }
+  );
+
+  it.each([true, false])(
+    'requires a local Cursor binary, not a separate connector: %s',
+    async (installed) => {
+      mocks.listPlugins.mockReturnValue([
+        { metadata: { id: 'cursor' }, capabilities: { switchSetup: { kind: 'none' } } },
+      ]);
+      mocks.resolveCommandPath.mockResolvedValue(installed ? '/usr/local/bin/agent' : null);
+      expect(await switchSetupService.listAgentTypeAvailability()).toEqual([
+        {
+          agentId: 'cursor',
+          available: installed,
+          blockedReason: installed
+            ? null
+            : 'Install Cursor CLI on this computer to use ACP sessions.',
+        },
+      ]);
+    }
+  );
+
   it('reports a Switch-supported type with its connector installed as available', async () => {
     mocks.listPlugins.mockReturnValue([CLI_AGENT, NONE_AGENT]);
     mocks.exec.mockImplementation(execImpl('0.1.0'));

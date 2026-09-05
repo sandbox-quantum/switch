@@ -11,10 +11,11 @@ vi.mock('node:child_process', () => ({
   },
 }));
 
-const { AppServerClient, JsonRpcError, noopLogger } = await import('./app-server-client');
+const { StdioJsonRpcClient, JsonRpcError, noopLogger } =
+  await import('../transport/stdio-json-rpc');
 
 function connect(onExit: (reason: string) => void = () => {}) {
-  const client = new AppServerClient({
+  const client = new StdioJsonRpcClient({
     command: 'codex',
     args: ['app-server'],
     cwd: '/tmp',
@@ -27,7 +28,7 @@ function connect(onExit: (reason: string) => void = () => {}) {
   return { client, server };
 }
 
-describe('AppServerClient', () => {
+describe('StdioJsonRpcClient', () => {
   beforeEach(() => {
     servers.length = 0;
   });

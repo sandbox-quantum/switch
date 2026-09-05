@@ -3,6 +3,9 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { sessionTranscriptChannel } from '@shared/core/sessions/session-transcript';
 import type { Session } from '@shared/core/sessions/sessions';
 
+vi.mock('@switch-console/agent-providers', () => ({
+  prepareGeminiHome: vi.fn(async () => '/isolated-gemini'),
+}));
 vi.mock('./codex-session-home', () => ({
   prepareCodexSessionHome: vi.fn(async () => '/isolated-codex'),
 }));
@@ -121,6 +124,12 @@ describe('ProviderAgentRuntime session start input', () => {
     return input as unknown as ProviderSessionStartInput;
   }
 
+  it('shares concurrent session startup without double registration', async () => {
+    const r = runtime('session-2');
+    await Promise.all([r.start(session('cursor')), r.start(session('cursor'))]);
+    expect(startSession).toHaveBeenCalledTimes(1);
+  });
+
   it('launches a Claude session as its own definition, the way `--agent` does', async () => {
     definitionFiles.add('.claude/agents/wanda.md');
     vi.mocked(agentLaunchSpecialization).mockResolvedValue(undefined);
@@ -173,9 +182,15 @@ describe('ProviderAgentRuntime session start input', () => {
     expect(input.env.CODEX_HOME).toBe('/isolated-codex');
   });
 
+  it('isolates Gemini settings and includes the room workflow', async () => {
+    vi.mocked(agentLaunchSpecialization).mockResolvedValue({ instructions: 'Agent instructions' });
+    const input = await start('gemini');
+    expect(input.env.GEMINI_CLI_HOME).toBe('/isolated-gemini');
+  });
+
   it('registers exactly one Switch MCP server, whatever the provider', async () => {
     vi.mocked(agentLaunchSpecialization).mockResolvedValue(undefined);
-    for (const providerId of ['claude', 'opencode', 'codex'] as const) {
+    for (const providerId of ['claude', 'opencode', 'codex', 'gemini'] as const) {
       startSession.mockClear();
       expect(Object.keys((await start(providerId)).mcpServers)).toEqual(['switch']);
     }

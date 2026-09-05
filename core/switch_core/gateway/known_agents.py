@@ -607,10 +607,136 @@ class OpenCodeKnownAgent(KnownAgent):
         )
 
 
+class GeminiOptions(KnownAgentOptions):
+    auto_session: bool = False
+    repo_dir: str | None = None
+
+    @field_validator("repo_dir", mode="before")
+    @classmethod
+    def _blank_string_to_none(cls, value: object) -> object:
+        return None if isinstance(value, str) and not value.strip() else value
+
+
+class GeminiKnownAgent(KnownAgent):
+    connector_type = "Gemini CLI"
+    options_schema = GeminiOptions
+    tools = [
+        ToolSpec(name="run_shell_command", description="Executes shell commands"),
+        ToolSpec(name="replace", description="Edits existing files"),
+        ToolSpec(name="write_file", description="Writes files"),
+        ToolSpec(name="read_file", description="Reads file contents"),
+        ToolSpec(name="grep_search", description="Searches file contents"),
+        ToolSpec(name="glob", description="Finds files by pattern"),
+        ToolSpec(name="list_directory", description="Lists directory contents"),
+        ToolSpec(name="web_fetch", description="Fetches web pages"),
+    ]
+    models: ClassVar[list[ModelSpec]] = []
+
+    @classmethod
+    def build_profile(cls, options: KnownAgentOptions) -> IntegrationProfile:
+        assert isinstance(options, GeminiOptions)
+        return IntegrationProfile(
+            connection_model="auto_session"
+            if options.auto_session
+            else "session_addressable",
+            message_exchange=True,
+            pre_invocation_mediation=[],
+            post_invocation_mediation=[],
+            event_reporting=[],
+            task_protocol=TaskProtocolConfig(can_delegate=True, can_accept=True),
+            command_capabilities=CommandCapabilities(
+                reset="session_dependent",
+                compact="session_dependent",
+                interrupt="session_dependent",
+            ),
+        )
+
+    @classmethod
+    def start_session_instructions(
+        cls,
+        options: KnownAgentOptions,
+        agent: Agent,
+        room_name: str,
+        owner_handle: str | None,
+        assume_role: str | None = None,
+        other_room_names: list[str] | None = None,
+        connected_not_live: bool = False,
+    ) -> str | None:
+        prefix = f"{owner_handle} — " if owner_handle else ""
+        return (
+            f"{prefix}open **{agent.name}** in Switch Console, enable the Gemini CLI ACP "
+            f"runtime in its advanced settings, and start a local session in **{room_name}**. "
+            "Sign in with `gemini` first if you have not already."
+        )
+
+
+class CursorOptions(KnownAgentOptions):
+    auto_session: bool = False
+    repo_dir: str | None = None
+
+    @field_validator("repo_dir", mode="before")
+    @classmethod
+    def _blank_string_to_none(cls, value: object) -> object:
+        return None if isinstance(value, str) and not value.strip() else value
+
+
+class CursorKnownAgent(KnownAgent):
+    connector_type = "Cursor CLI"
+    options_schema = CursorOptions
+    tools = [
+        ToolSpec(name="shell", description="Executes shell commands"),
+        ToolSpec(name="read_file", description="Reads file contents"),
+        ToolSpec(name="write", description="Writes files"),
+        ToolSpec(name="str_replace", description="Edits existing files"),
+        ToolSpec(name="grep", description="Searches file contents"),
+        ToolSpec(name="glob", description="Finds files by pattern"),
+    ]
+    models: ClassVar[list[ModelSpec]] = []
+
+    @classmethod
+    def build_profile(cls, options: KnownAgentOptions) -> IntegrationProfile:
+        assert isinstance(options, CursorOptions)
+        return IntegrationProfile(
+            connection_model="auto_session"
+            if options.auto_session
+            else "session_addressable",
+            message_exchange=True,
+            pre_invocation_mediation=[],
+            post_invocation_mediation=[],
+            event_reporting=[],
+            task_protocol=TaskProtocolConfig(can_delegate=True, can_accept=True),
+            command_capabilities=CommandCapabilities(
+                reset="session_dependent",
+                compact="session_dependent",
+                interrupt="session_dependent",
+            ),
+        )
+
+    @classmethod
+    def start_session_instructions(
+        cls,
+        options: KnownAgentOptions,
+        agent: Agent,
+        room_name: str,
+        owner_handle: str | None,
+        assume_role: str | None = None,
+        other_room_names: list[str] | None = None,
+        connected_not_live: bool = False,
+    ) -> str | None:
+        prefix = f"{owner_handle} — " if owner_handle else ""
+        return (
+            f"{prefix}open **{agent.name}** in Switch Console, enable the Cursor CLI ACP "
+            f"runtime in its advanced settings, and start a local session in **{room_name}**. "
+            "Sign in with `agent` first if you have not already."
+        )
+
+
 KNOWN_AGENTS: dict[str, type[KnownAgent]] = {
     "claude-code": ClaudeCodeKnownAgent,
     "codex": CodexKnownAgent,
     "opencode": OpenCodeKnownAgent,
+    "gemini": GeminiKnownAgent,
+    "cursor": CursorKnownAgent,
 }
 
 

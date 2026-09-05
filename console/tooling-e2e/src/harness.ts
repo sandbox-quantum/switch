@@ -49,6 +49,8 @@ export interface SetupOptions {
 /** The name prefix per agent type, kept inside Mattermost's 22-character cap. */
 const PREFIX_BY_AGENT_TYPE: Record<HarnessAgentType, string> = {
   opencode: 'e2e-opencode',
+  gemini: 'e2e-gemini',
+  cursor: 'e2e-cursor',
   'claude-code': 'e2e-claude',
   codex: 'e2e-codex',
 };

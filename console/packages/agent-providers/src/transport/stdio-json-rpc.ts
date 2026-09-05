@@ -13,7 +13,7 @@ export const noopLogger: ProviderLogger = {
   error: () => {},
 };
 
-export interface AppServerClientOptions {
+export interface StdioJsonRpcClientOptions {
   command: string;
   args: string[];
   cwd: string;
@@ -59,7 +59,7 @@ const STDERR_TAIL_LIMIT = 8_000;
  * requests (approvals, questions) arrive with both `id` and `method` and are
  * answered on the same channel, which is what separates them from responses.
  */
-export class AppServerClient {
+export class StdioJsonRpcClient {
   private readonly child: ChildProcess;
   private readonly pending = new Map<number, PendingRequest>();
   private readonly notificationHandlers = new Map<string, NotificationHandler[]>();
@@ -70,7 +70,7 @@ export class AppServerClient {
   private nextId = 0;
   private exited = false;
 
-  constructor(options: AppServerClientOptions) {
+  constructor(options: StdioJsonRpcClientOptions) {
     this.logger = options.logger;
     this.onExit = options.onExit;
     this.child = spawn(options.command, options.args, {
@@ -81,7 +81,7 @@ export class AppServerClient {
 
     const stdout = this.child.stdout;
     const stderr = this.child.stderr;
-    if (!stdout || !stderr) throw new Error('codex app-server was spawned without stdio pipes');
+    if (!stdout || !stderr) throw new Error('provider process was spawned without stdio pipes');
 
     createInterface({ input: stdout }).on('line', (line) => this.handleLine(line));
     stderr.on('data', (chunk: Buffer) => {
@@ -91,7 +91,7 @@ export class AppServerClient {
     this.child.on('error', (error) => this.handleExit(`spawn failed: ${error.message}`));
     this.child.on('exit', (code, signal) =>
       this.handleExit(
-        `codex app-server exited (code ${code ?? 'null'}, signal ${signal ?? 'null'})`
+        `provider process exited (code ${code ?? 'null'}, signal ${signal ?? 'null'})`
       )
     );
   }
@@ -106,7 +106,7 @@ export class AppServerClient {
 
   request<T>(method: string, params: unknown): Promise<T> {
     if (this.exited) {
-      return Promise.reject(new Error(`codex app-server is gone; cannot call ${method}`));
+      return Promise.reject(new Error(`provider process is gone; cannot call ${method}`));
     }
     const id = ++this.nextId;
     return new Promise<T>((resolve, reject) => {
@@ -152,7 +152,7 @@ export class AppServerClient {
     try {
       message = JSON.parse(line) as JsonRpcMessage;
     } catch {
-      this.logger.warn('codex app-server emitted a line that is not JSON', { line });
+      this.logger.warn('provider process emitted a line that is not JSON', { line });
       return;
     }
 
@@ -170,7 +170,7 @@ export class AppServerClient {
       try {
         handler(message.params);
       } catch (cause) {
-        this.logger.error('codex notification handler threw', {
+        this.logger.error('provider notification handler threw', {
           method: message.method,
           error: String(cause),
         });
@@ -195,7 +195,7 @@ export class AppServerClient {
   private handleServerRequest(id: number | string, method: string, params: unknown): void {
     const handler = this.serverRequestHandlers.get(method);
     if (!handler) {
-      this.logger.warn('codex app-server sent an unhandled request', { method });
+      this.logger.warn('provider process sent an unhandled request', { method });
       this.write({
         jsonrpc: '2.0',
         id,

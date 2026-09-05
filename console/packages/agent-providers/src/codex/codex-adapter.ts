@@ -22,11 +22,11 @@ import type {
   UserInputQuestion,
 } from '../events';
 import {
-  AppServerClient,
+  StdioJsonRpcClient,
   JsonRpcError,
   noopLogger,
   type ProviderLogger,
-} from './app-server-client';
+} from '../transport/stdio-json-rpc';
 import { featureArgs, mcpServerConfigArgs } from './config-args';
 import { mapCodexItem } from './item-mapping';
 import {
@@ -97,7 +97,7 @@ type EmittableEvent<T = ProviderRuntimeEvent> = T extends ProviderRuntimeEvent
 interface CodexSessionState {
   sessionId: string;
   threadId: string;
-  client: AppServerClient;
+  client: StdioJsonRpcClient;
   model?: string;
   effort?: string;
   activeNativeTurnId?: string;
@@ -237,7 +237,7 @@ export class CodexAdapter implements ProviderAdapter {
       ...featureArgs(this.features),
       ...mcpServerConfigArgs(input.mcpServers),
     ];
-    const client = new AppServerClient({
+    const client = new StdioJsonRpcClient({
       command: this.binaryPath,
       args,
       cwd: input.cwd,
@@ -434,7 +434,7 @@ export class CodexAdapter implements ProviderAdapter {
   }
 
   private async openThread(
-    client: AppServerClient,
+    client: StdioJsonRpcClient,
     config: Record<string, unknown>,
     resumeThreadId: string | undefined
   ): Promise<CodexThreadOpenResponse> {
