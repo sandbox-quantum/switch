@@ -39,6 +39,7 @@ from switch_core.db.models import Room
 from switch_core.db.stores.client_store import ClientStore
 from switch_core.db.stores.message_store import MessageStore
 from switch_core.messages import backfill_room
+from switch_core.messages.backfill import MESSAGES_PER_ROOM
 from switch_core.transport.matrix import MatrixTransport
 
 # The admin client is a member of every room by design, which is what makes it
@@ -68,6 +69,18 @@ def _parse_args() -> argparse.Namespace:
             "Without it they are skipped: the walk always starts from the "
             "newest message, so re-reading a finished room costs its whole "
             "history in pages to learn there is nothing to write."
+        ),
+    )
+    parser.add_argument(
+        "--messages-per-room",
+        type=int,
+        default=MESSAGES_PER_ROOM,
+        metavar="N",
+        help=(
+            "How many of a room's messages to carry across, newest first "
+            f"(default {MESSAGES_PER_ROOM}). 0 walks every room to its start. "
+            "Older messages are left on the homeserver, which is going away, "
+            "so this is what is kept rather than what is done first."
         ),
     )
     parser.add_argument(
@@ -153,7 +166,13 @@ async def _run(args: argparse.Namespace) -> int:
                 # reporting it as done would be the one answer that misleads.
                 unreadable.append(f"{room.name} ({room.matrix_room_id})")
                 continue
-            report = await backfill_room(transport, session_factory, room, store=store)
+            report = await backfill_room(
+                transport,
+                session_factory,
+                room,
+                store=store,
+                messages_per_room=args.messages_per_room,
+            )
             print(report.summary())
             written += report.written
             incomplete += 1 if report.incomplete else 0

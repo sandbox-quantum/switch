@@ -453,3 +453,136 @@ class TestStopping:
 
         assert transport.reads == 2
         assert report.written == 1
+
+
+class TestPerRoomLimit:
+    """A room's history is carried across newest-first, up to a limit.
+
+    The limit is the whole point of the release it shipped in: an unbounded
+    walk over a room with years in it is the difference between a migration an
+    operator runs and one they abandon. What it leaves behind is left behind
+    for good, because the homeserver goes away afterwards.
+    """
+
+    async def test_it_keeps_the_newest_and_leaves_the_rest(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        async with session_factory() as session:
+            room = await _make_room(session)
+
+        transport = PagingTransport(
+            [
+                HistoryPage(
+                    events=[_event(f"$e{i}", 100 - i, f"m{i}") for i in range(5)],
+                    next_token=None,
+                )
+            ]
+        )
+        async with session_factory() as session:
+            room = await session.get(Room, room.id)  # type: ignore[assignment]
+            report = await backfill_room(
+                transport,
+                session_factory,
+                room,
+                store=MessageStore(),
+                messages_per_room=2,
+            )
+
+        assert report.written == 2
+        assert report.capped is True
+        rows = await _rows(session_factory, room.id)
+        assert [r.body for r in rows] == ["m1", "m0"]
+
+    async def test_a_capped_room_is_finished_not_abandoned(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """Marked, or every start walks it again — and `incomplete` stays
+        false, because the command exits non-zero on that and Console fails an
+        upgrade on a non-zero exit."""
+        async with session_factory() as session:
+            room = await _make_room(session)
+
+        transport = PagingTransport(
+            [
+                HistoryPage(
+                    events=[_event(f"$e{i}", 100 - i, f"m{i}") for i in range(4)],
+                    next_token=None,
+                )
+            ]
+        )
+        async with session_factory() as session:
+            room = await session.get(Room, room.id)  # type: ignore[assignment]
+            report = await backfill_room(
+                transport,
+                session_factory,
+                room,
+                store=MessageStore(),
+                messages_per_room=1,
+            )
+
+        assert report.incomplete is False
+        async with session_factory() as session:
+            marked = await session.get(Room, room.id)
+            assert marked is not None
+            assert marked.history_backfilled_at is not None
+
+    async def test_a_second_run_does_not_carry_another_batch(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """The cap counts what the log holds, not what this run wrote. Counting
+        only writes would make each re-run reach further back."""
+        async with session_factory() as session:
+            room = await _make_room(session)
+
+        pages = [
+            HistoryPage(
+                events=[_event(f"$e{i}", 100 - i, f"m{i}") for i in range(5)],
+                next_token=None,
+            )
+        ]
+        async with session_factory() as session:
+            room = await session.get(Room, room.id)  # type: ignore[assignment]
+            await backfill_room(
+                PagingTransport(list(pages)),
+                session_factory,
+                room,
+                store=MessageStore(),
+                messages_per_room=2,
+            )
+            second = await backfill_room(
+                PagingTransport(list(pages)),
+                session_factory,
+                room,
+                store=MessageStore(),
+                messages_per_room=2,
+            )
+
+        assert second.written == 0
+        assert len(await _rows(session_factory, room.id)) == 2
+
+    async def test_zero_walks_the_room_to_its_start(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        async with session_factory() as session:
+            room = await _make_room(session)
+
+        transport = PagingTransport(
+            [
+                HistoryPage(
+                    events=[_event(f"$e{i}", 100 - i, f"m{i}") for i in range(5)],
+                    next_token=None,
+                )
+            ]
+        )
+        async with session_factory() as session:
+            room = await session.get(Room, room.id)  # type: ignore[assignment]
+            report = await backfill_room(
+                transport,
+                session_factory,
+                room,
+                store=MessageStore(),
+                messages_per_room=0,
+            )
+
+        assert report.written == 5
+        assert report.capped is False

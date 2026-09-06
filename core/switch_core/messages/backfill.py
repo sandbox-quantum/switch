@@ -66,6 +66,17 @@ PAGE_SIZE = 100
 # room that ends returns no next token and stops on its own.
 MAX_PAGES = 10_000
 
+# How much of a room's past is worth carrying across. The walk runs newest
+# first, so this keeps the most recent messages and abandons what is older —
+# and abandons it for good, because the homeserver goes away after this.
+#
+# It is a product decision rather than a technical limit: recent context is
+# what an agent reads, a migration that finishes in minutes is one an operator
+# will actually run, and an unbounded walk over a room with years in it is the
+# reason someone reaches for `--force` and then waits. Raise it with
+# `--messages-per-room`, or pass 0 to walk a room to its start.
+MESSAGES_PER_ROOM = 50
+
 
 @dataclass
 class BackfillReport:
@@ -81,6 +92,11 @@ class BackfillReport:
     # because the room ended. The room is then partially reconstructed, and
     # saying so matters more than the count does.
     incomplete: bool = False
+    # True when the walk stopped at `messages_per_room`. Deliberately not
+    # `incomplete`: that one reports a walk that failed to finish and makes the
+    # command exit non-zero, and Console fails an upgrade on that. Stopping
+    # where we were told to stop is success, and the room is marked done.
+    capped: bool = False
 
     def summary(self) -> str:
         line = (
@@ -94,6 +110,8 @@ class BackfillReport:
                 for name, count in sorted(self.skipped_by_type.items())
             )
             line += f"; not part of the log: {counts}"
+        if self.capped:
+            line += "; stopped at the per-room limit, older history not carried"
         if self.incomplete:
             line += "; INCOMPLETE — hit the page limit before the room ended"
         return line
@@ -119,16 +137,32 @@ async def _mark_backfilled(
         await session.commit()
 
 
+def _in_log(report: BackfillReport) -> int:
+    """How many of this room's messages the log now holds from this walk.
+
+    Written plus already recorded, because the cap has to mean the same thing
+    on a second run as on the first. Counting only what this run wrote would
+    make every re-run carry another `messages_per_room` of older history.
+    """
+    return report.written + report.already_present
+
+
 async def backfill_room(
     transport: MessageTransport,
     session_factory: async_sessionmaker[AsyncSession],
     room: Room,
     *,
     store: MessageStore,
+    messages_per_room: int = MESSAGES_PER_ROOM,
 ) -> BackfillReport:
-    """Walk one room to its start, writing every message with no row.
+    """Walk a room backwards, writing the messages that have no row.
 
     The transport must already be connected and a member of the room.
+
+    Stops at `messages_per_room` loggable messages, or at the room's start if
+    that comes first; 0 means walk to the start. The count is of messages the
+    log would hold, found rather than written, so a second run over a room that
+    is already done stops in the same place instead of carrying fifty more.
 
     Each page is its own transaction. A walk that fails partway therefore
     leaves the pages it finished written rather than rolling back an hour of
@@ -153,6 +187,12 @@ async def backfill_room(
         # room's start leaves the oldest message with the lowest number. Any
         # other order would number the room backwards.
         for raw in page.events:
+            if messages_per_room and _in_log(report) >= messages_per_room:
+                # Told where to stop, so stopping is a finished room rather
+                # than an abandoned one: mark it, or every start walks it again.
+                report.capped = True
+                await _mark_backfilled(session_factory, room, store)
+                return report
             await _consider(raw, session_factory, room, store, report)
 
         end = page.next_token
