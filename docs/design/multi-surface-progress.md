@@ -440,15 +440,58 @@ measuring "nothing has happened yet". That is the same vacuous-pass shape as the
 other eleven on this branch, arriving through timing rather than through a weak
 assertion.
 
+### What review found
+
+Four real bugs, three of them the same shape: **a check placed at the moment
+work is accepted rather than the moment it runs.**
+
+1. **`stop()` did not drain.** The wake-up cycle awaits a write before queueing
+   the turns it found due, so awaiting the chain once returned through that
+   window. The cycle now runs *on* the chain, and `stop` drains until the chain
+   stops moving.
+2. **The lost-room guard ran only at enqueue time**, so a turn queued behind a
+   long one would reply into a room claimed away during the wait. The comment
+   claiming otherwise was simply wrong.
+3. **A gap was lost when the turn carrying it threw** — cleared before `onTurn`
+   and never restored, so the agent answered from a stale picture with nothing
+   saying so.
+4. **A throwing logger could silence the host permanently**, being the one
+   unguarded statement inside the chain.
+
+Also added `evicted()`. The stream reports eviction and the host had nowhere to
+put it; without it a host keeps firing scheduled work into rooms it was evicted
+from while looking healthy.
+
+**Three more tests asserted less than they read as** — ordering passed with the
+serialisation removed, the wake-up-queues-behind-an-event test passed if the
+wake-up never ran at all, and "rehydrates after a restart" contained no restart.
+Fourteen across the branch now.
+
+A related lesson: **the fake clock counted microtasks**, and that broke the
+moment the wake-up path grew an `await`. A tick count is only ever right for the
+current shape of the code, and the failure mode is asymmetric — the positive
+test fails loudly while the negative one starts passing vacuously. Tests now
+drain to quiescence through `settled()`.
+
+And one about mutation testing: the first version of the drain test **passed
+under the mutation**, because it asserted the turn had *started* rather than
+finished. Mutation testing only works if the assertion can tell the difference.
+
 ### Knowingly left
 
 - **Nothing wires this to `SwitchEventStream`.** The seam is `deliver` /
-  `acceptRooms` / `noteGap`; connecting it is a thin adapter, and there is no
-  test for it yet.
-- **No `onEvicted` counterpart.** The stream reports eviction and the host has
-  nowhere to put it.
-- **No production `Clock`.** A `setTimeout` implementation has to re-arm past
-  `MAX_TIMER_MS`, which nothing does yet.
+  `acceptRooms` / `noteGap` / `evicted`, which now matches the stream's
+  callbacks; connecting it is a thin adapter with no test yet. `noteGap` still
+  discards `fromSequence`.
+- **No production `Clock`.** A `setTimeout` implementation must clamp
+  defensively — the `MAX_TIMER_MS` clamp lives in `schedule.ts`, so a second
+  call site would not inherit it — and `now()` over `Date.now()` is wall-clock,
+  so an NTP step or a suspend moves every wake-up.
+- **Reentrancy deadlocks.** `onTurn` calling `await host.deliver(...)` chains
+  behind the turn currently executing and hangs. Undocumented, and the class is
+  publicly exported.
+- **`persist()` is last-writer-wins** across concurrent callers; the blast
+  radius is restart-only.
 - The safety register above is unchanged: the host makes a multi-room agent
   possible, which is the state Sprint 1 designed for (labels visible, rule in
   the instructions), but it does not wire D3.
