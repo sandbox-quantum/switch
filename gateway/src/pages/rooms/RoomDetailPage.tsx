@@ -192,7 +192,7 @@ function RoomInfoSection({ room }: { room: RoomDetail }) {
           />
         )}
         <InfoChip label="Created" value={formatDateTime(room.created_at)} />
-        <InfoChip label="Matrix room" value={room.matrix_room_id} mono />
+        <InfoChip label="Transport room" value={room.transport_room_id} mono />
         {room.external_channel_id && (
           <InfoChip
             label="External channel"

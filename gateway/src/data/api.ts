@@ -157,6 +157,8 @@ export interface RoomRoleDetail extends RoomRoleSpec {
 }
 
 export interface RoomDetail extends RoomSummary {
+  transport_room_id: string;
+  /** @deprecated Alias of `transport_room_id`, carried for the compatibility window. */
   matrix_room_id: string;
   external_channel_id: string | null;
   instructions: string | null;

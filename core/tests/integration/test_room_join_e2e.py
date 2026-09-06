@@ -1,8 +1,9 @@
-"""End-to-end test for CHOO-576 room_join over a real Matrix homeserver.
+"""End-to-end test for the room_join event over the real transport.
 
-Drives the genuine path: RoomService adds an agent to a room → Matrix invite →
-the watcher's AgentClient sync loop receives the join → on_member_event enqueues
-a `room_join` AgentEvent → it is read off the event buffer. No mocks, no HTTP layer.
+Drives the genuine path: RoomService adds an agent to a room → the invite reaches
+the joiner → the watcher's AgentClient receive loop sees the arrival →
+on_member_event enqueues a `room_join` AgentEvent → it is read off the event
+buffer. No mocks, no HTTP layer.
 """
 
 from __future__ import annotations
@@ -14,16 +15,16 @@ import pytest
 from switch_core.room_service import RoomCreateConfig
 from tests.integration.conftest import Harness
 
-# Session-scoped event loop: the background matrix-nio sync clients are created
-# and torn down across tests; sharing one loop lets their aiohttp sessions
-# finalize cleanly instead of being stranded when a per-test loop is destroyed.
+# Session-scoped event loop: the background clients are created and torn down
+# across tests; sharing one loop lets their connections finalize cleanly instead
+# of being stranded when a per-test loop is destroyed.
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="session")]
 
 
 async def _wait_joined(
     client: object, matrix_room_id: str, timeout: float = 30
 ) -> None:
-    """Block until the agent's own client has joined the Matrix room."""
+    """Block until the agent's own client has joined the room."""
     deadline = asyncio.get_event_loop().time() + timeout
     while asyncio.get_event_loop().time() < deadline:
         if matrix_room_id in client.room_join_times:  # type: ignore[attr-defined]
@@ -101,6 +102,6 @@ async def test_self_join_does_not_emit_room_join(harness: Harness) -> None:
     )
     await _wait_joined(watcher_client, result.room.matrix_room_id)
 
-    # Give the sync loop time to deliver any (erroneous) self-join event.
+    # Give the receive loop time to deliver any (erroneous) self-join event.
     event = await _drain_room_join(harness, watcher.agent_id, result.room.id, timeout=8)
     assert event is None, "self-join should not produce a room_join event"

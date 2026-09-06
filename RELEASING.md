@@ -153,7 +153,7 @@ to that interface as you would any public API change.
   `.env.example`). Repo users who want the build-from-source flow layer
   `standalone-docker-compose.build.yml` on top — that is what `just
   standalone-up` runs.
-- **Profiles.** Core services (`postgres`, `tuwunel`, `switch`) always start.
+- **Profiles.** Core services (`postgres`, `switch`) always start.
   Optional services are opt-in behind profiles: `collab` (`init-db`,
   `mattermost`, `setup`) and `gateway` (`gateway`). Enable with
   `--profile collab --profile gateway` or `COMPOSE_PROFILES`.

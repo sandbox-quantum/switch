@@ -36,7 +36,6 @@ async def _make_client(session: AsyncSession, name: str) -> Client:
         matrix_user_id=f"@{name}-{uuid.uuid4().hex[:8]}:test",
         display_name=name,
         type="agent",
-        password="x",
     )
     session.add(client)
     await session.flush()
@@ -47,7 +46,7 @@ def _message(room_id: str, event_id: str, **overrides: object) -> Message:
     fields: dict[str, object] = {
         "room_id": room_id,
         "transport_event_id": event_id,
-        "sender_matrix_id": "@sender:test",
+        "sender_id": "@sender:test",
         "event_type": "m.room.message",
         "msgtype": "m.text",
         "body": f"body of {event_id}",
@@ -455,4 +454,4 @@ class TestForeignKeyBehaviour:
 
         assert found is not None
         assert found.sender_client_id is None
-        assert found.sender_matrix_id == "@sender:test"
+        assert found.sender_id == "@sender:test"

@@ -78,20 +78,12 @@ class ClientLifecycleService:
         if localpart is None:
             localpart = f"switch-{client_type}-{client_id[:8]}"
         matrix_user_id = self._make_user_id(localpart)
-        password = str(uuid.uuid4())
-
-        await self._matrix_admin.register_user(
-            user_id=matrix_user_id,
-            password=password,
-            display_name=display_name,
-        )
 
         record = Client(
             id=client_id,
             matrix_user_id=matrix_user_id,
             display_name=display_name,
             type=client_type,
-            password=password,
             config=config,
         )
         async with self._session_factory() as session:

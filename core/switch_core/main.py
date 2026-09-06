@@ -88,12 +88,6 @@ from switch_core.db.stores.task_store import TaskStore
 from switch_core.db.stores.user_store import UserStore
 from switch_core.gateway.app import create_gateway_app
 from switch_core.gateway.auth import hash_password
-from switch_core.matrix_admin import (
-    MatrixAdmin,
-    ensure_admin_exists,
-    wait_for_homeserver,
-)
-from switch_core.messages import MessageRecorder
 from switch_core.messages.notify import MessageListener
 from switch_core.provisioning import Provisioning
 from switch_core.provisioning.postgres import PostgresProvisioning
@@ -161,8 +155,6 @@ async def _connection_sweep_loop(protocol: ProtocolService) -> None:
 
 
 logging.getLogger("httpx").setLevel(logging.WARNING)
-logging.getLogger("nio.rooms").setLevel(logging.ERROR)
-logging.getLogger("nio.client.base_client").setLevel(logging.WARNING)
 
 
 class _QuietPollFilter(logging.Filter):
@@ -215,11 +207,6 @@ async def run() -> None:
     room_role_store = RoomRoleStore()
     message_store = MessageStore()
     media_store = MediaStore()
-    message_recorder = MessageRecorder(
-        session_factory=session_factory,
-        room_store=room_store,
-        message_store=message_store,
-    )
 
     # ── Seed admin user + registration key ──────────────────────────────────
     await _seed_admin_user(session_factory, user_store, config)
@@ -244,39 +231,16 @@ async def run() -> None:
         await resource_service.log_builtin_shadowing(session)
 
     # ── Provisioning ─────────────────────────────────────────────────────────
-    # The homeserver is only contacted when it is the transport. Reaching it
-    # unconditionally would keep a Postgres deployment waiting on, and failing
-    # to start without, a service it does not use.
-    matrix_admin: Provisioning
-    if config.message_transport == "matrix":
-        await wait_for_homeserver(config.matrix_server)
-        await ensure_admin_exists(
-            server_url=config.matrix_server,
-            username=config.matrix_admin_user,
-            password=config.matrix_admin_password,
-            shared_secret=config.matrix_registration_shared_secret,
-        )
-        matrix_admin = await MatrixAdmin.create(
-            server_url=config.matrix_server,
-            admin_user=config.matrix_admin_user,
-            admin_password=config.matrix_admin_password,
-            shared_secret=config.matrix_registration_shared_secret,
-        )
-    else:
-        logger.warning(
-            "Running on the Postgres transport: no homeserver is contacted, "
-            "and media uploaded before the switch cannot be served"
-        )
-        matrix_admin = PostgresProvisioning(
-            session_factory=session_factory,
-            room_store=room_store,
-            client_store=client_store,
-            message_store=message_store,
-            invites=invites,
-        )
+    matrix_admin: Provisioning = PostgresProvisioning(
+        session_factory=session_factory,
+        room_store=room_store,
+        client_store=client_store,
+        message_store=message_store,
+        invites=invites,
+    )
 
     # One connection registry for the process. Created here rather than inside
-    # the agent bridge because the Matrix agent clients are wired first and read
+    # the agent bridge because the room clients are wired first and read
     # presence from it — an agent is reachable if it has a live connection OR a
     # fresh heartbeat row (CHOO-1857 stage B).
     connections = ConnectionRegistry()
@@ -286,7 +250,6 @@ async def run() -> None:
         client_store=client_store,
         session_factory=session_factory,
         config=config,
-        message_recorder=message_recorder,
         room_store=room_store,
         message_store=message_store,
         media_store=media_store,

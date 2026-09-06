@@ -26,7 +26,7 @@ init-env:
       exit 1
     fi
     cp .env.example .env
-    for key in DB_PASSWORD MATRIX_ADMIN_PASSWORD MATRIX_REGISTRATION_SHARED_SECRET \
+    for key in DB_PASSWORD \
                AGENT_REGISTRATION_TOKEN JWT_SECRET_KEY GATEWAY_ADMIN_PASSWORD \
                MATTERMOST_ADMIN_PASSWORD MATTERMOST_USER_PASSWORD; do
       secret="$(openssl rand -hex 24)"
@@ -38,8 +38,6 @@ init-env:
     echo "   The stack binds to 127.0.0.1 only (set SWITCH_BIND_ADDR to expose it)."
 
 # ── Dev infrastructure ─────────────────────────────────────────────────────────
-# Tuwunel self-initializes its signing key + database in its data volume on
-# first boot, so no pre-start key generation is needed.
 up:
     docker compose -f deploy/local/docker-compose.yml --project-directory . up -d --build
 
@@ -101,24 +99,6 @@ migrate:
     uv run --project core alembic -c core/alembic.ini upgrade head
 
 
-# ── Check the recorded messages against the message bus ───────────────────────
-# Messages are written to Postgres after the send is accepted, so a database
-# problem leaves a row missing for a message that was really delivered. This
-# walks each room's history and reports the difference. Exits non-zero on drift.
-# Needs a real deployment — the question it answers cannot be asked of fakes.
-#   just reconcile-messages --room <id> --since <iso8601> --verbose
-reconcile-messages *args:
-    uv run --project core python -m switch_core.cli.reconcile {{ args }}
-
-# ── Reconstruct room history from the bus into the message log ────────────────
-# Rows exist only from when the recorder was deployed; everything older is on
-# the homeserver and invisible to agents now that reads come from Postgres.
-# This walks each room to its start and writes what is missing, numbered below
-# the live log so nothing is redelivered. Safe to re-run. Start with --dry-run.
-#   just backfill-messages --dry-run --room <id>
-backfill-messages *args:
-    uv run --project core python -m switch_core.cli.backfill {{ args }}
-
 # ── Generate a new alembic migration ──────────────────────────────────────────
 migration msg:
     uv run --project core alembic -c core/alembic.ini revision --autogenerate -m "{{ msg }}"
@@ -127,7 +107,7 @@ migration msg:
 test *args:
     uv run --project core pytest -c core/pyproject.toml core/tests/ {{ args }}
 
-# ── Run integration tests (real Postgres + Tuwunel via testcontainers) ──────────
+# ── Run integration tests (real Postgres via testcontainers) ───────────────────
 # DOCKER_HOST is auto-resolved from the active docker context in conftest, so this
 # works under Docker Desktop / OrbStack / colima without extra setup.
 test-integration *args:

@@ -18,20 +18,6 @@ MATRIX_ROOM_ID = "!matrix:switch.local"
 SELF = "@switch-agent-1:switch.local"
 
 
-class _Recorder:
-    """Stands in for MessageRecorder, collecting the arrivals written."""
-
-    def __init__(self) -> None:
-        self.joins: list[str] = []
-        self.names: list[str] = []
-
-    async def record_join(
-        self, *, transport_room_id, event, client_id, member_name
-    ) -> None:
-        self.joins.append(event.event_id)
-        self.names.append(member_name)
-
-
 class _Client(ClientBase):
     def __init__(self) -> None:
         self.matrix_user_id = SELF
@@ -43,7 +29,6 @@ class _Client(ClientBase):
         self._startup_ts = 1000
         self.self_joins: list[str] = []
         self.member_events: list[str] = []
-        self.message_recorder = _Recorder()
 
     async def on_self_join(self, room, event) -> None:
         self.self_joins.append(room.room_id)
@@ -156,27 +141,3 @@ async def test_an_arrival_is_logged_even_when_it_is_not_announced() -> None:
     await client._handle_member_event(_room(), _member_event(timestamp=500))
 
     assert client.self_joins == []
-    assert client.message_recorder.joins == ["$member"]
-
-
-@pytest.mark.asyncio
-async def test_a_profile_update_is_not_logged_as_an_arrival() -> None:
-    client = _Client()
-
-    await client._handle_member_event(
-        _room(), _member_event(prev_membership="join", timestamp=3000)
-    )
-
-    assert client.message_recorder.joins == []
-
-
-@pytest.mark.asyncio
-async def test_another_member_arriving_is_not_this_client_to_log() -> None:
-    """Each client logs its own arrival, which is what makes it one row."""
-    client = _Client()
-
-    await client._handle_member_event(
-        _room(), _member_event(state_key="@switch-agent-2:switch.local")
-    )
-
-    assert client.message_recorder.joins == []

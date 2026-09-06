@@ -106,10 +106,6 @@ Other service hostnames (used in env vars and init containers).
 {{- include "switch.fullname" . }}-switch-core
 {{- end }}
 
-{{- define "switch.tuwunelHost" -}}
-{{- include "switch.fullname" . }}-tuwunel
-{{- end }}
-
 {{- define "switch.gatewayHost" -}}
 {{- include "switch.fullname" . }}-gateway
 {{- end }}
@@ -239,22 +235,8 @@ Include with `nindent 12`.
 {{- end }}
 - name: AGENT_AUTH_CACHE_TTL_SECONDS
   value: {{ .Values.switchCore.authCache.ttlSeconds | quote }}
-- name: MATRIX_SERVER
-  value: "http://{{ include "switch.tuwunelHost" . }}:8008"
 - name: MATRIX_SERVER_NAME
-  value: {{ .Values.tuwunel.serverName | quote }}
-- name: MATRIX_ADMIN_USER
-  value: admin
-- name: MATRIX_ADMIN_PASSWORD
-  valueFrom:
-    secretKeyRef:
-      name: {{ include "switch.secretName" . }}
-      key: MATRIX_ADMIN_PASSWORD
-- name: MATRIX_REGISTRATION_SHARED_SECRET
-  valueFrom:
-    secretKeyRef:
-      name: {{ include "switch.secretName" . }}
-      key: MATRIX_REGISTRATION_SHARED_SECRET
+  value: {{ .Values.clientIdentity.serverName | quote }}
 - name: AGENT_REGISTRATION_TOKEN
   valueFrom:
     secretKeyRef:
@@ -330,7 +312,7 @@ Usage: {{ include "switch.waitFor" (dict "name" "postgres" "host" (include "swit
 
 {{/*
 Wait-for-http init container template.
-Usage: {{ include "switch.waitForHttp" (dict "name" "tuwunel" "url" "http://host:8008/_matrix/client/versions") }}
+Usage: {{ include "switch.waitForHttp" (dict "name" "gateway" "url" "http://host:8000/health") }}
 */}}
 {{- define "switch.waitForHttp" -}}
 - name: wait-for-{{ .name }}

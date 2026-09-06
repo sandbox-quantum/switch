@@ -1,9 +1,9 @@
 """Smoke test for the integration harness.
 
 Proves the testcontainers stack boots and the in-process wiring works end-to-end:
-register agents, start their Matrix sync clients, create a room via RoomService,
-and confirm each agent's client actually joined the Matrix room. No feature under
-test — this only exercises the harness itself.
+register agents, start their clients, create a room via RoomService, and confirm
+each agent's client actually joined the room. No feature under test — this only
+exercises the harness itself.
 """
 
 from __future__ import annotations
@@ -15,16 +15,16 @@ import pytest
 from switch_core.room_service import RoomCreateConfig
 from tests.integration.conftest import Harness
 
-# Session-scoped event loop: the background matrix-nio sync clients are created
-# and torn down across tests; sharing one loop lets their aiohttp sessions
-# finalize cleanly instead of being stranded when a per-test loop is destroyed.
+# Session-scoped event loop: the background clients are created and torn down
+# across tests; sharing one loop lets their connections finalize cleanly instead
+# of being stranded when a per-test loop is destroyed.
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="session")]
 
 
 async def _wait_joined(
     client: object, matrix_room_id: str, timeout: float = 30
 ) -> None:
-    """Block until the agent's own client has joined the Matrix room."""
+    """Block until the agent's own client has joined the room."""
     deadline = asyncio.get_event_loop().time() + timeout
     while asyncio.get_event_loop().time() < deadline:
         if matrix_room_id in client.room_join_times:  # type: ignore[attr-defined]

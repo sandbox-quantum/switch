@@ -121,7 +121,6 @@ async def _make_agent(session: AsyncSession, name: str, user_id: str) -> Agent:
         matrix_user_id=f"@{name}:test.local",
         display_name=name,
         type="agent",
-        password="x",
     )
     session.add_all([api_key, client])
     await session.flush()
@@ -600,13 +599,11 @@ async def test_export_includes_users_from_bridge(env):
             matrix_user_id="@bridge:test.local",
             display_name="bridge",
             type="collaboration_bridge",
-            password="x",
         )
         user_client = Client(
             matrix_user_id="@bob:test.local",
             display_name="bob",
             type="external_user",
-            password="x",
         )
         session.add_all([bridge_client, user_client])
         await session.flush()

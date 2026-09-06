@@ -2,9 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import random
 import time
-from typing import TYPE_CHECKING, Literal, NotRequired, TypedDict
+from typing import TYPE_CHECKING, Literal, TypedDict
 
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -22,7 +21,6 @@ from switch_core.events import (
     TaskUpdate,
     ToolCallReport,
 )
-from switch_core.messages.recording import MessageRecording
 from switch_core.transport import (
     InboundCustomEvent,
     InboundEvent,
@@ -31,7 +29,6 @@ from switch_core.transport import (
     InboundMessage,
     MessageTransport,
     RoomRef,
-    SendResult,
     TransportError,
     TransportHandlers,
 )
@@ -41,18 +38,6 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-SYNC_STATE_INTERVAL = 30.0
-# Every client in this process starts when the process does, and its sync
-# long-poll is SYNC_STATE_INTERVAL as well, so a fixed interval has all of them
-# crossing the threshold in the same instant — hundreds of one-row transactions
-# competing for the connection pool at once. A per-client interval keeps them
-# spread out and stops them re-converging after a restart.
-SYNC_STATE_JITTER = 15.0
-# A sync that carried nothing durable still advances the cursor, and persisting
-# that is wasted work: resuming from the older cursor replays the same nothing.
-# The token should still not be left arbitrarily far behind the server, so an
-# unwritten one is flushed once it is this stale.
-SYNC_STATE_MAX_STALENESS = 900.0
 SYNC_MAX_RETRIES = 5
 SYNC_BACKOFF_BASE = 1.0
 SYNC_BACKOFF_CAP = 60.0
@@ -70,8 +55,8 @@ class ClientBaseKwargs[ConfigT: ClientConfig](TypedDict):
     sides: the subclass cannot be told it is missing something, and a caller
     cannot be told it is passing something that no longer exists. A stale
     `device_id=` type-checked clean that way and took all four collaboration
-    bridges down at startup — the credential had moved into `session_state`
-    and nothing said so until the process refused to start.
+    bridges down at startup — the credential had moved elsewhere and nothing
+    said so until the process refused to start.
 
     Declaring the shape here and unpacking it restores both checks without
     making every subclass restate eleven parameters.
@@ -80,15 +65,10 @@ class ClientBaseKwargs[ConfigT: ClientConfig](TypedDict):
     client_id: str
     matrix_user_id: str
     display_name: str
-    password: str
-    server_url: str
     session_factory: async_sessionmaker[AsyncSession]
     client_store: ClientStore
     config: ConfigT
     transport_factory: Callable[[ClientBase[ConfigT]], MessageTransport]
-    session_state: dict[str, str | None]
-    message_recorder: MessageRecording
-    next_batch_token: NotRequired[str | None]
 
 
 class ClientBase[ConfigT: ClientConfig]:
@@ -100,30 +80,17 @@ class ClientBase[ConfigT: ClientConfig]:
         client_id: str,
         matrix_user_id: str,
         display_name: str,
-        password: str,
-        server_url: str,
         session_factory: async_sessionmaker[AsyncSession],
         client_store: ClientStore,
         config: ConfigT,
         transport_factory: Callable[[ClientBase[ConfigT]], MessageTransport],
-        session_state: dict[str, str | None],
-        message_recorder: MessageRecording,
-        next_batch_token: str | None = None,
     ) -> None:
         self.client_id = client_id
         self.matrix_user_id = matrix_user_id
         self.display_name = display_name
-        self.password = password
-        self.server_url = server_url
         self.session_factory = session_factory
         self.client_store = client_store
         self.config = config
-        self.message_recorder = message_recorder
-
-        # Credentials the transport owns. Stored and handed back unread, so
-        # what authentication needs is the transport's business alone.
-        self.session_state = session_state
-        self.next_batch_token = next_batch_token
 
         self._transport_factory = transport_factory
         self.transport: MessageTransport | None = None
@@ -137,13 +104,6 @@ class ClientBase[ConfigT: ClientConfig]:
         self._self_join_dispatched: set[str] = set()
         self._ready = asyncio.Event()
         self._startup_ts: int = 0
-        self._sync_persist_interval = SYNC_STATE_INTERVAL + random.uniform(
-            0.0, SYNC_STATE_JITTER
-        )
-        self._last_sync_persist: float = time.monotonic() - random.uniform(
-            0.0, SYNC_STATE_INTERVAL
-        )
-        self._sync_state_dirty: bool = False
         self._running: bool = False
 
     async def wait_ready(self) -> None:
@@ -177,15 +137,13 @@ class ClientBase[ConfigT: ClientConfig]:
         """Block until this client is a member of `room_id`, up to `timeout`
         seconds. Returns True if joined, False on timeout. Callers that need to
         *send* into a room they have only just been invited to must await this
-        first — a send issued before the join lands is rejected by the
-        homeserver, and any event that does land before a member's join is
-        filtered out by `_should_ignore`.
+        first: any event that lands before a member's join is filtered out by
+        `_should_ignore`.
 
-        A join observed through sync sets the event, but a join that predates
-        this process never replays: the client resumes from a stored
-        `next_batch` token, so an incremental sync carries no member event for a
-        room it joined in an earlier run, and re-inviting an existing member is
-        a no-op. The homeserver is therefore asked directly before waiting."""
+        A join delivered to this client sets the event, but a join that
+        predates the process is never redelivered — delivery starts at each
+        room's head — and re-inviting an existing member is a no-op. Membership
+        is therefore read directly before waiting."""
         event = self._joined_event(room_id)
         if event.is_set():
             return True
@@ -219,7 +177,7 @@ class ClientBase[ConfigT: ClientConfig]:
         retries = 0
         while self._running:
             try:
-                await self._transport.receive_forever(since=self.next_batch_token)
+                await self._transport.receive_forever()
                 retries = 0
             except Exception:
                 if not self._running:
@@ -245,7 +203,6 @@ class ClientBase[ConfigT: ClientConfig]:
     async def stop(self) -> None:
         logger.info("Stopping client %s", self.matrix_user_id)
         self._running = False
-        await self._persist_state(force=True)
         await self.teardown()
         if self.transport is not None:
             await self.transport.close()
@@ -259,29 +216,16 @@ class ClientBase[ConfigT: ClientConfig]:
                 on_member_event=self._handle_member_event,
                 on_custom_event=self._handle_custom_event,
                 on_invite=self._handle_invite,
-                on_sync=self._handle_sync,
-                on_sync_error=self._handle_sync_error,
             )
         )
 
     async def teardown(self) -> None:
         pass
 
-    # ── Authentication ─────────────────────────────────────────────────────────
-
     async def _create_client(self) -> None:
-        before = dict(self.session_state)
         self.transport = self._transport_factory(self)
         await self.transport.connect()
-        self._absorb_session_state()
-        if self.session_state != before:
-            await self._persist_state(force=True)
-
         self._ready.set()
-
-    def _absorb_session_state(self) -> None:
-        """Take back whatever the transport wants persisted, without reading it."""
-        self.session_state = dict(self._transport.session_state)
 
     # ── Internal event handlers (filtering + dispatch to hooks) ────────────────
 
@@ -321,16 +265,6 @@ class ClientBase[ConfigT: ClientConfig]:
         if event.state_key == self.matrix_user_id:
             if event.membership == "join":
                 self._mark_joined(room.room_id, event.timestamp)
-                if event.prev_membership != "join":
-                    # Recorded on the arrival itself rather than under the
-                    # announcement guards below: the log wants every arrival,
-                    # including ones too old to be worth announcing.
-                    await self.message_recorder.record_join(
-                        transport_room_id=room.room_id,
-                        event=event,
-                        client_id=self.client_id,
-                        member_name=self.display_name,
-                    )
                 # A membership-preserving update (display name, avatar) re-fires
                 # m.room.member with membership == "join"; only a transition into
                 # membership is an arrival. Joins predating this process are not
@@ -436,28 +370,6 @@ class ClientBase[ConfigT: ClientConfig]:
                 "Error in handler for %s in %s", event.event_type, room.room_id
             )
 
-    async def _handle_sync(self, next_batch: str, durable: bool) -> None:
-        if not next_batch or next_batch == self.next_batch_token:
-            return
-        self.next_batch_token = next_batch
-        if durable:
-            await self._persist_state()
-            return
-        self._sync_state_dirty = True
-        if (time.monotonic() - self._last_sync_persist) >= SYNC_STATE_MAX_STALENESS:
-            await self._persist_state(force=True)
-
-    async def _handle_sync_error(self, message: str) -> None:
-        logger.error("Sync error for %s: %s", self.matrix_user_id, message)
-        if self.password:
-            logger.info("Attempting re-login for %s", self.matrix_user_id)
-            try:
-                await self._transport.relogin()
-            except TransportError as exc:
-                logger.error("%s", exc)
-                return
-            self._absorb_session_state()
-
     # ── Filtering ──────────────────────────────────────────────────────────────
 
     def _should_ignore(self, room: RoomRef, event: InboundEvent) -> bool:
@@ -548,7 +460,6 @@ class ClientBase[ConfigT: ClientConfig]:
         except TransportError as exc:
             logger.error("Failed to send message to %s: %s", room_id, exc)
             return None
-        await self._record(room_id, result)
         return result.event_id
 
     async def send_event(
@@ -561,7 +472,6 @@ class ClientBase[ConfigT: ClientConfig]:
         delivered when it was not corrupts whatever it was coordinating.
         """
         result = await self._transport.send_event(room_id, event_type, content)
-        await self._record(room_id, result)
         return result.event_id
 
     async def upload_media(self, data: bytes, content_type: str, filename: str) -> str:
@@ -616,17 +526,7 @@ class ClientBase[ConfigT: ClientConfig]:
         except TransportError as exc:
             logger.error("Failed to send media to %s: %s", room_id, exc)
             return None
-        await self._record(room_id, result)
         return result.event_id
-
-    async def _record(self, room_id: str, result: SendResult) -> None:
-        await self.message_recorder.record(
-            transport_room_id=room_id,
-            result=result,
-            sender_matrix_id=self.matrix_user_id,
-            sender_client_id=self.client_id,
-            sender_name=self.display_name,
-        )
 
     async def set_typing(self, room_id: str, is_typing: bool) -> None:
         await self._transport.set_typing(room_id, is_typing)
@@ -637,25 +537,3 @@ class ClientBase[ConfigT: ClientConfig]:
         if await self._transport.join_room(room_id):
             self._mark_joined(room_id, int(time.time() * 1000))
             logger.info("Client %s joined %s", self.matrix_user_id, room_id)
-
-    # ── State persistence ──────────────────────────────────────────────────────
-
-    async def _persist_state(self, force: bool = False) -> None:
-        now = time.monotonic()
-        if not force and (now - self._last_sync_persist) < self._sync_persist_interval:
-            self._sync_state_dirty = True
-            return
-
-        try:
-            async with self.session_factory() as session:
-                await self.client_store.update_state(
-                    session,
-                    self.client_id,
-                    next_batch_token=self.next_batch_token,
-                    **self.session_state,
-                )
-                await session.commit()
-            self._last_sync_persist = now
-            self._sync_state_dirty = False
-        except Exception:
-            logger.exception("Failed to persist state for %s", self.matrix_user_id)
