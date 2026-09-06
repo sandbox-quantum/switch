@@ -175,5 +175,48 @@ curl --data-binary @sample.eml \
 
 ## Teardown
 
-`just down` stops the stack and keeps the volumes; `just reset` drops them too.
-The `.env` holds generated secrets and is gitignored.
+Everything this runbook creates, most-contained first.
+
+**The branch.** `main` is untouched; nothing is pushed.
+
+```bash
+git checkout main && git branch -D feat/multi-surface-agent
+```
+
+**Gitignored, but on disk.** `console/node_modules` is ~1.1G and `core/.venv`
+~242M — the rest is small.
+
+```bash
+rm -f .env
+rm -rf core/.venv
+git clean -xdf console          # node_modules and every packages/*/dist
+```
+
+**Docker.** `just down` removes the containers and keeps the volumes; `just
+reset` drops the volumes too, and with them every agent, room and Matrix account
+the demo created.
+
+```bash
+just reset
+docker rmi switch-setup:latest jevolk/tuwunel:v1.7.1 \
+           mattermost/mattermost-team-edition:latest
+```
+
+**Not repo-local — the one thing worth knowing.** Making `pnpm` available
+installs corepack globally and writes shims into the global npm bin:
+
+```bash
+corepack disable && npm uninstall -g corepack && rm -rf ~/.cache/node/corepack
+```
+
+Nothing here is destructive on the way in: `just init-env` refuses to overwrite
+an existing `.env`, and no step touches `main`.
+
+**One trap.** Do not run a filtered install with `--ignore-scripts` and then a
+full one — Electron's postinstall downloads its binary, and the second install
+sees the package as present and skips it. The symptom is *"Electron failed to
+install correctly"* across ~100 desktop test suites. Fix:
+
+```bash
+rm -rf console/node_modules/electron && pnpm install
+```
