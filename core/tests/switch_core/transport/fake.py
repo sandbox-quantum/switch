@@ -21,32 +21,6 @@ from switch_core.transport import (
 )
 
 
-class FakeMessageRecorder:
-    """A `MessageRecorder` double for tests that send without a database."""
-
-    def __init__(self) -> None:
-        self.recorded: list[dict[str, Any]] = []
-
-    async def record(
-        self,
-        *,
-        transport_room_id: str,
-        result: SendResult,
-        sender_matrix_id: str,
-        sender_client_id: str,
-        sender_name: str,
-    ) -> None:
-        self.recorded.append(
-            {
-                "transport_room_id": transport_room_id,
-                "result": result,
-                "sender_matrix_id": sender_matrix_id,
-                "sender_client_id": sender_client_id,
-                "sender_name": sender_name,
-            }
-        )
-
-
 class FakeTransport:
     """Records what was sent and replays what it was primed with."""
 

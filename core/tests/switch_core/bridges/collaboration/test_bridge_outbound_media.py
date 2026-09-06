@@ -128,8 +128,8 @@ def _fake_bridge(
     recorded: list[dict[str, str]] = []
     lookup = matrix_to_external or {}
 
-    async def _external_post_for_matrix_event(matrix_event_id: str) -> str | None:
-        return lookup.get(matrix_event_id)
+    async def _external_post_for_matrix_event(transport_event_id: str) -> str | None:
+        return lookup.get(transport_event_id)
 
     async def _record_message_map(**kwargs: str) -> None:
         recorded.append(kwargs)
@@ -200,7 +200,7 @@ async def test_image_relays_via_send_attachment_and_records_map() -> None:
     assert bridge.recorded == [
         {
             "external_channel_id": "chan-1",
-            "matrix_event_id": "$media-event",
+            "transport_event_id": "$media-event",
             "external_post_id": "ext-ref-1",
         }
     ]
@@ -335,7 +335,7 @@ async def test_grouped_attachments_relay_as_one_platform_post() -> None:
     assert [f.filename for f in batch["files"]] == ["cat.png", "notes.md", "data.csv"]
     assert batch["caption"] == "three files"
     # The group correlates via its first event, so replies thread back.
-    assert bridge.recorded[0]["matrix_event_id"] == "$part-0"
+    assert bridge.recorded[0]["transport_event_id"] == "$part-0"
     assert bridge.recorded[0]["external_post_id"] == "ext-ref-3"
     assert bridge._outbound_groups == {}
 

@@ -391,6 +391,11 @@ class CreateModerationRoomRequest(BaseModel):
 class CreateModerationRoomResponse(BaseModel):
     id: str
     name: str
+    transport_room_id: str
+    # Deprecated alias of `transport_room_id`, sent for the compatibility
+    # window. Connectors are installed copies and only update when someone
+    # clicks Update, so both names are carried until the shipped ones have
+    # moved. Same value in both; nothing dereferences either.
     matrix_room_id: str
     # Attachments that failed at attach-time (after the room was created).
     # Empty on full success.

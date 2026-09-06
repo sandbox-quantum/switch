@@ -29,7 +29,9 @@ async def _agent(session: AsyncSession) -> Agent:
         type="agent",
     )
     client = Client(
-        matrix_user_id=f"@{name}:test", display_name=name, type="agent", password="x"
+        matrix_user_id=f"@{name}:test",
+        display_name=name,
+        type="agent",
     )
     session.add_all([api_key, client])
     await session.flush()

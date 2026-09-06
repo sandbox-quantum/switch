@@ -7,7 +7,7 @@ requires-python = ">=3.12"
 authors = [
     { name = "SandboxAQ" },
 ]
-keywords = ["ai", "agents", "orchestration", "governance", "matrix", "mcp"]
+keywords = ["ai", "agents", "orchestration", "governance", "mcp"]
 license = "LicenseRef-Apache-2.0-with-Commons-Clause"
 classifiers = [
     "Development Status :: 4 - Beta",
@@ -26,7 +26,6 @@ dependencies = [
     "alembic>=1.15,<2",
     "fastapi>=0.115,<1",
     "uvicorn>=0.34,<1",
-    "matrix-nio>=0.25,<0.26",
     "httpx>=0.28,<1",
     "Markdown>=3,<4",
     "slack-sdk>=3.41.0",

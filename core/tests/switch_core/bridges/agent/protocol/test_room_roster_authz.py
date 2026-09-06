@@ -45,7 +45,6 @@ class _FakeClientLifecycle:
                 matrix_user_id=f"@{display_name}:test",
                 display_name=display_name,
                 type=client_type,
-                password="x",
             )
             session.add(client)
             await session.commit()

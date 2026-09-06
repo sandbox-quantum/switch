@@ -92,7 +92,7 @@ class TestCommandThreadMapping:
         assert bridge.recorded == [
             {
                 "external_channel_id": "chan-1",
-                "matrix_event_id": "$cmd-event",
+                "transport_event_id": "$cmd-event",
                 "external_post_id": "mm-post-1",
             }
         ]
@@ -134,7 +134,7 @@ class TestCommandThreadMapping:
         assert bridge.recorded == [
             {
                 "external_channel_id": "chan-1",
-                "matrix_event_id": "$cmd-event",
+                "transport_event_id": "$cmd-event",
                 "external_post_id": "mm-root",
             }
         ]
@@ -234,7 +234,9 @@ class TestCommandResultThreadingRace:
             _adapter=SimpleNamespace(translate_inbound=lambda s: s),
             _pending_message_maps={},
             _bridge_id="b",
-            _bridge_message_map_store=SimpleNamespace(get_by_matrix_event_id=_get_none),
+            _bridge_message_map_store=SimpleNamespace(
+                get_by_transport_event_id=_get_none
+            ),
             _session_factory=lambda: _NullSession(),
             _ensure_user_in_matrix_room=_ensure_user_in_matrix_room,
             _matrix_event_for_external_post=_matrix_event_for_external_post,
@@ -247,12 +249,12 @@ class TestCommandResultThreadingRace:
         )
 
         async def _record_message_map(
-            *, external_channel_id: str, matrix_event_id: str, external_post_id: str
+            *, external_channel_id: str, transport_event_id: str, external_post_id: str
         ) -> None:
             # Simulate the reply's outbound relay resolving the thread root while
             # this write is still in flight.
             resolved["mid"] = await bridge._external_post_for_matrix_event(
-                matrix_event_id
+                transport_event_id
             )
 
         bridge._record_message_map = _record_message_map

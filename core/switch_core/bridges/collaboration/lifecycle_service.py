@@ -415,18 +415,10 @@ class CollaborationBridgeLifecycleService:
             client_id=bridge_client_record.id,
             matrix_user_id=bridge_client_record.matrix_user_id,
             display_name=bridge_client_record.display_name,
-            password=bridge_client_record.password,
-            server_url=self._config.matrix_server,
             session_factory=self._session_factory,
             client_store=self._client_store,
             config=BridgeClientConfig(bridge_id=bridge_id),
             transport_factory=self._client_factory.transport_for,
-            message_recorder=self._client_factory.recorder(),
-            session_state={
-                "access_token": bridge_client_record.access_token,
-                "device_id": bridge_client_record.device_id,
-            },
-            next_batch_token=bridge_client_record.next_batch_token,
         )
 
         task = asyncio.create_task(
