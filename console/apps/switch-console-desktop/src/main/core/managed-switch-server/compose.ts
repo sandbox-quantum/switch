@@ -82,6 +82,38 @@ export function composeUp(
   );
 }
 
+/**
+ * Run one command in a throwaway container of `service`, streaming its output.
+ *
+ * `--no-deps` so it uses the stack as it stands rather than starting anything,
+ * and the command replaces the service's own entrypoint — a one-off is run
+ * because its result matters, so it must not inherit an entrypoint written to
+ * keep the stack moving when it fails. Rejects on a non-zero exit.
+ */
+export function composeRunOneOff(
+  host: ServerHost,
+  service: string,
+  command: string[],
+  onLog: (line: string) => void
+): Promise<void> {
+  log.info(`local-switch-server: docker compose run ${service} (${host.label})`);
+  return host.streamCommand(
+    host.dockerBin,
+    [
+      ...baseArgs(host, ['--progress', 'plain']),
+      'run',
+      '--rm',
+      '--no-deps',
+      '--entrypoint',
+      command[0],
+      service,
+      ...command.slice(1),
+    ],
+    onLog,
+    { timeoutMs: COMPOSE_TIMEOUT_MS }
+  );
+}
+
 /** Stop and remove the stack's containers. `removeVolumes` also destroys the
  * data volumes (the reset path) — irreversible. */
 export async function composeDown(host: ServerHost, removeVolumes: boolean): Promise<void> {

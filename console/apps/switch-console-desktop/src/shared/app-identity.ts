@@ -61,3 +61,15 @@ export const RELEASE_REPO_NAME = 'switch';
 // derived pin would immediately point local-server mode at images that are not
 // on the registry yet.
 export const COMPATIBLE_SWITCH_VERSION = '0.23.0';
+
+// The last switch-core release that can still read a Matrix homeserver.
+//
+// Room history written before Switch moved to the Postgres message store lives
+// only on the homeserver, and only an image up to this version can copy it
+// across — the release after it removes the transport, the backfill command
+// and Tuwunel itself. Crossing this line without having run the backfill
+// strands that history where nothing will ever read it again, so the upgrade
+// runs the backfill first and refuses to cross if it fails.
+//
+// A stack already on a version above this has nothing to migrate.
+export const LAST_MATRIX_VERSION = '0.23.0';
