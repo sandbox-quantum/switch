@@ -44,6 +44,35 @@ version of their own to them without also giving them a release of their own.
 
 ### [Unreleased]
 
+### [0.24.0] - 2026-09-06
+
+#### Security
+- Mattermost connections verify TLS by default; disabling it is now an explicit
+  opt-in (#294).
+- OIDC logins are bound to the identity provider's `(iss, sub)` pair rather than
+  email, so a changed or reused email address can no longer take over an account
+  (#291).
+- Room roster changes are gated on room membership, not on a resource's
+  write-visibility (#292).
+- Room-scoped resource endpoints now require access to the room (#293).
+- Agent registration and re-registration are confined to the owner's tenant, and
+  re-registration cannot overwrite an agent owned by someone else (#290).
+
+#### Changed
+- **Internal message transport moved to Postgres `LISTEN`/`NOTIFY`.** The
+  message/notify path and event cursors are served from Postgres instead of
+  Matrix, which is kept alongside for now. Ships a database migration
+  (`message_notify_and_cursors`) (#363).
+
+#### Added
+- Agents render under their human display name on every collaboration bridge,
+  defused so an agent still never sees its own echo (#330).
+
+#### Fixed
+- `!command` now resolves `@mentions` and runs code-wrapped commands, matching
+  `/command` behaviour — both had broken once agents gained autocomplete user
+  groups (#313).
+
 ### [0.23.0] - 2026-09-03
 
 #### Performance
