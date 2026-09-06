@@ -20,7 +20,6 @@ def _config(**overrides: object) -> SwitchConfig:
         db_user="u",
         db_password="p",
         db_name="d",
-        matrix_server="http://homeserver.invalid",
         matrix_server_name="m",
         agent_registration_token="t",
         jwt_secret_key="secret",

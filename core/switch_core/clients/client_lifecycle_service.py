@@ -78,6 +78,7 @@ class ClientLifecycleService:
         if localpart is None:
             localpart = f"switch-{client_type}-{client_id[:8]}"
         matrix_user_id = self._make_user_id(localpart)
+
         record = Client(
             id=client_id,
             matrix_user_id=matrix_user_id,
