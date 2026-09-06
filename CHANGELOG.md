@@ -44,6 +44,16 @@ version of their own to them without also giving them a release of their own.
 
 ### [Unreleased]
 
+### [0.24.1] - 2026-09-06
+
+#### Changed
+- The one-time history backfill now carries a bounded amount of each room's
+  history — 50 messages per room, newest first, instead of walking every room
+  to its start (an unbounded migration that could never finish on a busy,
+  long-lived channel and ran at boot with switch-core waiting on it). Override
+  with `--messages-per-room` (`0` restores the old full walk). A capped room is
+  marked backfilled and reported as `capped`, not `incomplete` (#379).
+
 ### [0.24.0] - 2026-09-06
 
 #### Security

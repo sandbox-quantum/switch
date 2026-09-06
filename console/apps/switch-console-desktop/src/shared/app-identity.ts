@@ -78,4 +78,4 @@ export const COMPATIBLE_SWITCH_VERSION = '0.24.0';
 // moved into the package. 0.23.0 is published and predates that, so it is not
 // a valid value here however natural it looks: pointing at it would make every
 // crossing fail with ModuleNotFoundError, and the crossing is mandatory.
-export const LAST_MATRIX_VERSION = '0.24.0';
+export const LAST_MATRIX_VERSION = '0.24.1';
