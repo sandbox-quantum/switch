@@ -1241,6 +1241,14 @@ version of their own to them without also giving them a release of their own.
 
 ### [Unreleased]
 
+### [0.34.0] - 2026-09-06
+
+#### Changed
+- **Local-server mode drops Matrix.** The bundled standalone stack no longer
+  runs a Tuwunel service or sets `MATRIX_*` environment, matching switch-core
+  0.25.0; an existing local stack is migrated off Matrix on start. Bundles
+  **switch-core 0.25.0** (was 0.24.x) (#380).
+
 ### [0.33.0] - 2026-09-06
 
 #### Added
@@ -2969,6 +2977,11 @@ compatibility signal. History for those is in the git log.
 
 ### [Unreleased]
 
+### [0.9.14] - 2026-09-06
+#### Changed
+- Skill updated: Matrix references removed to match the Postgres-backed message
+  store (#380). Plugin version bumps so installs re-download.
+
 ### [0.9.13] - 2026-09-06
 #### Changed
 - Skills updated for agent display names: the switch and configure skills note
@@ -3211,6 +3224,11 @@ manifest history.
 
 ### [Unreleased]
 
+### [0.3.15] - 2026-09-06
+#### Changed
+- Skill updated: Matrix references removed to match the Postgres-backed message
+  store (#380). Plugin version bumps so installs re-download.
+
 ### [0.3.14] - 2026-09-06
 #### Changed
 - Skills updated for agent display names: the switch and configure skills note
@@ -3407,6 +3425,12 @@ for humans reading a diff rather than for an installer, and an install reports
 the app version that wrote it rather than a version of its own.
 
 ### [Unreleased]
+
+### [0.1.10] - 2026-09-06
+#### Changed
+- Skill updated: Matrix references removed to match the Postgres-backed message
+  store (#380). (Delivered at the next Switch Console update, which rewrites the
+  embedded connector.)
 
 ### [0.1.9] - 2026-09-06
 #### Changed
