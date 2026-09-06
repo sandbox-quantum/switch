@@ -72,4 +72,10 @@ export const COMPATIBLE_SWITCH_VERSION = '0.23.0';
 // runs the backfill first and refuses to cross if it fails.
 //
 // A stack already on a version above this has nothing to migrate.
-export const LAST_MATRIX_VERSION = '0.23.0';
+//
+// It must name a release that EXISTS and that CONTAINS the backfill command —
+// `switch_core.cli.backfill`, which only entered the image when the command
+// moved into the package. 0.23.0 is published and predates that, so it is not
+// a valid value here however natural it looks: pointing at it would make every
+// crossing fail with ModuleNotFoundError, and the crossing is mandatory.
+export const LAST_MATRIX_VERSION = '0.24.0';

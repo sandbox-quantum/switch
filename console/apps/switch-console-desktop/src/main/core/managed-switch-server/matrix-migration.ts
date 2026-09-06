@@ -18,13 +18,26 @@
  * one no-op container.
  */
 import { log } from '@main/lib/logger';
-import { LAST_MATRIX_VERSION } from '@shared/app-identity';
-import { composeRunOneOff } from './compose';
+import { LAST_MATRIX_VERSION, RELEASE_REPO_OWNER } from '@shared/app-identity';
+import { dockerRunOneOff } from './compose';
+import { GHCR_REGISTRY } from './constants';
 import { classifyVersionDrift } from './deployed-version';
 import type { ServerHost } from './host/types';
 
-/** The compose service that carries the backfill in a pre-flip stack. */
-const BACKFILL_SERVICE = 'backfill';
+/**
+ * Where the other containers are, from inside the stack's network.
+ *
+ * The stack's `.env` carries the credentials but not these: they live in each
+ * service's own definition in the compose file, and the whole point of running
+ * this by image rather than by compose service is not to depend on the version
+ * of that file the user happens to have. Compose service names, unchanged
+ * across every version this runs against.
+ */
+const STACK_ADDRESSES = {
+  DB_HOST: 'postgres',
+  DB_PORT: '5432',
+  MATRIX_SERVER: 'http://tuwunel:8008',
+};
 
 /**
  * Whether starting `pinned` against a stack running `deployed` moves it past
@@ -55,14 +68,18 @@ export function crossesMatrixBoundary(deployed: string, pinned: string): boolean
 export type BackfillOutcome = { ok: true } | { ok: false; detail: string };
 
 /**
- * Copy the homeserver's history into Postgres, using the stack as it is
- * currently deployed.
+ * Copy the homeserver's history into Postgres, against the stack as it is
+ * currently running.
  *
- * Runs as a one-off container of the stack's own `backfill` service, so it
- * inherits that stack's database, homeserver and credentials with nothing to
- * wire up — and runs the command directly rather than the service's entrypoint,
- * which is written to let the stack start anyway when the copy fails. Here that
- * failure is the whole point: it has to stop the upgrade.
+ * The image is pinned to {@link LAST_MATRIX_VERSION} rather than taken from
+ * the stack, and that is the point: the install that most needs this is the one
+ * that skipped that release, so its own images and its own compose file have no
+ * backfill in them at all. Pinning the image means the copy does not depend on
+ * which version the user happens to be coming from.
+ *
+ * Nothing here runs the compose service's entrypoint, which is written to let a
+ * stack start anyway when the copy fails. Here that failure is the whole point:
+ * it has to stop the upgrade.
  */
 export async function runBackfill(
   host: ServerHost,
@@ -70,10 +87,13 @@ export async function runBackfill(
 ): Promise<BackfillOutcome> {
   log.info(`managed-switch-server: backfilling room history before the upgrade (${host.label})`);
   try {
-    await composeRunOneOff(
+    await dockerRunOneOff(
       host,
-      BACKFILL_SERVICE,
-      ['python', '-m', 'switch_core.cli.backfill', '--allow-empty'],
+      {
+        image: `${GHCR_REGISTRY}/${RELEASE_REPO_OWNER}/switch-core:${LAST_MATRIX_VERSION}`,
+        command: ['python', '-m', 'switch_core.cli.backfill', '--allow-empty'],
+        env: STACK_ADDRESSES,
+      },
       onLog
     );
     return { ok: true };

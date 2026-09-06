@@ -13,7 +13,7 @@ import type { ServerHost } from './host/types';
 
 const readDeployedVersionMock = vi.hoisted(() => vi.fn());
 const composeUpMock = vi.hoisted(() => vi.fn(() => Promise.resolve()));
-const composeRunOneOffMock = vi.hoisted(() => vi.fn(() => Promise.resolve()));
+const dockerRunOneOffMock = vi.hoisted(() => vi.fn(() => Promise.resolve()));
 
 vi.mock('@shared/app-identity', async (importOriginal) => ({
   ...(await importOriginal<typeof AppIdentity>()),
@@ -29,7 +29,7 @@ vi.mock('./deployed-version', async (importOriginal) => ({
 }));
 vi.mock('./compose', () => ({
   composeUp: composeUpMock,
-  composeRunOneOff: composeRunOneOffMock,
+  dockerRunOneOff: dockerRunOneOffMock,
   composeDown: vi.fn(() => Promise.resolve()),
   runningImages: vi.fn(),
   isStackRunning: vi.fn(),
@@ -98,7 +98,7 @@ describe('startStack across the Matrix boundary', () => {
       order.push('compose-up');
       return Promise.resolve();
     });
-    composeRunOneOffMock.mockImplementation(() => {
+    dockerRunOneOffMock.mockImplementation(() => {
       order.push('backfill');
       return Promise.resolve();
     });
@@ -111,10 +111,14 @@ describe('startStack across the Matrix boundary', () => {
     // The old stack comes up and is drained before the new compose file lands:
     // that file is what removes the homeserver being read from.
     expect(order.slice(0, 3)).toEqual(['compose-up', 'backfill', 'write']);
-    expect(composeRunOneOffMock).toHaveBeenCalledWith(
+    // Pinned to the boundary image, not to whatever the stack is running: the
+    // install that needs this most is the one whose own images have no backfill.
+    expect(dockerRunOneOffMock).toHaveBeenCalledWith(
       expect.anything(),
-      'backfill',
-      ['python', '-m', 'switch_core.cli.backfill', '--allow-empty'],
+      expect.objectContaining({
+        image: 'ghcr.io/sandbox-quantum/switch-core:0.23.0',
+        command: ['python', '-m', 'switch_core.cli.backfill', '--allow-empty'],
+      }),
       expect.anything()
     );
   });
@@ -125,7 +129,7 @@ describe('startStack across the Matrix boundary', () => {
       version: '0.22.1',
       source: 'container',
     });
-    composeRunOneOffMock.mockRejectedValue(new Error('homeserver unreachable'));
+    dockerRunOneOffMock.mockRejectedValue(new Error('homeserver unreachable'));
     const { opts, writeFile } = options();
 
     const result = await startStack(opts);
@@ -148,7 +152,7 @@ describe('startStack across the Matrix boundary', () => {
     const { opts } = options();
 
     expect(await startStack(opts)).toEqual({ kind: 'started', serverId: 'srv-1' });
-    expect(composeRunOneOffMock).not.toHaveBeenCalled();
+    expect(dockerRunOneOffMock).not.toHaveBeenCalled();
   });
 
   it('does not copy for a checkout build', async () => {
@@ -162,6 +166,6 @@ describe('startStack across the Matrix boundary', () => {
     const { opts } = options('/src/switch');
 
     await startStack(opts);
-    expect(composeRunOneOffMock).not.toHaveBeenCalled();
+    expect(dockerRunOneOffMock).not.toHaveBeenCalled();
   });
 });

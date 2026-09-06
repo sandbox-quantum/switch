@@ -83,31 +83,42 @@ export function composeUp(
 }
 
 /**
- * Run one command in a throwaway container of `service`, streaming its output.
+ * Run one command in a throwaway container of `image`, on the stack's network.
  *
- * `--no-deps` so it uses the stack as it stands rather than starting anything,
- * and the command replaces the service's own entrypoint — a one-off is run
- * because its result matters, so it must not inherit an entrypoint written to
- * keep the stack moving when it fails. Rejects on a non-zero exit.
+ * Deliberately `docker run` and not `compose run`: the caller needs a specific
+ * image, and the compose file on disk is whatever version the stack was last
+ * started with. A `compose run` would take the service definition — and the
+ * image — from that file, which for the case this exists to serve does not
+ * contain the service at all.
+ *
+ * The stack's `.env` supplies the credentials. What it cannot supply is where
+ * the other containers are: those come from each service's own definition in
+ * the compose file, so the few that matter are passed explicitly here. They are
+ * compose service names, stable across the versions this runs against, and
+ * they override anything the `.env` says — a `.env` written for the host names
+ * `localhost`, which is not where Postgres is from inside the network.
+ *
+ * Rejects on a non-zero exit.
  */
-export function composeRunOneOff(
+export function dockerRunOneOff(
   host: ServerHost,
-  service: string,
-  command: string[],
+  spec: { image: string; command: string[]; env: Record<string, string> },
   onLog: (line: string) => void
 ): Promise<void> {
-  log.info(`local-switch-server: docker compose run ${service} (${host.label})`);
+  log.info(`local-switch-server: docker run ${spec.image} (${host.label})`);
+  const env = Object.entries(spec.env).flatMap(([key, value]) => ['-e', `${key}=${value}`]);
   return host.streamCommand(
     host.dockerBin,
     [
-      ...baseArgs(host, ['--progress', 'plain']),
       'run',
       '--rm',
-      '--no-deps',
-      '--entrypoint',
-      command[0],
-      service,
-      ...command.slice(1),
+      '--network',
+      `${host.composeProjectName}_default`,
+      '--env-file',
+      ENV_FILE_NAME,
+      ...env,
+      spec.image,
+      ...spec.command,
     ],
     onLog,
     { timeoutMs: COMPOSE_TIMEOUT_MS }
