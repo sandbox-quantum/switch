@@ -42,6 +42,13 @@ export {
   type ReapOutcome,
 } from './reap';
 export {
+  MultiRoomHost,
+  type Clock,
+  type HostLogger,
+  type MultiRoomHostDeps,
+  type Turn,
+} from './host';
+export {
   advance,
   due,
   MAX_TIMER_MS,

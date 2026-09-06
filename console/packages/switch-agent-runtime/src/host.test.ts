@@ -108,8 +108,12 @@ describe('turns do not overlap', () => {
      * half of the other.
      */
     let release!: () => void;
+    let started!: () => void;
     const inFlight = new Promise<void>((resolve) => {
       release = resolve;
+    });
+    const firstStarted = new Promise<void>((resolve) => {
+      started = resolve;
     });
     let concurrent = 0;
     let peak = 0;
@@ -118,7 +122,10 @@ describe('turns do not overlap', () => {
       onTurn: async () => {
         concurrent += 1;
         peak = Math.max(peak, concurrent);
-        if (concurrent === 1) await inFlight;
+        if (concurrent === 1) {
+          started();
+          await inFlight;
+        }
         concurrent -= 1;
       },
     });
@@ -126,6 +133,9 @@ describe('turns do not overlap', () => {
 
     const first = host.deliver(message(ROOM_A, 'one'));
     const second = host.deliver(message(ROOM_B, 'two'));
+    // A turn begins on a microtask, so wait for the first to actually be in
+    // flight — asserting synchronously would only prove nothing had run yet.
+    await firstStarted;
     expect(turns).toHaveLength(1);
 
     release();
@@ -375,14 +385,20 @@ describe('stop', () => {
     });
     let finished = false;
 
+    let started!: () => void;
+    const hasStarted = new Promise<void>((resolve) => {
+      started = resolve;
+    });
     const { host } = harness({
       onTurn: async () => {
+        started();
         await inFlight;
         finished = true;
       },
     });
     await host.start();
     const turn = host.deliver(message(ROOM_A, 'mid-thought'));
+    await hasStarted;
 
     const stopping = host.stop();
     release();
