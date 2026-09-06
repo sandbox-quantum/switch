@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { MultiRoomHost, type Clock, type Turn } from './host';
-import { serialiseWakeups, type Wakeup } from './schedule';
+import { MAX_TIMER_MS, serialiseWakeups, type Wakeup } from './schedule';
 
 /**
  * The process that is a multi-room agent.
@@ -44,16 +44,21 @@ function fakeClock(startMs = NOW) {
         };
       },
     } satisfies Clock,
-    /** Move time forward and fire the timer if it is due. */
-    async advance(byMs: number) {
+    /**
+     * Move time forward and fire the timer if it is due.
+     *
+     * The caller drains the host afterwards rather than this counting
+     * microtasks: a tick count is only ever right for the current shape of the
+     * code, and adding one `await` inside the wake-up path silently turns a
+     * negative test into one that passes because nothing has happened yet.
+     */
+    advance(byMs: number) {
       current += byMs;
       const due = pending;
       if (due && due.at <= current) {
         pending = null;
         due.fire();
       }
-      await Promise.resolve();
-      await Promise.resolve();
     },
     armed: () => pending !== null,
     delay: () => (pending ? pending.at - current : null),
@@ -61,6 +66,16 @@ function fakeClock(startMs = NOW) {
 }
 
 const SILENT = { debug() {}, warn() {}, error() {} };
+
+/** Move the clock and let the host finish whatever that started. */
+async function advanced(
+  host: MultiRoomHost,
+  time: { advance(ms: number): void },
+  byMs: number
+): Promise<void> {
+  time.advance(byMs);
+  await host.settled();
+}
 
 function message(roomId: string, body: string) {
   return {
@@ -146,7 +161,19 @@ describe('turns do not overlap', () => {
   });
 
   it('keeps queued events in the order they arrived', async () => {
-    const { host, turns } = harness();
+    /**
+     * The turns take differing time on purpose. With every turn synchronous the
+     * pushes come out in call order whether or not anything is serialised, so
+     * the test would pass with the chain removed — the first turn has to be the
+     * slowest for unordered completion to reorder them.
+     */
+    const delays: Record<string, number> = { first: 3, second: 2, third: 1 };
+    const { host, turns } = harness({
+      onTurn: async (turn) => {
+        const body = turn.kind === 'event' ? (turn.event.payload as { body: string }).body : '';
+        for (let i = 0; i < (delays[body] ?? 0); i++) await Promise.resolve();
+      },
+    });
     await host.start();
 
     await Promise.all([
@@ -236,7 +263,7 @@ describe('scheduled wake-ups', () => {
     });
     await host.start();
 
-    await time.advance(1000);
+    await advanced(host, time, 1000);
 
     expect(turns).toHaveLength(1);
     expect(turns[0].kind).toBe('wakeup');
@@ -246,29 +273,44 @@ describe('scheduled wake-ups', () => {
   it('a wake-up waits its turn like anything else', async () => {
     /** It is a turn in the same one context, not a second thread of thought. */
     let release!: () => void;
+    let started!: () => void;
     const blocked = new Promise<void>((resolve) => {
       release = resolve;
+    });
+    const firstStarted = new Promise<void>((resolve) => {
+      started = resolve;
     });
     let concurrent = 0;
     let peak = 0;
 
-    const { host, time } = harness({
+    const { host, turns, time } = harness({
       stored: [{ id: 'w1', atMs: NOW + 1000, note: 'digest' }],
       onTurn: async () => {
         concurrent += 1;
         peak = Math.max(peak, concurrent);
-        if (concurrent === 1) await blocked;
+        if (concurrent === 1) {
+          started();
+          await blocked;
+        }
         concurrent -= 1;
       },
     });
     await host.start();
 
     const event = host.deliver(message(ROOM_A, 'hello'));
-    await time.advance(1000);
+    await firstStarted;
+    // Fired while the event turn is still in flight, and not drained here —
+    // draining would wait on the very turn this test is holding open.
+    time.advance(1000);
     release();
     await event;
+    await host.settled();
 
     expect(peak).toBe(1);
+    // Both ran. Asserting only `peak` would pass just as well if the wake-up
+    // had been dropped, the timer never armed, or the cycle thrown.
+    expect(turns).toHaveLength(2);
+    expect(turns[1].kind).toBe('wakeup');
   });
 
   it('does not fire a wake-up into a room it no longer holds', async () => {
@@ -283,7 +325,7 @@ describe('scheduled wake-ups', () => {
     await host.start();
 
     host.acceptRooms([ROOM_A]);
-    await time.advance(1000);
+    await advanced(host, time, 1000);
 
     expect(turns).toHaveLength(0);
   });
@@ -297,7 +339,7 @@ describe('scheduled wake-ups', () => {
     });
     await host.start();
 
-    await time.advance(1000);
+    await advanced(host, time, 1000);
 
     expect(time.delay()).toBe(4000);
   });
@@ -309,7 +351,7 @@ describe('scheduled wake-ups', () => {
     });
     await host.start();
 
-    await time.advance(1000);
+    await advanced(host, time, 1000);
 
     expect(saved).not.toHaveLength(0);
     expect(JSON.parse(saved[saved.length - 1])).toEqual([]);
@@ -324,12 +366,43 @@ describe('scheduled wake-ups', () => {
   });
 
   it('rehydrates rather than starting empty after a restart', async () => {
-    const stored: Wakeup[] = [{ id: 'w1', atMs: NOW + 60_000, note: 'survives' }];
-    const { host, time } = harness({ stored });
+    /**
+     * An actual restart: one host writes the schedule, a second reads what it
+     * wrote and fires it. Asserting only that the first host armed a timer
+     * tests the same path as the case above and calls it a restart.
+     */
+    const written: string[] = [];
+    let stored = serialiseWakeups([]);
+    const time = fakeClock();
+    const turns: Turn[] = [];
 
-    await host.start();
+    const make = () =>
+      new MultiRoomHost({
+        rooms: [ROOM_A],
+        clock: time.clock,
+        log: SILENT,
+        loadSchedule: async () => stored,
+        saveSchedule: async (text) => {
+          written.push(text);
+          stored = text;
+        },
+        onTurn: async (turn) => {
+          turns.push(turn);
+        },
+      });
 
-    expect(time.armed()).toBe(true);
+    const first = make();
+    await first.start();
+    await first.schedule({ id: 'w1', atMs: NOW + 1000, note: 'survives', roomId: ROOM_A });
+    await first.stop();
+
+    const second = make();
+    await second.start();
+    time.advance(1000);
+    await second.settled();
+
+    expect(turns).toHaveLength(1);
+    expect(turns[0].kind).toBe('wakeup');
   });
 });
 
@@ -364,6 +437,111 @@ describe('gaps', () => {
   });
 });
 
+// ── Losing a room, or the connection ─────────────────────────────────────────
+
+describe('what stops the agent acting', () => {
+  it('drops a turn for a room taken away while it was queued', async () => {
+    /**
+     * The guard where the turn is accepted does not cover this: a turn waits
+     * behind whatever is running, and the room can be claimed during that wait.
+     * Replying into a room the agent has lost is not something it can be owed,
+     * unlike finishing a turn accepted before a stop.
+     */
+    let release!: () => void;
+    let started!: () => void;
+    const blocked = new Promise<void>((r) => {
+      release = r;
+    });
+    const firstStarted = new Promise<void>((r) => {
+      started = r;
+    });
+    let seen = 0;
+
+    const { host, turns } = harness({
+      onTurn: async () => {
+        seen += 1;
+        if (seen === 1) {
+          started();
+          await blocked;
+        }
+      },
+    });
+    await host.start();
+
+    const first = host.deliver(message(ROOM_A, 'thinking'));
+    await firstStarted;
+    const queued = host.deliver(message(ROOM_B, 'will be stale'));
+    host.acceptRooms([ROOM_A]);
+    release();
+    await Promise.all([first, queued]);
+
+    expect(turns).toHaveLength(1);
+  });
+
+  it('keeps the gap when the turn that would have carried it fails', async () => {
+    /**
+     * A gap says the agent is missing events. Losing it because the turn
+     * carrying it threw leaves the agent answering from a stale picture with
+     * nothing saying so — and a failing turn and a gap share their causes, so
+     * they arrive together.
+     */
+    let seen = 0;
+    const { host, turns } = harness({
+      onTurn: async () => {
+        seen += 1;
+        if (seen === 1) throw new Error('the model fell over');
+      },
+    });
+    await host.start();
+
+    host.noteGap('buffer overflowed');
+    await host.deliver(message(ROOM_A, 'one'));
+    await host.deliver(message(ROOM_A, 'two'));
+
+    expect(turns[1].gap).toContain('buffer overflowed');
+  });
+
+  it('stops waking and stops holding rooms when it is evicted', async () => {
+    /**
+     * Not a shutdown — nothing was finished and nothing asked for it. Another
+     * stream took the connection over, so the agent no longer holds any room;
+     * left as it was it would keep firing scheduled work into rooms it was
+     * evicted from while the process looked healthy.
+     */
+    const { host, turns, time } = harness({
+      stored: [{ id: 'w1', atMs: NOW + 1000, note: 'digest', roomId: ROOM_A }],
+    });
+    await host.start();
+
+    host.evicted('another stream took this connection');
+
+    expect(host.rooms).toEqual([]);
+    expect(time.armed()).toBe(false);
+    await advanced(host, time, 1000);
+    expect(turns).toHaveLength(0);
+  });
+
+  it('a wake-up further out than a timer can hold re-arms across hops', async () => {
+    /**
+     * `nextDelayMs` clamps, so the first timer expires with nothing due. The
+     * cycle has to notice that and arm again rather than treating an empty
+     * `due` as the end of the schedule.
+     */
+    const { host, turns, time } = harness({
+      stored: [{ id: 'far', atMs: NOW + MAX_TIMER_MS + 5000, note: 'monthly' }],
+    });
+    await host.start();
+
+    expect(time.delay()).toBe(MAX_TIMER_MS);
+    await advanced(host, time, MAX_TIMER_MS);
+    expect(turns).toHaveLength(0);
+    expect(time.delay()).toBe(5000);
+
+    await advanced(host, time, 5000);
+    expect(turns).toHaveLength(1);
+  });
+});
+
 // ── Shutting down ────────────────────────────────────────────────────────────
 
 describe('stop', () => {
@@ -376,6 +554,33 @@ describe('stop', () => {
     await host.stop();
 
     expect(time.armed()).toBe(false);
+  });
+
+  it('drains the turns a wake-up queued, not just the cycle that found them', async () => {
+    /**
+     * The wake-up cycle awaits a write before queueing the turns it found due,
+     * so awaiting the chain once returns through that window — and those turns
+     * then run against a transport the caller believed drained, posting into a
+     * room after `stop` resolved or dying mid-sentence when the process exits.
+     */
+    let finished = false;
+    const { host, time } = harness({
+      stored: [{ id: 'w1', atMs: NOW + 1000, note: 'digest', roomId: ROOM_A }],
+      onTurn: async () => {
+        // Genuinely suspends, so "the turn ran to completion" is distinguishable
+        // from "the turn was entered". Asserting only that it started passes
+        // whether or not `stop` waited.
+        await Promise.resolve();
+        await Promise.resolve();
+        finished = true;
+      },
+    });
+    await host.start();
+
+    time.advance(1000);
+    await host.stop();
+
+    expect(finished).toBe(true);
   });
 
   it('waits for the turn in flight rather than cutting it off', async () => {

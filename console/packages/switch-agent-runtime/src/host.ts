@@ -107,7 +107,37 @@ export class MultiRoomHost {
   async stop(): Promise<void> {
     this.running = false;
     this.disarm();
-    await this.tail;
+    await this.settled();
+  }
+
+  /**
+   * Resolve once the chain has stopped moving.
+   *
+   * Awaiting the tail *once* is not enough: a turn can queue another, and the
+   * wake-up cycle awaits a write before queueing the turns it found due — so a
+   * single await returns through that window, and those turns then run against
+   * a transport the caller believed drained.
+   */
+  async settled(): Promise<void> {
+    for (let seen = this.tail; ; seen = this.tail) {
+      await seen;
+      if (this.tail === seen) return;
+    }
+  }
+
+  /**
+   * Another stream took this connection over.
+   *
+   * Not a shutdown: nothing was finished and nothing asked for this. The agent
+   * has stopped receiving and no longer holds any room, so it must stop acting
+   * as though it does — otherwise scheduled work keeps firing into rooms it was
+   * evicted from while the process looks healthy.
+   */
+  evicted(reason: string): void {
+    this.deps.log.error('MultiRoomHost: evicted, no longer acting in any room', { reason });
+    this.running = false;
+    this.disarm();
+    this.roomSet = [];
   }
 
   /** What the event stream calls. */
@@ -126,7 +156,16 @@ export class MultiRoomHost {
 
   /** Adopt the server's room list; it is the authority on what we cover. */
   acceptRooms(rooms: string[]): void {
+    const lost = this.roomSet.filter((room) => !rooms.includes(room));
     this.roomSet = [...rooms];
+    if (rooms.length === 0) {
+      // A malformed `connection_state` frame also lands here, since the stream
+      // filters non-strings out of the list. Either way the agent now silently
+      // drops every event while looking healthy, which is worth an error.
+      this.deps.log.error('MultiRoomHost: the server says we cover no rooms at all');
+    } else if (lost.length > 0) {
+      this.deps.log.warn('MultiRoomHost: rooms taken from this connection', { lost });
+    }
   }
 
   noteGap(reason: string): void {
@@ -149,32 +188,73 @@ export class MultiRoomHost {
   // ── Serialising ────────────────────────────────────────────────────────────
 
   /**
-   * Queue one turn behind whatever is running.
+   * Put work on the chain, isolated so it cannot poison what follows.
    *
-   * The returned promise resolves when *this* turn is done, so a caller can
-   * await its own work — but the chain is what enforces the ordering, and it
-   * never rejects: a turn that throws is logged and the next one still runs.
-   * One bad turn must not silence the agent for the rest of the session.
+   * Everything that must not overlap goes through here — turns and the wake-up
+   * cycle alike. The returned promise never rejects: a failure is logged and
+   * the next piece of work still runs, because one bad turn must not silence
+   * the agent for the rest of the session.
    */
-  private run(turn: Turn): Promise<void> {
+  private append(work: () => Promise<void>): Promise<void> {
     const next = this.tail.then(async () => {
-      // No `running` check here. Whether to accept work is decided when it
-      // arrives — `deliver` refuses after stop, and `stop` disarms the timer —
-      // so anything that reaches this point was accepted while running and is
-      // owed completion. Checking here instead discards a turn that had been
-      // accepted but had not yet had a chance to start.
+      try {
+        await work();
+      } catch (error) {
+        this.logSafely('MultiRoomHost: queued work failed', error);
+      }
+    });
+    this.tail = next;
+    return next;
+  }
+
+  /**
+   * Log without letting the logger take the host down.
+   *
+   * This is the only statement inside the chain that is not already guarded, so
+   * a logger that throws would reject the tail and every `.then` after it would
+   * short-circuit — the host silent for good, and `stop` rejecting.
+   */
+  private logSafely(message: string, error: unknown): void {
+    try {
+      this.deps.log.error(message, {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    } catch {
+      // Nothing useful left to do; losing the line is better than the process.
+    }
+  }
+
+  private run(turn: Turn): Promise<void> {
+    return this.append(async () => {
+      // Re-checked here, not only where the turn was accepted. A turn waits
+      // behind whatever is running, and the room can be claimed by a session
+      // during that wait — replying into a room the agent has lost is not
+      // something it can be owed, unlike finishing a turn accepted before a
+      // stop.
+      if (turn.roomId !== undefined && !this.roomSet.includes(turn.roomId)) {
+        this.deps.log.warn('MultiRoomHost: dropped a queued turn for a room we no longer hold', {
+          roomId: turn.roomId,
+        });
+        return;
+      }
+
+      // No `running` check. Whether to accept work is decided when it arrives —
+      // `deliver` refuses after stop, and `stop` disarms the timer — so
+      // anything reaching this point was accepted while running and is owed
+      // completion.
       const gap = this.pendingGap;
       if (gap !== null) this.pendingGap = null;
       try {
         await this.deps.onTurn(gap !== null ? { ...turn, gap } : turn);
       } catch (error) {
-        this.deps.log.error('MultiRoomHost: a turn failed', {
-          error: error instanceof Error ? error.message : String(error),
-        });
+        // Put the gap back. It says the agent is missing events, and losing it
+        // because the turn that would have carried it failed leaves the agent
+        // answering from a stale picture with nothing saying so — and a failing
+        // turn and a gap have the same causes, so they arrive together.
+        if (gap !== null && this.pendingGap === null) this.pendingGap = gap;
+        this.logSafely('MultiRoomHost: a turn failed', error);
       }
     });
-    this.tail = next;
-    return next;
   }
 
   // ── Waking up ──────────────────────────────────────────────────────────────
@@ -189,8 +269,10 @@ export class MultiRoomHost {
     if (!this.running) return;
     const delay = nextDelayMs(this.wakeups, this.deps.clock.now());
     if (delay === null) return;
+    // On the chain, not beside it: `fire` awaits a write before queueing its
+    // turns, and off-chain that window is one `stop` can return through.
     this.cancelTimer = this.deps.clock.setTimer(delay, () => {
-      void this.fire();
+      void this.append(() => this.fire());
     });
   }
 
@@ -200,8 +282,10 @@ export class MultiRoomHost {
 
     // The schedule moves on whether or not each wake-up ends up running: a
     // recurrence aimed at a room we have lost is still due again next week.
-    this.wakeups = reschedule(this.wakeups, ready, now);
-    await this.persist();
+    if (ready.length > 0) {
+      this.wakeups = reschedule(this.wakeups, ready, now);
+      await this.persist();
+    }
     this.arm();
 
     for (const wakeup of ready) {
@@ -226,9 +310,7 @@ export class MultiRoomHost {
       // Loud, and not fatal. The schedule is still correct in memory; what is
       // lost is its survival of a restart, and stopping the agent over that
       // would trade a degraded feature for no agent at all.
-      this.deps.log.error('MultiRoomHost: could not persist the schedule', {
-        error: error instanceof Error ? error.message : String(error),
-      });
+      this.logSafely('MultiRoomHost: could not persist the schedule', error);
     }
   }
 }
