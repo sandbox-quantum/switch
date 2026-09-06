@@ -593,15 +593,12 @@ tested?". The answer was no, in three places. Two are closed; one is open.
   tested by nothing. `test_room_instructions_disclosure.py` now covers it, and
   reintroducing the original bug turns 11 of its 12 tests red.
 
-### Open
+### Closed since
 
-- **`agent.ts` has never been reviewed.** It was written after the host review,
-  so no reviewer has seen the wiring.
-- **No fix commit has been reviewed.** `b9954060`, `4aac1788` and `196a6110`
-  are roughly a thousand lines of largely security-relevant change, written in
-  response to review and then reviewed by nobody. That is the largest remaining
-  hole in the process, and it is structural rather than accidental: the loop as
-  run here reviews implementations and not their corrections.
+- **`agent.ts` and every fix commit have now been reviewed.** See "Reviewing the
+  corrections" below. Doing it found the original exploit still open.
+
+### Open
 - **Three behaviour changes have only incidental coverage**: the `audience`
   field on `RoomMeta` and its threading through nine envelope sites, the
   `authenticates_senders` startup warning, and the `surfaceMeta` wiring in
@@ -611,3 +608,85 @@ tested?". The answer was no, in three places. Two are closed; one is open.
   have never run here (testcontainers stalls), and the desktop app has no
   `node_modules`, so `switch-event-format.ts` and its tests are verified by
   inspection only. Both need a real run before merge.
+
+
+---
+
+## Reviewing the corrections
+
+The audit above noted that no fix commit had been reviewed — roughly a thousand
+lines of mostly security-relevant change, written immediately after a reviewer
+said what was wrong, and then seen by nobody. Two reviewers were pointed at
+exactly that, and told to look for incomplete fixes, over-corrections, and bugs
+introduced by the fix.
+
+**It was the highest-yield review of the branch.**
+
+### The exploit was still open — twice
+
+The DMARC forgery "fixed" in `4aac1788` remained exploitable by two other
+routes, both demonstrated by execution:
+
+1. **A quoted semicolon.** Anchoring the verdict to the head of a
+   `;`-separated chunk is worth nothing if the sender chooses where chunks
+   begin — and a quoted local part may legally contain a semicolon, so
+   `smtp.mailfrom="x;dmarc=pass"@evil.example` invents a boundary and puts a
+   forged verdict at the head of the chunk after it.
+2. **A quoted authserv-id containing a space.** `_authserv_id` took the first
+   whitespace token and stripped quotes afterwards, so `"mx.ours evil"` read as
+   `mx.ours`. A border MTA strips a pre-existing header only on an *exact* match
+   of its own id, so that header is never stripped — the attacker prepends it
+   themselves and needs no MTA at all.
+
+And a third route to the same place: a non-verdict like `dmarc=none` was
+*skipped* rather than recorded, leaving the method unset so a later smuggled
+`dmarc=pass` filled the gap. `dmarc=none` is the ordinary case for a domain
+publishing no policy, so this was not exotic.
+
+**The lesson, which is the one to keep:** the first fix addressed the *instance*
+that was reported — a verdict pattern that matched too widely — and not the
+*class*, which is that every part of that header after the authserv-id is
+attacker-influenced text. A fix aimed at the reported input rather than the
+threat leaves siblings behind, and here it left three.
+
+### The rule contradicted itself in the permissive direction
+
+`_disclosure` told the agent that repeating an `open` room's contents elsewhere
+is free. `may_carry` refuses `open → external`. So the standing instructions
+positively encouraged internal content going to an outside correspondent — the
+single failure the section exists to prevent. The condition was on the source
+room only; it is on both now.
+
+### Sibling failures the corrections left behind
+
+- `message/rfc822` flattening raised on a degenerate part *and* was unbounded in
+  size. Both end as a 500 the provider redelivers forever, failing identically
+  each time — a permanent retry loop introduced by a fix for silent data loss.
+- The `List-*` branch was unreachable; the `Precedence` check above it always
+  returned.
+- `surfaceMeta` destructured without `audience`, so the server-computed label
+  was dropped on **every** notification while the terminal path forwarded it.
+  Two paths in one product disagreeing about a confidentiality label — and the
+  fix had landed in `audienceOf` and not in its only caller.
+- `bin.ts` read `event.audience` on a local type with no such field: a hard type
+  error, hidden because vitest transpiles without checking.
+- `onEvent` returned the turn promise, blocking the SSE reader for a whole turn
+  — so `subscription_changed` could never arrive *during* one, making the host's
+  queued lost-room re-check from the previous round unreachable through the
+  wiring written right after it.
+- A startup failure was an unhandled rejection nobody logged, and `stop` awaited
+  `ready`, so a hanging `loadSchedule` was a process that could not shut down.
+
+### Five more vacuous tests
+
+Nineteen across the branch. Two worth naming: the two-`From` test passed because
+the injected sender was unlisted, so the *allowlist* did the work and the count
+check could be deleted with the test still green; and "aborts the stream and
+drains the host" asserted only the abort — half its own title.
+
+### What this says about the process
+
+Reviewing implementations and not their corrections was a real hole, and it hid
+a live exploit for two rounds. **A correction deserves the same scrutiny as the
+code it corrects, and arguably more:** it is written fast, immediately after
+being told one is wrong, with attention narrowed to the reported instance.
