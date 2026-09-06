@@ -690,3 +690,93 @@ Reviewing implementations and not their corrections was a real hole, and it hid
 a live exploit for two rounds. **A correction deserves the same scrutiny as the
 code it corrects, and arguably more:** it is written fast, immediately after
 being told one is wrong, with attention narrowed to the reported instance.
+
+
+---
+
+## What is actually load-bearing — and how to split this
+
+Asked late, and it should have been asked early: **how much of this branch does
+a demo need?** About 43% of the new source. The rest is correct, tested, and
+ahead of demand.
+
+Recorded here so the branch can be split into PRs by *dependency* rather than by
+the sprint order it was written in.
+
+### The four groups
+
+**Group 1 — the multi-room protocol.** *Load-bearing. Nothing works without it.*
+
+- `room_id` on `post_message`, `read_context`, `send_targeted_message`
+  (`operations/definitions.py`, `operations/context.py`)
+- `multi` scope, `Connection.claims_rooms`, `covers`, the delivery-loop park
+  (`protocol/connections.py`, `protocol/stream.py`)
+- scope/filter validation and its 400 (`api/handlers.py`)
+- the three connector skills' `room_id` note
+
+Self-contained, reviewed twice, useful on its own. **Land this first.**
+
+**Group 2 — surfaces the agent can tell apart.** *Load-bearing for anything
+multi-room, and for US-4's advisory half.*
+
+- `surface.ts`, and `surfaceMeta` in `bin.ts`
+- `audience` on the envelope: `RoomMeta`, nine `AgentEvent` sites,
+  `protocol/types.py`
+- `audience_of` / `bridge_is_external` / `EXTERNAL_BRIDGE_TYPES` in
+  `disclosure.py`
+- `_disclosure` in `instructions.py` and its test
+- the audience in `switch-event-format.ts`
+
+Depends on Group 1 being merged; otherwise independent.
+
+**Group 3 — a session that spans rooms.** *Load-bearing for every demo.*
+
+- `room-set.ts` and the `bin.ts` widening (`SWITCH_SCOPE`)
+
+Small, depends on Groups 1 and 2. **This is the piece that makes it runnable**,
+and it was found last.
+
+**Group 4 — inbound email.** *Load-bearing for US-1 and US-6.*
+
+- `bridges/collaboration/email/adapter.py`, its registration,
+  `authenticates_senders` on the ABC, the lifecycle warning
+
+Independent of 1–3 at the code level; only the demo needs both.
+
+### What is ahead of demand
+
+Correct and tested, connected to nothing, needed by no demo:
+
+| | Lines | For |
+|---|---|---|
+| `host.ts` | 316 | a headless always-on agent |
+| `agent.ts` | 158 | the same |
+| `schedule.ts` | 167 | US-3, the only story needing the host |
+| the `event-stream.ts` widening | — | the same — **`bin.ts` does not use `SwitchEventStream`** |
+| `authentication.py` | 185 | Sprint 5, unwired |
+| `reply.py` | 102 | Sprint 5, unwired |
+| `may_carry` / `disclosed_span` | ~138 | D3, gated |
+
+Land them as their own PRs, after the four above, and be explicit in each that
+nothing calls them yet.
+
+### Two things worth carrying forward
+
+**`bin.ts` does not use `SwitchEventStream`.** It has its own stream loop. So
+the `StreamScope`, `claim()` and `acceptRooms()` work on the shared client —
+including a `repoint` takeover bug found in review — is used only by the console
+watchers and by `host.ts`. Choosing that seam first was a wrong guess about
+where the demo would run, and it was never checked.
+
+**The most severe review findings were in the least-used code.** The DMARC
+forgery, which survived three attempts, is in `authentication.py` — zero
+callers. `may_carry` permitting one person's DM into another's is in the unwired
+half of `disclosure.py`. The email adapter is necessary and had real bugs too,
+so it is not a clean split — but a large share of four review rounds went to
+code no demo touches.
+
+The predictable shape, and an argument for building closer to demand: **Sprint 1
+should have been followed by an attempt to run it**, not by Sprint 2. That one
+step would have surfaced the `bin.ts` route, shown `event-stream.ts` was the
+wrong seam, and said whether the protocol change works — all before Sprints 3
+and 5 and the host existed.
