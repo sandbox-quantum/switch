@@ -780,3 +780,50 @@ should have been followed by an attempt to run it**, not by Sprint 2. That one
 step would have surfaced the `bin.ts` route, shown `event-stream.ts` was the
 wrong seam, and said whether the protocol change works — all before Sprints 3
 and 5 and the host existed.
+
+
+---
+
+## The smoke test — it ran
+
+First execution of anything on this branch, against a real stack: Postgres,
+Tuwunel and switch-core from this working tree. Two internal rooms, no bridge,
+one connection. Driven with `curl` rather than a session, because the protocol
+change is what had never run.
+
+**Everything passed.** Six behaviours, each previously only asserted in a test:
+
+1. `scope=multi` is accepted, and `connection_state` comes back naming **both**
+   rooms as claimed on the one connection.
+2. Messages posted in *both* rooms arrive on **that single stream**, each
+   tagged with its own `room_id`. This is the whole design working.
+3. `post_message(room_id=A)` lands in A and not in B — verified by reading both
+   rooms back.
+4. `post_message` with no `room_id`, holding two rooms, is refused: *"This
+   connection covers several rooms; the operation needs one — pass room_id
+   explicitly. Rooms covered: [...]"*, naming both.
+5. `post_message` naming a room outside the claimed set is refused.
+6. The `audience` label is on the envelope, computed server-side —
+   `"audience":"open"` for these rooms, which is right: `create_room` defaults
+   to `channel_public`, and an internal Switch room is workspace-visible.
+
+### Two things the run taught that the tests did not
+
+**An agent's own messages are not delivered back to it.** Obvious in hindsight
+and not written down anywhere; it cost a diagnostic cycle. A delivery test needs
+a second speaker, which means a second agent with a connection of its own.
+
+**`room_id` does not substitute for being connected.** The first attempt had the
+second agent post with `room_id` and no connection, and got *"Not connected to a
+room."* That is correct — `session_key()` gates before the room is resolved, and
+a room id is an argument rather than a permission — but it is worth knowing
+before writing a harness.
+
+### What it did not cover
+
+No bridge, so no Slack and no email. No Claude Code session, so the `bin.ts`
+widening is still unexercised: `SWITCH_SCOPE`, `RoomSet` and the reconnect
+declaration are tested but have never run. That needs a built runtime, which
+needs a `pnpm install` this environment cannot do.
+
+So: the **server half of Sprint 1 is proven**, the client half is not.
