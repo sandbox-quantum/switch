@@ -185,6 +185,7 @@ def _build_config(stack: StackInfo, db_name: str) -> SwitchConfig:
         db_user=pg.username,
         db_password=pg.password,
         db_name=db_name,
+        matrix_server="http://homeserver.invalid",
         matrix_server_name=SERVER_NAME,
         agent_registration_token=REGISTRATION_TOKEN,
         jwt_secret_key=JWT_SECRET,

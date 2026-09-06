@@ -411,6 +411,7 @@ _CONFIG_KWARGS = dict(
     db_user="postgres",
     db_password="pw",
     db_name="switch",
+    matrix_server="http://homeserver.invalid",
     matrix_server_name="switch.local",
     agent_registration_token="token",
     jwt_secret_key="jwt",

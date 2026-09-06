@@ -78,6 +78,12 @@ class Client(Base):
     matrix_user_id: Mapped[str] = mapped_column(Text, unique=True, nullable=False)
     display_name: Mapped[str] = mapped_column(Text, nullable=False)
     type: Mapped[str] = mapped_column(Text, nullable=False)
+    # The account's password on the homeserver. Nothing in the running system
+    # authenticates any more — this is here for the backfill, which logs in as
+    # the admin client because that is the one identity in every room, and
+    # which outlives the transport it reads through. Generated here rather than
+    # by the caller: it is a credential nobody chooses and nobody reads back.
+    password: Mapped[str] = mapped_column(Text, nullable=False, default=_uuid)
     config: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     created_at: Mapped[str] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
@@ -299,6 +305,14 @@ class Room(Base):
     # members, Matrix room, and bridge channel are untouched. NULL = active.
     # Archiving is metadata-only and reversible (unarchive clears this).
     archived_at: Mapped[str | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    # Set when this room's history has been walked to its start and written
+    # into the message log. Null means never completed — including a walk that
+    # stopped at the page limit, which leaves the room partly reconstructed.
+    # The walk always starts from the newest message, so without this a re-run
+    # reads every page of every room again to discover it has nothing to do.
+    history_backfilled_at: Mapped[str | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
 

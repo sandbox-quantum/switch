@@ -17,10 +17,13 @@ class SwitchConfig(BaseSettings):
     db_password: str
     db_name: str
 
-    # The server half of every client's `@localpart:server` id. Not a
-    # homeserver address — nothing is contacted at it — but the ids are stable
-    # public handles, so the shape outlives the homeserver that chose it.
+    # The server half of every client's `@localpart:server` id. The ids are
+    # stable public handles, so the shape outlives the homeserver that chose it.
     matrix_server_name: str
+    # Where the homeserver still is. Switch does not talk to it any more; the
+    # backfill and reconcile commands do, and they are the last things that
+    # need it — they exist to copy what is still only there.
+    matrix_server: str
     agent_registration_token: str
 
     # JWT auth

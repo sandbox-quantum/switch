@@ -5,6 +5,8 @@ import { randomBytes } from 'node:crypto';
  * reads is derived from them at each start. */
 export type LocalServerSecrets = {
   dbPassword: string;
+  matrixRegistrationSharedSecret: string;
+  matrixAdminPassword: string;
   agentRegistrationToken: string;
   jwtSecretKey: string;
   gatewayAdminPassword: string;
@@ -21,6 +23,8 @@ function token(bytes = 24): string {
 export function generateSecrets(): LocalServerSecrets {
   return {
     dbPassword: token(),
+    matrixRegistrationSharedSecret: token(),
+    matrixAdminPassword: token(),
     agentRegistrationToken: token(),
     jwtSecretKey: token(32),
     gatewayAdminPassword: token(),

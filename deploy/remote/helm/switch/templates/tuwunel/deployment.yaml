@@ -1,0 +1,78 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "switch.fullname" . }}-tuwunel
+  labels:
+    {{- include "switch.labels" . | nindent 4 }}
+    {{- include "switch.selectorLabels" (dict "Release" .Release "component" "tuwunel") | nindent 4 }}
+spec:
+  replicas: 1
+  # Embedded RocksDB on a RWO volume — never run two pods against it at once.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "switch.selectorLabels" (dict "Release" .Release "component" "tuwunel") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "switch.labels" . | nindent 8 }}
+        {{- include "switch.selectorLabels" (dict "Release" .Release "component" "tuwunel") | nindent 8 }}
+    spec:
+      {{- if .Values.global.imagePullSecrets }}
+      {{- include "switch.imagePullSecrets" . | nindent 6 }}
+      {{- end }}
+      {{- with .Values.tuwunel.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: tuwunel
+          image: {{ .Values.tuwunel.image }}
+          imagePullPolicy: {{ .Values.tuwunel.imagePullPolicy }}
+          ports:
+            - containerPort: 8008
+              protocol: TCP
+          env:
+            # Every Matrix user id is @localpart:<server_name>, so this must not
+            # change on an existing deployment or all accounts are orphaned.
+            - name: TUWUNEL_SERVER_NAME
+              value: {{ .Values.tuwunel.serverName | quote }}
+            - name: TUWUNEL_DATABASE_PATH
+              value: /var/lib/tuwunel
+            - name: TUWUNEL_ADDRESS
+              value: "0.0.0.0"
+            - name: TUWUNEL_PORT
+              value: "8008"
+            - name: TUWUNEL_ALLOW_FEDERATION
+              value: {{ .Values.tuwunel.allowFederation | quote }}
+            - name: TUWUNEL_ALLOW_REGISTRATION
+              value: {{ .Values.tuwunel.allowRegistration | quote }}
+            - name: TUWUNEL_REGISTRATION_SHARED_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "switch.secretName" . }}
+                  key: MATRIX_REGISTRATION_SHARED_SECRET
+            - name: TUWUNEL_MAX_REQUEST_SIZE
+              value: {{ .Values.tuwunel.maxRequestSize | quote }}
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/tuwunel
+          readinessProbe:
+            httpGet:
+              path: /_matrix/client/versions
+              port: 8008
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /_matrix/client/versions
+              port: 8008
+            initialDelaySeconds: 20
+            periodSeconds: 30
+          resources:
+            {{- toYaml .Values.tuwunel.resources | nindent 12 }}
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: {{ include "switch.fullname" . }}-tuwunel-data
