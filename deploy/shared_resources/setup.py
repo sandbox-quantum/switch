@@ -11,6 +11,7 @@ comes up knowing which chat account its owner is.
 import os
 import sys
 import time
+from http.cookies import SimpleCookie
 
 import httpx
 
@@ -196,7 +197,43 @@ def gateway_login() -> httpx.Client:
             f"{GATEWAY_ADMIN_EMAIL}: {resp.status_code} {resp.text}"
         )
         sys.exit(1)
+
+    # Re-set the session cookie without its Secure flag. A deployment served
+    # over HTTPS sets GATEWAY_COOKIE_SECURE, so the gateway marks switch_auth
+    # `Secure`; this runs in-cluster against plain http://, and a cookie jar
+    # will accept a Secure cookie there but never send one back. So the login
+    # looks perfect — 200, cookie in the jar — and every authorized call after
+    # it goes out bare and comes back 401, with nothing naming the cause.
+    #
+    # The token is unchanged; only the rule about which schemes it may travel
+    # on is being set aside, on a connection that never leaves the cluster.
+    token = _session_token(resp)
+    if token is None:
+        print(
+            "ERROR: The Switch gateway accepted the login but sent no "
+            "switch_auth cookie, so there is no session to act with."
+        )
+        sys.exit(1)
+    client.cookies.set("switch_auth", token)
     return client
+
+
+def _session_token(resp: httpx.Response) -> str | None:
+    """The switch_auth value from a login response, Secure flag notwithstanding.
+
+    Reads the jar first and falls back to the raw Set-Cookie headers, so this
+    holds whether or not the client stored it.
+    """
+    stored = resp.cookies.get("switch_auth")
+    if stored:
+        return stored
+    for header in resp.headers.get_list("set-cookie"):
+        parsed = SimpleCookie()
+        parsed.load(header)
+        morsel = parsed.get("switch_auth")
+        if morsel is not None and morsel.value:
+            return morsel.value
+    return None
 
 
 def register_bridge(client: httpx.Client) -> str:
@@ -206,23 +243,27 @@ def register_bridge(client: httpx.Client) -> str:
     registration that fails raises, as it did before: without a bridge there is
     no deployment to speak of, so it is not something to carry on past.
     """
-    # Check if bridge already registered
+    # Check if bridge already registered. A failure here is NOT "there are no
+    # bridges": read that way, an auth or transport error sends us straight on
+    # to registering a second Mattermost bridge and making it the default,
+    # taking that from whatever held it. Refuse instead — the caller can retry,
+    # and a duplicated bridge cannot be undone by retrying.
     resp = client.get("/gateway/collaborations")
-    if resp.is_success:
-        bridges = resp.json()
-        for bridge in bridges:
-            if bridge.get("bridge_type") == "mattermost":
-                bridge_id = bridge["bridge_id"]
-                print(f"Mattermost bridge already registered: {bridge_id}")
-                # Adopt the default on an instance that predates it, so an
-                # existing deployment gains the invariant on its next setup run
-                # rather than only new ones.
-                if not any(b.get("is_default") for b in bridges):
-                    client.post(
-                        f"/gateway/collaborations/{bridge_id}/default"
-                    ).raise_for_status()
-                    print(f"Set Mattermost bridge as default: {bridge_id}")
-                return bridge_id
+    resp.raise_for_status()
+    bridges = resp.json()
+    for bridge in bridges:
+        if bridge.get("bridge_type") == "mattermost":
+            bridge_id = bridge["bridge_id"]
+            print(f"Mattermost bridge already registered: {bridge_id}")
+            # Adopt the default on an instance that predates it, so an
+            # existing deployment gains the invariant on its next setup run
+            # rather than only new ones.
+            if not any(b.get("is_default") for b in bridges):
+                client.post(
+                    f"/gateway/collaborations/{bridge_id}/default"
+                ).raise_for_status()
+                print(f"Set Mattermost bridge as default: {bridge_id}")
+            return bridge_id
 
     # Register new bridge
     connection_config: dict[str, str] = {
