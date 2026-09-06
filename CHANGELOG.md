@@ -1209,6 +1209,23 @@ version of their own to them without also giving them a release of their own.
 
 ### [Unreleased]
 
+### [0.33.0] - 2026-09-06
+
+#### Added
+- **Local control API for programmatic agent management.** A localhost-only,
+  token-gated HTTP server in the main process (127.0.0.1 on an OS-assigned port,
+  credentials in a 0600 file in the app data dir) exposes the same
+  agent-management operations as the UI — list/read agents, list an agent's
+  sessions, and start a session (#362).
+
+#### Changed
+- Agent names are auto-lowercased as you type in the New Agent dialog, matching
+  the identifier rules (rather than rejecting after the fact).
+- Local-server mode now bundles **switch-core 0.24.0** (was 0.23.0), and picks
+  up the internal Postgres LISTEN/NOTIFY transport client-side (#363).
+- Refreshes the connectors so installs pick up the display-name skill updates
+  (Claude Code 0.9.13, Codex 0.3.14, OpenCode 0.1.9).
+
 ### [0.32.0] - 2026-09-03
 
 #### Added
@@ -2920,6 +2937,12 @@ compatibility signal. History for those is in the git log.
 
 ### [Unreleased]
 
+### [0.9.13] - 2026-09-06
+#### Changed
+- Skills updated for agent display names: the switch and configure skills note
+  that agents may render under a human display name on the bridges (#330).
+  Plugin version bumps so installs re-download.
+
 ### [0.9.12] - 2026-09-03
 #### Changed
 - Pin `@sandboxaq/switch-agent-runtime@0.4.1` (was `0.3.4`) — a deleted room no
@@ -3156,6 +3179,12 @@ manifest history.
 
 ### [Unreleased]
 
+### [0.3.14] - 2026-09-06
+#### Changed
+- Skills updated for agent display names: the switch and configure skills note
+  that agents may render under a human display name on the bridges (#330).
+  Plugin version bumps so installs re-download.
+
 ### [0.3.13] - 2026-09-03
 #### Changed
 - Pin `@sandboxaq/switch-agent-runtime@0.4.1` (was `0.3.4`) — a deleted room no
@@ -3346,6 +3375,12 @@ for humans reading a diff rather than for an installer, and an install reports
 the app version that wrote it rather than a version of its own.
 
 ### [Unreleased]
+
+### [0.1.9] - 2026-09-06
+#### Changed
+- Skill updated for agent display names: the switch skill notes that agents may
+  render under a human display name on the bridges (#330). (Delivered at the
+  next Switch Console update, which rewrites the embedded connector.)
 
 ### [0.1.8] - 2026-09-03
 #### Changed
