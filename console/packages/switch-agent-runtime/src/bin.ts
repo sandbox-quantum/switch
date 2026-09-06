@@ -53,6 +53,7 @@ import {
   type ResolvedAgent,
 } from './credentials';
 import { reapOrphanedRuntimes } from './reap';
+import { RoomSet, type RoomScope } from './room-set';
 import { readSse, type SseFrame } from './sse';
 import { surfaceMeta } from './surface';
 
@@ -77,6 +78,26 @@ let AGENT_NAME = '';
 // reachable) and simply do not surface events as notifications.
 // Env var name kept for compatibility with Switch Console releases in the wild.
 const SUPPRESS_NOTIFICATIONS = process.env.SWITCH_CHANNEL_DISABLE_POLL === '1';
+
+/**
+ * How many rooms this session works in.
+ *
+ * `single` is the default and is right for a session a supervisor spawned to
+ * answer one message. `multi` is a session someone configured to be an agent
+ * across several surfaces at once — a Slack channel and an email correspondent
+ * in one context window, which is the same shape a session already has.
+ *
+ * Anything else is refused rather than defaulted: a typo would otherwise become
+ * a session that quietly holds one room while its owner believes it holds four.
+ */
+const SCOPE: RoomScope = (() => {
+  const raw = (process.env.SWITCH_SCOPE ?? 'single').trim();
+  if (raw !== 'single' && raw !== 'multi') {
+    process.stderr.write(`switch: SWITCH_SCOPE must be 'single' or 'multi', got '${raw}'\n`);
+    process.exit(1);
+  }
+  return raw;
+})();
 
 // Claude Code may spawn this server twice on startup: once before settings.env
 // expansion (vars literal as `${SWITCH_*}`) and once with real values. Reject
@@ -511,7 +532,7 @@ const BORROWED_CONNECTION_ID = borrowedConnectionId();
 const CONNECTION_ID = BORROWED_CONNECTION_ID ?? randomUUID();
 const OWNS_CONNECTION = BORROWED_CONNECTION_ID === null;
 
-let pollingRoomId: string | null = null;
+const rooms = new RoomSet(SCOPE);
 let streamAbort: AbortController | null = null;
 let leaseAbort: AbortController | null = null;
 let heartbeatAbort: AbortController | null = null;
@@ -1022,7 +1043,7 @@ async function handleDownloadAttachment(rawArgs: Record<string, unknown>) {
   if (!mxc) {
     return { isError: true, content: [{ type: 'text', text: 'mxc is required' }] };
   }
-  const roomId = args.room_id ?? pollingRoomId;
+  const roomId = args.room_id ?? rooms.only();
   if (!roomId) {
     return {
       isError: true,
@@ -1109,7 +1130,7 @@ async function handleSendAttachment(rawArgs: Record<string, unknown>) {
       content: [{ type: 'text', text: 'path (or paths) is required' }],
     };
   }
-  const roomId = args.room_id ?? pollingRoomId;
+  const roomId = args.room_id ?? rooms.only();
   if (!roomId) {
     return {
       isError: true,
@@ -1191,7 +1212,7 @@ function stopStream() {
     streamAbort.abort();
     streamAbort = null;
   }
-  pollingRoomId = null;
+  rooms.clear();
 }
 
 function startStream() {
@@ -1211,7 +1232,7 @@ function startStream() {
       try {
         const params = new URLSearchParams({
           connection_id: CONNECTION_ID,
-          scope: 'single',
+          scope: SCOPE,
           filter: 'all',
           start_from: cursor > 0 ? String(cursor) : 'head',
         });
@@ -1224,8 +1245,11 @@ function startStream() {
         // would be refused, and whichever of us lost would sit in a reconnect
         // loop delivering nothing. Suppressing the *notification* was never
         // enough — the claim has to be suppressed too.
-        if (pollingRoomId && !SUPPRESS_NOTIFICATIONS) {
-          params.set('rooms', pollingRoomId);
+        if (rooms.size && !SUPPRESS_NOTIFICATIONS) {
+          // Every room, not the newest. One left off has its buffered events
+          // skipped as "not covered" and its cursor advanced past them, so the
+          // surface goes quiet with the socket up.
+          params.set('rooms', rooms.declare());
         }
         const resp = await fetch(`${API_ENDPOINT}/agents/${AGENT_ID}/events?${params}`, {
           headers: {
@@ -1259,16 +1283,30 @@ function startStream() {
   })();
 }
 
+/**
+ * Take the server's room list as authoritative, when it sends one.
+ *
+ * Only on a connection we own: on a borrowed one the supervisor's rooms are not
+ * ours to adopt, and doing so would have this process declare them on a
+ * reconnect it should not be making.
+ */
+function adoptServerRooms(raw: unknown): void {
+  if (!OWNS_CONNECTION || !Array.isArray(raw)) return;
+  rooms.accept(raw.filter((room): room is string => typeof room === 'string'));
+}
+
 async function handleFrame(frame: SseFrame): Promise<void> {
   switch (frame.event) {
     case 'connection_state':
       process.stderr.write(
         `switch: connection established (rooms=${JSON.stringify(frame.data.rooms)})\n`
       );
+      adoptServerRooms(frame.data.rooms);
       return;
 
     case 'subscription_changed':
       process.stderr.write(`switch: subscription now ${JSON.stringify(frame.data.rooms)}\n`);
+      adoptServerRooms(frame.data.rooms);
       return;
 
     case 'gap':
@@ -1318,21 +1356,28 @@ async function unsubscribeRoom(roomId: string): Promise<void> {
 }
 
 function setConnectedRoom(target: string | null) {
-  if (target === pollingRoomId) return;
-
-  const previous = pollingRoomId;
-
-  if (previous) {
-    process.stderr.write(`switch: leaving room ${previous}\n`);
-    // Only release a slot we hold. On a borrowed connection the claim belongs
-    // to the supervisor's stream, and connect_to_room repoints it for us —
-    // releasing here would blank the supervisor's room between the two calls.
-    if (OWNS_CONNECTION) void unsubscribeRoom(previous);
-    pollingRoomId = null;
+  if (target === null) {
+    for (const previous of rooms.clear()) {
+      process.stderr.write(`switch: leaving room ${previous}\n`);
+      if (OWNS_CONNECTION) void unsubscribeRoom(previous);
+    }
+    return;
   }
 
-  if (target) {
-    pollingRoomId = target;
+  if (rooms.has(target)) return;
+
+  // Under `single` this is the room being replaced; under `multi` it is empty,
+  // because gaining a surface must not cost the others.
+  //
+  // Only a slot we hold is released. On a borrowed connection the claim belongs
+  // to the supervisor's stream and connect_to_room repoints it for us, so
+  // releasing here would blank the supervisor's room between the two calls.
+  for (const previous of rooms.adopt(target)) {
+    process.stderr.write(`switch: leaving room ${previous}\n`);
+    if (OWNS_CONNECTION) void unsubscribeRoom(previous);
+  }
+
+  {
     missedSinceRead = 0;
 
     process.stderr.write(
@@ -1438,9 +1483,9 @@ function restartStream() {
 }
 
 function stopStreamKeepingRoom() {
-  const room = pollingRoomId;
+  const held = rooms.all;
   stopStream();
-  pollingRoomId = room;
+  rooms.accept(held);
 }
 
 // -- Role lease renewal ------------------------------------------------------
@@ -1564,7 +1609,10 @@ async function handleHookRequest(req: Request): Promise<Response> {
     // the agent ended without posting a reply — Slack's faked indicator is
     // a real message that lingers until explicitly deleted (the reply path
     // clears it server-side, but a no-reply turn would otherwise leave it).
-    if (pollingRoomId) void setTyping(pollingRoomId, false);
+    // Every room, not one: a turn spanning several surfaces may have raised the
+    // indicator in more than one, and Slack's is a real message that lingers
+    // until it is explicitly deleted.
+    for (const room of rooms.all) void setTyping(room, false);
     return new Response('ok');
   }
 
