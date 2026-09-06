@@ -451,6 +451,9 @@ type AgentEvent = {
   room_id: string;
   bridge_id: string | null;
   channel_type: string | null;
+  // Kept in step with `AgentBridgeEvent` in `types.ts` by hand. This local copy
+  // exists for its narrower payload union; the envelope fields must not drift.
+  audience?: string | null;
   payload:
     | MessagePayload
     | CommandPayload

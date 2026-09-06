@@ -20,7 +20,7 @@ const SILENT = { debug() {}, warn() {}, error() {} };
 
 type Handlers = Parameters<OpenStream>[0];
 
-function harness(rooms = [ROOM_A, ROOM_B]) {
+function harness(options: { rooms?: string[]; onTurn?: (turn: Turn) => Promise<void> } = {}) {
   const turns: Turn[] = [];
   let captured!: Handlers;
   let started = 0;
@@ -37,12 +37,13 @@ function harness(rooms = [ROOM_A, ROOM_B]) {
   const agent = startMultiRoomAgent({
     creds: CREDS,
     connectionId: 'conn-1',
-    rooms,
+    rooms: options.rooms ?? [ROOM_A, ROOM_B],
     log: SILENT,
     loadSchedule: async () => serialiseWakeups([]),
     saveSchedule: async () => {},
     onTurn: async (turn) => {
       turns.push(turn);
+      await options.onTurn?.(turn);
     },
     openStream,
   });
@@ -170,28 +171,111 @@ describe('the four wires', () => {
 
 describe('stopping', () => {
   it('aborts the stream and drains the host', async () => {
-    const { agent, stream } = harness();
+    let finished = false;
+    const { agent, stream } = harness({
+      onTurn: async () => {
+        await Promise.resolve();
+        finished = true;
+      },
+    });
     await agent.ready;
     expect(stream().signal.aborted).toBe(false);
 
+    void stream().onEvent(message(ROOM_A, 'mid-thought'));
     await agent.stop();
 
     expect(stream().signal.aborted).toBe(true);
+    // The drain half of the title, which the assertion above says nothing about.
+    expect(finished).toBe(true);
   });
 
-  it('is safe to call twice', async () => {
-    const { agent } = harness();
+  it('two callers share one shutdown rather than racing it', async () => {
+    /**
+     * A boolean set before the await lets the second caller resolve while the
+     * first is still tearing down — so this passes with the guard deleted
+     * unless it asserts both callers see the *same* completion.
+     */
+    let released!: () => void;
+    const held = new Promise<void>((resolve) => {
+      released = resolve;
+    });
+    let drained = false;
+
+    const { agent, stream } = harness({
+      onTurn: async () => {
+        await held;
+        drained = true;
+      },
+    });
     await agent.ready;
+    void stream().onEvent(message(ROOM_A, 'mid-thought'));
+
+    const first = agent.stop();
+    const second = agent.stop();
+    released();
+    await Promise.all([first, second]);
+
+    expect(drained).toBe(true);
+  });
+
+  it('reports a startup failure instead of losing it', async () => {
+    /**
+     * `ready` rejecting with nobody awaiting it is an unhandled rejection —
+     * fatal under Node's default, with nothing tying it to the schedule that
+     * could not be read. An unreadable schedule document is the ordinary way
+     * this happens.
+     */
+    const logged: string[] = [];
+    const agent = startMultiRoomAgent({
+      creds: CREDS,
+      connectionId: 'conn-1',
+      rooms: [ROOM_A],
+      log: { ...SILENT, error: (m: string) => logged.push(m) },
+      loadSchedule: async () => {
+        throw new Error('the document is unreadable');
+      },
+      saveSchedule: async () => {},
+      onTurn: async () => {},
+      openStream: () => ({ start() {} }),
+    });
+
+    await expect(agent.ready).rejects.toThrow('unreadable');
+    expect(logged.join(' ')).toContain('failed to start');
 
     await agent.stop();
-    await expect(agent.stop()).resolves.toBeUndefined();
+  });
+
+  it('can be stopped even when startup never settles', async () => {
+    /** Awaiting `ready` before aborting makes a hanging `loadSchedule` a
+     * process that cannot shut down. */
+    const agent = startMultiRoomAgent({
+      creds: CREDS,
+      connectionId: 'conn-1',
+      rooms: [ROOM_A],
+      log: SILENT,
+      loadSchedule: () => new Promise<string>(() => {}),
+      saveSchedule: async () => {},
+      onTurn: async () => {},
+      openStream: () => ({ start() {} }),
+    });
+
+    await expect(
+      Promise.race([
+        agent.stop().then(() => 'stopped'),
+        new Promise((resolve) => setTimeout(() => resolve('hung'), 50)),
+      ])
+    ).resolves.toBe('stopped');
   });
 });
 
 describe('systemClock', () => {
   it('reads the wall clock', () => {
+    /** Bounded on both sides: a lower bound alone passes for `() => Infinity`. */
     const before = Date.now();
-    expect(systemClock.now()).toBeGreaterThanOrEqual(before);
+    const now = systemClock.now();
+
+    expect(now).toBeGreaterThanOrEqual(before);
+    expect(now).toBeLessThan(before + 5000);
   });
 
   it('fires, and can be cancelled before it does', async () => {

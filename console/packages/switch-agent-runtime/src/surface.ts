@@ -86,9 +86,18 @@ export function audienceOf({ audience, channelType, bridgeIsExternal }: SurfaceI
   // has no rule for. `unknown` is the honest answer, not a guess at which of
   // ours it resembles.
   if (audience) return AUDIENCES.has(audience) ? (audience as Audience) : 'unknown';
-  if (bridgeIsExternal === undefined) return 'unknown';
   if (bridgeIsExternal) return 'external';
   if (!channelType) return 'unknown';
+
+  // Reached only for an envelope carrying no audience — that is, from a server
+  // predating the field, which is also a server predating the email bridge, so
+  // there is no external correspondent for it to be wrong about. Returning
+  // `unknown` for everything here instead would be safe and would cost every
+  // label on every room until that server is upgraded.
+  //
+  // `direct` is the exception: it is the shape an email room takes, so if a
+  // newer server ever omits the field this is the one answer worth withholding.
+  if (channelType === 'direct' && bridgeIsExternal === undefined) return 'unknown';
   return BY_CHANNEL_TYPE.get(channelType) ?? 'unknown';
 }
 
@@ -109,6 +118,7 @@ export interface SurfaceMetaInput extends SurfaceInput {
 export function surfaceMeta({
   roomId,
   roomName,
+  audience,
   channelType,
   bridgeIsExternal,
 }: SurfaceMetaInput): Record<string, string> {
@@ -119,6 +129,6 @@ export function surfaceMeta({
     // not read — and `room_name: "!abc:server"` does not read as "no name
     // available", it reads as the room being called that.
     ...(roomName ? { room_name: roomName } : {}),
-    audience: audienceOf({ channelType, bridgeIsExternal }),
+    audience: audienceOf({ audience, channelType, bridgeIsExternal }),
   };
 }

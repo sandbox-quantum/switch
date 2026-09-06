@@ -115,6 +115,57 @@ def test_a_value_that_looks_like_a_verdict_cannot_smuggle_one_in() -> None:
     assert not authenticated_sender(verdict)
 
 
+def test_a_quoted_semicolon_cannot_invent_a_chunk_boundary() -> None:
+    """The forgery that survived the first fix.
+
+    Anchoring the verdict to the head of a `;`-separated chunk is worth nothing
+    if the sender chooses where chunks begin — and a quoted local part may
+    legally contain a semicolon, so `smtp.mailfrom="x;dmarc=pass"@evil` puts a
+    forged verdict at the head of the chunk after it, inside a header our own
+    MTA stamped.
+    """
+    verdict = parse_authentication_results(
+        [
+            f"{AUTHSERV}; dmarc=none header.from=evil.example; "
+            'spf=pass smtp.mailfrom="x;dmarc=pass"@evil.example'
+        ],
+        trusted_authserv_id=AUTHSERV,
+    )
+
+    assert verdict.dmarc == "none"
+    assert not authenticated_sender(verdict)
+
+
+def test_a_quoted_id_containing_a_space_cannot_impersonate_ours() -> None:
+    """The other forgery that survived.
+
+    A quoted authserv-id is one token *including* its spaces. Taking the first
+    word and stripping quotes afterwards reads `"mx.ours evil"` as `mx.ours` —
+    and a border MTA strips a pre-existing header only on an exact match of its
+    own id, so that one is never stripped. The attacker prepends it themselves
+    and needs no MTA at all.
+    """
+    verdict = parse_authentication_results(
+        [f'"{AUTHSERV} evil"; dmarc=pass'], trusted_authserv_id=AUTHSERV
+    )
+
+    assert verdict.dmarc == "none"
+
+
+def test_a_genuine_verdict_is_not_overwritten_by_a_later_one() -> None:
+    """`none` is a verdict, not an absence.
+
+    Skipping it left the method unset so a later chunk could fill the gap —
+    which is the same forgery by another route, since `dmarc=none` (the sending
+    domain publishes no policy) is the common real case.
+    """
+    verdict = parse_authentication_results(
+        [f"{AUTHSERV}; dmarc=none; dmarc=pass"], trusted_authserv_id=AUTHSERV
+    )
+
+    assert verdict.dmarc == "none"
+
+
 def test_a_repeated_method_fails_closed() -> None:
     """Whichever order they arrive in. First-wins makes the verdict depend on a
     header's internal ordering, which the sender is not prevented from

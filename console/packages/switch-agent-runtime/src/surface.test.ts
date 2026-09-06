@@ -55,16 +55,39 @@ describe('audienceOf', () => {
     );
   });
 
-  it('says unknown when the caller cannot tell whether the bridge is external', () => {
+  it('withholds only the label an unknown bridge could change', () => {
     /**
-     * The flag used to be a required boolean, so that a caller had to answer.
-     * Both callers answered `false` — the envelope carries `bridge_id` and not
-     * the bridge type, so neither can actually tell — which made an email room
-     * read as `private`. A question only answerable by guessing collects
-     * guesses, so not knowing is now sayable.
+     * The flag used to be a required boolean so a caller had to answer, and
+     * both callers answered `false` — the envelope carries `bridge_id` and not
+     * the bridge type, so neither can tell — which made an email room read as
+     * `private`. A question only answerable by guessing collects guesses.
+     *
+     * But withholding *every* label costs the annotation on every room against
+     * a server that sends no audience, for no gain: this path is only reached
+     * by a server old enough to predate the field, which is old enough to
+     * predate the email bridge with it. `direct` is the one shape an email room
+     * takes, so it is the one worth holding back.
      */
     expect(audienceOf({ channelType: 'direct' })).toBe<Audience>('unknown');
-    expect(audienceOf({ channelType: 'channel_public' })).toBe<Audience>('unknown');
+    expect(audienceOf({ channelType: 'channel_public' })).toBe<Audience>('open');
+    expect(audienceOf({ channelType: 'channel_private' })).toBe<Audience>('restricted');
+  });
+
+  it('carries the server’s audience through surfaceMeta, not just audienceOf', () => {
+    /**
+     * The correction landed in `audienceOf` and not in its only caller:
+     * `surfaceMeta` destructured without `audience`, so every notification said
+     * `unknown` while the terminal path — which did forward it — said
+     * `external` for the same event. Two paths in one product disagreeing about
+     * a confidentiality label.
+     */
+    const meta = surfaceMeta({
+      roomId: '!abc:switch.local',
+      audience: 'external',
+      channelType: 'direct',
+    });
+
+    expect(meta.audience).toBe('external');
   });
 
   it('says unknown rather than guessing when the type is missing', () => {

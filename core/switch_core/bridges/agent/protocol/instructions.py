@@ -219,7 +219,9 @@ def _disclosure(room: Room, bridge: CollaborationBridge | None) -> str:
         "You may be connected to several rooms at once, and they will not all "
         "have the same audience. Anything said here may be repeated here. "
         "Repeating it in a **different** room is free only when this room is "
-        "`open`, because the whole workspace can already read it.",
+        "`open` *and* the other room is inside the organisation — never into "
+        "one whose audience is `external` or `unknown`, whatever this room's "
+        "is.",
         "",
         "Otherwise — including into another room with the same label — assume "
         "you may not. **A different DM is a different person; one outside "

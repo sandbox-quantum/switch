@@ -119,6 +119,22 @@ def test_the_rule_says_a_same_sized_room_is_not_the_same_people() -> None:
     assert "different DM is a different person" in text
 
 
+def test_the_open_carve_out_stops_at_the_organisation() -> None:
+    """`may_carry` allows `open` into any *internal* room and refuses
+    `open → external`.
+
+    The instruction originally put the condition on the source room alone —
+    "free only when this room is `open`" — which tells an agent in a public
+    channel that repeating its contents anywhere is fine. The email room is
+    anywhere. That is internal content going to an outside correspondent, which
+    is the single failure this section exists to prevent.
+    """
+    text = _instructions(_room("channel_public"), include_general=False)
+
+    assert "inside the organisation" in text
+    assert "external" in text
+
+
 def test_the_rule_names_whose_permission_it_is() -> None:
     """Asking whoever the agent is talking to now is unactionable: they are in
     the wider room and cannot consent to hearing something they do not know

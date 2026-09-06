@@ -368,6 +368,64 @@ async def test_a_message_that_is_only_an_attachment_still_arrives() -> None:
     assert received[0].attachments[0].filename == "a.txt"
 
 
+async def test_a_forwarded_part_containing_junk_does_not_raise() -> None:
+    """A `message/rfc822` part whose content is not a message.
+
+    `get_payload(0)` raises TypeError when the payload is a string rather than a
+    list, and that escapes as a 500 the provider redelivers forever — failing
+    identically every time, since the message will never parse.
+
+    Note the shape survives a parse round-trip as an empty nested message, so
+    this exercises the path rather than the raise; the guard in `_read_content`
+    is for a payload reaching it unparsed. Asserted here because what matters at
+    this entry point is that a junk forward costs the forward, not the delivery.
+    """
+    outer = EmailMessage()
+    outer["From"] = f"Sam Owner <{OWNER}>"
+    outer["Subject"] = "fwd"
+    outer["Message-ID"] = "<broken@example.com>"
+    outer.set_content("See attached.")
+    outer.add_attachment(
+        b"not a message at all",
+        maintype="application",
+        subtype="octet-stream",
+        filename="x.eml",
+    )
+    # Relabel the part as a forwarded message without giving it the structure.
+    for part in outer.iter_attachments():
+        part.replace_header("Content-Type", "message/rfc822")
+
+    adapter, received = _adapter()
+    await adapter.ingest(outer.as_bytes())
+
+    assert len(received) == 1
+    assert "See attached." in received[0].content
+
+
+async def test_a_huge_forwarded_message_is_truncated_visibly() -> None:
+    """Serialising a nested message includes its own attachments in base64, so
+    an unbounded flatten sails past what a Matrix event holds — and that
+    rejection is another permanent 500."""
+    inner = EmailMessage()
+    inner["From"] = "Vendor <api@vendor.example>"
+    inner["Subject"] = "big"
+    inner.set_content("x" * 200_000)
+
+    outer = EmailMessage()
+    outer["From"] = f"Sam Owner <{OWNER}>"
+    outer["Subject"] = "fwd"
+    outer["Message-ID"] = "<fwd2@example.com>"
+    outer.set_content("See below.")
+    outer.add_attachment(inner, filename="big.eml")
+
+    adapter, received = _adapter()
+    await adapter.ingest(outer.as_bytes())
+
+    body = received[0].content
+    assert "truncated" in body
+    assert len(body) < 100_000
+
+
 # ── Malformed input ──────────────────────────────────────────────────────────
 
 
@@ -401,10 +459,11 @@ async def test_a_message_with_two_from_headers_is_dropped() -> None:
     """RFC 7489 requires rejecting these, because implementations disagree about
     which is authoritative — so a receiving MTA could DMARC-pass the second
     while this bridge attributes the mail to the first."""
-    adapter, received = _adapter()
-    raw = _mime().replace(
-        b"From: ", b"From: Not You <" + STRANGER.encode() + b">\r\nFrom: ", 1
-    )
+    # Both headers allowlisted, so only the count check can cause the drop.
+    # With an unlisted address in one of them the allowlist does the work and
+    # this passes with the count check deleted.
+    adapter, received = _adapter(allowed_senders=[OWNER, "other@example.com"])
+    raw = _mime().replace(b"From: ", b"From: Other <other@example.com>\r\nFrom: ", 1)
 
     await adapter.ingest(raw)
 

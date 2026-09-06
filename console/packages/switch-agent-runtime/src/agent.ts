@@ -78,13 +78,21 @@ export function startMultiRoomAgent(deps: MultiRoomAgentDeps): RunningAgent {
 
   const abort = new AbortController();
   const open = deps.openStream ?? ((streamDeps) => new SwitchEventStream(streamDeps));
-  let stopped = false;
+
+  let stopRequested = false;
 
   const ready = (async () => {
     // Started before the socket, not after. Events arrive the moment the stream
     // opens, and a turn that ran against an empty schedule which was then
     // replaced underneath it reads as a wake-up that silently went missing.
     await host.start();
+    if (stopRequested) {
+      // Stopped while the schedule was loading. The host is running and armed
+      // by now, so it has to be put back down — and no stream is opened, since
+      // nobody would hold it.
+      await host.stop();
+      return;
+    }
 
     const stream = open({
       creds: deps.creds,
@@ -92,7 +100,15 @@ export function startMultiRoomAgent(deps: MultiRoomAgentDeps): RunningAgent {
       scope: 'multi',
       filter: 'all',
       rooms: deps.rooms,
-      onEvent: (event: AgentBridgeEvent) => host.deliver(event),
+      // Discarded, not awaited. `handleFrame` awaits `onEvent`, so returning
+      // the turn promise stops the reader for the whole turn — and then
+      // `subscription_changed`, `gap` and `evicted` all queue behind it. The
+      // host's re-check for a room claimed away *during* a turn could never see
+      // one. Ordering is unaffected: `deliver` runs to its first await
+      // synchronously and the chain is assigned there.
+      onEvent: (event: AgentBridgeEvent) => {
+        void host.deliver(event);
+      },
       onRooms: (rooms: string[]) => host.acceptRooms(rooms),
       onGap: ({ fromSequence, reason }) =>
         // The sequence travels with the reason. It is the only thing telling
@@ -104,19 +120,39 @@ export function startMultiRoomAgent(deps: MultiRoomAgentDeps): RunningAgent {
       signal: abort.signal,
     });
     stream.start();
-  })();
+  })().catch((error) => {
+    // Startup failing is otherwise an unhandled rejection — fatal under Node's
+    // default, with nothing tying it to the schedule that could not be read.
+    // The host is already running and armed by this point, so it is stopped
+    // too rather than left waking into a connection that never opened.
+    deps.log.error('startMultiRoomAgent: failed to start', {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    void host.stop();
+    throw error;
+  });
+  // Nothing else observes `ready`, and a caller is not obliged to.
+  ready.catch(() => {});
+
+  let stopping: Promise<void> | null = null;
 
   return {
     host,
     ready,
-    async stop() {
-      if (stopped) return;
-      stopped = true;
-      // Wait for the open to finish first, so a stop racing startup does not
-      // leave a stream nobody holds a reference to.
-      await ready.catch(() => {});
-      abort.abort();
-      await host.stop();
+    stop() {
+      // Memoised rather than flagged: a boolean set before the await lets a
+      // second caller resolve while the first is still tearing down.
+      stopping ??= (async () => {
+        // `ready` is deliberately not awaited: a `loadSchedule` that hangs
+        // would otherwise be a process that cannot shut down. Aborting before
+        // the stream exists is safe — `streamLoop` and `beatLoop` both gate on
+        // the signal — and `stopRequested` covers a startup that completes
+        // after this, so the host cannot be left running behind us.
+        stopRequested = true;
+        abort.abort();
+        await host.stop();
+      })();
+      return stopping;
     },
   };
 }

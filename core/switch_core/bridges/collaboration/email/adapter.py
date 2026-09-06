@@ -69,6 +69,13 @@ from switch_core.bridges.collaboration.models import (
 logger = logging.getLogger(__name__)
 
 WEBHOOK_SECRET_BYTES = 32
+#: How much of a forwarded message is carried into the room body.
+#:
+#: Serialising a nested `message/rfc822` includes its own attachments in
+#: base64, so an unbounded flatten sails past what a Matrix event will hold —
+#: and that rejection surfaces as a 500 the provider retries forever.
+_FORWARDED_BODY_MAX_CHARS = 32_000
+
 #: Shorter than this and the endpoint is guessable; empty and it is open.
 MIN_WEBHOOK_SECRET_LENGTH = 32
 
@@ -387,8 +394,34 @@ class EmailAdapter(CollaborationAdapter):
             # exists to carry. Flattened into the body instead, whole and
             # unparsed, which is what happens to an inline forward anyway.
             if item.get_content_type() == "message/rfc822":
-                nested = item.get_payload(0)
-                body = f"{body}\n\n{nested}".strip() if body else str(nested)
+                # `get_payload(0)` raises TypeError when the payload is a string
+                # rather than a list, which a malformed part produces — and that
+                # escapes as a 500 the provider redelivers forever.
+                payload_parts = item.get_payload()
+                nested = (
+                    payload_parts[0]
+                    if isinstance(payload_parts, list) and payload_parts
+                    else None
+                )
+                if nested is None:
+                    failures.append(
+                        AttachmentFailure(
+                            filename=filename,
+                            reason="the forwarded message could not be read",
+                        )
+                    )
+                    continue
+                flattened = str(nested)
+                if len(flattened) > _FORWARDED_BODY_MAX_CHARS:
+                    # Serialising a nested message includes its own attachments,
+                    # base64 and all, so this grows far past what a Matrix event
+                    # will hold — and that rejection is another permanent 500.
+                    flattened = (
+                        flattened[:_FORWARDED_BODY_MAX_CHARS]
+                        + f"\n\n[forwarded message truncated at "
+                        f"{_FORWARDED_BODY_MAX_CHARS} characters]"
+                    )
+                body = f"{body}\n\n{flattened}".strip() if body else flattened
                 continue
 
             payload = item.get_payload(decode=True)
@@ -544,8 +577,6 @@ def _loop_marker(message: EmailMessage) -> str | None:
 
     precedence = (message.get("Precedence") or "").strip().lower()
     bulk = precedence in _BULK_PRECEDENCE
-    if bulk:
-        return f"Precedence: {precedence}"
 
     for header in _AUTOREPLY_HEADERS:
         if message.get(header):
@@ -554,14 +585,15 @@ def _loop_marker(message: EmailMessage) -> str | None:
     if (message.get("Return-Path") or "").strip() == "<>":
         return "Return-Path: <>"
 
-    # `List-*` alone is not enough. A newsletter someone deliberately forwarded
-    # through a server-side rule keeps its list headers — a client-side forward
-    # strips them, a sieve `redirect` does not — so on its own this drops mail a
-    # person meant to send. Only in combination with a bulk marker, which a
-    # deliberate forward does not carry.
-    if bulk:
-        for header in message.keys():
-            if _LIST_HEADER.match(header):
-                return header
+    if not bulk:
+        return None
 
-    return None
+    # Bulk on its own is a loop marker. `List-*` on its own is not: a newsletter
+    # someone deliberately forwarded through a server-side rule keeps its list
+    # headers, since a sieve `redirect` does not strip them the way a
+    # client-side forward does. Reported together where both are present so the
+    # log line says which combination fired.
+    for header in message.keys():
+        if _LIST_HEADER.match(header):
+            return f"Precedence: {precedence} with {header}"
+    return f"Precedence: {precedence}"

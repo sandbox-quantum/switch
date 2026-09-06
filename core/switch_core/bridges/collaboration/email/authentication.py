@@ -79,27 +79,34 @@ def parse_authentication_results(
         return AuthVerdict(dmarc="none", spf="none", dkim="none")
 
     for header in headers:
-        authserv, separator, rest = header.partition(";")
-        if not separator:
+        parts = _split_unquoted(header)
+        if len(parts) < 2:
             continue
-        if _authserv_id(authserv) != wanted:
+        if _authserv_id(parts[0]) != wanted:
             continue
-        # Split into resinfo chunks and read only the head of each, so the
-        # `ptype.property=value` pairs after a verdict are never mistaken for
-        # one. See `_METHOD`.
-        for chunk in rest.split(";"):
+        for chunk in parts[1:]:
             match = _METHOD.match(chunk)
             if match is None:
                 continue
             method = match.group(1).lower()
-            value = match.group(2).lower()
-            if value not in ("pass", "fail"):
-                continue
-            # Fail beats pass, whatever the order. First-wins would make the
-            # verdict depend on a header's internal ordering, which is not
-            # something the sender is prevented from influencing.
-            if found.get(method) != "fail":
-                found[method] = value  # type: ignore[assignment]
+            raw_value = match.group(2).lower()
+            # Anything that is not a verdict is recorded as `none`, not skipped.
+            # Skipping leaves the method unset, and a later chunk — one the
+            # sender may have placed — then fills the gap. A genuine
+            # `dmarc=none` must beat a smuggled `dmarc=pass` after it.
+            value: Result = (
+                "pass"
+                if raw_value == "pass"
+                else "fail"
+                if raw_value == "fail"
+                else "none"
+            )
+            # First verdict wins, except that `fail` beats anything: ordering
+            # inside a header is not something the sender is prevented from
+            # influencing, so it must not decide the outcome in the permissive
+            # direction.
+            if method not in found or value == "fail":
+                found[method] = value
 
     return AuthVerdict(
         dmarc=found.get("dmarc", "none"),
@@ -108,19 +115,63 @@ def parse_authentication_results(
     )
 
 
+def _split_unquoted(header: str) -> list[str]:
+    """Split on the semicolons that are actually separators.
+
+    A `pvalue` may be a quoted string, and the values following a verdict —
+    `smtp.mailfrom`, `header.i`, `header.d` — are chosen by the sender. A
+    quoted local part may legally contain a semicolon, so
+    ``smtp.mailfrom="x;dmarc=pass"@evil.example`` invents a chunk boundary and
+    puts a forged verdict at the head of the chunk after it. Anchoring the
+    verdict pattern to the head of a chunk is worth nothing if the sender picks
+    where chunks begin.
+
+    An unbalanced quote leaves the remainder as one chunk, which fails closed:
+    whatever the sender hid in it is no longer at a chunk head.
+    """
+    parts: list[str] = []
+    current: list[str] = []
+    in_quotes = False
+    escaped = False
+    for ch in header:
+        if escaped:
+            current.append(ch)
+            escaped = False
+        elif ch == "\\" and in_quotes:
+            current.append(ch)
+            escaped = True
+        elif ch == '"':
+            in_quotes = not in_quotes
+            current.append(ch)
+        elif ch == ";" and not in_quotes:
+            parts.append("".join(current))
+            current = []
+        else:
+            current.append(ch)
+    parts.append("".join(current))
+    return parts
+
+
 def _authserv_id(raw: str) -> str:
     """The id at the head of an `Authentication-Results` header, normalised.
 
-    Tolerates the shapes RFC 8601 permits and a strict split would lose: a
-    leading comment, surrounding quotes, and a trailing version number. Losing
-    them fails closed — no verdict — which is safe but leaves an operator with a
-    bridge that authenticates nobody and no clue why.
+    A quoted id is **one token including its spaces**. Taking the first
+    whitespace-delimited word and stripping quotes afterwards lets
+    ``"mx.ours evil"`` read as ``mx.ours`` — and a border MTA strips a
+    pre-existing header only on an *exact* match of its own id, so that one
+    survives to be read as ours. An attacker prepends it to their own message
+    and needs no MTA involvement at all.
+
+    Also tolerates a leading comment and a trailing version number, both of
+    which RFC 8601 permits; losing them fails closed, which is safe but leaves
+    an operator authenticating nobody with no clue why.
     """
-    without_comment = _LEADING_COMMENT.sub("", raw).strip()
-    head = without_comment.split()[0:1]
-    if not head:
-        return ""
-    return head[0].strip('"').lower()
+    text = _LEADING_COMMENT.sub("", raw).strip()
+    if text.startswith('"'):
+        end = text.find('"', 1)
+        return "" if end == -1 else text[1:end].strip().lower()
+    head = text.split()[0:1]
+    return head[0].lower() if head else ""
 
 
 def authenticated_sender(verdict: AuthVerdict) -> bool:
