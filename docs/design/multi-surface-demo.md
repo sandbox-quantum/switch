@@ -68,9 +68,75 @@ The mechanisms are done. The thing that turns them into an agent is not.
 - [ ] **A launcher.** Something that reads credentials, builds the deps and
       calls `startMultiRoomAgent`. A script, not a product.
 
-## Three tiers
+## Simplifications found on a second pass
 
-Each adds exactly one thing to the one before it. Stop at any of them.
+The three-tier plan below was written before thinking about what each story
+*minimally* needs. Five things collapse.
+
+**US-1 and US-2 are the same demo.** Forwarding an email and then asking about
+it in Slack demonstrates one-agent-many-surfaces *and* continuity across
+surfaces. They were listed separately because they are separate stories, and
+setting them up twice is doing the same work twice.
+
+**US-4 and US-6 are variations, not tiers.** Once a session spans two rooms of
+different audiences, US-4 costs one extra question ("ask in the channel about
+something said in the DM"). Once email is reachable, US-6 costs one extra
+`curl` with a different `From`. Neither needs setup of its own.
+
+**Email needs no domain, provider or public endpoint** — for a technical demo.
+Those prove *mail delivery*, which is not the feature. The feature is that a
+message which arrived as email becomes a room message the agent answers
+elsewhere, and that is shown by POSTing a raw `.eml` at the adapter's webhook:
+
+```
+curl --data-binary @sample.eml http://127.0.0.1:PORT/inbound/SECRET
+```
+
+Keep the provider for a customer demo. Skip it to find out whether any of this
+works.
+
+**Only US-3 needs `MultiRoomHost`.** A Claude Code session already is a turn
+loop with one context window, so everything except waking up on its own runs on
+the connector people already install. The host earns its keep for the scheduler
+and for nothing else in this list.
+
+**There is a zero-infrastructure smoke test worth running first.** Two
+*internal* Switch rooms — no bridge at all, both visible in Switch Console —
+with one session spanning them. That proves the protocol change end to end
+before anyone configures Slack or stands up a mail endpoint, and it would be the
+first time any of this executes.
+
+### What that leaves
+
+| | Covers | Needs |
+|---|---|---|
+| **Smoke test** | the mechanism | two internal rooms, a widened `bin.ts` |
+| **Demo A** | US-1, US-2, US-4, US-6 | + a Slack bridge, a local email bridge, a sample `.eml` |
+| **Demo B** | US-3 | `MultiRoomHost`, schedule persistence, a launcher |
+
+Demo A is the one worth building. Demo B is a separate project that happens to
+share a branch.
+
+### The cost that is actually left
+
+Widening `bin.ts` is **not** a config flag, which an earlier draft of this
+document implied. `pollingRoomId` is a single `string | null` used in eight
+places — the reconnect room list, two operation fallbacks, the repoint path. It
+has to become a set, and the reconnect must re-declare every room or catch-up
+silently drops a surface. Half a day, not an afternoon.
+
+Two operational steps are easy to miss:
+
+- An auto-created email room resolves **no agents** (`get_channel_agent_names`
+  returns `[]` for this bridge), so the agent has to be added to it after the
+  first message arrives. The bridge logs a notice saying so.
+- The webhook secret is minted at registration and displayed nowhere. Read it
+  out of the bridge's stored config.
+
+## The original tiers, kept for their detail
+
+Superseded by the grouping above; the setup steps and acceptance criteria
+still apply.
 
 ### Tier 1 — two rooms, one mind *(US-2)*
 
