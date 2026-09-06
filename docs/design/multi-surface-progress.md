@@ -19,6 +19,37 @@ code. Every stage commits separately so any of it can be undone on its own.
 
 ---
 
+## ⚠️ Open safety register
+
+Read this before enabling anything on this branch. Everything here is **written
+and tested but connected to nothing** — which is safe only for as long as the
+features that would need it stay off.
+
+No known exploitable flaw is open. The one that existed — a forged DMARC pass
+through a header our own infrastructure stamped — is fixed in `4aac1788` and has
+a test reproducing the original attack. The entries below are undelivered
+enforcement, not lurking bugs.
+
+| # | Mechanism | State | What must not happen until it is wired |
+|---|---|---|---|
+| S1 | `disclosure.py` — `may_carry`, `disclosed_span` | **zero callers** | No outsider in a room with a multi-room agent. `handle_protection_verdict` in `bridge_core.py` is the intended call site and is still behind its TODO. |
+| S2 | `email/authentication.py` — DMARC evaluation | **not imported by the adapter** | Email must not admit a sender who is not on the allowlist. The allowlist is the only live gate. |
+| S3 | `email/reply.py` + SMTP | **not imported by the adapter** | Nothing. Outbound email does not exist, which is why S1 and S2 are not yet urgent. |
+| S4 | `authenticates_senders` | **read only by a startup log line** | The addressing layer must not be described as distinguishing an unauthenticated sender. It does not. The warning reads like a control; it is not one. |
+
+**The dependency that matters: S3 must not ship before S1 and S2.** Outbound
+email is what puts an outsider in a room, and it is the reason the other two
+exist. The design states this as a hard sequencing constraint; it is currently
+satisfied only by S3 being absent.
+
+**What is safe today.** An agent can span several internal rooms, and the
+disclosure story for that is the designed one: rooms are labelled, the label
+reaches the model on every event, and the flow rule is in the standing
+instructions. That is "the boundary is visible", which is what Sprint 1 promised
+and Sprint 4 was to reinforce. It is not enforcement.
+
+---
+
 ## Sprint 1 — Two rooms, one mind
 
 **Unlocks US-2.** Branch `feat/multi-surface-agent`.
