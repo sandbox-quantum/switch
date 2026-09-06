@@ -77,6 +77,12 @@ async function advanced(
   await host.settled();
 }
 
+/** The payload is a union; only a message carries a body. */
+function bodyOf(event: { payload: unknown }): string {
+  const payload = event.payload as { body?: unknown };
+  return typeof payload.body === 'string' ? payload.body : '';
+}
+
 function message(roomId: string, body: string) {
   return {
     type: 'message',
@@ -170,7 +176,7 @@ describe('turns do not overlap', () => {
     const delays: Record<string, number> = { first: 3, second: 2, third: 1 };
     const { host, turns } = harness({
       onTurn: async (turn) => {
-        const body = turn.kind === 'event' ? (turn.event.payload as { body: string }).body : '';
+        const body = turn.kind === 'event' ? bodyOf(turn.event) : '';
         for (let i = 0; i < (delays[body] ?? 0); i++) await Promise.resolve();
       },
     });
@@ -182,7 +188,7 @@ describe('turns do not overlap', () => {
       host.deliver(message(ROOM_A, 'third')),
     ]);
 
-    expect(turns.map((t) => (t.kind === 'event' ? t.event.payload.body : ''))).toEqual([
+    expect(turns.map((t) => (t.kind === 'event' ? bodyOf(t.event) : ''))).toEqual([
       'first',
       'second',
       'third',
