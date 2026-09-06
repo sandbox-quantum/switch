@@ -42,6 +42,13 @@ export {
   type ReapOutcome,
 } from './reap';
 export {
+  startMultiRoomAgent,
+  systemClock,
+  type MultiRoomAgentDeps,
+  type OpenStream,
+  type RunningAgent,
+} from './agent';
+export {
   MultiRoomHost,
   type Clock,
   type HostLogger,
