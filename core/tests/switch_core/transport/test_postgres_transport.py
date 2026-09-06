@@ -394,7 +394,9 @@ class TestWhatIsNotBuiltYet:
         method are the walkers that compare a bus against them."""
         transport = _transport(session_factory, client_id="c", user_id="@a:test")
         with pytest.raises(NotImplementedError):
-            await transport.read_history("!r:test", start=None, limit=10)
+            await transport.read_history(
+                "!r:test", start=None, limit=10, exclude_types=()
+            )
 
 
 class TestReceiving:

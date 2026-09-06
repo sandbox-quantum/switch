@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import io
 import logging
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -422,9 +423,25 @@ class MatrixTransport:
         return to_inbound(_RoomIdOnly(room_id), resp.event)
 
     async def read_history(
-        self, room_id: str, *, start: str | None, limit: int
+        self,
+        room_id: str,
+        *,
+        start: str | None,
+        limit: int,
+        exclude_types: Sequence[str],
     ) -> HistoryPage:
-        resp = await self.raw_client.room_messages(room_id, start=start, limit=limit)
+        # Filtered by the homeserver rather than after the fact. A room's
+        # history is mostly things the log does not keep, and `limit` counts
+        # what is sent — so filtering here makes each page carry a page's worth
+        # of what the caller actually wants instead of whatever survived.
+        resp = await self.raw_client.room_messages(
+            room_id,
+            start=start,
+            limit=limit,
+            message_filter={"not_types": list(exclude_types)}
+            if exclude_types
+            else None,
+        )
         if isinstance(resp, RoomMessagesError):
             raise TransportError(f"Failed to read history in {room_id}: {resp.message}")
         room = _RoomIdOnly(room_id)

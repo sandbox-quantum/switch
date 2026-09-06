@@ -165,6 +165,49 @@ async def test_send_event_carries_the_type_through() -> None:
     assert nio.room_send_calls[0][1] == "com.switch.task.accept"
 
 
+async def test_read_history_asks_the_homeserver_to_withhold_what_it_is_told_to() -> (
+    None
+):
+    """Filtered at the source, not after the fact.
+
+    `limit` counts what the homeserver sends, so a page filtered on arrival is
+    a page mostly wasted — the caller pays to receive and decode events it
+    already knows it will drop.
+    """
+    nio = _FakeNio()
+    seen: dict[str, Any] = {}
+
+    async def _chunk(*args: Any, **kwargs: Any) -> Any:
+        seen.update(kwargs)
+        return SimpleNamespace(chunk=[], end=None)
+
+    nio.room_messages = _chunk  # type: ignore[assignment]
+
+    await _transport(nio).read_history(
+        "!r:s", start=None, limit=10, exclude_types=("com.switch.report.tool_call",)
+    )
+
+    assert seen["message_filter"] == {"not_types": ["com.switch.report.tool_call"]}
+
+
+async def test_read_history_sends_no_filter_when_nothing_is_excluded() -> None:
+    """An empty denial is not a filter that denies nothing — it is no filter,
+    so a caller that wants everything is not relying on the server to agree
+    about what "everything" means."""
+    nio = _FakeNio()
+    seen: dict[str, Any] = {}
+
+    async def _chunk(*args: Any, **kwargs: Any) -> Any:
+        seen.update(kwargs)
+        return SimpleNamespace(chunk=[], end=None)
+
+    nio.room_messages = _chunk  # type: ignore[assignment]
+
+    await _transport(nio).read_history("!r:s", start=None, limit=10, exclude_types=())
+
+    assert seen["message_filter"] is None
+
+
 async def test_read_history_returns_neutral_events_and_its_cursor() -> None:
     nio = _FakeNio()
 
@@ -184,7 +227,9 @@ async def test_read_history_returns_neutral_events_and_its_cursor() -> None:
 
     nio.room_messages = _chunk  # type: ignore[assignment]
 
-    page = await _transport(nio).read_history("!r:s", start=None, limit=10)
+    page = await _transport(nio).read_history(
+        "!r:s", start=None, limit=10, exclude_types=("com.switch.report.tool_call",)
+    )
 
     assert page.next_token == "tok-2"
     assert [e.event_id for e in page.events] == ["$1"]
@@ -204,7 +249,9 @@ async def test_read_history_raises_on_failure() -> None:
     nio.room_messages = _fail  # type: ignore[assignment]
 
     with pytest.raises(TransportError, match="boom"):
-        await _transport(nio).read_history("!r:s", start=None, limit=10)
+        await _transport(nio).read_history(
+            "!r:s", start=None, limit=10, exclude_types=()
+        )
 
 
 def test_register_handlers_binds_only_what_was_supplied() -> None:

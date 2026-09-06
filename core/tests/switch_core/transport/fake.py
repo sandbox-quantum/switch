@@ -6,6 +6,7 @@ instead, so the thing under test talks to the port rather than to Matrix.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Any
 
 from switch_core.attachments import ATTACHMENT_GROUP_KEY
@@ -227,7 +228,12 @@ class FakeTransport:
         return self.events_by_id.get(event_id)
 
     async def read_history(
-        self, room_id: str, *, start: str | None, limit: int
+        self,
+        room_id: str,
+        *,
+        start: str | None,
+        limit: int,
+        exclude_types: Sequence[str] = (),
     ) -> HistoryPage:
         return self._history
 

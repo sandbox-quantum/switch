@@ -37,6 +37,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
@@ -562,7 +563,12 @@ class PostgresTransport:
         return rows[0] if rows else None
 
     async def read_history(
-        self, room_id: str, *, start: str | None, limit: int
+        self,
+        room_id: str,
+        *,
+        start: str | None,
+        limit: int,
+        exclude_types: Sequence[str],
     ) -> HistoryPage:
         raise NotImplementedError(
             "PostgresTransport does not serve history: the read path already "

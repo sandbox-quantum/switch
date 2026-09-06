@@ -12,7 +12,7 @@ error object.
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
 
@@ -157,9 +157,22 @@ class MessageTransport(Protocol):
         ...
 
     async def read_history(
-        self, room_id: str, *, start: str | None, limit: int
+        self,
+        room_id: str,
+        *,
+        start: str | None,
+        limit: int,
+        exclude_types: Sequence[str],
     ) -> HistoryPage:
-        """Read one page of history backwards from `start`."""
+        """Read one page of history backwards from `start`.
+
+        `exclude_types` is a denial the transport pushes as far towards the
+        source as it can, so a caller that discards a category does not pay to
+        receive it first. Required rather than defaulted: a walk that filters
+        and a walk that counts what it drops want opposite answers, and neither
+        should get one by omission. A transport that cannot filter may ignore
+        it — the caller's own filtering is what decides correctness.
+        """
         ...
 
     # ── Rooms ─────────────────────────────────────────────────────────────────

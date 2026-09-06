@@ -40,7 +40,11 @@ from typing import TYPE_CHECKING
 
 from switch_core.db.models import Message, MessageAttachment
 from switch_core.db.stores.message_store import MessageStore
-from switch_core.messages.recorded_types import MEMBERSHIP_EVENT_TYPE, should_record
+from switch_core.messages.recorded_types import (
+    MEMBERSHIP_EVENT_TYPE,
+    NOT_RECORDED_FILTER,
+    should_record,
+)
 from switch_core.transport import (
     InboundCustomEvent,
     InboundEvent,
@@ -177,7 +181,10 @@ async def backfill_room(
     start: str | None = None
     while report.pages_read < MAX_PAGES:
         page = await transport.read_history(
-            room.matrix_room_id, start=start, limit=PAGE_SIZE
+            room.matrix_room_id,
+            start=start,
+            limit=PAGE_SIZE,
+            exclude_types=NOT_RECORDED_FILTER,
         )
         report.pages_read += 1
 

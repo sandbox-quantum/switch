@@ -8,6 +8,7 @@ way time does, and running the walk twice must not double the room.
 from __future__ import annotations
 
 import uuid
+from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import select
@@ -17,6 +18,12 @@ from switch_core.cli.backfill import _ReadOnlyStore
 from switch_core.db.models import Message, Room
 from switch_core.db.stores.message_store import MessageStore
 from switch_core.messages import backfill_room
+from switch_core.messages.recorded_types import (
+    MEMBERSHIP_EVENT_TYPE,
+    NOT_RECORDED,
+    NOT_RECORDED_FILTER,
+    should_record,
+)
 from switch_core.transport import (
     HistoryPage,
     InboundCustomEvent,
@@ -34,10 +41,17 @@ class PagingTransport:
     def __init__(self, pages: list[HistoryPage]) -> None:
         self._pages = pages
         self.reads = 0
+        self.excluded: list[Sequence[str]] = []
 
     async def read_history(
-        self, room_id: str, *, start: str | None, limit: int
+        self,
+        room_id: str,
+        *,
+        start: str | None,
+        limit: int,
+        exclude_types: Sequence[str] = (),
     ) -> HistoryPage:
+        self.excluded.append(exclude_types)
         page = self._pages[min(self.reads, len(self._pages) - 1)]
         self.reads += 1
         return page
@@ -168,6 +182,43 @@ class TestNumbering:
 
         rows = await _rows(session_factory, room.id)
         assert rows[0].sent_at == _at(10)
+
+
+class TestWhatIsAskedFor:
+    async def test_the_walk_asks_the_bus_not_to_send_what_it_would_drop(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """A room's history is mostly things the log does not keep, and `limit`
+        counts what is sent — so a page that arrives full of discards is a page
+        of nothing, paid for."""
+        async with session_factory() as session:
+            room = await _make_room(session)
+
+        transport = PagingTransport(
+            [HistoryPage(events=[_event("$a", 10, "a")], next_token=None)]
+        )
+        async with session_factory() as session:
+            room = await session.get(Room, room.id)  # type: ignore[assignment]
+            await backfill_room(transport, session_factory, room, store=MessageStore())
+
+        asked = list(transport.excluded[0])
+        assert "com.switch.agent.runtime_state" in asked
+        assert "com.switch.report.tool_call" in asked
+        assert "com.switch.task.delegate" in asked
+        # A prefix is expressible only as a wildcard.
+        assert "com.switch.observe.*" in asked
+        # Never the conversation, and never an arrival: the walk writes both.
+        assert "m.room.message" not in asked
+        assert MEMBERSHIP_EVENT_TYPE not in asked
+
+    async def test_the_denial_is_derived_from_the_denylist(self) -> None:
+        """Restating it would let the two drift, and drift here means the
+        homeserver withholding something the log wanted."""
+        for event_type in NOT_RECORDED:
+            assert event_type in NOT_RECORDED_FILTER
+        assert all(
+            not should_record(t) for t in NOT_RECORDED_FILTER if not t.endswith("*")
+        )
 
 
 class TestCompletionMark:

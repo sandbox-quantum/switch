@@ -75,6 +75,21 @@ NOT_RECORDED = EPHEMERAL | PERSISTED_ELSEWHERE | TELEMETRY | RETIRED
 NOT_RECORDED_PREFIXES = ("com.switch.observe.",)
 
 
+# The same denial expressed as a Matrix event filter, so a walk can ask the
+# homeserver not to send what it is only going to drop. Derived from the sets
+# above rather than restated, because the two going out of step would mean the
+# server silently withholding something the log wanted.
+#
+# A trailing `*` is the filter wildcard, which is what makes a prefix
+# expressible. Keep this a denial: an allowlist here would have the homeserver
+# skip a type nobody has classified yet, turning the deliberate "record what we
+# do not recognise" into "lose it", and the log would never know.
+NOT_RECORDED_FILTER = [
+    *sorted(NOT_RECORDED),
+    *(f"{prefix}*" for prefix in NOT_RECORDED_PREFIXES),
+]
+
+
 def should_record(event_type: str) -> bool:
     """Whether an event of this type belongs in the message log."""
     if event_type in NOT_RECORDED:

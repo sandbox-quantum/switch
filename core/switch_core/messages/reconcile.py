@@ -316,8 +316,12 @@ async def _read_back_to(
     anchored = False
     done = False
     while not done:
+        # Unfiltered on purpose, unlike the backfill. This walk reports what
+        # it discarded (`ignored_by_type`), and that disclosure is part of the
+        # answer — a homeserver that withheld those events would make the
+        # report read as though the room had never carried any.
         page = await transport.read_history(
-            matrix_room_id, start=start, limit=PAGE_SIZE
+            matrix_room_id, start=start, limit=PAGE_SIZE, exclude_types=()
         )
         for raw in page.events:
             if not isinstance(raw, InboundEvent):

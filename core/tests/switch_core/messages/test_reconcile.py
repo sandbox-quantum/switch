@@ -11,6 +11,7 @@ as clean.
 from __future__ import annotations
 
 import uuid
+from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 from itertools import count
 
@@ -35,7 +36,12 @@ class PagingTransport:
         self.reads = 0
 
     async def read_history(
-        self, room_id: str, *, start: str | None, limit: int
+        self,
+        room_id: str,
+        *,
+        start: str | None,
+        limit: int,
+        exclude_types: Sequence[str] = (),
     ) -> HistoryPage:
         page = self._pages[self.reads]
         self.reads += 1
