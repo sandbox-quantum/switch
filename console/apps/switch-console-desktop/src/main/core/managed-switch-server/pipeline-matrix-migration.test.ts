@@ -117,7 +117,15 @@ describe('startStack across the Matrix boundary', () => {
       expect.anything(),
       expect.objectContaining({
         image: 'ghcr.io/sandbox-quantum/switch-core:0.23.0',
-        command: ['python', '-m', 'switch_core.cli.backfill', '--allow-empty'],
+        // Migrates before it copies. The stack is on an older release, so its
+        // database is at an older revision and the backfill reads a column a
+        // later one adds — without this it fails on a missing column before
+        // reaching a single room.
+        command: [
+          'sh',
+          '-c',
+          'alembic upgrade head && python -m switch_core.cli.backfill --allow-empty',
+        ],
       }),
       expect.anything()
     );

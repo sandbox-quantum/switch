@@ -40,6 +40,25 @@ const STACK_ADDRESSES = {
 };
 
 /**
+ * Bring the schema forward, then copy.
+ *
+ * The migration is not incidental. The stack being migrated is on an older
+ * release, so its database is at an older revision — and the backfill selects
+ * on a column a later revision adds. Reading it against the old schema fails
+ * on a missing column before it looks at a single room.
+ *
+ * `&&`, so a migration that fails stops the copy and therefore the upgrade.
+ * Deliberately not the compose service's entrypoint, which ends in `|| echo`:
+ * that exists to let a stack start when the copy fails, and here the failure
+ * has to be fatal.
+ */
+const BACKFILL_COMMAND = [
+  'sh',
+  '-c',
+  'alembic upgrade head && python -m switch_core.cli.backfill --allow-empty',
+];
+
+/**
  * Whether starting `pinned` against a stack running `deployed` moves it past
  * the last version that can read the homeserver.
  *
@@ -91,7 +110,7 @@ export async function runBackfill(
       host,
       {
         image: `${GHCR_REGISTRY}/${RELEASE_REPO_OWNER}/switch-core:${LAST_MATRIX_VERSION}`,
-        command: ['python', '-m', 'switch_core.cli.backfill', '--allow-empty'],
+        command: BACKFILL_COMMAND,
         env: STACK_ADDRESSES,
       },
       onLog
