@@ -60,7 +60,7 @@
 artifacts:
   switch-core:
     description: The backend service, and the gateway API it serves.
-    version: 0.24.1
+    version: 0.25.0
     declared_in: core/pyproject.toml
     published_as: switch-core
 
@@ -169,8 +169,8 @@ contracts:
       names, profiles, and environment variables — which Switch Console's
       local-server mode drives.
     artifacts:
-      switch-console: { speaks: 1, accepts: 1 }
-      compose: { speaks: 1, accepts: 1 }
+      switch-console: { speaks: 2, accepts: 1 }
+      compose: { speaks: 2, accepts: 1 }
 
   sidecar-control:
     description: >-

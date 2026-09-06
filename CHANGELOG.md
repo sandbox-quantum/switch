@@ -44,6 +44,21 @@ version of their own to them without also giving them a release of their own.
 
 ### [Unreleased]
 
+### [0.25.0] - 2026-09-06
+
+#### Removed
+- **Matrix is gone.** Following the 0.24.0 move to a Postgres message store,
+  switch-core no longer runs or talks to a Matrix homeserver: the Tuwunel
+  service, the `matrix-nio` dependency, and all `MATRIX_*` configuration are
+  removed, and the Helm chart drops the tuwunel deployment, service and PVC. The
+  standalone compose no longer ships a Tuwunel service. Ships a migration
+  (`drop_matrix_columns`) that drops the now-unused Matrix columns (#380).
+
+#### Changed
+- **`stack-compose` contract → speaks 2** (accepts 1). The published standalone
+  compose no longer carries the `tuwunel` service or the `MATRIX_*` environment
+  variables; Switch Console's local-server mode drives the new shape (#380).
+
 ### [0.24.1] - 2026-09-06
 
 #### Changed

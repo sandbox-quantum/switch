@@ -20,14 +20,14 @@ class ContractRange(NamedTuple):
 # Where each artifact is. Says nothing about compatibility — that is
 # CONTRACTS below. The two must never be derived from one another.
 ARTIFACT_VERSIONS: Final[dict[str, str]] = {
-    "switch-core": "0.24.1",
+    "switch-core": "0.25.0",
     "switch-console": "0.33.0",
     "agent-runtime": "0.4.1",
     "sidecar": "1.9.7",
-    "gateway": "0.24.1",
-    "setup": "0.24.1",
-    "helm-chart": "0.24.1",
-    "compose": "0.24.1",
+    "gateway": "0.25.0",
+    "setup": "0.25.0",
+    "helm-chart": "0.25.0",
+    "compose": "0.25.0",
     "switch-connector": "0.9.13",
     "switch-connector-codex": "0.3.14",
     "switch-connector-opencode": "0.1.9",
@@ -46,8 +46,8 @@ CONTRACTS: Final[dict[str, dict[str, ContractRange]]] = {
     },
     # The interface of the published standalone compose artifact — its service names, profiles, and environment variables — which Switch Console's local-server mode drives.
     "stack-compose": {
-        "switch-console": ContractRange(speaks=1, accepts=1),
-        "compose": ContractRange(speaks=1, accepts=1),
+        "switch-console": ContractRange(speaks=2, accepts=1),
+        "compose": ContractRange(speaks=2, accepts=1),
     },
     # How Switch Console controls a deployed sidecar on a remote host: the ready file it reads, and the control channel it opens.
     "sidecar-control": {
