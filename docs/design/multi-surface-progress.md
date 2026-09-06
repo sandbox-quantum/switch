@@ -291,6 +291,45 @@ in a room — therefore still binds Sprint 5.
 
 ---
 
+## Sprint 5 — The agent has a correspondent
+
+**Unlocks US-5**, once wired. `email/authentication.py`, `email/reply.py`.
+
+This entry was missing when the log was first written — the sprint's decisions
+were recorded in the review section and the commit messages, and nowhere
+alongside the other four. Written up here for symmetry.
+
+### Decisions taken during the work
+
+**Only a DMARC pass authenticates.** Accepting `spf=pass and dkim=pass` as
+equivalent is the tempting mistake: neither asserts that the envelope or signing
+domain is the domain in the `From` line a person reads, and that alignment is
+the only claim that matters when the answer decides who may address an agent.
+
+**Exactly one `Authentication-Results` header is read — the one bearing the
+configured `authserv-id`.** The header is ordinary text in an ordinary message,
+so a sender can write one, and a receiver *prepends* its own, meaning the
+attacker's arrives first. A deployment that has not configured the id gets no
+verdict at all, which is right: mail that reached us by a path we cannot name
+has been checked by nothing we can name.
+
+**`Re:` exactly once, stripping any existing pile.** Prefixing unconditionally
+produces `Re: Re: Re: Re: booking` after four turns, which is how a thread
+announces that a machine is writing it.
+
+**The full `References` chain, not just the parent.** Carrying only the
+immediate parent attaches a reply to one message rather than to a conversation.
+
+**Replying to a message with no `Message-ID` raises.** There is nothing to thread
+against, and a reply claiming to answer nothing is worse than an error — it
+arrives as a new conversation under a subject implying it is not.
+
+**Both modules are pure and free of I/O**, so the fiddly parts are testable
+without a mail server. Neither is wired into the adapter; see the safety
+register.
+
+---
+
 ## Review of Sprints 2–5
 
 Two reviewers, split by subsystem. One confirmed a working exploit; the other
@@ -536,3 +575,39 @@ is an `onTurn` that drives a model** — that is the caller's, by design, and
 there is no reference implementation of one here.
 
 The safety register is unchanged. D3 remains unwired.
+
+
+---
+
+## Audit — what is and is not covered
+
+Taken after the wiring landed, in answer to "is everything logged, reviewed and
+tested?". The answer was no, in three places. Two are closed; one is open.
+
+### Closed
+
+- **Sprint 5 had no log entry.** Written above.
+- **The disclosure section of the room instructions had no test.** This is the
+  gap that let the "reaching no agent" regression exist for a sprint —
+  `test_disclosure.py` tests the rule as a function, and its *delivery* was
+  tested by nothing. `test_room_instructions_disclosure.py` now covers it, and
+  reintroducing the original bug turns 11 of its 12 tests red.
+
+### Open
+
+- **`agent.ts` has never been reviewed.** It was written after the host review,
+  so no reviewer has seen the wiring.
+- **No fix commit has been reviewed.** `b9954060`, `4aac1788` and `196a6110`
+  are roughly a thousand lines of largely security-relevant change, written in
+  response to review and then reviewed by nobody. That is the largest remaining
+  hole in the process, and it is structural rather than accidental: the loop as
+  run here reviews implementations and not their corrections.
+- **Three behaviour changes have only incidental coverage**: the `audience`
+  field on `RoomMeta` and its threading through nine envelope sites, the
+  `authenticates_senders` startup warning, and the `surfaceMeta` wiring in
+  `bin.ts` — the last of which cannot be unit-tested, since `bin.ts` exits at
+  module scope.
+- **Two environment gaps, unchanged since Sprint 1**: Postgres-backed core tests
+  have never run here (testcontainers stalls), and the desktop app has no
+  `node_modules`, so `switch-event-format.ts` and its tests are verified by
+  inspection only. Both need a real run before merge.
