@@ -54,6 +54,18 @@ class _Platform:
             self.live.add(ref)
             return ref
 
+        async def post_message_with_blocks(
+            channel_id: str,
+            agent_name: str,
+            text: str,
+            blocks: Any,
+            thread_root_id: str | None,
+        ) -> str | None:
+            await asyncio.sleep(0)
+            ref = next(self._next)
+            self.live.add(ref)
+            return ref
+
         async def update_message(
             channel_id: str, message_ref: str, new_content: str
         ) -> None:
@@ -65,6 +77,7 @@ class _Platform:
             self.live.discard(message_ref)
 
         adapter.send_message = send_message  # type: ignore[method-assign]
+        adapter._post_message_with_blocks = post_message_with_blocks  # type: ignore[method-assign]
         adapter.update_message = update_message  # type: ignore[method-assign]
         adapter.delete_message = delete_message  # type: ignore[method-assign]
 

@@ -144,8 +144,6 @@ Stops what an agent is doing now.
 !interrupt @agent-name
 ```
 
-On Slack, the agent's progress message carries a **Stop** button that does the same thing — click it instead of typing the command.
-
 ### !compact
 
 Compacts an agent's session context.

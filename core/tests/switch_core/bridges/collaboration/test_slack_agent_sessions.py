@@ -661,8 +661,8 @@ def test_every_card_and_button_is_deleted_when_two_were_open() -> None:
     _run(_state(adapter, "idle", thread="C1:222.0"))
 
     deleted_ts = sorted(d["ts"] for d in client.deleted)
-    # Two cards + one button message (one per channel+agent) = 3 deletions.
-    assert len(deleted_ts) == 3
+    # Two cards + two button messages (one button per thread) = 4 deletions.
+    assert len(deleted_ts) == 4
 
 
 # ── Which message gets the eyes ──────────────────────────────────────────────
@@ -1048,6 +1048,47 @@ def test_streaming_path_button_message_is_deleted_on_idle() -> None:
     assert len(client.deleted) == 2
 
 
+def test_block_action_works_without_agent_sessions() -> None:
+    """The Stop button must fire the interrupt on the non-card path too,
+    where _session_owner is never populated."""
+    adapter, _ = _adapter(enabled=False)
+    commands: list[InboundCommand] = []
+
+    async def on_command(cmd: InboundCommand) -> None:
+        commands.append(cmd)
+
+    adapter._on_command = on_command  # type: ignore[assignment]
+    adapter._user_cache["U1"] = SlackUser(name="louis", display_name="Louis")
+
+    _run(_state(adapter, "working", detail="reading"))
+    _run(adapter._handle_block_action(_block_action_payload()))
+
+    assert len(commands) == 1
+    assert commands[0].command == "interrupt"
+    assert commands[0].args == "@flint-tracker"
+
+
+def test_block_action_after_idle_without_agent_sessions_posts_soft_message() -> None:
+    """Non-card path: once the working message is cleared, the button is dead."""
+    adapter, client = _adapter(enabled=False)
+    commands: list[InboundCommand] = []
+
+    async def on_command(cmd: InboundCommand) -> None:
+        commands.append(cmd)
+
+    adapter._on_command = on_command  # type: ignore[assignment]
+
+    _run(_state(adapter, "working", detail="reading"))
+    _run(_state(adapter, "idle"))
+    _run(adapter._handle_block_action(_block_action_payload()))
+
+    assert commands == []
+    already_finished = [
+        p for p in client.posted if "already finished" in p.get("text", "")
+    ]
+    assert len(already_finished) == 1
+
+
 def test_block_action_falls_back_to_session_owner() -> None:
     """When the button's value is empty, the handler resolves the agent
     from _session_owner."""
@@ -1067,3 +1108,49 @@ def test_block_action_falls_back_to_session_owner() -> None:
 
     assert len(commands) == 1
     assert commands[0].args == "@flint-tracker"
+
+
+# ── Repositioning preserves blocks ─────────────────────────────────────────
+
+
+def test_reposition_preserves_stop_button_on_non_streaming_path() -> None:
+    """The base class reposts with plain text, losing the blocks.
+    SlackAdapter's override must repost with the Stop button intact."""
+    adapter, client = _adapter(enabled=False)
+
+    _run(_state(adapter, "working", detail="reading"))
+    assert len(client.posted) == 1
+
+    _run(adapter.reposition_runtime_state("C1", "flint-tracker", "C1:222.0"))
+
+    assert len(client.posted) == 2
+    blocks = client.posted[1].get("blocks", [])
+    action_ids = [
+        el["action_id"]
+        for b in blocks
+        if b["type"] == "actions"
+        for el in b["elements"]
+    ]
+    assert "switch_interrupt" in action_ids
+
+
+def test_reposition_preserves_stop_button_on_streaming_path() -> None:
+    """The button-only message beside the card must also survive repositioning."""
+    adapter, client = _adapter()
+
+    _run(_state(adapter, "working", detail="reading"))
+    assert len(client.posted) == 1
+
+    _run(adapter.reposition_runtime_state("C1", "flint-tracker", "C1:222.0"))
+
+    assert len(client.posted) == 2
+    blocks = client.posted[1].get("blocks", [])
+    action_ids = [
+        el["action_id"]
+        for b in blocks
+        if b["type"] == "actions"
+        for el in b["elements"]
+    ]
+    assert "switch_interrupt" in action_ids
+    # No section block — the card has the status text.
+    assert not any(b["type"] == "section" for b in blocks)

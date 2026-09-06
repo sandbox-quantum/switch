@@ -892,10 +892,10 @@ def test_reposition_leaves_the_original_when_the_repost_fails() -> None:
         )
     )
 
-    async def failing_send(*_args: Any, **_kwargs: Any) -> None:
+    async def failing_post(*_args: Any, **_kwargs: Any) -> None:
         return None
 
-    adapter.send_message = failing_send  # type: ignore[method-assign]
+    adapter._post_message_with_blocks = failing_post  # type: ignore[method-assign]
     _run(adapter.reposition_runtime_state("C123", "agent-bot", None))
 
     assert fake.deletes == []

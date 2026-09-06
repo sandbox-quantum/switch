@@ -765,8 +765,12 @@ class SlackAdapter(CollaborationAdapter):
                 # story.  Tracked as a LiveRuntimeIndicator so the existing
                 # idle disposal removes it.
                 existing = self._working_msg.get(key)
-                if existing is not None and existing.body == "":
-                    # Already have a button-only message; nothing to do.
+                if (
+                    existing is not None
+                    and existing.body == ""
+                    and existing.thread_root_id == thread_root_id
+                ):
+                    # Already have a button-only message in this thread; nothing to do.
                     return
                 # Clear any full working message left over from before the
                 # card existed (e.g. sessions were temporarily unavailable).
@@ -1366,12 +1370,27 @@ class SlackAdapter(CollaborationAdapter):
             return
 
         # The button carries the agent name in its value, but the turn may
-        # have ended between the click and this handler running.  Check the
-        # session owner to confirm the turn is still live.
+        # have ended between the click and this handler running.
         agent_name = str(action.get("value") or "") or self._session_owner.get(
             (channel_id, thread_ts), ""
         )
-        if not agent_name or (channel_id, thread_ts) not in self._session_owner:
+        if not agent_name:
+            await self.admin_message(
+                channel_id,
+                "That turn already finished.",
+                thread_root_id=f"{channel_id}:{thread_ts}",
+            )
+            return
+
+        # The turn is live if tracked by either signal: _session_owner
+        # (card path, populated only when agent_sessions is on) or
+        # _working_msg (both paths — always present while a working
+        # indicator is up).
+        turn_live = (channel_id, thread_ts) in self._session_owner or (
+            channel_id,
+            agent_name,
+        ) in self._working_msg
+        if not turn_live:
             await self.admin_message(
                 channel_id,
                 "That turn already finished.",
@@ -1500,6 +1519,41 @@ class SlackAdapter(CollaborationAdapter):
         return await self._post_message_with_blocks(
             channel_id, agent_name, "Stop", blocks, thread_root_id
         )
+
+    async def _reposition_runtime_state(
+        self, channel_id: str, agent_name: str, thread_root_id: str | None
+    ) -> None:
+        """Repost the working indicator with its Block Kit blocks intact.
+
+        The base class reposts with plain text, which loses the Stop button.
+        """
+        key = (channel_id, agent_name)
+        live = self._working_msg.get(key)
+        if live is None:
+            return
+
+        if live.body == "":
+            # Streaming path: button-only message.
+            ref = await self._post_stop_button(channel_id, agent_name, thread_root_id)
+        else:
+            blocks = self._stop_button_blocks(agent_name, live.body)
+            ref = await self._post_message_with_blocks(
+                channel_id, agent_name, live.body, blocks, thread_root_id
+            )
+
+        if ref is None:
+            logger.warning(
+                "Could not repost the runtime indicator for %s in %s; leaving it "
+                "at its current position",
+                agent_name,
+                channel_id,
+            )
+            return
+
+        self._working_msg[key] = replace(
+            live, message_ref=ref, thread_root_id=thread_root_id
+        )
+        await self._remove_runtime_indicator(channel_id, live.message_ref)
 
     async def _clear_working(self, channel_id: str, agent_name: str) -> None:
         live = self._working_msg.pop((channel_id, agent_name), None)
