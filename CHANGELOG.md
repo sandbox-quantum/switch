@@ -46,6 +46,13 @@ version of their own to them without also giving them a release of their own.
 
 ### [0.25.0] - 2026-09-06
 
+#### Added
+- `GATEWAY_OIDC_REQUIRE_EMAIL_VERIFIED` (default true) makes the OIDC
+  `email_verified` check configurable, so a deployment whose IdP addresses are
+  authoritative (e.g. Okta directory-provisioned users that never report the
+  claim as true) can opt out. The relaxed check logs a warning on every login
+  naming the claim value, so it is never silent (#387).
+
 #### Removed
 - **Matrix is gone.** Following the 0.24.0 move to a Postgres message store,
   switch-core no longer runs or talks to a Matrix homeserver: the Tuwunel
