@@ -392,3 +392,63 @@ correct path rather than no path at all.
 - No operator-facing way to see the minted webhook URL.
 - The HTTP surface of the email adapter (`start`, routing, the 202/500 split)
   has no test coverage; every test goes through `bind_message_handler`.
+
+---
+
+## The multi-room host
+
+Sprint 1's outstanding item, built after the Sprint 2–5 review.
+`console/packages/switch-agent-runtime/src/host.ts`.
+
+### What it is, and what it deliberately is not
+
+The process that holds a `multi` connection open and stays up. **It does not
+drive a model** — `onTurn` is injected — so what the module contains is only the
+part with rules. That split is the reason it is testable at all: a host that
+owned the model would need one to test.
+
+### Decisions taken during the work
+
+**Turns are serialised through a single promise chain.** One context window
+means two turns in flight interleave two conversations inside it, and the agent
+answers each with half of the other. A scheduled wake-up queues behind an event
+like anything else — it is a turn in the same context, not a second thread of
+thought.
+
+**A turn that throws is logged, and the next one still runs.** One bad turn must
+not silence the agent for the rest of the session.
+
+**A wake-up aimed at a room the agent no longer holds is skipped, and the
+schedule still advances.** Posting where it has no seat either fails somewhere
+nobody reads or lands in a room it was evicted from; and a weekly recurrence is
+due again next week whether or not this occurrence could run.
+
+**The clock is injected.** Production passes `setTimeout`; a test advances time
+by hand. Nothing in the suite waits on a real timer.
+
+### A bug the tests found
+
+`stop()` checked `running` *inside* the chained callback, so a turn accepted
+before the stop but not yet started was discarded rather than finished — which
+is precisely what `stop()` is documented not to do. Whether to accept work is
+decided when it arrives; anything reaching the callback was accepted and is owed
+completion.
+
+Two of the tests also needed fixing during development: they asserted
+synchronously, before the microtask a turn starts on had run, so they were
+measuring "nothing has happened yet". That is the same vacuous-pass shape as the
+other eleven on this branch, arriving through timing rather than through a weak
+assertion.
+
+### Knowingly left
+
+- **Nothing wires this to `SwitchEventStream`.** The seam is `deliver` /
+  `acceptRooms` / `noteGap`; connecting it is a thin adapter, and there is no
+  test for it yet.
+- **No `onEvicted` counterpart.** The stream reports eviction and the host has
+  nowhere to put it.
+- **No production `Clock`.** A `setTimeout` implementation has to re-arm past
+  `MAX_TIMER_MS`, which nothing does yet.
+- The safety register above is unchanged: the host makes a multi-room agent
+  possible, which is the state Sprint 1 designed for (labels visible, rule in
+  the instructions), but it does not wire D3.
