@@ -119,6 +119,13 @@ reconcile-messages *args:
 backfill-messages *args:
     uv run --project core python -m switch_core.cli.backfill {{ args }}
 
+# ── Recover recent room history from Slack, not the homeserver ────────────────
+# For bridged rooms Slack holds the same conversation and holds it first, so
+# this reads it there and leaves the homeserver alone. Newest messages only.
+#   just slack-backfill --dry-run
+slack-backfill *args:
+    uv run --project core python -m switch_core.cli.slack_backfill {{ args }}
+
 # ── Generate a new alembic migration ──────────────────────────────────────────
 migration msg:
     uv run --project core alembic -c core/alembic.ini revision --autogenerate -m "{{ msg }}"
