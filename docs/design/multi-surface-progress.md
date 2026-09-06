@@ -479,14 +479,8 @@ finished. Mutation testing only works if the assertion can tell the difference.
 
 ### Knowingly left
 
-- **Nothing wires this to `SwitchEventStream`.** The seam is `deliver` /
-  `acceptRooms` / `noteGap` / `evicted`, which now matches the stream's
-  callbacks; connecting it is a thin adapter with no test yet. `noteGap` still
-  discards `fromSequence`.
-- **No production `Clock`.** A `setTimeout` implementation must clamp
-  defensively — the `MAX_TIMER_MS` clamp lives in `schedule.ts`, so a second
-  call site would not inherit it — and `now()` over `Date.now()` is wall-clock,
-  so an NTP step or a suspend moves every wake-up.
+- ~~Nothing wires this to `SwitchEventStream`~~ — **done**, see below.
+- ~~No production `Clock`~~ — **done**, `systemClock` in `agent.ts`.
 - **Reentrancy deadlocks.** `onTurn` calling `await host.deliver(...)` chains
   behind the turn currently executing and hangs. Undocumented, and the class is
   publicly exported.
@@ -495,3 +489,50 @@ finished. Mutation testing only works if the assertion can tell the difference.
 - The safety register above is unchanged: the host makes a multi-room agent
   possible, which is the state Sprint 1 designed for (labels visible, rule in
   the instructions), but it does not wire D3.
+
+
+---
+
+## Wiring it up — a runnable agent
+
+`console/packages/switch-agent-runtime/src/agent.ts`. Thirty lines joining the
+stream to the host, and the first point at which anything on this branch can be
+demonstrated rather than argued about.
+
+### Decisions taken during the work
+
+**It is its own module rather than a few lines in a caller.** The failure mode
+of a missing wire is *silence*, which from outside is indistinguishable from a
+quiet room, so each of the stream's four callbacks has a test asserting it lands
+somewhere. `onEvicted` is the one that matters most: without it an agent keeps
+its rooms and keeps firing scheduled work into them after another stream has
+taken the connection over, receiving nothing and looking healthy throughout.
+
+**The schedule is read before the socket opens.** Events arrive the moment it
+does, and a turn that ran against an empty schedule which was then replaced
+underneath it reads as a wake-up that silently went missing.
+
+**`stop` waits for startup before aborting**, so a stop racing the open cannot
+leave a stream nobody holds a reference to.
+
+**The gap carries `fromSequence` through** into the message the agent sees. It
+is the only thing saying how far back to re-read; without it the warning says
+only that something, somewhere, was lost.
+
+**`systemClock` repeats the `MAX_TIMER_MS` clamp** rather than leaning on
+`nextDelayMs`. It belongs where the timer is: Node keeps a delay in a 32-bit int
+and anything larger fires *immediately*, so any caller computing its own delay
+would turn a monthly wake-up into a hot loop. Its `now()` is wall-clock
+deliberately — a schedule is written in wall-clock terms — which does mean an
+NTP step or a suspended laptop moves every pending wake-up.
+
+All five wires were mutation-checked: cutting each one turns a test red.
+
+### What this does and does not make possible
+
+A process can now hold a `multi` connection across several rooms, answer in the
+room it was addressed from, and wake itself on a schedule. **What it still needs
+is an `onTurn` that drives a model** — that is the caller's, by design, and
+there is no reference implementation of one here.
+
+The safety register is unchanged. D3 remains unwired.
