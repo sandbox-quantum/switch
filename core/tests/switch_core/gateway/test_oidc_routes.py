@@ -84,19 +84,22 @@ class TestOidcCallback:
                 "oidc_sub": "okta|123",
             }
 
+    @pytest.mark.parametrize("email_verified", [False, None, "false"])
     async def test_unverified_email_is_rejected(
         self,
         session_factory: async_sessionmaker[AsyncSession],
         monkeypatch: pytest.MonkeyPatch,
+        email_verified: object,
     ) -> None:
-        token = {
-            "userinfo": {
-                "email": "mallory@example.com",
-                "email_verified": False,
-                "sub": "okta|9",
-                "name": "Mallory",
-            }
+        # An absent claim is as untrusted as an explicit false.
+        claims: dict[str, object] = {
+            "email": "mallory@example.com",
+            "sub": "okta|9",
+            "name": "Mallory",
         }
+        if email_verified is not None:
+            claims["email_verified"] = email_verified
+        token = {"userinfo": claims}
         monkeypatch.setattr(oidc_routes, "_client", lambda: _FakeClient(token))
 
         async with session_factory() as session:
@@ -108,6 +111,102 @@ class TestOidcCallback:
                     user_store=UserStore(),
                 )
             assert exc.value.status_code == 401
+
+    @pytest.mark.parametrize("email_verified", [False, None, "false"])
+    async def test_unverified_email_provisions_when_check_disabled(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        monkeypatch: pytest.MonkeyPatch,
+        email_verified: object,
+    ) -> None:
+        # Okta's org authorization server reports false (or omits the claim)
+        # for directory-provisioned users, so a deployment that vouches for its
+        # IdP's addresses must be able to opt out.
+        claims: dict[str, object] = {
+            "email": "bob@example.com",
+            "sub": "okta|55",
+            "name": "Bob",
+        }
+        if email_verified is not None:
+            claims["email_verified"] = email_verified
+        monkeypatch.setattr(
+            oidc_routes, "_client", lambda: _FakeClient({"userinfo": claims})
+        )
+
+        async with session_factory() as session:
+            response = await oidc_routes.oidc_callback(
+                request=SimpleNamespace(),  # type: ignore[arg-type]
+                config=_config(gateway_oidc_require_email_verified=False),
+                session=session,
+                user_store=UserStore(),
+            )
+
+            assert response.status_code == 303
+            user = await UserStore().get_by_email(session, "bob@example.com")
+            assert user is not None
+            assert user.metadata_ == {
+                "oidc_iss": "https://idp.example",
+                "oidc_sub": "okta|55",
+            }
+
+    async def test_missing_email_claim_still_rejected_when_check_disabled(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # Opting out of the verified-email check must not weaken anything else.
+        token = {"userinfo": {"sub": "okta|56", "email_verified": False}}
+        monkeypatch.setattr(oidc_routes, "_client", lambda: _FakeClient(token))
+
+        async with session_factory() as session:
+            with pytest.raises(HTTPException) as exc:
+                await oidc_routes.oidc_callback(
+                    request=SimpleNamespace(),  # type: ignore[arg-type]
+                    config=_config(gateway_oidc_require_email_verified=False),
+                    session=session,
+                    user_store=UserStore(),
+                )
+            assert exc.value.status_code == 401
+
+    async def test_email_collision_still_rejected_when_check_disabled(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # The takeover guard is independent of the verified-email check.
+        from switch_core.gateway.auth import hash_password
+
+        async with session_factory() as session:
+            await UserStore().create(
+                session,
+                User(
+                    name="Admin",
+                    email="admin2@example.com",
+                    role="admin",
+                    password_hash=hash_password("pw"),
+                ),
+            )
+            await session.commit()
+
+        token = {
+            "userinfo": {
+                "email": "admin2@example.com",
+                "email_verified": False,
+                "sub": "okta|attacker2",
+                "name": "Not Admin",
+            }
+        }
+        monkeypatch.setattr(oidc_routes, "_client", lambda: _FakeClient(token))
+
+        async with session_factory() as session:
+            with pytest.raises(HTTPException) as exc:
+                await oidc_routes.oidc_callback(
+                    request=SimpleNamespace(),  # type: ignore[arg-type]
+                    config=_config(gateway_oidc_require_email_verified=False),
+                    session=session,
+                    user_store=UserStore(),
+                )
+            assert exc.value.status_code == 409
 
     async def test_email_collision_with_existing_account_is_rejected(
         self,

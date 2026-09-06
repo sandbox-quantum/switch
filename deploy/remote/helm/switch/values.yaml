@@ -118,6 +118,11 @@ switchCore:
     providerLabel: "OIDC"
     # Must exactly match the redirect URI registered with the IdP.
     redirectUrl: ""
+    # Refuse a login unless the IdP asserts email_verified. Set false only for a
+    # single-tenant IdP whose addresses are authoritative — e.g. Okta's org
+    # authorization server, which reports false for every directory-provisioned
+    # user and offers no way to change that.
+    requireEmailVerified: true
     # Set false to disable password login entirely (OIDC-only).
     passwordLoginEnabled: true
   # Bearer-token resolution runs before every authenticated request and agents

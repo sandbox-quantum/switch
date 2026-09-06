@@ -293,6 +293,10 @@ Include with `nindent 12`.
 - name: GATEWAY_OIDC_REDIRECT_URL
   value: {{ .Values.switchCore.oidc.redirectUrl | quote }}
 {{- end }}
+{{- if not .Values.switchCore.oidc.requireEmailVerified }}
+- name: GATEWAY_OIDC_REQUIRE_EMAIL_VERIFIED
+  value: "false"
+{{- end }}
 {{- if not .Values.switchCore.oidc.passwordLoginEnabled }}
 - name: GATEWAY_PASSWORD_LOGIN_ENABLED
   value: "false"

@@ -42,6 +42,8 @@ class TestGatewayOidcConfig:
         assert config.gateway_oidc_enabled is False
         # Password login is on by default.
         assert config.gateway_password_login_enabled is True
+        # Opting out of the verified-email check must be deliberate.
+        assert config.gateway_oidc_require_email_verified is True
 
     def test_enabled_when_all_three_set(self) -> None:
         config = SwitchConfig(

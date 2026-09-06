@@ -94,11 +94,25 @@ async def oidc_callback(
             status_code=401, detail="OIDC token missing email or sub claim"
         )
     # Provisioning trusts the email, so an unverified (attacker-set) one must
-    # not be accepted.
+    # not be accepted — unless the deployment vouches for its IdP's addresses.
     email_verified = claims.get("email_verified")
-    if email_verified is not True and str(email_verified).lower() != "true":
-        logger.warning("OIDC login rejected: email not verified (sub %s)", sub)
-        raise HTTPException(status_code=401, detail="OIDC email is not verified")
+    verified = email_verified is True or str(email_verified).lower() == "true"
+    if not verified:
+        if config.gateway_oidc_require_email_verified:
+            logger.warning(
+                "OIDC login rejected: email_verified=%r (sub %s). If this IdP's "
+                "addresses are authoritative, set "
+                "GATEWAY_OIDC_REQUIRE_EMAIL_VERIFIED=false.",
+                email_verified,
+                sub,
+            )
+            raise HTTPException(status_code=401, detail="OIDC email is not verified")
+        logger.warning(
+            "OIDC email_verified=%r accepted (sub %s): the email claim is trusted "
+            "because GATEWAY_OIDC_REQUIRE_EMAIL_VERIFIED is false.",
+            email_verified,
+            sub,
+        )
     name = claims.get("name") or email.split("@")[0]
 
     # Bind to the immutable issuer+subject, never the mutable email.
