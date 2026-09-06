@@ -36,12 +36,28 @@ mine and have only ever been checked by inspection.
 
 ## Phase 1 — a stack and an agent
 
+There are two stacks, and for a demo you want the second one.
+
+`just up` runs only the **dependencies** in Docker — Postgres, Tuwunel,
+Mattermost — and expects switch-core on the host via `just run`. That is the dev
+loop: a code change takes effect on restart with no rebuild.
+
+`just standalone-up` runs **everything** in Docker, built from the working tree,
+including the operator dashboard. No host toolchain, one command up, one down.
+Use it unless you are iterating on switch-core itself.
+
 - [ ] `just init-env` — refuses if `.env` exists, which is fine; the existing one
-      works
-- [ ] `just up` — Postgres, Tuwunel, Mattermost
-- [ ] `just migrate`
-- [ ] `just run` — switch-core on `127.0.0.1:8000`, in its own terminal
+      works. It sets `SWITCH_VERSION`, which the standalone stack requires and
+      has no default for.
+- [ ] `just standalone-up` — builds and starts postgres, tuwunel, mattermost,
+      switch, gateway and setup. First run builds three images; allow a few
+      minutes.
 - [ ] `curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8000/health` → `200`
+- [ ] Operator dashboard at <http://127.0.0.1:3000>, credentials from
+      `GATEWAY_ADMIN_EMAIL` / `GATEWAY_ADMIN_PASSWORD` in `.env`
+
+**No migration step.** `switch_core.main` runs `alembic upgrade head` on boot,
+so the container self-migrates. `just migrate` is only for the host-mode stack.
 
 Register an agent. Either from Switch Console, or directly:
 
@@ -98,14 +114,38 @@ take — check for the "must be 'single' or 'multi'" line on stderr.
 The provider only proves mail *delivery*. Skip it: POST a raw message at the
 adapter and you have demonstrated the feature.
 
+**First, expose the adapter's port.** The email bridge listens *inside* the
+container and the standalone compose maps only 8000, 3000, 8065 and 5432 — so
+`curl` from the host cannot reach it. Save this as
+`deploy/local/standalone-email.override.yml`:
+
+```yaml
+services:
+  switch:
+    ports:
+      - "127.0.0.1:8099:8099"
+```
+
+and bring the stack up with it appended:
+
+```bash
+docker compose -f deploy/local/standalone-docker-compose.yml \
+  -f deploy/local/standalone-docker-compose.build.yml \
+  -f deploy/local/standalone-email.override.yml \
+  --profile collab --profile gateway --project-directory . up -d --build
+```
+
+*(On the host-mode stack this does not arise — the adapter binds on your
+machine.)*
+
 - [ ] Register the email bridge (operator dashboard → bridge type `email`):
-      `listen_port` (something free, e.g. `8099`), `agent_address`
+      `listen_port` **8099, matching the mapping above**, `agent_address`
       (`atlas@agents.example.com` — nothing routes to it in this mode), and
       `allowed_senders` set to **your own address only**
 - [ ] Read the minted webhook secret. It is displayed nowhere, by design:
 
 ```bash
-docker exec switch-postgres-1 sh -lc \
+docker exec "$(docker ps -qf name=postgres)" sh -lc \
   'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -t -c "select connection_config from collaboration_bridges where type='"'"'email'"'"';"'
 ```
 
@@ -192,14 +232,22 @@ rm -rf core/.venv
 git clean -xdf console          # node_modules and every packages/*/dist
 ```
 
-**Docker.** `just down` removes the containers and keeps the volumes; `just
-reset` drops the volumes too, and with them every agent, room and Matrix account
-the demo created.
+**Docker.** Match the teardown to the stack you started.
 
 ```bash
-just reset
+just standalone-down     # containers, volumes kept
+just standalone-reset    # volumes too — prompts before deleting
+# or, for the host-mode stack:
+just down / just reset
+```
+
+`reset` takes every agent, room and Matrix account the demo created with it.
+Then the images, if you want the disk back:
+
+```bash
 docker rmi switch-setup:latest jevolk/tuwunel:v1.7.1 \
            mattermost/mattermost-team-edition:latest
+docker images --format '{{.Repository}}:{{.Tag}}' | grep -E 'switch-core|gateway' | xargs -r docker rmi
 ```
 
 **Not repo-local — the one thing worth knowing.** Making `pnpm` available
