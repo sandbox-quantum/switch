@@ -43,7 +43,7 @@ Captured from the review of this note with the steering dev. These are the calls
 2. **A newsroom / comms desk.** Roles: editor (exclusive), reporters (shared), fact-checker, publisher. Shared references: style guide, CMS, stock-image API (the credentials case). Flow: pitch → draft → review → publish.
 3. **A hotel ops desk (booking.com-style).** Roles: front-desk, reservations, housekeeping-coordinator, guest-comms. References: the booking/PMS system, rate calendar, guest inbox. A domain the dev can sanity-check against a real operation.
 
-_Precedent for team blueprints (who already ships a bundled fleet, and the recurring role compositions) is being gathered and will land in section 5._
+_Precedent for team blueprints, who already ships a bundled fleet and the recurring role compositions, is in section 5 under "Bundled fleets and team blueprints." Short version: MetaGPT, ChatDev and Magentic-One ship fixed named teams; CrewAI, Relevance AI, Lindy and Beam let users assemble one; Manus notably does not (single agent plus a swarm of identical generalists). No one ships a browse-and-deploy blueprint marketplace, which is the open space._
 
 ## 1. Where Switch is today
 
@@ -199,6 +199,19 @@ Across Manus and its peers the out-of-box unit is consistent: a **task or sessio
 - **Would have to build.** A **template / playbook catalogue** of instantiable shapes (Lindy and Manus Playbooks both have one; Switch has none). **Scheduled / recurring runs**: Switch has no scheduler at all (`external/switch-has-no-scheduler`), a gap these products have solved and a natural companion to templates ("stand up this shape every Monday"). The per-task isolated workspace pattern is already Switch idiom at the design level (`shape/hub-and-execution-rooms` + `external/worktree-per-parallel-task`); productizing it is the step not yet taken.
 - **Doesn't apply.** The cloud VM / sandbox as a Switch primitive: Switch agents run on their own hosts, and Switch orchestrates rather than provisions compute. And the **hidden planning loop** is a deliberate philosophical divergence: these products hide the whole organization *inside one agent* (planner, executor, verifier, sub-agents, all invisible), whereas Switch makes the organization **explicit**: rooms, roles, and named agents you can see, address and correct. That contrast is the sharpest thing in this whole scan, and it belongs in the recommendation: Switch's template should stamp out a *visible, inhabitable* team, not a black box.
 
+### Bundled fleets and team blueprints
+
+The single-agent products are one half. The other half is the small but real set of tools that ship a **fleet** as the unit, the "startup in a box" precedent. Two shapes:
+
+- **Fixed, named teams shipped as one instantiable object.** Microsoft **Magentic-One** (Orchestrator + WebSurfer + FileSurfer + Coder + ComputerTerminal). **MetaGPT** (a "software company": Product Manager, Architect, Project Manager, Engineer, QA, run as an assembly-line SOP). **ChatDev** (a "virtual software company": CEO/CPO/CTO, programmer, designer, tester, over a chat-chain waterfall). All fixed-role, pipeline- or orchestrator-shaped, and code-generation-centric.
+- **Team-as-unit but user-assembled.** **CrewAI** (a "Crew"; ~16 ready-to-run example crews in its examples repo, plus a no-code Crew Studio that generates a crew plan with per-agent role/goal/task). **Relevance AI** ("AI Workforce", pitched literally as "an org chart where every role is an agent"). **Lindy** ("Societies of Lindies"). **Beam AI** (per-function agent templates you assemble).
+
+Two counter-examples worth naming, because they are easy to assume wrongly: **Manus is not a team bundle.** It is a single general agent plus task **Playbooks**, and its "Wide Research" fans out a swarm of *identical generalists*, explicitly contrasted by Manus against role-differentiated teams. **Artisan** markets separate single-role "AI employees" (Ava, Aaron, Aria), not a team you deploy together.
+
+**Recurring role compositions:** (1) orchestrator/coordinator + specialists (hierarchical); (2) the software-team SOP, PM + Architect + Engineer + QA, sometimes over a CEO/CTO layer; (3) research → build/write → review pipelines; (4) the go-to-market split, prospect → qualify → outreach → customer success. Underneath, two structures recur: a **pipeline / assembly line** with typed handoffs, and an **orchestrator with workers**.
+
+**The gap is the opportunity.** No product ships a browse-and-deploy **marketplace of role-differentiated team blueprints**. Frameworks ship *example* teams (CrewAI, Magentic-One, MetaGPT); vertical products ship *building canvases + component templates*. The team-as-catalogue-item, instantiated with parameters, is an open space (absence-of-evidence from this scan, not proof, but nothing surfaced) and it is exactly the "startup in a box" blueprint catalogue the recommendation points at. The way to win it is Switch's own differentiator: a blueprint that stamps out a team with **humans in it**, visible and directable, not a code-generation black box.
+
 ## 6. Verdict matrix
 
 Every idea from the scans, sorted into three buckets against Switch's primitives.
@@ -287,5 +300,12 @@ Internal (this repo): `docs/official/building/payments-room.md`, `docs/official/
 **Productized agents:**
 - Manus: `https://manus.im/docs/introduction/welcome`, `https://manus.im/blog/manus-sandbox`, `https://manus.im/features/agent-skills`, `https://manus.im/docs/features/scheduled-tasks`; Meta acquisition (Dec 2025, developing): `https://www.cnbc.com/2025/12/30/meta-acquires-singapore-ai-agent-firm-manus-china-butterfly-effect-monicai.html`
 - Peers: `https://openai.com/index/introducing-chatgpt-agent/`, `https://cognition.com/blog/introducing-devin`, `https://blog.replit.com/introducing-agent-3-our-most-autonomous-agent-yet`, `https://www.lindy.ai/tools/ai-workflow-automation`, `https://venturebeat.com/ai/gensparks-super-agent-ups-the-ante-in-the-general-ai-agent-race`
+
+**Bundled fleets / team blueprints:**
+- MetaGPT: `https://github.com/geekan/MetaGPT`, `https://arxiv.org/html/2308.00352v6`; ChatDev: `https://github.com/openbmb/ChatDev`, `https://arxiv.org/html/2307.07924v5`
+- Magentic-One: `https://microsoft.github.io/autogen/stable/user-guide/agentchat-user-guide/magentic-one.html`, `https://arxiv.org/html/2411.04468v1`
+- CrewAI examples + Crew Studio: `https://github.com/crewAIInc/crewAI-examples/tree/main/crews`, `https://docs.crewai.com/en/enterprise/features/crew-studio`
+- Relevance AI Workforce: `https://relevanceai.com/workforce`; Lindy: `https://www.lindy.ai/blog/lindy-3-0`; Beam AI: `https://beam.ai/platform`; Artisan: `https://www.artisan.co/`
+- Manus Wide Research (single-agent swarm, not a role team): `https://manus.im/blog/introducing-wide-research`
 
 **Caveats carried from the research:** CrewAI's two-file YAML is the "classic" pattern, not the 2026 default. No first-party maintainer manifesto was found justifying CrewAI's persona/work split; the rationale in §2 is synthesized from its docs + issue tracker. "No declarative team spec" for AG2, LangGraph and the OpenAI SDK is a scoped negative (core pages checked, not exhaustive). Manus's Planner/Executor/Verifier architecture is analyst reconstruction, and its "100×"/benchmark and post-acquisition status are vendor or developing claims, re-verify before relying on them.
