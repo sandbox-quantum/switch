@@ -1,0 +1,22 @@
+# Publishes the email collaboration bridge's inbound listener.
+#
+# The bridge is not a service — it runs inside switch-core and binds a port of
+# its own, and the standalone compose maps only 8000/3000/8065/5432. Without
+# this, a provider (or a `curl` standing in for one) has nowhere to POST a raw
+# RFC 5322 message and the adapter looks dead from outside the container.
+#
+# Bound to loopback deliberately: an inbound-parse endpoint reachable on the LAN
+# is an open relay into an agent's room. Reaching it from a real provider means
+# a tunnel you control, not widening this.
+#
+# The port must match `listen_port` in the bridge's registered connection_config.
+#
+# Append to the standalone stack:
+#   docker compose -f deploy/local/standalone-docker-compose.yml \
+#     -f deploy/local/standalone-docker-compose.build.yml \
+#     -f deploy/local/standalone-email.override.yml \
+#     --profile collab --profile gateway --project-directory . up -d --build
+services:
+  switch:
+    ports:
+      - "127.0.0.1:8099:8099"

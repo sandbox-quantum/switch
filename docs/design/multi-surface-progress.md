@@ -1284,3 +1284,78 @@ honest remaining gap and it is cosmetic.
 Say out loud: the badge shows one room while the session serves two; US-4 is
 advisory; the runtime is unpublished so the plugin is hand-pointed at a local
 build.
+
+---
+
+## 2026-09-07 — email inbound works, and it exposed a hole in the disclosure rule
+
+### The bridge
+
+Registered, live, and a forwarded message reached the agent:
+
+```
+15:19:02 [Switch] Dana Okafor addressed you in room 1dd36cde… [external]
+         **Fwd: Northwind renewal — three things before Thursday**
+```
+
+`[external]` is this branch's audience label on a real email room, reaching the
+model. Three things the runbook did not say, all found by doing it:
+
+- **Registration is refused without `channel_creation_enabled: false`.** It
+  defaults to true and email cannot create channels. The error is clear, but the
+  default is wrong for this bridge type.
+- **The gateway takes `agent_ids`, not `agent_names`**, when adding an agent to
+  the auto-created room — which has to be done by hand, since an email room
+  resolves none.
+- **The allowlist is not the only gate.** The first delivery was admitted by the
+  bridge and then refused by *addressing*: an external sender who is not claimed
+  by any Switch user cannot satisfy an owner-scoped rule. The fix is the
+  designed one — `POST /gateway/collaborations/{id}/identities` claims the
+  address for a Switch user — and it is exactly US-6. Worth demoing as two
+  distinct gates rather than one.
+
+Also observed, correctly and loudly: atlas's auto-refusal could not be
+delivered, because *"this email bridge is inbound-only, so there is nowhere to
+send atlas's message"*. That is US-5's absence failing visibly rather than
+silently, which is the behaviour this codebase asks for.
+
+### ⚠️ The rule forbids the use case the demo was designed around
+
+Asked in `t-alpha` what the email needed, the agent refused:
+
+> "There is separate email correspondence I'm party to, but it's a DM with
+> someone outside the organisation, and this room is open to the whole
+> workspace — so the contents don't travel here... The permission to repeat it
+> isn't mine or yours to give."
+
+That is `may_carry` applied faithfully, from the labels alone, with nothing
+enforcing it. As a demonstration of US-4 it is better than anything planned.
+
+**But it is also the original premise, refused.** The brief was "forward it an
+email and then ask about that email in Slack". `may_carry` permits only
+`same_room` or `open → internal`, so:
+
+| move | permitted |
+|---|---|
+| `external → open` | ❌ |
+| `external → private` | ❌ |
+| `external → external`, different room | ❌ |
+
+An emailed item can be repeated **nowhere** but its own room — and on an
+inbound-only bridge, nowhere at all.
+
+**What is missing is not strictness, it is identity.** The rule reasons about
+room audiences and has no notion of *who is asking*. Forwarding your own mail to
+your own agent and then asking about it yourself discloses nothing — the same
+person is on both ends — and the rule cannot see that. The identity needed
+already exists and was used here: `ExternalUserClaim` binds
+`demo-sender@example.com` to a Switch user. `may_carry` does not consult it.
+
+The refusal in an **open** room is right regardless: repeating a private email
+into a workspace-wide channel really is a disclosure. The gap is narrower —
+`external → private` where the DM's counterparty holds a claim on the external
+identity. That is the change to consider, and it is a product decision rather
+than a bug: it widens what an agent may repeat, so it belongs with whoever owns
+the D3 question.
+
+Left as-is for now, and recorded here rather than fixed.
