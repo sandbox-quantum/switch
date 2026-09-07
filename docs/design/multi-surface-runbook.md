@@ -238,7 +238,7 @@ At <https://api.slack.com/apps> → your app:
 Workspace id:
 
 ```bash
-curl -s -H "Authorization: Bearer xoxb-…" https://slack.com/api/auth.test
+curl -s -H "Authorization: Bearer $SLACK_BOT_TOKEN" https://slack.com/api/auth.test
 ```
 
 ✅ `"team_id":"T…"` — that is `workspace_id`.
@@ -247,16 +247,29 @@ curl -s -H "Authorization: Bearer xoxb-…" https://slack.com/api/auth.test
 
 Dashboard (<http://127.0.0.1:3000> → Collaborations), or by API:
 
+Put the tokens in `.env` rather than on the command line — it is already
+gitignored, and an inline token ends up in your shell history:
+
+```bash
+cat >> .env <<'EOF'
+SLACK_BOT_TOKEN=xoxb-…
+SLACK_APP_TOKEN=xapp-…
+SLACK_WORKSPACE_ID=T…
+EOF
+set -a; source .env; set +a
+```
+
 ```bash
 curl -s -c /tmp/gw.txt -X POST http://127.0.0.1:8000/gateway/auth/login \
   -H 'Content-Type: application/json' \
-  -d "{\"email\":\"$(grep GATEWAY_ADMIN_EMAIL .env | cut -d= -f2)\",\"password\":\"$(grep GATEWAY_ADMIN_PASSWORD .env | cut -d= -f2)\"}"
+  -d "{\"email\":\"$GATEWAY_ADMIN_EMAIL\",\"password\":\"$GATEWAY_ADMIN_PASSWORD\"}"
 
 curl -s -b /tmp/gw.txt -X POST http://127.0.0.1:8000/gateway/collaborations \
-  -H 'Content-Type: application/json' -d '{
-    "bridge_type":"slack","display_name":"Demo Slack",
-    "connection_config":{"bot_token":"xoxb-…","app_token":"xapp-…",
-      "workspace_id":"T…","agent_usergroups":false}}'
+  -H 'Content-Type: application/json' -d "{
+    \"bridge_type\":\"slack\",\"display_name\":\"Demo Slack\",
+    \"connection_config\":{\"bot_token\":\"$SLACK_BOT_TOKEN\",
+      \"app_token\":\"$SLACK_APP_TOKEN\",
+      \"workspace_id\":\"$SLACK_WORKSPACE_ID\",\"agent_usergroups\":false}}"
 ```
 
 `agent_usergroups: false` deliberately — it mints a Slack user group per agent,
