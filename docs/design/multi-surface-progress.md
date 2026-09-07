@@ -1018,3 +1018,40 @@ and gained the general rule. All three plugin versions bumped and
 2226 core tests, 199 runtime tests, full console typecheck, `ruff` and `mypy`
 clean. One desktop failure in `sidecar/session-spawner.test.ts`, pre-existing
 and machine-specific: it reads this machine's real `~/.claude.json`.
+
+### Why the session was deaf — and how it was settled
+
+The session could `read_context` a room and see the messages, and was never
+woken by them. Both halves looked fine, which is the worst shape a bug can have.
+
+Settled by experiment rather than reading: a third agent, the runtime driven
+under a **minimal MCP stdio client** (`initialize`, `connect_to_room`, then
+print every notification). It emitted exactly what it should:
+
+```
+>>> NOTIFICATION notifications/claude/channel
+{"content": "[probe]: @echoprobe are you notified?",
+ "meta": {"room_id": "…", "audience": "open", "event_type": "message", …}}
+```
+
+So the server buffers, the stream delivers, and the runtime notifies —
+including the `audience` label this branch added. The gap is entirely on the
+host side: **Claude Code surfaces `notifications/claude/channel` only from a
+plugin-provided MCP server.** Registered from a project `.mcp.json` the server
+connects, claims its rooms, serves every tool — and nothing ever wakes the
+session.
+
+An earlier entry here claimed the plugin was unnecessary because the runtime
+notifies Claude Code directly. The first half is true and the conclusion was
+wrong. There was also a name collision: a project server called `switch` and
+the plugin's server called `switch`.
+
+The fix for a demo is to point the *installed* plugin at the local
+`dist/bin.mjs` rather than its npm pin, and to remove the project server. That
+keeps 0.6.0 running while getting the channel registration only a plugin has.
+
+**Worth carrying beyond the demo:** the npm pin and the plugin are not two
+independent facts. A client change cannot be exercised in a real session at all
+until it is either published or hand-substituted into an installed plugin, so
+"unpublished" is closer to "untestable end to end" than the version table
+suggests.

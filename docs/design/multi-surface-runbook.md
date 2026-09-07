@@ -180,12 +180,26 @@ agents hold both rooms at once, because the invariant is per-agent, not global.
 is in local **0.6.0**, unpublished. A stock install runs 0.3.3 — no
 `SWITCH_SCOPE`, no room set — and Step 6 fails looking like a server bug.
 
-**The plugin is not needed.** The runtime pushes room events into Claude Code
-itself, as `notifications/claude/channel` — the plugin's hook is a second path to
-the same place, and installing it here would only reintroduce the npm pin.
+**The plugin IS needed, and a bare `.mcp.json` is not enough.** The runtime
+emits `notifications/claude/channel` either way — verified by driving it under a
+minimal MCP client — but Claude Code only surfaces those from a **plugin-provided**
+server. Registered as a project server it connects, holds its rooms and answers
+`read_context` perfectly, and is never woken by anything. The session looks
+healthy and is deaf.
 
-Write `.mcp.json` in a scratch directory **outside this repo** — the token goes
-in it, and the repo is public:
+Worse, a project server named `switch` **collides** with the plugin's server of
+the same name.
+
+So install the plugin and point *it* at the local build. Edit the installed
+copy, not the tracked one — the path is machine-specific and this repo is
+public:
+
+```bash
+P=~/.claude/plugins/cache/switch-plugins/switch-connector/<version>
+cp "$P/.mcp.json" "$P/.mcp.json.bak"     # restore this afterwards
+```
+
+…then write into `$P/.mcp.json`:
 
 ```json
 {
@@ -209,7 +223,8 @@ registration response uses and is read by nothing. All three of endpoint, id and
 token must be set, or the runtime falls back to resolving against a
 `.switch/agents/` store that a scratch directory does not have.
 
-Start a Claude Code session in that directory and approve the project MCP server.
+Start a Claude Code session in any directory. Restore `.mcp.json.bak` when done,
+or `claude plugin uninstall switch-connector@switch-plugins` and reinstall.
 
 ✅ Session stderr carries `switch:` lines.
 ❌ No `switch:` lines at all → you are on the npm build. A *bad* scope value
@@ -453,6 +468,8 @@ inside switch-core — and **the agent is not a daemon**, it is the session.
 | Email room exists, agent never answers | Auto-created email rooms resolve no agents. Add it. |
 | Every forwarded mail dropped | Check the log for a loop marker. `Auto-Submitted: auto-forwarded` is exempt; a list header *plus* a bulk `Precedence` is not. |
 | `connection … is not open` | 6s heartbeat TTL. A session handles this; a `curl` harness must beat. |
+| Session connects, reads rooms fine, is never woken | The MCP server is project-scoped. Claude Code surfaces `notifications/claude/channel` only from a **plugin-provided** server. Point the installed plugin at the local build instead. |
+| Two `switch` MCP servers | A project `.mcp.json` named `switch` collides with the plugin's. Use one. |
 | Runtime starts but authenticates as nobody | The variable is `SWITCH_API_TOKEN`. `SWITCH_API_KEY` — the name in the registration *response* — is read by nothing. |
 | Slack asks for a public request URL | You want Socket Mode and an app-level token, not Event Subscriptions. |
 | Rooms appear for channels you did not expect | Any message in any channel the app is in auto-creates one. |
