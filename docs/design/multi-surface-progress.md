@@ -21,6 +21,14 @@ code. Every stage commits separately so any of it can be undone on its own.
 
 ## ⚠️ Open safety register
 
+**D5 — forwarding, the primary email use case, is not properly supported.** A
+`message/rfc822` part is flattened into the room message as raw MIME with
+base64 attachments inline, so a real forward is unreadable, oversized, and its
+attachments never reach the media repo. Capped at `EMAIL_BODY_MAX_BYTES` as a
+stopgap 2026-09-07; the fix is to recurse into nested messages and extract
+their attachments as attachments. See the D5 section below.
+
+
 **D4 — ~~19 operations are uncallable under `multi` scope~~ — FIXED 2026-09-06.** `room_id` was added to
 `post_message`, `read_context` and `send_targeted_message`. The other 19 call
 `require_connected_room()` with no argument, so with two rooms held they raise
@@ -1451,3 +1459,74 @@ was still refused because the sender's Slack account was not claimed by any
 Switch user. Same fix, same endpoint. Worth demoing deliberately — "the bridge
 let it in" and "the agent may be addressed by you" are separate decisions, and
 each says so clearly when it refuses.
+
+---
+
+## ⚠️ D5 — forwarding is a primary use case and the adapter does not really support it
+
+**Stated as a product requirement 2026-09-07:** forwarding mail to the agent —
+long, multi-part, with attachments, often a forward of a forward — is expected
+to be *one of the main ways this feature is used*. The email adapter currently
+handles it badly enough that a truncation cap is a stopgap, not a fix.
+
+### What happens today
+
+`_read_content` reads the top-level body, then walks `iter_attachments()`. When
+it meets the `message/rfc822` part that a "forward as attachment" produces —
+**Apple Mail's default, Outlook's, and every "report this message" flow** — it
+does this:
+
+```python
+flattened = str(nested)
+body = f"{body}\n\n{flattened}".strip() if body else flattened
+```
+
+That is the nested message's **entire raw MIME source pasted into the room
+message as text**: headers, boundaries, quoted-printable, and every attachment
+base64-encoded inline. So a forwarded email carrying a 2 MB PDF becomes ~2.7 MB
+of base64 in the body.
+
+Three consequences, in increasing order of how bad they are:
+
+1. **It cannot fit.** A Matrix PDU caps at 65535 bytes, and the relay is
+   markdown so the text is carried twice. Today's fix cuts it, which for a
+   forward means cutting the thing the message exists to deliver.
+2. **What survives is unreadable.** Even under the cap, the agent is handed MIME
+   framing and base64 rather than the message. It cannot answer questions about
+   an attachment it was given as an unlabelled encoded blob.
+3. **The attachments are not attachments.** They never reach the Matrix media
+   repo, so `download_attachment` cannot fetch them, the runtime cannot
+   materialise them to local files, and the model cannot read them — even
+   though all of that machinery already exists and works for a *directly*
+   attached file.
+
+### What it should do instead
+
+**Recurse.** A nested `message/rfc822` is a message, and should be read as one:
+its text becomes text, its attachments become real `Attachment`s alongside the
+outer message's. Then the existing path does the rest — upload to the media
+repo, `download_attachment`, materialise locally, model reads the PDF.
+
+Sketch of the work:
+
+- `_read_content` becomes recursive over `message/rfc822`, with a depth limit
+  (a forward of a forward of a forward is real, an unbounded chain is a denial
+  of service) and a total-attachment budget across the whole tree.
+- Nested text is rendered with a header line naming the original sender, date
+  and subject, because that is the part a human forwards *for*.
+- `_FORWARDED_BODY_MAX_CHARS` and the raw flatten both go away. `EMAIL_BODY_MAX_BYTES`
+  stays as the backstop it should always have been, rather than the mechanism.
+- The attachment budget needs deciding against `agent_media_max_bytes`, which
+  is currently applied per attachment with no cap on the total.
+
+### Why the current state is worse than it looks
+
+The failure is silent in both directions. The sender gets nothing back — this
+bridge does not send mail — and until today the room got nothing either, with
+one log line as the only evidence. With the cap in place the room now gets a
+truncated message that *says* it was truncated, which is an improvement and
+still means a forwarded contract arrives as its first few kilobytes.
+
+**This should be built before the email path is demoed as handling real mail.**
+Everything shown so far used small, hand-written messages; the first real
+forward attempted — a newsletter — was lost outright.
