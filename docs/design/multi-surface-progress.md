@@ -21,6 +21,21 @@ code. Every stage commits separately so any of it can be undone on its own.
 
 ## ⚠️ Open safety register
 
+**D4 — 19 operations are uncallable under `multi` scope.** `room_id` was added to
+`post_message`, `read_context` and `send_targeted_message`. The other 19 call
+`require_connected_room()` with no argument, so with two rooms held they raise
+*"This connection covers several rooms; the operation needs one — pass room_id
+explicitly"* and the caller has no parameter to comply with. Confirmed live: a
+session holding two rooms had `list_participants` and `read_context` refused.
+Affected: `accept_task`, `assume_role`, `cancel_task`, `create_room_document`,
+`define_role`, `delegate_task`, `delete_role`, `delete_room_document`,
+`edit_role`, `finalise_task`, `list_linked_rooms`, `list_participants`,
+`list_references`, `list_roles`, `list_tasks`, `load_internal_documents`,
+`release_role`, `update_room_document`, `update_task`.
+Note `create_room_document` / `update_room_document` are the schedule-persistence
+path US-3 depends on, so US-3 cannot be built on `multi` until this is fixed.
+
+
 Read this before enabling anything on this branch. Everything here is **written
 and tested but connected to nothing** — which is safe only for as long as the
 features that would need it stay off.
@@ -905,3 +920,40 @@ does it, and it had never run before today.
 
 The session-side confirmation — that both rooms are visible to the model and
 that a reply routes back to the room it came from — is still outstanding.
+
+### The session claimed both rooms — and then could barely act
+
+Server logs, the first time the client half has ever run:
+
+```
+[CONNECT] connection=faab6976… took room 09590cc2… from connection t
+[CONNECT] connection=faab6976… took room 4e8f635f… from connection t
+```
+
+**One connection, `scope=multi`, holding two rooms.** That is Sprint 1's central
+claim, executing rather than asserted. `RoomSet.adopt` not releasing under
+`multi` is the line that does it.
+
+Two things went wrong on the way, and both are worth keeping.
+
+**Registration defaults to owner-only addressing, so the second speaker was
+refused.** `probe`'s `@atlas` was demoted to room chatter and answered with *"my
+operator has restricted who can address me here."* Both agents share an owner —
+the registration token's user — and the default rule carries
+`owner_agents: false`. The fix is the documented one for owner-run
+orchestration: `PUT /gateway/agents/{id}/addressing-policy` with
+`owner_agents: true`, which admits the owner's own agents and leaves human
+owner-only addressing intact. Clearing the policy would also have worked and is
+worse: it opens the agent to anyone.
+
+This is not a demo-only detail. It applies to the Slack demo too — a human
+addressing `atlas` must be its owner, which means their Slack account has to be
+linked to the owning Switch user. An unlinked account gets a *different*
+refusal naming that specific cause.
+
+**Then the session hit D4** (above): it called `read_context` and
+`list_participants` with no `room_id`, was told to pass one, and for
+`list_participants` there is no such parameter. So a `multi` session can talk
+and read, and can do almost nothing else. That is the gap to close next, and it
+is larger than the three operations the design treated as the room-addressed
+set.
