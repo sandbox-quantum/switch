@@ -100,7 +100,7 @@ describe('SidecarRuntime (multi-session)', () => {
     await runtime.handleHook(switchRoomHook('room-1', PTY_A));
 
     expect(created).toHaveLength(1);
-    expect(created[0].deps.roomId).toBe('room-1');
+    expect(created[0].deps.rooms[0] ?? null).toBe('room-1');
     expect(created[0].deps.sessionId).toBe('session-a');
     expect(created[0].conn.start).toHaveBeenCalledTimes(1);
   });
@@ -125,7 +125,7 @@ describe('SidecarRuntime (multi-session)', () => {
 
     runtime.ensureForSession('session-a', 'codex', 'room-1', 41);
 
-    expect(created[0].deps.roomId).toBe('room-1');
+    expect(created[0].deps.rooms[0] ?? null).toBe('room-1');
   });
 
   // What `/connection` answers Switch Console with. The returned id has to be the
@@ -138,7 +138,7 @@ describe('SidecarRuntime (multi-session)', () => {
 
     expect(created).toHaveLength(1);
     expect(created[0].deps.connectionId).toBe(connectionId);
-    expect(created[0].deps.roomId).toBeNull();
+    expect(created[0].deps.rooms[0] ?? null).toBeNull();
     expect(created[0].conn.start).toHaveBeenCalledTimes(1);
   });
 
@@ -191,7 +191,7 @@ describe('SidecarRuntime (multi-session)', () => {
     expect(created).toHaveLength(2);
     // The first session's connection is NOT stopped by the second connecting.
     expect(created[0].conn.stop).not.toHaveBeenCalled();
-    expect(created[1].deps.roomId).toBe('room-2');
+    expect(created[1].deps.rooms[0] ?? null).toBe('room-2');
   });
 
   it('supersedes only the same session when it re-targets to a new room', async () => {
@@ -201,7 +201,7 @@ describe('SidecarRuntime (multi-session)', () => {
 
     expect(created).toHaveLength(2);
     expect(created[0].conn.stop).toHaveBeenCalledTimes(1);
-    expect(created[1].deps.roomId).toBe('room-2');
+    expect(created[1].deps.rooms[0] ?? null).toBe('room-2');
   });
 
   it('ignores a repeat connect to the same room by the same session', async () => {
@@ -247,7 +247,7 @@ describe('SidecarRuntime (multi-session)', () => {
     const { runtime, created, registry } = makeRuntime();
     await runtime.handleHook(switchRoomHook('room-1', PTY_A));
 
-    created[0].deps.onRoomChanged?.(null);
+    created[0].deps.onRoomsChanged?.([]);
 
     expect(runtime.connectedSessions()).toEqual([{ sessionId: 'session-a', roomId: null }]);
     expect(runtime.roomIdForSession('session-a')).toBeNull();
@@ -273,7 +273,7 @@ describe('SidecarRuntime (multi-session)', () => {
     await runtime.handleHook(switchRoomHook('room-1', PTY_A));
     expect(runtime.hasLiveRoom('room-1')).toBe(true);
 
-    created[0].deps.onRoomChanged?.(null);
+    created[0].deps.onRoomsChanged?.([]);
 
     expect(runtime.hasLiveRoom('room-1')).toBe(false);
   });

@@ -163,7 +163,7 @@ describe('RoomConnection', () => {
     vi.stubGlobal('fetch', fetchMock);
     const conn = new RoomConnection({
       creds,
-      roomId: 'room-1',
+      rooms: ['room-1'],
       roomName: 'Room One',
       connectionId: 'conn-1',
       sessionId: 'session-1',
@@ -239,7 +239,7 @@ describe('RoomConnection', () => {
       conn.onAgentStatusChange('completed');
       await flush();
       // A second arrival in the same room must not re-raise a turn that is done.
-      (conn as unknown as { adoptRoom: (rooms: string[]) => void }).adoptRoom(['room-2']);
+      (conn as unknown as { adoptRooms: (rooms: string[]) => void }).adoptRooms(['room-2']);
       await flush();
       conn.stop();
 
@@ -790,7 +790,7 @@ describe('RoomConnection', () => {
     vi.stubGlobal('fetch', fetchMock);
     const conn = new RoomConnection({
       creds,
-      roomId: 'room-1',
+      rooms: ['room-1'],
       roomName: 'Room One',
       connectionId: 'conn-1',
       sessionId: 'session-1',
@@ -949,7 +949,7 @@ describe('RoomConnection', () => {
       const target: InjectionTarget = { write: vi.fn() };
       const conn = new RoomConnection({
         creds,
-        roomId: 'room-1',
+        rooms: ['room-1'],
         roomName: 'Room One',
         connectionId: 'conn-1',
         sessionId: 'session-1',
@@ -1028,7 +1028,7 @@ describe('RoomConnection', () => {
       vi.stubGlobal('fetch', fetchMock);
       const conn = new RoomConnection({
         creds,
-        roomId: 'room-1',
+        rooms: ['room-1'],
         roomName: 'Room One',
         connectionId: 'conn-1',
         sessionId: 'session-1',
@@ -1147,7 +1147,7 @@ describe('the room is set by the server', () => {
     const rooms: (string | null)[] = [];
     const conn = new RoomConnection({
       creds,
-      roomId,
+      rooms: roomId ? [roomId] : [],
       roomName: null,
       connectionId: 'conn-1',
       sessionId: 'session-1',
@@ -1157,7 +1157,7 @@ describe('the room is set by the server', () => {
       deeplinkScheme: 'switchdash',
       isHumanTyping: () => false,
       mediaDir,
-      onRoomChanged: (room) => rooms.push(room),
+      onRoomsChanged: (next) => rooms.push(next[0] ?? null),
       log: silentLog,
     });
     conn.start();
@@ -1304,7 +1304,7 @@ describe('a spawned session starts from its trigger', () => {
     vi.stubGlobal('fetch', fetchMock);
     const conn = new RoomConnection({
       creds,
-      roomId: null,
+      rooms: [],
       roomName: null,
       connectionId: 'conn-1',
       startCursor,
@@ -1386,7 +1386,7 @@ describe('repointing a restored session', () => {
     vi.stubGlobal('fetch', fetchMock);
     const conn = new RoomConnection({
       creds,
-      roomId: null,
+      rooms: [],
       roomName: null,
       connectionId: 'conn-1',
       sessionId: 'session-1',
@@ -1431,7 +1431,7 @@ describe('repointing a restored session', () => {
     vi.stubGlobal('fetch', fetchMock);
     const conn = new RoomConnection({
       creds,
-      roomId: 'room-1',
+      rooms: ['room-1'],
       roomName: 'Room One',
       connectionId: 'conn-1',
       sessionId: 'session-1',

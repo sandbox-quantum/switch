@@ -45,6 +45,13 @@ const CONTROL_STEP_GAP_MS = 600;
 // elapsed-time suffix (e.g. "· 15s") so a long-running step visibly ticks.
 const ACTIVITY_TICK_INTERVAL_MS = 5_000;
 
+/** Order-insensitive room-list comparison, for deduping the server's reports. */
+function sameRooms(a: string[], b: string[]): boolean {
+  if (a.length !== b.length) return false;
+  const sortedB = [...b].sort();
+  return [...a].sort().every((room, i) => room === sortedB[i]);
+}
+
 export type SwitchCredentials = { agentId: string; apiEndpoint: string; token: string };
 
 /** Make an attachment filename safe to use as a local path segment. */
@@ -106,6 +113,14 @@ function isBlockingStatus(
 
 interface QueuedInjection {
   text: string;
+  /**
+   * The room this message arrived in. A session can hold several, so the turn
+   * it opens — and every runtime-state report belonging to that turn — has to
+   * be raised in the room that asked, not in whichever one happens to be
+   * first. Reporting elsewhere puts "working on it" in a room nobody addressed
+   * and leaves the asking room silent.
+   */
+  roomId: string | null;
   /** True for addressed messages — drives the room "typing" indicator. */
   addressed: boolean;
   /**
@@ -145,12 +160,15 @@ export interface SpawnTurn {
 export interface RoomConnectionDeps {
   creds: SwitchCredentials;
   /**
-   * The room the session is already known to be in, if we happen to know —
-   * restoring after a restart, or an adopted session whose hook told us. Null
+   * The rooms the session is already known to be in, if we happen to know —
+   * restoring after a restart, or an adopted session whose hook told us. Empty
    * for a session we just launched: it has not connected to a room yet, and
    * when it does the server tells us on the stream.
+   *
+   * A list because one session can serve several surfaces at once — a chat
+   * channel and an email correspondent — holding one context across them.
    */
-  roomId: string | null;
+  rooms: string[];
   roomName: string | null;
   /**
    * The connection id this session uses, minted before launch and handed to the
@@ -210,7 +228,7 @@ export interface RoomConnectionDeps {
    * session's room: from Switch, on the connection the session's own
    * `connect_to_room` call landed on.
    */
-  onRoomChanged?: (roomId: string | null) => void;
+  onRoomsChanged?: (rooms: string[]) => void;
   log: RoomConnectionLogger;
 }
 
@@ -239,8 +257,8 @@ export interface RoomConnectionDeps {
  */
 export class RoomConnection {
   private readonly creds: SwitchCredentials;
-  /** The room this session is currently in, or null before the server says. */
-  private roomId: string | null;
+  /** Every room this session is currently in; empty before the server says. */
+  private roomIds: string[];
   private roomName: string | null;
   private readonly sessionId: string;
   private readonly sink: InjectionSink;
@@ -258,6 +276,11 @@ export class RoomConnection {
   /** Last runtime state we pushed to the bridge, to avoid redundant calls. */
   private runtimeState: RuntimeState = 'idle';
   /**
+   * What we last told each room, so the dedupe is per room rather than per
+   * session. Keyed by room id ('' before the server has named one).
+   */
+  private readonly postedByRoom = new Map<string, RuntimeState>();
+  /**
    * True while the session is handling a turn kicked off by an addressed room
    * message. Only then does runtime state surface to the room — local TUI work
    * (or any non-room activity) must not show "working on it" in the channel.
@@ -272,6 +295,8 @@ export class RoomConnection {
    * make the indicator claim the agent has seen it.
    */
   private currentAnchorId: string | null = null;
+  /** The room of the turn in progress, so its reports land where it began. */
+  private currentRoom: string | null = null;
   /** Last activity line (without the elapsed suffix), to skip redundant refreshes. */
   private lastActivityDetail: string | null = null;
   /** Monotonic timestamp the current working turn began, for the elapsed suffix. */
@@ -293,8 +318,8 @@ export class RoomConnection {
   /** Cleared once opened, so the turn is opened once and not on every
    * reconnect or room change for the life of the session. */
   private spawnTurn: SpawnTurn | null;
-  /** Notified whenever the server tells us which room this session is in. */
-  private readonly onRoomChanged: ((roomId: string | null) => void) | null;
+  /** Notified whenever the server tells us which rooms this session is in. */
+  private readonly onRoomsChanged: ((rooms: string[]) => void) | null;
   /**
    * The last room we passed to `onRoomChanged`. Deliberately not seeded from
    * the declared room: a connection opened declaring one is *told* the same
@@ -302,7 +327,7 @@ export class RoomConnection {
    * value would swallow the server's first word — leaving the session's room
    * known here but never reported to anyone.
    */
-  private reportedRoom: string | null = null;
+  private reportedRooms: string[] | null = null;
   /** Unaddressed room messages filtered out since the last event we surfaced. */
   private missed = 0;
   /**
@@ -318,7 +343,7 @@ export class RoomConnection {
 
   constructor(deps: RoomConnectionDeps) {
     this.creds = deps.creds;
-    this.roomId = deps.roomId;
+    this.roomIds = [...deps.rooms];
     this.roomName = deps.roomName;
     this.sessionId = deps.sessionId;
     this.sink = deps.sink;
@@ -330,7 +355,7 @@ export class RoomConnection {
     this.connectionId = deps.connectionId;
     this.startCursor = deps.startCursor;
     this.spawnTurn = deps.spawnTurn ?? null;
-    this.onRoomChanged = deps.onRoomChanged ?? null;
+    this.onRoomsChanged = deps.onRoomsChanged ?? null;
     this.log = deps.log;
   }
 
@@ -339,21 +364,25 @@ export class RoomConnection {
     this.stream = new SwitchEventStream({
       creds: this.creds,
       connectionId: this.connectionId,
-      // One room per session: the connection claims it, which is what stops a
-      // second session of the same agent silently competing for the room.
-      scope: 'single',
+      // `multi`, so a second `connect_to_room` ADDS a room rather than
+      // replacing the first. The claim still stops a second session of the
+      // same agent competing for a room — the slot invariant is per
+      // (agent, room), so covering two costs nothing.
+      scope: 'multi',
       filter: 'all',
-      // Empty until the session connects to one. Declared here only when we
-      // already know it — a restored session, or one adopted with a room.
-      rooms: this.roomId ? [this.roomId] : [],
+      // Empty until the session connects. Declared here only when we already
+      // know them — a restored session, or one adopted with rooms. Every one
+      // of them: a room left off has its buffered events skipped as "not
+      // covered" and its cursor advanced past them.
+      rooms: [...this.roomIds],
       startCursor: this.startCursor,
       onEvent: (event) => this.handleEvent(event),
-      onRooms: (rooms) => this.adoptRoom(rooms),
+      onRooms: (rooms) => this.adoptRooms(rooms),
       onGap: (info) => this.handleGap(info),
       onEvicted: (reason) =>
         this.log.warn('RoomConnection: connection evicted', {
           event: 'room_connection_evicted',
-          roomId: this.roomId,
+          rooms: this.roomIds,
           reason,
         }),
       log: this.log,
@@ -365,8 +394,8 @@ export class RoomConnection {
     // session's `(Open in Switch Console)` link is available in the new room's
     // !status immediately on connect/switch — not only once the agent next
     // works. idle surfaces nothing on the bridge, so this posts no message.
-    if (this.roomId && !this.openSpawnTurn()) {
-      void this.postRuntimeState('idle', null).catch(() => {});
+    if (this.roomIds.length > 0 && !this.openSpawnTurn()) {
+      void this.postRuntimeState(this.roomIds[0], 'idle', null).catch(() => {});
     }
   }
 
@@ -389,9 +418,10 @@ export class RoomConnection {
     this.roomTurnActive = true;
     this.currentThreadId = turn.threadId;
     this.currentAnchorId = turn.anchorId;
+    this.currentRoom = this.roomIds[0] ?? null;
     this.log.info('RoomConnection: reporting the turn this session was started for', {
       event: 'switch_spawn_turn_opened',
-      roomId: this.roomId,
+      roomId: this.currentRoom,
       threadId: turn.threadId,
       anchorId: turn.anchorId,
     });
@@ -413,13 +443,13 @@ export class RoomConnection {
    * are restarting. Everywhere else the server still decides.
    */
   async repointTo(roomId: string, roomName: string | null): Promise<void> {
-    if (this.roomId === roomId) return;
+    if (this.roomIds.includes(roomId)) return;
     this.roomName = roomName;
     this.log.debug('RoomConnection: claiming the remembered room for a restored session', {
       event: 'room_connection_repoint',
       sessionId: this.sessionId,
       roomId,
-      previous: this.roomId,
+      previous: this.roomIds,
     });
     // The server's acknowledgement comes back as `subscription_changed`, which
     // sets `roomId` through the normal path — so there is still exactly one
@@ -435,32 +465,34 @@ export class RoomConnection {
    * allowed to set the room — inferring it anywhere else is what let Switch Console
    * and Switch disagree.
    *
-   * A `single`-scope connection covers at most one room, so anything else in
-   * the list would be a protocol violation rather than a case to handle.
+   * Every room in the list, not the first. Under `multi` a connection covers
+   * as many as the session joined, and keeping only one is the connection
+   * forgetting a surface it is actually serving — which looks like that room
+   * going quiet with the socket up.
    */
-  private adoptRoom(rooms: string[]): void {
-    const next = rooms[0] ?? null;
+  private adoptRooms(rooms: string[]): void {
     // Against what we last *reported*, not what we hold: a session launched
     // into a room declares it at open and the server confirms the same value,
     // which is the only signal the rest of the app ever gets that the session
     // is in that room.
-    if (next === this.reportedRoom) return;
+    if (this.reportedRooms !== null && sameRooms(this.reportedRooms, rooms)) return;
 
-    const previous = this.roomId;
-    this.roomId = next;
-    this.reportedRoom = next;
+    const previous = this.roomIds;
+    this.roomIds = [...rooms];
+    this.reportedRooms = [...rooms];
     // The name is not on the wire — the renderer resolves it from the gateway's
-    // room list, and falls back to a short id when it cannot.
-    if (next !== previous) this.roomName = null;
-    this.log.debug('RoomConnection: room set by the server', {
+    // room list, and falls back to a short id when it cannot. Only the primary
+    // room is named downstream, so a change of primary invalidates it.
+    if ((previous[0] ?? null) !== (rooms[0] ?? null)) this.roomName = null;
+    this.log.debug('RoomConnection: rooms set by the server', {
       event: 'room_connection_room_changed',
       sessionId: this.sessionId,
       previous,
-      roomId: next,
+      rooms,
     });
-    this.onRoomChanged?.(next);
-    if (next && !this.openSpawnTurn()) {
-      void this.postRuntimeState('idle', null).catch(() => {});
+    this.onRoomsChanged?.([...rooms]);
+    if (rooms.length > 0 && !this.openSpawnTurn()) {
+      void this.postRuntimeState(rooms[0], 'idle', null).catch(() => {});
     }
   }
 
@@ -471,12 +503,22 @@ export class RoomConnection {
     // Clear any lingering runtime-state surface before aborting (the abort
     // signal would cancel the request, so fire it unsignalled and best-effort).
     // The server's heartbeat-expiry sweep is the backstop if this never lands.
-    if (this.runtimeState !== 'idle') {
+    // Every room we left showing something, not just the current turn's. A
+    // session spanning two surfaces can be `working` in both, and clearing one
+    // leaves the other with a "working on it…" that never resolves.
+    const stale = [...this.postedByRoom.entries()]
+      .filter(([, state]) => state !== 'idle')
+      .map(([room]) => room || null);
+    if (stale.length > 0) {
       this.runtimeState = 'idle';
       this.roomTurnActive = false;
       this.currentThreadId = null;
       this.currentAnchorId = null;
-      void this.postRuntimeState('idle', null, { detached: true }).catch(() => {});
+      this.currentRoom = null;
+      this.postedByRoom.clear();
+      for (const room of stale) {
+        void this.postRuntimeState(room, 'idle', null, { detached: true }).catch(() => {});
+      }
     }
     this.abort.abort();
     if (this.busyFallback) clearTimeout(this.busyFallback);
@@ -485,9 +527,21 @@ export class RoomConnection {
     this.stopActivityTicker();
   }
 
-  /** The room the session is in, or null until the server has said. */
+  /**
+   * The session's primary room, or null until the server has said.
+   *
+   * Every room it holds is in `rooms`; this is the one reported to the app's
+   * one-room bookkeeping — `session_room_connections` keys on the session, so
+   * the store, the service and the renderer badge all still take exactly one.
+   * The connection serves all of them regardless.
+   */
   get room(): string | null {
-    return this.roomId;
+    return this.roomIds[0] ?? null;
+  }
+
+  /** Every room this session is in. */
+  get rooms(): string[] {
+    return [...this.roomIds];
   }
 
   /** The connection this session's tool calls are expected to arrive on. */
@@ -501,12 +555,12 @@ export class RoomConnection {
    * message back to Switch Console. Switch Console owns this link — switch-core relays
    * it verbatim. Resolution is by room, so `server`/`agent` are advisory.
    */
-  private sessionDeeplink(): string {
+  private sessionDeeplink(roomId: string | null): string {
     return buildSessionDeeplink({
       scheme: this.deeplinkScheme,
       apiEndpoint: this.creds.apiEndpoint,
       agentId: this.creds.agentId,
-      roomId: this.roomId,
+      roomId,
       sessionId: this.sessionId,
     });
   }
@@ -535,13 +589,14 @@ export class RoomConnection {
   }
 
   private async postRuntimeState(
+    roomId: string | null,
     state: RuntimeState,
     threadId: string | null,
     opts: { detached?: boolean } = {},
     detail?: string | null
   ): Promise<void> {
     this.log.debug('RoomConnection: runtime-state ->', {
-      roomId: this.roomId,
+      roomId,
       agentId: this.creds.agentId,
       state,
       detail: detail ?? null,
@@ -557,14 +612,14 @@ export class RoomConnection {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          room_id: this.roomId,
+          room_id: roomId,
           state,
           thread_id: threadId,
           // Reported on every push, including the periodic activity refresh.
           // The bridge repositions only when the value CHANGES, so a refresh
           // that repeats the current anchor deliberately moves nothing.
           anchor_event_id: this.currentAnchorId,
-          deeplink_url: this.sessionDeeplink(),
+          deeplink_url: this.sessionDeeplink(roomId),
           detail: detail ?? null,
           control_capabilities: this.control.capabilities,
         }),
@@ -588,7 +643,7 @@ export class RoomConnection {
     // Session-control commands aren't injected as text — they drive concrete
     // keystrokes (interrupt/compact/reset) against the session.
     if (event.type === 'command') {
-      void this.executeCommand(event.payload as CommandPayload);
+      void this.executeCommand(event.payload as CommandPayload, event.room_id ?? null);
       return;
     }
     const addressed = event.type === 'message' && (event.payload as MessagePayload).addressed;
@@ -601,7 +656,7 @@ export class RoomConnection {
     }
     const text = formatEventForInjection(event, this.roomName);
     this.log.debug('RoomConnection: received event', {
-      roomId: this.roomId,
+      roomId: this.room,
       type: event.type,
       ...(event.type === 'message'
         ? { addressed: (event.payload as MessagePayload).addressed }
@@ -617,7 +672,8 @@ export class RoomConnection {
       // fails is named in the annotation rather than dropped, so the agent is
       // never left believing it saw everything.
       const { imagePaths, filePaths, failed } = await this.downloadAttachments(
-        event.payload as MessagePayload
+        event.payload as MessagePayload,
+        event.room_id ?? null
       );
       const annotation = formatAttachmentAnnotation(imagePaths, filePaths, failed);
       if (annotation) {
@@ -638,7 +694,7 @@ export class RoomConnection {
       body = `${body}\n(Some earlier room events were dropped and cannot be replayed: ${this.pendingGapReason} — call read_context before responding.)`;
       this.pendingGapReason = null;
     }
-    this.enqueue({ text: body, addressed, threadId, messageId });
+    this.enqueue({ text: body, addressed, threadId, messageId, roomId: event.room_id ?? null });
   }
 
   /**
@@ -654,7 +710,7 @@ export class RoomConnection {
    */
   private handleGap(info: { fromSequence: number; reason: string }): void {
     this.log.warn('RoomConnection: gap — deferring the warning to the next surfaced event', {
-      roomId: this.roomId,
+      roomId: this.room,
       fromSequence: info.fromSequence,
       reason: info.reason,
     });
@@ -673,7 +729,8 @@ export class RoomConnection {
    * still never throws, so it cannot break event delivery.
    */
   private async downloadAttachments(
-    msg: MessagePayload
+    msg: MessagePayload,
+    roomId: string | null
   ): Promise<{ imagePaths: string[]; filePaths: string[]; failed: string[] }> {
     const attachments = msg.attachments ?? [];
     const imagePaths: string[] = [];
@@ -681,7 +738,7 @@ export class RoomConnection {
     const failed: string[] = [];
     for (let i = 0; i < attachments.length; i++) {
       const att = attachments[i];
-      const localPath = await this.fetchAttachmentToFile(att, msg.message_id, i);
+      const localPath = await this.fetchAttachmentToFile(att, msg.message_id, i, roomId);
       if (!localPath) {
         failed.push(att.filename);
         continue;
@@ -695,11 +752,12 @@ export class RoomConnection {
   private async fetchAttachmentToFile(
     att: AttachmentRef,
     messageId: string,
-    index: number
+    index: number,
+    roomId: string | null
   ): Promise<string | null> {
     try {
       const url =
-        `${this.creds.apiEndpoint}/agents/${this.creds.agentId}/rooms/${this.roomId}/media` +
+        `${this.creds.apiEndpoint}/agents/${this.creds.agentId}/rooms/${roomId}/media` +
         `?mxc=${encodeURIComponent(att.mxc)}`;
       const resp = await this.fetchWithTimeout(
         url,
@@ -718,7 +776,7 @@ export class RoomConnection {
     } catch (error) {
       if (this.abort.signal.aborted) return null;
       this.log.warn('RoomConnection: attachment download error', {
-        roomId: this.roomId,
+        roomId: this.room,
         mxc: att.mxc,
         error: String(error),
       });
@@ -734,7 +792,7 @@ export class RoomConnection {
     // question every "the agent ignored me" report comes down to.
     this.log.info('RoomConnection: room message queued for the session', {
       event: 'switch_message_queued',
-      roomId: this.roomId,
+      roomId: this.room,
       sessionId: this.sessionId,
       messageId: injection.messageId,
       addressed: injection.addressed,
@@ -753,7 +811,7 @@ export class RoomConnection {
     if (this.stopped) return;
     if (toRuntimeState(status) === 'awaiting-input') {
       this.log.debug('RoomConnection: status -> awaiting-input', {
-        roomId: this.roomId,
+        roomId: this.room,
         status,
         notificationType,
         roomTurnActive: this.roomTurnActive,
@@ -768,6 +826,7 @@ export class RoomConnection {
         this.roomTurnActive = false;
         this.currentThreadId = null;
         this.currentAnchorId = null;
+        this.currentRoom = null;
       }
     }
     this.busy = isBlockingStatus(status, notificationType);
@@ -794,9 +853,18 @@ export class RoomConnection {
     // must ping again even when the previous state was already awaiting-input —
     // e.g. a follow-up prompt with no intervening `working` event we observed.
     // `working`/`idle` stay deduped: one "working on it…" / one clear is enough.
-    if (state !== 'awaiting-input' && this.runtimeState === state) return;
+    //
+    // Deduped **per room**, not per session. A session holding two surfaces is
+    // one worker, so it is already `working` when a message arrives in the
+    // other room — and a session-wide dedupe swallowed that room's indicator
+    // entirely. The room that asked would show nothing at all while the reply
+    // was being written, which is the one moment it most needs to.
+    const room = this.turnRoom();
+    const key = room ?? '';
+    if (state !== 'awaiting-input' && this.postedByRoom.get(key) === state) return;
     const wasWorking = this.runtimeState === 'working';
     this.runtimeState = state;
+    this.postedByRoom.set(key, state);
     // A fresh state clears the activity line: a new "working" turn starts from
     // the generic indicator, and idle/awaiting-input carry no activity.
     this.lastActivityDetail = null;
@@ -810,10 +878,10 @@ export class RoomConnection {
       return;
     }
     this.stopActivityTicker();
-    void this.postRuntimeState(state, this.currentThreadId).catch((error) => {
+    void this.postRuntimeState(this.turnRoom(), state, this.currentThreadId).catch((error) => {
       if (this.abort.signal.aborted) return;
       this.log.warn('RoomConnection: failed to set runtime state', {
-        roomId: this.roomId,
+        roomId: this.room,
         state,
         error: String(error),
       });
@@ -848,13 +916,20 @@ export class RoomConnection {
   /** Push the current activity line (base + elapsed) to the bridge. */
   private pushActivity(): void {
     const detail = this.composeActivityDetail();
-    void this.postRuntimeState('working', this.currentThreadId, {}, detail).catch((error) => {
-      if (this.abort.signal.aborted) return;
-      this.log.warn('RoomConnection: failed to report activity', {
-        roomId: this.roomId,
-        error: String(error),
-      });
-    });
+    void this.postRuntimeState(this.turnRoom(), 'working', this.currentThreadId, {}, detail).catch(
+      (error) => {
+        if (this.abort.signal.aborted) return;
+        this.log.warn('RoomConnection: failed to report activity', {
+          roomId: this.turnRoom(),
+          error: String(error),
+        });
+      }
+    );
+  }
+
+  /** The room a runtime-state report belongs to: the turn's, or the primary. */
+  private turnRoom(): string | null {
+    return this.currentRoom ?? this.roomIds[0] ?? null;
   }
 
   private startActivityTicker(): void {
@@ -884,7 +959,7 @@ export class RoomConnection {
       // Arm the fallback so a dialog that never reports resolution can't wedge
       // the queue. Log so an undelivered message is visible, not silent.
       this.log.debug('RoomConnection: injection deferred — blocked on dialog', {
-        roomId: this.roomId,
+        roomId: this.room,
         queued: this.queue.length,
       });
       if (!this.busyFallback) {
@@ -898,7 +973,7 @@ export class RoomConnection {
       // message and its trailing Enter with their keystrokes. Re-check shortly —
       // delivery resumes as soon as they pause.
       this.log.debug('RoomConnection: injection deferred — operator typing', {
-        roomId: this.roomId,
+        roomId: this.room,
         queued: this.queue.length,
       });
       if (!this.humanGateTimer) {
@@ -920,7 +995,7 @@ export class RoomConnection {
       if (!this.noTargetTimer) {
         this.log.warn('RoomConnection: injection deferred — no live target for session', {
           event: 'switch_message_deferred',
-          roomId: this.roomId,
+          roomId: this.room,
           sessionId: this.sessionId,
           queued: this.queue.length,
         });
@@ -942,7 +1017,7 @@ export class RoomConnection {
       target.write(payload);
       this.log.info('RoomConnection: injected message into target', {
         event: 'switch_message_injected',
-        roomId: this.roomId,
+        roomId: this.room,
         sessionId: this.sessionId,
         messageId: item.messageId,
         addressed: item.addressed,
@@ -953,14 +1028,14 @@ export class RoomConnection {
           target.write(submitSequence);
         } catch (error) {
           this.log.warn('RoomConnection: failed to submit injected message', {
-            roomId: this.roomId,
+            roomId: this.room,
             error: String(error),
           });
         }
       }, submitDelayMs);
     } catch (error) {
       this.log.warn('RoomConnection: failed to inject message', {
-        roomId: this.roomId,
+        roomId: this.room,
         error: String(error),
       });
       // Put it back so it is not lost.
@@ -975,6 +1050,7 @@ export class RoomConnection {
       this.roomTurnActive = true;
       this.currentThreadId = item.threadId;
       this.currentAnchorId = item.messageId;
+      this.currentRoom = item.roomId ?? this.roomIds[0] ?? null;
       this.setRuntimeState('working');
     }
 
@@ -995,29 +1071,34 @@ export class RoomConnection {
    * promptly). Steps run sequentially, spaced so a TUI doesn't merge them —
    * e.g. reset's `/clear` must settle before the reconnect prompt is typed.
    */
-  private async executeCommand(payload: CommandPayload): Promise<void> {
+  private async executeCommand(payload: CommandPayload, roomId: string | null): Promise<void> {
     const command = payload.command;
-    if (!this.roomId) {
-      // A control command can only have come from a room, so this means the
-      // server told us about the event before it told us about the room.
-      // Refusing beats guessing: `reset` re-types a connect prompt naming the
-      // room, and naming the wrong one would move the session.
+    if (!roomId || !this.roomIds.includes(roomId)) {
+      // Either the event named no room, or it named one this connection is not
+      // covering — the server told us about the event before it told us about
+      // the room. Refusing beats guessing: `reset` re-types a connect prompt
+      // naming the room, and naming the wrong one would move the session.
+      //
+      // Checked against the rooms we hold rather than trusting the envelope, on
+      // the same rule the server applies to `room_id` on an operation: a room
+      // id is an argument, not a permission.
       this.log.warn('RoomConnection: control command before the room is known', {
         event: 'room_connection_command_without_room',
         sessionId: this.sessionId,
         command,
+        roomId,
       });
       return;
     }
     const plan = this.control.plan(command, {
-      room: this.roomName ?? this.roomId,
+      room: (this.roomIds[0] === roomId ? this.roomName : null) ?? roomId,
       role: payload.args || null,
       threadId: payload.thread_id ?? null,
       user: payload.user_name || null,
     });
     if (!plan) {
       this.log.warn('RoomConnection: unsupported control command ignored', {
-        roomId: this.roomId,
+        roomId: this.room,
         command,
       });
       return;
@@ -1026,14 +1107,14 @@ export class RoomConnection {
     const target = this.sink.acquire();
     if (!target) {
       this.log.warn('RoomConnection: control command dropped — no live target', {
-        roomId: this.roomId,
+        roomId: this.room,
         command,
       });
       return;
     }
 
     this.log.debug('RoomConnection: executing control command', {
-      roomId: this.roomId,
+      roomId: this.room,
       command,
       steps: plan.length,
     });
@@ -1051,7 +1132,7 @@ export class RoomConnection {
         }
       } catch (error) {
         this.log.warn('RoomConnection: control command step failed', {
-          roomId: this.roomId,
+          roomId: this.room,
           command,
           error: String(error),
         });

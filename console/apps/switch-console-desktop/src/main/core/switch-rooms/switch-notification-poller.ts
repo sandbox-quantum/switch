@@ -261,7 +261,7 @@ class SwitchNotificationPoller {
     });
     const connection = new RoomConnection({
       creds,
-      roomId,
+      rooms: roomId ? [roomId] : [],
       roomName,
       connectionId,
       startCursor,
@@ -277,7 +277,12 @@ class SwitchNotificationPoller {
       // so it is what updates the session→room map the UI reads. The
       // connect_to_room hook writes the same map, and now only matters for
       // sessions that never got our connection id.
-      onRoomChanged: (room) => {
+      // Only the primary room reaches the session→room map: it keys on the
+      // session (`session_room_connections.sessionId` is a primary key), so a
+      // session spanning several surfaces is recorded under the first. The
+      // connection serves all of them; the map and the badge show one.
+      onRoomsChanged: (rooms) => {
+        const room = rooms[0] ?? null;
         if (room) {
           void switchRoomService.setSessionRoom(ctx, room, creds.agentId, null);
         } else {

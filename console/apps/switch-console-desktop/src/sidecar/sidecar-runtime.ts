@@ -268,7 +268,7 @@ export class SidecarRuntime {
     const connectionId = sessionConnectionId(sessionId);
     const connection = this.deps.createConnection({
       creds: this.deps.creds,
-      roomId,
+      rooms: roomId ? [roomId] : [],
       roomName,
       connectionId,
       startCursor,
@@ -295,7 +295,10 @@ export class SidecarRuntime {
       mediaDir: path.join(os.tmpdir(), 'switch-console-switch-media', sessionId),
       // The server naming this connection's room is what records it here, so a
       // session that moves rooms is followed without re-reading a hook.
-      onRoomChanged: (room) => {
+      // The sidecar's own bookkeeping is one room per session, like the
+      // desktop's, so it follows the primary room.
+      onRoomsChanged: (rooms) => {
+        const room = rooms[0] ?? null;
         const entry = this.sessions.get(sessionId);
         if (entry) {
           entry.roomId = room;
