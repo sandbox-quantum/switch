@@ -263,7 +263,7 @@ room, and replies into the right one.
 
 ---
 
-## Step 7 — Slack  **[untried]**
+## Step 7 — Slack  **[verified]**
 
 ### 7a. The app
 
@@ -316,8 +316,36 @@ curl -s -b /tmp/gw.txt -X POST http://127.0.0.1:8000/gateway/collaborations \
       \"workspace_id\":\"$SLACK_WORKSPACE_ID\",\"agent_usergroups\":false}}"
 ```
 
-`agent_usergroups: false` deliberately — it mints a Slack user group per agent,
-needs a paid plan, and leaves workspace-visible residue.
+⚠️ **`agent_usergroups` is the trap in this step, and the answer depends on the
+workspace.**
+
+An agent's user group is how its name reaches Slack's `@` autocomplete.
+
+- **A workspace that has never run Switch:** `false` is fine. Nothing to
+  autocomplete, so people type `@name` as text and addressing matches it.
+- **A workspace that already has the groups:** `false` **silently breaks
+  mentions.** Picking the agent from the `@` menu sends `<!subteam^S…>`, not the
+  text; the map that resolves it back is only loaded when the flag is on; the
+  raw tag reaches Matrix; addressing matches on the plain name and finds none;
+  the message is filed as unaddressed chatter. **No error is logged anywhere** —
+  the agent just never answers a mention that looks perfectly normal in Slack.
+
+Check before choosing:
+
+```bash
+curl -s -H "Authorization: Bearer $SLACK_BOT_TOKEN" \
+  'https://slack.com/api/usergroups.list' | python3 -c 'import json,sys; print(len(json.load(sys.stdin).get("usergroups",[])), "existing groups")'
+```
+
+Any result above zero — register with `"agent_usergroups": true`. It adopts what
+is there rather than creating duplicates.
+
+**The cost of `true`, which is not reversible by Switch:** it creates a group for
+*every* agent on the server, dead ones included, and they appear in the
+workspace's autocomplete. The bot **cannot remove them** — `usergroups.disable`
+returns `permission_denied` even with `usergroups:write` — so a workspace admin
+must disable them by hand (**People & user groups → User groups**). Delete
+agents you do not want published *before* registering the bridge.
 
 ✅ A bridge id. Credentials are verified at registration, so a bad token fails
 here in Slack's own words rather than silently later.
@@ -325,16 +353,22 @@ here in Slack's own words rather than silently later.
 ### 7c. A channel
 
 - `/invite @yourapp` in one channel
-- ✅ A Switch room auto-creates, named after the channel
-- **Add `atlas` to that room** (dashboard → the room → add agent)
+- ✅ A Switch room auto-creates, named after the channel — **on connect**, for
+  every channel the app is already in, without anyone posting
+- **Add `atlas` to that room.** By API the field is `agent_ids`, not
+  `agent_names`:
+  `POST /gateway/rooms/{room}/agents  {"agent_ids":["<AID>"]}`
 - Post in the channel; ✅ it reaches the session
+
+❌ **Mentioned and ignored** → see the `agent_usergroups` note in 7b, then the
+addressing gate below.
 
 ⚠️ A message in **any** channel the app is already in auto-creates a room. Use a
 quiet channel, or a scratch workspace.
 
 ---
 
-## Step 8 — email  **[untried]**
+## Step 8 — email  **[verified]**
 
 ### 8a. Expose the port
 
@@ -365,10 +399,15 @@ docker compose -f deploy/local/standalone-docker-compose.yml \
 curl -s -b /tmp/gw.txt -X POST http://127.0.0.1:8000/gateway/collaborations \
   -H 'Content-Type: application/json' -d '{
     "bridge_type":"email","display_name":"Demo Email",
+    "channel_creation_enabled": false,
     "connection_config":{"listen_port":8099,
       "agent_address":"atlas@agents.example.com",
       "allowed_senders":["you@yourdomain.com"]}}'
 ```
+
+`channel_creation_enabled: false` is **required**, not tidiness: it defaults to
+true and email cannot create channels, so the registration is refused without
+it.
 
 `agent_address` routes nothing in this mode — it is what outbound *would* send
 as. `allowed_senders` is the only gate: **your address only**.
@@ -391,7 +430,8 @@ curl --data-binary @sample.eml -H 'Content-Type: message/rfc822' \
 
 ✅ `202`, and a room appears named after your address.
 **Add `atlas` to it** — auto-created email rooms resolve no agents, and the
-bridge logs a notice saying so.
+bridge logs a notice saying so. By API the field is `agent_ids`:
+`POST /gateway/rooms/{room}/agents  {"agent_ids":["<AID>"]}`.
 
 ❌ Nothing appears → check the switch logs for a refusal naming the sender (not
 allowlisted) or a loop marker.
@@ -399,6 +439,37 @@ allowlisted) or a loop marker.
 ### 8e. Reconnect
 
 In the session: `connect_to_room` for the **Slack** room and the **email** room.
+
+---
+
+## Step 8b — claim your identity on each bridge  **[verified]**
+
+**The allowlist is not the addressing gate, and this catches everyone.** A
+message can be admitted by the bridge and still refused by the agent, because an
+agent registered through the API starts **owner-only** and a platform account
+nobody has claimed cannot be recognised as its owner. The refusal says so:
+
+> *"…has not been claimed by any Switch user, so an owner-scoped rule cannot
+> match them — the owner may need to link this identity"*
+
+Claim the account for the Switch user who owns the agent — once per bridge:
+
+```bash
+curl -s -b /tmp/gw.txt -X POST \
+  "http://127.0.0.1:8000/gateway/collaborations/<BRIDGE_ID>/identities" \
+  -H 'Content-Type: application/json' \
+  -d '{"external_user_id":"<U… for Slack, the address for email>","username":"<display name>"}'
+```
+
+✅ `claimed_by` lists the owning user. The next message is answered.
+
+Worth demoing as two gates rather than papering over it: "the bridge let it in"
+and "the agent may be addressed by you" are separate decisions, and each refuses
+in its own words. This is US-6.
+
+Two other ways the same agent goes quiet, both already covered above: an
+unresolved Slack user-group mention (7b) and an agent that was never added to
+the auto-created room (7c / 8d).
 
 ---
 
@@ -465,7 +536,12 @@ inside switch-core — and **the agent is not a daemon**, it is the session.
 | Second `connect_to_room` replaces the first | `SWITCH_SCOPE` not `multi`, **or the npm-pinned 0.3.3 is running**. No `switch:` scope line on stderr means the latter. |
 | Session sees nothing after it posts | An agent's own messages are not delivered back to it. Use a second speaker. |
 | `Not connected to a room` with a valid `room_id` | The caller has no connection. A room id is an argument, not a permission. |
-| Email room exists, agent never answers | Auto-created email rooms resolve no agents. Add it. |
+| Email room exists, agent never answers | Auto-created email rooms resolve no agents. Add it (`agent_ids`). |
+| Slack mention looks normal and is ignored | An unresolved `<!subteam^S…>`. The workspace already has agent user groups and the bridge was registered with `agent_usergroups: false`, so nothing maps it back to the agent's name. **Logs nothing.** Read the message body in the room — the raw tag is visible there. |
+| Admitted by the bridge, refused by the agent | The sender's platform account is not claimed by a Switch user, and an API-registered agent is owner-only. Step 8b. |
+| Agent refuses to repeat something it learned by email | Working as designed: `may_carry` permits only same-room, or out of an `open` room. It forbids `external → anywhere`, including the demo's own "forward it and ask elsewhere". See the progress log. |
+| Email registration refused | `channel_creation_enabled` defaults to true; email cannot create channels. Pass `false`. |
+| Stray `@agent` groups in the workspace | Enabling `agent_usergroups` creates one per agent on the server. The bot cannot remove them; a workspace admin must disable them by hand. |
 | Every forwarded mail dropped | Check the log for a loop marker. `Auto-Submitted: auto-forwarded` is exempt; a list header *plus* a bulk `Precedence` is not. |
 | `connection … is not open` | 6s heartbeat TTL. A session handles this; a `curl` harness must beat. |
 | Session connects, reads rooms fine, is never woken | The MCP server is project-scoped. Claude Code surfaces `notifications/claude/channel` only from a **plugin-provided** server. Point the installed plugin at the local build instead. |
