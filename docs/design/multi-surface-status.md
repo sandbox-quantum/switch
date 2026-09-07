@@ -144,14 +144,33 @@ notice its absence.
 
 | Code | Lines | Blocked on | Story |
 |---|---|---|---|
-| `disclosure.may_carry` + `disclosed_span` + `_words` | 91 of 198 | a product decision on what enforcement means, now complicated by §1a | **US-4** enforcement (D3) |
-| `email/authentication.py` | 207 | wiring into the adapter | **US-6** real sender verification |
-| `email/reply.py` | 102 | there is no SMTP path | **US-5** answering an outsider |
+| ~~`disclosure.may_carry` + `disclosed_span`~~ | ~~91~~ | **parked** | **US-4** enforcement (D3) |
+| ~~`email/authentication.py`~~ | ~~207~~ | **parked** | **US-6** real sender verification |
+| ~~`email/reply.py`~~ | ~~102~~ | **parked** | **US-5** answering an outsider |
 | ~~`runtime/{agent,host,schedule}.ts`~~ | ~~672~~ | **parked** — see below | **US-3** self-scheduling |
 
-Their tests: `host.test.ts` (709), `agent.test.ts` (340), `schedule.test.ts`
-(279), `test_email_correspondent.py` (397, covers `authentication` and `reply`),
-and 42 of 288 lines in `test_disclosure.py`.
+### Where it went
+
+**Unfinished work lives on a branch off this one.** The test is simple: *could
+this file be deleted today without anything noticing?* If yes, it is a branch —
+left in the tree it reads as a live feature, and a reviewer cannot tell the
+difference.
+
+| Branch | What is on it |
+|---|---|
+| `feat/us3-self-scheduling` | `agent`/`host`/`schedule`.ts + tests (672 + 1,328 lines) |
+| `feat/us5-outbound-email` | `email/reply.py` + its half of `test_email_correspondent.py` |
+| `feat/us6-verified-senders` | `email/authentication.py` + its half of the same file |
+| `feat/us4-disclosure-enforcement` | `may_carry`, `disclosed_span`, `_words` and their tests |
+
+Each branch is a full snapshot at `46acc1e3`, so recovering a piece is
+`git checkout <branch> -- <paths>` and nothing else. What each still needs
+before it can be wired is in the notes below.
+
+`disclosure.py` is the only one that was a *split* rather than a file move: it
+now holds labelling alone, which is what it actually does. `test_disclosure.py`
+was trimmed to match, and `test_email_correspondent.py` went whole because both
+of its halves are parked.
 
 **Two things follow from this that are easy to miss.**
 

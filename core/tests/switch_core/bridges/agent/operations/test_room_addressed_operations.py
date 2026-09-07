@@ -92,7 +92,9 @@ def _resolver_calls(node: ast.AST, name: str) -> list[ast.Call]:
     return [
         n
         for n in ast.walk(node)
-        if isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id == name
+        if isinstance(n, ast.Call)
+        and isinstance(n.func, ast.Name)
+        and n.func.id == name
     ]
 
 
@@ -458,7 +460,10 @@ async def test_create_room_document_creates_in_the_named_room() -> None:
     protocol = _Protocol(_registry_holding(ROOM_A, ROOM_B))
     with _calling(protocol):
         await ops.create_room_document(
-            name="schedule", description="d", instructions="i", content="c",
+            name="schedule",
+            description="d",
+            instructions="i",
+            content="c",
             room_id=ROOM_B,
         )
 
@@ -532,7 +537,9 @@ async def test_release_role_works_while_several_rooms_are_held() -> None:
         pytest.param(lambda: ops.accept_task("task-1"), id="accept_task"),
         pytest.param(lambda: ops.update_task("task-1", "progress"), id="update_task"),
         pytest.param(lambda: ops.finalise_task("task-1", "done"), id="finalise_task"),
-        pytest.param(lambda: ops.cancel_task("task-1", "changed my mind"), id="cancel_task"),
+        pytest.param(
+            lambda: ops.cancel_task("task-1", "changed my mind"), id="cancel_task"
+        ),
     ],
 )
 async def test_the_task_lifecycle_works_while_several_rooms_are_held(call) -> None:

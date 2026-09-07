@@ -207,7 +207,9 @@ class TestListRoomRoles:
             "session_room": None,
         }
 
-    async def test_a_holder_spanning_rooms_that_excludes_this_one_is_absent(self) -> None:
+    async def test_a_holder_spanning_rooms_that_excludes_this_one_is_absent(
+        self,
+    ) -> None:
         """Two rooms, neither of them this one: absent, and no single room to name."""
         role = _role("role-w", "worker", False, "do the work")
         leases = {"role-w": [_lease("role-w", "a-multi", "tx-multi")]}
