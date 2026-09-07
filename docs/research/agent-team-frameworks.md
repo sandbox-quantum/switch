@@ -22,6 +22,29 @@ The two artifacts:
 
 One thing the scan settles: this is a **packaging problem, not a new-primitive problem.** Switch has the nouns. It needs a way to declare a reusable arrangement of them, parameterize it, and instantiate it from a shelf.
 
+## Direction (decisions from review)
+
+Captured from the review of this note with the steering dev. These are the calls that shape where the framework model goes, and they re-weight the recommendation above.
+
+1. **"Team" is the unit, not "organization."** Team is more agnostic. A team is a durable unit anchored by a **repo as its knowledge base**.
+2. **There is no `Team` entity today; it would be new.** The closest existing things are `room_groups` (navigation over rooms) and a `room`, neither of which is a team. If team becomes the durable unit that blueprints instantiate, make it a first-class entity rather than overloading `room_group`.
+3. **Tasks are externalized to the tracker (Jira), not modelled as rooms.** Since work is routed to an agent rather than owned by it (as in CrewAI), a task lives in Jira and is *referenced*. This deliberately moves away from rooms-as-tasks and the room proliferation it causes: a task should be lighter than a room.
+4. **Two clean layers, agent template inside team template.** The agent-anatomy entities (subagents, skills, MCP, hooks, memory/instructions, commands, permissions) are the **agent** layer, what an agent template bundles. The **team** layer is composition: which agents, their roles, the shared repo/knowledge, shared credentials, and the coordination shape. A team blueprint encodes a fleet by referencing agent templates.
+5. **Agent templates are the primary near-term bet**, ahead of multi-room room templates. Preference is explicit: agent templates first.
+6. **Team blueprints are the product: "startup in a box."** A named fleet (roles + agents + shared repo + credentials + room shape) you instantiate and direct. This is the marketplace unit, and it should encode a whole fleet, not a single agent.
+7. **Parameterization stays the key enabler**, blueprints are filled per instantiation.
+8. **Open decision: team-scoped credentials.** A blueprint needs to carry shared team resources (e.g. a newsroom's stock-image API) so its agents can use them. That requires a team-scoped, encrypted secret store, which does not exist today and cuts against the current "references are pointers, agents bring their own keys" stance. Lean: build it, because a blueprint that cannot carry its own access is not a product.
+9. **Want a visual fleet view (observability, not authoring).** A live map of who is on what, which room, which role, which Jira task, over rooms + agents + roles + tasks. Distinct from Flowise-style visual programming (wiring a pipeline); this is watching a team work, not building one on a canvas.
+10. **Keep the team visible and inhabitable.** The template stamps out a place you can walk into and see and direct, not a black box that returns an answer.
+
+### Three exemplar blueprints to develop
+
+1. **The dev fleet (this one), documented and simplified.** A coordinator + coder + reviewer + doctor, a repo, a hub, roles. The one a fleet owner can recognize their own setup in.
+2. **A newsroom / comms desk.** Roles: editor (exclusive), reporters (shared), fact-checker, publisher. Shared references: style guide, CMS, stock-image API (the credentials case). Flow: pitch → draft → review → publish.
+3. **A hotel ops desk (booking.com-style).** Roles: front-desk, reservations, housekeeping-coordinator, guest-comms. References: the booking/PMS system, rate calendar, guest inbox. A domain the dev can sanity-check against a real operation.
+
+_Precedent for team blueprints (who already ships a bundled fleet, and the recurring role compositions) is being gathered and will land in section 5._
+
 ## 1. Where Switch is today
 
 Read from the code (`core/switch_core/db/models.py`, `room_service.py`, `rooms_yaml.py`), not the pitch.
