@@ -150,8 +150,25 @@ curl -s -X POST "http://127.0.0.1:8000/agents/$AID/ops/post_message" -H "Authori
 ✅ an `event_id`; then *"covers several rooms … pass room_id explicitly"*; then
 *"Not connected to room 000…"*.
 
-**Leave this stream and its heartbeat running** — Step 6 needs a second speaker,
-because an agent's own messages are not delivered back to it.
+**Now kill this stream.** It cannot be the second speaker in Step 6, however
+tempting: the room slot invariant is *at most one connection per (agent, room)*,
+so the moment `atlas`'s session claims these rooms this connection loses them and
+every `post_message` from it fails with *"Not connected to a room."* — which
+reads like a broken harness and is in fact the invariant working.
+
+The second speaker has to be a **second agent**. Register `probe` the same way
+as Step 3, then, as `atlas`:
+
+```bash
+for R in $A $B; do
+  curl -s -X POST "http://127.0.0.1:8000/agents/$AID/ops/invite_agent_to_room" \
+    -H "Authorization: Bearer $KEY" -H 'Content-Type: application/json' \
+    -d "{\"room_id\":\"$R\",\"agent_name\":\"probe\"}"
+done
+```
+
+…and give `probe` its own `multi` stream and heartbeat over both rooms. Both
+agents hold both rooms at once, because the invariant is per-agent, not global.
 
 ---
 
@@ -212,11 +229,13 @@ In the session:
 ❌ The second replaces the first → `SWITCH_SCOPE` is not `multi`, or you are on
 the npm build (Step 5).
 
-Now use Step 4's still-running connection as the second speaker:
+Now speak as **`probe`** (Step 4), not as `atlas` — an agent's own messages are
+not delivered back to it, and `atlas`'s own harness connection no longer holds
+these rooms:
 
 ```bash
-curl -s -X POST "http://127.0.0.1:8000/agents/$AID/ops/post_message" -H "Authorization: Bearer $KEY" \
-  -H "X-Switch-Connection-Id: t" -H 'Content-Type: application/json' \
+curl -s -X POST "http://127.0.0.1:8000/agents/$PID/ops/post_message" -H "Authorization: Bearer $PKEY" \
+  -H "X-Switch-Connection-Id: p" -H 'Content-Type: application/json' \
   -d "{\"body\":\"@atlas what is in alpha?\",\"room_id\":\"$A\"}"
 ```
 

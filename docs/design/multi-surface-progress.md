@@ -878,3 +878,30 @@ today touched any of them.
 Still unexercised: the client half. `SWITCH_SCOPE`, `RoomSet` and the reconnect
 declaration are built and unit-tested but have not yet run inside a session.
 That is Step 6, and it is the first thing that proves the client half at all.
+
+### The harness cannot be the second speaker — and finding that out was a result
+
+Step 6 failed on the first try with *"Not connected to a room."* from the
+harness connection, which looked like a dead heartbeat. It was not: both
+processes were alive, the SSE stream was receiving keepalives, and a manual beat
+returned `{"ok":true,"rooms":[],"cursor":4}` — the connection existed and held
+**nothing**.
+
+The Claude Code session had claimed both rooms away from it. That is the room
+slot invariant — *at most one connection per (agent, room)* — doing exactly what
+it is for. The runbook had said to keep the Step 4 stream running as Step 6's
+second speaker, which cannot work: it is the same agent.
+
+The fix is a second *agent*. `probe`, invited to both rooms by `atlas`, with its
+own `multi` connection. Both agents then hold both rooms, because the invariant
+is per-agent rather than global.
+
+**This is the first evidence that the client half works.** The harness held both
+rooms; after the session started it held neither. Under `single` the session
+could have taken only one of them and the harness would have kept the other. It
+lost both — so the 0.6.0 runtime, under `SWITCH_SCOPE=multi`, claimed two rooms
+on one connection. `RoomSet.adopt` not releasing under `multi` is the line that
+does it, and it had never run before today.
+
+The session-side confirmation — that both rooms are visible to the model and
+that a reply routes back to the room it came from — is still outstanding.
