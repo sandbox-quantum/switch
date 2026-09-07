@@ -1,5 +1,12 @@
 # Demoing the multi-surface agent
 
+> **Superseded.** This was written before any of it had run, and its
+> predictions were wrong in both directions: US-4 turned out to be the
+> strongest demo rather than the weakest, and US-1's headline scenario is
+> refused by design. For demos to actually run, see
+> **`multi-surface-demos.md`**. This file is kept for the tier-by-tier setup
+> detail and the reasoning about what was worth building first.
+
 What can be shown from `feat/multi-surface-agent`, what cannot, and what has to
 be built or stood up first. Companion to `multi-surface-agents.md` (the design)
 and `multi-surface-progress.md` (what happened).
