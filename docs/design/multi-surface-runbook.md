@@ -13,6 +13,124 @@ no email and are worth doing on their own.
 
 ---
 
+## Test sequence
+
+Five tests, each proving one thing and each a prerequisite for the next. Stop at
+the first failure — later tests will not be interpretable.
+
+Marked **[verified]** where these exact steps have been run against a real
+stack, and **[untried]** where they have not.
+
+### T1 — the stack answers  **[verified in host mode, untried standalone]**
+
+```bash
+just standalone-up
+curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8000/health
+```
+
+✅ `200`. Dashboard on <http://127.0.0.1:3000>.
+❌ Check `docker compose ... logs switch`. `SWITCH_VERSION` unset is the usual
+cause; `just init-env` sets it.
+
+### T2 — an agent exists  **[verified]**
+
+```bash
+TOKEN=$(grep AGENT_REGISTRATION_TOKEN .env | cut -d= -f2)
+curl -s -X POST http://127.0.0.1:8000/agents \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -d '{
+    "name":"atlas","description":"demo","connector_type":"claude_code",
+    "integration_profile":{"connection_model":"always_on","message_exchange":true,
+      "pre_invocation_mediation":[],"post_invocation_mediation":[],"event_reporting":[],
+      "task_protocol":{"can_delegate":false,"can_accept":false}}}'
+```
+
+✅ `{"id":"…","api_key":"…"}`. Keep both — the key is shown once.
+
+### T3 — the protocol holds two rooms  **[verified with curl]**
+
+Create two internal rooms, then drive a `multi` connection by hand. This is the
+server half, and it is the cheapest possible proof.
+
+```bash
+AID=<id>; KEY=<key>
+for n in alpha beta; do
+  curl -s -X POST "http://127.0.0.1:8000/agents/$AID/ops/create_room" \
+    -H "Authorization: Bearer $KEY" -H 'Content-Type: application/json' \
+    -d "{\"name\":\"t3-$n\",\"description\":\"$n\",\"agent_names\":[\"atlas\"],\"internal_only\":true}"
+done
+```
+
+Open the stream, **and start beating within 6 seconds** — the connection TTL is
+6s and a `curl` harness has to send its own heartbeats:
+
+```bash
+A=<room alpha id>; B=<room beta id>
+curl -sN -H "Authorization: Bearer $KEY" -H 'Accept: text/event-stream' \
+  "http://127.0.0.1:8000/agents/$AID/events?connection_id=t3&scope=multi&filter=all&rooms=$A,$B&protocol=1" > /tmp/t3.log &
+( while sleep 2; do curl -s -o /dev/null -X POST \
+    "http://127.0.0.1:8000/agents/$AID/connection/beat" -H "Authorization: Bearer $KEY" \
+    -H 'Content-Type: application/json' -d '{"connection_id":"t3"}'; done ) &
+sleep 3; head -2 /tmp/t3.log
+```
+
+✅ `connection_state` with `"scope":"multi"` and **both** room ids in `rooms`.
+
+Then the three refusals and one success:
+
+```bash
+# routes
+curl -s -X POST "http://127.0.0.1:8000/agents/$AID/ops/post_message" -H "Authorization: Bearer $KEY" \
+  -H "X-Switch-Connection-Id: t3" -H 'Content-Type: application/json' \
+  -d "{\"body\":\"into alpha\",\"room_id\":\"$A\"}"
+# refuses: ambiguous
+curl -s -X POST "http://127.0.0.1:8000/agents/$AID/ops/post_message" -H "Authorization: Bearer $KEY" \
+  -H "X-Switch-Connection-Id: t3" -H 'Content-Type: application/json' -d '{"body":"where?"}'
+# refuses: not held
+curl -s -X POST "http://127.0.0.1:8000/agents/$AID/ops/post_message" -H "Authorization: Bearer $KEY" \
+  -H "X-Switch-Connection-Id: t3" -H 'Content-Type: application/json' \
+  -d '{"body":"nope","room_id":"00000000-0000-0000-0000-000000000000"}'
+```
+
+✅ an `event_id`; then *"covers several rooms … pass room_id explicitly"*; then
+*"Not connected to room 000…"*.
+
+### T4 — a real session holds two rooms  **[untried — the important one]**
+
+The client half. **Point the session at the local build, not the npm pin** — see
+the trap below, or this silently runs 0.3.3 and T4 fails looking like a server
+bug.
+
+- [ ] Configure the MCP server as `node <abs>/dist/bin.mjs` with
+      `SWITCH_SCOPE=multi` and the three `SWITCH_*` credentials
+- [ ] Start a Claude Code session; check stderr for `switch:` lines
+- [ ] In session: `connect_to_room` for room alpha, then for room beta
+
+✅ stderr shows both rooms; `connection_state` lists both.
+❌ Second connect replaces the first → you are on the npm build, or
+`SWITCH_SCOPE` is unset. A bad value exits with *"must be 'single' or 'multi'"*;
+**no** scope line at all means the npm build.
+
+Then, from T3's `curl` connection as a second speaker, post into each room and
+confirm the session receives both. *(An agent's own messages are not delivered
+back to it, so the session cannot test this alone.)*
+
+### T5 — email arrives  **[untried]**
+
+- [ ] Map port 8099 out of the container (override below), register the email
+      bridge, `allowed_senders` = your address only
+- [ ] Read the minted secret from the database (command below)
+- [ ] `curl --data-binary @sample.eml -H 'Content-Type: message/rfc822' http://127.0.0.1:8099/inbound/<SECRET>`
+
+✅ A room appears named after your address. **Add `atlas` to it** — auto-created
+email rooms resolve no agents.
+❌ Nothing appears → check the switch logs for a refusal naming the sender, or a
+loop marker.
+
+Then re-run T4's connect for the Slack room and the email room together, and you
+have the demo.
+
+---
+
 ## The components, and how they connect
 
 Worth reading once. Two of these are routinely conflated, and one has a trap
