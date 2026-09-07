@@ -426,6 +426,32 @@ async def test_a_huge_forwarded_message_is_truncated_visibly() -> None:
     assert len(body) < 100_000
 
 
+@pytest.mark.parametrize(
+    ("sent", "expected"),
+    [
+        ("../../../../tmp/evil.sh", "evil.sh"),
+        ("C:\\windows\\evil.exe", "evil.exe"),
+        ("..", "attachment"),
+        ("", "attachment"),
+        ("report .pdf", "report_.pdf"),
+    ],
+)
+async def test_a_sender_chosen_filename_is_sanitised(sent: str, expected: str) -> None:
+    """The first bridge where a filename is typed by an attacker rather than
+    normalised by a platform.
+
+    It reaches the Matrix media repository rather than a filesystem today, so
+    none of this is exploitable here — but any later consumer that writes by
+    name inherits whatever gets through, and `Path(...).name` alone lets `..`,
+    Windows separators and control characters straight past.
+    """
+    adapter, received = _adapter()
+
+    await adapter.ingest(_mime(attachments=[(sent, "application/pdf", b"x")]))
+
+    assert received[0].attachments[0].filename == expected
+
+
 # ── Malformed input ──────────────────────────────────────────────────────────
 
 

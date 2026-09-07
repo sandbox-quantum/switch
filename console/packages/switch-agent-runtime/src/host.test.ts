@@ -430,6 +430,45 @@ describe('gaps', () => {
     expect(turns[0].gap).toContain('buffer overflowed');
   });
 
+  it('keeps the earliest gap when two arrive before a turn', async () => {
+    /**
+     * Gaps arrive in order, so the first pending one has the lowest sequence —
+     * it is the one saying how far back to re-read, and re-reading from there
+     * covers everything the later one would have. Overwriting narrows the
+     * window the agent is told about, silently.
+     */
+    const { host, turns } = harness();
+    await host.start();
+
+    host.noteGap('dropped from sequence 100');
+    host.noteGap('dropped from sequence 500');
+    await host.deliver(message(ROOM_A, 'hello'));
+
+    expect(turns[0].gap).toContain('100');
+  });
+
+  it('keeps the earliest gap even when a newer one arrives mid-failure', async () => {
+    /** The restored gap must beat one that arrived while the turn was failing,
+     * for the same reason. */
+    let seen = 0;
+    const { host, turns } = harness({
+      onTurn: async () => {
+        seen += 1;
+        if (seen === 1) {
+          host.noteGap('dropped from sequence 500');
+          throw new Error('the model fell over');
+        }
+      },
+    });
+    await host.start();
+
+    host.noteGap('dropped from sequence 100');
+    await host.deliver(message(ROOM_A, 'one'));
+    await host.deliver(message(ROOM_A, 'two'));
+
+    expect(turns[1].gap).toContain('100');
+  });
+
   it('reports a gap once, not on every turn after it', async () => {
     const { host, turns } = harness();
     await host.start();
@@ -549,6 +588,46 @@ describe('what stops the agent acting', () => {
 });
 
 // ── Shutting down ────────────────────────────────────────────────────────────
+
+describe('persisting the schedule', () => {
+  it('writes concurrent changes in order', async () => {
+    /**
+     * `fire`, `schedule` and `cancel` each write, with no mutual exclusion —
+     * two in flight can land out of order and leave the stored document behind
+     * the in-memory schedule. A retired one-shot then comes back on restart and
+     * fires again.
+     */
+    const writes: string[] = [];
+    let release!: () => void;
+    const first = new Promise<void>((r) => {
+      release = r;
+    });
+    let n = 0;
+
+    const host = new MultiRoomHost({
+      rooms: [ROOM_A],
+      clock: fakeClock().clock,
+      log: SILENT,
+      loadSchedule: async () => serialiseWakeups([]),
+      saveSchedule: async (text) => {
+        n += 1;
+        if (n === 1) await first;
+        writes.push(text);
+      },
+      onTurn: async () => {},
+    });
+    await host.start();
+
+    const a = host.schedule({ id: 'a', atMs: NOW + 1000, note: 'first' });
+    const b = host.schedule({ id: 'b', atMs: NOW + 2000, note: 'second' });
+    release();
+    await Promise.all([a, b]);
+
+    // The last write must be the one holding both, not the earlier snapshot.
+    const last = JSON.parse(writes[writes.length - 1]) as Array<{ id: string }>;
+    expect(last.map((w) => w.id).sort()).toEqual(['a', 'b']);
+  });
+});
 
 describe('stop', () => {
   it('leaves no timer armed', async () => {

@@ -93,11 +93,24 @@ Declared when the stream opens, mutable while it is open.
 
 | scope | meaning | typical client |
 |---|---|---|
-| `single` | at most one room at a time; subscribing to a new room drops the previous | a terminal coding session |
-| `all` | every room the agent belongs to, including rooms joined later | a supervising daemon, an always-on agent |
+| `single` | at most one room at a time; subscribing to a new room drops the previous | a session spawned to answer one message |
+| `multi` | an explicit set of rooms, each claimed | an agent reachable on several surfaces at once |
+| `all` | every room the agent belongs to, including rooms joined later | a supervising daemon that watches and spawns |
 
-`single` is `all` with a limit of one. The limit is enforced server-side, so
-"one room at a time" is a guarantee rather than a convention in a skill.
+`single` and `multi` both **claim** their rooms and cover exactly what they
+claimed; the difference is only how many. `single`'s limit is enforced
+server-side, so "one room at a time" is a guarantee rather than a convention in
+a skill. A `multi` connection that has claimed nothing yet covers nothing — it
+does not fall back to `all`.
+
+`multi` exists because a Slack channel and an email correspondent are two rooms
+and one context window. Declining to unify stays available: an operator who
+wants hard isolation between two rooms simply does not span them on one
+connection.
+
+An unrecognised scope is refused at open rather than defaulted — a typo would
+otherwise be a connection that claims nothing, covers nothing, and reports a
+successful connect.
 
 Scope is always a subset of the rooms the agent is already a member of.
 Subscribing is not joining; membership is checked per subscribe.
@@ -122,7 +135,8 @@ makes the separate `/notifications` endpoint and the second notification builder
 
 **At most one connection per (agent, room) may act as that agent in that room.**
 
-- A `single`-scope connection **claims** the slot for its room.
+- A `single`-scope connection **claims** the slot for its room; a `multi`-scope
+  one claims the slot for every room in its set.
 - An `all`-scope connection covers every room **not** claimed by another
   connection of the same agent.
 - When a `single` connection claims room R, the `all` connection **goes fully
@@ -291,7 +305,7 @@ Authorization: Bearer <agent token>
 Accept: text/event-stream
 
   connection_id   client-generated UUID
-  scope           single | all
+  scope           single | multi | all
   filter          all | addressed
   start_from      head | <sequence number>       (default head)
   spawn_capable   bool                            (default false)
@@ -440,7 +454,8 @@ data: {"type":"message","room_id":"…","bridge_id":"…","channel_type":"channe
 |---|---|---|
 | `type` | string | one of the types below |
 | `room_id` | string | Switch room id |
-| `room_name` | string | *proposed, not implemented* — `all`-scope clients receive events for rooms they never explicitly connected to |
+| `room_name` | string | *proposed, not implemented* — a client covering several rooms receives events for rooms it never explicitly connected to |
+| `audience` | string | who can read this room: `private`, `restricted`, `open`, `external`, `unknown`. Computed server-side, where the bridge type is known — a client cannot tell an email room from a DM from `channel_type` alone |
 | `bridge_id` | string \| null | collaboration bridge, if any |
 | `channel_type` | string \| null | `channel_public`, `channel_private`, `direct` |
 | `payload` | object | per type |

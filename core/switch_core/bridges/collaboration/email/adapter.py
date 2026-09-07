@@ -379,12 +379,7 @@ class EmailAdapter(CollaborationAdapter):
         attachments: list[Attachment] = []
         failures: list[AttachmentFailure] = []
         for item in message.iter_attachments():
-            # `Path(...).name` because this is the first bridge where a filename
-            # is typed by a sender rather than normalised by a platform. It
-            # reaches the Matrix media repository rather than a filesystem
-            # today, so it is not exploitable here — but any later consumer that
-            # writes by name would inherit a traversal.
-            filename = Path(item.get_filename() or "attachment").name or "attachment"
+            filename = _safe_filename(item.get_filename())
 
             # "Forward as attachment" — Apple Mail's default, Outlook's, and
             # every "report this message" flow — arrives as `message/rfc822`,
@@ -557,6 +552,26 @@ class EmailAdapter(CollaborationAdapter):
 
     def translate_inbound(self, raw_message: str) -> str:
         return raw_message
+
+
+def _safe_filename(raw: str | None) -> str:
+    """A filename safe to hand on, from one a sender chose.
+
+    This is the first bridge where a filename is typed by an attacker rather
+    than normalised by a platform. It reaches the Matrix media repository rather
+    than a filesystem today, so nothing here is exploitable — but any later
+    consumer that writes by name inherits whatever this lets through, and
+    `Path(...).name` alone lets through a great deal: `..` survives it, so do
+    Windows separators and drive letters on POSIX, and so do control characters
+    and newlines.
+
+    An allow-list rather than a deny-list, for the usual reason.
+    """
+    candidate = Path((raw or "").replace("\\", "/")).name
+    cleaned = re.sub(r"[^A-Za-z0-9._-]", "_", candidate).strip("._")
+    if not cleaned or set(cleaned) <= {"."}:
+        return "attachment"
+    return cleaned[:120]
 
 
 def _loop_marker(message: EmailMessage) -> str | None:

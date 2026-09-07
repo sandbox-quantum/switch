@@ -43,8 +43,30 @@ Result = Literal["pass", "fail", "none"]
 # genuine `dmarc=fail` header stamped by our own infrastructure as a pass.
 _METHOD = re.compile(r"^\s*(dmarc|spf|dkim)\s*=\s*([a-z]+)", re.IGNORECASE)
 
-# An authserv-id may be a quoted string, and may be preceded by a comment.
-_LEADING_COMMENT = re.compile(r"^\s*\([^)]*\)\s*")
+
+def _strip_leading_comments(text: str) -> str:
+    """Drop any CFWS comments before the authserv-id.
+
+    Balanced rather than regex: RFC 5322 comments nest, and `\\([^)]*\\)` stops at
+    the first `)`, so `((a) b) mx.ours` would leave `b) mx.ours` and lose the
+    verdict. Failing to match is safe — no verdict — but it leaves an operator
+    authenticating nobody with no clue why.
+    """
+    rest = text.lstrip()
+    while rest.startswith("("):
+        depth = 0
+        for index, char in enumerate(rest):
+            if char == "(":
+                depth += 1
+            elif char == ")":
+                depth -= 1
+                if depth == 0:
+                    rest = rest[index + 1 :].lstrip()
+                    break
+        else:
+            # Unbalanced: nothing sensible left to read.
+            return ""
+    return rest
 
 
 @dataclass(frozen=True)
@@ -166,7 +188,7 @@ def _authserv_id(raw: str) -> str:
     which RFC 8601 permits; losing them fails closed, which is safe but leaves
     an operator authenticating nobody with no clue why.
     """
-    text = _LEADING_COMMENT.sub("", raw).strip()
+    text = _strip_leading_comments(raw)
     if text.startswith('"'):
         end = text.find('"', 1)
         return "" if end == -1 else text[1:end].strip().lower()

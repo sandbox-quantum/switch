@@ -209,6 +209,25 @@ def test_the_shapes_rfc_8601_permits_do_not_lose_the_verdict(header: str) -> Non
     assert verdict.dmarc == "pass"
 
 
+def test_a_nested_comment_before_the_id_does_not_lose_the_verdict() -> None:
+    """RFC 5322 comments nest. A regex that stops at the first `)` leaves the
+    remainder as the id and silently yields no verdict — safe, but it leaves an
+    operator authenticating nobody with nothing to go on."""
+    verdict = parse_authentication_results(
+        [f"((checked) twice) {AUTHSERV}; dmarc=pass"], trusted_authserv_id=AUTHSERV
+    )
+
+    assert verdict.dmarc == "pass"
+
+
+def test_an_unbalanced_comment_fails_closed() -> None:
+    verdict = parse_authentication_results(
+        [f"((never closed {AUTHSERV}; dmarc=pass"], trusted_authserv_id=AUTHSERV
+    )
+
+    assert verdict.dmarc == "none"
+
+
 def test_no_header_at_all_is_not_a_pass() -> None:
     """Absence is not permission. Mail that reached us through a path that
     checked nothing has been checked by nothing."""

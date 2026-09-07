@@ -82,6 +82,10 @@ export class MultiRoomHost {
   private tail: Promise<void> = Promise.resolve();
   private pendingGap: string | null = null;
   private running = false;
+  /** Serialises `saveSchedule`. `fire`, `schedule` and `cancel` all write, and
+   * two in flight can land out of order — leaving the stored document behind
+   * the schedule, so a retired one-shot returns on restart and fires again. */
+  private persistTail: Promise<void> = Promise.resolve();
 
   constructor(deps: MultiRoomHostDeps) {
     this.deps = deps;
@@ -117,6 +121,10 @@ export class MultiRoomHost {
    * wake-up cycle awaits a write before queueing the turns it found due — so a
    * single await returns through that window, and those turns then run against
    * a transport the caller believed drained.
+   *
+   * On a *running* host with traffic arriving this may never settle — that is
+   * what "stopped moving" means. `stop` calls it after refusing new work, which
+   * is the case it is written for.
    */
   async settled(): Promise<void> {
     for (let seen = this.tail; ; seen = this.tail) {
@@ -140,7 +148,13 @@ export class MultiRoomHost {
     this.roomSet = [];
   }
 
-  /** What the event stream calls. */
+  /**
+   * What the event stream calls.
+   *
+   * **Do not call this from inside `onTurn`.** It chains behind the turn
+   * currently running, so awaiting it from within that turn waits on a promise
+   * only that turn can resolve — a deadlock, which `stop` then waits behind.
+   */
   async deliver(event: AgentBridgeEvent): Promise<void> {
     if (!this.running) return;
     if (!this.roomSet.includes(event.room_id)) {
@@ -168,8 +182,16 @@ export class MultiRoomHost {
     }
   }
 
+  /**
+   * Record that events were dropped, keeping the **earliest** report.
+   *
+   * Gaps arrive in order, so the first pending one carries the lowest sequence
+   * — and re-reading from there covers everything a later one would have.
+   * Overwriting narrows the window the agent is told about, silently, which is
+   * the opposite of what a gap is for.
+   */
   noteGap(reason: string): void {
-    this.pendingGap = reason;
+    this.pendingGap ??= reason;
   }
 
   /** Add or replace a wake-up, and persist so a restart keeps it. */
@@ -251,7 +273,9 @@ export class MultiRoomHost {
         // because the turn that would have carried it failed leaves the agent
         // answering from a stale picture with nothing saying so — and a failing
         // turn and a gap have the same causes, so they arrive together.
-        if (gap !== null && this.pendingGap === null) this.pendingGap = gap;
+        // Unconditional: it beats a gap that arrived during the failure,
+        // being the earlier of the two.
+        if (gap !== null) this.pendingGap = gap;
         this.logSafely('MultiRoomHost: a turn failed', error);
       }
     });
@@ -303,14 +327,21 @@ export class MultiRoomHost {
     }
   }
 
-  private async persist(): Promise<void> {
-    try {
-      await this.deps.saveSchedule(serialiseWakeups(this.wakeups));
-    } catch (error) {
-      // Loud, and not fatal. The schedule is still correct in memory; what is
-      // lost is its survival of a restart, and stopping the agent over that
-      // would trade a degraded feature for no agent at all.
-      this.logSafely('MultiRoomHost: could not persist the schedule', error);
-    }
+  private persist(): Promise<void> {
+    // Snapshotted here and written in turn, so the text reflects the schedule
+    // as it was when the change happened and the writes land in that order.
+    const text = serialiseWakeups(this.wakeups);
+    const next = this.persistTail.then(async () => {
+      try {
+        await this.deps.saveSchedule(text);
+      } catch (error) {
+        // Loud, and not fatal. The schedule is still correct in memory; what is
+        // lost is its survival of a restart, and stopping the agent over that
+        // would trade a degraded feature for no agent at all.
+        this.logSafely('MultiRoomHost: could not persist the schedule', error);
+      }
+    });
+    this.persistTail = next;
+    return next;
   }
 }
