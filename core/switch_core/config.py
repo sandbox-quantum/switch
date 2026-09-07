@@ -17,11 +17,10 @@ class SwitchConfig(BaseSettings):
     db_password: str
     db_name: str
 
-    matrix_server: str
+    # The server half of every client's `@localpart:server` id. Not a
+    # homeserver address — nothing is contacted at it — but the ids are stable
+    # public handles, so the shape outlives the homeserver that chose it.
     matrix_server_name: str
-    matrix_admin_user: str
-    matrix_admin_password: str
-    matrix_registration_shared_secret: str
     agent_registration_token: str
 
     # JWT auth
@@ -50,6 +49,15 @@ class SwitchConfig(BaseSettings):
     # provider registration, e.g.
     # https://switch-gateway.<tailnet>.ts.net/gateway/auth/oidc/callback
     gateway_oidc_redirect_url: str | None = None
+    # JIT provisioning trusts the email claim, so by default a login is refused
+    # unless the IdP asserts `email_verified`. That guards against an IdP where
+    # a user can self-assert an address. It also rejects every user of an IdP
+    # that never emits the claim as true — Okta's org authorization server only
+    # sets it for users who completed its own email-verification flow, so
+    # directory-provisioned users are permanently false and cannot be fixed
+    # from the Okta side. Set false ONLY for a single-tenant IdP whose
+    # addresses are authoritative (corporate directory, HR-provisioned).
+    gateway_oidc_require_email_verified: bool = True
     # Lets the password login path be disabled (OIDC-only) without code changes.
     gateway_password_login_enabled: bool = True
     # Sets the Secure flag on the switch_auth cookie. Defaults to False so local

@@ -194,6 +194,7 @@ export type TelemetryManagedServerFailure =
   | 'docker_not_installed'
   | 'docker_daemon_down'
   | 'version_downgrade'
+  | 'matrix_migration_failed'
   | 'error';
 
 /**

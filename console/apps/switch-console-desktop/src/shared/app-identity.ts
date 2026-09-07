@@ -60,4 +60,22 @@ export const RELEASE_REPO_NAME = 'switch';
 // core/pyproject.toml is the first step of cutting a switch-core release, and a
 // derived pin would immediately point local-server mode at images that are not
 // on the registry yet.
-export const COMPATIBLE_SWITCH_VERSION = '0.23.0';
+export const COMPATIBLE_SWITCH_VERSION = '0.25.0';
+
+// The last switch-core release that can still read a Matrix homeserver.
+//
+// Room history written before Switch moved to the Postgres message store lives
+// only on the homeserver, and only an image up to this version can copy it
+// across — the release after it removes the transport, the backfill command
+// and Tuwunel itself. Crossing this line without having run the backfill
+// strands that history where nothing will ever read it again, so the upgrade
+// runs the backfill first and refuses to cross if it fails.
+//
+// A stack already on a version above this has nothing to migrate.
+//
+// It must name a release that EXISTS and that CONTAINS the backfill command —
+// `switch_core.cli.backfill`, which only entered the image when the command
+// moved into the package. 0.23.0 is published and predates that, so it is not
+// a valid value here however natural it looks: pointing at it would make every
+// crossing fail with ModuleNotFoundError, and the crossing is mandatory.
+export const LAST_MATRIX_VERSION = '0.24.1';

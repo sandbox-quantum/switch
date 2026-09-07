@@ -23,7 +23,7 @@ class _FakeAdapter:
     def set_channel_migration_handler(self, handler: Any) -> None:
         pass
 
-    def set_agent_icon_resolver(self, resolver: Any) -> None:
+    def set_agent_presentation_resolver(self, resolver: Any) -> None:
         pass
 
     async def start(self, **kwargs: Any) -> None:
@@ -48,7 +48,7 @@ def _core(provision: Any) -> tuple[BridgeCore, _FakeAdapter]:
     core._load_existing_puppets = _noop  # type: ignore[assignment]
     core._ensure_channel_captures = _noop  # type: ignore[assignment]
     core._handle_channel_migrated = None  # type: ignore[attr-defined]
-    core._agent_icon_url = None  # type: ignore[attr-defined]
+    core._agent_presentation = None  # type: ignore[attr-defined]
     core._handle_inbound_message = None  # type: ignore[attr-defined]
     core._handle_inbound_command = None  # type: ignore[attr-defined]
     core._handle_agent_joined_channel = None  # type: ignore[attr-defined]

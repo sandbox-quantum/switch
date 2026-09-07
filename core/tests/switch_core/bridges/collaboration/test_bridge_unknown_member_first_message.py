@@ -175,7 +175,7 @@ async def test_first_message_from_app_sender_is_relayed() -> None:
         return False
 
     async def _record_message_map(**kwargs: str) -> None:
-        relayed.append((kwargs["matrix_event_id"], kwargs["external_post_id"]))
+        relayed.append((kwargs["transport_event_id"], kwargs["external_post_id"]))
 
     inner = _bridge(puppet, known_puppets={})
 
@@ -225,7 +225,7 @@ async def test_first_message_from_unknown_member_is_relayed() -> None:
         return puppet
 
     async def _record_message_map(**kwargs: str) -> None:
-        relayed.append((kwargs["matrix_event_id"], kwargs["external_post_id"]))
+        relayed.append((kwargs["transport_event_id"], kwargs["external_post_id"]))
 
     bridge = SimpleNamespace(
         _repair_placeholder_username=_noop_repair,

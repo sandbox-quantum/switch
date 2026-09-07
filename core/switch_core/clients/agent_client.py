@@ -5,18 +5,8 @@ import logging
 import random
 import re
 from dataclasses import dataclass, field
-from typing import Literal, NamedTuple
+from typing import TYPE_CHECKING, Literal, NamedTuple, Unpack
 
-from nio import (
-    MatrixRoom,
-    RoomMemberEvent,
-    RoomMessage,
-    RoomMessageMedia,
-    RoomMessageText,
-)
-from sqlalchemy.ext.asyncio import AsyncSession
-
-from switch_core.addressing import SenderKind, can_address, parse_policy
 from switch_core.attachments import parse_attachment_group
 from switch_core.bridges.agent.commands import (
     AGENT_GREETINGS,
@@ -38,16 +28,11 @@ from switch_core.bridges.agent.protocol.types import (
     TaskFinalisePayload,
     TaskUpdatePayload,
 )
-from switch_core.bridges.agent.request_tracker import RequestTracker
-from switch_core.bridges.resource.events import (
-    ResourceLoadResponse,
-    RoomDocumentCreateResponse,
-    RoomDocumentDeleteResponse,
-    RoomDocumentUpdateResponse,
+from switch_core.clients.client_base import (
+    ClientBase,
+    ClientBaseKwargs,
+    ClientConfig,
 )
-from switch_core.bridges.resource.tracker import ResourceRequestTracker
-from switch_core.clients.admin_messages import ADMIN_MARKER
-from switch_core.clients.client_base import ClientBase, ClientConfig
 from switch_core.clients.mentions import (
     NAME_CHAR as _NAME_CHAR,
 )
@@ -67,11 +52,15 @@ from switch_core.db.stores.external_user_store import ExternalUserStore
 from switch_core.db.stores.reference_store import ReferenceStore
 from switch_core.db.stores.room_role_store import RoomRoleStore
 from switch_core.db.stores.room_store import RoomStore
+from switch_core.delivery.addressing import (
+    ADDRESSING_DENIED_MESSAGE,
+    ADDRESSING_UNCLAIMED_MESSAGE,
+    AddressingDecision,
+    AddressingResolver,
+    IncomingMessage,
+)
 from switch_core.events import (
     CommandEvent,
-    MediationLlmResponse,
-    MediationResult,
-    MediationToolResult,
     TaskAccept,
     TaskCancel,
     TaskDelegate,
@@ -79,6 +68,15 @@ from switch_core.events import (
     TaskUpdate,
 )
 from switch_core.gateway.known_agents import known_agent_for
+from switch_core.transport import (
+    InboundMedia,
+    InboundMembership,
+    InboundMessage,
+    RoomRef,
+)
+
+if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession
 
 logger = logging.getLogger(__name__)
 
@@ -113,7 +111,7 @@ class _PendingAttachmentGroup:
     # The index-0 event, kept so a group that has to be flushed incomplete is
     # still anchored on its canonical first part (message_id / timestamp /
     # sender) rather than on whichever part happened to arrive last.
-    first_event: RoomMessageMedia | None = None
+    first_event: InboundMedia | None = None
 
 
 _UNAVAILABLE_MESSAGES = {
@@ -191,45 +189,11 @@ def _offline_owner_message(
     return f"{opening} {terminal}\n\n```\n{cmd}\n```"
 
 
-# Posted (once, guarded by AUTO_REPLY_FLAG) when a sender tags this agent but
-# the agent's scoped addressing policy does not permit that sender to address
-# it here. The message is demoted to unaddressed room chatter; this reply is
-# the sender's only feedback that the attempt was rejected.
-_ADDRESSING_DENIED_MESSAGE = (
-    "You're not permitted to direct messages to me in this room — my operator "
-    "has restricted who can address me here."
-)
-
-
-# The same refusal, for the case worth telling apart: the agent answers only to
-# its owner, and the sender's chat account is not linked to any Switch user, so
-# it cannot be recognised as the owner even if it is. Without this the owner
-# gets refused by their own agent with no idea why.
-_ADDRESSING_UNCLAIMED_MESSAGE = (
-    "I only take instructions from my owner, and this chat account isn't "
-    "linked to a Switch user yet — so I can't tell whether that's you. If it "
-    "is, link this account to your Switch user in Switch Console and try again."
-)
-
-
-class _SenderPrincipal(NamedTuple):
-    """Who a Matrix sender turned out to be, in the terms a policy is written
-    in. `user_ids` and `owner_user_id` are the two ways a symbolic subject
-    resolves, and are mutually exclusive: a human has claimants, an agent has
-    an owner."""
-
-    kind: SenderKind
-    id: str
-    user_ids: list[str]
-    owner_user_id: str | None
-
-
-class _AddressingDecision(NamedTuple):
-    """The outcome of checking a sender against an agent's addressing policy,
-    carrying the wording to reply with so the caller need not re-derive why."""
-
-    allowed: bool
-    refusal: str
+# The refusal wording lives with the decision that produces it. Kept under
+# these names because they are how the rest of the package and its tests refer
+# to them.
+_ADDRESSING_DENIED_MESSAGE = ADDRESSING_DENIED_MESSAGE
+_ADDRESSING_UNCLAIMED_MESSAGE = ADDRESSING_UNCLAIMED_MESSAGE
 
 
 class _GateOutcome(NamedTuple):
@@ -272,13 +236,11 @@ class AgentClient(ClientBase[ClientConfig]):
         agent_session_store: AgentSessionStore,
         room_role_store: RoomRoleStore,
         external_user_store: ExternalUserStore,
-        request_tracker: RequestTracker,
-        resource_request_tracker: ResourceRequestTracker,
         connections: ConnectionRegistry,
         frontend_base_url: str | None,
-        **kwargs: object,
+        **kwargs: Unpack[ClientBaseKwargs[ClientConfig]],
     ) -> None:
-        super().__init__(**kwargs)  # type: ignore[arg-type]
+        super().__init__(**kwargs)
         self._event_buffer = event_buffer
         self._agent_store = agent_store
         self._room_store = room_store
@@ -288,13 +250,21 @@ class AgentClient(ClientBase[ClientConfig]):
         self._agent_session_store = agent_session_store
         self._room_role_store = room_role_store
         self._external_user_store = external_user_store
-        self._request_tracker = request_tracker
-        self._resource_request_tracker = resource_request_tracker
         self._connections = connections
         self._frontend_base_url = (
             frontend_base_url.rstrip("/") if frontend_base_url else None
         )
         self._agent: Agent | None = None
+        # Addressing is decided from stores, not from this client, so the same
+        # rules can decide for a message read out of the log.
+        self._addressing = AddressingResolver(
+            room_store=room_store,
+            room_role_store=room_role_store,
+            client_store=self.client_store,
+            agent_store=agent_store,
+            external_user_store=external_user_store,
+            live_agent_ids=connections.live_agent_ids,
+        )
         self._room_meta: dict[str, RoomMeta | None] = {}
         # In-flight multi-attachment groups, by group id, with their safety-net
         # timers. Both are cleared when a group completes or times out, so a
@@ -336,7 +306,7 @@ class AgentClient(ClientBase[ClientConfig]):
 
     # ── Event hooks ───────────────────────────────────────────────────────────
 
-    async def on_self_join(self, room: MatrixRoom, event: RoomMemberEvent) -> None:
+    async def on_self_join(self, room: RoomRef, event: InboundMembership) -> None:
         is_direct = await self._is_direct_room(room.room_id)
         name = self.agent.name
         # The per-agent self-join greeting can be switched off per bridge
@@ -357,7 +327,29 @@ class AgentClient(ClientBase[ClientConfig]):
             greeting = random.choice(AGENT_GREETINGS).format(name=name)
         await self.send_message(room.room_id, greeting, format="markdown")
 
-    async def on_member_event(self, room: MatrixRoom, event: RoomMemberEvent) -> None:
+    async def _member_name(
+        self, session: AsyncSession, event: InboundMembership
+    ) -> str:
+        """What to call the member who just arrived.
+
+        The name Switch knows them by, not the one on the membership event: a
+        profile is set from whatever the source platform calls someone, so
+        taking it makes the same person read one way when they arrive and
+        another way when they speak — and the log, which records the Switch
+        name, disagree with what was delivered live.
+        """
+        client = await self.client_store.get_by_matrix_user_id(session, event.state_key)
+        if client is not None:
+            return client.display_name
+        fallback = event.display_name or event.state_key.split(":")[0].lstrip("@")
+        logger.warning(
+            "No Switch client owns %s; naming the arrival %r from the membership event",
+            event.state_key,
+            fallback,
+        )
+        return fallback
+
+    async def on_member_event(self, room: RoomRef, event: InboundMembership) -> None:
         # Only forward genuine joins. A membership-preserving update (e.g. a
         # display-name or avatar change) re-fires m.room.member with
         # membership == "join" and prev_membership == "join" — exclude those, and
@@ -369,9 +361,6 @@ class AgentClient(ClientBase[ClientConfig]):
         meta = await self._resolve_room_meta(room.room_id)
         if meta is None:
             return
-        member_name = event.content.get("displayname") or event.state_key.split(":")[
-            0
-        ].lstrip("@")
         # `listening` tells each connector whether THIS receiving agent is
         # configured to react to join events in this room. The event is always
         # delivered; the connector decides whether to surface it.
@@ -379,6 +368,7 @@ class AgentClient(ClientBase[ClientConfig]):
             listening = await self._room_store.get_receives_join_events(
                 session, meta.room_id, self.agent.id
             )
+            member_name = await self._member_name(session, event)
         self._event_buffer.enqueue(
             self.agent.id,
             meta.room_id,
@@ -390,21 +380,18 @@ class AgentClient(ClientBase[ClientConfig]):
                 payload=RoomJoinPayload(
                     member=event.state_key,
                     member_name=member_name,
-                    timestamp=event.server_timestamp,
+                    timestamp=event.timestamp,
                     listening=listening,
                 ),
             ),
         )
 
-    async def on_message(self, room: MatrixRoom, event: RoomMessageText) -> None:
+    async def on_message(self, room: RoomRef, event: InboundMessage) -> None:
         meta = await self._resolve_room_meta(room.room_id)
         if meta is None:
             return
 
-        thread_id: str | None = None
-        relates = event.source.get("content", {}).get("m.relates_to") or {}
-        if relates.get("rel_type") == "m.thread":
-            thread_id = relates.get("event_id")
+        thread_id = event.thread_root_id
 
         reply_thread_root = thread_id if thread_id is not None else event.event_id
 
@@ -459,7 +446,7 @@ class AgentClient(ClientBase[ClientConfig]):
 
         text = event.body
 
-        sender_name = event.source.get("content", {}).get("sender_name")
+        sender_name = event.sender_name
         if not sender_name:
             sender_name = event.sender
             logger.error(
@@ -478,7 +465,7 @@ class AgentClient(ClientBase[ClientConfig]):
                 sender_name=sender_name,
                 message_id=event.event_id,
                 body=text,
-                timestamp=event.server_timestamp,
+                timestamp=event.timestamp,
                 thread_id=thread_id,
             ),
         )
@@ -490,26 +477,24 @@ class AgentClient(ClientBase[ClientConfig]):
             agent_event,
         )
 
-    async def on_media(self, room: MatrixRoom, event: RoomMessageMedia) -> None:
+    async def on_media(self, room: RoomRef, event: InboundMedia) -> None:
         meta = await self._resolve_room_meta(room.room_id)
         if meta is None:
             return
         is_addressed = await self._addressed(event, meta)
 
-        content = event.source.get("content", {})
-        info = content.get("info", {}) or {}
+        content = event.content
         # With a caption, body is the caption text and the real filename lives in
         # `filename`; without one, body is the filename itself.
-        filename = content.get("filename") or event.body
         attachment = AttachmentRef(
-            filename=filename,
-            mimetype=str(info.get("mimetype", "")),
-            size=int(info.get("size", 0) or 0),
-            mxc=str(event.url),
-            msgtype=str(content.get("msgtype", "")),
+            filename=event.filename or event.body,
+            mimetype=event.mimetype or "",
+            size=event.size or 0,
+            mxc=event.uri,
+            msgtype=event.msgtype,
         )
 
-        sender_name = content.get("sender_name")
+        sender_name = event.sender_name
         if not sender_name:
             sender_name = event.sender
             logger.error(
@@ -518,10 +503,7 @@ class AgentClient(ClientBase[ClientConfig]):
             )
 
         # Mirror on_message: surface the thread this media belongs to (if any).
-        thread_id: str | None = None
-        relates = content.get("m.relates_to") or {}
-        if relates.get("rel_type") == "m.thread":
-            thread_id = relates.get("event_id")
+        thread_id = event.thread_root_id
 
         # Several files posted as one message arrive as separate Matrix events
         # sharing a group marker (Matrix has no multi-attachment event). Hold
@@ -574,8 +556,8 @@ class AgentClient(ClientBase[ClientConfig]):
     def _schedule_attachment_group_flush(
         self,
         group_id: str,
-        room: MatrixRoom,
-        event: RoomMessageMedia,
+        room: RoomRef,
+        event: InboundMedia,
         meta: RoomMeta,
         sender_name: str,
         thread_id: str | None,
@@ -610,8 +592,8 @@ class AgentClient(ClientBase[ClientConfig]):
     async def _flush_incomplete_attachment_group(
         self,
         group_id: str,
-        room: MatrixRoom,
-        event: RoomMessageMedia,
+        room: RoomRef,
+        event: InboundMedia,
         meta: RoomMeta,
         sender_name: str,
         thread_id: str | None,
@@ -650,8 +632,8 @@ class AgentClient(ClientBase[ClientConfig]):
 
     async def _emit_media(
         self,
-        room: MatrixRoom,
-        event: RoomMessageMedia,
+        room: RoomRef,
+        event: InboundMedia,
         meta: RoomMeta,
         is_addressed: bool,
         sender_name: str,
@@ -681,7 +663,7 @@ class AgentClient(ClientBase[ClientConfig]):
                 sender_name=sender_name,
                 message_id=event.event_id,
                 body=body,
-                timestamp=event.server_timestamp,
+                timestamp=event.timestamp,
                 thread_id=thread_id,
                 attachments=attachments,
             ),
@@ -694,7 +676,7 @@ class AgentClient(ClientBase[ClientConfig]):
             agent_event,
         )
 
-    async def on_command(self, room: MatrixRoom, event: CommandEvent) -> None:
+    async def on_command(self, room: RoomRef, event: CommandEvent) -> None:
         meta = await self._resolve_room_meta(room.room_id)
         if meta is None:
             return
@@ -751,7 +733,7 @@ class AgentClient(ClientBase[ClientConfig]):
         return await self._text_tags_my_role(session, args, room_id)
 
     async def _gate_command(
-        self, room: MatrixRoom, event: CommandEvent, meta: RoomMeta
+        self, room: RoomRef, event: CommandEvent, meta: RoomMeta
     ) -> bool:
         """Apply the addressing policy to a command aimed at this agent.
 
@@ -794,7 +776,7 @@ class AgentClient(ClientBase[ClientConfig]):
 
     # ── Command handling ──────────────────────────────────────────────────────
 
-    async def _handle_command(self, room: MatrixRoom, event: CommandEvent) -> bool:
+    async def _handle_command(self, room: RoomRef, event: CommandEvent) -> bool:
         is_direct = await self._is_direct_room(room.room_id)
         return await dispatch_command(self, room, event, is_direct)
 
@@ -1067,7 +1049,7 @@ class AgentClient(ClientBase[ClientConfig]):
 
     # ── Task event forwarding ────────────────────────────────────────────────
 
-    async def on_task_delegate(self, room: MatrixRoom, event: TaskDelegate) -> None:
+    async def on_task_delegate(self, room: RoomRef, event: TaskDelegate) -> None:
         if event.performer_agent_id != self.agent.id:
             return
         await self.send_message(room.room_id, "Working on it.", format="markdown")
@@ -1092,7 +1074,7 @@ class AgentClient(ClientBase[ClientConfig]):
             ),
         )
 
-    async def on_task_accept(self, room: MatrixRoom, event: TaskAccept) -> None:
+    async def on_task_accept(self, room: RoomRef, event: TaskAccept) -> None:
         if event.requester_agent_id != self.agent.id:
             return
         meta = await self._resolve_room_meta(room.room_id)
@@ -1114,7 +1096,7 @@ class AgentClient(ClientBase[ClientConfig]):
             ),
         )
 
-    async def on_task_update(self, room: MatrixRoom, event: TaskUpdate) -> None:
+    async def on_task_update(self, room: RoomRef, event: TaskUpdate) -> None:
         if event.requester_agent_id != self.agent.id:
             return
         meta = await self._resolve_room_meta(room.room_id)
@@ -1137,7 +1119,7 @@ class AgentClient(ClientBase[ClientConfig]):
             ),
         )
 
-    async def on_task_finalise(self, room: MatrixRoom, event: TaskFinalise) -> None:
+    async def on_task_finalise(self, room: RoomRef, event: TaskFinalise) -> None:
         if event.requester_agent_id != self.agent.id:
             return
         meta = await self._resolve_room_meta(room.room_id)
@@ -1160,7 +1142,7 @@ class AgentClient(ClientBase[ClientConfig]):
             ),
         )
 
-    async def on_task_cancel(self, room: MatrixRoom, event: TaskCancel) -> None:
+    async def on_task_cancel(self, room: RoomRef, event: TaskCancel) -> None:
         if event.performer_agent_id != self.agent.id:
             return
         meta = await self._resolve_room_meta(room.room_id)
@@ -1183,56 +1165,20 @@ class AgentClient(ClientBase[ClientConfig]):
             ),
         )
 
-    # ── Post-invocation mediation ──────────────────────────────────────────────
-
-    async def on_mediation_tool_result(
-        self, room: MatrixRoom, event: MediationToolResult
-    ) -> None:
-        if event.agent_id != self.agent.id:
-            return
-        result = MediationResult(verdict=event.status)
-        self._request_tracker.resolve(event.request_id, result)
-
-    async def on_mediation_llm_response(
-        self, room: MatrixRoom, event: MediationLlmResponse
-    ) -> None:
-        if event.agent_id != self.agent.id:
-            return
-        result = MediationResult(verdict=event.status)
-        self._request_tracker.resolve(event.request_id, result)
-
-    async def on_resource_load_response(
-        self, room: MatrixRoom, event: ResourceLoadResponse
-    ) -> None:
-        if event.agent_id != self.agent.id:
-            return
-        self._resource_request_tracker.resolve(event.request_id, event)
-
-    async def on_room_document_create_response(
-        self, room: MatrixRoom, event: RoomDocumentCreateResponse
-    ) -> None:
-        if event.agent_id != self.agent.id:
-            return
-        self._resource_request_tracker.resolve(event.request_id, event)
-
-    async def on_room_document_update_response(
-        self, room: MatrixRoom, event: RoomDocumentUpdateResponse
-    ) -> None:
-        if event.agent_id != self.agent.id:
-            return
-        self._resource_request_tracker.resolve(event.request_id, event)
-
-    async def on_room_document_delete_response(
-        self, room: MatrixRoom, event: RoomDocumentDeleteResponse
-    ) -> None:
-        if event.agent_id != self.agent.id:
-            return
-        self._resource_request_tracker.resolve(event.request_id, event)
-
     # ── Mention detection ─────────────────────────────────────────────────────
 
+    @staticmethod
+    def _as_incoming(event: InboundMessage) -> IncomingMessage:
+        """The parts of a bus event that addressing is decided from."""
+        return IncomingMessage(
+            sender=event.sender,
+            body=getattr(event, "body", "") or "",
+            formatted_body=getattr(event, "formatted_body", None),
+            content=event.content,
+        )
+
     def _addressed_without_lookup(
-        self, event: RoomMessage, meta: RoomMeta
+        self, event: InboundMessage, meta: RoomMeta
     ) -> bool | None:
         """The addressing answer that needs no database read, or None when the
         room's aliases and role leases have to be consulted.
@@ -1241,17 +1187,14 @@ class AgentClient(ClientBase[ClientConfig]):
         chatter carries no `@` and is answered here, and a room fans every
         message out to all of its agent clients at once.
         """
-        if ADMIN_MARKER in (event.source.get("content") or {}):
-            return False
-        if meta.channel_type == "direct":
-            return True
-        if self._is_mentioned(event):
-            return True
-        if "@" not in (getattr(event, "body", "") or ""):
-            return False
-        return None
+        return self._addressing.addressed_without_lookup(
+            agent=self.agent,
+            agent_matrix_id=self.matrix_user_id,
+            channel_type=meta.channel_type,
+            message=self._as_incoming(event),
+        )
 
-    async def _addressed(self, event: RoomMessage, meta: RoomMeta) -> bool:
+    async def _addressed(self, event: InboundMessage, meta: RoomMeta) -> bool:
         """`_compute_addressed`, in a session of its own when it needs one."""
         decided = self._addressed_without_lookup(event, meta)
         if decided is not None:
@@ -1260,144 +1203,36 @@ class AgentClient(ClientBase[ClientConfig]):
             return await self._compute_addressed(session, event, meta)
 
     async def _compute_addressed(
-        self, session: AsyncSession, event: RoomMessage, meta: RoomMeta
+        self, session: AsyncSession, event: InboundMessage, meta: RoomMeta
     ) -> bool:
-        """Whether this message addresses this agent (expects a response).
-
-        Direct rooms always address. Otherwise the agent is addressed by an
-        `@name` mention OR by an `@<role>` tag for a room-role it currently
-        holds (see `_is_mentioned_via_role`).
-
-        **A system message never addresses anyone**, whatever the room type.
-        Switch's own notices — a command's answer, "Added X to this room", the
-        guidance shown when someone tags the app itself — are output, not a
-        request for a reply. Two ways they were read as one: in a direct room
-        every message addresses the agent, so running `/list-agents` in a 1:1
-        chat had the agent start a session to respond to its own roster; and in
-        any room, a notice that lists the agents present writes each `@name`,
-        which tagged every one of them. The marker exists to say "generated by
-        Switch"; this is it being honoured.
-        """
-        decided = self._addressed_without_lookup(event, meta)
-        if decided is not None:
-            return decided
-        if await self._is_mentioned_via_alias(session, event, meta.room_id):
-            return True
-        return await self._is_mentioned_via_role(session, event, meta.room_id)
-
-    async def _resolve_sender_principal(
-        self, session: AsyncSession, matrix_user_id: str
-    ) -> _SenderPrincipal | None:
-        """Resolve a Matrix sender to an addressing principal.
-
-        Maps the sender's mxid to its Client, then to either an Agent (an
-        agent-to-agent attempt) or an ExternalUser (a human on a bridge).
-        Returns ``None`` when the sender has no such record — an
-        unresolvable identity that a restricted agent should not trust.
-
-        The two symbolic subjects resolve from different fields, and only one
-        applies to any given sender: ``user_ids`` are the Switch users who have
-        claimed a human's platform account (empty for an agent — an agent is
-        never its owner, even its owner's own), and ``owner_user_id`` is who
-        owns an agent sender (None for a human).
-        """
-        client = await self.client_store.get_by_matrix_user_id(session, matrix_user_id)
-        if client is None:
-            return None
-        agent = await self._agent_store.get_by_client_id(session, client.id)
-        if agent is not None:
-            return _SenderPrincipal("agent", agent.id, [], agent.owner_id)
-        external_user = await self._external_user_store.get_by_client_id(
-            session, client.id
+        return await self._addressing.addresses(
+            session,
+            agent=self.agent,
+            agent_matrix_id=self.matrix_user_id,
+            room_id=meta.room_id,
+            channel_type=meta.channel_type,
+            message=self._as_incoming(event),
         )
-        if external_user is not None:
-            claimants = await self._external_user_store.claimant_ids(
-                session, external_user.id
-            )
-            return _SenderPrincipal("user", external_user.id, claimants, None)
-        return None
 
     async def _addressing_allowed(
         self, session: AsyncSession, agent: Agent, matrix_sender: str, room_id: str
-    ) -> _AddressingDecision:
+    ) -> AddressingDecision:
         """Whether `matrix_sender` may address this agent in `room_id`, per the
         agent's scoped addressing policy.
 
-        An agent with no policy is open to anyone, so this returns allowed
-        without a DB round-trip. With a policy set it is deny-by-default: an
-        unresolvable sender is rejected (fail-closed). A denial carries the
-        wording to send back, which differs when the sender looks like someone
-        whose platform identity simply has not been claimed yet.
+        `agent` is the freshly-read row rather than the cached snapshot: the
+        policy is the thing being enforced, and enforcing a stale copy of it is
+        the one way this check can be wrong in the dangerous direction.
         """
-        policy = parse_policy(agent.addressing_policy)
-        if policy.is_open():
-            return _AddressingDecision(allowed=True, refusal="")
-        principal = await self._resolve_sender_principal(session, matrix_sender)
-        room = await self._room_store.get(session, room_id)
-        if principal is None:
-            logger.warning(
-                "Addressing denied for %s: unresolvable sender %s in room %s",
-                self.agent.name,
-                matrix_sender,
-                room_id,
-            )
-            return _AddressingDecision(
-                allowed=False, refusal=_ADDRESSING_DENIED_MESSAGE
-            )
-        sender_kind, sender_id, sender_user_ids = (
-            principal.kind,
-            principal.id,
-            principal.user_ids,
-        )
-        group_id = room.group_id if room is not None else None
-        allowed = can_address(
-            policy,
-            room_id=room_id,
-            group_id=group_id,
-            sender_kind=sender_kind,
-            sender_id=sender_id,
-            sender_user_ids=sender_user_ids,
-            sender_owner_user_id=principal.owner_user_id,
-            owner_user_id=agent.owner_id,
-        )
-        if allowed:
-            return _AddressingDecision(allowed=True, refusal="")
-        unclaimed = (
-            sender_kind == "user"
-            and not sender_user_ids
-            and policy.requires_owner_identity()
-        )
-        if unclaimed:
-            logger.warning(
-                "Addressing denied for %s: sender %s in room %s has not been "
-                "claimed by any Switch user, so an owner-scoped rule cannot "
-                "match them — the owner may need to link this identity",
-                self.agent.name,
-                sender_id,
-                room_id,
-            )
-        else:
-            logger.warning(
-                "Addressing denied for %s: %s %s not permitted in room %s",
-                self.agent.name,
-                sender_kind,
-                sender_id,
-                room_id,
-            )
-        return _AddressingDecision(
-            allowed=False,
-            refusal=(
-                _ADDRESSING_UNCLAIMED_MESSAGE
-                if unclaimed
-                else _ADDRESSING_DENIED_MESSAGE
-            ),
+        return await self._addressing.permitted(
+            session, agent=agent, room_id=room_id, sender=matrix_sender
         )
 
     async def _gate_addressed(
         self,
         session: AsyncSession,
         agent: Agent,
-        event: RoomMessage,
+        event: InboundMessage,
         meta: RoomMeta,
     ) -> _GateOutcome:
         """Apply the scoped addressing policy to a message that tags this agent.
@@ -1418,13 +1253,13 @@ class AgentClient(ClientBase[ClientConfig]):
         return _GateOutcome(addressed=False, refusal=decision.refusal)
 
     @staticmethod
-    def _triggered_by_auto_reply(event: RoomMessage) -> bool:
-        return bool(event.source.get("content", {}).get(AUTO_REPLY_FLAG))
+    def _triggered_by_auto_reply(event: InboundMessage) -> bool:
+        return bool(event.content.get(AUTO_REPLY_FLAG))
 
     async def _post_auto_reply(
         self,
         matrix_room_id: str,
-        event: RoomMessage,
+        event: InboundMessage,
         msg: str,
         thread_root_id: str | None,
     ) -> None:
@@ -1449,65 +1284,24 @@ class AgentClient(ClientBase[ClientConfig]):
     async def _text_tags_my_alias(
         self, session: AsyncSession, text: str, room_id: str
     ) -> bool:
-        """True when `text` `@`-tags this agent's room alias at a token boundary.
-
-        The alias is looked up live (like a role lease) so a change takes effect
-        on the next message without any per-client cache to invalidate.
-        """
-        if "@" not in text:
-            return False
-        alias = await self._room_store.get_alias(session, room_id, self.agent.id)
-        if not alias:
-            return False
-        return _mention_regex(alias).search(text) is not None
-
-    async def _is_mentioned_via_alias(
-        self, session: AsyncSession, event: RoomMessage, room_id: str
-    ) -> bool:
-        """True when the message body tags this agent's room alias.
-
-        A room alias addresses the agent exactly like its real name, so an
-        `@<alias>` mention routes here just as `@<name>` does.
-        """
-        return await self._text_tags_my_alias(
-            session, getattr(event, "body", "") or "", room_id
+        return await self._addressing.mentions_alias(
+            session,
+            agent=self.agent,
+            room_id=room_id,
+            message=IncomingMessage(sender="", body=text),
         )
 
     async def _text_tags_my_role(
         self, session: AsyncSession, text: str, room_id: str
     ) -> bool:
-        """True when `text` `@`-tags a room-role this agent LIVE-holds.
-
-        Only a live lease counts, so "held" means the same thing here as in
-        `!roles` and the moderator warning: a stale lease (session gone, role
-        auto-released → shown free) does NOT route here — the moderator flags
-        it as unassigned instead. A holder whose session merely hopped to
-        another room still matches, because that lease is kept alive by the
-        renewal loop. The moderator holds no role, so this is a no-op for it.
-        """
-        if "@" not in text:
-            return False
-        role_name = await self._room_role_store.agent_room_role(
-            session, room_id, self.agent.id, self._connections.live_agent_ids()
-        )
-        if not role_name:
-            return False
-        return _mention_regex(role_name).search(_strip_emphasis(text)) is not None
-
-    async def _is_mentioned_via_role(
-        self, session: AsyncSession, event: RoomMessage, room_id: str
-    ) -> bool:
-        """True when the message body tags a room-role this agent holds.
-
-        Tagging `@<role>` addresses whichever agent holds that role, so an
-        interchangeable agent can be reached by responsibility rather than by
-        name.
-        """
-        return await self._text_tags_my_role(
-            session, getattr(event, "body", "") or "", room_id
+        return await self._addressing.mentions_role(
+            session,
+            agent=self.agent,
+            room_id=room_id,
+            message=IncomingMessage(sender="", body=text),
         )
 
-    def _sender_handle(self, event: RoomMessage) -> str:
+    def _sender_handle(self, event: InboundMessage) -> str:
         """The @-handle to tag the message sender with.
 
         Prefers the bridge-provided `sender_name` (the external username, which
@@ -1515,21 +1309,17 @@ class AgentClient(ClientBase[ClientConfig]):
         Mattermost); falls back to the mxid localpart for a native Matrix user
         (paired with `mentions=[event.sender]` so Matrix renders a pill).
         """
-        content = event.source.get("content", {}) or {}
+        content = event.content
         name = content.get("sender_name")
         if name:
             return str(name)
         return str(event.sender).split(":")[0].lstrip("@")
 
-    def _is_mentioned(self, event: RoomMessage) -> bool:
-        # Media events (RoomMessageImage/File) have no formatted_body; fall back
-        # to a plain-text mention scan on the body (the caption, for media).
-        formatted_body = getattr(event, "formatted_body", None)
-        if formatted_body is not None and self.matrix_user_id in formatted_body:
-            return True
-        return (
-            _mention_regex(self.agent.name).search(_strip_emphasis(event.body))
-            is not None
+    def _is_mentioned(self, event: InboundMessage) -> bool:
+        return self._addressing.mentions_name(
+            agent=self.agent,
+            agent_matrix_id=self.matrix_user_id,
+            message=self._as_incoming(event),
         )
 
     def _strip_mention(self, text: str) -> str:

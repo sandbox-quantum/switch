@@ -26,7 +26,7 @@ init-env:
       exit 1
     fi
     cp .env.example .env
-    for key in DB_PASSWORD MATRIX_ADMIN_PASSWORD MATRIX_REGISTRATION_SHARED_SECRET \
+    for key in DB_PASSWORD \
                AGENT_REGISTRATION_TOKEN JWT_SECRET_KEY GATEWAY_ADMIN_PASSWORD \
                MATTERMOST_ADMIN_PASSWORD MATTERMOST_USER_PASSWORD; do
       secret="$(openssl rand -hex 24)"
@@ -38,8 +38,6 @@ init-env:
     echo "   The stack binds to 127.0.0.1 only (set SWITCH_BIND_ADDR to expose it)."
 
 # ── Dev infrastructure ─────────────────────────────────────────────────────────
-# Tuwunel self-initializes its signing key + database in its data volume on
-# first boot, so no pre-start key generation is needed.
 up:
     docker compose -f deploy/local/docker-compose.yml --project-directory . up -d --build
 
@@ -109,7 +107,7 @@ migration msg:
 test *args:
     uv run --project core pytest -c core/pyproject.toml core/tests/ {{ args }}
 
-# ── Run integration tests (real Postgres + Tuwunel via testcontainers) ──────────
+# ── Run integration tests (real Postgres via testcontainers) ───────────────────
 # DOCKER_HOST is auto-resolved from the active docker context in conftest, so this
 # works under Docker Desktop / OrbStack / colima without extra setup.
 test-integration *args:

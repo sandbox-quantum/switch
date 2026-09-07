@@ -5,11 +5,10 @@ from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from typing import Any
 
-import nio
-
 import switch_core.clients.agent_client as ac
 from switch_core.clients.agent_client import AgentClient, _GateOutcome
 from switch_core.clients.room_meta import RoomMeta
+from switch_core.transport import InboundMedia, RoomRef
 
 
 def _media_event(
@@ -20,7 +19,7 @@ def _media_event(
     msgtype: str = "m.image",
     group: dict[str, Any] | None = None,
     event_id: str = "$evt",
-) -> nio.RoomMessageMedia:
+) -> InboundMedia:
     content: dict[str, Any] = {
         "msgtype": msgtype,
         "body": body,
@@ -32,15 +31,20 @@ def _media_event(
         content["filename"] = filename
     if group is not None:
         content["com.switch.attachment_group"] = group
-    cls = nio.RoomMessageImage if msgtype == "m.image" else nio.RoomMessageFile
-    return cls.from_dict(
-        {
-            "type": "m.room.message",
-            "event_id": event_id,
-            "sender": "@alice:s",
-            "origin_server_ts": 1700000000000,
-            "content": content,
-        }
+    return InboundMedia(
+        room_id="!room:s",
+        event_id=event_id,
+        sender="@alice:s",
+        timestamp=1700000000000,
+        content=content,
+        body=body,
+        sender_name="alice",
+        msgtype=msgtype,
+        uri="mxc://s/abc",
+        filename=filename,
+        mimetype=mimetype,
+        size=5,
+        group=group,
     )
 
 
@@ -104,8 +108,8 @@ def _fake_client() -> SimpleNamespace:
     return ns
 
 
-def _room() -> SimpleNamespace:
-    return SimpleNamespace(room_id="!room:s")
+def _room() -> RoomRef:
+    return RoomRef(room_id="!room:s")
 
 
 async def test_grouped_media_coalesces_into_one_event() -> None:

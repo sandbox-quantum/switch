@@ -72,6 +72,29 @@ function suggestionButton(el: HTMLElement): HTMLButtonElement | undefined {
 
 const REJECTION = 'Use lowercase letters, digits';
 
+describe('an agent name typed with capitals', () => {
+  it('folds them as they are typed rather than rejecting them', async () => {
+    const el = await renderFields();
+    await typeName(el, 'SwitchDev');
+
+    const field = el.querySelector<HTMLInputElement>('input[placeholder="Name this agent"]');
+    expect(field?.value).toBe('switchdev');
+    expect(form?.nameIsValid).toBe(true);
+    expect(el.textContent).not.toContain(REJECTION);
+  });
+
+  it('still remembers them for the display name the slug offer hands back', async () => {
+    // The fold above is what makes this worth pinning: the identifier no longer
+    // holds the capitals, so only the typed text can supply them.
+    const el = await renderFields();
+    await typeName(el, 'Switch Dev');
+    await act(async () => suggestionButton(el)!.click());
+
+    expect(form?.agentName).toBe('switch-dev');
+    expect(form?.displayName).toBe('Switch Dev');
+  });
+});
+
 describe('a rejected agent name', () => {
   it('offers the slug of what was typed', async () => {
     const el = await renderFields();
@@ -93,6 +116,7 @@ describe('a rejected agent name', () => {
 
     expect(form?.agentName).toBe('switch-dev');
     expect(form?.nameIsValid).toBe(true);
+    expect(form?.displayName).toBe('Switch Dev');
     expect(el.textContent).not.toContain(REJECTION);
     expect(suggestionButton(el)).toBeUndefined();
   });

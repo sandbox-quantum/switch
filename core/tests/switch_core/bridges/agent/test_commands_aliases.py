@@ -78,9 +78,15 @@ def _event(args: str) -> SimpleNamespace:
     return SimpleNamespace(command="set-alias", args=args, thread_id=None)
 
 
+def _agent(
+    agent_id: str, name: str, display_name: str | None = None
+) -> SimpleNamespace:
+    return SimpleNamespace(id=agent_id, name=name, display_name=display_name)
+
+
 _AGENTS = {
-    "a1": SimpleNamespace(id="a1", name="claude-code.alice"),
-    "a2": SimpleNamespace(id="a2", name="moderator"),
+    "a1": _agent("a1", "claude-code.alice"),
+    "a2": _agent("a2", "moderator"),
 }
 
 
@@ -118,6 +124,85 @@ class TestListAliasesCommand:
         await _cmd_list_aliases(client, _Room(room_id="!m:x"), _event(""), False)
         assert "boss" in posted[0]
         assert _MENTION.search(posted[0]) is None
+
+
+class TestAliasCommandsRenderDisplayNames:
+    async def test_set_alias_names_the_agent_and_keeps_its_identifier(self) -> None:
+        agents = {"a1": _agent("a1", "switchdev", "Switch Dev")}
+        client, posted = _build_client(agents=agents, aliases={}, role_names=[])
+        await _cmd_set_alias(
+            client, _Room(room_id="!m:x"), _event("@switchdev @boss"), False
+        )
+        assert "Switch Dev (`switchdev`)" in posted[0]
+
+    async def test_set_alias_without_a_display_name_names_it_once(self) -> None:
+        client, posted = _build_client(agents=_AGENTS, aliases={}, role_names=[])
+        await _cmd_set_alias(
+            client, _Room(room_id="!m:x"), _event("@claude-code.alice @boss"), False
+        )
+        assert "**claude-code.alice**" in posted[0]
+        assert "(`claude-code.alice`)" not in posted[0]
+
+    async def test_set_alias_display_name_cannot_ping_the_channel(self) -> None:
+        agents = {"a1": _agent("a1", "switchdev", "@everyone")}
+        client, posted = _build_client(agents=agents, aliases={}, role_names=[])
+        await _cmd_set_alias(
+            client, _Room(room_id="!m:x"), _event("@switchdev @boss"), False
+        )
+        assert _MENTION.search(posted[0]) is None
+        assert "switchdev" in posted[0]
+
+    async def test_set_alias_display_name_cannot_forge_a_link(self) -> None:
+        agents = {"a1": _agent("a1", "switchdev", "[here](https://example.invalid)")}
+        client, posted = _build_client(agents=agents, aliases={}, role_names=[])
+        await _cmd_set_alias(
+            client, _Room(room_id="!m:x"), _event("@switchdev @boss"), False
+        )
+        assert "](https://example.invalid)" not in posted[0]
+
+    async def test_set_alias_echoes_a_mistyped_token_verbatim(self) -> None:
+        # The user typed the identifier, so the "no such agent" line has to
+        # quote what they typed — not some other agent's display name.
+        agents = {"a1": _agent("a1", "switchdev", "Switch Dev")}
+        client, posted = _build_client(agents=agents, aliases={}, role_names=[])
+        await _cmd_set_alias(
+            client, _Room(room_id="!m:x"), _event("@switchdevv @boss"), False
+        )
+        assert "No agent named `switchdevv`" in posted[0]
+        assert "Switch Dev" not in posted[0]
+
+    async def test_list_aliases_names_the_agent_and_keeps_its_identifier(self) -> None:
+        agents = {"a1": _agent("a1", "switchdev", "Switch Dev")}
+        client, posted = _build_client(
+            agents=agents, aliases={"a1": "boss"}, role_names=[]
+        )
+        await _cmd_list_aliases(client, _Room(room_id="!m:x"), _event(""), False)
+        # The alias itself stays bare and typeable; the agent gets its label.
+        assert "- `boss` → **Switch Dev (`switchdev`)**" in posted[0]
+
+    async def test_list_aliases_without_a_display_name_names_it_once(self) -> None:
+        client, posted = _build_client(
+            agents=_AGENTS, aliases={"a1": "boss"}, role_names=[]
+        )
+        await _cmd_list_aliases(client, _Room(room_id="!m:x"), _event(""), False)
+        assert "- `boss` → **claude-code.alice**" in posted[0]
+
+    async def test_list_aliases_display_name_cannot_ping_the_channel(self) -> None:
+        agents = {"a1": _agent("a1", "switchdev", "@everyone")}
+        client, posted = _build_client(
+            agents=agents, aliases={"a1": "boss"}, role_names=[]
+        )
+        await _cmd_list_aliases(client, _Room(room_id="!m:x"), _event(""), False)
+        assert _MENTION.search(posted[0]) is None
+        assert "switchdev" in posted[0]
+
+    async def test_list_aliases_display_name_cannot_forge_a_link(self) -> None:
+        agents = {"a1": _agent("a1", "switchdev", "[here](https://example.invalid)")}
+        client, posted = _build_client(
+            agents=agents, aliases={"a1": "boss"}, role_names=[]
+        )
+        await _cmd_list_aliases(client, _Room(room_id="!m:x"), _event(""), False)
+        assert "](https://example.invalid)" not in posted[0]
 
 
 class TestAliasCommandRegistration:

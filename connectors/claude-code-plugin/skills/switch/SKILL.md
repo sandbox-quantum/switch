@@ -352,6 +352,13 @@ none of it is needed to take part in a conversation.
   sets the agent's parent (validated against self-parenting and cycles);
   `clear_parent=true` detaches it to top-level.
 
+**Address by `name`, not `display_name`.** `list_agents` and
+`get_agent_detail` return both. `name` is the machine identifier and the only
+one that routes: `target_names`, mentions and room aliases all take it.
+`display_name` is a free-form human label for showing an agent to a person, and
+is null when the agent has none — fall back to `name`. A `target_names` entry
+carrying a display name addresses no one.
+
 ### Creating rooms
 
 - **`list_bridges`** — the collaboration bridges configured on this instance:
@@ -369,7 +376,7 @@ none of it is needed to take part in a conversation.
   `instructions`, `group_name`, `aliases`, `reference_ids`, `package_ids`,
   `linked_rooms`, `join_event_listeners` (the subset of `agent_names` that
   should receive `room_join` events — off by default). Returns
-  `{id, name, matrix_room_id, failed_attachments}`.
+  `{id, name, transport_room_id, failed_attachments}`.
 - **`update_room`** — change an existing room, including its `aliases` map.
 - **`invite_agent_to_room`** — add an existing agent to an existing room by
   name. Humans and agents can do the same from inside a room with the

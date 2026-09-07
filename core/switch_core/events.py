@@ -3,11 +3,6 @@ from __future__ import annotations
 from pydantic import BaseModel, ConfigDict
 
 
-class MediationResult(BaseModel):
-    verdict: str
-    reason: str | None = None
-
-
 class SwitchEvent(BaseModel):
     model_config = ConfigDict(extra="allow")
 
@@ -28,48 +23,6 @@ class CommandEvent(SwitchEvent):
     # Populated at dispatch (the id is not part of the event content). None for
     # synthetic/legacy events that carry no id.
     thread_id: str | None = None
-
-
-# ── Mediation (pre-invocation) ────────────────────────────────────────────────
-
-
-class MediationToolRequest(SwitchEvent):
-    request_id: str
-    agent_id: str
-    tool_id: str
-    args: dict[str, object]
-    task_id: str | None = None
-    status: str
-
-
-class MediationLlmRequest(SwitchEvent):
-    request_id: str
-    agent_id: str
-    model_id: str
-    messages: list[dict[str, object]]
-    task_id: str | None = None
-    status: str
-
-
-# ── Mediation (post-invocation) ───────────────────────────────────────────────
-
-
-class MediationToolResult(SwitchEvent):
-    request_id: str
-    agent_id: str
-    tool_id: str
-    result: object
-    task_id: str | None = None
-    status: str
-
-
-class MediationLlmResponse(SwitchEvent):
-    request_id: str
-    agent_id: str
-    model_id: str
-    response: object
-    task_id: str | None = None
-    status: str
 
 
 # ── Event reporting ───────────────────────────────────────────────────────────
@@ -164,19 +117,3 @@ class AgentRuntimeStateEvent(SwitchEvent):
     # the agent really has. Unchanged between reports (e.g. the periodic
     # activity refresh) means the indicator stays where it is.
     anchor_event_id: str | None = None
-
-
-# ── Permission ────────────────────────────────────────────────────────────────
-
-
-class PermissionRequest(SwitchEvent):
-    request_id: str
-    agent_id: str
-    action: str
-    details: dict[str, object] | None = None
-
-
-class PermissionResponse(SwitchEvent):
-    request_id: str
-    approved: bool
-    responder_id: str

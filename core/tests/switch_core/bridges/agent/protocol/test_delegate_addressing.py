@@ -61,7 +61,6 @@ async def _make_agent(
         matrix_user_id=f"@{name}:test",
         display_name=name,
         type="agent",
-        password="x",
     )
     session.add_all([api_key, client])
     await session.flush()

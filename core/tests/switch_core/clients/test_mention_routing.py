@@ -8,6 +8,10 @@ from switch_core.clients.agent_client import (
     AgentClient,
     _role_elsewhere_message,
 )
+from switch_core.delivery.addressing import (
+    AddressingResolver,
+    IncomingMessage,
+)
 
 
 @asynccontextmanager
@@ -32,21 +36,49 @@ def _no_connections() -> SimpleNamespace:
     )
 
 
-def _event(body: str, formatted_body: str | None = None) -> SimpleNamespace:
-    return SimpleNamespace(body=body, formatted_body=formatted_body)
+def _event(body: str, formatted_body: str | None = None) -> IncomingMessage:
+    return IncomingMessage(sender="@u:test", body=body, formatted_body=formatted_body)
+
+
+def _resolver(**attrs: object) -> SimpleNamespace:
+    """A resolver-shaped double with the named checks wired to the real ones.
+
+    Each check reads only the stores it needs, so a double carrying just those
+    is enough to run the real logic against.
+    """
+    resolver = SimpleNamespace(**attrs)
+    for name in ("mentions_name", "mentions_alias", "mentions_role"):
+        setattr(
+            resolver,
+            name,
+            (
+                lambda method: (
+                    lambda *a, **kw: getattr(AddressingResolver, method)(
+                        resolver, *a, **kw
+                    )
+                )
+            )(name),
+        )
+    return resolver
 
 
 def _client(name: str) -> SimpleNamespace:
-    # Enough surface for the unbound _is_mentioned: an agent with a name and a
-    # matrix_user_id for the formatted_body branch.
+    """An AgentClient-shaped double: an agent, an mxid, and a resolver."""
     return SimpleNamespace(
         agent=SimpleNamespace(name=name),
         matrix_user_id=f"@switch-agent-{name}:switch.local",
+        _addressing=_resolver(),
+        _as_incoming=AgentClient._as_incoming,
     )
 
 
 def _is_mentioned(name: str, body: str) -> bool:
-    return AgentClient._is_mentioned(_client(name), _event(body))
+    return AddressingResolver.mentions_name(
+        _resolver(),
+        agent=SimpleNamespace(name=name),  # type: ignore[arg-type]
+        agent_matrix_id=f"@switch-agent-{name}:switch.local",
+        message=_event(body),
+    )
 
 
 async def _command_addresses(name: str, args: str) -> bool:
@@ -127,12 +159,14 @@ class TestMediaEventWithoutFormattedBody:
     def test_media_caption_mention_matches(self) -> None:
         client = _client("cc-bug-fixing")
         # A media event surfaces only `body` (the caption) — no formatted_body.
-        media_event = SimpleNamespace(body="@cc-bug-fixing look at this")
+        media_event = SimpleNamespace(
+            body="@cc-bug-fixing look at this", content={}, sender="@u:test"
+        )
         assert AgentClient._is_mentioned(client, media_event) is True
 
     def test_media_without_mention_not_addressed(self) -> None:
         client = _client("cc-bug-fixing")
-        media_event = SimpleNamespace(body="cat.png")
+        media_event = SimpleNamespace(body="cat.png", content={}, sender="@u:test")
         assert AgentClient._is_mentioned(client, media_event) is False
 
 
@@ -162,9 +196,10 @@ def _role_client(agent_name: str, held_role: str | None) -> SimpleNamespace:
 
     return SimpleNamespace(
         agent=SimpleNamespace(id="agent-1", name=agent_name),
-        session_factory=_session_factory,
-        _connections=_no_connections(),
-        _room_role_store=SimpleNamespace(agent_room_role=_agent_room_role),
+        _addressing=_resolver(
+            _room_role_store=SimpleNamespace(agent_room_role=_agent_room_role),
+            _live_agent_ids=_no_connections().live_agent_ids,
+        ),
     )
 
 
@@ -231,9 +266,9 @@ def _alias_client(agent_name: str, alias_by_room: dict[str, str]) -> SimpleNames
 
     return SimpleNamespace(
         agent=SimpleNamespace(id="agent-1", name=agent_name),
-        session_factory=_session_factory,
-        _connections=_no_connections(),
-        _room_store=SimpleNamespace(get_alias=_get_alias),
+        _addressing=_resolver(
+            _room_store=SimpleNamespace(get_alias=_get_alias),
+        ),
     )
 
 
