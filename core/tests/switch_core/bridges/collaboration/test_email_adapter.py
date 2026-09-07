@@ -29,6 +29,7 @@ from typing import Any
 import pytest
 
 from switch_core.bridges.collaboration.email.adapter import (
+    EMAIL_BODY_MAX_BYTES,
     EmailAdapter,
     EmailConnectionConfig,
 )
@@ -699,3 +700,75 @@ def test_the_secret_is_kept_out_of_the_operator_form() -> None:
     schema = EmailConnectionConfig.model_json_schema()
 
     assert "webhook_secret" not in schema["properties"]
+
+
+# ── What a Matrix event will actually hold ───────────────────────────────────
+
+
+def _nested_forward(inner_body: str, count: int = 1) -> bytes:
+    """A message carrying `count` forwarded messages, each `inner_body` long."""
+    outer = EmailMessage()
+    outer["From"] = f"Sam Owner <{OWNER}>"
+    outer["To"] = "atlas@agents.example.com"
+    outer["Subject"] = "Fwd: a long one"
+    outer["Message-ID"] = "<fwd@example.com>"
+    outer.set_content("Passing this on.")
+    for i in range(count):
+        inner = EmailMessage()
+        inner["From"] = "Newsletter <news@example.com>"
+        inner["Subject"] = f"part {i}"
+        inner.set_content(inner_body)
+        outer.add_attachment(inner, disposition="inline")
+    return outer.as_bytes()
+
+
+async def test_a_huge_forward_is_cut_to_something_matrix_will_accept() -> None:
+    """Matrix rejects a PDU over 65535 bytes, and the whole message is lost.
+
+    Observed against a real forwarded newsletter: the webhook answered 202, the
+    relay then failed with `M_TOO_LARGE: PDU exceeds 65535 bytes`, and the only
+    trace was one line saying the message "will not reach the room". The sender
+    is told nothing — this bridge cannot reply — so a message that is merely
+    long silently never arrives.
+    """
+    adapter, received = _adapter()
+
+    await adapter.ingest(_nested_forward("x" * 60_000))
+
+    (msg,) = received
+    assert len(msg.content.encode("utf-8")) <= EMAIL_BODY_MAX_BYTES
+
+
+async def test_several_forwards_are_cut_together_not_one_by_one() -> None:
+    """The per-part cap was applied inside the loop, and the body accumulates.
+
+    Four parts each comfortably under the old 32,000-character limit still
+    summed to a PDU Matrix refused, so capping each one proves nothing about
+    the message that actually gets sent.
+    """
+    adapter, received = _adapter()
+
+    await adapter.ingest(_nested_forward("y" * 25_000, count=4))
+
+    (msg,) = received
+    assert len(msg.content.encode("utf-8")) <= EMAIL_BODY_MAX_BYTES
+
+
+async def test_the_reader_is_told_the_message_was_cut() -> None:
+    """Silent truncation is the failure this replaces, not a smaller version of
+    it: an agent acting on half a contract needs to know it has half."""
+    adapter, received = _adapter()
+
+    await adapter.ingest(_nested_forward("z" * 60_000))
+
+    assert "truncated" in received[0].content.lower()
+
+
+async def test_an_ordinary_message_is_left_exactly_as_it_was() -> None:
+    """The cap must not touch anything that already fits."""
+    adapter, received = _adapter()
+
+    await adapter.ingest(_mime(body="Short and complete."))
+
+    assert "truncated" not in received[0].content.lower()
+    assert "Short and complete." in received[0].content

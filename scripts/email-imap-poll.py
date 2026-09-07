@@ -35,12 +35,18 @@ It never deletes, moves, or replies.
 from __future__ import annotations
 
 import email
+import functools
 import imaplib
 import os
 import sys
 import time
 import urllib.error
 import urllib.request
+
+#: Line-buffered output. This is a loop people leave running and tail, and a
+#: block-buffered pipe shows nothing until the buffer fills — which for a quiet
+#: mailbox is never.
+print = functools.partial(print, flush=True)  # noqa: A001
 
 POLL_DEFAULT_SECONDS = 10
 #: Long enough for a slow local stack, short enough that a wedged request does
@@ -81,7 +87,17 @@ def _describe(raw: bytes) -> str:
 
 
 def poll_once(client: imaplib.IMAP4_SSL, url: str) -> int:
-    """Deliver every unread message. Returns how many were accepted."""
+    """Deliver every unread message. Returns how many were accepted.
+
+    The `NOOP` is not a keepalive, it is the poll. IMAP does not push anything
+    to an idle client: the server's view of the mailbox is fixed at `SELECT`
+    and only advances when the client speaks, so re-running `SEARCH` on a
+    quiet connection returns the same answer forever. Without this, new mail
+    is delivered only when the connection happens to drop and the reconnect
+    re-selects — which looks like it works, intermittently, and is the worst
+    way for this to be wrong.
+    """
+    client.noop()
     status, data = client.search(None, "UNSEEN")
     if status != "OK":
         raise RuntimeError(f"IMAP search failed: {status}")

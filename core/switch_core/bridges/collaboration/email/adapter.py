@@ -72,9 +72,24 @@ WEBHOOK_SECRET_BYTES = 32
 #: How much of a forwarded message is carried into the room body.
 #:
 #: Serialising a nested `message/rfc822` includes its own attachments in
-#: base64, so an unbounded flatten sails past what a Matrix event will hold —
-#: and that rejection surfaces as a 500 the provider retries forever.
+#: base64, so an unbounded flatten sails past what a Matrix event will hold.
 _FORWARDED_BODY_MAX_CHARS = 32_000
+
+#: What one message may contribute to a Matrix event, in bytes.
+#:
+#: Matrix refuses a PDU over 65535 bytes outright — `M_TOO_LARGE` — and the
+#: bridge cannot tell the sender, because it does not send mail. So an
+#: over-long forward simply never arrives.
+#:
+#: The budget is a quarter of the limit rather than a half because the body
+#: travels **twice**: the relay sends it as markdown, so the event carries the
+#: plain `body` and an HTML `formatted_body` rendered from it, and the HTML is
+#: the larger of the two. The rest is JSON overhead and the room's own fields.
+#:
+#: `_FORWARDED_BODY_MAX_CHARS` above does not cover this and cannot: it caps
+#: each nested part inside a loop while the body accumulates across them, so
+#: four compliant parts still produced a PDU Matrix refused.
+EMAIL_BODY_MAX_BYTES = 16_000
 
 #: Shorter than this and the endpoint is guessable; empty and it is open.
 MIN_WEBHOOK_SECRET_LENGTH = 32
@@ -103,6 +118,26 @@ class EmailConnectionConfig(BridgeConnectionConfig):
     #: and it survives being nested or wrapped in a `TypeAdapter`, which
     #: overriding `model_json_schema` does not.
     webhook_secret: SkipJsonSchema[str] = ""
+
+
+def _fit_to_event(body: str) -> str:
+    """Cut `body` to what a Matrix event will carry, and say so in the text.
+
+    Truncating on bytes rather than characters because the limit is on the
+    encoded event, and cutting on a character boundary is what keeps the
+    result valid UTF-8.
+    """
+    encoded = body.encode("utf-8")
+    if len(encoded) <= EMAIL_BODY_MAX_BYTES:
+        return body
+
+    notice = (
+        f"\n\n[Message truncated: it exceeds the {EMAIL_BODY_MAX_BYTES} bytes a "
+        "room message can carry. Ask the sender for the rest, or for the part "
+        "you need.]"
+    )
+    budget = EMAIL_BODY_MAX_BYTES - len(notice.encode("utf-8"))
+    return encoded[:budget].decode("utf-8", errors="ignore") + notice
 
 
 class _TextFromHtml(HTMLParser):
@@ -344,6 +379,10 @@ class EmailAdapter(CollaborationAdapter):
         body, attachments, failures = self._read_content(message)
         subject = _decoded(message.get("Subject"))
         content = f"**{subject}**\n\n{body}".strip() if subject else body
+        # After the subject is prepended, because that is the string that
+        # becomes the event. Capping the body alone left the subject line to
+        # push it back over.
+        content = _fit_to_event(content)
 
         if self._on_message is None:  # pragma: no cover - defensive
             logger.error("[EMAIL] received mail before a handler was installed")
