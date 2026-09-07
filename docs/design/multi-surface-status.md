@@ -185,3 +185,50 @@ In the order the evidence supports, not the order the design doc assumed:
    connects a "from now on…" said in a room to anything durable.
 4. **Then** US-3, US-5, US-6 verification — each of which already has its code
    written and waiting.
+
+---
+
+## 5. Splitting this into PRs
+
+**Do not cherry-pick.** Eight commits touch three or more trees at once — the
+review-fix commits each span server, runtime, console, skills and
+`artifacts.yaml`, because that is what fixing a finding across a stack looks
+like. Any commit-range split leaves half a change behind.
+
+**Reconstruct by file instead.** Branch from current `main` and
+`git checkout feat/multi-surface-agent -- <paths>`. The history here is
+test → implement → fix-review, which is no use to a reviewer; the reasoning
+lives in these design docs.
+
+| PR | Contents | Depends on | Ready? |
+|---|---|---|---|
+| **1. `multi` scope + room addressing** | `protocol/{connections,stream,types}.py`, `api/handlers.py`, `operations/{context,definitions}.py`, `protocol/service.py`, their tests, `docs/old/api/AGENT_PROTOCOL.md` | — | **yes** |
+| **2. audience labelling** | `disclosure.py` (wired half), `clients/{room_meta,agent_client}.py`, `protocol/instructions.py`, runtime `surface.ts`, console `switch-event-format.ts`, tests | 1 (conceptually) | after §4.2 |
+| **3. runtime client** | `room-set.ts`, `bin.ts`, `event-stream.ts`, `index.ts`, `types.ts`, tests, the three `SKILL.md`, plugin versions, `artifacts.yaml` | 1 | yes, but needs the npm tag |
+| **4. Switch Console multi-room** | `room-connection.ts`, `switch-notification-poller.ts`, `sidecar-runtime.ts`, `switch-room-service.ts`, `shared/…/switch-rooms.ts`, `auto-session-watcher.ts`, tests | 1, 3 | yes |
+| **5. email bridge** | `email/adapter.py`, `collaboration/adapter.py`, `lifecycle_service.py`, `main.py`, `test_email_adapter.py`, the deploy override, `scripts/email-imap-poll.py` | 1 | **hold for D5** |
+| **6. the unwired code** | `may_carry`/`disclosed_span`, `email/authentication.py`, `email/reply.py`, `agent`/`host`/`schedule`.ts and their tests | its own story | **do not submit** |
+
+### Order and timing
+
+**PR 1 can go whenever.** It imports neither `disclosure` nor `email`, it is the
+most heavily exercised code here, and neither pending decision touches it.
+Landing it early removes about a third of the branch and de-risks the rest.
+
+**PRs 2 and 5 should wait** on the two decisions in §4 — otherwise they are
+written twice.
+
+**PR 3 carries a release step**, not just a merge: the connector pins must name
+a *published* runtime, so the tag (`git tag switch-agent-runtime-v<version>`)
+goes first and the pins follow. Until then no session runs the new client.
+
+**PR 6 should not be submitted as code.** Each piece is a complete tested
+feature with no entry point, and a reviewer would read it as live. It belongs
+with the story that gives it a caller.
+
+### Two things to do before any of it
+
+- **Rebase onto `origin/main`.** The branch is behind, and the connector
+  versions were computed from stale values once already.
+- **Re-run the whole gate on the rebased tree**, since nothing here has been
+  tested against current `main`.
