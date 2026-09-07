@@ -15,6 +15,17 @@ history — a later commit cannot take it back. Keep internal detail out of it:
   Prefer a role address to a person's.
 - **Keep internal tooling in `internal/`**, which is untracked and stays that
   way. Do not reference internal-only systems from tracked files.
+- **Evidence from a real run belongs in `internal/`; the conclusion belongs
+  here.** Quoting what actually happened is better than paraphrasing it, and
+  real behaviour carries real details — a channel name, a mail header, a line
+  someone typed. Three of those reached this repo before being caught, all from
+  the same instinct. So: write up *what was learned* in a tracked doc, and keep
+  the transcript, the header dump and the screenshot in `internal/`. If a
+  quotation needs a specific to make its point, it is usually the wrong
+  quotation.
+- **Evaluations of third-party projects go in `internal/` too** — naming them,
+  weighing their licences, and recording questions for legal is not something to
+  publish permanently. The tracked doc gets the decision, not the deliberation.
 - **Ticket keys** (`CHOO-…`) are fine in source comments and design notes as
   traceability, but write so the comment stands on its own without the ticket —
   a reader outside the company cannot open it. Keep them out of user-facing
