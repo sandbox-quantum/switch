@@ -1,4 +1,8 @@
 /**
+ * NOT WIRED — reached only from `host.ts`, which has no consumer. US-3.
+ * See `docs/design/multi-surface-status.md` §3.
+ */
+/**
  * When an agent acts without being spoken to.
  *
  * Everything else in Switch is a response: an event arrives and the agent

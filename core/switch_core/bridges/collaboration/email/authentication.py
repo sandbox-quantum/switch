@@ -1,28 +1,13 @@
-"""Whether the mail infrastructure vouched for who sent a message.
+"""NOT WIRED — no caller. Kept for US-6 (verifying an email sender).
 
-Every other bridge sits behind a platform that authenticated the account before
-accepting the message. Email does not: a `From` header is typed by whoever sent
-the mail. While the only legitimate sender was the owner, an allowlist covered
-that. Once an outsider can legitimately write to an agent, it does not — the
-whole point is admitting someone nobody listed in advance.
+`adapter.py` does not import this. Inbound mail is admitted on its `From`
+header and the operator's allowlist, and nothing checks DMARC — which is why
+the bridge declares `authenticates_senders = False` and the lifecycle service
+warns at startup that "the identity on an inbound message is a claim the
+platform did not verify".
 
-What replaces it is the receiving infrastructure's own verdict, reported in an
-`Authentication-Results` header (RFC 8601).
-
-**The header is only worth what its author is worth.** It is ordinary text in an
-ordinary message, so a sender who wants to be believed can simply include one
-saying `dmarc=pass` — and it arrives *ahead* of ours, because a receiver
-prepends its own. So this reads exactly one header: the one stamped with the
-`authserv-id` an operator configured. Everything else is discarded unread. A
-deployment that has not configured that id gets no verdict, which is correct:
-mail that reached us through a path we cannot identify has been checked by
-nothing we can name.
-
-**DMARC is the verdict that means something.** SPF passing says the envelope
-sender matched, which a forwarder satisfies while carrying mail claiming to be
-from anyone. DKIM passing says *a* domain signed it, not that it is the domain a
-person reads in the `From` line. Only DMARC asserts the alignment between them,
-which is the question actually being asked.
+Wiring it is what would make US-6 true for email rather than advisory. See
+`docs/design/multi-surface-status.md` §3.
 """
 
 from __future__ import annotations

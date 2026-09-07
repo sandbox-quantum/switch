@@ -91,6 +91,23 @@ def audience_of(channel_type: str | None, *, bridge_is_external: bool) -> Audien
     return _BY_CHANNEL_TYPE.get(channel_type, "unknown")
 
 
+# ── Below here is NOT WIRED ──────────────────────────────────────────────────
+#
+# `audience_of` and `bridge_is_external` above are load-bearing: every event
+# carries the label they produce. Everything below is the *enforcement* half —
+# `may_carry` and `disclosed_span` have **no callers anywhere**.
+#
+# So this file reads like a working disclosure system and is a working
+# labelling system beside an unused rule. An agent behaving discreetly today is
+# obeying the instruction built from the labels, not being checked by this.
+#
+# Do not build enforcement on `may_carry` as written without revisiting it:
+# first real use showed it refusing the primary workflow (summarising a
+# forwarded newsletter into a channel), because it reasons about the audience
+# of the *room* and not the audience of the *content*. See
+# `docs/design/multi-surface-status.md` §1a and §3.
+
+
 def may_carry(source: Audience, target: Audience, *, same_room: bool) -> bool:
     """Whether content known in `source` may be repeated in `target`.
 

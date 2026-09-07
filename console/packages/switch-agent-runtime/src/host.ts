@@ -1,4 +1,15 @@
 /**
+ * NOT WIRED — no consumer. Kept for US-3 (an agent that wakes itself).
+ *
+ * `agent.ts` constructs this and nothing constructs `agent.ts`: the three
+ * files here (`agent` → `host` → `schedule`) are a complete, tested feature
+ * with no entry point. `bin.ts` does not import any of them, and neither does
+ * Switch Console.
+ *
+ * What is missing is a launcher that supplies `loadSchedule`/`saveSchedule`
+ * against a room document. See `docs/design/multi-surface-status.md` §3.
+ */
+/**
  * The process that is a multi-room agent.
  *
  * Everything else in this package is a mechanism — a scope the protocol

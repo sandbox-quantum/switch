@@ -1,13 +1,11 @@
-"""Building a reply that lands in the conversation it answers.
+"""NOT WIRED — no caller. Kept for US-5 (answering an outsider by email).
 
-A mail client groups a thread by walking `In-Reply-To` and `References`. Get
-them wrong and every reply is a new conversation: the recipient sees a pile of
-unrelated messages with similar subjects, which is exactly how a correspondent
-learns they are talking to a machine.
+This builds a correctly threaded reply and there is nothing to send it with:
+the bridge is inbound-only and `EmailAdapter.send_message` raises to say so.
+Attempting a reply today produces a real error in the log, deliberately.
 
-Kept separate from the adapter, and free of I/O, so the header arithmetic — the
-part that is fiddly and easy to get subtly wrong — can be tested without a mail
-server.
+Wiring it needs an SMTP path, which does not exist. See
+`docs/design/multi-surface-status.md` §3.
 """
 
 from __future__ import annotations

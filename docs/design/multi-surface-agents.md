@@ -1,5 +1,11 @@
 # Multi-surface agents
 
+> **Read `multi-surface-status.md` first.** This is the design as written
+> before any of it ran. Most of it held, and three things did not: US-1's
+> headline scenario is refused by US-4's rule, the user story that emerged is
+> an intelligence desk rather than a hand-off, and a third of the code here was
+> built and never wired to anything. The status doc says which is which.
+
 **Status:** design
 **Scope:** agent protocol (connections, operations), collaboration bridges
 (email, sender authenticity), room disclosure labelling

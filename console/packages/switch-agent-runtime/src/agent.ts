@@ -1,4 +1,10 @@
 /**
+ * NOT WIRED — nothing calls `startMultiRoomAgent`. US-3.
+ *
+ * This is the entry point the US-3 cluster was built around, and no launcher
+ * was ever written for it. See `docs/design/multi-surface-status.md` §3.
+ */
+/**
  * A running multi-room agent: the stream and the host, joined.
  *
  * Both halves are complete on their own and neither does anything alone. This
