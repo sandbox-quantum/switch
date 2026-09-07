@@ -340,12 +340,29 @@ curl -s -H "Authorization: Bearer $SLACK_BOT_TOKEN" \
 Any result above zero — register with `"agent_usergroups": true`. It adopts what
 is there rather than creating duplicates.
 
-**The cost of `true`, which is not reversible by Switch:** it creates a group for
-*every* agent on the server, dead ones included, and they appear in the
-workspace's autocomplete. The bot **cannot remove them** — `usergroups.disable`
-returns `permission_denied` even with `usergroups:write` — so a workspace admin
-must disable them by hand (**People & user groups → User groups**). Delete
-agents you do not want published *before* registering the bridge.
+**The cost of `true`, which Switch cannot undo:** it creates a group for *every*
+agent on the server, dead ones included, and they appear in the workspace's
+autocomplete.
+
+The bot can create and update a group but **cannot disable one** —
+`usergroups.disable` returns `permission_denied` even holding `usergroups:write`,
+because Slack wants a user token or an admin for that verb. Creation is
+permitted and retraction is not, so **delete agents you do not want published
+before registering the bridge.**
+
+Cleaning up afterwards has an order that matters. Deactivating the group in
+Slack (**People & user groups → User groups** — the *group*, not a person)
+is not enough on its own: the adapter treats a disabled group as reusable and
+re-enables it the next time that agent is provisioned.
+
+```python
+disabled_id = self._agent_groups_disabled.get(folded)
+if disabled_id:
+    await self._web_client.usergroups_enable(usergroup=disabled_id)
+```
+
+So **delete the agent first, then deactivate the group.** In the other order it
+comes back.
 
 ✅ A bridge id. Credentials are verified at registration, so a bad token fails
 here in Slack's own words rather than silently later.
