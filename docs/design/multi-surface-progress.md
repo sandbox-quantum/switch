@@ -21,7 +21,7 @@ code. Every stage commits separately so any of it can be undone on its own.
 
 ## ⚠️ Open safety register
 
-**D4 — 19 operations are uncallable under `multi` scope.** `room_id` was added to
+**D4 — ~~19 operations are uncallable under `multi` scope~~ — FIXED 2026-09-06.** `room_id` was added to
 `post_message`, `read_context` and `send_targeted_message`. The other 19 call
 `require_connected_room()` with no argument, so with two rooms held they raise
 *"This connection covers several rooms; the operation needs one — pass room_id
@@ -957,3 +957,64 @@ refusal naming that specific cause.
 and read, and can do almost nothing else. That is the gap to close next, and it
 is larger than the three operations the design treated as the room-addressed
 set.
+
+---
+
+## 2026-09-06 — D4 fixed: the room-addressed surface is now structural
+
+### What changed
+
+The 19 operations split cleanly in two, and the split is the fix:
+
+- **14 act on a room** — they bind the resolved room and use it. Each now takes
+  an optional `room_id` and passes it through: `list_references`,
+  `list_linked_rooms`, `load_internal_documents`, `create_room_document`,
+  `update_room_document`, `delete_room_document`, `list_participants`,
+  `delegate_task`, `list_tasks`, `list_roles`, `define_role`, `edit_role`,
+  `delete_role`, `assume_role`.
+- **5 only need the caller to be somewhere** — they resolved a room and threw
+  it away: `accept_task`, `update_task`, `finalise_task`, `cancel_task`,
+  `release_role`. These call a new `require_connected()` and take **no**
+  `room_id`. Demanding an id that is then discarded is an argument a caller
+  cannot reason about, and it was the reason an agent on two surfaces could
+  take a role and be unable to release it.
+
+The tool schema is derived from the signature, so both front doors and the
+runtime — which fetches the operation list from the server at startup — pick
+the new argument up with no client change.
+
+### Why the tests are written the way they are
+
+The bug was not "three was the wrong number to widen". It was that *which
+operations take a room* lived in a human's memory, so the set went stale the
+first time someone added an operation. The tests now derive the two sets from
+an AST walk of `definitions.py` and assert the rule over each, so operation
+number 26 is covered without anyone remembering this existed.
+
+That style has one failure mode — a scan that matches nothing passes
+vacuously — so `test_the_source_scan_actually_found_operations` pins minimum
+sizes and asserts the two sets are disjoint.
+
+Red first, for the right reasons: 33 failures, being the 14 room-acting
+operations × 2 structural assertions plus 5 behavioural. Then green.
+
+### Verified live, not just in tests
+
+Against the rebuilt standalone image, on a connection holding two rooms:
+
+- `list_participants(room_id=…)` returns that room's members — it was
+  uncallable an hour earlier;
+- `list_participants()` with no room still refuses, naming both rooms;
+- `list_participants(room_id=<unheld>)` still refuses;
+- `release_role()` succeeds while two rooms are held.
+
+### Cost
+
+`post_message`, `send_targeted_message` and `read_context` are no longer a
+special case, so the three connector skills lost the sentence enumerating them
+and gained the general rule. All three plugin versions bumped and
+`artifacts.yaml` regenerated.
+
+2226 core tests, 199 runtime tests, full console typecheck, `ruff` and `mypy`
+clean. One desktop failure in `sidecar/session-spawner.test.ts`, pre-existing
+and machine-specific: it reads this machine's real `~/.claude.json`.

@@ -84,6 +84,31 @@ def _resolve_room(covered: frozenset[str], room_id: str | None) -> str:
     return next(iter(covered))
 
 
+async def require_connected() -> None:
+    """Assert the caller is in a room, without deciding which one.
+
+    For operations that act on something addressed globally — a task id, the
+    caller's own role lease — and need the room only as a precondition. They
+    used to call `require_connected_room` and discard the result, which was
+    harmless while a caller had one room and became a wall with two: the
+    ambiguity error demanded a room id for a value about to be thrown away, and
+    an agent on two surfaces could take a role and not give it back.
+    """
+    key = session_key()
+    if not key:
+        raise ValueError("Not connected to a room. Call connect_to_room first.")
+
+    protocol = get_protocol()
+    connection = protocol.connections.get(key)
+    if connection is not None and connection.rooms:
+        return
+
+    async with protocol.session_factory() as db:
+        result = await protocol.agent_session_store.get_connected_room(db, key)
+    if result is None:
+        raise ValueError("Not connected to a room. Call connect_to_room first.")
+
+
 async def require_connected_room(room_id: str | None = None) -> str:
     """The room this call acts on, or a clear error saying why there is none.
 

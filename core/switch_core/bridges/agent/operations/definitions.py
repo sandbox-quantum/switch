@@ -18,6 +18,7 @@ from switch_core.bridges.agent.api.handlers import parse_timestamp_ms
 from switch_core.bridges.agent.operations.context import (
     get_agent_id,
     get_protocol,
+    require_connected,
     require_connected_room,
     session_key,
 )
@@ -345,7 +346,7 @@ async def _decorate_linked_rooms(
 
 
 @operation
-async def list_references() -> dict[str, Any]:
+async def list_references(room_id: str | None = None) -> dict[str, Any]:
     """List references, documents, and packages attached to this session's
     connected room.
 
@@ -364,16 +365,20 @@ async def list_references() -> dict[str, Any]:
     Packages bundle other refs and documents and have their own
     `instructions`; their `references` and `documents` arrays mirror the
     same shape as the top-level fields.
+
+    `room_id` names which connected room to act in. Omit it when you are
+    connected to one room — the usual case. It is required when you are
+    connected to several, where there is no safe default.
     """
     agent_id = get_agent_id()
-    room_id = await require_connected_room()
+    room_id = await require_connected_room(room_id)
     protocol = get_protocol()
     await protocol.require_room_member(agent_id, room_id)
     return await protocol.list_room_resources(room_id)
 
 
 @operation
-async def list_linked_rooms() -> list[dict[str, Any]]:
+async def list_linked_rooms(room_id: str | None = None) -> list[dict[str, Any]]:
     """List the rooms linked from this session's connected room.
 
     Returns the directed outbound links from the current room — each link
@@ -391,7 +396,7 @@ async def list_linked_rooms() -> list[dict[str, Any]]:
         label, access, access_note?} dicts.
     """
     agent_id = get_agent_id()
-    room_id = await require_connected_room()
+    room_id = await require_connected_room(room_id)
     protocol = get_protocol()
     await protocol.require_room_member(agent_id, room_id)
     resources = await protocol.list_room_resources(room_id)
@@ -399,12 +404,17 @@ async def list_linked_rooms() -> list[dict[str, Any]]:
 
 
 @operation
-async def load_internal_documents(ids: list[str]) -> list[dict[str, Any]]:
+async def load_internal_documents(
+    ids: list[str], room_id: str | None = None
+) -> list[dict[str, Any]]:
     """Load the content of internal documents attached to the connected room.
 
     Args:
         ids: List of document ids to load (from `documents[*].id` in the
             connect payload or `list_references`).
+        room_id: Optional. Which connected room to act in. Omit when you
+            are connected to one room — the usual case. Required when you
+            are connected to several, where there is no safe default.
 
     Returns:
         List of {id, description, content} entries in the same order as
@@ -417,7 +427,7 @@ async def load_internal_documents(ids: list[str]) -> list[dict[str, Any]]:
     import uuid
 
     agent_id = get_agent_id()
-    room_id = await require_connected_room()
+    room_id = await require_connected_room(room_id)
     protocol = get_protocol()
     await protocol.require_room_member(agent_id, room_id)
     request_id = str(uuid.uuid4())
@@ -439,6 +449,7 @@ async def create_room_document(
     description: str,
     instructions: str,
     content: str,
+    room_id: str | None = None,
 ) -> dict[str, str]:
     """Create a new internal document scoped to the connected room.
 
@@ -453,6 +464,9 @@ async def create_room_document(
         description: One-line summary (shown in pickers and listings).
         instructions: Agent-facing notes on when/how to use this document.
         content: Full text content (max 1 MiB).
+        room_id: Optional. Which connected room to act in. Omit when you
+            are connected to one room — the usual case. Required when you
+            are connected to several, where there is no safe default.
 
     Returns:
         ``{"document_id": "..."}`` once the resource manager confirms creation.
@@ -462,7 +476,7 @@ async def create_room_document(
     if len(content.encode("utf-8")) > _ROOM_DOCUMENT_MAX_CONTENT_BYTES:
         raise ValueError(f"content exceeds {_ROOM_DOCUMENT_MAX_CONTENT_BYTES} bytes")
     agent_id = get_agent_id()
-    room_id = await require_connected_room()
+    room_id = await require_connected_room(room_id)
     protocol = get_protocol()
     await protocol.require_room_member(agent_id, room_id)
     request_id = str(uuid.uuid4())
@@ -486,11 +500,16 @@ async def update_room_document(
     description: str | None = None,
     instructions: str | None = None,
     content: str | None = None,
+    room_id: str | None = None,
 ) -> dict[str, str]:
     """Update a room-scoped document you created in the connected room.
 
     Only the agent that created the document can update it. Pass only the
     fields you want to change; omit (or set to None) the others.
+
+    `room_id` names which connected room to act in. Omit it when you are
+    connected to one room — the usual case. It is required when you are
+    connected to several, where there is no safe default.
     """
     import uuid
 
@@ -500,7 +519,7 @@ async def update_room_document(
     ):
         raise ValueError(f"content exceeds {_ROOM_DOCUMENT_MAX_CONTENT_BYTES} bytes")
     agent_id = get_agent_id()
-    room_id = await require_connected_room()
+    room_id = await require_connected_room(room_id)
     protocol = get_protocol()
     await protocol.require_room_member(agent_id, room_id)
     request_id = str(uuid.uuid4())
@@ -519,16 +538,22 @@ async def update_room_document(
 
 
 @operation
-async def delete_room_document(document_id: str) -> dict[str, str]:
+async def delete_room_document(
+    document_id: str, room_id: str | None = None
+) -> dict[str, str]:
     """Delete a room-scoped document you created in the connected room.
 
     Only the agent that created the document can delete it via MCP. Users
     can also delete from the room UI as an admin escape hatch.
+
+    `room_id` names which connected room to act in. Omit it when you are
+    connected to one room — the usual case. It is required when you are
+    connected to several, where there is no safe default.
     """
     import uuid
 
     agent_id = get_agent_id()
-    room_id = await require_connected_room()
+    room_id = await require_connected_room(room_id)
     protocol = get_protocol()
     await protocol.require_room_member(agent_id, room_id)
     request_id = str(uuid.uuid4())
@@ -617,19 +642,20 @@ async def read_context(
 
 
 @operation
-async def list_participants() -> list[dict[str, Any]]:
+async def list_participants(room_id: str | None = None) -> list[dict[str, Any]]:
     """List agents and users in the connected room.
 
     Args:
-        (none) — operates on the session's currently connected room. Call
-        connect_to_room first.
+        room_id: Optional. Which connected room to act in. Omit when you
+            are connected to one room — the usual case. Required when you
+            are connected to several, where there is no safe default.
 
     Returns:
         List of {id, name, type, status, alias} dicts for each participant.
         `status` and `alias` are null when unset.
     """
     get_agent_id()
-    room_id = await require_connected_room()
+    room_id = await require_connected_room(room_id)
 
     protocol = get_protocol()
     participants = await protocol.list_participants(room_id)
@@ -752,7 +778,10 @@ async def send_targeted_message(
 
 @operation
 async def delegate_task(
-    performer_agent_id: str, summary: str, description: str
+    performer_agent_id: str,
+    summary: str,
+    description: str,
+    room_id: str | None = None,
 ) -> dict[str, str]:
     """Delegate a task to a performer agent. Requires can_delegate capability.
 
@@ -763,6 +792,9 @@ async def delegate_task(
         summary: Short one-line title for the task (shown in lists/headers).
         description: Full instructions: what to do, inputs, expected output,
             constraints. The performer reads this when accepting.
+        room_id: Optional. Which connected room to act in. Omit when you
+            are connected to one room — the usual case. Required when you
+            are connected to several, where there is no safe default.
 
     Returns:
         {"task_id": "<id>", "status": "pending", "target_status": "<status>"}.
@@ -771,7 +803,7 @@ async def delegate_task(
         task until they reconnect.
     """
     agent_id = get_agent_id()
-    room_id = await require_connected_room()
+    room_id = await require_connected_room(room_id)
 
     protocol = get_protocol()
     result = await protocol.delegate_task(
@@ -796,7 +828,7 @@ async def accept_task(task_id: str) -> dict[str, Any]:
         {"status": "ongoing", "accepted_at": "<iso timestamp>"}.
     """
     agent_id = get_agent_id()
-    await require_connected_room()
+    await require_connected()
 
     protocol = get_protocol()
     await protocol.accept_task(agent_id, task_id)
@@ -827,7 +859,7 @@ async def update_task(task_id: str, update: str) -> dict[str, Any]:
         {"status": "updated", "updates_count": <int>} with the new total.
     """
     agent_id = get_agent_id()
-    await require_connected_room()
+    await require_connected()
 
     protocol = get_protocol()
     await protocol.update_task(agent_id, task_id, update)
@@ -849,7 +881,7 @@ async def finalise_task(task_id: str, outcome: str) -> dict[str, Any]:
         {"status": "finalised", "finalised_at": "<iso timestamp>"}.
     """
     agent_id = get_agent_id()
-    await require_connected_room()
+    await require_connected()
 
     protocol = get_protocol()
     await protocol.finalise_task(agent_id, task_id, outcome)
@@ -880,7 +912,7 @@ async def cancel_task(task_id: str, reason: str) -> dict[str, str]:
         {"status": "cancelled", "reason": "<reason>"}.
     """
     agent_id = get_agent_id()
-    await require_connected_room()
+    await require_connected()
 
     protocol = get_protocol()
     await protocol.cancel_task(agent_id, task_id, reason)
@@ -889,7 +921,9 @@ async def cancel_task(task_id: str, reason: str) -> dict[str, str]:
 
 @operation
 async def list_tasks(
-    role: str | None = None, status: str | None = None
+    role: str | None = None,
+    status: str | None = None,
+    room_id: str | None = None,
 ) -> list[dict[str, Any]]:
     """List tasks for the connected agent in the connected room.
 
@@ -900,6 +934,9 @@ async def list_tasks(
             - None: both
         status: Lifecycle filter. One of "pending", "ongoing", "finalised",
             "cancelled", or None for all.
+        room_id: Optional. Which connected room to act in. Omit when you
+            are connected to one room — the usual case. Required when you
+            are connected to several, where there is no safe default.
 
     Returns:
         List of task dicts {id, summary, description, status,
@@ -908,7 +945,7 @@ async def list_tasks(
         strings or null.
     """
     agent_id = get_agent_id()
-    room_id = await require_connected_room()  # type: ignore[arg-type]
+    room_id = await require_connected_room(room_id)  # type: ignore[arg-type]
 
     protocol = get_protocol()
     tasks = await protocol.list_tasks(
@@ -1091,7 +1128,7 @@ async def create_room(
 
 
 @operation
-async def list_roles() -> list[dict[str, Any]]:
+async def list_roles(room_id: str | None = None) -> list[dict[str, Any]]:
     """List the roles defined in the connected room.
 
     Roles are room-scoped, assumable instruction bundles. Each entry carries
@@ -1104,9 +1141,13 @@ async def list_roles() -> list[dict[str, Any]]:
     `session_room` names the room its session is currently attending (a lease
     survives room hops, so a holder can be live but looking elsewhere), or is
     null if no bound session can be located.
+
+    `room_id` names which connected room to act in. Omit it when you are
+    connected to one room — the usual case. It is required when you are
+    connected to several, where there is no safe default.
     """
     agent_id = get_agent_id()
-    room_id = await require_connected_room()
+    room_id = await require_connected_room(room_id)
     return await get_protocol().list_room_roles(agent_id, room_id)
 
 
@@ -1136,7 +1177,10 @@ async def get_role_detail(room_id: str, role_name: str) -> dict[str, Any]:
 
 @operation
 async def define_role(
-    name: str, instructions: str, exclusive: bool = False
+    name: str,
+    instructions: str,
+    exclusive: bool = False,
+    room_id: str | None = None,
 ) -> dict[str, Any]:
     """Define a new role in the connected room. Requires write access to the room.
 
@@ -1146,9 +1190,12 @@ async def define_role(
             this role.
         exclusive: When true, at most one live agent may hold the role at a
             time (a lease with auto-release). When false, unrestricted.
+        room_id: Optional. Which connected room to act in. Omit when you
+            are connected to one room — the usual case. Required when you
+            are connected to several, where there is no safe default.
     """
     agent_id = get_agent_id()
-    room_id = await require_connected_room()
+    room_id = await require_connected_room(room_id)
     await get_protocol().define_room_role(
         agent_id, room_id, name, instructions, exclusive
     )
@@ -1160,14 +1207,19 @@ async def edit_role(
     name: str,
     instructions: str | None = None,
     exclusive: bool | None = None,
+    room_id: str | None = None,
 ) -> dict[str, Any]:
     """Edit a role's instructions and/or exclusivity. Requires write access.
 
     Edits take effect on the next `assume_role`; any current holder keeps the
     instructions it already received.
+
+    `room_id` names which connected room to act in. Omit it when you are
+    connected to one room — the usual case. It is required when you are
+    connected to several, where there is no safe default.
     """
     agent_id = get_agent_id()
-    room_id = await require_connected_room()
+    room_id = await require_connected_room(room_id)
     await get_protocol().edit_room_role(
         agent_id, room_id, name, instructions, exclusive
     )
@@ -1175,19 +1227,23 @@ async def edit_role(
 
 
 @operation
-async def delete_role(name: str) -> dict[str, Any]:
+async def delete_role(name: str, room_id: str | None = None) -> dict[str, Any]:
     """Delete a role from the connected room (and any lease on it).
 
     Requires write access to the room.
+
+    `room_id` names which connected room to act in. Omit it when you are
+    connected to one room — the usual case. It is required when you are
+    connected to several, where there is no safe default.
     """
     agent_id = get_agent_id()
-    room_id = await require_connected_room()
+    room_id = await require_connected_room(room_id)
     await get_protocol().delete_room_role(agent_id, room_id, name)
     return {"status": "deleted", "name": name}
 
 
 @operation
-async def assume_role(role: str) -> dict[str, Any]:
+async def assume_role(role: str, room_id: str | None = None) -> dict[str, Any]:
     """Assume a role in the connected room and receive its instructions.
 
     Returns `{"role", "instructions"}` — the role's instruction delta to layer
@@ -1198,9 +1254,13 @@ async def assume_role(role: str) -> dict[str, Any]:
     For exclusive roles, this acquires a lease with a fast heartbeat: while
     your session stays alive the seat is yours, and it auto-releases shortly
     after you disconnect so another agent can take over.
+
+    `room_id` names which connected room to act in. Omit it when you are
+    connected to one room — the usual case. It is required when you are
+    connected to several, where there is no safe default.
     """
     agent_id = get_agent_id()
-    room_id = await require_connected_room()
+    room_id = await require_connected_room(room_id)
     return await get_protocol().assume_room_role(agent_id, room_id, role, session_key())
 
 
@@ -1208,7 +1268,7 @@ async def assume_role(role: str) -> dict[str, Any]:
 async def release_role() -> dict[str, Any]:
     """Release the role you currently hold, freeing it for others. Idempotent."""
     agent_id = get_agent_id()
-    await require_connected_room()
+    await require_connected()
     await get_protocol().release_room_role(agent_id)
     return {"status": "released"}
 

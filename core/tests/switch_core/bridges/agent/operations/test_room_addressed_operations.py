@@ -16,15 +16,31 @@ across rooms, and resolution moves into one place:
 - supplied, checked against what the caller actually holds, because a room id
   arriving from a model is an argument and not a permission.
 
-Only `post_message`, `read_context` and `send_targeted_message` are widened.
-The rest keep raising on ambiguity; the error already says what happened, and
-widening them costs tool-surface churn on three connector skills for calls
-nobody is making across rooms yet.
+That bounded widening — `post_message`, `read_context`, `send_targeted_message`
+and nothing else — turned out to be the wrong line, and a live `multi` session
+found it within minutes: it called `list_participants`, was told to "pass
+room_id explicitly", and had no such parameter to pass. Nineteen operations were
+in that state. A connection could talk and read, and do nothing else.
+
+So the rule is now structural rather than a list, and the tests below derive it
+from the source rather than restating it:
+
+- an operation that **acts on** a room takes `room_id` and passes it through;
+- an operation that only needs the caller to **be** somewhere calls
+  `require_connected` instead, and takes no room argument — demanding a room id
+  it then discards is noise the caller cannot act on.
+
+Deriving it matters more than the individual cases: the failure is not that
+someone widened the wrong three, it is that "which operations take a room" was
+a list someone had to remember to extend. An operation added tomorrow is
+covered here without anyone thinking about it.
 """
 
 from __future__ import annotations
 
+import ast
 from contextlib import contextmanager
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
@@ -54,6 +70,62 @@ ROOM_B = "room-b"
 ROOM_ELSEWHERE = "room-elsewhere"
 
 WIDENED = ("post_message", "read_context", "send_targeted_message")
+
+
+# ── Which operations are room-bound, read off the source ─────────────────────
+
+
+def _operation_defs() -> list[ast.AsyncFunctionDef]:
+    source = Path(ops.__file__).read_text()
+    return [
+        node
+        for node in ast.parse(source).body
+        if isinstance(node, ast.AsyncFunctionDef)
+        and any(
+            isinstance(d, ast.Name) and d.id == "operation" for d in node.decorator_list
+        )
+    ]
+
+
+def _resolver_calls(node: ast.AST, name: str) -> list[ast.Call]:
+    return [
+        n
+        for n in ast.walk(node)
+        if isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id == name
+    ]
+
+
+def _classify() -> tuple[set[str], set[str]]:
+    """Split the room-bound operations by whether they use the room they resolve.
+
+    An operation that binds the result (`room_id = await …`) acts on that room
+    and must be able to be told which one. One that calls it as a bare
+    statement is only asserting the caller is connected.
+    """
+    acts_on, binding_only = set(), set()
+    for fn in _operation_defs():
+        if _resolver_calls(fn, "require_connected"):
+            binding_only.add(fn.name)
+        for stmt in ast.walk(fn):
+            if not _resolver_calls(stmt, "require_connected_room"):
+                continue
+            if isinstance(stmt, ast.Assign):
+                acts_on.add(fn.name)
+            elif isinstance(stmt, ast.Expr):
+                binding_only.add(fn.name)
+    return acts_on, binding_only
+
+
+def _passes_room_id_through() -> set[str]:
+    """Operations whose `require_connected_room` call is given an argument."""
+    return {
+        fn.name
+        for fn in _operation_defs()
+        if any(c.args or c.keywords for c in _resolver_calls(fn, "require_connected_room"))
+    }
+
+
+ACTS_ON_A_ROOM, ONLY_NEEDS_A_BINDING = _classify()
 
 
 # ── Fakes ────────────────────────────────────────────────────────────────────
@@ -96,6 +168,30 @@ class _Protocol(SimpleNamespace):
         self.sent: list[tuple[str, str]] = []
         self.targeted: list[tuple[str, str]] = []
         self.read: list[str] = []
+        self.participants_of: list[str] = []
+        self.documents_created: list[str] = []
+        self.roles_assumed: list[tuple[str, str]] = []
+        self.roles_released: list[str] = []
+
+    async def list_participants(self, room_id: str) -> list[Any]:
+        self.participants_of.append(room_id)
+        return []
+
+    async def require_room_member(self, _agent_id: str, _room_id: str) -> None:
+        return None
+
+    async def request_room_document_create(self, *, room_id: str, **_kw: Any) -> str:
+        self.documents_created.append(room_id)
+        return "doc-1"
+
+    async def assume_room_role(
+        self, _agent_id: str, room_id: str, role: str, _key: str | None
+    ) -> dict[str, Any]:
+        self.roles_assumed.append((room_id, role))
+        return {"role": role, "instructions": ""}
+
+    async def release_room_role(self, agent_id: str) -> None:
+        self.roles_released.append(agent_id)
 
     async def send_message(
         self, _agent_id: str, room_id: str, body: str, **_kw: Any
@@ -275,11 +371,11 @@ async def test_send_targeted_message_sends_to_the_named_room() -> None:
     assert protocol.targeted == [(ROOM_B, "over here")]
 
 
-async def test_an_unwidened_operation_still_refuses_rather_than_guessing() -> None:
-    """The bounded widening must not leave a silent picker behind.
+async def test_an_operation_without_a_room_still_refuses_rather_than_guessing() -> None:
+    """Widening must not leave a silent picker behind.
 
-    `list_participants` has no room argument. Called from a connection holding
-    several rooms it must fail, not answer about whichever room came first.
+    Holding several rooms and naming none, `list_participants` must fail rather
+    than answer about whichever room came first.
     """
     protocol = _Protocol(_registry_holding(ROOM_A, ROOM_B))
     with _calling(protocol):
@@ -287,7 +383,144 @@ async def test_an_unwidened_operation_still_refuses_rather_than_guessing() -> No
             await ops.list_participants()
 
 
+# ── The newly widened operations route by the room, not just accept it ───────
+
+
+async def test_list_participants_answers_about_the_named_room() -> None:
+    """The operation the live session actually hit."""
+    protocol = _Protocol(_registry_holding(ROOM_A, ROOM_B))
+    with _calling(protocol):
+        await ops.list_participants(room_id=ROOM_B)
+
+    assert protocol.participants_of == [ROOM_B]
+
+
+async def test_list_participants_refuses_a_room_the_caller_does_not_hold() -> None:
+    protocol = _Protocol(_registry_holding(ROOM_A, ROOM_B))
+    with _calling(protocol):
+        with pytest.raises(ValueError):
+            await ops.list_participants(room_id=ROOM_ELSEWHERE)
+
+    assert protocol.participants_of == []
+
+
+async def test_create_room_document_creates_in_the_named_room() -> None:
+    """US-3's schedule persistence writes through here.
+
+    While this could not be told which room, a `multi` agent had nowhere to
+    keep a schedule — so the wake-up story was not merely unbuilt, it was
+    unbuildable on this scope.
+    """
+    protocol = _Protocol(_registry_holding(ROOM_A, ROOM_B))
+    with _calling(protocol):
+        await ops.create_room_document(
+            name="schedule", description="d", instructions="i", content="c",
+            room_id=ROOM_B,
+        )
+
+    assert protocol.documents_created == [ROOM_B]
+
+
+async def test_assume_role_takes_the_role_in_the_named_room() -> None:
+    """A role is held per room, so this one is a routing decision, not a lookup."""
+    protocol = _Protocol(_registry_holding(ROOM_A, ROOM_B))
+    with _calling(protocol):
+        await ops.assume_role(role="reviewer", room_id=ROOM_B)
+
+    assert protocol.roles_assumed == [(ROOM_B, "reviewer")]
+
+
+# ── The connectivity-only operations stop demanding a room ───────────────────
+
+
+async def test_release_role_works_while_several_rooms_are_held() -> None:
+    """It never used the room. Refusing it for ambiguity was the bug.
+
+    A role lease is per agent, so an agent on two surfaces could take a role
+    and then be unable to give it back.
+    """
+    protocol = _Protocol(_registry_holding(ROOM_A, ROOM_B))
+    with _calling(protocol):
+        assert await ops.release_role() == {"status": "released"}
+
+    assert protocol.roles_released == [AGENT]
+
+
+async def test_a_connectivity_only_operation_still_needs_a_connection() -> None:
+    """Relaxing ambiguity must not relax the check itself.
+
+    Deleting the call outright would satisfy every other test in this section.
+    """
+    with _calling(_Protocol(ConnectionRegistry()), session_key=None):
+        with pytest.raises(ValueError) as excinfo:
+            await ops.release_role()
+
+    assert "connect_to_room" in str(excinfo.value)
+
+
 # ── Both front doors see it ──────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("name", sorted(ACTS_ON_A_ROOM))
+def test_every_room_acting_operation_publishes_room_id(name: str) -> None:
+    """The whole of D4 in one assertion, for every operation at once.
+
+    An operation that resolves a room and cannot be told which one is
+    uncallable the moment a connection holds two — the caller is told to pass
+    `room_id` and there is nowhere to put it. Derived from the source, so an
+    operation added later is covered without being added to a list.
+    """
+    schema = all_operations()[name].input_schema
+
+    assert "room_id" in schema["properties"], (
+        f"{name} resolves a room but publishes no room_id — a caller holding "
+        f"two rooms cannot call it at all"
+    )
+    assert "room_id" not in schema.get("required", [])
+
+
+@pytest.mark.parametrize("name", sorted(ACTS_ON_A_ROOM))
+def test_every_room_acting_operation_passes_room_id_through(name: str) -> None:
+    """Accepting the argument and ignoring it is the silent version of D4.
+
+    The schema check above passes for an operation that takes `room_id` and
+    still calls `require_connected_room()` bare — the caller supplies a room,
+    is refused for ambiguity anyway, and nothing says why.
+    """
+    assert name in _passes_room_id_through(), (
+        f"{name} accepts room_id but does not pass it to require_connected_room"
+    )
+
+
+@pytest.mark.parametrize("name", sorted(ONLY_NEEDS_A_BINDING))
+def test_a_connectivity_only_operation_asks_for_no_room(name: str) -> None:
+    """The other half of the rule, and the reason it is not "add room_id to all".
+
+    These five never use the room they resolve — they only require the caller
+    to be somewhere. Demanding a room id and discarding it is an argument the
+    caller cannot reason about, so they check connectivity instead.
+    """
+    schema = all_operations()[name].input_schema
+
+    assert "room_id" not in schema["properties"], (
+        f"{name} discards the room it resolves; it should call "
+        f"require_connected rather than take a room_id it ignores"
+    )
+
+
+def test_the_source_scan_actually_found_operations() -> None:
+    """Guards the three parametrized tests above from passing vacuously.
+
+    They are generated from an AST walk. If it stops matching — a rename, an
+    import style change — every case silently disappears and the suite goes
+    green with nothing checked.
+    """
+    assert len(ACTS_ON_A_ROOM) >= 15
+    assert len(ONLY_NEEDS_A_BINDING) >= 5
+    # The two sets are the same scan split in half; an overlap means the
+    # "uses the room" test is deciding both answers.
+    assert not (ACTS_ON_A_ROOM & ONLY_NEEDS_A_BINDING)
+    assert set(WIDENED) <= ACTS_ON_A_ROOM
 
 
 @pytest.mark.parametrize("name", WIDENED)

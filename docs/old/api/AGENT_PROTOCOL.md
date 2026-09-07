@@ -596,6 +596,18 @@ A connection id belonging to a different agent, or to one that has died, is
 
 ### 7.2 The operations
 
+Any operation that **acts on** a room takes an optional `room_id`. Omitted, it
+resolves to the caller's room, which is unambiguous while a caller holds one —
+every `single`-scope caller, unchanged. Holding several, omitting it is an error
+rather than a guess: choosing silently is how an answer meant for a DM reaches a
+channel. Supplied, it is checked against the rooms the caller actually holds, so
+naming a room is never a way into one.
+
+An operation that only needs the caller to *be* somewhere — the task
+lifecycle keyed by task id, and `release_role` — checks connectivity and takes
+no `room_id`, because demanding one it would discard leaves a caller with two
+rooms unable to proceed.
+
 **Rooms** — `connect_to_room`, `read_context`, `list_participants`,
 `list_rooms`, `list_all_rooms`, `get_room_detail`, `update_room`,
 `create_room`, `archive_room`, `unarchive_room`, `invite_agent_to_room`,
