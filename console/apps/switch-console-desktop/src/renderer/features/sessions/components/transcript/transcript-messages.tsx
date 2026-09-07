@@ -41,7 +41,7 @@ export const UserMessage = observer(function UserMessage({ entry }: { entry: Use
           {room.sender} · #{room.roomName ?? shortRoomId(room.roomId)}
         </span>
       )}
-      <div className="max-w-[85%] rounded-lg rounded-tr-sm border border-border bg-background-1 px-3 py-2 text-sm whitespace-pre-wrap text-foreground">
+      <div className="max-w-[85%] min-w-0 rounded-2xl bg-background-1 px-4 py-3 text-sm leading-relaxed break-words whitespace-pre-wrap text-foreground">
         {entry.displayText ?? entry.text}
       </div>
     </div>
@@ -55,8 +55,12 @@ export const AssistantMessage = observer(function AssistantMessage({
   entry: AssistantEntry;
 }) {
   return (
-    <div className="min-w-0 text-sm text-foreground">
-      <MarkdownRenderer variant="compact" content={entry.text} className="min-w-0" />
+    <div className="min-w-0 text-sm leading-relaxed text-foreground">
+      <MarkdownRenderer
+        variant="compact"
+        content={entry.text}
+        className="min-w-0 [&_p]:leading-relaxed"
+      />
       {entry.streaming && (
         <span
           aria-label="Still writing"

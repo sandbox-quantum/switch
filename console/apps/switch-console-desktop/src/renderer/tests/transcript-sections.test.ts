@@ -137,7 +137,7 @@ describe('composerPlaceholder', () => {
     expect(composerPlaceholder('starting', false)).toMatch(/Starting/);
     expect(composerPlaceholder('stopped', false)).toMatch(/stopped/);
     expect(composerPlaceholder('error', false)).toMatch(/error/);
-    expect(composerPlaceholder('running', true)).toMatch(/running turn/);
+    expect(composerPlaceholder('running', true)).toMatch(/follow-up/);
     expect(composerPlaceholder('ready', false)).toMatch(/Message the agent/);
   });
 });

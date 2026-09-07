@@ -66,11 +66,46 @@ export const SessionTranscript = observer(function SessionTranscript() {
     >
       <TranscriptHeader store={store} />
       <TranscriptScroller store={store} />
-      <TranscriptComposer
-        store={store}
-        autoFocus={isActive && sessionView.focusedRegion === 'main'}
-      />
+      <div className="shrink-0 px-4 pb-3 sm:px-6">
+        <div className="mx-auto w-full max-w-3xl">
+          <PendingInputDock store={store} />
+          <div hidden={store.pendingInputs.length > 0}>
+            <TranscriptComposer
+              store={store}
+              autoFocus={
+                store.pendingInputs.length === 0 && isActive && sessionView.focusedRegion === 'main'
+              }
+            />
+          </div>
+        </div>
+      </div>
     </div>
+  );
+});
+
+const PendingInputDock = observer(function PendingInputDock({
+  store,
+}: {
+  store: SessionTranscriptStore;
+}) {
+  const pending = store.pendingInputs[0];
+  if (!pending) return null;
+  return (
+    <section
+      aria-label="Waiting for your response"
+      className="max-h-[50vh] overflow-y-auto rounded-xl border border-border bg-background shadow-sm"
+    >
+      {store.pendingInputs.length > 1 && (
+        <p className="border-b border-border px-4 py-2 text-xs text-foreground-muted">
+          {store.pendingInputs.length} requests waiting · answering the first
+        </p>
+      )}
+      {pending.kind === 'question' ? (
+        <QuestionCard key={pending.id} entry={pending} store={store} />
+      ) : (
+        <ApprovalCard key={pending.id} entry={pending} store={store} />
+      )}
+    </section>
   );
 });
 
@@ -96,9 +131,14 @@ const TranscriptHeader = observer(function TranscriptHeader({
 
   return (
     <div className="flex h-8 shrink-0 items-center gap-2 border-b border-border px-3">
-      <span className={cn('size-1.5 shrink-0 rounded-full', STATE_DOT[store.state])} />
+      <span
+        className={cn(
+          'size-1.5 shrink-0 rounded-full',
+          store.pendingInputs.length ? 'bg-foreground-warning' : STATE_DOT[store.state]
+        )}
+      />
       <span className="text-tiny tracking-wide text-foreground-muted uppercase">
-        {STATE_LABELS[store.state]}
+        {store.pendingInputs.length ? 'Waiting for you' : STATE_LABELS[store.state]}
       </span>
       {store.pendingInputs.length > 0 && (
         <span className="text-tiny text-foreground-warning">
@@ -180,18 +220,18 @@ const TranscriptScroller = observer(function TranscriptScroller({
 
   return (
     <div className="relative min-h-0 flex-1">
-      <div ref={scrollRef} onScroll={onScroll} className="h-full overflow-y-auto px-3 py-3">
+      <div ref={scrollRef} onScroll={onScroll} className="h-full overflow-y-auto px-4 py-6 sm:px-6">
         {entries.length === 0 ? (
           <EmptyState
             label="No messages yet"
             description="Send a message to start the conversation. Anything addressed to this agent in a room shows up here too."
           />
         ) : (
-          <div className="mx-auto flex w-full max-w-3xl flex-col gap-4">
+          <div className="mx-auto flex w-full max-w-3xl flex-col gap-6">
             {sections.map((section, index) => (
               <div
                 key={`${section.turnId ?? 'no-turn'}-${index}`}
-                className="flex flex-col gap-2.5"
+                className="flex flex-col gap-3"
                 data-turn-status={section.turn?.status}
               >
                 {section.blocks.map((block) => {
@@ -205,8 +245,10 @@ const TranscriptScroller = observer(function TranscriptScroller({
                     case 'assistant':
                       return <AssistantMessage key={entry.id} entry={entry} />;
                     case 'request':
+                      if (entry.state === 'open') return null;
                       return <ApprovalCard key={entry.id} entry={entry} store={store} />;
                     case 'question':
+                      if (entry.state === 'open') return null;
                       return <QuestionCard key={entry.id} entry={entry} store={store} />;
                     case 'notice':
                       return <NoticeRow key={entry.id} entry={entry} />;

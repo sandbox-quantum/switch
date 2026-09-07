@@ -741,6 +741,7 @@ describe('ClaudeAdapter user input', () => {
     await recorder.waitFor('user-input.requested', () => true, 1_000);
     controller.abort();
     expect(await decision).toMatchObject({ behavior: 'deny' });
+    expect(recorder.ofType('user-input.resolved')).toMatchObject([{ requestId: 'ask-3' }]);
   });
 
   it('asks in a mode that prompts as well, without opening an approval card', async () => {

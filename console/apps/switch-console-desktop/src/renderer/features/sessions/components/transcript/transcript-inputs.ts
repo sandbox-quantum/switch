@@ -47,17 +47,10 @@ export function draftsToAnswers(
   return answers;
 }
 
-/**
- * What the composer says it will do with what is typed.
- *
- * A message sent while a turn is running is not queued behind it — it is
- * delivered into the turn — and the box has to say so, or a person waits for a
- * reply that already arrived somewhere else.
- */
 export function composerPlaceholder(state: TranscriptSessionState, running: boolean): string {
   if (state === 'starting') return 'Starting the session…';
   if (state === 'stopped') return 'The session has stopped.';
   if (state === 'error') return 'The session is in an error state.';
-  if (running) return 'Send into the running turn…';
+  if (running) return 'Send a follow-up…';
   return 'Message the agent…';
 }

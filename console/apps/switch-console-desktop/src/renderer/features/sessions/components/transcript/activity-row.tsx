@@ -49,7 +49,7 @@ function itemLabel(item: TranscriptItem): string | null {
  * the spinner and dropping the task on the floor.
  */
 function itemTitle(item: TranscriptItem): string {
-  if (item.type === 'reasoning') return '';
+  if (item.type === 'reasoning' || item.title === itemLabel(item)) return '';
   return item.title;
 }
 
@@ -129,6 +129,7 @@ export function ActivityRow({ entry }: { entry: ActivityEntry }) {
 export function ActivityGroup({ items }: { items: ActivityEntry[] }) {
   const [open, setOpen] = useState(false);
   const running = items.some((entry) => entry.item.status === 'in_progress');
+  const failed = items.filter((entry) => entry.item.status === 'failed').length;
 
   if (items.length === 1 || open) {
     return (
@@ -144,7 +145,7 @@ export function ActivityGroup({ items }: { items: ActivityEntry[] }) {
             className="flex items-center gap-1.5 self-start rounded-md px-1.5 py-0.5 text-tiny text-foreground-passive transition-colors hover:bg-background-1"
           >
             <ChevronRight className="size-3 rotate-90" />
-            {items.length} actions
+            {items.length} actions{failed > 0 ? ` · ${failed} failed` : running ? ' · working' : ''}
           </button>
         )}
         {items.map((entry) => (
@@ -164,7 +165,7 @@ export function ActivityGroup({ items }: { items: ActivityEntry[] }) {
       >
         <ChevronRight className="size-3" />
         {running ? <Loader2 className="size-3 animate-spin" /> : <Wrench className="size-3" />}
-        {items.length} actions
+        {items.length} actions{failed > 0 ? ` · ${failed} failed` : running ? ' · working' : ''}
       </button>
     </section>
   );

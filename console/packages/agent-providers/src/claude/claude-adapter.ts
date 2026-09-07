@@ -853,11 +853,11 @@ export class ClaudeAdapter implements ProviderAdapter {
       const settle = (answers: UserInputAnswers | null) => {
         session.pendingUserInputs.delete(requestId);
         signal.removeEventListener('abort', onAbort);
+        this.emit(session, { type: 'user-input.resolved', requestId });
         if (answers === null) {
           resolve(null);
           return;
         }
-        this.emit(session, { type: 'user-input.resolved', requestId });
         resolve(buildAnswers(questions, questionTextById, answers));
       };
       const onAbort = () => settle(null);
@@ -937,7 +937,6 @@ export class ClaudeAdapter implements ProviderAdapter {
     for (const [requestId, pending] of [...session.pendingUserInputs]) {
       session.pendingUserInputs.delete(requestId);
       pending.settle({});
-      this.emit(session, { type: 'user-input.resolved', requestId });
     }
 
     const turn = session.turn;

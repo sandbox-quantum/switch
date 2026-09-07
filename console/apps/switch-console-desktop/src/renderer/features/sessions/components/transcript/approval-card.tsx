@@ -1,5 +1,5 @@
 import type { ApprovalDecision } from '@switch-console/agent-providers';
-import { Check, CircleSlash, ShieldQuestionMark, X } from 'lucide-react';
+import { Check, CircleSlash, ShieldQuestionMark, Loader2, X } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useState } from 'react';
 import type { SessionTranscriptStore } from '@renderer/features/sessions/stores/session-transcript-store';
@@ -80,10 +80,8 @@ export const ApprovalCard = observer(function ApprovalCard({
       role="group"
       aria-label={`Approval request: ${entry.title}`}
       className={cn(
-        'rounded-lg border px-3 py-2.5',
-        resolved
-          ? 'border-border bg-background-1'
-          : 'border-border-warning bg-background-warning/40'
+        'px-4 py-3',
+        resolved ? 'rounded-lg border border-border bg-background-1' : 'bg-background'
       )}
     >
       <div className="flex items-start gap-2">
@@ -93,9 +91,12 @@ export const ApprovalCard = observer(function ApprovalCard({
           <ShieldQuestionMark className="mt-0.5 size-4 shrink-0 text-foreground-warning" />
         )}
         <div className="min-w-0 flex-1">
+          {!resolved && (
+            <p className="mb-2 text-xs font-medium text-foreground-muted">Approval needed</p>
+          )}
           <p
             className={cn(
-              'text-sm font-medium',
+              'text-sm leading-relaxed whitespace-pre-wrap break-words',
               resolved ? 'text-foreground-muted' : 'text-foreground'
             )}
           >
@@ -109,15 +110,16 @@ export const ApprovalCard = observer(function ApprovalCard({
           {resolved ? (
             <p className="mt-1.5 text-xs text-foreground-passive">{outcome}</p>
           ) : (
-            <div className="mt-2 flex flex-wrap items-center gap-1.5">
+            <div className="mt-3 flex flex-wrap items-center justify-end gap-2 border-t border-border pt-3">
               {entry.options.map((option) => (
                 <Button
                   key={option.decision}
-                  size="xs"
+                  size="sm"
                   variant={option.decision === 'accept' ? 'default' : 'outline'}
                   disabled={submitting !== null}
                   onClick={() => void respond(option.decision)}
                 >
+                  {submitting === option.decision && <Loader2 className="animate-spin" />}
                   {option.label}
                 </Button>
               ))}
