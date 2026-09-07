@@ -2,11 +2,25 @@
 
 Market research for CHOO-2620. Groundwork for articulating Switch's framework model: what a room template and an agent template should be, read against how other systems express and reuse the shape of an agent team.
 
-> **Status: draft in progress.** Section 1 (the internal grounding) is written. Sections 2–7 are being filled from primary sources.
+> Research complete as of 2026-09-07. Fast-moving space: version- and date-sensitive claims are flagged inline, and the Manus corporate situation (§5) is the least stable fact here. Sources are listed at the end.
 
 ## 0. Recommendation
 
-_Opinion up front, since opinion is the deliverable. Written last, once the evidence is in._
+**Switch already has the primitives every other system is converging toward. It is missing one property and two artifacts. Build them in that order.**
+
+The property is **parameterization**. Nothing in Switch fills `{variables}` at instantiation; `rooms_yaml` is fully resolved. This is the smallest change with the widest leverage, and it unblocks everything else. Add it first.
+
+The two artifacts:
+
+1. **A room template = a parameterized, multi-room shape.** Concretely, grow the `rooms_yaml` surface three ways: (a) a `params:` block of typed variables with defaults, interpolated as `{var}` into every field; (b) the *full* `create_room` surface per room, group, packages, links, aliases, subagent inclusion, not today's subset; (c) more than one room in a single document, able to link to each other by a local handle. That turns "a shape the next team can reuse" from prose into an artifact. **Acceptance test: the entire payments-room → grow-into-an-organization narrative should collapse into one instantiable template**: `payments(team, repo, design_doc, ticket_project)` that stamps out the day-to-day room, the incidents room, the group, the package, the links and the roles in one shot.
+
+2. **An agent template = the bundle the frontier CLIs converged on, in Switch's own entities.** Identity + instructions + skills + attached references/packages + addressing policy + subagents. Switch already stores every one of those as a first-class row; the template is the declaration that stamps them out, plus a catalogue to instantiate from. One boundary matters: `shape/build-it-from-inside-a-room` records that **agents cannot create agents**: identity, credentials and runtime are a human step in the Console. So an agent template is a Console-side artifact that pre-fills that human step, whereas a **room template an agent can stamp out itself** (it can already create rooms, roles, links and references). That makes room templates the nearer-term, higher-agency win.
+
+**Build order:** (1) parameters in `rooms_yaml`; (2) room templates, multi-room, full surface, parameterized, with the payments example as the acceptance test; (3) a template **catalogue** in the Gateway (the "marketplace" every product in this scan has and Switch does not); (4) agent templates as the Console-side bundle; (5) a recurring-run trigger convention, later, as the companion to templates.
+
+**The differentiator to protect.** Everyone else either barely templates a team (the OSS frameworks) or hides the team inside a single agent (the productized ones). Switch's template should stamp out a **visible, inhabitable organization**: humans and agents in rooms, explicit roles, addressable names. The market's instinct is a black box; Switch's whole premise is the opposite. Don't copy the black box.
+
+One thing the scan settles: this is a **packaging problem, not a new-primitive problem.** Switch has the nouns. It needs a way to declare a reusable arrangement of them, parameterize it, and instantiate it from a shelf.
 
 ## 1. Where Switch is today
 
@@ -14,19 +28,19 @@ Read from the code (`core/switch_core/db/models.py`, `room_service.py`, `rooms_y
 
 ### The primitives
 
-- **Room** — a chat channel with a briefing. The fields that carry weight: `instructions` (the briefing every agent reads when it joins), `bridge_id` + `external_channel_id` (the platform channel it mirrors), `channel_type`, `group_id`, read/write visibility, `protection_config`, `observe_config`, `admin_mode`, `archived_at`. A bridged channel maps to at most one room.
-- **Agent** — an identity plus a connector. `name`, `display_name`, `icon_url`, `agent_type` (its reachability class), `connector_type`, `integration_profile`, `owner_id`, `parent_agent_id` (subagents: Claude Code child agents brought in under a parent), and `addressing_policy` (a stored allow-list of who may address it; null = open). Agents are not created by agents: identity, credentials and runtime are a human step in the Console.
-- **Role** (`RoomRole`) — a per-room, assumable instruction bundle: `name`, `instructions`, `exclusive`. A hat you put on: assume, receive the instructions, act, release. Exclusive means at most one live holder (leased, auto-released on disconnect). The code calls roles "the forward-compatible home for the future 'deterministic rules for rooms' work" and already carries an unused `eligibility` ACL hook.
-- **Reference** — a typed pointer to material outside Switch, carrying instructions. `type` (GitHub, Confluence, Google Drive, Jira, plus user-defined types), `name`, `description`, `instructions`, `value`. Registered once, attached to many rooms. `ReferenceType` is itself a first-class, user-extensible entity.
-- **Document** — content the room holds itself. Either a *library* document (owned by a person, attachable anywhere) or a *room-scoped* document (an agent writes it as it works; never leaves the room). Both carry instructions.
-- **Package** — a named bundle of references + documents with its own instructions. Built in the Gateway; an agent can attach one but cannot create or edit one. Cannot nest; cannot hold a room-scoped document.
-- **Room group** — a tree (`parent_group_id`). Navigation, and one of the scopes an addressing policy can name. A room sits in at most one group.
-- **Room link** — a directed pointer from one room to another with a free-text label. One-way, and grants nothing (a signpost, not access).
-- **Bridge** — a chat-platform connection (Slack, Mattermost, ...). Carries `is_default` and `channel_creation_enabled`.
-- **Alias** — a per-room handle for an agent (`@worker`), so a long qualified name is addressable short in one room.
-- **Skill** — a versioned, packaged capability (`name`, `version`, `package_uri`, `visibility`), attachable to both agents (`agent_skills`) and rooms (`room_skills`). Already first-class in the schema.
+- **Room**: a chat channel with a briefing. The fields that carry weight: `instructions` (the briefing every agent reads when it joins), `bridge_id` + `external_channel_id` (the platform channel it mirrors), `channel_type`, `group_id`, read/write visibility, `protection_config`, `observe_config`, `admin_mode`, `archived_at`. A bridged channel maps to at most one room.
+- **Agent**: an identity plus a connector. `name`, `display_name`, `icon_url`, `agent_type` (its reachability class), `connector_type`, `integration_profile`, `owner_id`, `parent_agent_id` (subagents: Claude Code child agents brought in under a parent), and `addressing_policy` (a stored allow-list of who may address it; null = open). Agents are not created by agents: identity, credentials and runtime are a human step in the Console.
+- **Role** (`RoomRole`), a per-room, assumable instruction bundle: `name`, `instructions`, `exclusive`. A hat you put on: assume, receive the instructions, act, release. Exclusive means at most one live holder (leased, auto-released on disconnect). The code calls roles "the forward-compatible home for the future 'deterministic rules for rooms' work" and already carries an unused `eligibility` ACL hook.
+- **Reference**: a typed pointer to material outside Switch, carrying instructions. `type` (GitHub, Confluence, Google Drive, Jira, plus user-defined types), `name`, `description`, `instructions`, `value`. Registered once, attached to many rooms. `ReferenceType` is itself a first-class, user-extensible entity.
+- **Document**: content the room holds itself. Either a *library* document (owned by a person, attachable anywhere) or a *room-scoped* document (an agent writes it as it works; never leaves the room). Both carry instructions.
+- **Package**: a named bundle of references + documents with its own instructions. Built in the Gateway; an agent can attach one but cannot create or edit one. Cannot nest; cannot hold a room-scoped document.
+- **Room group**: a tree (`parent_group_id`). Navigation, and one of the scopes an addressing policy can name. A room sits in at most one group.
+- **Room link**: a directed pointer from one room to another with a free-text label. One-way, and grants nothing (a signpost, not access).
+- **Bridge**: a chat-platform connection (Slack, Mattermost, ...). Carries `is_default` and `channel_creation_enabled`.
+- **Alias**: a per-room handle for an agent (`@worker`), so a long qualified name is addressable short in one room.
+- **Skill**: a versioned, packaged capability (`name`, `version`, `package_uri`, `visibility`), attachable to both agents (`agent_skills`) and rooms (`room_skills`). Already first-class in the schema.
 
-One shape to notice: everything reusable in Switch — reference, document, package, skill, role — carries its **own `instructions` field**. Switch's unit of reuse is "material plus a note on how to use it," not raw material. That instinct is the seed of the template model.
+One shape to notice: everything reusable in Switch, reference, document, package, skill, role, carries its **own `instructions` field**. Switch's unit of reuse is "material plus a note on how to use it," not raw material. That instinct is the seed of the template model.
 
 ### The one templating artifact, and the gap
 
@@ -35,21 +49,21 @@ The only thing in Switch that stamps a shape out of a declaration is `rooms_yaml
 Two gaps, both concrete:
 
 1. **No parameters, no templating.** `RoomSpec` is fully resolved: literal names, literal instructions. There is no way to say "a payments-shaped room for team X" and fill in X. Standing up the same shape twice means editing the YAML twice.
-2. **The declarative surface is a strict subset of the primitive.** `RoomSpec` exposes `name`, `description`, `instructions`, `bridge`, `channel_type`, visibility, `agents`, `users`, `roles`, `references` (attach-by-id/name or define-inline) and `docs`. The `create_room` primitive (`RoomCreateConfig`) additionally accepts `group_id`, `package_ids`, `linked_rooms`, `aliases`, `include_subagents_for`, `join_event_listeners`, and `protection_config` / `observe_config` / `admin_mode`. So even for a *single* room you cannot declare a group, a package, a link, an alias, or subagent inclusion from YAML — the exact ingredients the "grow into an organization" doc says you reach for once one room stops being enough.
+2. **The declarative surface is a strict subset of the primitive.** `RoomSpec` exposes `name`, `description`, `instructions`, `bridge`, `channel_type`, visibility, `agents`, `users`, `roles`, `references` (attach-by-id/name or define-inline) and `docs`. The `create_room` primitive (`RoomCreateConfig`) additionally accepts `group_id`, `package_ids`, `linked_rooms`, `aliases`, `include_subagents_for`, `join_event_listeners`, and `protection_config` / `observe_config` / `admin_mode`. So even for a *single* room you cannot declare a group, a package, a link, an alias, or subagent inclusion from YAML, the exact ingredients the "grow into an organization" doc says you reach for once one room stops being enough.
 
-And there is **no multi-room artifact at all**. `RoomLink` / `LinkedRoomSpec` only point at rooms that already exist; nothing declares "these three rooms, linked this way, filed in this group, sharing this package" as one unit. The docs describe that shape in prose — "a shape the next team can reuse" — and stop. Narrative with no artifact behind it is the whole workstream.
+And there is **no multi-room artifact at all**. `RoomLink` / `LinkedRoomSpec` only point at rooms that already exist; nothing declares "these three rooms, linked this way, filed in this group, sharing this package" as one unit. The docs describe that shape in prose, "a shape the next team can reuse", and stop. Narrative with no artifact behind it is the whole workstream.
 
 ## 2. OSS agent-team tooling
 
 _How a **team** is expressed: roles, task graphs, handoff. What is reusable or templated, and at what granularity._
 
-### CrewAI — the two-layer YAML
+### CrewAI, the two-layer YAML
 
 CrewAI splits a crew's configuration into two YAML files: a **personas** layer (`config/agents.yaml`) and a **work** layer (`config/tasks.yaml`). A Python `@CrewBase` class binds them into a runnable crew.
 
 > **Currency note.** CrewAI's hosted docs now lead new projects with a JSON-first model (`crew.jsonc`, `crewai run`). The two-file YAML below is the still-fully-supported "classic" pattern (`crewai create crew <name> --classic`), not the 2026 default. The files below are the canonical classic-template files from `crewAIInc/crewAI` (fetched 2026-09-07).
 
-**`agents.yaml`** — who is acting. Each key is an agent; the load-bearing fields are `role`, `goal`, `backstory`, and (optionally) `llm`, `tools`, and a long tail of tuning knobs (`max_iter`, `allow_delegation`, `memory`, `reasoning`, ...).
+**`agents.yaml`**: who is acting. Each key is an agent; the load-bearing fields are `role`, `goal`, `backstory`, and (optionally) `llm`, `tools`, and a long tail of tuning knobs (`max_iter`, `allow_delegation`, `memory`, `reasoning`, ...).
 
 ```yaml
 researcher:
@@ -62,7 +76,7 @@ researcher:
     developments in {topic}. ...
 ```
 
-**`tasks.yaml`** — what gets done. Each key is a task; the two required fields are `description` and `expected_output`, plus `agent` (which persona does it), `context` (which prior tasks feed it), `output_file`, guardrails, and so on.
+**`tasks.yaml`**: what gets done. Each key is a task; the two required fields are `description` and `expected_output`, plus `agent` (which persona does it), `context` (which prior tasks feed it), `output_file`, guardrails, and so on.
 
 ```yaml
 research_task:
@@ -84,7 +98,7 @@ research_task:
 **Verdict against Switch's primitives:**
 
 - **Maps cleanly.** The persona/work separation already exists in Switch, along a *better* axis: the **agent** is the portable persona (identity + instructions + skills, reusable across every room), and the **room's instructions** are the work brief (`shape/hub-and-execution-rooms`: "the room instructions carry the brief"). CrewAI's `agents.yaml` ≈ a Switch agent; its `tasks.yaml` ≈ a room's instructions. Switch is in fact *stronger* on persona reuse: a Switch agent is a first-class identity attached to many rooms, where a CrewAI agent is bound to its crew class.
-- **Would have to build.** (1) `{variable}` interpolation — the parameterization `rooms_yaml` explicitly lacks. This is the single most transferable idea: a room/team template with `{variables}` filled at instantiation. (2) `process` (sequential/hierarchical) is deterministic control flow; Switch has none (no scheduler; roles are the code's own "forward-compatible home for deterministic rules for rooms"). A crew's ordered task graph maps onto that unbuilt rules layer.
+- **Would have to build.** (1) `{variable}` interpolation, the parameterization `rooms_yaml` explicitly lacks. This is the single most transferable idea: a room/team template with `{variables}` filled at instantiation. (2) `process` (sequential/hierarchical) is deterministic control flow; Switch has none (no scheduler; roles are the code's own "forward-compatible home for deterministic rules for rooms"). A crew's ordered task graph maps onto that unbuilt rules layer.
 - **Doesn't apply.** CrewAI's task graph as a literal in-process DAG runner. Switch execution is conversational and human-in-the-loop, not a batch runner stepping a DAG; the "team" is a room people and agents talk in, not a `kickoff()`.
 
 ### AutoGen / AG2, LangGraph, OpenAI Agents SDK
@@ -103,69 +117,152 @@ Three more OSS frameworks. The interesting axis across them is not how they run 
 
 **Common thread across the OSS frameworks.** A declarative team definition is the exception (only AutoGen has one), and even there it describes a single-process program, not a durable, human-inhabited organization. None of these model what Switch models: persistent rooms, humans in the loop, work spread across a network of rooms. Switch's real peers in spirit are not these runtimes but the productized-agent and frontier-CLI worlds below.
 
-## 3. Flowise — ontology
+## 3. Flowise, ontology
 
 Flowise is an open-source, node-graph-centric visual builder. Everything a user builds is a **flow**: a graph of typed nodes and edges, persisted as JSON, wrapped around a set of first-class supporting objects.
 
 **First-class entities:**
 
-- **Flow** — the thing you build. Three visual builders in ascending capability: **Assistant** (beginner: instructions + tools + RAG), **Chatflow** (single-agent / simple LLM flows), **Agentflow** (the superset: single- and multi-agent orchestration; current version is Agentflow V2, a native redesign with loops, branching and human-in-the-loop). Under the hood these are *not* separate tables: all three are rows in one `ChatFlow` entity discriminated by a `type` column (`CHATFLOW | AGENTFLOW | MULTIAGENT | ASSISTANT`), verified in source (`packages/server/src/database/entities/ChatFlow.ts`).
-- **Nodes** — the atomic units of a flow. Typed, with input/output anchors. Agentflow V2 has ~15 node types (Start, LLM, Agent, Tool, Retriever, HTTP, Condition, Condition Agent, Iteration, Loop, Human Input, Direct Reply, Custom Function, Execute Flow, Sticky Note).
-- **Tools** — reusable callable capabilities (built-in, user-defined Custom Tools in JS, and MCP tools) that attach to Agent nodes.
-- **Document Stores** — centralized RAG knowledge bases: loaders → splitters → embeddings → vector store, referenced by retriever nodes and by an agent's Knowledge slot.
-- **Credentials** — encrypted, reusable auth objects referenced by nodes rather than inlined; shareable across workspaces.
-- **Variables** — static or runtime (`.env`) values referenced in nodes as `$vars.name`, overridable per request via `overrideConfig`.
-- **Marketplace / Templates** — pre-built flow and tool templates you instantiate as a starting point (24+ chatflow templates ship in the repo); flows also export/import as JSON.
-- **Workspaces / Organizations / RBAC** — the tenancy layer that partitions all of the above.
+- **Flow**: the thing you build. Three visual builders in ascending capability: **Assistant** (beginner: instructions + tools + RAG), **Chatflow** (single-agent / simple LLM flows), **Agentflow** (the superset: single- and multi-agent orchestration; current version is Agentflow V2, a native redesign with loops, branching and human-in-the-loop). Under the hood these are *not* separate tables: all three are rows in one `ChatFlow` entity discriminated by a `type` column (`CHATFLOW | AGENTFLOW | MULTIAGENT | ASSISTANT`), verified in source (`packages/server/src/database/entities/ChatFlow.ts`).
+- **Nodes**: the atomic units of a flow. Typed, with input/output anchors. Agentflow V2 has ~15 node types (Start, LLM, Agent, Tool, Retriever, HTTP, Condition, Condition Agent, Iteration, Loop, Human Input, Direct Reply, Custom Function, Execute Flow, Sticky Note).
+- **Tools**: reusable callable capabilities (built-in, user-defined Custom Tools in JS, and MCP tools) that attach to Agent nodes.
+- **Document Stores**: centralized RAG knowledge bases: loaders → splitters → embeddings → vector store, referenced by retriever nodes and by an agent's Knowledge slot.
+- **Credentials**: encrypted, reusable auth objects referenced by nodes rather than inlined; shareable across workspaces.
+- **Variables**: static or runtime (`.env`) values referenced in nodes as `$vars.name`, overridable per request via `overrideConfig`.
+- **Marketplace / Templates**: pre-built flow and tool templates you instantiate as a starting point (24+ chatflow templates ship in the repo); flows also export/import as JSON.
+- **Workspaces / Organizations / RBAC**: the tenancy layer that partitions all of the above.
 
 **How it composes:** a flow is `{ nodes, edges }`; nodes carry a `category`/`type` and typed anchors; edges wire one node's output anchor to another's input. Document Stores feed retriever nodes and agent Knowledge; Tools attach to Agent nodes; Credentials attach to provider nodes; Variables are referenced inside node fields; `$flow.state` is a per-run key-value store shared across nodes in one execution. Multi-agent is explicit graph orchestration (supervisor/worker is a *pattern* you wire, not a primitive), and an **Execute Flow** node lets one flow call another as a sub-workflow.
 
 **Verdict against Switch's primitives:**
 
 - **Maps cleanly.** A **Document Store** (a curated bundle of material an agent draws on) is close to a Switch **package** of references and documents. **Tools attach to Agent nodes** the way Switch **skills** attach to agents. The **Marketplace of instantiable templates** + **export/import as JSON** is precisely the artifact Switch lacks and the workstream wants; Flowise proves the shape (a named, shareable, instantiable flow definition) is viable. **Variables + `overrideConfig`** are the parameterization Switch's `rooms_yaml` is missing.
-- **Would have to build.** The template marketplace / export-import / parameterization layer. And the node-graph orchestration itself is deterministic control flow (loops, conditions, sequencing) — the same "deterministic rules for rooms" gap CrewAI's `process` exposes.
+- **Would have to build.** The template marketplace / export-import / parameterization layer. And the node-graph orchestration itself is deterministic control flow (loops, conditions, sequencing), the same "deterministic rules for rooms" gap CrewAI's `process` exposes.
 - **Doesn't apply.** The visual node-graph canvas *as the authoring model*: Switch is chat-native, so the "flow" is a conversation in a room, not a DAG drawn on a canvas. Wiring agents by dragging edges is the opposite of Switch's premise (you talk to an agent; you don't wire it). **Credentials as a first-class stored object** is a deliberate non-goal for Switch: references store a *pointer* and instructions, never the keys, and agents bring their own access. **`$flow.state`** (ephemeral per-run memory) has no analogue and needs none: Switch state lives in the room, the repo and the tracker, not in a run.
 
-## 4. Frontier-lab agent apps — the converging entities
+## 4. Frontier-lab agent apps, the converging entities
 
 Claude Code, Gemini CLI and Codex are independently converging on the same vocabulary of configuration and extension entities. What is genuinely converging across all three:
 
-- **MCP servers** — total convergence; the same open protocol (Anthropic-originated) with a `/mcp` surface in each. The strongest convergence of the set.
-- **Skills (`SKILL.md`)** — all three, with the same progressive-disclosure model (name + description first, body on use). A cross-tool `.agents/skills` directory is emerging (native in Codex, aliased in Gemini).
-- **Subagents** — all three (Claude and Gemini as markdown files with YAML frontmatter in an `agents/` dir; Codex via TOML config).
-- **Memory / context file** — all three use a root Markdown instructions file with hierarchical merge (`CLAUDE.md` / `GEMINI.md` / `AGENTS.md`).
-- **Hooks** — all three (Codex still beta); Claude and Codex even share PascalCase event names (`PreToolUse`, `SubagentStop`, ...).
-- **Slash / custom commands, permissions/sandbox/approval/trusted-folders, and hierarchical settings files** — all three, with shared vocabulary (JSON for Claude/Gemini, TOML for Codex).
+- **MCP servers**: total convergence; the same open protocol (Anthropic-originated) with a `/mcp` surface in each. The strongest convergence of the set.
+- **Skills (`SKILL.md`)**: all three, with the same progressive-disclosure model (name + description first, body on use). A cross-tool `.agents/skills` directory is emerging (native in Codex, aliased in Gemini).
+- **Subagents**: all three (Claude and Gemini as markdown files with YAML frontmatter in an `agents/` dir; Codex via TOML config).
+- **Memory / context file**: all three use a root Markdown instructions file with hierarchical merge (`CLAUDE.md` / `GEMINI.md` / `AGENTS.md`).
+- **Hooks**: all three (Codex still beta); Claude and Codex even share PascalCase event names (`PreToolUse`, `SubagentStop`, ...).
+- **Slash / custom commands, permissions/sandbox/approval/trusted-folders, and hierarchical settings files**: all three, with shared vocabulary (JSON for Claude/Gemini, TOML for Codex).
 
-Not symmetric: **plugin/extension packaging + a marketplace** is first-class in Claude (Plugins + Marketplaces) and Gemini (Extensions), but absent as a first-party layer in Codex. A plugin/extension bundles the rest — skills, hooks, subagents, MCP servers, commands — into one installable, distributable unit.
+Not symmetric: **plugin/extension packaging + a marketplace** is first-class in Claude (Plugins + Marketplaces) and Gemini (Extensions), but absent as a first-party layer in Codex. A plugin/extension bundles the rest, skills, hooks, subagents, MCP servers, commands, into one installable, distributable unit.
 
 Two emerging cross-lab standards are worth naming: **MCP** (Anthropic, now universal here) and **AGENTS.md** (stewarded by the Agentic AI Foundation under the Linux Foundation, 60k+ repos; Codex reads it natively, Gemini via config, Claude keeps `CLAUDE.md` by design but interoperates).
 
 **Verdict against Switch's primitives:**
 
-- **Maps cleanly.** **Skills** are already a first-class Switch entity (`agent_skills`, `room_skills`). **Subagents** are already modelled: `Agent.parent_agent_id` exists explicitly to bring Claude Code child agents into Switch under a parent. The **memory/context file** is conceptually Switch's `instructions` — a room's briefing and an agent's instructions, layered the way `CLAUDE.md`/`AGENTS.md` merge hierarchically. **Permissions** map onto Switch's `addressing_policy` + room visibility + `protection_config` (a different axis — who may address an agent, versus what a tool may do — but the same "declared allow-list" shape). **Hooks** have a real analogue: Switch already mediates every local tool call for governance (a platform-level `PreToolUse`).
-- **Would have to build.** The **plugin/extension bundle + marketplace** is the single most important lesson here for the *agent template* question. The frontier CLIs show the agent-extension surface (subagents + skills + MCP + hooks + memory + commands + permissions) converging into one packaged, shareable, installable unit with a catalogue. Switch already has every one of those pieces as a first-class entity — it lacks the *bundle* and the *catalogue*. A Switch agent template should be exactly that bundle.
-- **Doesn't apply.** The CLI-local mechanics: file paths, TOML-vs-JSON, OS-kernel sandboxing, `.claude/` vs `.gemini/` directory layouts. These are how a single agent is configured on one machine; Switch operates a layer up, orchestrating agents that already carry their own such config. MCP servers as a Switch-modelled entity fall here too: they live inside the agent's own runtime, not in Switch's orchestration model (though an agent template may want to *declare* them — see the recommendation).
+- **Maps cleanly.** **Skills** are already a first-class Switch entity (`agent_skills`, `room_skills`). **Subagents** are already modelled: `Agent.parent_agent_id` exists explicitly to bring Claude Code child agents into Switch under a parent. The **memory/context file** is conceptually Switch's `instructions`, a room's briefing and an agent's instructions, layered the way `CLAUDE.md`/`AGENTS.md` merge hierarchically. **Permissions** map onto Switch's `addressing_policy` + room visibility + `protection_config` (a different axis, who may address an agent, versus what a tool may do, but the same "declared allow-list" shape). **Hooks** have a real analogue: Switch already mediates every local tool call for governance (a platform-level `PreToolUse`).
+- **Would have to build.** The **plugin/extension bundle + marketplace** is the single most important lesson here for the *agent template* question. The frontier CLIs show the agent-extension surface (subagents + skills + MCP + hooks + memory + commands + permissions) converging into one packaged, shareable, installable unit with a catalogue. Switch already has every one of those pieces as a first-class entity, it lacks the *bundle* and the *catalogue*. A Switch agent template should be exactly that bundle.
+- **Doesn't apply.** The CLI-local mechanics: file paths, TOML-vs-JSON, OS-kernel sandboxing, `.claude/` vs `.gemini/` directory layouts. These are how a single agent is configured on one machine; Switch operates a layer up, orchestrating agents that already carry their own such config. MCP servers as a Switch-modelled entity fall here too: they live inside the agent's own runtime, not in Switch's orchestration model (though an agent template may want to *declare* them, see the recommendation).
 
 ## 5. Productized "spin up an agent"
 
 Across Manus and its peers the out-of-box unit is consistent: a **task or session**, not a configured "agent object." The user writes a natural-language goal; the environment, tool wiring, planning loop and sub-agent orchestration are pre-built and hidden. What differs between products is what the user gets to *keep and reuse*.
 
-- **Manus.** Each task spins up its own isolated cloud VM (browser, terminal, filesystem, on E2B). The user picks a mode (Agent / Chat) and writes the goal. What is templated away: the sandbox, tool selection, the planner/executor/verifier decomposition, and sub-agent orchestration (its "Wide Research" fans a task across many parallel sub-agents). What the user can reuse: **Agent Skills** (reusable workflow modules written as Markdown, progressive-disclosure loading, portable via an "open standard" and a **Team Skill Library** — explicitly positioned against Claude Skills), **Scheduled Tasks** (recurring runs with an output destination), and **Playbooks** (a catalog of starting-point templates). Weakest axis: durable cross-task memory.
-- **Peers, same lens.** OpenAI's **ChatGPT Agent** (a task in a cloud "virtual computer"; user configures connector permissions and takes over for logins). **Genspark** (a "Mixture-of-Agents" router picks model and tools; user connects an MCP store of integrations). **Devin** (a per-session coding sandbox ending in a PR; user configures a codebase **knowledge base** and approves an interactive plan). **Replit Agent** (builds and deploys apps in a browser cloud; user sets an autonomy level and can roll back to checkpoints; can itself build other agents and scheduled automations). **Lindy** (the outlier: a no-code **agent builder** where the reusable unit is front-and-centre — 100+ templates, custom agents, triggers, multi-agent handoffs).
+- **Manus.** Each task spins up its own isolated cloud VM (browser, terminal, filesystem, on E2B). The user picks a mode (Agent / Chat) and writes the goal. What is templated away: the sandbox, tool selection, the planner/executor/verifier decomposition, and sub-agent orchestration (its "Wide Research" fans a task across many parallel sub-agents). What the user can reuse: **Agent Skills** (reusable workflow modules written as Markdown, progressive-disclosure loading, portable via an "open standard" and a **Team Skill Library**: explicitly positioned against Claude Skills), **Scheduled Tasks** (recurring runs with an output destination), and **Playbooks** (a catalog of starting-point templates). Weakest axis: durable cross-task memory.
+- **Peers, same lens.** OpenAI's **ChatGPT Agent** (a task in a cloud "virtual computer"; user configures connector permissions and takes over for logins). **Genspark** (a "Mixture-of-Agents" router picks model and tools; user connects an MCP store of integrations). **Devin** (a per-session coding sandbox ending in a PR; user configures a codebase **knowledge base** and approves an interactive plan). **Replit Agent** (builds and deploys apps in a browser cloud; user sets an autonomy level and can roll back to checkpoints; can itself build other agents and scheduled automations). **Lindy** (the outlier: a no-code **agent builder** where the reusable unit is front-and-centre, 100+ templates, custom agents, triggers, multi-agent handoffs).
 
-**Synthesis.** What is consistently templated away: the execution environment (an isolated sandbox per task), tool selection and wiring, the planning loop, and sub-agent orchestration. What users get to reuse: **skills + schedules + knowledge** — and of those, knowledge/memory is the least mature across the whole category.
+**Synthesis.** What is consistently templated away: the execution environment (an isolated sandbox per task), tool selection and wiring, the planning loop, and sub-agent orchestration. What users get to reuse: **skills + schedules + knowledge**: and of those, knowledge/memory is the least mature across the whole category.
 
 **Verdict against Switch's primitives:**
 
-- **Maps cleanly.** Manus **Agent Skills** ≈ Switch **skills** (both are packaged, Markdown, attachable, progressively disclosed); a **Team Skill Library** ≈ Switch's shared skills and packages. Devin's and Manus's **Knowledge** ≈ Switch **references / documents / packages** (curated material carrying instructions). **Lindy's template library** ≈ exactly the room-template artifact this workstream wants — a catalogue of instantiable shapes.
+- **Maps cleanly.** Manus **Agent Skills** ≈ Switch **skills** (both are packaged, Markdown, attachable, progressively disclosed); a **Team Skill Library** ≈ Switch's shared skills and packages. Devin's and Manus's **Knowledge** ≈ Switch **references / documents / packages** (curated material carrying instructions). **Lindy's template library** ≈ exactly the room-template artifact this workstream wants, a catalogue of instantiable shapes.
 - **Would have to build.** A **template / playbook catalogue** of instantiable shapes (Lindy and Manus Playbooks both have one; Switch has none). **Scheduled / recurring runs**: Switch has no scheduler at all (`external/switch-has-no-scheduler`), a gap these products have solved and a natural companion to templates ("stand up this shape every Monday"). The per-task isolated workspace pattern is already Switch idiom at the design level (`shape/hub-and-execution-rooms` + `external/worktree-per-parallel-task`); productizing it is the step not yet taken.
-- **Doesn't apply.** The cloud VM / sandbox as a Switch primitive: Switch agents run on their own hosts, and Switch orchestrates rather than provisions compute. And the **hidden planning loop** is a deliberate philosophical divergence: these products hide the whole organization *inside one agent* (planner, executor, verifier, sub-agents, all invisible), whereas Switch makes the organization **explicit** — rooms, roles, and named agents you can see, address and correct. That contrast is the sharpest thing in this whole scan, and it belongs in the recommendation: Switch's template should stamp out a *visible, inhabitable* team, not a black box.
+- **Doesn't apply.** The cloud VM / sandbox as a Switch primitive: Switch agents run on their own hosts, and Switch orchestrates rather than provisions compute. And the **hidden planning loop** is a deliberate philosophical divergence: these products hide the whole organization *inside one agent* (planner, executor, verifier, sub-agents, all invisible), whereas Switch makes the organization **explicit**: rooms, roles, and named agents you can see, address and correct. That contrast is the sharpest thing in this whole scan, and it belongs in the recommendation: Switch's template should stamp out a *visible, inhabitable* team, not a black box.
 
 ## 6. Verdict matrix
 
-_Every pattern in three buckets: maps cleanly onto something we have; maps onto something we would have to build; does not apply, and why._
+Every idea from the scans, sorted into three buckets against Switch's primitives.
+
+### Maps cleanly onto something we already have
+
+| External idea | Seen in | Switch primitive |
+|---|---|---|
+| Persona/work separation | CrewAI (`agents.yaml` vs `tasks.yaml`) | Agent (portable persona) vs room `instructions` (the work brief), and Switch is cleaner: an agent is one identity reusable across rooms |
+| The agent object as the reusable unit | AutoGen, AG2, LangGraph, OpenAI SDK | Agent |
+| Agent-to-agent handoff surfaced as a tool | OpenAI Agents SDK | Addressing another agent in a room (`agents-ask-each-other-by-addressing`) |
+| Skills / `SKILL.md` | Manus, Claude Code, Gemini CLI, Codex | Skill (first-class; attaches to agents and rooms) |
+| Subagents | Claude Code, Gemini CLI, Codex | `Agent.parent_agent_id` (models Claude Code subagents explicitly) |
+| Hierarchical memory / context file | `CLAUDE.md` / `GEMINI.md` / `AGENTS.md` | Room `instructions` + agent instructions, layered |
+| Permissions allow-list | frontier CLIs | `addressing_policy` + room visibility + `protection_config` |
+| Tool-call interception / `PreToolUse` hook | frontier CLIs | Switch's governance mediation of every local tool call |
+| Curated knowledge bundle | Flowise Document Store; Devin/Manus Knowledge | References + documents + packages |
+| Tools attach to an agent | Flowise | Skills attach to an agent |
+
+### Maps onto something we would have to build
+
+| External idea | Seen in | What it would take |
+|---|---|---|
+| **`{variable}` parameterization at instantiation** | CrewAI interpolation; Flowise Variables / `overrideConfig` | Parameters in the room/team spec, filled at create time. `rooms_yaml` has none. **Highest-leverage single item.** |
+| **A multi-object shape as one instantiable, shareable unit + a catalogue** | Flowise Marketplace; Lindy templates; Manus Playbooks; AutoGen JSON + Studio | The room template + agent template artifacts, plus a library to instantiate from. **This is the workstream.** |
+| Deterministic control flow / ordering | CrewAI `process`; LangGraph edges; Flowise nodes; AutoGen speaker selection | The "deterministic rules for rooms" layer that `RoomRole` is already the code's stated stub for |
+| A plugin/extension bundle + marketplace | Claude Code Plugins, Gemini Extensions | The agent template: bundle skills + references + addressing policy + subagents into one installable unit |
+| Scheduled / recurring runs | Manus, Replit, Lindy | An external trigger convention (Switch has no scheduler; `external/switch-has-no-scheduler`), a natural companion to templates |
+| Expanding the declarative surface to match the primitive | our own `rooms_yaml` gap | Let the YAML express group, package, link, alias, subagent inclusion, everything `create_room` already takes |
+
+### Does not apply, and why
+
+| External idea | Seen in | Why not |
+|---|---|---|
+| In-process DAG / actor runtime, run to completion | CrewAI `kickoff`, LangGraph, AutoGen, OpenAI `Runner` | Switch is a standing room, conversational and human-gated, not a program that terminates |
+| Visual node-graph canvas as the authoring model | Flowise | Switch is chat-native; you talk to an agent, you don't wire it on a canvas |
+| Credentials as a first-class stored object | Flowise | Deliberate non-goal: references store a pointer + instructions, never keys; agents bring their own access |
+| Ephemeral per-run state | Flowise `$flow.state` | Switch state lives in the room, the repo and the tracker, not in a run |
+| Per-task cloud VM / sandbox provisioning | Manus, ChatGPT Agent, Devin, Replit | Switch orchestrates agents that run on their own hosts; it does not provision compute |
+| Hidden planning loop / the org inside one agent | Manus and peers | Switch makes the organization **explicit**: visible, addressable rooms/roles/agents. A philosophy divergence, not just an absence |
+| CLI-local mechanics (paths, TOML vs JSON, OS sandbox) | frontier CLIs | These configure one agent on one machine; Switch operates a layer up |
 
 ## 7. Research-agent as the first use case
 
-_This task treated as a dry run of a productized agent. What a "research agent template" would have needed, and what that tells us about the template model._
+This task was a dry run of a productized research agent. Reading back what it actually needed is the cheapest way to see what a "research agent template" would stamp out.
+
+What this run used:
+
+- **A home room whose instructions carried the whole procedure and the instance data**: the task card: the Jira key, the branch, the hub thread id, the repo, the write-out-loud rules. That is `knowledge/procedure-vs-bindings` exactly: portable how-to in the agent, instance data in the room instructions.
+- **A worktree per task** (`external/worktree-per-parallel-task`), set up by hand.
+- **Parallel sub-agents, one per research area**: done here with the agent runner, but ad hoc. A template would declare "fan out one researcher per area" rather than leaving it to the agent to improvise.
+- **A place to report and a human gate**: the hub banner thread, plus human-approved readiness and merge.
+- **Skills the agent leaned on**: commit/PR style, anti-AI-slop prose, knowledge distillation.
+
+So a **research-agent template** decomposes into exactly the two artifacts from the recommendation:
+
+- an **agent template**: identity + research skills + web/citation tooling + a "cite everything, admit gaps" discipline in its instructions; plus
+- a **room template**: a per-task work room carrying the procedure, a worktree convention, a declared fan-out of sub-researchers, and a report-to-hub-then-gate flow.
+
+Two things stand out. First, **every piece the template would stamp out already exists** as a Switch primitive or a documented pattern, more evidence that this is packaging, not new primitives. Second, the one genuinely missing mechanic this task exposed is the same one section 0 leads with: **parameterization.** The task card was hand-written and fully resolved; a template would have generated it from `research(jira_key, branch, hub_thread, repo, areas[])`. Building the research agent well requires parameters first, which is a good reason to make the research agent the first use case: it forces the highest-leverage piece.
+
+## Sources
+
+Internal (this repo): `docs/official/building/payments-room.md`, `docs/official/building/grow-into-an-organization.md`, `switch-expert/knowledge/PATTERNS.md` and `INDEX.md`, `core/switch_core/db/models.py`, `core/switch_core/room_service.py`, `core/switch_core/rooms_yaml.py`.
+
+**CrewAI** (classic two-file template still supported; docs now lead with a JSONC model, flagged in §2):
+- Template files: `https://github.com/crewAIInc/crewAI/blob/main/lib/cli/src/crewai_cli/templates/crew/config/agents.yaml`, `.../config/tasks.yaml`, `.../crew.py`
+- Concepts: `https://docs.crewai.com/en/concepts/agents`, `.../tasks`, `.../crews`; quickstart `https://docs.crewai.com/en/quickstart`
+- Full-YAML feature request (closed): `https://github.com/crewAIInc/crewAI/issues/1474`
+
+**AutoGen / AG2, LangGraph, OpenAI Agents SDK:**
+- AutoGen teams + declarative components: `https://microsoft.github.io/autogen/stable/user-guide/agentchat-user-guide/tutorial/teams.html`, `.../core-user-guide/framework/component-config.html`; AG2 group chat: `https://docs.ag2.ai/latest/docs/user-guide/advanced-concepts/orchestration/group-chat/patterns/`
+- LangGraph: `https://langchain-ai.github.io/langgraph/`; supervisor/swarm: `https://github.com/langchain-ai/langgraph-supervisor-py`, `https://github.com/langchain-ai/langgraph-swarm-py`
+- OpenAI Agents SDK: `https://openai.github.io/openai-agents-python/`, `.../handoffs/`, `.../quickstart/`
+
+**Flowise:**
+- `https://docs.flowiseai.com/using-flowise/agentflowv2`, `.../document-stores`, `.../variables`, `.../workspaces`
+- Entity source: `https://raw.githubusercontent.com/FlowiseAI/Flowise/main/packages/server/src/database/entities/ChatFlow.ts`; templates: `https://github.com/FlowiseAI/Flowise/tree/main/packages/server/marketplaces/chatflows`
+
+**Frontier CLIs (Claude Code / Gemini CLI / Codex) + standards:**
+- Claude Code: `https://code.claude.com/docs/en/sub-agents`, `.../skills`, `.../mcp`, `.../hooks`, `.../plugins`, `.../memory`, `.../permissions`
+- Gemini CLI: `https://github.com/google-gemini/gemini-cli/blob/main/docs/core/subagents.md`, `.../docs/cli/skills.md`, `.../docs/extensions/index.md`, `.../docs/hooks/reference.md`
+- Codex: `https://learn.chatgpt.com/docs/config-file/config-reference`, `https://developers.openai.com/codex/skills`, `.../hooks`
+- Standards: `https://agents.md` (AGENTS.md); MCP (Anthropic-originated, adopted by all three)
+
+**Productized agents:**
+- Manus: `https://manus.im/docs/introduction/welcome`, `https://manus.im/blog/manus-sandbox`, `https://manus.im/features/agent-skills`, `https://manus.im/docs/features/scheduled-tasks`; Meta acquisition (Dec 2025, developing): `https://www.cnbc.com/2025/12/30/meta-acquires-singapore-ai-agent-firm-manus-china-butterfly-effect-monicai.html`
+- Peers: `https://openai.com/index/introducing-chatgpt-agent/`, `https://cognition.com/blog/introducing-devin`, `https://blog.replit.com/introducing-agent-3-our-most-autonomous-agent-yet`, `https://www.lindy.ai/tools/ai-workflow-automation`, `https://venturebeat.com/ai/gensparks-super-agent-ups-the-ante-in-the-general-ai-agent-race`
+
+**Caveats carried from the research:** CrewAI's two-file YAML is the "classic" pattern, not the 2026 default. No first-party maintainer manifesto was found justifying CrewAI's persona/work split; the rationale in §2 is synthesized from its docs + issue tracker. "No declarative team spec" for AG2, LangGraph and the OpenAI SDK is a scoped negative (core pages checked, not exhaustive). Manus's Planner/Executor/Verifier architecture is analyst reconstruction, and its "100×"/benchmark and post-acquisition status are vendor or developing claims, re-verify before relying on them.
