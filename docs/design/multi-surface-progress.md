@@ -1390,3 +1390,64 @@ Worth generalising: widening the *connection* while leaving one-room bookkeeping
 in place is sound only where the bookkeeping is descriptive. Wherever a single
 room is used to make a *decision* — this guard is the one found so far — the
 primary is the wrong value and the failure is silent.
+
+---
+
+## 2026-09-07 — Slack works, and the runbook had the user-group advice backwards
+
+The agent answers in Slack, and knows what it is holding:
+
+> "<the room name> — the Switch room bridged to this Slack channel.
+> I'm live in it now and saw this one directly."
+
+> "Connected right now: this channel and **t-alpha**. I'm also a member of
+> **t-beta** but not live in it at the moment... Beyond those I'm party to one
+> email DM with someone outside the organisation. **I'll leave them unnamed
+> here: who an outside correspondent is belongs to that thread.**"
+
+That last sentence is US-4 again, unprompted, in a `restricted` room — it
+declined to name an external correspondent to a Slack channel without being
+asked to be careful.
+
+### ⚠️ `agent_usergroups: false` silently breaks mentions in an established workspace
+
+The runbook said to register with `agent_usergroups: false`, because minting a
+Slack user group per agent needs a paid plan and leaves workspace-visible
+residue. That is right for a **clean** workspace and wrong for one that has
+already run Switch.
+
+An agent's user group is how its name reaches Slack's `@` autocomplete. Where
+those groups already exist, picking the agent from the menu sends
+`<!subteam^S…>`, not the text `@name`. Resolving that back is
+`_translate_usergroup_mentions`, which reads maps that are only loaded when
+`agent_usergroups` is on. With it off:
+
+- the raw `<!subteam^S…>` reaches Matrix untouched;
+- `_compute_addressed` matches on the plain agent name and finds none;
+- the message is filed as unaddressed chatter.
+
+**Nothing reports this.** No error, no warning — the agent simply never
+answers, and the room shows a mention that looks perfectly normal. It cost a
+diagnosis that went through the bridge, the room membership, the Matrix join
+and the addressing policy before reaching the message body, where the raw tag
+was plainly visible.
+
+Turning it on adopted the existing group rather than creating one, and the
+mention resolved immediately.
+
+**The cost, which is real:** enabling it also created groups for every *other*
+agent on the server — four of them, including two dead smoke-test agents from a
+previous run. They are visible in the workspace's autocomplete and the bot
+**cannot remove them**: `usergroups.disable` returns `permission_denied` even
+though the token holds `usergroups:write`, so a workspace admin has to disable
+them by hand. Creating is permitted and undoing is not, which is a bad shape to
+discover after the fact. Register a bridge only on a server whose agent list you
+are happy to publish into the workspace, and delete dead agents first.
+
+### Two gates, again
+
+Slack repeated the email lesson exactly: once the mention resolved, the message
+was still refused because the sender's Slack account was not claimed by any
+Switch user. Same fix, same endpoint. Worth demoing deliberately — "the bridge
+let it in" and "the agent may be addressed by you" are separate decisions, and
+each says so clearly when it refuses.
