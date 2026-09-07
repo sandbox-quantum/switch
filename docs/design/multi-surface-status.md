@@ -177,6 +177,7 @@ In the order the evidence supports, not the order the design doc assumed:
 1. **D5 — read forwarded mail properly.** It is the primary use case and it is
    broken today: a forward is flattened to raw MIME, capped at 16 KB, and its
    attachments never reach the agent. Confirmed by the first real use.
+   **Five user stories and a five-phase plan: `email-forwarding.md`.**
 2. **Decide what `may_carry` is for.** The current rule blocks the actual
    workflow and the user overrode it conversationally. Either narrow it to
    content that is plausibly confidential, or make an override something the
