@@ -147,9 +147,7 @@ notice its absence.
 | `disclosure.may_carry` + `disclosed_span` + `_words` | 91 of 198 | a product decision on what enforcement means, now complicated by §1a | **US-4** enforcement (D3) |
 | `email/authentication.py` | 207 | wiring into the adapter | **US-6** real sender verification |
 | `email/reply.py` | 102 | there is no SMTP path | **US-5** answering an outsider |
-| `runtime/host.ts` | 347 | no launcher constructs it | **US-3** self-scheduling |
-| `runtime/schedule.ts` | 167 | same | **US-3** |
-| `runtime/agent.ts` | 158 | same | **US-3** |
+| ~~`runtime/{agent,host,schedule}.ts`~~ | ~~672~~ | **parked** — see below | **US-3** self-scheduling |
 
 Their tests: `host.test.ts` (709), `agent.test.ts` (340), `schedule.test.ts`
 (279), `test_email_correspondent.py` (397, covers `authentication` and `reply`),
@@ -157,10 +155,27 @@ and 42 of 288 lines in `test_disclosure.py`.
 
 **Two things follow from this that are easy to miss.**
 
-The **US-3 cluster is self-consistent and self-contained**: `agent.ts` imports
-`host.ts` imports `schedule.ts`, and nothing outside imports any of them. It is
-a complete, tested implementation of a feature with no entry point. It was
-built to a design that later turned out to need a launcher nobody wrote.
+The **US-3 cluster has been parked on `feat/us3-self-scheduling`.**
+`agent.ts` → `host.ts` → `schedule.ts` (672 lines) plus their tests (1,328) were
+a complete, tested implementation with no entry point: nothing outside imported
+any of them, and `startMultiRoomAgent` needs a launcher supplying
+`loadSchedule`/`saveSchedule` against a room document that nobody wrote.
+
+They are removed from this branch and preserved intact, with history, on that
+branch. To bring them back:
+
+```bash
+git checkout feat/us3-self-scheduling -- \
+  console/packages/switch-agent-runtime/src/{agent,host,schedule}.ts \
+  console/packages/switch-agent-runtime/src/{agent,host,schedule}.test.ts
+```
+
+and restore the three export blocks in `src/index.ts`.
+
+Worth knowing when it is picked up: US-3 needs durable per-agent state, and so
+does the standing-instruction gap in §1b — *"whenever I send you an email,
+acknowledge it"* survives only as long as the session. Both want a room
+document, so doing US-3 likely delivers that persistence as a side effect.
 
 The **`disclosure.py` split is the one place where wired and unwired code share
 a file**. `audience_of` and `bridge_is_external` are load-bearing; `may_carry`
@@ -208,7 +223,7 @@ lives in these design docs.
 | **3. runtime client** | `room-set.ts`, `bin.ts`, `event-stream.ts`, `index.ts`, `types.ts`, tests, the three `SKILL.md`, plugin versions, `artifacts.yaml` | 1 | yes, but needs the npm tag |
 | **4. Switch Console multi-room** | `room-connection.ts`, `switch-notification-poller.ts`, `sidecar-runtime.ts`, `switch-room-service.ts`, `shared/…/switch-rooms.ts`, `auto-session-watcher.ts`, tests | 1, 3 | yes |
 | **5. email bridge** | `email/adapter.py`, `collaboration/adapter.py`, `lifecycle_service.py`, `main.py`, `test_email_adapter.py`, the deploy override, `scripts/email-imap-poll.py` | 1 | **hold for D5** |
-| **6. the unwired code** | `may_carry`/`disclosed_span`, `email/authentication.py`, `email/reply.py`, `agent`/`host`/`schedule`.ts and their tests | its own story | **do not submit** |
+| **6. the unwired code** | `may_carry`/`disclosed_span`, `email/authentication.py`, `email/reply.py` | its own story | **do not submit** |
 
 ### Order and timing
 

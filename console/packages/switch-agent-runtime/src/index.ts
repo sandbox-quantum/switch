@@ -41,30 +41,6 @@ export {
   type ProcessRow,
   type ReapOutcome,
 } from './reap';
-export {
-  startMultiRoomAgent,
-  systemClock,
-  type MultiRoomAgentDeps,
-  type OpenStream,
-  type RunningAgent,
-} from './agent';
-export {
-  MultiRoomHost,
-  type Clock,
-  type HostLogger,
-  type MultiRoomHostDeps,
-  type Turn,
-} from './host';
-export {
-  advance,
-  due,
-  MAX_TIMER_MS,
-  nextDelayMs,
-  parseWakeups,
-  reschedule,
-  serialiseWakeups,
-  type Wakeup,
-} from './schedule';
 export { readSse, type SseFrame } from './sse';
 export {
   audienceOf,
