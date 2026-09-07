@@ -139,8 +139,10 @@ words.
 addressed by you" are separate decisions, so an operator can admit a
 correspondent without making them the agent's owner.
 
-**Say also — this is the honest caveat:** for email, the sender is **not
-verified**. The bridge logs it at startup:
+**Say also — this is the honest caveat, and it is stronger than "unverified":**
+for email the sender is **not authenticated at all**, and a forged `From` from an
+allowlisted address is treated as that person — including as the agent's owner.
+See **D6** in the progress log. The bridge logs it at startup:
 
 > *"the identity on an inbound message is a claim the platform did not verify"*
 
