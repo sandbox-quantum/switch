@@ -151,6 +151,10 @@ celerybeat.pid
 
 # Environments
 .env
+# Any backup of it is the same secrets under a different name — a
+# `cp .env .env.bak-$(date +%s)` before an edit is the ordinary way this
+# happens, and `git add -A` then commits it.
+.env.bak*
 .env.switch-pilot
 internal/deploy/.env.switch-pilot
 .envrc
