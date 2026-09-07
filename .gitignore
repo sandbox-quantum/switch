@@ -156,7 +156,10 @@ celerybeat.pid
 # happens, and `git add -A` then commits it.
 .env.bak*
 .env.switch-pilot
-internal/deploy/.env.switch-pilot
+# Internal-only tooling and notes. CLAUDE.md says this directory is untracked
+# and stays that way; before this line only one file inside it was ignored, so
+# a `git add -A` would have committed anything else placed here.
+internal/
 .envrc
 .venv
 env/

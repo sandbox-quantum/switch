@@ -151,6 +151,25 @@ proactivity. Group WhatsApp is not on the table.
 
 ---
 
+## Other transports were evaluated
+
+Several routes beyond the CPaaS options were considered and set aside. The
+evaluation names third-party projects and weighs their licences, so it is kept
+in the internal notes rather than here.
+
+One conclusion from it belongs in the roadmap on its own merits: **Switch cannot
+adopt a Matrix room it did not create.** `room_service.create_room` always calls
+`matrix_admin.create_room`, and there is no path that takes a room id from
+anywhere else. That capability is small and would widen the options for any
+future surface — a transport integrated at the Matrix layer needs no
+collaboration adapter, because agents are already Matrix clients.
+
+The caveat if it is ever used that way: such a room would bypass the
+collaboration bridge layer, which is where `audience_of`,
+`authenticates_senders`, the allowlist and the two-gate identity model live.
+Those would have to be re-established for it, or the room is a hole in the
+disclosure work.
+
 ## What I would do
 
 **1. Try Telegram this week.** It is built, free, has groups and mentions, and
