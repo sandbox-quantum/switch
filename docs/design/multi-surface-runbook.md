@@ -13,6 +13,80 @@ no email and are worth doing on their own.
 
 ---
 
+## The components, and how they connect
+
+Worth reading once. Two of these are routinely conflated, and one has a trap
+that silently runs the wrong code.
+
+```
+  sample.eml ──curl──▶ email bridge ─┐
+                    (inside switch-core,
+                     port 8099, must be
+                     mapped out of Docker)
+                                      ├─▶ Matrix room (auto-created, one per
+                                      │   correspondent — the agent must be
+                                      │   ADDED to it; it resolves none)
+  Slack ◀──socket mode──▶ Slack bridge ┘
+        (outbound WebSocket,           │
+         no public URL needed)         │
+                                       ▼
+                        one `multi` connection, both rooms
+                                       │
+                                       ▼
+                     Claude Code session + the connector's
+                     MCP server (dist/bin.mjs) = THE AGENT
+                                       │
+                        post_message(room_id=…) back out
+```
+
+| Component | What it actually is |
+|---|---|
+| Switch stack | 6 containers: postgres, tuwunel, mattermost, switch-core, gateway, setup |
+| Email bridge | **Not a service.** A collaboration bridge running *inside* switch-core, on a port you must map out of the container |
+| Slack bridge | Also inside switch-core. **Socket Mode** — an outbound WebSocket, so no ingress and no public URL |
+| Agent | A row in Switch's database: a name, an API key, a Matrix account |
+| Rooms | Matrix rooms. Both are auto-created — a Slack one when the app joins a channel, an email one when the first mail arrives |
+| **The agent process** | **A Claude Code session.** There is no separate agent daemon. The session is the turn loop; the connector's MCP server carries events into it |
+| Runtime | `dist/bin.mjs` — the MCP server the session runs. **See the trap below** |
+
+### ⚠️ The trap: the connector fetches a *published* runtime
+
+`connectors/claude-code-plugin/.mcp.json` pins
+`npx -y @sandboxaq/switch-agent-runtime@0.3.3` — from npm. Every one of this
+branch's client changes is in local **0.6.0**, unpublished. A stock connector
+install therefore runs **0.3.3**, which has no `SWITCH_SCOPE`, no room set and
+no audience label.
+
+The demo would fail in a way that looks like a bug in the server: the second
+`connect_to_room` silently replaces the first, and nothing says why.
+
+Publishing is a tag push (`console/AGENTS.md`), and the pins deliberately stay
+behind until one exists. **For a demo, do not publish — point the session at the
+local build:**
+
+```json
+{
+  "mcpServers": {
+    "switch": {
+      "command": "node",
+      "args": ["/ABSOLUTE/PATH/TO/console/packages/switch-agent-runtime/dist/bin.mjs"],
+      "env": {
+        "SWITCH_SCOPE": "multi",
+        "SWITCH_API_ENDPOINT": "http://127.0.0.1:8000",
+        "SWITCH_AGENT_ID": "<agent id>",
+        "SWITCH_API_KEY": "<api key>"
+      }
+    }
+  }
+}
+```
+
+Confirm it took: the session's stderr says `switch:` lines, and a bad
+`SWITCH_SCOPE` exits immediately with `must be 'single' or 'multi'`. If you see
+neither, you are on the npm build.
+
+---
+
 ## Phase 0 — prove the client half *(nothing has ever run it)*
 
 The server half is proven: 2173 core tests pass and a `multi` connection was
@@ -202,7 +276,8 @@ curl --data-binary @sample.eml \
 | Email room exists, agent never answers | Auto-created email rooms resolve no agents. Add it. |
 | Every forwarded mail is dropped | Check the log for a loop marker. Server-side forwarding sets `Auto-Submitted: auto-forwarded`, which is exempt now — but a mailing-list header plus a bulk `Precedence` is not. |
 | `connection smoke-1 is not open` | The heartbeat TTL is 6s. A session's runtime handles this; a `curl` harness must beat. |
-| Second `connect_to_room` replaces the first | `SWITCH_SCOPE` is not `multi`. |
+| Second `connect_to_room` replaces the first | `SWITCH_SCOPE` is not `multi` — **or the session is running the npm-pinned 0.3.3 rather than the local build.** Check stderr for the scope line. |
+| Slack asks for a public request URL | It should not. The adapter is Socket Mode; you want an app-level token, not Event Subscriptions. |
 
 ---
 
