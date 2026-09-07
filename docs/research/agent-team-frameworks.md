@@ -39,7 +39,14 @@ Captured from the review of this note with the steering dev. These are the calls
 
 ### Three exemplar blueprints to develop
 
-1. **The dev fleet (this one), documented and simplified.** A coordinator + coder + reviewer + doctor, a repo, a hub, roles. The one a fleet owner can recognize their own setup in.
+1. **The Switch workforce (Louis's fleet), documented and simplified.** The team that builds Switch itself, and the reference blueprint. Read from the live instance, its composition is:
+   - a **workstream hub** as the intake/portfolio layer (work is requested here);
+   - a **workforce manager** (`switch-workforce-manager`), now split per workstream (`switch-workforce-manager-framework`, `-interconnectivity`, `-platform`): the coordinator that files a CHOO ticket, creates a branch and a per-item execution room, dispatches a worker, tracks it to done, and archives the room;
+   - **workers** (`switch-worker-louis-local`, `switch-worker-louis-remote`, plus contributors' own) that plan-then-implement in isolation;
+   - **specialists**: `switch-usecase-builder`, `switch-onboarding-manager`, `switch-expert` / `switch-expert-fast`, and bug/feature agents (`cc-bug-fixing-2`, `cc-switch-feature-requests`);
+   - **CHOO/Jira** as the system of record, **GitHub** for branches and PRs, and **Louis** as the human approver and merge authority.
+
+   Flow: hub intake → manager files CHOO + branch + execution room → worker plans with the human, then implements and posts verification → PR review → Louis merges → manager closes Jira (human-gated) → room archived. The load-bearing detail for the template model: the workflow logic lives in **room instructions, roles and aliases**, not hard-coded per agent (Louis's own observation). This is the blueprint a fleet owner recognizes their own setup in, and it is the fleet that dispatched and is running this very task.
 2. **A newsroom / comms desk.** Roles: editor (exclusive), reporters (shared), fact-checker, publisher. Shared references: style guide, CMS, stock-image API (the credentials case). Flow: pitch → draft → review → publish.
 3. **A hotel ops desk (booking.com-style).** Roles: front-desk, reservations, housekeeping-coordinator, guest-comms. References: the booking/PMS system, rate calendar, guest inbox. A domain the dev can sanity-check against a real operation.
 
