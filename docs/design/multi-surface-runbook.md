@@ -55,7 +55,7 @@ pnpm --filter @switch-console/desktop exec vitest run --project node --project m
 
 ---
 
-## Step 2 — start Switch  **[verified in host mode, untried standalone]**
+## Step 2 — start Switch  **[verified]**
 
 ```bash
 cd ..
@@ -163,7 +163,12 @@ because an agent's own messages are not delivered back to it.
 is in local **0.6.0**, unpublished. A stock install runs 0.3.3 — no
 `SWITCH_SCOPE`, no room set — and Step 6 fails looking like a server bug.
 
-Configure the session's MCP server as:
+**The plugin is not needed.** The runtime pushes room events into Claude Code
+itself, as `notifications/claude/channel` — the plugin's hook is a second path to
+the same place, and installing it here would only reintroduce the npm pin.
+
+Write `.mcp.json` in a scratch directory **outside this repo** — the token goes
+in it, and the repo is public:
 
 ```json
 {
@@ -175,14 +180,19 @@ Configure the session's MCP server as:
         "SWITCH_SCOPE": "multi",
         "SWITCH_API_ENDPOINT": "http://127.0.0.1:8000",
         "SWITCH_AGENT_ID": "<AID>",
-        "SWITCH_API_KEY": "<KEY>"
+        "SWITCH_API_TOKEN": "<KEY>"
       }
     }
   }
 }
 ```
 
-Start a Claude Code session in any directory.
+`SWITCH_API_TOKEN` — **not** `SWITCH_API_KEY`, which is the field name the
+registration response uses and is read by nothing. All three of endpoint, id and
+token must be set, or the runtime falls back to resolving against a
+`.switch/agents/` store that a scratch directory does not have.
+
+Start a Claude Code session in that directory and approve the project MCP server.
 
 ✅ Session stderr carries `switch:` lines.
 ❌ No `switch:` lines at all → you are on the npm build. A *bad* scope value
@@ -424,6 +434,7 @@ inside switch-core — and **the agent is not a daemon**, it is the session.
 | Email room exists, agent never answers | Auto-created email rooms resolve no agents. Add it. |
 | Every forwarded mail dropped | Check the log for a loop marker. `Auto-Submitted: auto-forwarded` is exempt; a list header *plus* a bulk `Precedence` is not. |
 | `connection … is not open` | 6s heartbeat TTL. A session handles this; a `curl` harness must beat. |
+| Runtime starts but authenticates as nobody | The variable is `SWITCH_API_TOKEN`. `SWITCH_API_KEY` — the name in the registration *response* — is read by nothing. |
 | Slack asks for a public request URL | You want Socket Mode and an app-level token, not Event Subscriptions. |
 | Rooms appear for channels you did not expect | Any message in any channel the app is in auto-creates one. |
 

@@ -827,3 +827,54 @@ declaration are tested but have never run. That needs a built runtime, which
 needs a `pnpm install` this environment cannot do.
 
 So: the **server half of Sprint 1 is proven**, the client half is not.
+
+---
+
+## 2026-09-06 — standalone run, client built, and two runbook errors
+
+First run on the **standalone** stack (everything in Docker, built from the
+working tree) rather than host mode. Steps 1–4 of the runbook now carry
+`[verified]` for that configuration too.
+
+### What ran
+
+- `pnpm install && pnpm -r --filter './packages/**' run build` — four packages,
+  `dist/bin.mjs` at runtime **0.6.0**. First time the client has been built at
+  all; every client-side finding before today came from reading.
+- `just standalone-up` — images built from the tree, `/health` 200, gateway 200.
+  No migration step: `switch_core.main` runs `alembic upgrade head` on boot.
+- Agent registered; two internal rooms created.
+- A `multi` SSE stream with a 2s heartbeat loop reported
+  `"scope":"multi"` with **both** room ids and `cursor:4`.
+- The three routing cases again, unchanged from the host-mode run: a routed
+  post succeeds, an unaddressed post is refused as ambiguous naming both rooms,
+  and a post naming an unheld room is refused naming what the caller does cover.
+
+### Two errors in the runbook, both found by following it
+
+**The env var is `SWITCH_API_TOKEN`, not `SWITCH_API_KEY`.** The runbook said
+`SWITCH_API_KEY` because that is the field name in the *registration response*.
+Nothing reads it. `bin.ts` reads `SWITCH_API_ENDPOINT`, `SWITCH_API_TOKEN`,
+`SWITCH_AGENT_ID`, `SWITCH_SCOPE`, `SWITCH_CONNECTION_ID`,
+`SWITCH_CHANNEL_DISABLE_POLL`. With the token absent the runtime does not fail —
+it falls back to resolving against a `.switch/agents/` store, which a scratch
+directory does not have, so the failure surfaces as a credential error naming a
+directory the user never chose.
+
+**The connector plugin is not needed for this demo,** which the runbook implied
+by warning about its npm pin without saying the pin could simply be avoided. The
+runtime delivers room events to Claude Code directly as
+`notifications/claude/channel`; the plugin's `PostToolUse` hook is a *second*
+path to the same place. Installing the plugin here would reintroduce the 0.3.3
+pin — the exact failure the step warns about. A bare `.mcp.json` naming
+`dist/bin.mjs` is both simpler and the only way to be sure 0.6.0 is running.
+
+### Unchanged
+
+The safety register is untouched: D3 is still unwired, `authentication.py` and
+`reply.py` are still unimported, and outbound email still does not exist. Nothing
+today touched any of them.
+
+Still unexercised: the client half. `SWITCH_SCOPE`, `RoomSet` and the reconnect
+declaration are built and unit-tested but have not yet run inside a session.
+That is Step 6, and it is the first thing that proves the client half at all.
