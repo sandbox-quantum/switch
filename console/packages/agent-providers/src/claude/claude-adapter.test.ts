@@ -51,6 +51,21 @@ function resultMessage(uuids: string[], overrides: Record<string, unknown> = {})
 }
 
 describe('ClaudeAdapter session lifecycle', () => {
+  it.each([undefined, { nativeSessionId: 'resumed-session' }])(
+    'accepts the first message after initialization without a conversation init event: %j',
+    async (resume) => {
+      const sdk = createFakeSdk(false);
+      const adapter = new ClaudeAdapter({ query: sdk.query, claudeExecutablePath: '/bin/claude' });
+      const recorder = new EventRecorder(adapter);
+      await adapter.startSession(startInput({ resume }));
+      await recorder.waitFor('session.state.changed', (event) => event.status === 'ready', 1_000);
+      await adapter.sendTurn({ sessionId: SESSION, turnId: 'first', text: 'Hello' });
+      expect(await sdk.latest().waitForSent(1)).toHaveLength(1);
+      expect(recorder.ofType('session.state.changed').at(-1)?.status).toBe('running');
+      await adapter.stopAll();
+    }
+  );
+
   it('picks the CLI session id itself so a session is usable before init', async () => {
     const { sdk, adapter, recorder, session } = await startSession();
     expect(session.nativeSessionId).toMatch(/^[0-9a-f-]{36}$/);

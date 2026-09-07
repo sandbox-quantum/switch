@@ -21,6 +21,15 @@ import { ErrorBoundary } from './lib/components/error-boundary';
 import { appState } from './lib/stores/app-state';
 
 async function bootstrap() {
+  if (import.meta.env.DEV && import.meta.env.VITE_SESSION_V1_PREVIEW === '1') {
+    const { SessionV1Preview } =
+      await import('./features/sessions/components/transcript/session-v1-preview');
+    ReactDOM.createRoot(document.getElementById('root') as HTMLElement).render(
+      <SessionV1Preview />
+    );
+    return;
+  }
+
   wireExternalLinkRequests();
 
   appState.update.start();

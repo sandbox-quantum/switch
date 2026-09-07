@@ -563,6 +563,12 @@ export class ClaudeAdapter implements ProviderAdapter {
 
   private pump(session: SessionState): void {
     const run = async () => {
+      await session.query.initializationResult();
+      if (session.stopping) return;
+      this.emit(session, {
+        type: 'session.state.changed',
+        status: session.turn ? 'running' : 'ready',
+      });
       for await (const message of session.query) this.handleMessage(session, message);
     };
 

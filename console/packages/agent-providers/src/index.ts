@@ -41,3 +41,5 @@ export { prepareGeminiHome } from './gemini/home';
 
 export { CursorAdapter, createCursorAdapter } from './cursor/cursor-adapter';
 export type { CursorAdapterOptions } from './cursor/cursor-adapter';
+export { ChatProjector } from './session-v1/chat-projector';
+export { EventOutbox } from './session-v1/event-outbox';

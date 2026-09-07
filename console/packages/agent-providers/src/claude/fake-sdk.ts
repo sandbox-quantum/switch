@@ -52,6 +52,10 @@ export class FakeQuery {
     return this.sent;
   }
 
+  initializationResult(): Promise<void> {
+    return Promise.resolve();
+  }
+
   interrupt(): Promise<undefined> {
     this.interruptCount += 1;
     return Promise.resolve(undefined);
@@ -99,7 +103,7 @@ export interface FakeSdk {
 }
 
 /** Mirrors the CLI, which honours `sessionId` and echoes it back on `init`. */
-export function createFakeSdk(): FakeSdk {
+export function createFakeSdk(emitInit = true): FakeSdk {
   const queries: FakeQuery[] = [];
   let captured: Options | undefined;
 
@@ -107,14 +111,15 @@ export function createFakeSdk(): FakeSdk {
     captured = options;
     const fake = new FakeQuery(prompt);
     queries.push(fake);
-    fake.emit({
-      type: 'system',
-      subtype: 'init',
-      session_id: options?.sessionId ?? options?.resume ?? 'unknown',
-      model: 'claude-sonnet-5',
-      tools: [],
-      mcp_servers: [],
-    });
+    if (emitInit)
+      fake.emit({
+        type: 'system',
+        subtype: 'init',
+        session_id: options?.sessionId ?? options?.resume ?? 'unknown',
+        model: 'claude-sonnet-5',
+        tools: [],
+        mcp_servers: [],
+      });
     return fake as unknown as Query;
   };
 
