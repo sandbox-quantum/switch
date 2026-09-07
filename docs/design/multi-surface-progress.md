@@ -1177,3 +1177,48 @@ A bare `claude` session has no Switch Console, so nothing injects, and no
 transcript on this machine has ever received a channel delivery. So the demo
 needs Switch Console running to show the unprompted wake-up; without it, the
 multi-surface claim is demonstrable but only interactively.
+
+### Switch Console and an unpublished runtime are in direct conflict
+
+Starting Switch Console to get the wake-up **updated the connector plugin to
+0.9.14 on launch** and thereby replaced the hand-substituted local runtime with
+its npm pin. The demo silently regressed to single-room: 0.9.14 pins
+`@sandboxaq/switch-agent-runtime@0.4.1`, which has no `SWITCH_SCOPE` and no
+`RoomSet`.
+
+Nothing warned. The app is doing its job — it manages the connector — and the
+substitution was never a supported state.
+
+So the two halves of the demo currently exclude one another:
+
+| | multi-surface | unprompted wake-up |
+|---|---|---|
+| bare `claude`, local runtime | ✅ | ❌ nothing injects |
+| Switch Console, pinned runtime | ❌ 0.4.1 is single-room | ✅ |
+
+Having both means **publishing the runtime** — `git tag
+switch-agent-runtime-v0.6.0 && git push origin <tag>` — and moving the connector
+pins to it. That is the documented path and it works from a branch, which is
+exactly what it is for. It is also irreversible in the way publishing always is,
+so it is a decision rather than a step.
+
+Until then the local substitution has to be re-applied to whichever version is
+*active*, and re-applied again after any Switch Console update.
+
+### The branch's connector versions were going backwards
+
+Found while checking the above. `origin/main` has moved on since this branch
+started, and the bumps here were computed from the stale local values:
+
+| Artifact | branch (before) | origin/main | corrected |
+|---|---|---|---|
+| claude-code-plugin | 0.9.12 | 0.9.14 | **0.9.15** |
+| codex-plugin | 0.3.13 | 0.3.15 | **0.3.16** |
+| opencode-plugin | 0.1.8 | 0.1.10 | **0.1.11** |
+| agent runtime | 0.6.0 | 0.4.1 | 0.6.0 (already ahead) |
+
+Merging as it stood would have moved three plugin versions *down*, and an
+install compares versions to decide whether to update — so the fix would not
+have reached anyone. `just artifacts-check` does not catch this: it checks the
+registry against the declared files, both of which were consistently wrong.
+Worth a rebase onto `origin/main` before the PR.
