@@ -4,6 +4,7 @@ import { useEffect, useState, useSyncExternalStore } from 'react';
 import { Button } from '@renderer/lib/ui/button';
 import { MarkdownRenderer } from '@renderer/lib/ui/markdown-renderer';
 import { Textarea } from '@renderer/lib/ui/textarea';
+import { SessionV1Request } from './session-v1-request';
 
 /** Both remote and local-only transports feed the same contract-shaped view. */
 export function SessionV1Chat({ client }: { client: SessionChatClient }) {
@@ -127,18 +128,22 @@ export function SessionV1Chat({ client }: { client: SessionChatClient }) {
               {notice.message}
             </p>
           ))}
-          {view.snapshot?.commandStatuses.map((command) => (
-            <p key={command.commandId} className="text-xs text-foreground-muted">
-              Message {command.status}
-              {command.message ? `: ${command.message}` : ''}
-            </p>
+          {view.snapshot?.commandStatuses
+            .filter((command) => command.status !== 'applied')
+            .map((command) => (
+              <p key={command.commandId} className="text-xs text-foreground-muted">
+                Command {command.status}
+                {command.message ? `: ${command.message}` : ''}
+              </p>
+            ))}
+          {view.snapshot?.requests.map((request) => (
+            <SessionV1Request
+              key={request.requestId}
+              request={request}
+              client={client}
+              connected={view.connected}
+            />
           ))}
-          {session?.pendingRequestIds.length ? (
-            <p role="status" className="text-sm text-foreground-warning">
-              This session has a pending request. Request controls are not available in this chat
-              preview.
-            </p>
-          ) : null}
         </div>
       </div>
       <div className="mx-auto w-full max-w-3xl px-5 pb-5">

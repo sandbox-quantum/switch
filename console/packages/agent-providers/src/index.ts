@@ -43,3 +43,6 @@ export { CursorAdapter, createCursorAdapter } from './cursor/cursor-adapter';
 export type { CursorAdapterOptions } from './cursor/cursor-adapter';
 export { ChatProjector } from './session-v1/chat-projector';
 export { EventOutbox } from './session-v1/event-outbox';
+export { HostConnection } from './host/client';
+export type { HostEndpoint, HostStartRequest } from './host/server';
+export { connectHost } from './host/launcher';

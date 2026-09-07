@@ -644,6 +644,17 @@ export class ClaudeAdapter implements ProviderAdapter {
         itemId: `${session.streamMessageId}#${index}`,
         text: '',
       });
+      this.emit(session, {
+        type: 'item.started',
+        turnId,
+        item: {
+          id: `${session.streamMessageId}#${index}`,
+          type: 'assistant_message',
+          status: 'in_progress',
+          title: '',
+          text: '',
+        },
+      });
       session.streamedMessageIds.add(session.streamMessageId);
       return;
     }

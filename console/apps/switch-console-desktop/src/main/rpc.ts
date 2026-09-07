@@ -11,6 +11,7 @@ import { providersController } from './core/providers/controller';
 import { ptyController } from './core/pty/controller';
 import { remoteHostsController } from './core/remote-hosts/controller';
 import { resourceMonitorController } from './core/resource-monitor/controller';
+import { sdkHostController } from './core/sdk-host/controller';
 import { searchController } from './core/search/controller';
 import { sessionController } from './core/sessions/controller';
 import { sessionTranscriptController } from './core/sessions/transcript-controller';
@@ -25,6 +26,7 @@ import { updateController } from './core/updates/controller';
 import { viewStateController } from './core/view-state/controller';
 
 export const rpcRouter = createRPCRouter({
+  sdkHost: sdkHostController,
   providers: providersController,
   agents: agentsController,
   app: appController,

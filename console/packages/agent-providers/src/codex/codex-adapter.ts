@@ -65,14 +65,6 @@ const CLIENT_VERSION = '0.1.0';
  */
 const DEFAULT_FEATURES: Record<string, boolean> = { multi_agent_v2: true };
 
-const RESUME_FALLBACK_SNIPPETS = [
-  'no rollout found',
-  'not found',
-  'no such thread',
-  'unknown thread',
-  'does not exist',
-];
-
 export interface CodexAdapterOptions {
   /** Defaults to `codex` on PATH. */
   binaryPath?: string;
@@ -150,12 +142,6 @@ function turnOutcomeOf(status: CodexTurnNotification['turn']['status']): TurnOut
     default:
       return 'error';
   }
-}
-
-function isResumeFallbackError(error: unknown): boolean {
-  const message =
-    error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase();
-  return RESUME_FALLBACK_SNIPPETS.some((snippet) => message.includes(snippet));
 }
 
 function approvalOptions(decisions: ApprovalDecision[]): ApprovalOption[] {
@@ -441,20 +427,11 @@ export class CodexAdapter implements ProviderAdapter {
     if (!resumeThreadId) {
       return client.request<CodexThreadOpenResponse>(CODEX_CLIENT_METHODS.threadStart, config);
     }
-    try {
-      return await client.request<CodexThreadOpenResponse>(CODEX_CLIENT_METHODS.threadResume, {
-        ...config,
-        threadId: resumeThreadId,
-        excludeTurns: true,
-      });
-    } catch (cause) {
-      if (!isResumeFallbackError(cause)) throw cause;
-      this.logger.warn('codex thread/resume failed; starting a fresh thread', {
-        resumeThreadId,
-        error: String(cause),
-      });
-      return client.request<CodexThreadOpenResponse>(CODEX_CLIENT_METHODS.threadStart, config);
-    }
+    return client.request<CodexThreadOpenResponse>(CODEX_CLIENT_METHODS.threadResume, {
+      ...config,
+      threadId: resumeThreadId,
+      excludeTurns: true,
+    });
   }
 
   private async trySteer(

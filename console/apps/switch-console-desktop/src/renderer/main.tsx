@@ -21,6 +21,15 @@ import { ErrorBoundary } from './lib/components/error-boundary';
 import { appState } from './lib/stores/app-state';
 
 async function bootstrap() {
+  if (import.meta.env.DEV && import.meta.env.VITE_SESSION_HOST === '1') {
+    const { SessionHostWorkbench } =
+      await import('./features/sessions/components/transcript/session-host-workbench');
+    ReactDOM.createRoot(document.getElementById('root') as HTMLElement).render(
+      <SessionHostWorkbench />
+    );
+    return;
+  }
+
   if (import.meta.env.DEV && import.meta.env.VITE_SESSION_V1_PREVIEW === '1') {
     const { SessionV1Preview } =
       await import('./features/sessions/components/transcript/session-v1-preview');

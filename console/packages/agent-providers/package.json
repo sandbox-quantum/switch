@@ -20,7 +20,8 @@
       "types": "./dist/testing.d.mts",
       "default": "./dist/testing.mjs"
     },
-    "./package.json": "./package.json"
+    "./package.json": "./package.json",
+    "./host-daemon": "./dist/host-daemon.mjs"
   },
   "scripts": {
     "dev": "tsdown --watch",
@@ -35,7 +36,8 @@
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.3.260",
     "@opencode-ai/sdk": "^1.18.27",
-    "@switch-console/shared": "workspace:*"
+    "@switch-console/shared": "workspace:*",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@types/node": "^20.19.42",

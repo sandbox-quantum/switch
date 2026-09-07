@@ -385,6 +385,18 @@ export class GeminiAdapter implements ProviderAdapter {
       !Array.isArray(update.content) &&
       update.content.type === 'text'
     ) {
+      if (!state.messageText)
+        this.emit(state, {
+          type: 'item.started',
+          turnId: state.turn,
+          item: {
+            id: state.messageId,
+            type: 'assistant_message',
+            status: 'in_progress',
+            title: '',
+            text: '',
+          },
+        });
       state.messageText += update.content.text ?? '';
       this.emit(state, {
         type: 'content.delta',

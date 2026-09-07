@@ -65,6 +65,26 @@ describe('CodexAdapter', () => {
     });
   });
 
+  it('fails resume without silently opening a fresh thread', async () => {
+    const adapter = createCodexAdapter();
+    const pending = adapter.startSession({
+      sessionId: 'resume',
+      cwd: '/work',
+      runtimeMode: 'approval-required',
+      env: { PATH: '/usr/bin' },
+      mcpServers: {},
+      resume: { nativeSessionId: 'missing' },
+    });
+    const server = servers.at(-1)!;
+    server.on('message', (message: FakeJsonRpcMessage) => {
+      if (message.method === 'thread/resume')
+        server.send({ id: message.id, error: { code: -32000, message: 'no rollout found' } });
+    });
+    await expect(pending).rejects.toThrow('no rollout found');
+    expect(server.received.filter((message) => message.method === 'thread/start')).toHaveLength(0);
+    expect(adapter.hasSession('resume')).toBe(false);
+  });
+
   it('asks for approvals in approval-required mode', async () => {
     const { server } = await start('approval-required');
     const threadStart = server.received.find((message) => message.method === 'thread/start');

@@ -99,7 +99,7 @@ const request = z.strictObject({
   audience,
   expiresAt: timestamp.nullable(),
 });
-const session = z.strictObject({
+export const sessionSchema = z.strictObject({
   sessionId: id,
   agentId: id,
   provider: z.enum(['claude', 'codex', 'opencode', 'gemini', 'cursor']),
@@ -132,7 +132,7 @@ export const commandStatusSchema = z.strictObject({
   message: z.string().nullable(),
 });
 const hostBodies = [
-  z.strictObject({ type: z.literal('session.upsert'), session }),
+  z.strictObject({ type: z.literal('session.upsert'), session: sessionSchema }),
   turn,
   z.strictObject({ type: z.literal('item.upsert'), item }),
   z.strictObject({ type: z.literal('request.opened'), request }),
@@ -181,7 +181,7 @@ export const serverEventSchema: z.ZodType<ServerEvent> = z.strictObject({
 export const snapshotSchema: z.ZodType<Snapshot> = z.strictObject({
   contractVersion: z.literal(1),
   throughSequence: counter,
-  session,
+  session: sessionSchema,
   turns: z.array(turn),
   items: z.array(item),
   requests: z.array(

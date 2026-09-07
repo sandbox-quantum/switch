@@ -282,6 +282,9 @@ describe('ClaudeAdapter event translation', () => {
       (event) => event.item.type === 'assistant_message',
       1_000
     );
+    expect(
+      recorder.ofType('item.started').find((event) => event.item.id === 'msg_1#0')
+    ).toMatchObject({ item: { type: 'assistant_message', status: 'in_progress', text: '' } });
     expect(completed.item.id).toBe('msg_1#0');
     expect(completed.item.text).toBe('Hello world');
     expect(recorder.assistantText('turn-1')).toBe('Hello world');

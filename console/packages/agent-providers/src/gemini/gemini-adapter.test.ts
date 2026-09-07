@@ -177,6 +177,11 @@ it('finishes streamed assistant messages so the transcript stops showing writing
   await flush();
   const delta = events.find((e) => e.type === 'content.delta');
   if (!delta || delta.type !== 'content.delta') throw new Error('missing delta');
+  const started = events.findIndex(
+    (event) => event.type === 'item.started' && event.item.id === delta.itemId
+  );
+  expect(started).toBeGreaterThanOrEqual(0);
+  expect(started).toBeLessThan(events.indexOf(delta));
   expect(events.find((e) => e.type === 'item.completed')).toMatchObject({
     item: { id: delta.itemId, type: 'assistant_message', status: 'completed', text: 'Hello' },
   });

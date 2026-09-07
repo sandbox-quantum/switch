@@ -141,6 +141,31 @@ export class SessionChatClient {
     return status;
   }
 
+  async execute(body: Command['body'], commandId: string): Promise<CommandStatus> {
+    const session = this.replica?.snapshot().session;
+    if (!session || !this.view.connected || session.connectivity !== 'online')
+      throw new Error('HOST_OFFLINE: reconnect before sending.');
+    if (
+      this.pending &&
+      (this.pending.commandId !== commandId ||
+        JSON.stringify(this.pending.body) !== JSON.stringify(body))
+    )
+      throw new Error('Resolve the previous command before sending another.');
+    const command = this.pending ?? {
+      contractVersion: 1 as const,
+      commandId,
+      sessionId: this.sessionId,
+      epoch: session.epoch,
+      body,
+    };
+    if (command.epoch !== session.epoch)
+      throw new Error('STALE_EPOCH: reconcile the previous command.');
+    this.pending = command;
+    const status = commandStatusSchema.parse(await this.transport.submit(command));
+    this.acceptReceipt(status, commandId);
+    return status;
+  }
+
   hasPendingCommand(): boolean {
     return this.pending !== null;
   }

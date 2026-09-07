@@ -2,6 +2,8 @@ export type * from './contract';
 export { SessionReplica } from './replica';
 export {
   commandSchema,
+  commandStatusSchema,
+  sessionSchema,
   eventBytes,
   hostEventSchema,
   parseHostEvent,
