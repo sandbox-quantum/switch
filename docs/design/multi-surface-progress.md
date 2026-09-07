@@ -1055,3 +1055,39 @@ independent facts. A client change cannot be exercised in a real session at all
 until it is either published or hand-substituted into an installed plugin, so
 "unpublished" is closer to "untestable end to end" than the version table
 suggests.
+
+### The hook, not the channel capability, was the missing wire
+
+The plugin edit was necessary and not sufficient: with the plugin serving the
+local build, the session still connected, still read rooms on request, and was
+still never woken.
+
+The delivery path is not "runtime notifies Claude Code" alone. The connector's
+**`PostToolUse` hook on `connect_to_room`** is what tells the channel which room
+to route, over the localhost port the runtime publishes to
+`~/.switch/sessions/<ppid>/port`. A hook is a separate process, so it does not
+inherit the MCP server's `env` block — credentials put there reach the runtime
+and never the hook, which then reports itself unconfigured and skips **in
+silence**. Its own docstring warns about exactly this; the mistake was assuming
+one `env` block covered both.
+
+The fix is the layout the app already documents, and it is directory-scoped:
+
+```
+<working dir>/.switch/agents/<slug>.json   ← the token
+<working dir>/.claude/settings.local.json  ← endpoint + agent id (+ SWITCH_SCOPE)
+```
+
+Both the runtime and `hooks/switch_hook.py` read it, which is the point of it —
+`console/AGENTS.md` names four consumers of that layout and says they must
+agree. Verified by launching the runtime with cwd set there and no token in the
+environment: it resolved the right agent and published its hook port.
+
+This also removes the credential from the plugin's `.mcp.json`, which is shared
+by every Claude Code session on the machine and was a bad place for it.
+
+**The general lesson for the demo docs:** "point a session at the local
+runtime" is three things, not one — the plugin (channel registration), the
+runtime binary (the build under test), and the credential layout (which the
+hook needs and the MCP `env` block cannot supply). Getting two of the three
+produces a session that looks completely healthy and is deaf.
