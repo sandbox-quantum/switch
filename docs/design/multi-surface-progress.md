@@ -1222,3 +1222,65 @@ install compares versions to decide whether to update — so the fix would not
 have reached anyone. `just artifacts-check` does not catch this: it checks the
 registry against the declared files, both of which were consistently wrong.
 Worth a rebase onto `origin/main` before the PR.
+
+---
+
+## 2026-09-07 — the demo works end to end, under Switch Console
+
+One managed session, one context window, both rooms, **woken by injection**
+rather than prompted. From the session's own transcript:
+
+```
+14:59:36 USER-INPUT: [Switch] probe addressed you in room 09590cc2… [open]
+                     (message_id $z8AExQ…): @atlas which room did this arrive in?
+```
+
+Switch Console typed that in. The `[open]` is this branch's `audience` label
+reaching the model. The replies name their own rooms:
+
+- **t-alpha** — "t-alpha — and I saw it live, not by reading back."
+- **t-beta** — "t-beta. You just pinged me in t-alpha too and both reached me
+  live, so that's your answer: this session holds the two rooms at once and
+  events arrive from both, tagged with the room they came from."
+
+The before and after are both in the alpha room: at 09:40, on the old
+`scope: 'single'` build, the agent posted a correction reporting that
+*"connecting to t-beta flipped t-alpha to disconnected"* — it observed the bug
+itself. At 09:59 it corrected that again.
+
+### What the Switch Console change cost
+
+`RoomConnection` held `roomId: string | null` and opened `scope: 'single'`.
+Widening it turned up two silent failures that only exist with several rooms:
+
+- **Runtime state was deduped per session.** One worker is already `working`
+  when a message lands in its other room, so the session-wide dedupe swallowed
+  that room's indicator entirely — the room that asked showed nothing while its
+  reply was being written. Now deduped per room.
+- **`stop()` cleared only the current turn's room**, leaving the other with a
+  "working on it…" that never resolves.
+
+One thing was tightened rather than loosened: a control command is checked
+against the rooms actually held, not just its envelope's `room_id` — the same
+rule the server applies to `room_id` on an operation.
+
+**Deliberately not done:** `session_room_connections` keys on the session, so
+`onRoomsChanged` reports a *primary* room and the store, the service and the
+renderer badge still show one. The connection serves both. Closing that means a
+schema migration and a pass through main, sidecar and renderer; it is the
+honest remaining gap and it is cosmetic.
+
+### Demo status
+
+| Story | |
+|---|---|
+| US-1 one agent, several surfaces | ✅ |
+| US-2 continuity across surfaces | ✅ |
+| US-4 discretion | 🟡 advisory — the label reaches the model, nothing enforces it |
+| US-6 recognised as me | 🟡 allowlist half, needs the email bridge |
+| US-3 wakes itself | ❌ needs MultiRoomHost + schedule persistence |
+| US-5 answer an outsider | ❌ outbound email does not exist |
+
+Say out loud: the badge shows one room while the session serves two; US-4 is
+advisory; the runtime is unpublished so the plugin is hand-pointed at a local
+build.
