@@ -39,6 +39,7 @@ covered here without anyone thinking about it.
 from __future__ import annotations
 
 import ast
+import re
 from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
@@ -96,32 +97,45 @@ def _resolver_calls(node: ast.AST, name: str) -> list[ast.Call]:
 
 
 def _classify() -> tuple[set[str], set[str]]:
-    """Split the room-bound operations by whether they use the room they resolve.
+    """Split the room-bound operations by which resolver they call.
 
-    An operation that binds the result (`room_id = await …`) acts on that room
-    and must be able to be told which one. One that calls it as a bare
-    statement is only asserting the caller is connected.
+    Keyed on the resolver, not on the shape of the statement around it.
+    An earlier version asked whether the call was an `ast.Assign` (acts on the
+    room) or a bare `ast.Expr` (connectivity only), which had two failures that
+    both passed silently: reverting an operation to `require_connected_room()`
+    moved it back into `binding_only` — so the very regression under test
+    re-classified itself out of the test — and any other statement shape, say
+    `if await require_connected_room():`, landed in neither set and generated
+    no cases at all.
+
+    Touching the room resolver at all means the caller must be able to say
+    which room. That is the rule, and it does not depend on syntax.
     """
     acts_on, binding_only = set(), set()
     for fn in _operation_defs():
         if _resolver_calls(fn, "require_connected"):
             binding_only.add(fn.name)
-        for stmt in ast.walk(fn):
-            if not _resolver_calls(stmt, "require_connected_room"):
-                continue
-            if isinstance(stmt, ast.Assign):
-                acts_on.add(fn.name)
-            elif isinstance(stmt, ast.Expr):
-                binding_only.add(fn.name)
+        if _resolver_calls(fn, "require_connected_room"):
+            acts_on.add(fn.name)
     return acts_on, binding_only
 
 
 def _passes_room_id_through() -> set[str]:
-    """Operations whose `require_connected_room` call is given an argument."""
+    """Operations that pass their own `room_id` to `require_connected_room`.
+
+    Matches the name, not merely "some argument": `require_connected_room("x")`
+    or a different variable would satisfy the looser check while sending every
+    caller to one hard-coded room.
+    """
+
+    def names_room_id(call: ast.Call) -> bool:
+        supplied = [*call.args, *(k.value for k in call.keywords)]
+        return any(isinstance(a, ast.Name) and a.id == "room_id" for a in supplied)
+
     return {
         fn.name
         for fn in _operation_defs()
-        if any(c.args or c.keywords for c in _resolver_calls(fn, "require_connected_room"))
+        if any(names_room_id(c) for c in _resolver_calls(fn, "require_connected_room"))
     }
 
 
@@ -192,6 +206,36 @@ class _Protocol(SimpleNamespace):
 
     async def release_room_role(self, agent_id: str) -> None:
         self.roles_released.append(agent_id)
+
+    # The task lifecycle. Keyed on a task id, never on the caller's room.
+    async def accept_task(self, _agent_id: str, _task_id: str) -> None:
+        return None
+
+    async def update_task(self, _agent_id: str, _task_id: str, _update: str) -> None:
+        return None
+
+    async def finalise_task(self, _agent_id: str, _task_id: str, _outcome: str) -> None:
+        return None
+
+    async def cancel_task(self, _agent_id: str, _task_id: str, _reason: str) -> None:
+        return None
+
+    async def list_rooms(self, _agent_id: str, **_kw: Any) -> list[Any]:
+        return [
+            SimpleNamespace(id=r, name=r, description="", archived=False)
+            for r in (ROOM_A, ROOM_B, ROOM_ELSEWHERE)
+        ]
+
+    async def get_task(self, _agent_id: str, task_id: str) -> Any:
+        return SimpleNamespace(
+            id=task_id,
+            status=SimpleNamespace(value="ongoing"),
+            accepted_at=None,
+            finalised_at=None,
+            outcome=None,
+            summary="",
+            updates=[],
+        )
 
     async def send_message(
         self, _agent_id: str, room_id: str, body: str, **_kw: Any
@@ -430,6 +474,42 @@ async def test_assume_role_takes_the_role_in_the_named_room() -> None:
     assert protocol.roles_assumed == [(ROOM_B, "reviewer")]
 
 
+# ── "Where am I?" has to answer with every room ──────────────────────────────
+
+
+async def test_list_rooms_marks_every_room_the_caller_holds() -> None:
+    """`list_rooms` resolves the room inline, so D4's fix did not reach it.
+
+    It marked `connected` only when the caller held exactly one room, so a
+    connection holding two was told it was in **neither** — and the skill sends
+    an agent here to answer "where am I?". A multi-surface agent that believes
+    it is nowhere reconnects, and reconnecting is what costs it a room slot.
+    """
+    protocol = _Protocol(_registry_holding(ROOM_A, ROOM_B))
+    with _calling(protocol):
+        listed = await ops.list_rooms()
+
+    connected = {r["room_id"] for r in listed if r["connected"]}
+    assert connected == {ROOM_A, ROOM_B}
+
+
+async def test_list_rooms_still_marks_the_single_room_case() -> None:
+    protocol = _Protocol(_registry_holding(ROOM_A, scope="single"))
+    with _calling(protocol):
+        listed = await ops.list_rooms()
+
+    assert {r["room_id"] for r in listed if r["connected"]} == {ROOM_A}
+
+
+async def test_list_rooms_marks_nothing_when_the_caller_holds_nothing() -> None:
+    """The claim must come from the rooms held, not from the room existing."""
+    protocol = _Protocol(_registry_holding())
+    with _calling(protocol):
+        listed = await ops.list_rooms()
+
+    assert not [r for r in listed if r["connected"]]
+
+
 # ── The connectivity-only operations stop demanding a room ───────────────────
 
 
@@ -444,6 +524,31 @@ async def test_release_role_works_while_several_rooms_are_held() -> None:
         assert await ops.release_role() == {"status": "released"}
 
     assert protocol.roles_released == [AGENT]
+
+
+@pytest.mark.parametrize(
+    "call",
+    [
+        pytest.param(lambda: ops.accept_task("task-1"), id="accept_task"),
+        pytest.param(lambda: ops.update_task("task-1", "progress"), id="update_task"),
+        pytest.param(lambda: ops.finalise_task("task-1", "done"), id="finalise_task"),
+        pytest.param(lambda: ops.cancel_task("task-1", "changed my mind"), id="cancel_task"),
+    ],
+)
+async def test_the_task_lifecycle_works_while_several_rooms_are_held(call) -> None:
+    """The four operations a schema check cannot speak for.
+
+    Reverting these to `require_connected_room()` reinstates D4 for the whole
+    task lifecycle, and the structural tests stay green either way: the schema
+    assertion is "no room_id", which the broken version also satisfies. Only
+    calling them proves it.
+
+    A task id is globally unique and every one of these re-checks membership of
+    the task's *own* room, so the caller's room was never part of the decision.
+    """
+    protocol = _Protocol(_registry_holding(ROOM_A, ROOM_B))
+    with _calling(protocol):
+        await call()
 
 
 async def test_a_connectivity_only_operation_still_needs_a_connection() -> None:
@@ -492,6 +597,23 @@ def test_every_room_acting_operation_passes_room_id_through(name: str) -> None:
     )
 
 
+@pytest.mark.parametrize("name", sorted(ACTS_ON_A_ROOM))
+def test_every_room_acting_operation_documents_room_id(name: str) -> None:
+    """The docstring **is** the MCP tool description.
+
+    A parameter that exists and is undescribed is invisible to the model that
+    has to decide whether to pass it — the same discoverability failure as D4,
+    narrowed to one tool. `list_linked_rooms` was in that state, and was missed
+    by a first check that matched the substring `room_id` against the
+    `target_room_id` in its own return shape. Hence the token match here.
+    """
+    doc = all_operations()[name].description
+
+    assert re.search(r"(?<![\w.])room_id\b", doc), (
+        f"{name} takes room_id and never names it in its description"
+    )
+
+
 @pytest.mark.parametrize("name", sorted(ONLY_NEEDS_A_BINDING))
 def test_a_connectivity_only_operation_asks_for_no_room(name: str) -> None:
     """The other half of the rule, and the reason it is not "add room_id to all".
@@ -521,6 +643,16 @@ def test_the_source_scan_actually_found_operations() -> None:
     # "uses the room" test is deciding both answers.
     assert not (ACTS_ON_A_ROOM & ONLY_NEEDS_A_BINDING)
     assert set(WIDENED) <= ACTS_ON_A_ROOM
+
+    # Total, not just non-empty. Thresholds alone let a partial regression
+    # through: two operations dropping out of the scan still clears `>= 15`.
+    every_room_bound = {
+        fn.name
+        for fn in _operation_defs()
+        if _resolver_calls(fn, "require_connected_room")
+        or _resolver_calls(fn, "require_connected")
+    }
+    assert ACTS_ON_A_ROOM | ONLY_NEEDS_A_BINDING == every_room_bound
 
 
 @pytest.mark.parametrize("name", WIDENED)

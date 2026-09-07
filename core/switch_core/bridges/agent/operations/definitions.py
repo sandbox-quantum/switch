@@ -151,26 +151,32 @@ async def list_rooms(include_archived: bool = False) -> list[dict[str, Any]]:
 
     Returns:
         List of {room_id, name, description, connected, archived} dicts.
-        `connected` is true for the room this session is currently connected
-        to (if any); `archived` is true for archived rooms.
+        `connected` is true for **every** room you currently hold — usually one,
+        and more than one when this session spans several surfaces at once. So
+        this is the answer to "which rooms am I in?"; `archived` is true for
+        archived rooms.
     """
     agent_id = get_agent_id()
 
     protocol = get_protocol()
-    connected_room_id: str | None = None
+    connected_room_ids: frozenset[str] = frozenset()
     key = session_key()
     if key:
         # Ask the live connection first and the binding row only for callers
         # that have none, matching how require_connected_room resolves it — a
         # connection carries its own rooms and no row is written for it.
+        #
+        # Every room it holds, not "the one". A connection covering several
+        # surfaces is in all of them, and answering "none" is what sends an
+        # agent to reconnect — which costs it a room slot it already had.
         connection = protocol.connections.get(key)
-        if connection is not None and len(connection.rooms) == 1:
-            connected_room_id = next(iter(connection.rooms))
-        elif connection is None:
+        if connection is not None:
+            connected_room_ids = frozenset(connection.rooms)
+        else:
             async with protocol.session_factory() as db:
                 row = await protocol.agent_session_store.get_connected_room(db, key)
             if row is not None:
-                _, connected_room_id = row
+                connected_room_ids = frozenset({row[1]})
     rooms = await protocol.list_rooms(agent_id, include_archived=include_archived)
 
     return [
@@ -178,7 +184,7 @@ async def list_rooms(include_archived: bool = False) -> list[dict[str, Any]]:
             "room_id": r.id,
             "name": r.name,
             "description": r.description,
-            "connected": r.id == connected_room_id,
+            "connected": r.id in connected_room_ids,
             "archived": r.archived,
         }
         for r in rooms
@@ -394,6 +400,11 @@ async def list_linked_rooms(room_id: str | None = None) -> list[dict[str, Any]]:
     Returns:
         List of {target_room_id, target_room_name, target_room_description,
         label, access, access_note?} dicts.
+
+
+    `room_id` names which connected room to act in. Omit it when you are
+    connected to one room — the usual case. It is required when you are
+    connected to several, where there is no safe default.
     """
     agent_id = get_agent_id()
     room_id = await require_connected_room(room_id)
@@ -945,7 +956,7 @@ async def list_tasks(
         strings or null.
     """
     agent_id = get_agent_id()
-    room_id = await require_connected_room(room_id)  # type: ignore[arg-type]
+    room_id = await require_connected_room(room_id)
 
     protocol = get_protocol()
     tasks = await protocol.list_tasks(

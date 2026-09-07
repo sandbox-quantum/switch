@@ -18,6 +18,8 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+_NOT_CONNECTED = "Not connected to a room. Call connect_to_room first."
+
 _protocol: ProtocolService | None = None
 
 
@@ -75,13 +77,40 @@ def _resolve_room(covered: frozenset[str], room_id: str | None) -> str:
             )
         return room_id
     if not covered:
-        raise ValueError("Not connected to a room. Call connect_to_room first.")
+        raise ValueError(_NOT_CONNECTED)
     if len(covered) > 1:
         raise ValueError(
             "This connection covers several rooms; the operation needs one — "
             f"pass room_id explicitly. Rooms covered: {sorted(covered)}."
         )
     return next(iter(covered))
+
+
+async def _covered_rooms() -> frozenset[str]:
+    """Every room this caller holds, or the error that it holds none.
+
+    The live connection is asked first: a connection that has claimed a room is
+    in it, whether or not anything was ever written to a table. The table is
+    consulted only for callers that predate connections (an MCP transport
+    session), and goes away with them.
+
+    Shared by both requirements below so they cannot disagree about what being
+    connected means — the property the split between them rests on.
+    """
+    key = session_key()
+    if not key:
+        raise ValueError(_NOT_CONNECTED)
+
+    protocol = get_protocol()
+    connection = protocol.connections.get(key)
+    if connection is not None and connection.rooms:
+        return frozenset(connection.rooms)
+
+    async with protocol.session_factory() as db:
+        result = await protocol.agent_session_store.get_connected_room(db, key)
+    if result is None:
+        raise ValueError(_NOT_CONNECTED)
+    return frozenset({result[1]})
 
 
 async def require_connected() -> None:
@@ -93,47 +122,19 @@ async def require_connected() -> None:
     harmless while a caller had one room and became a wall with two: the
     ambiguity error demanded a room id for a value about to be thrown away, and
     an agent on two surfaces could take a role and not give it back.
+
+    Deliberately not on `_resolve_room`'s path, so it cannot raise the
+    ambiguity error it exists to avoid.
     """
-    key = session_key()
-    if not key:
-        raise ValueError("Not connected to a room. Call connect_to_room first.")
-
-    protocol = get_protocol()
-    connection = protocol.connections.get(key)
-    if connection is not None and connection.rooms:
-        return
-
-    async with protocol.session_factory() as db:
-        result = await protocol.agent_session_store.get_connected_room(db, key)
-    if result is None:
-        raise ValueError("Not connected to a room. Call connect_to_room first.")
+    await _covered_rooms()
 
 
 async def require_connected_room(room_id: str | None = None) -> str:
     """The room this call acts on, or a clear error saying why there is none.
-
-    The live connection is asked first: a connection that has claimed a room is
-    in it, whether or not anything was ever written to a table. The table is
-    consulted only for callers that predate connections (an MCP transport
-    session), and goes away with them.
 
     `room_id` names the room when the caller holds more than one, which is what
     a connection covering several surfaces needs to act at all. It is validated
     against the caller's rooms either way — including for a single-room caller,
     where it can only confirm the room already held.
     """
-    key = session_key()
-    if not key:
-        raise ValueError("Not connected to a room. Call connect_to_room first.")
-
-    protocol = get_protocol()
-    connection = protocol.connections.get(key)
-    if connection is not None and connection.rooms:
-        return _resolve_room(frozenset(connection.rooms), room_id)
-
-    async with protocol.session_factory() as db:
-        result = await protocol.agent_session_store.get_connected_room(db, key)
-    if result is None:
-        raise ValueError("Not connected to a room. Call connect_to_room first.")
-    _, bound_room = result
-    return _resolve_room(frozenset({bound_room}), room_id)
+    return _resolve_room(await _covered_rooms(), room_id)

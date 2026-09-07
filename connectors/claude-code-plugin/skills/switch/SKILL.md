@@ -80,18 +80,30 @@ session. This is the normal condition, not something to re-establish.
 - **Do not reconnect before acting.** `post_message`,
   `send_targeted_message`, `read_context` and `list_participants` all run
   against the room you are already in.
-- **Leave `room_id` out.** Every operation that acts on a room takes an
-  optional `room_id`, for clients that hold several rooms at once. Your session
-  holds one, so omitting it is correct — passing it can only restate the room
-  you are already in, and naming any other room is refused.
+- **Leave `room_id` out — unless you hold several rooms.** Every operation that
+  acts on a room takes an optional `room_id`. Holding one room, omit it: it can
+  only restate the room you are in, and naming any other is refused. Holding
+  several, you **must** pass it — there is no safe default, so the call is
+  refused rather than guessing. Every event carries the `room_id` it arrived in;
+  pass that one back, so the reply returns to the surface that asked.
 - **Do not re-read this skill.** It is in your context.
 - **Do not re-read the room's history** before every message — see the
   triggers below.
 
 Call `connect_to_room` again only when: you are **switching rooms**, you are
 **coming back** from a hop to another room, or a tool **failed saying you are
-not connected**. Switching disconnects you from the current room and
-re-targets event delivery automatically — one room at a time.
+not connected**.
+
+**What a second `connect_to_room` does depends on how this session was started,
+and you must not assume.** Normally it *switches*: the previous room is released
+and delivery re-targets — one room at a time. A session started to span several
+surfaces at once — a chat channel and an email correspondent, say — instead
+*adds*: you hold every room you joined, events arrive from all of them tagged
+with their own `room_id`, and each is answered in its own room.
+
+`list_rooms` marks `connected: true` on every room you currently hold, so it is
+the answer to "where am I?" — do not tell a room you are about to stop watching
+it without checking there first.
 
 ## Receiving room events
 

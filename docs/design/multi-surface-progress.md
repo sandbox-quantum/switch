@@ -1091,3 +1091,89 @@ runtime" is three things, not one — the plugin (channel registration), the
 runtime binary (the build under test), and the credential layout (which the
 hook needs and the MCP `env` block cannot supply). Getting two of the three
 produces a session that looks completely healthy and is deaf.
+
+---
+
+## 2026-09-06 — reviewer findings closed, and the wake-up path identified
+
+### Two more `len(rooms) == 1` bugs, same family as D4
+
+The reviewer found the D4 fix was incomplete in a way its tests structurally
+could not see: two places resolve the connected room **inline** rather than
+through `require_connected_room`, so widening the resolver never reached them.
+Both are callable — they just answer wrongly, which is why no test failed.
+
+- **`list_rooms`** marked `connected` only when the caller held exactly one
+  room, so a connection holding two was told it was in **neither**. That is the
+  tool an agent uses to answer "where am I?", and the skill now sends it there.
+  An agent that believes it is nowhere reconnects, and reconnecting is what
+  costs it a room slot.
+- **`_locate` in `service.py`** decided role presence the same way, so a holder
+  reachable on two surfaces read as absent from the very room being listed —
+  "live, but we cannot find its session" — for exactly the connections `multi`
+  exists to support.
+
+Both now test membership (`room_id in connection.rooms`) rather than counting.
+
+### The test hole, which mattered more than either bug
+
+Reverting `accept_task`, `update_task`, `finalise_task` and `cancel_task` to the
+broken `require_connected_room()` **passed 435 tests**. Two causes, both mine:
+
+- `_classify()` keyed on the *statement shape* — `Assign` meant acts-on, bare
+  `Expr` meant connectivity-only — so a reverted operation re-classified itself
+  into the set that does not check it. The regression under test removed itself
+  from the test.
+- The connectivity-only assertion was "no `room_id` in the schema", which the
+  broken version also satisfies.
+
+Now keyed on **which resolver is called**, which is the actual rule, plus
+behavioural tests that call all four. Re-running the same mutation: **16
+failures**. The guard is also total now (`ACTS_ON_A_ROOM | ONLY_NEEDS_A_BINDING
+== every room-bound operation`) rather than a `>= 15` threshold that two
+silently-dropped operations would clear.
+
+Also from the review: `_passes_room_id_through` now matches the *name*
+`room_id` rather than any argument (`require_connected_room("hardcoded")` passed
+before); `list_linked_rooms` documented its `room_id` — missed first time
+because a substring check matched the `target_room_id` in its own return shape,
+so there is now a token-accurate test over every operation; and
+`require_connected` / `require_connected_room` share `_covered_rooms()`, so they
+cannot drift on what "connected" means — the property the 14/5 split rests on.
+
+### The skills were written for `single` and the model believed them
+
+A live agent holding two rooms said, in the room:
+
+> "This is t-alpha. I hold one room at a time — this one right now, and I'm
+> about to switch to another, so I won't see further messages here until I'm
+> back."
+
+It was reading the skill, which said *"Switching disconnects you from the
+current room … one room at a time"* and *"Your session holds one."* Both false
+under `multi`, and the agent acted on them — announcing it would stop watching a
+room it was in fact still holding. It self-corrected only because it happened to
+notice.
+
+All three skills now describe both behaviours and tell the agent not to assume
+which it has, pointing at `list_rooms` — which is why that bug had to be fixed
+in the same change.
+
+### Where the wake-up actually comes from
+
+Chased at length, because a session could read its rooms on request and was
+never woken. The runtime is not at fault: driven under a minimal MCP stdio
+client it emits `notifications/claude/channel` correctly, including the
+two-room case with each event tagged by its own room.
+
+**Switch Console is what wakes a session in production** — `auto-session-watcher`
+injects the room message into the running TUI as keystrokes
+(`plugin-prompt-injector`, `injection-sink`, `TmuxInjectionSink`). The repo says
+so plainly: *"injecting prompts into a running TUI when the provider can't push
+events into a live session."* `SUPPRESS_NOTIFICATIONS` exists for the same
+reason — the runtime stands down when Switch Console is doing the telling.
+
+A bare `claude` session has no Switch Console, so nothing injects, and no
+transcript on this machine has ever received a channel delivery. So the demo
+needs Switch Console running to show the unprompted wake-up; without it, the
+multi-surface claim is demonstrable but only interactively.

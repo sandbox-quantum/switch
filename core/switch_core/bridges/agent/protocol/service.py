@@ -2484,7 +2484,15 @@ class ProtocolService:
             # row is only there for callers that predate connections.
             connection = self.connections.get(lease.transport_session_id)
             if connection is not None:
+                # Present here if this room is among the ones it holds. Testing
+                # for exactly one room reported a holder spanning two surfaces
+                # as absent from the very room being listed — "live, but we
+                # cannot find its session" — for precisely the connections
+                # `multi` exists to support.
+                if room_id in connection.rooms:
+                    return True, None
                 if len(connection.rooms) != 1:
+                    # Elsewhere, but there is no single "elsewhere" to name.
                     return False, None
                 conn_room_id = next(iter(connection.rooms))
             else:

@@ -3,7 +3,11 @@ from __future__ import annotations
 from types import SimpleNamespace
 from typing import Any
 
-from switch_core.bridges.agent.protocol.connections import ConnectionRegistry
+from switch_core.bridges.agent.protocol.connections import (
+    PROTOCOL_VERSION,
+    ClientDeclaration,
+    ConnectionRegistry,
+)
 from switch_core.bridges.agent.protocol.service import ProtocolService
 
 
@@ -164,6 +168,71 @@ class TestListRoomRoles:
             "present_here": False,
             "session_room": None,
         }
+
+    async def test_a_holder_spanning_two_rooms_is_present_in_this_one(self) -> None:
+        """A live connection covering several rooms is in each of them.
+
+        Presence tested for exactly one room, so a holder reachable on two
+        surfaces was reported absent from the room being listed — "live, but we
+        cannot find its session" — for precisely the connections `multi` exists
+        to support. Nothing else says the seat is occupied here, so a viewer
+        reads the role as unattended.
+        """
+        role = _role("role-w", "worker", False, "do the work")
+        leases = {"role-w": [_lease("role-w", "a-multi", "tx-multi")]}
+        svc = _build_service(
+            roles=[role],
+            leases=leases,
+            agents={"a-multi": SimpleNamespace(name="atlas")},
+            bindings={},
+            rooms={"room-1": SimpleNamespace(name="This Room")},
+        )
+        conn = svc.connections.open(
+            agent_id="a-multi",
+            connection_id="tx-multi",
+            scope="multi",
+            delivery_filter="all",
+            spawn_capable=False,
+            cursor=0,
+            declaration=ClientDeclaration(speaks=PROTOCOL_VERSION),
+        )
+        svc.connections.claim_room(conn, "room-1")
+        svc.connections.claim_room(conn, "room-2")
+
+        result = await svc.list_room_roles("viewer", "room-1")
+
+        assert result[0]["held_by"][0] == {
+            "name": "atlas",
+            "present_here": True,
+            "session_room": None,
+        }
+
+    async def test_a_holder_spanning_rooms_that_excludes_this_one_is_absent(self) -> None:
+        """Two rooms, neither of them this one: absent, and no single room to name."""
+        role = _role("role-w", "worker", False, "do the work")
+        leases = {"role-w": [_lease("role-w", "a-multi", "tx-multi")]}
+        svc = _build_service(
+            roles=[role],
+            leases=leases,
+            agents={"a-multi": SimpleNamespace(name="atlas")},
+            bindings={},
+            rooms={"room-1": SimpleNamespace(name="This Room")},
+        )
+        conn = svc.connections.open(
+            agent_id="a-multi",
+            connection_id="tx-multi",
+            scope="multi",
+            delivery_filter="all",
+            spawn_capable=False,
+            cursor=0,
+            declaration=ClientDeclaration(speaks=PROTOCOL_VERSION),
+        )
+        svc.connections.claim_room(conn, "room-2")
+        svc.connections.claim_room(conn, "room-3")
+
+        result = await svc.list_room_roles("viewer", "room-1")
+
+        assert result[0]["held_by"][0]["present_here"] is False
 
     async def test_free_role_has_empty_held_by_and_is_assumable(self) -> None:
         role = _role("role-m", "manager", True, "coordinate")
