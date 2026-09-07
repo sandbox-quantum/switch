@@ -1,186 +1,169 @@
-# Running the multi-surface demo — a runbook
+# Multi-surface demo — walkthrough
 
-Step by step from a clean checkout to a demo. Companion to
-`multi-surface-demo.md` (what is demonstrable and why) and
-`multi-surface-progress.md` (what happened and what is knowingly missing).
+One linear path from a clean checkout to a working demo: a single Claude Code
+session that is one agent in a Slack channel *and* at an email address, holding
+one context across both.
 
-**What you end up with:** one Claude Code session that is a single agent in a
-Slack channel *and* at an email address, holding one context across both. That
-covers **US-1, US-2, US-6**, and **US-4 in its advisory form**.
+Covers **US-1, US-2, US-6**, and **US-4 in its advisory form**. Does **not**
+cover US-3 or US-5 — see *What this does not show*.
 
-Total: an afternoon, most of it Slack app setup. Phases 0–2 need no Slack and
-no email and are worth doing on their own.
+Each step says what success looks like. **Stop at the first failure**: later
+steps will not be interpretable. Steps are marked **[verified]** where these
+exact commands have been run against a real stack, **[untried]** where they have
+not.
+
+Reference — component map, every known snag, teardown — is at the end.
 
 ---
 
-## Test sequence
+## Before you start
 
-Five tests, each proving one thing and each a prerequisite for the next. Stop at
-the first failure — later tests will not be interpretable.
+- Docker running
+- `uv`, `just`
+- `pnpm` (Node 25 dropped corepack: `npm i -g corepack && corepack enable`)
+- A Slack app you control, in a workspace you do not mind touching
+- One saved email as `sample.eml` (any client: *Show original* / *View source*),
+  with **your own address** in `From:`
 
-Marked **[verified]** where these exact steps have been run against a real
-stack, and **[untried]** where they have not.
+---
 
-### T1 — the stack answers  **[verified in host mode, untried standalone]**
+## Step 1 — build the client  **[verified]**
+
+The connector fetches a *published* runtime by default and every client change
+here is unpublished. Build the local one now; Step 5 points the session at it.
 
 ```bash
-just standalone-up
+cd console
+pnpm install
+pnpm -r --filter './packages/**' run build
+```
+
+✅ Four packages build; `packages/switch-agent-runtime/dist/bin.mjs` exists.
+
+> If you previously installed with `--ignore-scripts`, Electron's binary was
+> never downloaded: `rm -rf node_modules/electron && pnpm install`.
+
+Optional, cheap:
+
+```bash
+pnpm --filter @sandboxaq/switch-agent-runtime exec vitest run src/
+pnpm --filter @switch-console/desktop exec vitest run --project node --project main-db
+```
+
+✅ 196 and ~3055 passing. One unrelated failure in
+`sidecar/session-spawner.test.ts` on some machines.
+
+---
+
+## Step 2 — start Switch  **[verified in host mode, untried standalone]**
+
+```bash
+cd ..
+just init-env          # skips if .env exists; sets SWITCH_VERSION
+just standalone-up     # everything in Docker, built from the working tree
 curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8000/health
 ```
 
-✅ `200`. Dashboard on <http://127.0.0.1:3000>.
-❌ Check `docker compose ... logs switch`. `SWITCH_VERSION` unset is the usual
-cause; `just init-env` sets it.
+✅ `200`. Dashboard on <http://127.0.0.1:3000>, credentials from
+`GATEWAY_ADMIN_EMAIL` / `GATEWAY_ADMIN_PASSWORD` in `.env`.
 
-### T2 — an agent exists  **[verified]**
+No migration step — `switch_core.main` runs `alembic upgrade head` on boot.
+
+❌ Container exits →
+`docker compose -f deploy/local/standalone-docker-compose.yml --project-directory . logs switch`
+
+> **Alternative — host mode.** `just up && just migrate && just run` runs only
+> the dependencies in Docker with switch-core on your machine. Faster for
+> iterating on server code. Everything below is identical.
+
+---
+
+## Step 3 — register an agent  **[verified]**
 
 ```bash
 TOKEN=$(grep AGENT_REGISTRATION_TOKEN .env | cut -d= -f2)
 curl -s -X POST http://127.0.0.1:8000/agents \
   -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -d '{
-    "name":"atlas","description":"demo","connector_type":"claude_code",
+    "name":"atlas","description":"multi-surface demo","connector_type":"claude_code",
     "integration_profile":{"connection_model":"always_on","message_exchange":true,
       "pre_invocation_mediation":[],"post_invocation_mediation":[],"event_reporting":[],
       "task_protocol":{"can_delegate":false,"can_accept":false}}}'
 ```
 
-✅ `{"id":"…","api_key":"…"}`. Keep both — the key is shown once.
-
-### T3 — the protocol holds two rooms  **[verified with curl]**
-
-Create two internal rooms, then drive a `multi` connection by hand. This is the
-server half, and it is the cheapest possible proof.
+✅ `{"id":"…","api_key":"…"}`. **Save both** — the key is shown once.
 
 ```bash
-AID=<id>; KEY=<key>
+export AID=<id> KEY=<api_key>
+```
+
+---
+
+## Step 4 — prove the protocol, with no session  **[verified]**
+
+The cheapest proof that one connection can hold two rooms. No runtime, no Slack,
+no email — so a failure here is unambiguously server-side.
+
+**Two internal rooms:**
+
+```bash
 for n in alpha beta; do
   curl -s -X POST "http://127.0.0.1:8000/agents/$AID/ops/create_room" \
     -H "Authorization: Bearer $KEY" -H 'Content-Type: application/json' \
-    -d "{\"name\":\"t3-$n\",\"description\":\"$n\",\"agent_names\":[\"atlas\"],\"internal_only\":true}"
+    -d "{\"name\":\"t-$n\",\"description\":\"$n\",\"agent_names\":[\"atlas\"],\"internal_only\":true}"
 done
+export A=<alpha room id> B=<beta room id>
 ```
 
-Open the stream, **and start beating within 6 seconds** — the connection TTL is
-6s and a `curl` harness has to send its own heartbeats:
+**Open a `multi` stream and start beating within 6 seconds** — the connection
+TTL is 6s and a `curl` harness must send its own heartbeats:
 
 ```bash
-A=<room alpha id>; B=<room beta id>
 curl -sN -H "Authorization: Bearer $KEY" -H 'Accept: text/event-stream' \
-  "http://127.0.0.1:8000/agents/$AID/events?connection_id=t3&scope=multi&filter=all&rooms=$A,$B&protocol=1" > /tmp/t3.log &
+  "http://127.0.0.1:8000/agents/$AID/events?connection_id=t&scope=multi&filter=all&rooms=$A,$B&protocol=1" \
+  > /tmp/t.log 2>&1 &
 ( while sleep 2; do curl -s -o /dev/null -X POST \
     "http://127.0.0.1:8000/agents/$AID/connection/beat" -H "Authorization: Bearer $KEY" \
-    -H 'Content-Type: application/json' -d '{"connection_id":"t3"}'; done ) &
-sleep 3; head -2 /tmp/t3.log
+    -H 'Content-Type: application/json' -d '{"connection_id":"t"}'; done ) >/dev/null 2>&1 &
+sleep 3; head -2 /tmp/t.log
 ```
 
 ✅ `connection_state` with `"scope":"multi"` and **both** room ids in `rooms`.
 
-Then the three refusals and one success:
+**One success, two refusals:**
 
 ```bash
-# routes
+# routes to alpha
 curl -s -X POST "http://127.0.0.1:8000/agents/$AID/ops/post_message" -H "Authorization: Bearer $KEY" \
-  -H "X-Switch-Connection-Id: t3" -H 'Content-Type: application/json' \
+  -H "X-Switch-Connection-Id: t" -H 'Content-Type: application/json' \
   -d "{\"body\":\"into alpha\",\"room_id\":\"$A\"}"
+
 # refuses: ambiguous
 curl -s -X POST "http://127.0.0.1:8000/agents/$AID/ops/post_message" -H "Authorization: Bearer $KEY" \
-  -H "X-Switch-Connection-Id: t3" -H 'Content-Type: application/json' -d '{"body":"where?"}'
-# refuses: not held
+  -H "X-Switch-Connection-Id: t" -H 'Content-Type: application/json' -d '{"body":"where?"}'
+
+# refuses: room not held
 curl -s -X POST "http://127.0.0.1:8000/agents/$AID/ops/post_message" -H "Authorization: Bearer $KEY" \
-  -H "X-Switch-Connection-Id: t3" -H 'Content-Type: application/json' \
+  -H "X-Switch-Connection-Id: t" -H 'Content-Type: application/json' \
   -d '{"body":"nope","room_id":"00000000-0000-0000-0000-000000000000"}'
 ```
 
 ✅ an `event_id`; then *"covers several rooms … pass room_id explicitly"*; then
 *"Not connected to room 000…"*.
 
-### T4 — a real session holds two rooms  **[untried — the important one]**
-
-The client half. **Point the session at the local build, not the npm pin** — see
-the trap below, or this silently runs 0.3.3 and T4 fails looking like a server
-bug.
-
-- [ ] Configure the MCP server as `node <abs>/dist/bin.mjs` with
-      `SWITCH_SCOPE=multi` and the three `SWITCH_*` credentials
-- [ ] Start a Claude Code session; check stderr for `switch:` lines
-- [ ] In session: `connect_to_room` for room alpha, then for room beta
-
-✅ stderr shows both rooms; `connection_state` lists both.
-❌ Second connect replaces the first → you are on the npm build, or
-`SWITCH_SCOPE` is unset. A bad value exits with *"must be 'single' or 'multi'"*;
-**no** scope line at all means the npm build.
-
-Then, from T3's `curl` connection as a second speaker, post into each room and
-confirm the session receives both. *(An agent's own messages are not delivered
-back to it, so the session cannot test this alone.)*
-
-### T5 — email arrives  **[untried]**
-
-- [ ] Map port 8099 out of the container (override below), register the email
-      bridge, `allowed_senders` = your address only
-- [ ] Read the minted secret from the database (command below)
-- [ ] `curl --data-binary @sample.eml -H 'Content-Type: message/rfc822' http://127.0.0.1:8099/inbound/<SECRET>`
-
-✅ A room appears named after your address. **Add `atlas` to it** — auto-created
-email rooms resolve no agents.
-❌ Nothing appears → check the switch logs for a refusal naming the sender, or a
-loop marker.
-
-Then re-run T4's connect for the Slack room and the email room together, and you
-have the demo.
+**Leave this stream and its heartbeat running** — Step 6 needs a second speaker,
+because an agent's own messages are not delivered back to it.
 
 ---
 
-## The components, and how they connect
+## Step 5 — point a session at the local runtime  **[untried]**
 
-Worth reading once. Two of these are routinely conflated, and one has a trap
-that silently runs the wrong code.
-
-```
-  sample.eml ──curl──▶ email bridge ─┐
-                    (inside switch-core,
-                     port 8099, must be
-                     mapped out of Docker)
-                                      ├─▶ Matrix room (auto-created, one per
-                                      │   correspondent — the agent must be
-                                      │   ADDED to it; it resolves none)
-  Slack ◀──socket mode──▶ Slack bridge ┘
-        (outbound WebSocket,           │
-         no public URL needed)         │
-                                       ▼
-                        one `multi` connection, both rooms
-                                       │
-                                       ▼
-                     Claude Code session + the connector's
-                     MCP server (dist/bin.mjs) = THE AGENT
-                                       │
-                        post_message(room_id=…) back out
-```
-
-| Component | What it actually is |
-|---|---|
-| Switch stack | 6 containers: postgres, tuwunel, mattermost, switch-core, gateway, setup |
-| Email bridge | **Not a service.** A collaboration bridge running *inside* switch-core, on a port you must map out of the container |
-| Slack bridge | Also inside switch-core. **Socket Mode** — an outbound WebSocket, so no ingress and no public URL |
-| Agent | A row in Switch's database: a name, an API key, a Matrix account |
-| Rooms | Matrix rooms. Both are auto-created — a Slack one when the app joins a channel, an email one when the first mail arrives |
-| **The agent process** | **A Claude Code session.** There is no separate agent daemon. The session is the turn loop; the connector's MCP server carries events into it |
-| Runtime | `dist/bin.mjs` — the MCP server the session runs. **See the trap below** |
-
-### ⚠️ The trap: the connector fetches a *published* runtime
-
+⚠️ **The step most likely to go wrong, with the most misleading failure.**
 `connectors/claude-code-plugin/.mcp.json` pins
-`npx -y @sandboxaq/switch-agent-runtime@0.3.3` — from npm. Every one of this
-branch's client changes is in local **0.6.0**, unpublished. A stock connector
-install therefore runs **0.3.3**, which has no `SWITCH_SCOPE`, no room set and
-no audience label.
+`npx @sandboxaq/switch-agent-runtime@0.3.3` from npm. Every client change here
+is in local **0.6.0**, unpublished. A stock install runs 0.3.3 — no
+`SWITCH_SCOPE`, no room set — and Step 6 fails looking like a server bug.
 
-The demo would fail in a way that looks like a bug in the server: the second
-`connect_to_room` silently replaces the first, and nothing says why.
-
-Publishing is a tag push (`console/AGENTS.md`), and the pins deliberately stay
-behind until one exists. **For a demo, do not publish — point the session at the
-local build:**
+Configure the session's MCP server as:
 
 ```json
 {
@@ -191,125 +174,115 @@ local build:**
       "env": {
         "SWITCH_SCOPE": "multi",
         "SWITCH_API_ENDPOINT": "http://127.0.0.1:8000",
-        "SWITCH_AGENT_ID": "<agent id>",
-        "SWITCH_API_KEY": "<api key>"
+        "SWITCH_AGENT_ID": "<AID>",
+        "SWITCH_API_KEY": "<KEY>"
       }
     }
   }
 }
 ```
 
-Confirm it took: the session's stderr says `switch:` lines, and a bad
-`SWITCH_SCOPE` exits immediately with `must be 'single' or 'multi'`. If you see
-neither, you are on the npm build.
+Start a Claude Code session in any directory.
+
+✅ Session stderr carries `switch:` lines.
+❌ No `switch:` lines at all → you are on the npm build. A *bad* scope value
+exits immediately with *"SWITCH_SCOPE must be 'single' or 'multi'"* — that is
+how you tell the two apart.
 
 ---
 
-## Phase 0 — prove the client half *(nothing has ever run it)*
+## Step 6 — a session holds two rooms  **[untried — the point of all this]**
 
-The server half is proven: 2173 core tests pass and a `multi` connection was
-driven end to end with `curl`. The **client** half — `SWITCH_SCOPE`, `RoomSet`,
-the reconnect declaration — is tested and has never executed.
+In the session:
 
-- [ ] `cd console && pnpm install`
-- [ ] `pnpm --filter @sandboxaq/switch-agent-runtime run build` — produces
-      `dist/bin.mjs`, which is what a session actually runs
-- [ ] `pnpm --filter @sandboxaq/switch-agent-runtime run typecheck` — should be
-      clean; it was as of the last commit
-- [ ] `pnpm --filter @switch-console/desktop exec vitest run --project node --project main-db`
-      — **the one thing never run anywhere.** `AGENTS.md` says to skip the
-      `browser` project; if only that fails, treat the run as green.
-      `switch-event-format.test.ts` is the file that matters here.
+1. `connect_to_room` for room **alpha**
+2. `connect_to_room` for room **beta**
 
-**Stop and read the output if the desktop tests fail.** Two of those tests are
-mine and have only ever been checked by inspection.
+✅ Both rooms in stderr and in `connection_state`.
+❌ The second replaces the first → `SWITCH_SCOPE` is not `multi`, or you are on
+the npm build (Step 5).
 
----
-
-## Phase 1 — a stack and an agent
-
-There are two stacks, and for a demo you want the second one.
-
-`just up` runs only the **dependencies** in Docker — Postgres, Tuwunel,
-Mattermost — and expects switch-core on the host via `just run`. That is the dev
-loop: a code change takes effect on restart with no rebuild.
-
-`just standalone-up` runs **everything** in Docker, built from the working tree,
-including the operator dashboard. No host toolchain, one command up, one down.
-Use it unless you are iterating on switch-core itself.
-
-- [ ] `just init-env` — refuses if `.env` exists, which is fine; the existing one
-      works. It sets `SWITCH_VERSION`, which the standalone stack requires and
-      has no default for.
-- [ ] `just standalone-up` — builds and starts postgres, tuwunel, mattermost,
-      switch, gateway and setup. First run builds three images; allow a few
-      minutes.
-- [ ] `curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8000/health` → `200`
-- [ ] Operator dashboard at <http://127.0.0.1:3000>, credentials from
-      `GATEWAY_ADMIN_EMAIL` / `GATEWAY_ADMIN_PASSWORD` in `.env`
-
-**No migration step.** `switch_core.main` runs `alembic upgrade head` on boot,
-so the container self-migrates. `just migrate` is only for the host-mode stack.
-
-Register an agent. Either from Switch Console, or directly:
+Now use Step 4's still-running connection as the second speaker:
 
 ```bash
-TOKEN=$(grep AGENT_REGISTRATION_TOKEN .env | cut -d= -f2)
-curl -s -X POST http://127.0.0.1:8000/agents \
-  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -d '{
-    "name":"atlas","description":"multi-surface demo agent","connector_type":"claude_code",
-    "integration_profile":{"connection_model":"always_on","message_exchange":true,
-      "pre_invocation_mediation":[],"post_invocation_mediation":[],"event_reporting":[],
-      "task_protocol":{"can_delegate":false,"can_accept":false}}}'
+curl -s -X POST "http://127.0.0.1:8000/agents/$AID/ops/post_message" -H "Authorization: Bearer $KEY" \
+  -H "X-Switch-Connection-Id: t" -H 'Content-Type: application/json' \
+  -d "{\"body\":\"@atlas what is in alpha?\",\"room_id\":\"$A\"}"
 ```
 
-- [ ] Keep the returned `id` and `api_key`
+…and the same for `$B`.
+
+✅ The session is notified of **both**, on one connection, each tagged with its
+room, and replies into the right one.
+
+**This is the whole design working.** Everything after is presentation.
 
 ---
 
-## Phase 2 — two rooms, one session *(the real smoke test)*
+## Step 7 — Slack  **[untried]**
 
-This is Phase 0's proof, through the client rather than `curl`. **Do it before
-touching Slack**: if it fails, nothing after it will work.
+### 7a. The app
 
-- [ ] Create two internal rooms with the agent in both
-      (`POST /agents/{id}/ops/create_room`, `agent_names:["atlas"]`,
-      `internal_only:true`)
-- [ ] Point a Claude Code session at the connector with
-      `SWITCH_SCOPE=multi`, `SWITCH_AGENT_ID`, `SWITCH_API_ENDPOINT`,
-      `SWITCH_API_KEY`
-- [ ] In the session: `connect_to_room` for the **first** room, then again for
-      the **second**
-- [ ] Confirm the session's stderr shows both rooms, and that the server's
-      `connection_state` frame lists both
+At <https://api.slack.com/apps> → your app:
 
-**Acceptance:** post into room A from a second agent (or from Switch Console);
-the session receives it. Post into room B; the session receives that too, on the
-same connection. It replies to each with `post_message(room_id=…)`.
+- **Socket Mode → Enable.** This is why no public URL is needed.
+- **Basic Information → App-Level Tokens** → generate one with
+  `connections:write`. Copy the `xapp-…`.
+- **OAuth & Permissions → Bot Token Scopes**, at least:
+  `chat:write`, `chat:write.customize`, `channels:read`, `channels:history`,
+  `groups:read`, `groups:history`, `im:read`, `im:write`, `im:history`,
+  `users:read`, `reactions:read`, `reactions:write`, `files:read`, `files:write`
+- **Reinstall to workspace** if you changed scopes, *then* copy the **Bot User
+  OAuth Token** (`xoxb-…`) — reinstalling re-issues it.
 
-**If the second `connect_to_room` drops the first room**, `SWITCH_SCOPE` did not
-take — check for the "must be 'single' or 'multi'" line on stderr.
+Workspace id:
+
+```bash
+curl -s -H "Authorization: Bearer xoxb-…" https://slack.com/api/auth.test
+```
+
+✅ `"team_id":"T…"` — that is `workspace_id`.
+
+### 7b. Register the bridge
+
+Dashboard (<http://127.0.0.1:3000> → Collaborations), or by API:
+
+```bash
+curl -s -c /tmp/gw.txt -X POST http://127.0.0.1:8000/gateway/auth/login \
+  -H 'Content-Type: application/json' \
+  -d "{\"email\":\"$(grep GATEWAY_ADMIN_EMAIL .env | cut -d= -f2)\",\"password\":\"$(grep GATEWAY_ADMIN_PASSWORD .env | cut -d= -f2)\"}"
+
+curl -s -b /tmp/gw.txt -X POST http://127.0.0.1:8000/gateway/collaborations \
+  -H 'Content-Type: application/json' -d '{
+    "bridge_type":"slack","display_name":"Demo Slack",
+    "connection_config":{"bot_token":"xoxb-…","app_token":"xapp-…",
+      "workspace_id":"T…","agent_usergroups":false}}'
+```
+
+`agent_usergroups: false` deliberately — it mints a Slack user group per agent,
+needs a paid plan, and leaves workspace-visible residue.
+
+✅ A bridge id. Credentials are verified at registration, so a bad token fails
+here in Slack's own words rather than silently later.
+
+### 7c. A channel
+
+- `/invite @yourapp` in one channel
+- ✅ A Switch room auto-creates, named after the channel
+- **Add `atlas` to that room** (dashboard → the room → add agent)
+- Post in the channel; ✅ it reaches the session
+
+⚠️ A message in **any** channel the app is already in auto-creates a room. Use a
+quiet channel, or a scratch workspace.
 
 ---
 
-## Phase 3 — Slack
+## Step 8 — email  **[untried]**
 
-- [ ] Follow `docs/old/bridges/SLACK_SETUP.md` end to end
-- [ ] Register the Slack bridge in the operator dashboard
-- [ ] Invite the app to a channel; confirm a room is auto-created
-- [ ] Add `atlas` to that room
+### 8a. Expose the port
 
----
-
-## Phase 4 — email, without a domain
-
-The provider only proves mail *delivery*. Skip it: POST a raw message at the
-adapter and you have demonstrated the feature.
-
-**First, expose the adapter's port.** The email bridge listens *inside* the
-container and the standalone compose maps only 8000, 3000, 8065 and 5432 — so
-`curl` from the host cannot reach it. Save this as
-`deploy/local/standalone-email.override.yml`:
+The bridge listens *inside* the container and standalone maps only
+8000/3000/8065/5432. Save `deploy/local/standalone-email.override.yml`:
 
 ```yaml
 services:
@@ -318,7 +291,7 @@ services:
       - "127.0.0.1:8099:8099"
 ```
 
-and bring the stack up with it appended:
+Restart with it appended:
 
 ```bash
 docker compose -f deploy/local/standalone-docker-compose.yml \
@@ -327,124 +300,145 @@ docker compose -f deploy/local/standalone-docker-compose.yml \
   --profile collab --profile gateway --project-directory . up -d --build
 ```
 
-*(On the host-mode stack this does not arise — the adapter binds on your
-machine.)*
+*(Host mode: skip — the adapter binds on your machine.)*
 
-- [ ] Register the email bridge (operator dashboard → bridge type `email`):
-      `listen_port` **8099, matching the mapping above**, `agent_address`
-      (`atlas@agents.example.com` — nothing routes to it in this mode), and
-      `allowed_senders` set to **your own address only**
-- [ ] Read the minted webhook secret. It is displayed nowhere, by design:
+### 8b. Register the bridge
+
+```bash
+curl -s -b /tmp/gw.txt -X POST http://127.0.0.1:8000/gateway/collaborations \
+  -H 'Content-Type: application/json' -d '{
+    "bridge_type":"email","display_name":"Demo Email",
+    "connection_config":{"listen_port":8099,
+      "agent_address":"atlas@agents.example.com",
+      "allowed_senders":["you@yourdomain.com"]}}'
+```
+
+`agent_address` routes nothing in this mode — it is what outbound *would* send
+as. `allowed_senders` is the only gate: **your address only**.
+
+### 8c. Read the minted secret
+
+Displayed nowhere, by design:
 
 ```bash
 docker exec "$(docker ps -qf name=postgres)" sh -lc \
   'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -t -c "select connection_config from collaboration_bridges where type='"'"'email'"'"';"'
 ```
 
-- [ ] Save a real forwarded email as `sample.eml` (any client: "Show original" /
-      "View source"), with **your** address in `From:`
-- [ ] Deliver it:
+### 8d. Deliver a message
 
 ```bash
-curl --data-binary @sample.eml \
-  -H 'Content-Type: message/rfc822' \
+curl --data-binary @sample.eml -H 'Content-Type: message/rfc822' \
   http://127.0.0.1:8099/inbound/<SECRET>
 ```
 
-- [ ] **Add `atlas` to the room that just appeared.** An auto-created email room
-      resolves no agents, and the bridge logs a notice saying so. Easy to miss.
-- [ ] Reconnect the session so it holds the Slack room *and* the email room
+✅ `202`, and a room appears named after your address.
+**Add `atlas` to it** — auto-created email rooms resolve no agents, and the
+bridge logs a notice saying so.
+
+❌ Nothing appears → check the switch logs for a refusal naming the sender (not
+allowlisted) or a loop marker.
+
+### 8e. Reconnect
+
+In the session: `connect_to_room` for the **Slack** room and the **email** room.
 
 ---
 
-## Phase 5 — the demo
+## Step 9 — the demo
 
-1. **Forward an email**, from your phone, with no note. (Or `curl` a second
-   `.eml`, if nobody is watching the terminal.)
-2. **In Slack, ask about it** — "what did they want?" Never paste it, never say
-   which email. *This is US-1 and US-2, and it is the whole demo.*
-3. **Ask a colleague to ask a follow-up** in the same channel. Same agent, same
+1. **Forward an email** from your phone with no note — or `curl` a second `.eml`.
+2. **In Slack, ask about it.** "What did they want?" Never paste it, never name
+   it. *This is US-1 and US-2, and it is the whole demo.*
+3. **A colleague asks a follow-up** in the same channel. Same agent, same
    context, someone else's question.
 4. **US-6:** `curl` an `.eml` from an address not on the allowlist. Nothing
-   appears; the log says it refused, naming the address.
+   appears; the log names the refusal.
 5. **US-4, carefully:** tell the agent something in a Slack DM, then ask about
-   the subject in the channel. It should answer usefully without quoting you —
-   and then say the sentence below.
-
----
+   the subject in the channel. It answers usefully without quoting you — then
+   say the first sentence below.
 
 ## Say these out loud
 
 - **US-4 is advisory.** The agent is *told* who can read each room and what may
-  be repeated; **nothing enforces it**. What you are seeing is a model being
-  discreet because it was asked to, not a system preventing a leak. The
-  enforcement is written (`disclosure.py`) and wired to nothing.
+  be repeated; **nothing enforces it**. You are seeing a model being discreet
+  because it was asked to, not a system preventing a leak. The enforcement is
+  written (`disclosure.py`) and wired to nothing.
 - **The allowlist is a config list**, not claimed identities. "It knows it's me"
   is really "an operator listed this address".
-- **No outsider can be answered.** Inbound only — there is no outbound email.
+- **No outsider can be answered.** Inbound only.
+
+## What this does not show
+
+- **US-3** — the agent waking itself. Needs `MultiRoomHost`, schedule
+  persistence and a launcher.
+- **US-5** — answering an outsider. Needs outbound email, which does not exist.
+- Real mail delivery, unless you add a provider.
 
 ---
 
-## Known snags, in the order you will hit them
+# Reference
+
+## The components
+
+```
+  sample.eml ──curl──▶ email bridge ─┐
+                    (inside switch-core,
+                     port 8099, mapped out)
+                                      ├─▶ Matrix room (auto-created; the agent
+                                      │   must be ADDED — it resolves none)
+  Slack ◀──socket mode──▶ Slack bridge ┘
+        (outbound WebSocket,           │
+         no public URL)                ▼
+                        one `multi` connection, both rooms
+                                       ▼
+                     Claude Code session + dist/bin.mjs
+                              = THE AGENT
+                                       │
+                        post_message(room_id=…) back out
+```
+
+Two things are routinely conflated: **the bridges are not services** — they run
+inside switch-core — and **the agent is not a daemon**, it is the session.
+
+## Known snags
 
 | Symptom | Cause |
 |---|---|
-| The session sees nothing after it posts | An agent's own messages are not delivered back to it. Use a second speaker. |
+| Second `connect_to_room` replaces the first | `SWITCH_SCOPE` not `multi`, **or the npm-pinned 0.3.3 is running**. No `switch:` scope line on stderr means the latter. |
+| Session sees nothing after it posts | An agent's own messages are not delivered back to it. Use a second speaker. |
 | `Not connected to a room` with a valid `room_id` | The caller has no connection. A room id is an argument, not a permission. |
 | Email room exists, agent never answers | Auto-created email rooms resolve no agents. Add it. |
-| Every forwarded mail is dropped | Check the log for a loop marker. Server-side forwarding sets `Auto-Submitted: auto-forwarded`, which is exempt now — but a mailing-list header plus a bulk `Precedence` is not. |
-| `connection smoke-1 is not open` | The heartbeat TTL is 6s. A session's runtime handles this; a `curl` harness must beat. |
-| Second `connect_to_room` replaces the first | `SWITCH_SCOPE` is not `multi` — **or the session is running the npm-pinned 0.3.3 rather than the local build.** Check stderr for the scope line. |
-| Slack asks for a public request URL | It should not. The adapter is Socket Mode; you want an app-level token, not Event Subscriptions. |
-
----
-
-## What this demo does **not** show
-
-- **US-3** (the agent waking itself). Needs `MultiRoomHost`, schedule
-  persistence and a launcher — a separate project sharing the branch.
-- **US-5** (answering an outsider). Needs outbound email, which does not exist.
-- Real mail delivery, unless you add a provider.
+| Every forwarded mail dropped | Check the log for a loop marker. `Auto-Submitted: auto-forwarded` is exempt; a list header *plus* a bulk `Precedence` is not. |
+| `connection … is not open` | 6s heartbeat TTL. A session handles this; a `curl` harness must beat. |
+| Slack asks for a public request URL | You want Socket Mode and an app-level token, not Event Subscriptions. |
+| Rooms appear for channels you did not expect | Any message in any channel the app is in auto-creates one. |
 
 ## Teardown
 
-Everything this runbook creates, most-contained first.
-
-**The branch.** `main` is untouched; nothing is pushed.
+**Branch** — `main` is untouched, nothing pushed:
 
 ```bash
 git checkout main && git branch -D feat/multi-surface-agent
 ```
 
-**Gitignored, but on disk.** `console/node_modules` is ~1.1G and `core/.venv`
-~242M — the rest is small.
+**On disk** (gitignored; `console/node_modules` ~1.1G, `core/.venv` ~242M):
 
 ```bash
-rm -f .env
-rm -rf core/.venv
-git clean -xdf console          # node_modules and every packages/*/dist
+rm -f .env && rm -rf core/.venv && git clean -xdf console
 ```
 
-**Docker.** Match the teardown to the stack you started.
+**Docker** — match the stack you started. `reset` takes every agent, room and
+Matrix account with it.
 
 ```bash
-just standalone-down     # containers, volumes kept
-just standalone-reset    # volumes too — prompts before deleting
-# or, for the host-mode stack:
-just down / just reset
-```
-
-`reset` takes every agent, room and Matrix account the demo created with it.
-Then the images, if you want the disk back:
-
-```bash
+just standalone-down      # or: just down
+just standalone-reset     # or: just reset — prompts first
 docker rmi switch-setup:latest jevolk/tuwunel:v1.7.1 \
            mattermost/mattermost-team-edition:latest
-docker images --format '{{.Repository}}:{{.Tag}}' | grep -E 'switch-core|gateway' | xargs -r docker rmi
 ```
 
-**Not repo-local — the one thing worth knowing.** Making `pnpm` available
-installs corepack globally and writes shims into the global npm bin:
+**Not repo-local** — making `pnpm` available installs corepack globally:
 
 ```bash
 corepack disable && npm uninstall -g corepack && rm -rf ~/.cache/node/corepack
@@ -452,12 +446,3 @@ corepack disable && npm uninstall -g corepack && rm -rf ~/.cache/node/corepack
 
 Nothing here is destructive on the way in: `just init-env` refuses to overwrite
 an existing `.env`, and no step touches `main`.
-
-**One trap.** Do not run a filtered install with `--ignore-scripts` and then a
-full one — Electron's postinstall downloads its binary, and the second install
-sees the package as present and skips it. The symptom is *"Electron failed to
-install correctly"* across ~100 desktop test suites. Fix:
-
-```bash
-rm -rf console/node_modules/electron && pnpm install
-```
