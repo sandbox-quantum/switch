@@ -1359,3 +1359,34 @@ than a bug: it widens what an agent may repeat, so it belongs with whoever owns
 the D3 question.
 
 Left as-is for now, and recorded here rather than fixed.
+
+### A duplicate-session bug the incremental change introduced
+
+Caught by a question rather than a test: *"if I ping atlas in Slack without
+setting up a session first, will it set up an independent session?"* It would
+have.
+
+The auto-session watcher decides whether to spawn by asking whether one of its
+own sessions already attends the room:
+
+```ts
+.some((c) => c.roomId === roomId && c.agentId === watcher.creds.agentId)
+```
+
+`getConnections()` reports one room per session, and the incremental change made
+that the **primary**. So a ping in a session's non-primary room looked
+unattended, and the watcher would answer it by starting a second session — its
+own context window, competing for a room slot the first already held, with both
+answering as the same agent. Exactly the failure the `multi` scope exists to
+prevent, reintroduced one layer up.
+
+Fixed without touching the schema, because that guard deliberately reads the
+**live** map rather than the persisted row: `SessionRoomConnection` gains an
+optional `rooms`, the service records the full set via `setSessionRooms`, and
+the guard tests membership. `roomId` stays the primary, so the persisted map and
+the badge are unaffected.
+
+Worth generalising: widening the *connection* while leaving one-room bookkeeping
+in place is sound only where the bookkeeping is descriptive. Wherever a single
+room is used to make a *decision* — this guard is the one found so far — the
+primary is the wrong value and the failure is silent.

@@ -52,7 +52,7 @@ describe('SwitchRoomService', () => {
     switchRoomService.setSessionRoom(ctx, 'room-a', 'agent-1', 'Room A');
 
     expect(switchRoomService.getConnections()).toEqual([
-      { sessionId: 'session-1', roomId: 'room-a', agentId: 'agent-1' },
+      { sessionId: 'session-1', roomId: 'room-a', rooms: ['room-a'], agentId: 'agent-1' },
     ]);
     expect(emit).toHaveBeenCalledWith(sessionRoomChangedChannel, {
       sessionId: 'session-1',
@@ -73,7 +73,7 @@ describe('SwitchRoomService', () => {
     switchRoomService.setSessionRoom(ctx, 'room-b', 'agent-1', 'Room B');
 
     expect(switchRoomService.getConnections()).toEqual([
-      { sessionId: 'session-1', roomId: 'room-b', agentId: 'agent-1' },
+      { sessionId: 'session-1', roomId: 'room-b', rooms: ['room-b'], agentId: 'agent-1' },
     ]);
   });
 
@@ -99,7 +99,7 @@ describe('SwitchRoomService', () => {
     switchRoomService.mirrorRemoteSessionRoom(ctx, 'room-a', 'agent-1');
 
     expect(switchRoomService.getConnections()).toEqual([
-      { sessionId: 'session-1', roomId: 'room-a', agentId: 'agent-1' },
+      { sessionId: 'session-1', roomId: 'room-a', rooms: ['room-a'], agentId: 'agent-1' },
     ]);
     expect(emit).toHaveBeenCalledWith(sessionRoomChangedChannel, {
       sessionId: 'session-1',

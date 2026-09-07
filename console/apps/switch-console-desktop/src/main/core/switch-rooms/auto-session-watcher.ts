@@ -583,7 +583,7 @@ class AutoSessionWatcher {
     // unreachable agent, which is both worse and far harder to notice.
     const attending = switchRoomService
       .getConnections()
-      .some((c) => c.roomId === roomId && c.agentId === watcher.creds.agentId);
+      .some((c) => (c.rooms ?? [c.roomId]).includes(roomId) && c.agentId === watcher.creds.agentId);
     if (attending) {
       log.info('AutoSessionWatcher: a session of ours already attends this room', {
         event: 'auto_session_spawn_skipped_session_present',

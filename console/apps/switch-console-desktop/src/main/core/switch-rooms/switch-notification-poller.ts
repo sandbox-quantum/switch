@@ -285,6 +285,11 @@ class SwitchNotificationPoller {
         const room = rooms[0] ?? null;
         if (room) {
           void switchRoomService.setSessionRoom(ctx, room, creds.agentId, null);
+          // And the full set, which only the live map holds. The spawn guard
+          // reads this: without it a ping in a non-primary room looks
+          // unattended and the watcher starts a second session beside a
+          // working one.
+          switchRoomService.setSessionRooms(ctx.sessionId, rooms);
         } else {
           switchRoomService.clearSession(ctx.sessionId);
         }

@@ -14,7 +14,9 @@ vi.mock('@main/core/sessions/session-service', () => ({
 // spawnForRoom reads the agent to decide autoApprove; startForAgent / the loops
 // also touch this. Route it through a controllable mock so tests can set the
 // per-agent flag.
-const getConnections = vi.fn(() => [] as Array<{ roomId: string; agentId: string | null }>);
+const getConnections = vi.fn(
+  () => [] as Array<{ roomId: string; rooms?: string[]; agentId: string | null }>
+);
 vi.mock('./switch-room-service', () => ({
   switchRoomService: {
     getConnections: () => getConnections(),
@@ -232,6 +234,29 @@ describe('AutoSessionWatcher.handleNotification', () => {
 
       handle(watcher, 'room-x');
       await vi.waitFor(() => expect(createSession).toHaveBeenCalledTimes(1));
+    });
+
+    it('does not spawn when one of our sessions holds the room among several', async () => {
+      /**
+       * The multi-surface case, and the one that reintroduces the bug this
+       * whole block exists to prevent.
+       *
+       * A session spanning Slack and email reports a PRIMARY room to the
+       * session→room map, because `session_room_connections` keys on the
+       * session. Matching on that one value alone, a ping in the session's
+       * *other* room finds nothing attending and spawns a second session —
+       * with its own context window, competing for a room slot the first one
+       * already holds. The user then has two agents answering as one.
+       */
+      getConnections.mockReturnValue([
+        { roomId: 'primary-room', rooms: ['primary-room', 'room-x'], agentId: CREDS.agentId },
+      ]);
+      const watcher = fakeWatcher();
+
+      handle(watcher, 'room-x');
+      await new Promise((r) => setTimeout(r, 20));
+
+      expect(createSession).not.toHaveBeenCalled();
     });
 
     it('still spawns when the room is attended by a different agent', async () => {

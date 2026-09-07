@@ -225,11 +225,24 @@ class SwitchRoomService implements IDisposable {
 
   /** The current set of live session→room connections. */
   getConnections(): SessionRoomConnection[] {
-    return [...this.connections.values()].map(({ sessionId, roomId, agentId }) => ({
+    return [...this.connections.values()].map(({ sessionId, roomId, rooms, agentId }) => ({
       sessionId,
       roomId,
+      rooms: rooms ?? (roomId ? [roomId] : []),
       agentId,
     }));
+  }
+
+  /**
+   * Record every room a session holds, for callers that must not treat a
+   * non-primary room as unattended. Kept beside `setSessionRoom` rather than
+   * folded into it: that one also persists and notifies, and only the primary
+   * room can be persisted.
+   */
+  setSessionRooms(sessionId: string, rooms: string[]): void {
+    const existing = this.connections.get(sessionId);
+    if (!existing) return;
+    this.connections.set(sessionId, { ...existing, rooms: [...rooms] });
   }
 
   dispose(): void {
