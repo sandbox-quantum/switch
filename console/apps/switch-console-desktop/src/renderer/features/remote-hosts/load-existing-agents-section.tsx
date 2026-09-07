@@ -6,7 +6,7 @@
  * selects which to load (attach); agents that need a provider pick get one
  * inline. Already-loaded agents appear disabled.
  *
- * Discovery runs automatically when the section is expanded.
+ * Discovery runs on demand when the user clicks "Discover agents".
  */
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -68,13 +68,14 @@ export function LoadExistingAgentsSection({
   initiallyOpen?: boolean;
 }) {
   const [isOpen, setIsOpen] = useState(initiallyOpen);
+  const [scanRequested, setScanRequested] = useState(false);
   const queryClient = useQueryClient();
   const showRemoveConfig = useShowModal('removeAgentConfigModal');
 
   const discovery = useQuery({
     queryKey: [LOAD_AGENTS_QUERY_KEY, sshHost, serverId],
     queryFn: () => rpc.agents.discoverLoadableAgentsOnHost({ sshHost, serverId }),
-    enabled: isOpen,
+    enabled: isOpen && scanRequested,
   });
 
   const [manualAgents, setManualAgents] = useState<LoadableAgentRow[]>([]);
@@ -288,7 +289,12 @@ export function LoadExistingAgentsSection({
       <button
         type="button"
         className="flex w-full items-center gap-1 px-3 py-2 text-left"
-        onClick={() => setIsOpen((prev) => !prev)}
+        onClick={() =>
+          setIsOpen((prev) => {
+            if (prev) setScanRequested(false);
+            return !prev;
+          })
+        }
       >
         {isOpen ? <ChevronDown className="size-4" /> : <ChevronRight className="size-4" />}
         <Label className="cursor-pointer">Load existing agents</Label>
@@ -296,7 +302,16 @@ export function LoadExistingAgentsSection({
 
       {isOpen && (
         <div className="space-y-3 px-3 pb-2">
-          {discovery.isLoading || deepScan.isPending ? (
+          {!scanRequested ? (
+            <div className="flex items-center gap-2">
+              <Button size="sm" variant="outline" onClick={() => setScanRequested(true)}>
+                <ScanSearch className="size-4" /> Discover agents
+              </Button>
+              <span className="text-xs text-foreground-muted">
+                Check this host for agents to load
+              </span>
+            </div>
+          ) : discovery.isLoading || deepScan.isPending ? (
             <div className="flex items-center gap-2 text-sm text-foreground-muted">
               <Spinner />{' '}
               {deepScan.isPending
