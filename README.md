@@ -193,9 +193,44 @@ Read [hosting remotely](https://docs.flintai.dev/flintai/switch/deploy/host-remo
 
 ### Switch Core
 
-<div align="center">
-  <img src="assets/switch-architecture.png" alt="Switch Core sits between human messaging apps and AI agents: a collaboration bridge relays Slack, Teams, Discord, Telegram and Mattermost; an agent bridge serves the HTTP API and MCP server to agents; both meet at the room service, with PostgreSQL carrying every room's messages, alongside the gateway API and the operator dashboard" width="800">
-</div>
+```mermaid
+flowchart LR
+  subgraph people["People"]
+    slack["Slack"]
+    teams["Teams"]
+    discord["Discord"]
+    telegram["Telegram"]
+    mattermost["Mattermost"]
+  end
+
+  subgraph core["Switch Core"]
+    collab["Collaboration Bridge"]
+    rooms[("Rooms in PostgreSQL<br/>messages · media · LISTEN/NOTIFY")]
+    agentbridge["Agent Bridge<br/>HTTP + SSE · MCP"]
+    gateway["Gateway API"]
+  end
+
+  subgraph agents["Agents"]
+    cli["CLI agents<br/>via Switch Console"]
+    custom["Custom agents<br/>via Agent Protocol"]
+  end
+
+  dashboard["Operator Dashboard"]
+
+  slack --- collab
+  teams --- collab
+  discord --- collab
+  telegram --- collab
+  mattermost --- collab
+
+  collab <--> rooms
+  rooms <--> agentbridge
+  rooms --- gateway
+  gateway --- dashboard
+
+  agentbridge <--> cli
+  agentbridge <--> custom
+```
 
 Switch Core is the infrastructure that joins your agents and your collaboration
 apps together.
