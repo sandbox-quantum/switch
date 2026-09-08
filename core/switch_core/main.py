@@ -28,6 +28,7 @@ from switch_core.bridges.agent.registration_bootstrap import (
     BOOTSTRAP_LAST_SEEDED_HASH_META_KEY,
     BOOTSTRAP_REVOKED_HASHES_META_KEY,
     LEGACY_BOOTSTRAP_KEY_LABEL,
+    RETIRED_KEY_TYPE,
     ensure_bootstrap_owner,
 )
 from switch_core.bridges.agent.server_connectors.lifecycle import (
@@ -560,52 +561,19 @@ async def _seed_agent_registration_bootstrap_key(
             )
         bootstrap_key = bootstrap_keys[0] if bootstrap_keys else None
 
-        # Every row carrying the legacy label, not just one matching the
-        # current token: an admin who rotated AGENT_REGISTRATION_TOKEN at or
-        # before this upgrade leaves the old row's hash stale, so a hash-only
-        # lookup for the current token would miss it — and a `type:
-        # "registration"` row at that label is otherwise indistinguishable
-        # from a live credential that still authenticates as the admin.
-        legacy_rows = [
-            row
-            for row in await api_key_store.get_by_label(
-                session, LEGACY_BOOTSTRAP_KEY_LABEL
-            )
-            if row.type == "registration"
-        ]
-        matching_legacy = next(
-            (row for row in legacy_rows if row.key_hash == token_hash), None
-        )
-        if bootstrap_key is None and matching_legacy is not None:
-            matching_legacy.type = BOOTSTRAP_KEY_TYPE
-            matching_legacy.label = BOOTSTRAP_KEY_LABEL
-            matching_legacy.encrypted_key = encrypted_key
-            bootstrap_key = matching_legacy
-            logger.info(
-                "Migrated the legacy admin-owned registration key to a "
-                "scoped agent-registration bootstrap key"
-            )
-        for stale in legacy_rows:
-            if stale is matching_legacy:
-                continue
-            logger.warning(
-                "Removing a stale admin-owned registration key (id %s, "
-                "label %r): its value no longer matches "
-                "AGENT_REGISTRATION_TOKEN, so it predates a token rotation "
-                "and would otherwise keep registering agents with admin "
-                "authority indefinitely.",
-                stale.id,
-                LEGACY_BOOTSTRAP_KEY_LABEL,
-            )
-            await api_key_store.delete(session, stale.id)
-
         last_seeded_hash = (bootstrap_owner.metadata_ or {}).get(
             BOOTSTRAP_LAST_SEEDED_HASH_META_KEY
         )
-        revoked_hashes: list[str] = list(
-            (bootstrap_owner.metadata_ or {}).get(BOOTSTRAP_REVOKED_HASHES_META_KEY)
-            or []
+        raw_revoked_hashes = (bootstrap_owner.metadata_ or {}).get(
+            BOOTSTRAP_REVOKED_HASHES_META_KEY
         )
+        if raw_revoked_hashes is not None and not isinstance(raw_revoked_hashes, list):
+            raise RuntimeError(
+                f"{BOOTSTRAP_REVOKED_HASHES_META_KEY} on the agent-registration "
+                "bootstrap owner is not a list; refusing to guess which "
+                "hashes are revoked. This needs a direct database fix."
+            )
+        revoked_hashes: list[str] = list(raw_revoked_hashes or [])
         meta_dirty = False
 
         if (
@@ -623,6 +591,64 @@ async def _seed_agent_registration_bootstrap_key(
                 "last restart; its value is now permanently refused, even "
                 "if AGENT_REGISTRATION_TOKEN is later set back to it."
             )
+
+        if bootstrap_key is None:
+            # Every row carrying the legacy label, not just one matching the
+            # current token: an admin who rotated AGENT_REGISTRATION_TOKEN at
+            # or before this upgrade leaves the old row's hash stale, so a
+            # hash-only lookup for the current token would miss it — and a
+            # `type: "registration"` row at that label is otherwise
+            # indistinguishable from a live credential that still
+            # authenticates as the admin. Scoped to "no bootstrap key yet":
+            # once one exists, any startup that still finds a legacy-labeled
+            # row here already retired it on an earlier pass.
+            legacy_rows = [
+                row
+                for row in await api_key_store.get_by_label(
+                    session, LEGACY_BOOTSTRAP_KEY_LABEL
+                )
+                if row.type == "registration"
+            ]
+            matching_legacy = next(
+                (row for row in legacy_rows if row.key_hash == token_hash), None
+            )
+            if matching_legacy is not None:
+                matching_legacy.type = BOOTSTRAP_KEY_TYPE
+                matching_legacy.label = BOOTSTRAP_KEY_LABEL
+                matching_legacy.encrypted_key = encrypted_key
+                bootstrap_key = matching_legacy
+                logger.info(
+                    "Migrated the legacy admin-owned registration key to a "
+                    "scoped agent-registration bootstrap key"
+                )
+            for stale in legacy_rows:
+                if stale is matching_legacy:
+                    continue
+                # Retired, not deleted: every consumer already refuses
+                # RETIRED_KEY_TYPE (it is not in REGISTRATION_KEY_TYPES), so
+                # this stops it authenticating exactly as deletion would —
+                # but the row stays on the API Keys page (filtered on type,
+                # not existence) with a label that says why, so an operator
+                # can tell a stale bootstrap key apart from a personal key
+                # that coincidentally shared the label, and delete it
+                # themselves once they have. Its hash is also permanently
+                # revoked: restoring an old .env or values file must not
+                # bring it back to life via the rotation path below.
+                stale.type = RETIRED_KEY_TYPE
+                stale.label = f"{stale.label} (retired: stale, no longer authenticates)"
+                if stale.key_hash not in revoked_hashes:
+                    revoked_hashes.append(stale.key_hash)
+                    meta_dirty = True
+                logger.warning(
+                    "Retired a stale admin-owned registration key (id %s, "
+                    "label %r): its value no longer matches "
+                    "AGENT_REGISTRATION_TOKEN, so it predates a token "
+                    "rotation and would otherwise keep registering agents "
+                    "with admin authority indefinitely. It is now visible "
+                    "on the API Keys page for a human to review and delete.",
+                    stale.id,
+                    LEGACY_BOOTSTRAP_KEY_LABEL,
+                )
 
         if bootstrap_key is not None:
             if bootstrap_key.key_hash != token_hash:

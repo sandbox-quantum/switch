@@ -17,8 +17,13 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from switch_core.bridges.agent.registration_bootstrap import (
     BOOTSTRAP_KEY_LABEL,
     BOOTSTRAP_KEY_TYPE,
+    BOOTSTRAP_LAST_SEEDED_HASH_META_KEY,
     BOOTSTRAP_OWNER_EMAIL,
+    BOOTSTRAP_OWNER_MARKER_META_KEY,
+    BOOTSTRAP_OWNER_NAME,
+    BOOTSTRAP_REVOKED_HASHES_META_KEY,
     LEGACY_BOOTSTRAP_KEY_LABEL,
+    RETIRED_KEY_TYPE,
 )
 from switch_core.config import SwitchConfig
 from switch_core.db.models import Agent, ApiKey, Client, User
@@ -46,10 +51,14 @@ def _config(token: str, *, admin_email: str = ADMIN_EMAIL) -> SwitchConfig:
 
 
 async def _make_user(
-    session_factory: async_sessionmaker[AsyncSession], *, email: str, role: str
+    session_factory: async_sessionmaker[AsyncSession],
+    *,
+    email: str,
+    role: str,
+    metadata: dict | None = None,
 ) -> str:
     async with session_factory() as session:
-        user = User(name=role, email=email, role=role)
+        user = User(name=role, email=email, role=role, metadata_=metadata)
         session.add(user)
         await session.commit()
         return user.id
@@ -175,7 +184,11 @@ class TestSeedAgentRegistrationBootstrapKey:
         migrate. Left alone, that row keeps authenticating as
         `type="registration"`, owned by the admin — exactly the escalation
         this PR exists to close, and permanently, since a bootstrap key
-        exists after this run and later runs never look for it again."""
+        exists after this run and later runs never look for it again.
+
+        Retired, not deleted: the row must stop authenticating but stay
+        visible (and its old value permanently revoked, so restoring an old
+        .env or values file can't bring it back either)."""
         user_store, api_key_store = UserStore(), ApiKeyStore()
         admin_id = await _make_admin(session_factory)
 
@@ -189,19 +202,29 @@ class TestSeedAgentRegistrationBootstrapKey:
             )
             session.add(legacy)
             await session.commit()
+            legacy_id = legacy.id
 
         await _seed(session_factory, user_store, api_key_store, _config("new-token"))
 
         async with session_factory() as session:
             keys = await api_key_store.get_by_user(session, admin_id)
+        by_id = {k.id: k for k in keys}
         bootstrap_keys = [k for k in keys if k.type == BOOTSTRAP_KEY_TYPE]
         assert len(bootstrap_keys) == 1
         assert bootstrap_keys[0].key_hash == _hash("new-token")
-        # The stale row must not still be live as a registration credential
-        # under the old value.
-        assert not any(
-            k.type == "registration" and k.key_hash == _hash("old-token") for k in keys
-        )
+        # Still visible, no longer live: retired, not gone.
+        assert legacy_id in by_id
+        assert by_id[legacy_id].type == RETIRED_KEY_TYPE
+        assert by_id[legacy_id].type not in ("registration", BOOTSTRAP_KEY_TYPE)
+
+        # Restoring the old .env (or a stale values file) must not resurrect
+        # it: its hash is permanently revoked, not just retyped away.
+        await _seed(session_factory, user_store, api_key_store, _config("old-token"))
+        async with session_factory() as session:
+            keys = await api_key_store.get_by_user(session, admin_id)
+        bootstrap_keys = [k for k in keys if k.type == BOOTSTRAP_KEY_TYPE]
+        assert len(bootstrap_keys) == 1
+        assert bootstrap_keys[0].key_hash == _hash("new-token")
 
     async def test_a_hash_mismatched_legacy_labeled_key_is_retired_and_warned_about(
         self,
@@ -214,9 +237,10 @@ class TestSeedAgentRegistrationBootstrapKey:
         label identically (finding 5's contrived scenario). Nothing in the
         schema distinguishes them once the hash no longer matches, so this
         favours closing the real, silent escalation: retire the row (so it
-        can no longer register anything) and name it loudly in a warning, so
-        the rare coincidental case is at least visible and cheap to recover
-        from (recreate a personal key) rather than a permanent, silent hole."""
+        can no longer register anything, but stays visible on the API Keys
+        page instead of vanishing) and name it loudly in a warning, so the
+        rare coincidental case is at least visible and recoverable rather
+        than a permanent, silent hole."""
         user_store, api_key_store = UserStore(), ApiKeyStore()
         admin_id = await _make_admin(session_factory)
         config = _config("dev-test-token")
@@ -238,7 +262,10 @@ class TestSeedAgentRegistrationBootstrapKey:
 
         async with session_factory() as session:
             keys = await api_key_store.get_by_user(session, admin_id)
-        assert not any(k.id == stale_id for k in keys)
+        by_id = {k.id: k for k in keys}
+        assert stale_id in by_id, "the retired row must still be visible"
+        assert by_id[stale_id].type == RETIRED_KEY_TYPE
+        assert "retired" in by_id[stale_id].label.lower()
         assert len([k for k in keys if k.type == BOOTSTRAP_KEY_TYPE]) == 1
         warnings = [r.message for r in caplog.records if r.levelname == "WARNING"]
         assert any(stale_id in w for w in warnings)
@@ -390,21 +417,75 @@ class TestSeedAgentRegistrationBootstrapKey:
         with pytest.raises(RuntimeError):
             await _seed(session_factory, user_store, api_key_store, config)
 
-    async def test_bootstrap_owner_promoted_to_admin_blocks_seeding(
+    async def test_malformed_revoked_hashes_fails_loud(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
-        """Adversarial: a gateway admin has already claimed the bootstrap
-        owner's reserved address with the admin role via `POST /users`.
-        Seeding must refuse rather than adopt it — that account would confer
-        admin authority on every agent registered through the shared token,
-        exactly the escalation this fix closes."""
+        """A hand-edited, non-list value must not be silently coerced (`list("a
+        string")` iterates its characters) into "nothing is revoked"."""
         user_store, api_key_store = UserStore(), ApiKeyStore()
         await _make_admin(session_factory)
-        await _make_user(session_factory, email=BOOTSTRAP_OWNER_EMAIL, role="admin")
+        async with session_factory() as session:
+            session.add(
+                User(
+                    name=BOOTSTRAP_OWNER_NAME,
+                    email=BOOTSTRAP_OWNER_EMAIL,
+                    role="user",
+                    metadata_={
+                        BOOTSTRAP_OWNER_MARKER_META_KEY: True,
+                        BOOTSTRAP_REVOKED_HASHES_META_KEY: "not-a-list",
+                    },
+                )
+            )
+            await session.commit()
         config = _config("dev-test-token")
 
-        with pytest.raises(RuntimeError, match="admin"):
+        with pytest.raises(RuntimeError, match="not a list"):
             await _seed(session_factory, user_store, api_key_store, config)
+
+    async def test_promoted_bootstrap_owner_blocks_seeding(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """The role check exercised on its own: an otherwise-genuine account
+        (carries the marker) that was given the admin role directly — e.g. a
+        gateway admin editing it — must still block seeding. Marked so this
+        hits the role check rather than the separately-tested missing-marker
+        one."""
+        user_store, api_key_store = UserStore(), ApiKeyStore()
+        await _make_admin(session_factory)
+        await _make_user(
+            session_factory,
+            email=BOOTSTRAP_OWNER_EMAIL,
+            role="admin",
+            metadata={BOOTSTRAP_OWNER_MARKER_META_KEY: True},
+        )
+        config = _config("dev-test-token")
+
+        with pytest.raises(RuntimeError, match="must never be an admin"):
+            await _seed(session_factory, user_store, api_key_store, config)
+
+    async def test_upgrading_past_the_marker_commit_does_not_brick_seeding(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """A bootstrap owner created by an earlier commit of this same
+        feature (before the marker existed) has no marker but does carry the
+        last-seeded-hash key, which only this module's own seeding ever
+        writes. Seeding must heal it in place rather than refuse to start."""
+        user_store, api_key_store = UserStore(), ApiKeyStore()
+        await _make_admin(session_factory)
+        await _make_user(
+            session_factory,
+            email=BOOTSTRAP_OWNER_EMAIL,
+            role="user",
+            metadata={BOOTSTRAP_LAST_SEEDED_HASH_META_KEY: "old-hash"},
+        )
+        config = _config("dev-test-token")
+
+        await _seed(session_factory, user_store, api_key_store, config)
+
+        async with session_factory() as session:
+            owner = await user_store.get_by_email(session, BOOTSTRAP_OWNER_EMAIL)
+        assert owner is not None
+        assert (owner.metadata_ or {}).get(BOOTSTRAP_OWNER_MARKER_META_KEY) is True
 
     async def test_role_user_squatter_at_bootstrap_address_blocks_seeding(
         self, session_factory: async_sessionmaker[AsyncSession]

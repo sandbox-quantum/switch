@@ -5,6 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.bridges.agent.registration_bootstrap import (
     BOOTSTRAP_KEY_TYPE,
+    BOOTSTRAP_LAST_SEEDED_HASH_META_KEY,
     BOOTSTRAP_OWNER_EMAIL,
     BOOTSTRAP_OWNER_MARKER_META_KEY,
     ensure_bootstrap_owner,
@@ -58,22 +59,64 @@ class TestEnsureBootstrapOwner:
             with pytest.raises(RuntimeError, match="not created by"):
                 await ensure_bootstrap_owner(session, user_store)
 
-    async def test_refuses_an_existing_account_with_the_admin_role(
+    async def test_backfills_the_marker_onto_a_row_created_before_it_existed(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
-        """A gateway admin can `POST /users` with this exact email and an
-        admin role. Adopting that account would silently restore the exact
-        escalation this module exists to close — caught here as a second,
-        independent check even though the missing marker already refuses it."""
+        """Upgrade path: a bootstrap owner created by an earlier commit of
+        this same feature, before the marker existed, has no marker but does
+        carry the last-seeded-hash key — a value only this module's own
+        seeding step ever writes, so a squatter cannot have it. Must be
+        healed in place, not refused, or upgrading past the commit that
+        introduced the marker bricks every database that already ran this."""
         user_store = UserStore()
         async with session_factory() as session:
             session.add(
-                User(name="squatter", email=BOOTSTRAP_OWNER_EMAIL, role="admin")
+                User(
+                    name=BOOTSTRAP_OWNER_EMAIL,
+                    email=BOOTSTRAP_OWNER_EMAIL,
+                    role="user",
+                    metadata_={BOOTSTRAP_LAST_SEEDED_HASH_META_KEY: "some-hash"},
+                )
             )
             await session.commit()
 
         async with session_factory() as session:
-            with pytest.raises(RuntimeError, match="admin"):
+            owner = await ensure_bootstrap_owner(session, user_store)
+            await session.commit()
+
+        assert (owner.metadata_ or {}).get(BOOTSTRAP_OWNER_MARKER_META_KEY) is True
+        assert (owner.metadata_ or {}).get(BOOTSTRAP_LAST_SEEDED_HASH_META_KEY) == (
+            "some-hash"
+        )
+
+        async with session_factory() as session:
+            persisted = await session.get(User, owner.id)
+        assert persisted is not None
+        assert (persisted.metadata_ or {}).get(BOOTSTRAP_OWNER_MARKER_META_KEY) is True
+
+    async def test_refuses_a_marked_account_promoted_to_the_admin_role(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """The role check as its own, independently-exercised guard: an
+        otherwise-genuine account (it carries the marker) that has been
+        given the admin role — e.g. a gateway admin editing it directly —
+        must still be refused. Deliberately marked so this hits the role
+        check specifically rather than the (already separately tested)
+        missing-marker check."""
+        user_store = UserStore()
+        async with session_factory() as session:
+            session.add(
+                User(
+                    name="promoted",
+                    email=BOOTSTRAP_OWNER_EMAIL,
+                    role="admin",
+                    metadata_={BOOTSTRAP_OWNER_MARKER_META_KEY: True},
+                )
+            )
+            await session.commit()
+
+        async with session_factory() as session:
+            with pytest.raises(RuntimeError, match="must never be an admin"):
                 await ensure_bootstrap_owner(session, user_store)
 
 

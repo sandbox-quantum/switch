@@ -154,7 +154,10 @@ async def _resolve_registration_user_id(
     try:
         return await resolve_registration_owner_id(session, protocol.user_store, key)
     except RuntimeError as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        logger.error("Agent-registration bootstrap owner resolution failed: %s", exc)
+        raise HTTPException(
+            status_code=503, detail="Agent registration is temporarily unavailable"
+        ) from exc
 
 
 # Registration endpoints

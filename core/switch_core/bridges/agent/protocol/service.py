@@ -440,7 +440,10 @@ class ProtocolService:
         """Resolve a registration token to its owner, then register the agent.
 
         Raises PermissionError if the token does not match a stored ApiKey of
-        a registration type (see ``registration_bootstrap.REGISTRATION_KEY_TYPES``).
+        a registration type (see ``registration_bootstrap.REGISTRATION_KEY_TYPES``),
+        or if the bootstrap owner cannot be resolved (misconfigured deployment
+        — the detail is logged, not raised, to match the HTTP registration
+        path's handling of the same failure).
         Raises AgentExistsError if the name is taken and ``overwrite`` is False.
         """
         token_hash = hashlib.sha256(registration_token.encode()).hexdigest()
@@ -448,9 +451,17 @@ class ProtocolService:
             key = await self.api_key_store.get_by_hash(session, token_hash)
             if key is None or key.type not in REGISTRATION_KEY_TYPES:
                 raise PermissionError("Invalid registration token")
-            owner_id = await resolve_registration_owner_id(
-                session, self.user_store, key
-            )
+            try:
+                owner_id = await resolve_registration_owner_id(
+                    session, self.user_store, key
+                )
+            except RuntimeError as exc:
+                logger.error(
+                    "Agent-registration bootstrap owner resolution failed: %s", exc
+                )
+                raise PermissionError(
+                    "Agent registration is temporarily unavailable"
+                ) from exc
 
         return await self.register_agent(
             name=name,
