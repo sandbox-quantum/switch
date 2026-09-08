@@ -108,7 +108,8 @@ async def oidc_callback(
             # while also not returning an id_token leaves no way to read
             # claims at all — a configuration mistake (the wrong issuer for
             # this deployment), not a transient upstream fault, so retrying
-            # won't help.
+            # won't help. Not a 500: that's for something unanticipated, and
+            # this is diagnosed precisely enough to name.
             logger.error(
                 "OIDC callback failed: the provider published no "
                 "userinfo_endpoint and no id_token was returned, so there "
@@ -116,7 +117,7 @@ async def oidc_callback(
                 exc,
             )
             raise HTTPException(
-                status_code=500,
+                status_code=503,
                 detail="OIDC provider has no userinfo endpoint and issued no id_token",
             ) from exc
         except (httpx.HTTPError, json.JSONDecodeError) as exc:
