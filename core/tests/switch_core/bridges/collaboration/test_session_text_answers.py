@@ -100,7 +100,7 @@ def test_the_positions_are_the_ones_the_card_actually_rendered() -> None:
     one the reader is looking at, and nothing would report it.
     """
     source = FixtureEventSource.from_examples(EXAMPLES_PATH, events=[])
-    request = _run(project(source, "session-demo")).open_room_requests("room-demo")[0]
+    request = _run(project(source, "session-demo")).open_requests()[0]
 
     form = posted_form(request)
 

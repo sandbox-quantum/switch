@@ -1,8 +1,8 @@
 """Per-platform renderings of a projected session.
 
 A renderer reads contract types and produces one platform's artefact. It makes
-no access decisions: by the time something reaches a renderer the audience gate
-has already said the room may see it.
+no access decisions and no routing ones: by the time something reaches a
+renderer, whether a room sees it and which room that is have both been settled.
 """
 
 from __future__ import annotations

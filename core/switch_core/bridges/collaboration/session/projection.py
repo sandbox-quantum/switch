@@ -1,17 +1,17 @@
-"""One session's state, and what a room is allowed to see of it.
+"""One session's state, as a room reads it.
 
 The fold is a port of `SessionReplica` in
 `console/packages/shared/src/session-v1/replica.ts`: snapshot plus sequenced
 deltas, deduplicated by revision, tolerant of the sequence gaps a permission
 filter leaves behind. Everything the contract carries is folded, so nothing is
-dropped on the floor; what this layer adds on top is the audience gate.
+dropped on the floor.
 
-`audience` is access, not placement. It answers whether something may reach a
-room at all — a `session-members` audience never does, because no messaging
-platform has a surface that means "session members only": Slack's expandable
-detail on an assistant message is visible to everyone in the channel. Which
-surface a publishable thing lands on is a separate decision, made from
-`Item.kind`, and it is not an access decision.
+Nothing here decides where anything goes. The contract used to carry the room a
+request was addressed to, and that was the only thing in it naming a
+destination; it is being removed, because which people see a session's request
+is Switch's decision to make from the session's agent and the rooms it is in,
+and not one a host is in any position to take. So this reads a session, and the
+bridge above it chooses where what it reads is published.
 """
 
 from __future__ import annotations
@@ -27,7 +27,6 @@ from .contract import (
     RequestOpened,
     RequestSettled,
     RequestSubmitting,
-    RoomAudience,
     ServerEvent,
     SessionConnectivity,
     SessionUpsert,
@@ -40,7 +39,7 @@ T = TypeVar("T")
 
 
 class SessionProjection:
-    """A per-session replica, read through an audience gate."""
+    """A per-session replica: everything the session said, folded in order."""
 
     def __init__(self, snapshot: Snapshot) -> None:
         if snapshot.next_page_token is not None:
@@ -164,26 +163,18 @@ class SessionProjection:
             lambda x: x.request_id,
         )
 
-    # ── The audience gate ────────────────────────────────────────────────────
+    # ── What is waiting on someone ───────────────────────────────────────────
 
-    def room_requests(self, room_id: str) -> list[SnapshotRequest]:
-        """Requests this room may be shown, in the order they were opened.
+    def open_requests(self) -> list[SnapshotRequest]:
+        """Every request still waiting on an answer, in the order it opened.
 
-        A `session-members` audience is absent by construction, and a request
-        addressed to another room is not this room's business either.
+        Every one of them, deliberately: a session's requests are the session's,
+        and picking which of them a given room is shown is a decision made above
+        this, with knowledge this does not have.
         """
         return [
             request
             for request in self._value.requests
-            if isinstance(request.audience, RoomAudience)
-            and request.audience.room_id == room_id
-        ]
-
-    def open_room_requests(self, room_id: str) -> list[SnapshotRequest]:
-        """Those of them still waiting on someone."""
-        return [
-            request
-            for request in self.room_requests(room_id)
             if request.state in ("open", "submitting")
         ]
 

@@ -85,7 +85,7 @@ def _adapter(client: FakeWebClient) -> SlackAdapter:
 async def _fixture_request() -> SnapshotRequest:
     source = FixtureEventSource.from_examples(EXAMPLES_PATH, events=[])
     projection = await project(source, source.session_id)
-    return projection.open_room_requests("room-demo")[0]
+    return projection.open_requests()[0]
 
 
 async def _bridge_and_room(session: AsyncSession) -> tuple[str, str]:

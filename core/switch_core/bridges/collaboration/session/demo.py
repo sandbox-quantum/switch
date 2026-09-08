@@ -5,6 +5,10 @@ three connectors — the contract exists on both sides as types with no producer
 at either end, so until a host learns to speak it there is no session to show.
 This replays the bundled fixture in place of one.
 
+The card goes to the channel the trigger was typed in. Nothing in the contract
+says where a request should be shown, by design — that is Switch's decision —
+and here the person asking for it has made it.
+
 What it stands in for is the *session*, not the bridge. Rendering the card,
 minting its handle, writing its row, and everything an answer to it then goes
 through, is the production path exactly as it will run. What is invented here
@@ -37,12 +41,6 @@ _EXAMPLES = (
     Path(__file__).resolve().parents[5]
     / "console/packages/shared/src/session-v1/examples.json"
 )
-
-# The room the recorded session addresses. A fixture's, not a Switch room id:
-# the contract's own answer to "which room" is being removed, and this harness
-# does not pretend to have replaced it — the card goes where the trigger was
-# typed, and this is only how the recording is read back.
-_FIXTURE_ROOM = "room-demo"
 
 
 class SessionDemo:
@@ -88,11 +86,11 @@ class SessionDemo:
             )
         source = FixtureEventSource.from_examples(_EXAMPLES, events=[])
         projection = await project(source, source.session_id)
-        requests = projection.open_room_requests(_FIXTURE_ROOM)
+        requests = projection.open_requests()
         if not requests:
             raise ValueError(
-                f"The recorded session {source.session_id} has no open request "
-                f"for room {_FIXTURE_ROOM}, so there is no card to post."
+                f"The recorded session {source.session_id} has no open request, "
+                f"so there is no card to post."
             )
         session = projection.snapshot.session
         return await self._cards.post(

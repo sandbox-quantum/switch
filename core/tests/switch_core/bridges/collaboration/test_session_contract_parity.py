@@ -7,6 +7,11 @@ separate implementations in separate languages reading the same
 nowhere on its own, it just renders the wrong thing in a room, or rejects a
 message the other end considers valid.
 
+One field is deliberately out of step. `audience` is being removed from the
+contract, so Python accepts it and models nothing about it — see
+`session/contract.py`. Until the removal lands in `session-v1/`, the fixtures
+still carry it and both sides still have to parse it.
+
 The TypeScript half of these cases lives in
 `console/packages/shared/src/session-v1/session-v1.test.ts`; the assertions
 here are chosen to match it. Its client-side cases (`SessionChatClient`,

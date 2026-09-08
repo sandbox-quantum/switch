@@ -65,11 +65,7 @@ def _run(coro: Any) -> Any:
 def _requests(*events: str) -> dict[str, SnapshotRequest]:
     source = FixtureEventSource.from_examples(QUESTIONS_PATH, events=events)
     projection = _run(project(source, "session-questions"))
-    return {
-        request.request_id: request
-        for request in projection.snapshot.requests
-        if request.audience.kind == "room"
-    }
+    return {request.request_id: request for request in projection.snapshot.requests}
 
 
 def _form() -> SnapshotRequest:
