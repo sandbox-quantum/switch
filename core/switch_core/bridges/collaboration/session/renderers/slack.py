@@ -16,6 +16,12 @@ approval, so every one of them is escaped before it reaches somewhere Slack
 parses mrkdwn — which is both the section text and the message's own `text`.
 Button labels are `plain_text`, which Slack does not parse, and escaping one
 would put the entity in front of the reader instead of the character.
+
+They are also unbounded, and Slack's block limits are not: a title long enough
+to push a section past 3000 characters is rejected, and it takes the whole post
+with it rather than just the value that caused it. Every agent-supplied value
+therefore has a budget here, and the budgets are set so that no combination of
+them can reach a limit.
 """
 
 from __future__ import annotations
@@ -41,6 +47,17 @@ _MAX_ACTION_ID = 255
 _MAX_BUTTON_TEXT = 75
 _MAX_VALUE = 2000
 _MAX_ELEMENTS = 25
+
+# Budgets for the values this renderer does not control. A title and a detail
+# share one section with a heading and a few characters of framing, so they are
+# set to leave the section comfortably short of Slack's 3000 characters however
+# both are spent: 1500 + 1200 + a heading under 30 leaves room to spare.
+_MAX_TITLE = 1500
+_MAX_DETAIL = 1200
+# A label appears once per option in the text form and once in the footer of a
+# settled card. Twenty-five of them at this length still leave that text far
+# short of what Slack accepts for a message body.
+_MAX_LABEL = 150
 
 _DANGEROUS = {"decline", "cancel"}
 
@@ -91,9 +108,9 @@ def render_approval(
     card says what became of it instead.
     """
     content = _approval(request)
-    prompt = f"*{_HEADINGS[request.state]}*\n{escape_mrkdwn(content.title)}"
+    prompt = f"*{_HEADINGS[request.state]}*\n{_fit(content.title, _MAX_TITLE)}"
     if content.detail:
-        prompt += f"\n`{escape_mrkdwn(content.detail)}`"
+        prompt += f"\n`{_fit(content.detail, _MAX_DETAIL)}`"
 
     blocks: list[dict[str, Any]] = [
         {"type": "section", "text": {"type": "mrkdwn", "text": prompt}}
@@ -142,13 +159,14 @@ def render_approval_text(request: SnapshotRequest, reference: RequestReference) 
     """
     content = _approval(request)
     lines = [
-        f"> Request {escape_mrkdwn(reference.handle)}: {escape_mrkdwn(content.title)}"
+        f"> Request {escape_mrkdwn(reference.handle)}: "
+        f"{_fit(content.title, _MAX_TITLE)}"
     ]
     if content.detail:
-        lines.append(f"> {escape_mrkdwn(content.detail)}")
+        lines.append(f"> {_fit(content.detail, _MAX_DETAIL)}")
     if request.state == "open":
         lines += [
-            f"{index}. {escape_mrkdwn(option.label)}"
+            f"{index}. {_fit(option.label, _MAX_LABEL)}"
             for index, option in enumerate(content.options, start=1)
         ]
     lines.append(escape_mrkdwn(_footer(request, content, reference)))
@@ -203,7 +221,7 @@ def _answered(request: SnapshotRequest, content: ApprovalContent) -> str:
     # An option the content never offered still gets named rather than hidden:
     # the id is what the host said, and saying nothing would read as a plain
     # answer to a question that was not the one asked.
-    label = chosen.label if chosen else result.option_id
+    label = _truncate(chosen.label if chosen else result.option_id, _MAX_LABEL)
     scope = (
         " (applies for the rest of this session)"
         if chosen and chosen.decision == "acceptForSession"
@@ -241,3 +259,24 @@ def _button(option: ApprovalOption, reference: RequestReference) -> dict[str, An
 
 def _truncate(text: str, limit: int) -> str:
     return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+def _fit(text: str, limit: int) -> str:
+    """Escape `text` for mrkdwn and keep the result inside `limit`.
+
+    The cut is made on the source, never on the escaped form: slicing after
+    escaping can leave half an entity behind, and Slack shows the reader a
+    literal `&am`. Escaping only ever lengthens a string, so the longest prefix
+    that still fits can be found on the source and escaped whole.
+    """
+    escaped = escape_mrkdwn(text)
+    if len(escaped) <= limit:
+        return escaped
+    low, high = 0, len(text)
+    while low < high:
+        middle = (low + high + 1) // 2
+        if len(escape_mrkdwn(text[:middle])) + 1 <= limit:
+            low = middle
+        else:
+            high = middle - 1
+    return escape_mrkdwn(text[:low]) + "…"

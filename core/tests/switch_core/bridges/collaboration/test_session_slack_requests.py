@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -214,6 +215,65 @@ def test_an_approval_with_more_options_than_slack_renders_is_refused() -> None:
 
     with pytest.raises(ValueError, match="at most 25 buttons"):
         render_approval(crowded, REFERENCE)
+
+
+# ── The limits ───────────────────────────────────────────────────────────────
+
+SLACK_SECTION_LIMIT = 3000
+
+
+def _oversized(title: str, detail: str, *, options: int = 2) -> Any:
+    request = _projection().open_room_requests("room-demo")[0]
+    content = request.content
+    return request.model_copy(
+        update={
+            "content": content.model_copy(
+                update={
+                    "title": title,
+                    "detail": detail,
+                    "options": [
+                        ApprovalOption(
+                            option_id=f"option-{index}",
+                            label="label " * 400,
+                            decision="accept",
+                        )
+                        for index in range(options)
+                    ],
+                }
+            )
+        }
+    )
+
+
+def _section(message: Any) -> str:
+    return str(message.blocks[0]["text"]["text"])
+
+
+def test_a_long_title_does_not_take_the_whole_post_with_it() -> None:
+    """Slack rejects the section, and the post it was in, not just the value."""
+    message = render_approval(_oversized("t" * 9000, "d" * 9000), REFERENCE)
+
+    section = _section(message)
+    assert len(section) <= SLACK_SECTION_LIMIT
+    assert "…" in section
+
+
+def test_a_title_made_of_entities_is_cut_without_splitting_one() -> None:
+    """Escaping lengthens, so a budget spent on the escaped form is not enough."""
+    message = render_approval(_oversized("&" * 4000, "<" * 4000), REFERENCE)
+
+    section = _section(message)
+    assert len(section) <= SLACK_SECTION_LIMIT
+    assert re.sub(r"&(amp|lt|gt);", "", section).count("&") == 0
+
+
+def test_the_text_fallback_is_bounded_by_the_same_budgets() -> None:
+    """It is a message body, and Slack refuses an oversized one just as flatly."""
+    text = render_approval_text(
+        _oversized("t" * 9000, "d" * 9000, options=25), REFERENCE
+    )
+
+    assert len(text) < 10000
 
 
 # ── The post ─────────────────────────────────────────────────────────────────

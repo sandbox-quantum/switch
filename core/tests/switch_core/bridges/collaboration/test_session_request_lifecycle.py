@@ -186,6 +186,26 @@ async def test_accepting_for_the_session_says_the_scope_it_takes() -> None:
     assert "applies for the rest of this session" in _context(for_session)
 
 
+async def test_the_chosen_label_cannot_stretch_the_settled_card() -> None:
+    """The footer quotes an agent-supplied label, so it is bounded like the rest."""
+    settled = await _request(through=SETTLED)
+    content = settled.content
+    wordy = settled.model_copy(
+        update={
+            "content": content.model_copy(
+                update={
+                    "options": [
+                        option.model_copy(update={"label": "label " * 400})
+                        for option in content.options  # type: ignore[union-attr]
+                    ]
+                }
+            )
+        }
+    )
+
+    assert len(_context(wordy)) < 500
+
+
 async def test_an_option_the_request_never_offered_is_still_named() -> None:
     """Better a bare id than a card that reads as a plain yes to another question."""
     settled = await _request(through=SETTLED)
