@@ -20,7 +20,7 @@ import {
   ScanSearch,
   Trash2,
 } from 'lucide-react';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { toast } from '@renderer/lib/hooks/use-toast';
 import { rpc } from '@renderer/lib/ipc';
@@ -255,25 +255,6 @@ export function LoadExistingAgentsSection({
     },
   });
 
-  // Alt-reveal: show the "Deep scan" button while the modifier key is held.
-  const [altHeld, setAltHeld] = useState(false);
-  useEffect(() => {
-    if (!isOpen) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.repeat) return;
-      setAltHeld(e.altKey);
-    };
-    const onBlur = () => setAltHeld(false);
-    window.addEventListener('keydown', onKey);
-    window.addEventListener('keyup', onKey);
-    window.addEventListener('blur', onBlur);
-    return () => {
-      window.removeEventListener('keydown', onKey);
-      window.removeEventListener('keyup', onKey);
-      window.removeEventListener('blur', onBlur);
-    };
-  }, [isOpen]);
-
   const deepScan = useMutation({
     mutationFn: () =>
       rpc.agents.discoverLoadableAgentsOnHost({ sshHost, serverId, includeHomeScan: true }),
@@ -328,17 +309,14 @@ export function LoadExistingAgentsSection({
                 No registered agents found in this host's known directories. Scan a specific
                 directory below.
               </p>
-              <p className="text-xs text-foreground-muted/60">Hold Alt to reveal a deep scan.</p>
-              {altHeld && (
-                <Button
-                  size="sm"
-                  variant="outline"
-                  onClick={() => deepScan.mutate()}
-                  title={`Walk the whole home directory on ${sshHost} for agent configs. Can be slow on large VMs.`}
-                >
-                  <ScanSearch className="size-4" /> Deep scan ~
-                </Button>
-              )}
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => deepScan.mutate()}
+                title="Scans the full filesystem on this host. May take a while on large VMs."
+              >
+                <ScanSearch className="size-4" /> Deep scan
+              </Button>
             </div>
           ) : (
             <>
@@ -355,16 +333,14 @@ export function LoadExistingAgentsSection({
                   </button>
                 )}
                 <div className="flex items-center gap-1">
-                  {altHeld && (
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      onClick={() => deepScan.mutate()}
-                      title={`Walk the whole home directory on ${sshHost} for agent configs. Can be slow on large VMs.`}
-                    >
-                      <ScanSearch className="size-3" /> Deep scan ~
-                    </Button>
-                  )}
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => deepScan.mutate()}
+                    title="Scans the full filesystem on this host. May take a while on large VMs."
+                  >
+                    <ScanSearch className="size-3" /> Deep scan
+                  </Button>
                   <Button
                     size="sm"
                     variant="ghost"
