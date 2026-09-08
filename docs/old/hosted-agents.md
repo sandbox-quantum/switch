@@ -19,6 +19,11 @@ agent with nothing installed. It is an argument rather than an agreed plan, and
 The deliverable is the design, the order of work, and the questions still open.
 No code was written.
 
+It refers throughout to the multi-tenancy design spike, which is
+`docs/old/multi-tenancy.md` — **in flight on an unmerged branch**, so it is not
+on `main` and a reader of this document may not be able to open it yet. Where
+this document quotes it, the quote is reproduced in full for that reason.
+
 ---
 
 ## 1. Where we are today
@@ -34,13 +39,14 @@ addressed to it, spawns the agent CLI under `tmux`, types prompts into the
 running terminal UI, and keeps a session registry on disk that it reconciles
 against live `tmux` panes when it restarts.
 
-It needs Node 20, `tmux` and `git`, and nothing else. The build script *enforces*
-that: a custom esbuild resolver fails the build if Electron, the local SQLite
-database or the ORM are ever pulled in transitively. The sidecar cannot acquire
-a desktop dependency by accident.
+It needs `tmux`, `git`, and Node 18 or newer — the preflight's floor, though the
+build targets Node 20, now past end of life, so a new image should pin 22 or 24.
+Nothing else, and the build script enforces it: a custom esbuild resolver fails
+the build if Electron, the local database or the ORM are pulled in transitively,
+so the sidecar cannot acquire a desktop dependency by accident.
 
-It also touches SSH nowhere. SSH is how Switch Console *delivers* it, and the
-seam between the two is two methods:
+It contains no SSH code — only comments mentioning it. SSH is how Switch Console
+*delivers* it, and the seam between the two is two methods:
 
 ```ts
 export interface SidecarHost {
@@ -53,56 +59,43 @@ One implementation exists, over SSH. Anything that can run a command and put a
 file can host the sidecar.
 
 `AgentLaunchSpec` (`src/sidecar/agent-launch-spec.ts`) is the other half: a
-plain-JSON launch recipe — command, args, env, cwd, optional files to write into
-the home directory, provider id, and two behaviour flags — round-tripped through
-base64 and `JSON.parse`. It exists precisely so a headless watcher with no plugin
-registry never has to call back into desktop code to work out how to start an
-agent. It is already the interface a control plane would want.
+plain-JSON launch recipe — command, args, env, cwd, optional home-directory
+files, provider id and two behaviour flags — that exists precisely so a headless
+watcher with no plugin registry never has to call back into desktop code to work
+out how to start an agent. It is already the interface a control plane would
+want.
 
 Put that bundle in an image and the runtime problem is mostly solved.
 
 ### What assumes a human owns the box
 
-The parts around it assume ownership, and would be discarded rather than ported:
+Everything around the sidecar does. A host is an entry in the user's own
+`~/.ssh/config` and nothing else — `listSshConfigHosts()` is the whole of host
+onboarding, and its comment notes that Switch Console stores no credentials, so
+there is nothing a server could enumerate. The deployer imports `electron` and
+resolves the bundle out of `process.resourcesPath`, so the desktop app is the
+only thing that can deploy it. Setup is deliberately manual: *"There is
+deliberately no run-the-whole-plan loop — the ordering in a plan is guidance for
+a person, not a script."* And a deploy lock, a bundle-hash dedupe, log trimming
+and reattach logic all exist because the box outlives the client and is shared
+between installs — none of which is true of a machine we create per agent.
+§4 lists what that means for the port.
 
-- **A host is an entry in the user's own SSH config.** `listSshConfigHosts()`
-  parses `~/.ssh/config` and that is the whole of host onboarding. Its own
-  comment says authentication "resolves from the SSH config/agent (Switch
-  Console stores no credentials)". There is no host record, no inventory, and
-  nothing a server could enumerate.
-- **The deployer is an Electron app.** `resolveSidecarBundlePath()` imports
-  `electron` and resolves the bundle out of `process.resourcesPath`. The bundle
-  ships as an app resource, so the app is the only thing that can deploy it.
-- **Setup is deliberately interactive.** From the setup runner's own docstring:
-  *"There is deliberately no run-the-whole-plan loop — the ordering in a plan is
-  guidance for a person, not a script."* That is right for a machine a person
-  owns and exactly wrong for provisioning.
-- **A deploy lock, bundle-hash dedupe, log trimming and reattach logic.** An
-  atomic-`mkdir` mutex with a two-minute staleness break; a hash compare that
-  skips the upload when an identical bundle is already there; an 8 MB log
-  trimmed to 1 MB on relaunch; and `decideExisting()`, which reattaches to a
-  running sidecar rather than replacing it and defers a major upgrade while
-  sessions are live. All of it exists because the box outlives the client and is
-  shared between installs. A sandbox we create per agent has one client, one
-  bundle, one lifetime, and needs none of it.
-- **Model credentials are assumed to be already there.** The remote preflight
-  checks `tmux`, `node`, `git`, the Switch credentials and Switch reachability.
-  It never checks for a model credential, and the launch spec's `env` is built
-  from the provider plugin and Switch Console's own settings — the desktop's
-  `ANTHROPIC_API_KEY` is forwarded only to *local* terminal sessions. A remote
-  session works because a person logged the CLI in on that host by hand. Nothing
-  provisions it and nothing notices it is missing.
-
-That last one is not a rough edge. It is the whole of §6.
+One of them is not a rough edge but the whole of §6. **Model credentials are
+assumed to be already there.** The remote preflight checks `tmux`, `node`,
+`git`, the Switch credentials and Switch reachability, and never checks for a
+model credential; the launch spec's `env` comes from the provider plugin and
+Switch Console's settings, and the desktop's own `ANTHROPIC_API_KEY` is
+forwarded to *local* terminal sessions only. A remote session works because a
+person logged the CLI in on that host by hand. Nothing provisions it and nothing
+notices it is missing.
 
 ### The watcher is on the wrong side
 
 The thing that notices "someone addressed an agent that has no live session" is
-`NotificationWatcher`, and it runs inside the sidecar. It opens a stream with
-`scope: 'all', filter: 'addressed', spawnCapable: true`, and on an addressed
-event it takes a per-room in-flight guard, asks whether a session is already
-attending, and spawns one if not — three attempts, two seconds apart, posting a
-failure notice into the room if it never comes up.
+`NotificationWatcher`, and it runs inside the sidecar: a stream opened with
+`scope: 'all', filter: 'addressed', spawnCapable: true`, a per-room in-flight
+guard, and a spawn if nothing is already attending.
 
 That is a good design for a machine that is already running. It is circular for
 hosting: if the sidecar does not exist yet, nothing is listening.
@@ -111,9 +104,12 @@ The server knows this and says so. `connection_model` is one of `always_on`,
 `session_addressable`, `session_passive`, `auto_session`, and for an
 `auto_session` agent with a watcher connected the server posts *"Starting a
 session to handle this — one moment."* on the agent's behalf and waits. With no
-watcher connected it posts an offline message whose text tells the room that the
-agent "is brought online by Switch Console watching on its owner's machine" and
-that "the fix is for the OWNER to open it, and nobody else in the room can act."
+watcher connected, what the room actually gets is *"@owner — I'm not online in
+this room, and @asker needs me. Open Switch Console to bring me online here."*
+The reasoning behind that wording is in the function's docstring rather than in
+the room: an `auto_session` agent "is brought online by Switch Console watching
+on its owner's machine", so "the fix is for the OWNER to open it, and nobody else
+in the room can act."
 
 The model is already there. Only the actor is missing.
 
@@ -137,11 +133,12 @@ There is nowhere for a hosted customer to talk to their agent.
 
 The gateway API has thirteen routers and none of them read or post messages;
 `rooms.py` has twenty-two routes covering roles, groups, protection, membership
-and archiving, and not one of them touches the conversation. Reading and writing
-messages exists only on the agent-facing bridge — `read_context`, `post_message`,
-`send_targeted_message`, `send_attachment`. The operator dashboard has no message
-list and no composer; a search for a conversation view finds only `err.message`
-in error dialogs.
+and archiving, and not one touches the conversation. The only *API* for reading
+and writing messages is the agent-facing one — `read_context`, `post_message`,
+`send_targeted_message`, `send_attachment` — though the collaboration bridge
+moves the same rows on behalf of humans in Slack and the rest. What does not
+exist is a surface a person can point a browser at: the dashboard has no message
+list and no composer.
 
 Every human conversation in Switch today therefore goes through a collaboration
 bridge, and every bridge is an admin-created row with an operator-pasted
@@ -154,10 +151,10 @@ running."
 
 ### The security posture is a policy plane with no enforcement plane
 
-Covered in §8. In short: nothing in this repository sandboxes, restricts or
-limits an agent session today, because the machine belongs to the person running
-it and the operating system is the boundary. Hosting removes that boundary and
-supplies nothing in its place.
+Nothing in this repository sandboxes, restricts or limits an agent session today,
+because the machine belongs to the person running it and the operating system is
+the boundary. Hosting removes that boundary and supplies nothing in its place.
+§8 has the detail.
 
 ---
 
@@ -188,200 +185,188 @@ have different working directories and different credentials. A per-conversation
 sandbox throws away the working directory every time a conversation ends, which
 is exactly what the sidecar's durable session registry exists to avoid.
 
-An agent is also the unit the product already talks about: it has a name, a
-working directory, a provider and a set of rooms.
+A *machine*, though, is shorter-lived than an agent. Under the recommendation
+below it is destroyed when the agent goes idle and started again when it is next
+addressed, so the agent's durable state has to outlive its machine rather than
+live inside it. That is the hardest consequence of the recommendation and it is
+worked through under cold start.
 
-A *machine*, though, is a shorter-lived thing than an agent. Under the
-recommendation below a machine is destroyed when the agent goes idle and started
-again when it is next addressed, so the agent's durable state has to outlive its
-machine rather than living inside it. That is the thing to get right, and it is
-why the persistent-volume question in the cold-start discussion is load-bearing
-rather than an optimisation.
-
-### The shape: a microVM, not a container
-
-A sandbox here means a **microVM** — a real virtual machine with its own kernel,
-booted by Firecracker — not a container sharing the host kernel. That distinction
-is the entire security argument. We are running a stranger's coding agent, which
-means a stranger's shell, and a shared kernel is the wrong boundary for that.
-State it explicitly wherever this design is summarised, because "sandbox" is used
-loosely enough elsewhere to mean a container with a seccomp profile.
+The machine is a **microVM** — its own kernel — not a container sharing the
+host's. That distinction is the entire security argument: we are running a
+stranger's coding agent, which means a stranger's shell, and a shared kernel is
+the wrong boundary for that. Worth saying explicitly wherever this is summarised,
+because "sandbox" elsewhere often means a container with a seccomp profile.
 
 ### The recommendation: ECS Fargate
 
-Stay on AWS. **AWS Fargate already gives per-task microVM isolation** — in AWS's
-own words, each task has its own isolation boundary and does not share the
-underlying kernel, CPU, memory or network interface with another task. Tasks run
-on Firecracker microVMs, the same primitive the specialist agent-sandbox vendors
-sell, each with its own elastic network interface in our VPC and its own IAM task
-role.
+Stay on AWS. In AWS's own words, each Fargate task **"has its own isolation
+boundary and does not share the underlying kernel, CPU resources, memory
+resources, or elastic network interface with another task"** — which is the
+property §3 needs, stated by the vendor, and it does all the work on its own.
+Each task also gets its own elastic network interface in our VPC and its own IAM
+task role.
 
-That combination is what makes it the right answer rather than merely an
-acceptable one. We get the isolation boundary without operating a cluster and
-without the hardening our existing cluster would need; the network interface
-lands in a VPC we already control, so egress policy is a security group rather
-than a feature request; the task role is a real credential boundary rather than a
-convention; and because it runs in our own account and region, the data-residency
-question that would have decided against at least one specialist provider does
-not arise.
+Which gets us the isolation boundary without operating a cluster; egress policy
+as a security group rather than a feature request; a real credential boundary
+rather than a convention; and, because it is our own account and region, no new
+subprocessor and a residency answer that follows from the account.
 
 **ECS Fargate, not EKS Fargate.** EKS on Fargate has neither ARM nor spot
 pricing, and it puts back the Kubernetes cluster the whole point was to avoid.
 
 **And not our own existing cluster.** Per-session pods there are the right
-long-term shape in the abstract — we already run Kubernetes and it removes a
-dependency — but that cluster has no network policy, no resource limits and no
-pod isolation; node cloud credentials are reachable; the database holding every
-room's messages is one connection away in the same namespace; there are roughly
-six spare cores, no autoscaler, and the Kubernetes version is out of standard
-support with a forced upgrade ahead. Putting a stranger's shell in that namespace
-is not a decision about hosting, it is a decision about the database.
+long-term shape in the abstract, but that cluster is not hardened for untrusted
+workloads and shares a namespace with the database holding every room's messages.
+Putting a stranger's shell there is a decision about the database, not a decision
+about hosting.
 
-Sources: `docs.aws.amazon.com/AmazonECS/latest/developerguide/AWS_Fargate.html`
-and `aws.amazon.com/fargate/pricing/`.
+Source: `docs.aws.amazon.com/AmazonECS/latest/developerguide/AWS_Fargate.html`.
 
 ### Cold start is the central engineering risk
 
-AWS's own guidance is that a new Fargate task normally takes **thirty to
-forty-five seconds or longer** to start, and practitioner reports range much wider
-depending on image size. The billing clock starts when the image pull begins, not
-when the container is healthy. Both figures come from AWS's task-startup guidance
-rather than from our own measurement — which is why phase 0 measures it before
-anything is built on top of it.
+AWS's task-startup guidance puts a new Fargate task at **thirty to forty-five
+seconds or longer**, and practitioner reports range wider depending on image
+size. The billing clock starts when the image pull begins, not when the container
+is healthy. Both are AWS's figures rather than our measurements, which is why
+phase 0 measures them before anything is built on top.
 
-Set that against the trigger this whole design exists to serve: somebody
-addresses an agent in a chat window and waits for it to answer. Forty-five
-seconds of nothing is the difference between a product that feels alive and one
-that feels broken. This is the central risk of the recommendation and it should
-be treated as such, not as a tuning detail discovered in phase 2.
+Set that against the trigger this design exists to serve: somebody addresses an
+agent in a chat window and waits. Forty-five seconds of silence is the difference
+between a product that feels alive and one that feels broken.
 
-Three mitigations genuinely help, in ascending order of effort:
+Three mitigations, in ascending order of effort:
 
 - **An aggressively small image.** Node, `tmux`, `git`, the sidecar bundle and
   one agent CLI. Every megabyte is pull time on the critical path.
-- **Seekable OCI lazy image loading**, which AWS reports as the single
-  highest-return optimisation available here, at over fifty per cent. That is
-  AWS's number for its own workloads, not ours.
+- **Seekable OCI lazy image loading**, which AWS reports as the highest-return
+  optimisation available here at over fifty per cent — its number for its own
+  workloads, not ours.
 - **A small pre-warmed pool** rather than scaling to zero.
 
-The pool deserves a caveat, because it is easy to over-claim. A warm pool answers
-"how long until a container exists". It does not answer "how long until *this
-agent's* session is ready" — that needs the agent's working directory, its
-credentials and its CLI state, which is a per-agent restore on top. Total wake
-latency is pool-assign plus agent-restore, and only the first half is what a pool
-buys. Whether a pooled task can mount a per-agent persistent volume fast enough
-to make the second half cheap is unverified and is an open question below.
+**The pool buys less than it looks like, and permanently.** A Fargate task takes
+its volume configuration at launch and cannot attach an existing volume
+afterwards. So a pooled task can be waiting, but it cannot then adopt a specific
+agent's disk — which means a pool removes the infrastructure half of wake latency
+and nothing else, by construction rather than pending a workaround.
+
+That has a consequence the rest of this design has to carry: **durable per-agent
+state cannot live in the task.** It is either a filesystem mounted at launch — so
+the task is created for one agent and the pool is a pool of *unassigned* tasks
+that can never be reassigned — or a restore from object storage after the task
+starts. Neither is free and neither is currently anywhere in the design. The
+honest remaining question is not whether a pool can adopt state, which is settled
+and negative, but **how long a restore takes**, which nobody has measured.
 
 ### The honest trade against the specialists
 
-Three vendors were considered and rejected, and the reasoning is worth keeping
-because it is the reasoning that would reverse the decision if the risk above
-turns out to be fatal.
+Two vendors were evaluated and rejected; a third was not evaluated at all.
 
-- **Fly Sprites** — persistent Firecracker VMs with root and a durable root
-  filesystem, created in a second or two, with automatic sleep when idle. Three
-  billing states of which only *running* is billed. Roughly $0.07 per CPU-hour
-  and $0.04375 per GB-hour. Live checkpoint in around 300 ms and restore well
-  under a second. Coding agents are the advertised target workload.
+- **Fly Sprites** — persistent VMs with root and a durable root filesystem,
+  created in a second or two, with automatic sleep when idle. Three billing
+  states, of which only *running* is billed. Roughly $0.07 per CPU-hour and
+  $0.04375 per GB-hour. Live checkpoint in around 300 ms and restore well under a
+  second. Coding agents are the advertised target workload.
 - **E2B** — the one most widely used by other agent products. $0.000014 per
   vCPU-second and $0.0000045 per GiB-second. Session length is capped by plan
   tier: one hour on the entry tier, twenty-four hours above it.
-- **Northflank** — the only one of the three that runs in our own cloud account,
-  which is the answer if a customer says their code may not leave infrastructure
-  we control. Fargate answers that too, and more directly.
+- **Northflank** — **not evaluated.** It is the one option that would run in our
+  own cloud account, but nobody has established its price, its restore latency or
+  whether it pauses at all, so it is named here only so that it is not silently
+  dropped. It belongs in the phase 0 measurement, not in this comparison.
 
 **What we give up is pause.** The specialists snapshot and restore a paused
 machine in well under a second and charge nothing while it sleeps. Fargate has no
-pause: an idle session is either destroyed and rebuilt slowly, or kept warm and
-paid for. There is no third state. That is the real cost of staying on AWS, and
-it is paid in exactly the dimension — wake latency for a mostly-idle agent — that
-this product cares most about.
+third state: a session is running and billed, or gone.
 
-Two things blunt it. Fargate is cheaper per running hour than either specialist,
-so keeping something warm is less punitive than it sounds. And **destroying a
-session loses the agent CLI's in-memory context regardless of provider** — a
-restored microVM gives you back a `tmux` pane with a process in it whose sockets
-are dead, which is not the same as a session that can carry on. Session
-resumption is a design question in its own right, not something a hosting choice
-solves. The specialists' sub-second restore is a real advantage over cold start,
-but it is a smaller advantage than it first appears.
+### The numbers, including the case where we lose
 
-There was also a residency problem on at least one of them: Fly's Sprites do not
-appear to expose region selection, and their own community forum has a user in
-Germany finding their machine in France, apparently routed to a nearby point of
-presence rather than a chosen region. For a European company selling to European
-customers that is close to disqualifying on its own. Sources: `fly.io/sprites`,
-`e2b.dev/pricing`, and the Fly community thread at
+Estimates throughout, with the assumptions stated.
+
+Per *running* hour, for a 2 vCPU / 4 GB shape, Fargate is cheapest. Its published
+`us-east-1` rates are about $0.04 per vCPU-hour and $0.0044 per GB-hour, giving
+`2 × $0.04 + 4 × $0.0044 = $0.098`. European regions run higher; ten to thirty
+per cent is a working assumption here rather than a quoted rate, so call it
+**$0.10 to $0.13**. ARM is around twenty per cent cheaper again.
+
+| Per running hour, 2 vCPU / 4 GB | |
+|---|---|
+| Fargate (Europe, estimated) | $0.10 – $0.13 |
+| E2B | $0.17 |
+| Fly Sprites | $0.32 |
+
+That is the flattering denominator, and it is not the one the workload lives in.
+A hosted agent is expected to be **mostly idle**, and Fargate cannot be idle
+cheaply. Take the same agent worked one hour a day:
+
+| One hour a day, per month | |
+|---|---|
+| Fargate, destroyed when idle | ~$3.60, plus a cold start on every wake |
+| E2B, asleep the rest of the time | ~$5 |
+| Fly Sprites, asleep the rest of the time | ~$9 |
+| Fargate, kept warm to hide the cold start | ~$86 |
+
+**Warm Fargate is the most expensive option on the table by an order of
+magnitude.** E2B beats it below roughly seventy per cent duty cycle and Sprites
+below roughly forty — and a mostly-idle agent is nowhere near either. So the
+specialists dominate warm Fargate on price *and* on wake latency simultaneously.
+Fargate wins on price only in the destroy-when-idle regime, which is exactly the
+regime that pays the cold start this section calls the central risk.
+
+**The recommendation therefore does not rest on price, and should not be
+defended on it.** It rests on two things that are real and independent of cost:
+no new subprocessor holding customer code, and infrastructure we control in a
+region we choose. Those are strong arguments. If the phase 0 cold-start
+measurement comes back badly enough that a warm pool is mandatory, the price
+argument inverts completely and this decision should be reopened rather than
+defended.
+
+And the latency gap is wider than the boot numbers suggest, not narrower. A
+paused machine keeps its processes, so a specialist's sub-second restore really
+does return a session that carries on. **A destroyed task does not**: the agent
+CLI's in-memory context goes with it, and what comes back is a terminal with a
+dead socket in it. So Fargate's wake is not thirty to forty-five seconds, it is
+thirty to forty-five seconds *plus* a state restore *plus* whatever reloading the
+agent's context costs — against something close to zero. Session resumption is a
+design question in its own right (see the open questions), and it is one the
+recommendation creates and the alternative largely avoids.
+
+On residency: **Fly places a sprite near the caller and does not currently let
+you choose a region.** Placement looks sensible in practice — a Berlin user gets
+Frankfurt — but "usually nearby" is not a commitment a data-processing agreement
+can rest on. A gap needing a contractual answer, not a disqualification. Sources:
+`fly.io/sprites`, `e2b.dev/pricing`, `aws.amazon.com/fargate/pricing/`, and the
+Fly community thread at
 `community.fly.io/t/where-do-sprites-dev-sprites-live-as-in-which-fly-io-region-is-it/26775`.
 
-Note that renting from any of them would also make that vendor a **subprocessor
-of customer code and prompts**, requiring a contract, a security review and an
-entry in a privacy notice. Staying in our own account removes one layer of that
-problem — but only one layer. §10 is about the layer that remains.
+Renting from any of them would also make that vendor a **subprocessor of customer
+code and prompts**, requiring a contract, a security review and an entry in a
+privacy notice. Staying in our own account removes one layer of that. §10 is
+about the layer that remains.
 
 ### Rejected: rootless containers
 
-Podman was raised as a cheaper boundary than a microVM. Rootless containers share
-the host kernel, and it is worth being fair about what that means rather than
-treating it as an obvious error. It is a perfectly reasonable posture when you
-have contractual recourse against whoever is running the code — most CI systems
-work exactly this way, and they run arbitrary build scripts all day. The question
-is not "is a shared kernel secure", it is "how strong does the boundary need to
-be given who is on the other side of it".
+Podman was raised as a cheaper boundary, and it deserves a fair hearing rather
+than a reflex. A shared kernel is a reasonable posture when you have contractual
+recourse against whoever runs the code — most CI systems work exactly this way
+and run arbitrary build scripts all day. The question is not whether a shared
+kernel is secure but how strong the boundary needs to be given who is on the
+other side of it, and for anonymous free-tier users running whatever a model
+decides to type there is no contract and no recourse.
 
-For anonymous free-tier users running whatever a model decides to type, a shared
-kernel is the wrong boundary. There is no contract, no identity worth the name,
-and no recourse.
-
-There is also a practical point that settles it: if the task is already a
-microVM, the task *is* the boundary. Podman inside it would be a second boundary
-inside the first, adding a layer to reason about for no gain — and Fargate blocks
-the privileges nested containers usually want anyway.
-
-### The numbers
-
-Estimates, with the assumptions stated, because every one of them turns on a
-ratio we do not have data for.
-
-Fargate is roughly $0.04 per vCPU-hour and $0.0044 per GB-hour in the cheapest
-region. European regions run higher; ten to thirty per cent is the working
-assumption here rather than a quoted rate, and the real figure should be read off
-the pricing page for whichever region is chosen. A 2 vCPU /
-4 GB task is therefore about `2 × $0.04 + 4 × $0.0044 = $0.098` per hour before
-the regional uplift, so call it **$0.10 to $0.13 an hour in Europe**. ARM is
-around twenty per cent cheaper again, and billing granularity is one minute. For
-comparison, the same shape is about $0.315 an hour on the Sprites rates and about
-$0.17 on the E2B rates — Fargate undercuts both.
-
-Assume an actively working session — the CLI in a turn, reading files and calling
-the model — costs roughly $1.50 per hour on a mid-tier model with prompt caching
-working properly, and about five times that if caching breaks. So **compute is
-under a tenth of the model bill while working**, and under the credential model
-in §6 the model bill is not ours to pay at all.
-
-Which means our entire exposure is idle time, and idle time is the number we have
-no data for. Two bounds make the shape clear. An agent kept warm around the clock
-costs roughly $0.12 × 24 × 30 ≈ **$86 a month**, whether or not anyone speaks to
-it. An agent that is destroyed when idle and works one hour a day costs about
-**$3.60 a month**, and pays for it in a cold start every time. Nothing sensible
-sits at the first number for every agent; the design lives somewhere between,
-which is what makes the pooling question in the cold-start section the one that
-decides the unit economics.
+A practical point settles it anyway: if the task is already a microVM, the task
+*is* the boundary. Podman inside it is a second boundary inside the first, for no
+gain, and Fargate blocks the privileges nested containers usually want.
 
 ### What is decided and what is not
 
 Decided: ECS Fargate, in our own account and region, one task per agent, with a
-small image and lazy image loading from the start rather than retrofitted.
+small image and lazy image loading from the start rather than retrofitted — on
+the subprocessor and control arguments, not on price.
 
-Not decided: whether a warm pool is needed at launch or can wait for evidence;
-whether a pooled task can adopt a specific agent's state quickly enough to be
-worth having; and what the acceptable wake latency actually is, which is a
-product judgement nobody has made. Those are open questions below, and the first
-phase of the plan exists partly to answer them with measurements rather than
-argument.
-
----
-
+Not decided: whether a warm pool is needed at launch; how durable per-agent state
+is carried, given a pooled task cannot adopt a volume; and what wake latency is
+actually acceptable, which is a product judgement nobody has made. Phase 0 exists
+to answer the first two with measurements.
 ## 4. What is reused and what is discarded
 
 | Reused as-is | Discarded |
@@ -393,17 +378,24 @@ argument.
 | Startup and stall watches that report failures into the room | Log trimming on relaunch |
 | The event stream, cursor and `Last-Event-ID` resume | The assumption that a model credential is already on the machine |
 
-The image is the bundle plus Node 20, `tmux`, `git`, and one agent CLI — and
-nothing else, because §3 makes image size a latency budget rather than a
-housekeeping preference.
+The image is the bundle plus a current Node (22 or 24 — the sidecar's floor is
+18, but 20 is end of life and a new image should not start there), `tmux`, `git`,
+and one agent CLI. Nothing else, because §3 makes image size a latency budget
+rather than a housekeeping preference.
 
 Hosting simplifies the delivery seam rather than reimplementing it. `SidecarHost`
 is `exec` plus `putFile`; on Fargate the image *is* the file delivery, so
 `putFile` mostly disappears and the launch spec arrives as a container override
-or from a secret store at task start. What remains of `exec` is served by ECS
-Exec. Both paths coexist easily at that size — a self-hosted user keeps SSH, a
-hosted one gets the task API — and keeping the interface is what stops the two
-diverging the way the two on-demand-start implementations already have.
+or from a secret store at task start. Both paths coexist easily at that size — a
+self-hosted user keeps SSH, a hosted one gets the task API — and keeping the
+interface is what stops the two diverging the way the two on-demand-start
+implementations already have.
+
+What remains of `exec` is served by ECS Exec, and that is not free: it requires
+`ssmmessages` permissions on the task role, it is incompatible with a read-only
+root filesystem, and its sessions run as root. So it is **enabled per task, for
+the tasks that need it** — principally the interactive sign-in in §6 — rather
+than switched on across the fleet. §8 states the resulting default.
 
 The one genuinely new piece inside the sandbox is credential delivery, and it is
 new because today there is nothing there at all.
@@ -539,14 +531,28 @@ API key pasted at enrollment is the clean path and is the case the terms address
 in as many words: provisioning your own key into a machine image for your own
 authorized users, billed to the key owner.
 
-Subscription sign-in is harder and the terms are the reason. *"Developers may not
-collect, store, or intermediate Claude.ai credentials or session tokens — sign-in
-to a Claude account must complete through Anthropic's own flow."* So we cannot
-proxy an OAuth login, which means the end user has to complete it themselves
-against a terminal inside their own sandbox — a browser-based terminal, or a
-one-time interactive attach. Whether the resulting token sitting on a filesystem
-we operate counts as "storing" it is not addressed anywhere on that page, and it
-is an open question for a lawyer rather than a judgement call for an engineer.
+Subscription sign-in is harder, and the adverse text belongs in front of the
+reader in full rather than in the convenient half. The same page says:
+
+> Anthropic does not permit third-party developers to offer Claude.ai login into
+> their own applications, or to route requests through Free, Pro, or Max plan
+> credentials on behalf of their users. Moreover, developers may not collect,
+> store, or intermediate Claude.ai credentials or session tokens — sign-in to a
+> Claude account must complete through Anthropic's own flow.
+
+The second sentence rules out proxying the login, which is why an end user would
+have to complete it themselves against a terminal inside their own sandbox. But
+**the first sentence is arguably a direct description of that arrangement** — a
+platform putting a login in front of its users and then running their requests on
+subscription credentials — and it sits immediately before the carve-out quoted
+above, which permits an end user "signing in to the unmodified Claude Code binary
+with their own Claude subscription" on a platform that hosts it.
+
+Those two readings point in opposite directions and this document cannot resolve
+them. The honest expectation is **no** for anything resembling a sign-in screen
+of ours, and plausibly yes only for a raw terminal in which the user runs the
+vendor's own command themselves. The API-key path avoids the question entirely,
+which is a reason to make it the default rather than the fallback.
 
 Note that the same shape applies to the other providers. Codex and OpenCode have
 their own terms and their own answers, and nothing here should be generalised
@@ -592,9 +598,9 @@ That leaves four options and only two of them enforce anything.
   way everywhere it is displayed so nobody later builds billing on it.
 - **Meter and cap the thing we actually pay for: task wall-clock.** We start the
   task, we hold its handle, we can stop it. A budget in task-seconds is
-  enforceable and maps exactly onto our cost — Fargate bills at one-minute
-  granularity, so the accounting and the limit are the same unit rather than an
-  approximation of each other.
+  enforceable and maps exactly onto our cost — Fargate bills **per second, with a
+  one-minute minimum**, so the accounting and the limit are the same unit down to
+  the second rather than an approximation of each other.
 
 The last one is the answer. It is also a better fit for the multi-tenancy
 document's own rule that "a limit that only alerts is not a limit", because it is
@@ -644,9 +650,10 @@ Threats, roughly in order of how much they should worry us:
    sandbox per agent bounds the damage to one agent's room scope and one
    customer's model spend, which is an argument for the unit chosen in §3
    independent of cost. The Switch credential should be short-lived and issued by
-   the supervisor per task rather than baked into an image, and the task role
-   should grant nothing — a session has no legitimate reason to call our cloud
-   API at all.
+   the supervisor per task rather than baked into an image. The task role should
+   grant **nothing beyond the `ssmmessages` actions ECS Exec requires**, and only
+   on the tasks where the exec path is enabled at all (§4) — a session has no
+   other legitimate reason to call our cloud API.
 4. **Prompt injection reaching across rooms.** Content arriving in a room can
    instruct an agent. Switch already has answers here — room scoping, the scoped
    addressing policy, owner-only defaults for new agents — and hosting does not
@@ -702,11 +709,19 @@ The enforcement plane for a hosted session is the VM boundary, the security
 group, the filesystem it can reach and the clock — mechanisms outside the agent's
 own process, which cannot be talked out of a decision by a model.
 
-Concretely, a hosted session defaults to: a task role that grants nothing; no
-credentials in its environment beyond the two it needs; a writable filesystem
-limited to its own working directory; default-deny egress; and a compute cap that
-stops it. Getting those five right matters more than any amount of tool-level
-policy, and none of them requires the agent's cooperation.
+Concretely, a hosted session defaults to: a task role granting nothing beyond
+what ECS Exec needs, on the tasks that need it; no credentials in its environment
+beyond the two it must have; a writable filesystem limited to its own working
+directory; default-deny egress; and a compute cap that stops it. Getting those
+five right matters more than any amount of tool-level policy, and none of them
+requires the agent's cooperation.
+
+One of them cannot be had as stated. A **read-only root filesystem is
+incompatible with ECS Exec**, and ECS Exec sessions run as root — so the sign-in
+flow of §6 and the strongest filesystem posture are mutually exclusive on the
+same task. Keep them apart in time: exec enabled for enrollment, disabled for the
+working life of the session, and any task still carrying it treated and displayed
+as one with a weaker posture.
 
 One thing to fix regardless of hosting: the generic registration endpoint accepts
 a caller-supplied tool list with no validation, so an agent registering outside
@@ -718,27 +733,38 @@ indefensible once registration is a self-serve action.
 
 ## 9. The free tier: an open model on our own account
 
-§6 closes a door. This section finds the one next to it that is open.
+§6 closes a door. This section looks for the one next to it.
 
-The original proposal was to ship OpenCode rather than Claude Code, pointed at an
-internal model proxy with per-key spend limits. It was attractive because OpenCode
-is not Anthropic's binary, so the terms quoted in §6 do not bind it; because a
-proxy is exactly the mechanism §7 says a hard stop requires; and because it
-removes the worst step in the enrollment path — a stranger who has to produce an
-API key before they can see anything is a stranger who does not see anything.
-
-The objection to it was that serving external customers through our own model
-account raises the same resale question with the inference provider that
-Anthropic's terms raise for Claude. That objection turns out not to survive
-contact with the terms.
+The proposal was to ship OpenCode rather than Claude Code against a model we pay
+for: OpenCode is not Anthropic's binary, so §6's terms do not bind it; owning the
+credential is what §7 says a hard stop requires; and it removes the worst step in
+enrollment, since a stranger who must produce an API key before seeing anything
+is a stranger who does not see anything. The standing objection was that paying
+for external customers' usage raises the same resale question with whichever
+provider we use that Anthropic's terms raise for Claude.
 
 ### The door that is open
 
-**AWS's terms for third-party models on Bedrock distinguish our own engineers
-from our product's end users, and permit serving end users — including free
-ones.** That is the ordinary SaaS-wrapper pattern, and it is allowed. What they
-prohibit is handing customers raw API-level access to the model, and training a
-competing model on it. Neither describes what we would be doing.
+The reading this section rests on is that **serving a third-party model on
+Bedrock to our product's end users, including free ones, is permitted** — the
+ordinary SaaS-wrapper pattern — and that what is prohibited is handing customers
+raw API-level access to the model, and training a competing model on it. Neither
+of those describes what we would be doing.
+
+**That reading is not verified here, and it is the only major external claim in
+this document with no quotation behind it.** Everything in §6 is quoted from a
+named page; this is not, and it is a legal claim doing more work than any other
+sentence in the section. Two things make it worth checking rather than assuming.
+The operative instrument is probably not "AWS's terms" generically but **the
+model provider's own end-user licence as presented through the marketplace at
+subscription time**, which differs per model. And some providers' licences
+restrict use to the subscribing customer's *internal business purposes* — if the
+one attached to the chosen model does, this free tier is dead and the section
+does not survive it.
+
+So: name the instrument, quote the operative clause the way §6 quotes Anthropic's,
+and only then schedule anything. Until that is done it is an open question, and
+it is listed as one.
 
 So the resolution to the credential problem the rest of this document sets up is:
 
@@ -746,17 +772,12 @@ So the resolution to the credential problem the rest of this document sets up is
 > connects their own Claude or OpenAI credential when they want the good
 > models.**
 
-That is a coherent product shape rather than a workaround. The free tier is not a
-crippled version of the paid one; it is a different model tier, which is a thing
-users already understand from every other tool they use.
-
-It also simplifies §7 considerably. On the free tier we *are* the account holder,
-so the first of the four metering options — own the credential and cap it at the
-provider — becomes available after all, and it is the strongest of the four. What
-owning the account does not give us for free is *per-tenant* attribution, and
-whether that comes from provider-side request tagging or from a thin gateway of
-our own is an open question rather than a solved one. The global cap is the
-safety net; the per-tenant cap is the product.
+It also simplifies §7. On the free tier we *are* the account holder, so the
+strongest of the four metering options — own the credential and cap it at the
+provider — becomes available after all. What owning the account does not give us
+is *per-tenant* attribution, and whether that comes from provider-side request
+tagging or from a gateway of our own is open. The global cap is the safety net;
+the per-tenant cap is the product.
 
 ### The candidate
 
@@ -775,12 +796,8 @@ model, since caching is exactly what a real deployment would use. It is the righ
 comparison for a free tier all the same: a free tier is where caching is least
 likely to be working, because sessions are short, cold and unrelated.
 
-Note that this $3.90 and the $1.50-to-$7.50 range in §3 come from different
-assumed call rates and context sizes, so they are not the same calculation
-disagreeing with itself. Read them together as one range — somewhere between a
-dollar and eight dollars an active hour for a commercial model, depending mostly
-on whether caching is working — inside which $3.90 is an unremarkable point. The
-comparison that matters is not the absolute figure but the ratio to $0.13.
+The absolute figures matter less than the ratio: **thirty to one**, on
+assumptions chosen to flatter the expensive option.
 
 ### Self-hosting: ruled out, with numbers
 
@@ -818,19 +835,17 @@ harness's own issue history before shipping it, not to pick from a leaderboard.*
 That validation is a phase-6 task with a real cost, and pretending otherwise is
 how a free tier ships that loops forever on its first conversation.
 
-One licence caution that is independent of all of the above: **Meta's open-weight
-licence excludes European-domiciled companies from the grant.** That is a legal
-question about our own entity, not about which region we deploy in, and it rules
-their open weights out for us regardless of how they benchmark.
+One licence caution independent of all of the above: **some open-weight releases
+carry a restriction keyed to the licensee's domicile rather than to where it
+deploys.** One Meta licence was checked and has no such clause, so this is
+emphatically not a reason to exclude any vendor wholesale — it is a reason to
+read the licence of the specific release being evaluated, because the answer is
+per-release and turns on our own entity rather than on our region.
 
-### The closed flagship, briefly
-
-Meta's new closed flagship was raised as a candidate. It is real, and it is the
-wrong tier: priced like a mid-range commercial model rather than a
-cheap one, and its cheap variant requires that the vendor be allowed to train on
-prompts — which a governance product cannot accept on its customers' behalf and
-should not want to. Its open-weight sibling has no agentic benchmarks yet, which
-makes it a thing to revisit rather than a candidate to evaluate.
+Meta's new closed flagship was also raised and is the wrong tier — priced like a
+mid-range commercial model, with a cheap variant conditional on the vendor being
+allowed to train on prompts, which a governance product cannot accept on its
+customers' behalf.
 
 ### What stays uncertain
 
@@ -876,8 +891,8 @@ have to pass. As a European company selling to European customers, none of that
 is optional or deferrable.
 
 **It is a different business.** Hosting is an operations business with a
-round-the-clock expectation. Four environments are deployed by hand today, the
-cluster is on an unsupported Kubernetes version, and nobody is on call. Adding
+round-the-clock expectation. Deployment is manual today, the platform carries the
+usual debts of something built at pilot scale, and nobody is on call. Adding
 customer workloads to that is adding a promise we have no mechanism to keep.
 
 **The market has already run this experiment.** From a separate market review
@@ -970,10 +985,10 @@ grows past that, the positioning objection was right.
 | Decision | Chosen | Alternative and why not |
 |---|---|---|
 | Isolation boundary | microVM with its own kernel | Rootless containers — a shared kernel is a defensible boundary when you have recourse against whoever is inside it, and we would not. Redundant anyway once the task is already a microVM. |
-| Where sessions run | ECS Fargate, in our own account and region | Specialist sandbox vendors (Fly Sprites, E2B, Northflank) — sub-second restore and free sleep, but a new subprocessor, and at least one cannot answer the residency question. Fargate is also cheaper per running hour. |
+| Where sessions run | ECS Fargate, in our own account and region | Specialist sandbox vendors — sub-second restore and free sleep, and **cheaper than warm Fargate for a mostly-idle agent**. Chosen against them on subprocessor and account-control grounds, not on price. Northflank was not evaluated. |
 | Which Fargate | ECS | EKS on Fargate has neither ARM nor spot pricing and puts back the cluster we are avoiding. |
-| Not our existing cluster | Explicitly excluded | No network policy, no limits, no autoscaler, six spare cores, an out-of-support version, and the message database one connection away in the same namespace. |
-| Idle handling | Destroy and rebuild, with cold start attacked directly | Modelling a sleep state — Fargate has no pause, and a state the platform cannot provide is a fiction that becomes a support ticket. |
+| Not our existing cluster | Explicitly excluded | It is not hardened for untrusted workloads and shares a namespace with the message database. Putting a stranger's shell there is a decision about the database. |
+| Idle handling | Destroy and rebuild, with cold start attacked directly | Modelling a sleep state — Fargate has no pause, and a state the platform cannot provide is a fiction that becomes a support ticket. The cost is that a destroyed task loses the agent's in-memory context, which a paused machine would have kept. |
 | Unit of hosting | One task per agent | Per tenant shares a blast radius between agents with different credentials; per session throws away the working directory and the CLI's state every time. |
 | Runtime | The existing sidecar, containerised | A new server-side runner — discards working, tested code for no gain. The `SidecarHost` seam is already two methods wide. |
 | Delivery mechanism | The image, plus container overrides; keep the `SidecarHost` interface | Replacing SSH — self-hosted users still own machines, and keeping one interface is what stops the two paths diverging the way on-demand start already has. |
@@ -986,7 +1001,7 @@ grows past that, the positioning objection was right.
 | Permission model for a hosted session | VM boundary, default-deny egress, scoped filesystem, compute cap | Today's defaults — checks disabled off-laptop, name-based matching, shell allowed, one host of three. The mediation hook is not an enforcement plane. |
 | First chat surface | A message list and composer in the gateway, scoped to first-run and support | Slack first — depends on an app install review a stranger cannot complete during signup. |
 | Free tier | OpenCode on a cheap open model through our own account | A free tier on our Claude credentials — prohibited by the terms in §6. AWS's terms for third-party models permit serving end users, which is the door §6 leaves open. |
-| Free-tier model | Qwen's 30B coder on Bedrock on demand, validated against the harness before shipping | Picking from a leaderboard — the surveyed cheap models each have a dated failure mode in this class of harness, and the inference backend alone can move a score by forty points. Meta's open weights are excluded by a licence term about European-domiciled companies. |
+| Free-tier model | **A validation process**: drive a model-and-backend pairing through the real harness and check it against that harness's issue history. Qwen's 30B coder is the leading candidate to test first | Picking a model from a leaderboard — the surveyed cheap models each have a dated failure mode in this class of harness, and the inference backend alone can move a score by forty points. |
 | Serving the free-tier model | Per-token through our own account | Self-hosting on GPUs — twenty to a hundred and sixty times the price at a free tier's duty cycle, and the European regions we would use have no current-generation datacentre GPUs on demand anyway. |
 | Relationship to multi-tenancy | Downstream of it for self-serve; the existing-deployment case ships first | Building hosting first — signup, tenant isolation and the Slack app are all prerequisites for a stranger. |
 
@@ -1033,8 +1048,13 @@ the dashboard why.
 view in the dashboard.
 *Done when:* someone with no Slack can hold a conversation with their agent.
 
-**Phase 5 — self-serve.** Needs multi-tenancy phases 1 and 2. Signup creates a
-tenant, the tenant's first agent is hosted, payment.
+**Phase 5 — self-serve, paid-only beta.** Needs multi-tenancy phases 1 and 2.
+Signup creates a tenant, the tenant's first agent is hosted, payment. Call it a
+beta and mean it: §9 identifies "bring an API key before you can see anything" as
+the step that loses people, and this phase still has it. Phase 6 is the fix, and
+the two may well want to ship together rather than in sequence — the argument for
+splitting them is only that phase 5 can be measured without waiting on a legal
+answer.
 *Done when:* a stranger with a card and an API key has a working agent without
 talking to anyone.
 
@@ -1054,10 +1074,12 @@ conversation with an agent, and a runaway one stops at a cap we set.
   and the thing the whole cold-start argument in §3 is measured against. Thirty
   seconds with a "working on it" message in the room may be fine; the same thirty
   seconds in silence is not.
-- **Is a warm pool needed at launch, and can a pooled task adopt a specific
-  agent's state?** A pool removes the infrastructure cold start, not the agent
-  restore. Whether a task can mount a per-agent persistent volume fast enough for
-  the second half to be cheap is unverified.
+- **Is a warm pool needed at launch, and how is durable per-agent state
+  carried?** Whether a pooled task can adopt an agent's disk is *not* open — a
+  Fargate task takes its volume configuration at launch and cannot attach one
+  afterwards, so it cannot. What is open is how long a restore from object
+  storage takes, which is the only remaining route to a pool that is worth
+  having.
 - **What is the idle-to-active ratio of a real agent?** Every number in §3 turns
   on it and we have no data. It is measurable today from existing sessions and
   should be measured before the pooling decision, not after.
@@ -1066,6 +1088,17 @@ conversation with an agent, and a runaway one stops at a cap we set.
   a specific account, or their own. Northflank was the only rented option that
   could have offered the last of those; Fargate can, at the price of operating a
   second deployment path.
+- **Will we agree to Anthropic's Commercial Terms of Service, and who signs?**
+  §6 makes this a gate on the entire paid path — no agreement, no hosted Claude
+  Code, and the plan below has no phase 1. It is a commercial decision with a
+  named owner, and it has neither.
+- **Will the positioning change, and when?** §10 argues that shipping a hosted
+  tier while the public material still says data stays where it is would be the
+  worst outcome available. Nobody has decided whether it changes, so nobody has
+  decided whether this is buildable as described.
+- **What does the model licence behind the free tier actually say?** §9 rests on
+  an unverified reading. If the applicable instrument restricts use to the
+  subscribing customer's internal business purposes, phase 6 does not exist.
 - Does an inline proxy carrying the customer's *own* key count as
   "intermediating" under Anthropic's terms? A legal read, not an engineering
   call, and §9 depends on the equivalent answer from whichever provider sits
