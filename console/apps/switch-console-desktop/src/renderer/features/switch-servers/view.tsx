@@ -414,10 +414,13 @@ const ServerUnreachableCard = observer(function ServerUnreachableCard({
   const retrying = store.refreshing.has(serverId);
 
   // Keep probing while this is on screen. Waiting for the user to press
-  // something would leave a server that recovered looking down.
+  // something would leave a server that recovered looking down. This only
+  // re-checks connectivity, not sign-in options: those keep their once-cached
+  // behavior so a real outage does not turn into two doomed round trips on
+  // every tick, forever.
   useEffect(() => {
     const timer = setInterval(() => {
-      if (!document.hidden) void store.refreshServer(serverId);
+      if (!document.hidden) void store.retryConnection(serverId);
     }, UNREACHABLE_RETRY_MS);
     return () => clearInterval(timer);
   }, [serverId, store]);
@@ -435,7 +438,7 @@ const ServerUnreachableCard = observer(function ServerUnreachableCard({
         variant="outline"
         size="sm"
         disabled={retrying}
-        onClick={() => void store.refreshServer(serverId)}
+        onClick={() => void store.retryConnection(serverId)}
       >
         <RefreshCw className={retrying ? 'size-4 animate-spin' : 'size-4'} />
         Retry

@@ -62,13 +62,22 @@ function newStore(servers: SwitchServer[]) {
   return store;
 }
 
-/** A promise the test resolves by hand, to hold a fetch in flight. */
+/** A promise the test settles by hand, to hold a fetch in flight and control
+ * exactly when — and in what order relative to another fetch — it lands. */
 function deferred<T>() {
   let resolve!: (value: T) => void;
-  const promise = new Promise<T>((r) => {
-    resolve = r;
+  let reject!: (reason: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
   });
-  return { promise, resolve };
+  return { promise, resolve, reject };
+}
+
+/** Flushes pending timers and microtasks so an in-flight fetch's `.then`
+ * chain (including its `runInAction` writes) has fully landed. */
+async function flush(): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, 0));
 }
 
 beforeEach(() => {
@@ -255,15 +264,44 @@ describe('the manual refresh button', () => {
 
     expect(store.authConfigFor('srv-a')).toEqual(updatedConfig);
   });
+});
 
-  it('does not make the mount path re-fetch a cached config', async () => {
+describe("the unreachable card's automatic retry", () => {
+  it('does not re-fetch sign-in options once they are already known', async () => {
+    // Before the manual-refresh fix, the auto-retry's call to refreshServer
+    // would have started re-fetching sign-in options on every tick forever.
+    // The retry loop exists to re-probe connectivity, not to hammer an
+    // endpoint whose answer rarely changes.
     const store = newStore([server('srv-a')]);
     await store.ensureAuthConfig('srv-a');
     getAuthConfig.mockClear();
 
-    await store.ensureAuthConfig('srv-a');
+    await store.retryConnection('srv-a');
 
     expect(getAuthConfig).not.toHaveBeenCalled();
+    expect(getConnectionStatus).toHaveBeenCalledWith('srv-a');
+  });
+});
+
+describe('the reachability flag under concurrent checks', () => {
+  it('does not evict a reachable server over a later-landing sign-in-options failure', async () => {
+    // refreshServer runs the connection check and the sign-in-options check
+    // concurrently. If the connection check lands first and succeeds, a
+    // sign-in-options fetch that fails afterward must not overwrite that with
+    // "unreachable" — that would throw a perfectly signed-in user onto the
+    // cannot-reach screen over an unrelated endpoint's hiccup.
+    const store = newStore([server('srv-a')]);
+    const authPending = deferred<typeof authConfig>();
+    getAuthConfig.mockReturnValueOnce(authPending.promise);
+
+    const refreshing = store.refreshServer('srv-a');
+    await flush();
+    expect(store.isUnreachable('srv-a')).toBe(false);
+
+    authPending.reject(new Error('fetch failed'));
+    await refreshing;
+
+    expect(store.isUnreachable('srv-a')).toBe(false);
   });
 });
 
