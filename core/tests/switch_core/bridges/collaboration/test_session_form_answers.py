@@ -244,6 +244,24 @@ def test_a_press_for_an_option_the_record_never_had_answers_nothing() -> None:
     assert isinstance(resolve_pressed_option(approval, "something-else"), Unanswerable)
 
 
+def test_a_press_on_a_question_asking_for_several_answers_nothing() -> None:
+    """Checked here and not only where the card is drawn.
+
+    The renderer offers no buttons on a multi-select question, so today the two
+    agree. They are separate rules though, and this is the one that decides
+    what gets sent: taking the press would submit one option as if it were the
+    whole answer to a question asking for as many as apply.
+    """
+    form = _questions_form(("q-checks", ["unit", "types"], True, False))
+
+    resolved = resolve_pressed_option(form, "unit")
+
+    assert isinstance(resolved, Unanswerable)
+    assert resolved.reason == (
+        "a press is one option and that question takes as many as apply"
+    )
+
+
 # ── On the inbound path ──────────────────────────────────────────────────────
 
 
@@ -307,9 +325,37 @@ _FORMS: list[dict[str, Any]] = [
     _questions_form(("q1", [], False, True)),
     {"kind": "approval", "options": []},
     {"kind": "questions", "questions": [{}]},
+    {"kind": "approval", "options": "nonsense"},
+    {"kind": "questions", "questions": [1, 2]},
+    {"kind": "approval"},
+    {"kind": "questions", "questions": [{"questionId": 7}]},
     {"kind": "something-else"},
     {},
 ]
+
+
+def test_a_record_that_is_not_the_shape_this_layer_writes_is_refused_whole() -> None:
+    """Not filtered down to the entries that do parse.
+
+    Dropping the entries that are not records would shift every position after
+    them, and a position is what an answer is made of: `q2=1` would land on a
+    different question from the one the reader counted. Refusing the record is
+    the only reading of it that cannot answer the wrong question.
+
+    Unreachable from `posted_form` and from the backfill, both of which write
+    lists of records. It is here because this runs ahead of the relay on every
+    message, where the cost of `.get` on a string is not a refused answer but a
+    message the room never sees.
+    """
+    for form in (
+        {"kind": "approval", "options": "nonsense"},
+        {"kind": "questions", "questions": [1, 2]},
+        {"kind": "approval"},
+    ):
+        assert "is not a" in _refusal("R43 1", form)
+        pressed = resolve_pressed_option(form, "unit")
+        assert isinstance(pressed, Unanswerable)
+        assert "is not a" in pressed.reason
 
 
 def test_nothing_the_grammar_produces_can_take_a_message_with_it() -> None:

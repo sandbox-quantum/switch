@@ -60,8 +60,13 @@ _MAX_TITLE = 1500
 _MAX_DETAIL = 1200
 # A label appears once per option in the text form and once in the footer of a
 # settled card. Twenty-five of them at this length still leave that text far
-# short of what Slack accepts for a message body.
+# short of what Slack accepts for a message body. It also bounds the pieces of
+# a settled form's footer — a question's title, and what was written in answer
+# to it — which play the same part in that sentence as a label does.
 _MAX_LABEL = 150
+# Who answered. A Switch identity rather than anything an agent writes, but the
+# footer's arithmetic should not depend on that staying true.
+_MAX_ACTOR = 200
 
 # A question's own budgets. Each question is its own section, so these bound
 # one section between them rather than the message: a title, a prompt and the
@@ -70,7 +75,8 @@ _MAX_QUESTION_TITLE = 150
 _MAX_PROMPT = 800
 _MAX_DESCRIPTION = 200
 # The settled footer names every question and what was said to it, and both are
-# agent-supplied. A context block takes 3000 characters.
+# agent-supplied. A context block takes 3000 characters, and this is measured on
+# the escaped text, so what is left covers the actor and the framing.
 _MAX_ANSWERED = 1800
 _MAX_SECTION = 2800
 # Blocks per message are capped at 50 and a form needs one each plus framing.
@@ -170,10 +176,7 @@ def render_approval(
         {
             "type": "context",
             "elements": [
-                {
-                    "type": "mrkdwn",
-                    "text": escape_mrkdwn(_footer(request, content, reference)),
-                }
+                {"type": "mrkdwn", "text": _footer(request, content, reference)}
             ],
         }
     )
@@ -205,7 +208,7 @@ def render_approval_text(request: SnapshotRequest, reference: RequestReference) 
             f"{index}. {_fit(option.label, _MAX_LABEL)}"
             for index, option in enumerate(content.options, start=1)
         ]
-    lines.append(escape_mrkdwn(_footer(request, content, reference)))
+    lines.append(_footer(request, content, reference))
     return "\n".join(lines)
 
 
@@ -224,14 +227,16 @@ def _footer(
     """The one line under the card that says where the request has got to.
 
     Shared by the card and the text fallback so the two cannot disagree about
-    whether something was answered.
+    whether something was answered. It returns text that is ready for mrkdwn:
+    the framing is this file's own, and every value that came from anywhere
+    else is escaped here, where it is also measured.
     """
     if request.state == "open":
         # A code span, because the reader is meant to copy this and quote marks
         # around it are not part of the answer: `"R42 1"` parses as a handle of
         # `"R42`, which resolves to nothing and changes nothing on the card.
         # Slack draws a span from the backticks and the grammar strips them.
-        return f"Reply with `{reference.handle} 1`, or press a button."
+        return f"Reply with `{escape_mrkdwn(reference.handle)} 1`, or press a button."
     if request.state == "submitting":
         if request.decided_by is None:
             return "An answer is on its way."
@@ -261,7 +266,7 @@ def _answered(request: SnapshotRequest, content: ApprovalContent) -> str:
     # An option the content never offered still gets named rather than hidden:
     # the id is what the host said, and saying nothing would read as a plain
     # answer to a question that was not the one asked.
-    label = _truncate(chosen.label if chosen else result.option_id, _MAX_LABEL)
+    label = _fit(chosen.label if chosen else result.option_id, _MAX_LABEL)
     scope = (
         " (applies for the rest of this session)"
         if chosen and chosen.decision == "acceptForSession"
@@ -271,7 +276,9 @@ def _answered(request: SnapshotRequest, content: ApprovalContent) -> str:
 
 
 def _actor(decided_by: DecidedBy) -> str:
-    return f"{decided_by.actor_id} from {_SURFACES[decided_by.surface]}"
+    return (
+        f"{_fit(decided_by.actor_id, _MAX_ACTOR)} from {_SURFACES[decided_by.surface]}"
+    )
 
 
 def _button(option: ApprovalOption, reference: RequestReference) -> dict[str, Any]:
@@ -358,10 +365,8 @@ def render_questions(
             "elements": [
                 {
                     "type": "mrkdwn",
-                    "text": escape_mrkdwn(
-                        _questions_footer(
-                            request, content, reference, buttons=pressable is not None
-                        )
+                    "text": _questions_footer(
+                        request, content, reference, buttons=pressable is not None
                     ),
                 }
             ],
@@ -373,11 +378,15 @@ def render_questions(
 def render_questions_text(request: SnapshotRequest, reference: RequestReference) -> str:
     """The same form with no card at all, and the whole of it.
 
-    The notification fallback, and what someone reads when they answer by
-    typing. Numbering matches the card exactly, because the numbers are what an
-    answer is made of. Unlike the card it never drops an option: a message body
-    has room for the whole form, so the one place every option is guaranteed to
-    be visible is here.
+    The notification and accessibility string, and what is left when blocks do
+    not render. Numbering matches the card exactly, because the numbers are what
+    an answer is made of, and unlike the card it never drops an option — it is
+    not bound by a block limit.
+
+    Whether a channel reader can see this at all when the message also carries
+    blocks is not settled, so nothing here relies on it being visible: the card
+    says out loud when it has cut a list rather than leaving the reader to find
+    the rest in this.
     """
     content = _questions(request)
     lines = [
@@ -398,13 +407,11 @@ def render_questions_text(request: SnapshotRequest, reference: RequestReference)
                 for index, option in enumerate(question.options, start=1)
             ]
     lines.append(
-        escape_mrkdwn(
-            _questions_footer(
-                request,
-                content,
-                reference,
-                buttons=_pressable(request, content) is not None,
-            )
+        _questions_footer(
+            request,
+            content,
+            reference,
+            buttons=_pressable(request, content) is not None,
         )
     )
     return "\n".join(lines)
@@ -439,9 +446,16 @@ def _question_section(position: int, question: Question) -> str:
     """One question, numbered, with as many of its options as will fit.
 
     Slack rejects a section over 3000 characters and takes the whole post with
-    it, so a long list is cut. The cut is said out loud and the numbering is
-    untouched: an option that is not shown here is still shown in the message
-    text and still answerable by its number.
+    it, so a long list is cut. The cut is said out loud, with the count and
+    where the numbering resumes, and the numbering itself is untouched: an
+    option that is not shown is still answerable by its number by anyone who
+    knows it.
+
+    That last part is the weak point, and it is open (CHOO-2621): the full list
+    is in the message text, but whether a channel reader sees the text of a
+    message that carries blocks is unverified. If they cannot, a cut option is
+    one nobody can find, and this should refuse the way a form of more than
+    `_MAX_QUESTIONS` does rather than cut.
     """
     heading = f"*{position}. {_fit(question.title, _MAX_QUESTION_TITLE)}*"
     if question.prompt:
@@ -494,8 +508,23 @@ def _questions_footer(
     *,
     buttons: bool,
 ) -> str:
-    """The one line under the form that says how to answer it, or how it went."""
+    """The one line under the form that says how to answer it, or how it went.
+
+    Ready for mrkdwn, like the approval's: escaping happens here, beside the
+    budget that measures it.
+    """
     if request.state == "open":
+        stuck = _unanswerable(content.questions)
+        if stuck:
+            where = (
+                ""
+                if len(content.questions) == 1
+                else " on " + ", ".join(f"q{position}" for position in stuck)
+            )
+            return (
+                f"This card cannot be answered: nothing to choose{where}, "
+                "and no written answer allowed."
+            )
         example = f"`{_example(reference.handle, content.questions)}`"
         if buttons:
             return f"Reply with {example}, or press a button."
@@ -516,17 +545,35 @@ def _questions_footer(
     )
 
 
+def _unanswerable(questions: list[Question]) -> list[int]:
+    """The questions offering nothing to choose and taking no written answer.
+
+    A question like that cannot be answered on any surface — there is no number
+    to type and words are refused — and because every question has to be
+    answered for the answer to be sent at all, one of them makes the whole form
+    unanswerable. It is the host's mistake rather than the reader's, so the card
+    says so instead of printing an instruction the resolver would then refuse.
+    """
+    return [
+        position
+        for position, question in enumerate(questions, start=1)
+        if not question.options and not question.allow_custom_answer
+    ]
+
+
 def _example(handle: str, questions: list[Question]) -> str:
     """What answering this form actually looks like, typed out.
 
     Built from the form rather than fixed, because the shapes need different
     things said: one question takes a number on its own, several need saying
     which is which, and a question with nothing to number is answered in words.
+    Only ever called for a form every question of which can be answered, so
+    there is always something for each part to say.
     """
     values = [_example_value(question) for question in questions]
     if len(values) == 1:
-        return f"{handle} {values[0]}"
-    return f"{handle} " + "; ".join(
+        return f"{escape_mrkdwn(handle)} {values[0]}"
+    return f"{escape_mrkdwn(handle)} " + "; ".join(
         f"q{position}={value}" for position, value in enumerate(values, start=1)
     )
 
@@ -551,17 +598,33 @@ def _answered_questions(request: SnapshotRequest, content: QuestionsContent) -> 
         for option in question.options
     }
     titles = {question.question_id: question.title for question in content.questions}
+
+    # Budgeted on the escaped text and one whole answer at a time. Measuring
+    # before escaping would let a label full of `&` — a command line, a bit of
+    # code — take a footer that looked well inside the limit past the 3000 a
+    # context block accepts, and Slack rejects the whole update rather than the
+    # block: the card would stop tracking the request it stands for. Cutting
+    # the joined string afterwards is no good either, because the cut can land
+    # inside an entity and show the reader a literal `&am`.
     said: list[str] = []
-    for answer in result.answers:
+    spent = 0
+    for position, answer in enumerate(result.answers, start=1):
         # An id the content never offered is still named rather than hidden,
         # for the same reason an approval names one: it is what the host said,
         # and dropping it would read as an answer to a question nobody asked.
-        chosen = [labels.get(x, x) for x in answer.selected_option_ids]
+        chosen = [
+            _fit(labels.get(x, x), _MAX_LABEL) for x in answer.selected_option_ids
+        ]
         if answer.custom_text:
-            chosen.append(f"“{answer.custom_text}”")
-        title = titles.get(answer.question_id, answer.question_id)
-        said.append(f"{title}: {', '.join(chosen) if chosen else 'nothing'}")
-    answered = _truncate("; ".join(said), _MAX_ANSWERED)
+            chosen.append(f"“{_fit(answer.custom_text, _MAX_LABEL)}”")
+        title = _fit(titles.get(answer.question_id, answer.question_id), _MAX_LABEL)
+        part = f"{title}: {', '.join(chosen) if chosen else 'nothing'}"
+        if spent + len(part) + 2 > _MAX_ANSWERED:
+            said.append(f"…and {len(result.answers) - position + 1} more")
+            break
+        said.append(part)
+        spent += len(part) + 2
+    answered = "; ".join(said)
     return f"{answered} — answered{by}." if by else f"{answered}."
 
 

@@ -21,8 +21,10 @@ from typing import Any
 import pytest
 
 from switch_core.bridges.collaboration.session.contract import (
+    Answer,
     Question,
     QuestionOption,
+    QuestionsResult,
     SnapshotRequest,
 )
 from switch_core.bridges.collaboration.session.form import (
@@ -198,11 +200,82 @@ def test_the_example_says_which_question_only_when_there_is_more_than_one() -> N
 
 def test_a_question_with_nothing_to_number_is_shown_as_words_to_write() -> None:
     """There is no option 1 on it, so an example offering one would be a lie."""
-    request = _amend(_one_question(), options=[])
+    request = _amend(_one_question(), options=[], allow_custom_answer=True)
 
     assert 'Reply with `R44 "your answer"`.' == _footer(
         render_questions(request, ONE).blocks
     )
+
+
+def test_a_question_that_offers_nothing_makes_the_card_say_so() -> None:
+    """Nothing to press, nothing to number and no words allowed.
+
+    The contract permits it and the host is the one that got it wrong, so the
+    card cannot instruct its way out: whatever it told a reader to type would
+    be refused by the resolver. Saying the card cannot be answered is the only
+    honest thing on it, and it puts the host's mistake where a person can see
+    a session is stuck on it.
+    """
+    request = _amend(_one_question(), options=[], allow_custom_answer=False)
+
+    assert _footer(render_questions(request, ONE).blocks) == (
+        "This card cannot be answered: nothing to choose, "
+        "and no written answer allowed."
+    )
+
+
+def test_one_unanswerable_question_names_itself_on_a_longer_form() -> None:
+    """Every question has to be answered, so one stuck question stops the form.
+
+    Naming the position is the difference between a reader who can tell the
+    host which question to fix and one who has to guess.
+    """
+    questions = list(_form().content.questions)  # type: ignore[union-attr]
+    questions[1] = questions[1].model_copy(
+        update={"options": [], "multi_select": False, "allow_custom_answer": False}
+    )
+    request = _amend_questions(_form(), questions)
+
+    assert _footer(render_questions(request, FORM).blocks) == (
+        "This card cannot be answered: nothing to choose on q2, "
+        "and no written answer allowed."
+    )
+
+
+def test_no_question_shape_makes_the_card_offer_an_answer_it_would_refuse() -> None:
+    """The card's instruction and the resolver's rules are one claim.
+
+    Enumerated rather than sampled, because the shape that broke this was a
+    corner of it: zero options with both flags off reads as a perfectly
+    ordinary question and can never be answered. Every form here either says
+    it cannot be answered, or offers an example that parses and resolves.
+    """
+    shapes = [
+        (count, multi, custom)
+        for count in range(4)
+        for multi in (False, True)
+        for custom in (False, True)
+    ]
+
+    for first in shapes:
+        for rest in [None, *shapes]:
+            request = _amend_questions(
+                _form(),
+                [_question(1, *first)]
+                + ([] if rest is None else [_question(2, *rest)]),
+            )
+            footer = _footer(render_questions(request, FORM).blocks)
+            if footer.startswith("This card cannot be answered"):
+                continue
+
+            example = re.search(r"`([^`]+)`", footer)
+            assert example is not None, f"{first}, {rest}: no example in {footer!r}"
+            answer = parse_text_answer(example.group(1))
+            assert answer is not None, f"{first}, {rest}: {footer!r} does not parse"
+            resolved = resolve_text_answer(posted_form(request), answer)
+            assert not isinstance(resolved, Unanswerable), (
+                f"{first}, {rest}: {resolved}"
+            )
 
 
 # ── The text fallback ────────────────────────────────────────────────────────
@@ -223,6 +296,11 @@ def test_an_option_the_card_had_no_room_for_is_still_in_the_text() -> None:
     So a long list is cut on the card and said to be cut, and the message text
     — which has room — keeps every option. The numbering does not shift either
     way, because a number is what an answer is made of.
+
+    What this does not establish is that anyone can read the text of a message
+    that also carries blocks. Until that is checked in a real workspace, cutting
+    rather than refusing rests on the cut being announced, not on the rest being
+    findable.
     """
     crowded = _amend(
         _one_question(),
@@ -284,6 +362,59 @@ def test_a_settled_form_says_what_was_answered_and_by_whom() -> None:
     assert "answered by actor-demo from Slack" in footer
 
 
+def test_a_settled_form_heavy_in_entities_still_fits_a_context_block() -> None:
+    """The budget is spent in escaped characters, because those are the ones sent.
+
+    `&` is one character in a label and five in the block Slack receives, so a
+    footer measured on the source can be several times the size of the one that
+    is posted. A context block over 3000 characters is rejected, and the
+    rejection takes the outcome off the card that the refresh exists to update.
+    """
+    heavy = "&" * 200
+    questions = [
+        Question(
+            question_id=f"q{position}",
+            title=heavy,
+            prompt="",
+            options=[
+                QuestionOption(option_id=f"o{position}", label=heavy, description=None)
+            ],
+            multi_select=False,
+            allow_custom_answer=False,
+        )
+        for position in range(1, 21)
+    ]
+    answered = _requests("formAnswerLifecycle")["request-form"]
+    assert answered.result is not None
+    request = _amend_questions(answered, questions).model_copy(
+        update={
+            "result": answered.result.model_copy(
+                update={
+                    "result": QuestionsResult(
+                        kind="questions",
+                        answers=[
+                            Answer(
+                                question_id=f"q{position}",
+                                selected_option_ids=[f"o{position}"],
+                                custom_text=None,
+                            )
+                            for position in range(1, 21)
+                        ],
+                    )
+                }
+            )
+        }
+    )
+
+    footer = _footer(render_questions(request, FORM).blocks)
+
+    assert len(footer) <= 3000
+    assert "&amp;" in footer
+    # No half-written entity: the cut falls between answers, never inside one.
+    assert "&" not in footer.replace("&amp;", "")
+    assert re.search(r"…and \d+ more", footer), footer
+
+
 def test_a_settled_form_stops_asking() -> None:
     """A card still showing its questions is a card inviting a lost answer."""
     request = _requests("formAnswerLifecycle")["request-form"]
@@ -341,6 +472,23 @@ def _amend(request: SnapshotRequest, **fields: Any) -> SnapshotRequest:
     """The same request with one question changed. Only for single-question ones."""
     question = request.content.questions[0]  # type: ignore[union-attr]
     return _amend_questions(request, [question.model_copy(update=fields)])
+
+
+def _question(
+    position: int, options: int, multi_select: bool, allow_custom_answer: bool
+) -> Question:
+    """One question of every shape the contract allows, by the numbers."""
+    return Question(
+        question_id=f"q{position}",
+        title="Which?",
+        prompt="",
+        options=[
+            QuestionOption(option_id=f"o{index}", label=f"O{index}", description=None)
+            for index in range(1, options + 1)
+        ],
+        multi_select=multi_select,
+        allow_custom_answer=allow_custom_answer,
+    )
 
 
 def _amend_questions(

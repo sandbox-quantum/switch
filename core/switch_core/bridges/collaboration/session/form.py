@@ -95,13 +95,18 @@ def resolve_pressed_option(
     """
     kind = form.get("kind")
     if kind == "approval":
-        if option_id not in {option.get("optionId") for option in _options(form)}:
+        options = _entries(form, "options")
+        if options is None:
+            return _malformed(kind)
+        if option_id not in {option.get("optionId") for option in options}:
             return Unanswerable(
                 f"{option_id!r} is not one of the options that card offered"
             )
         return ApprovalResult(kind="approval", option_id=option_id)
     if kind == "questions":
-        questions = _questions(form)
+        questions = _entries(form, "questions")
+        if questions is None:
+            return _malformed(kind)
         if len(questions) != 1:
             # Nothing renders a control on a longer form, so a press against
             # one is a card from before this rule or a payload that was not
@@ -113,6 +118,13 @@ def resolve_pressed_option(
         question_id = question.get("questionId")
         if not isinstance(question_id, str):
             return Unanswerable("the record for that card names no question")
+        if question.get("multiSelect"):
+            # Checked here and not only where the card is drawn: a press is one
+            # option and the question asks for as many as apply, so taking it
+            # would send a single choice as though it were the whole answer.
+            return Unanswerable(
+                "a press is one option and that question takes as many as apply"
+            )
         if option_id not in (question.get("optionIds") or []):
             return Unanswerable(
                 f"{option_id!r} is not one of the options that question offered"
@@ -136,14 +148,20 @@ def resolve_text_answer(
     """The answer a typed message comes to, against the form that was posted."""
     kind = form.get("kind")
     if kind == "approval":
-        return _approval_answer(form, answer)
+        options = _entries(form, "options")
+        if options is None:
+            return _malformed(kind)
+        return _approval_answer(options, answer)
     if kind == "questions":
-        return _questions_answer(form, answer)
+        questions = _entries(form, "questions")
+        if questions is None:
+            return _malformed(kind)
+        return _questions_answer(questions, answer)
     return _unknown(kind)
 
 
 def _approval_answer(
-    form: dict[str, Any], answer: TextAnswer
+    options: list[dict[str, Any]], answer: TextAnswer
 ) -> RequestResult | Unanswerable:
     """One of the options, by position or by the word that names its decision.
 
@@ -152,7 +170,6 @@ def _approval_answer(
     because "yes" must never quietly grant a permission for the rest of a
     session.
     """
-    options = _options(form)
     if answer.decision is not None:
         matching = [
             option for option in options if option.get("decision") == answer.decision
@@ -191,7 +208,7 @@ def _picked(option: dict[str, Any]) -> ApprovalResult | Unanswerable:
 
 
 def _questions_answer(
-    form: dict[str, Any], answer: TextAnswer
+    questions: list[dict[str, Any]], answer: TextAnswer
 ) -> RequestResult | Unanswerable:
     """An answer per question, and only when there is one for every question.
 
@@ -200,7 +217,6 @@ def _questions_answer(
     is indistinguishable from one that skips it deliberately, and the host has
     no way to ask again for the part it did not get.
     """
-    questions = _questions(form)
     if answer.decision is not None:
         return Unanswerable(
             "a word answers a permission request, and that card asks questions"
@@ -294,12 +310,26 @@ def _one_answer(
     )
 
 
-def _options(form: dict[str, Any]) -> list[dict[str, Any]]:
-    return list(form.get("options") or [])
+def _entries(form: dict[str, Any], key: str) -> list[dict[str, Any]] | None:
+    """The records under `key`, or None if what is there is not records.
+
+    Nothing this layer writes can put anything else there, so None means a row
+    from somewhere else. It is still worth checking rather than reading
+    straight through: `.get` on a string is an `AttributeError`, and on the
+    inbound path that is not a refused answer but a message the room never
+    sees. Refusing the record whole also keeps the numbering honest — dropping
+    the entries that are not records would shift every position after them.
+    """
+    value = form.get(key)
+    if not isinstance(value, list):
+        return None
+    if any(not isinstance(entry, dict) for entry in value):
+        return None
+    return value
 
 
-def _questions(form: dict[str, Any]) -> list[dict[str, Any]]:
-    return list(form.get("questions") or [])
+def _malformed(kind: str) -> Unanswerable:
+    return Unanswerable(f"the record for that card is not a {kind} this layer wrote")
 
 
 def _unknown(kind: object) -> Unanswerable:
