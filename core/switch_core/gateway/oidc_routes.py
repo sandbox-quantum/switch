@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 from typing import Annotated, Any
 
@@ -92,7 +93,28 @@ async def oidc_callback(
     if not claims:
         try:
             claims = await client.userinfo(token=token)
-        except httpx.HTTPError as exc:
+        except KeyError as exc:
+            # authlib's userinfo() looks up metadata["userinfo_endpoint"],
+            # which OIDC discovery makes optional. A provider that omits it
+            # while also not returning an id_token leaves no way to read
+            # claims at all — a configuration mistake (the wrong issuer for
+            # this deployment), not a transient upstream fault, so retrying
+            # won't help.
+            logger.error(
+                "OIDC callback failed: the provider published no "
+                "userinfo_endpoint and no id_token was returned, so there "
+                "is nowhere to read claims from (%s)",
+                exc,
+            )
+            raise HTTPException(
+                status_code=500,
+                detail="OIDC provider has no userinfo endpoint and issued no id_token",
+            ) from exc
+        except (httpx.HTTPError, json.JSONDecodeError) as exc:
+            # A non-2xx response, a transport failure (timeout, connection
+            # refused), or a 200 whose body isn't JSON (a proxy or captive
+            # portal in front of the provider) — the provider's fault, not
+            # the caller's.
             logger.error("OIDC userinfo request failed: %s", exc)
             raise HTTPException(
                 status_code=502, detail="OIDC provider did not respond"
