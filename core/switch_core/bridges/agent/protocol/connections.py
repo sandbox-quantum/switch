@@ -58,6 +58,13 @@ PROTOCOL_ACCEPTS = _SERVER_AGENT_PROTOCOL.accepts
 # visible error instead of quiet resource creep.
 MAX_CONNECTIONS_PER_AGENT = 32
 
+# Minimum interval between reattaches on the same connection (CHOO-2653).
+# Two supervisors on one connection id reattach each other at full rate
+# (~9/s in the field), which dominates the log and makes neither one usable.
+# The server refuses a reattach that arrives too soon, forcing the client to
+# back off.
+MIN_REATTACH_INTERVAL_SECONDS = 2.0
+
 
 class ConnectionError_(Exception):
     """Base for connection faults that a client must be told about."""
@@ -180,6 +187,17 @@ class ProtocolVersionError(ConnectionError_):
         self.remedy = remedy
 
 
+class ReattachTooSoonError(ConnectionError_):
+    """A reattach arrived before the minimum interval elapsed (CHOO-2653)."""
+
+    def __init__(self, connection_id: str, wait_seconds: float) -> None:
+        super().__init__(
+            f"connection {connection_id} was reattached {wait_seconds:.1f}s ago; "
+            "wait before trying again"
+        )
+        self.connection_id = connection_id
+
+
 class TooManyConnectionsError(ConnectionError_):
     def __init__(self, agent_id: str, limit: int) -> None:
         super().__init__(
@@ -212,6 +230,9 @@ class Connection:
     # has been replaced and stop writing.
     stream_generation: int = 0
     closed_reason: str | None = None
+    # Monotonic time of the last stream reattach, so the server can refuse a
+    # reattach that arrives too soon (CHOO-2653).
+    last_reattach: float = 0.0
     # What the client said about itself on connect (CHOO-1865). Defaults to an
     # empty declaration, which means unknown — never "current".
     declaration: ClientDeclaration = field(default_factory=lambda: ClientDeclaration())
@@ -274,19 +295,30 @@ class ConnectionRegistry:
             if existing.agent_id != agent_id:
                 # Never let one agent attach to another's connection.
                 raise UnknownConnectionError(connection_id)
+
+            # Refuse a reattach that arrives too soon after the previous one
+            # (CHOO-2653). Two supervisors on one connection id would otherwise
+            # evict each other at ~9 reattaches/second.
+            now = time.monotonic()
+            if existing.last_reattach > 0:
+                elapsed = now - existing.last_reattach
+                if elapsed < MIN_REATTACH_INTERVAL_SECONDS:
+                    raise ReattachTooSoonError(connection_id, elapsed)
+
             existing.scope = scope
             existing.delivery_filter = delivery_filter
             existing.spawn_capable = spawn_capable
             existing.cursor = cursor
-            existing.last_beat = time.monotonic()
+            existing.last_beat = now
             existing.closed_reason = None
             existing.stream_attached = True
             existing.stream_generation += 1
+            existing.last_reattach = now
             # A reattach can come from an upgraded client, so the declaration
             # is replaced rather than kept. The connection outlives the socket;
             # what is on the other end of it need not.
             existing.declaration = declaration
-            logger.info(
+            logger.debug(
                 "[CONN] reattached agent=%s connection=%s scope=%s generation=%s",
                 agent_id,
                 connection_id,

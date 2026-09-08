@@ -523,15 +523,42 @@ export class RemoteSidecarLauncher {
    * and relaunched — otherwise a bundle upgrade never takes effect while the old
    * process keeps running.
    */
-  /** The running sidecar's ready line, or null when none is running. */
+  /** The running sidecar's ready line, or null when none is running.
+   *
+   * Checks both tmux (the process's supervisor) and the ready file's PID
+   * directly (CHOO-2653). The PID check catches sidecars running outside
+   * tmux, under a renamed tmux session, or via systemd — any case where the
+   * process is alive but tmux `has-session` misses it.
+   */
   private async readRunning(): Promise<ReadyLine | null> {
+    let tmuxAlive = false;
     try {
       await this.host.exec('tmux', ['has-session', '-t', exactTmuxTarget(this.sidecarTmuxName)]);
+      tmuxAlive = true;
     } catch {
-      return null; // not running
+      // tmux session not found — fall through to PID check
     }
+
     const raw = await this.readReadyFile();
-    return raw ? parseReady(raw) : null;
+    const ready = raw ? parseReady(raw) : null;
+    if (!ready) return tmuxAlive ? null : null;
+
+    // tmux found it — the common case
+    if (tmuxAlive) return ready;
+
+    // tmux didn't find it, but the ready file reports a PID. Check if that
+    // process is still alive on the host.
+    if (ready.pid == null) return null;
+    try {
+      await this.host.exec('kill', ['-0', String(ready.pid)]);
+      this.log.debug('RemoteSidecarLauncher: sidecar PID alive outside its tmux session', {
+        sidecarTmuxName: this.sidecarTmuxName,
+        pid: ready.pid,
+      });
+      return ready;
+    } catch {
+      return null; // PID is gone
+    }
   }
 
   /**

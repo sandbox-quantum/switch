@@ -415,6 +415,9 @@ export class SshAgentRuntime implements AgentRuntimeProvider, AttachableRuntime 
     const host = this.createSidecarHost();
     const credsSlug = agentCredsSlug(session);
     const specialization = await agentLaunchSpecialization(session.agentId);
+    // Drop any sidecar left in this directory by an earlier generation of the
+    // agent's name BEFORE deploying, so a leftover does not collide (CHOO-2653).
+    if (agent) await reapStaleSidecarsForAgent(agent, host, this.sessionPath);
     // Every session in this dir would otherwise re-run the same deploy+launch on
     // startup; coalesce so one host sees one ensure, not one per session.
     const endpoint = await dedupeInFlight(
@@ -434,9 +437,6 @@ export class SshAgentRuntime implements AgentRuntimeProvider, AttachableRuntime 
           host,
         })
     );
-    // Drop any sidecar left in this directory by an earlier generation of the
-    // agent's name — it is still polling Switch and no other path can see it.
-    if (agent) await reapStaleSidecarsForAgent(agent, host, this.sessionPath);
     this.sidecarEndpoint = endpoint;
     this.joinRelay(endpoint, session, credsSlug);
     return endpoint;

@@ -39,6 +39,70 @@ import { SIDECAR_CONTROL, SIDECAR_VERSION } from './sidecar-version';
 import { exactTmuxTarget, parseAgentTmuxSessionName } from './vm-tmux';
 
 /**
+ * Single-instance guard (CHOO-2653).
+ *
+ * Reads the existing ready file for this agent, checks whether its PID is still
+ * alive, and probes its HTTP port. If a healthy sidecar is already running,
+ * exits cleanly — so a second deploy (e.g. Console adopting a host that already
+ * has one) never starts a duplicate that livelocks the first.
+ */
+async function existingSidecarIsHealthy(
+  repoDir: string,
+  stateSlug: string,
+  log: { info(...input: unknown[]): void; warn(...input: unknown[]): void }
+): Promise<boolean> {
+  const readyPath = path.join(repoDir, sidecarReadyRelPath(stateSlug));
+  let raw: string;
+  try {
+    raw = await readFile(readyPath, 'utf8');
+  } catch {
+    return false;
+  }
+
+  const line = raw
+    .split('\n')
+    .map((l) => l.trim())
+    .find(Boolean);
+  if (!line) return false;
+
+  let parsed: { event?: string; pid?: number; port?: number; token?: string };
+  try {
+    parsed = JSON.parse(line);
+  } catch {
+    return false;
+  }
+
+  if (parsed.event !== 'ready') return false;
+  if (typeof parsed.pid !== 'number' || parsed.pid === process.pid) return false;
+
+  try {
+    process.kill(parsed.pid, 0);
+  } catch {
+    return false; // process is gone
+  }
+
+  // PID is alive — probe its HTTP endpoint to confirm it is a sidecar and not
+  // a recycled PID. The /sessions endpoint is token-gated and returns JSON.
+  if (typeof parsed.port !== 'number' || typeof parsed.token !== 'string') return false;
+  try {
+    const resp = await fetch(`http://127.0.0.1:${parsed.port}/sessions`, {
+      headers: { Authorization: `Bearer ${parsed.token}` },
+      signal: AbortSignal.timeout(2000),
+    });
+    if (resp.ok) {
+      log.info('sidecar: another instance is already running for this agent', {
+        existingPid: parsed.pid,
+        existingPort: parsed.port,
+      });
+      return true;
+    }
+  } catch {
+    // Port not responding — stale ready file with a recycled PID.
+  }
+  return false;
+}
+
+/**
  * Switch Console remote runtime sidecar (CHOO-1059 → CHOO-1085).
  *
  * One agent-scoped process per remote agent, deployed to the agent's VM and kept
@@ -139,6 +203,15 @@ async function main(): Promise<void> {
   // Per-agent state paths, so multiple agents in one repo dir each drive their
   // own sidecar without clobbering each other's spec/watch flag (CHOO-1440).
   // Fall back to the legacy shared paths when launched without a slug.
+  const stateSlug = credsSlug ?? 'default';
+
+  // Single-instance guard (CHOO-2653): refuse to start if a healthy sidecar for
+  // this agent is already running. Checked before any port binding or state
+  // loading, so the duplicate never touches shared files.
+  if (await existingSidecarIsHealthy(repoDir, stateSlug, log)) {
+    process.exit(0);
+  }
+
   const launchSpecRel = credsSlug
     ? sidecarLaunchSpecRelPath(credsSlug)
     : LEGACY_LAUNCH_SPEC_REL_PATH;
@@ -178,7 +251,6 @@ async function main(): Promise<void> {
 
   // Durable session registry. Restored entries whose pane is gone are dropped
   // here, so what survives is what is actually still running on the host.
-  const stateSlug = credsSlug ?? 'default';
   const store = await SidecarStateStore.open({
     repoDir,
     slug: stateSlug,
