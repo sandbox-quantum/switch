@@ -1041,6 +1041,44 @@ export async function deleteAgent(server: SwitchServer, agentId: string): Promis
   });
 }
 
+/** The result of provisioning a room from a YAML template. */
+export type TemplateProvisionResult = {
+  roomId: string;
+  roomName: string;
+  failedAttachments: Array<{ kind: string; id: string; error: string }>;
+};
+
+/**
+ * Create a room from a YAML template (`POST /rooms/from-yaml`). Sends the
+ * template as a JSON body with the YAML text and any user-supplied inputs.
+ * The server parses the template, interpolates inputs, and provisions
+ * everything in one call.
+ *
+ * A 400 carries a `detail` naming the bad input; the caller maps it back to
+ * the form field.
+ */
+export async function createRoomFromTemplate(
+  server: SwitchServer,
+  yamlText: string,
+  inputs: Record<string, string | number | boolean>
+): Promise<TemplateProvisionResult> {
+  const res = await gatewayFetch(server, '/rooms/from-yaml', {
+    authenticated: true,
+    method: 'POST',
+    body: { yaml: yamlText, inputs },
+  });
+  const json = (await res.json()) as {
+    room_id: string;
+    room_name: string;
+    failed_attachments?: Array<{ kind: string; id: string; error: string }>;
+  };
+  return {
+    roomId: json.room_id,
+    roomName: json.room_name,
+    failedAttachments: json.failed_attachments ?? [],
+  };
+}
+
 export async function fetchRoomRoles(
   server: SwitchServer,
   roomId: string
