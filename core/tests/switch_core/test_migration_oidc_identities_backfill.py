@@ -165,6 +165,56 @@ async def test_backfill_refuses_when_two_users_share_a_legacy_subject(
         await engine.dispose()
 
 
+async def test_backfill_allows_two_distinct_issuers_sharing_a_subject(
+    backfill_url: str,
+) -> None:
+    # Two full-pair rows sharing a subject string but naming two different,
+    # non-NULL issuers are not ambiguous: UNIQUE(iss, sub) is satisfied by
+    # both, the NULL-issuer partial index doesn't apply to either, and a
+    # later login matches exactly one of them by its exact (iss, sub) pair.
+    # This is also the shape the coming multi-issuer tenant work will make
+    # routine, so the pre-flight must not refuse it.
+    engine = create_async_engine(backfill_url)
+    try:
+        async with engine.begin() as connection:
+            await connection.run_sync(_upgrade_to(_PRE_MIGRATION_REVISION))
+
+        async with engine.begin() as connection:
+            await connection.execute(
+                text(
+                    """
+                    INSERT INTO users (id, name, email, role, password_hash, metadata)
+                    VALUES
+                        ('issuer-a-user', 'A', 'issuer-a-user@example.com', 'user',
+                         NULL,
+                         '{"oidc_iss": "https://idp-a.example", "oidc_sub": "shared-across-issuers"}'),
+                        ('issuer-b-user', 'B', 'issuer-b-user@example.com', 'user',
+                         NULL,
+                         '{"oidc_iss": "https://idp-b.example", "oidc_sub": "shared-across-issuers"}')
+                    """
+                )
+            )
+
+        async with engine.begin() as connection:
+            await connection.run_sync(_upgrade_to(_MIGRATION_UNDER_TEST))
+
+        async with engine.connect() as connection:
+            identities = (
+                await connection.execute(
+                    text(
+                        "SELECT user_id, iss, sub FROM oidc_identities ORDER BY user_id"
+                    )
+                )
+            ).all()
+    finally:
+        await engine.dispose()
+
+    assert identities == [
+        ("issuer-a-user", "https://idp-a.example", "shared-across-issuers"),
+        ("issuer-b-user", "https://idp-b.example", "shared-across-issuers"),
+    ]
+
+
 async def test_backfill_refuses_when_two_users_share_an_identical_full_pair(
     backfill_url: str,
 ) -> None:
