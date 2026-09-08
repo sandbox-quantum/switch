@@ -44,7 +44,13 @@ from switch_core.db.stores.room_link_store import RoomLinkStore
 from switch_core.db.stores.room_role_store import RoomRoleStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.room_service import RoomCreateConfig, RoomCreateResult
-from switch_core.rooms_yaml import ExistingReferenceById, RoomYamlService
+from switch_core.rooms_yaml import (
+    ExistingReferenceById,
+    ParamSpec,
+    RoomYamlService,
+    interpolate,
+    resolve_params,
+)
 
 
 class FakeRoomService:
@@ -645,3 +651,295 @@ async def test_export_includes_users_from_bridge(env):
     assert reparsed.name == "Bridged"
     assert reparsed.bridge == "Mattermost"
     assert reparsed.users == ["bob"]
+
+
+# ── resolve_params ──────────────────────────────────────────────────────────
+
+
+def test_resolve_params_defaults_only():
+    declared = {
+        "owner": ParamSpec(type="string"),
+        "repo": ParamSpec(type="string", default="sandbox-quantum/switch"),
+    }
+    values = resolve_params(declared, {"owner": "alice"})
+    assert values == {"owner": "alice", "repo": "sandbox-quantum/switch"}
+
+
+def test_resolve_params_override_default():
+    declared = {
+        "repo": ParamSpec(type="string", default="sandbox-quantum/switch"),
+    }
+    values = resolve_params(declared, {"repo": "other/repo"})
+    assert values == {"repo": "other/repo"}
+
+
+def test_resolve_params_missing_required():
+    declared = {"owner": ParamSpec(type="string")}
+    with pytest.raises(ValueError, match="Missing required param.*owner"):
+        resolve_params(declared, {})
+
+
+def test_resolve_params_undeclared_input():
+    declared = {"owner": ParamSpec(type="string")}
+    with pytest.raises(ValueError, match="Undeclared input.*extra"):
+        resolve_params(declared, {"owner": "a", "extra": "b"})
+
+
+def test_resolve_params_enum_valid():
+    declared = {
+        "vis": ParamSpec(type="enum", enum=["channel_public", "channel_private"]),
+    }
+    values = resolve_params(declared, {"vis": "channel_public"})
+    assert values == {"vis": "channel_public"}
+
+
+def test_resolve_params_enum_invalid():
+    declared = {
+        "vis": ParamSpec(type="enum", enum=["channel_public", "channel_private"]),
+    }
+    with pytest.raises(ValueError, match="not one of"):
+        resolve_params(declared, {"vis": "direct"})
+
+
+def test_resolve_params_boolean_coercion():
+    declared = {"flag": ParamSpec(type="boolean")}
+    assert resolve_params(declared, {"flag": True}) == {"flag": True}
+    assert resolve_params(declared, {"flag": "false"}) == {"flag": False}
+
+
+def test_resolve_params_number_coercion():
+    declared = {"count": ParamSpec(type="number")}
+    assert resolve_params(declared, {"count": "42"}) == {"count": 42}
+    assert resolve_params(declared, {"count": 3.14}) == {"count": 3.14}
+
+
+def test_resolve_params_number_bad():
+    declared = {"count": ParamSpec(type="number")}
+    with pytest.raises(ValueError, match="expected a number"):
+        resolve_params(declared, {"count": "abc"})
+
+
+# ── interpolate ─────────────────────────────────────────────────────────────
+
+
+def test_interpolate_whole_field_typed():
+    """A whole-field placeholder returns the typed value, not a string."""
+    result = interpolate("{flag}", {"flag": True})
+    assert result is True
+
+
+def test_interpolate_partial_string():
+    result = interpolate("hello {name}!", {"name": "world"})
+    assert result == "hello world!"
+
+
+def test_interpolate_undeclared_left_intact():
+    result = interpolate("{unknown} stays", {})
+    assert result == "{unknown} stays"
+
+
+def test_interpolate_nested_dict_and_list():
+    node = {
+        "a": "{x}",
+        "b": ["{y}", "literal"],
+        "c": {"nested": "prefix-{x}"},
+    }
+    values = {"x": "X", "y": "Y"}
+    result = interpolate(node, values)
+    assert result == {
+        "a": "X",
+        "b": ["Y", "literal"],
+        "c": {"nested": "prefix-X"},
+    }
+
+
+def test_interpolate_non_string_passthrough():
+    assert interpolate(42, {"x": "y"}) == 42
+    assert interpolate(None, {"x": "y"}) is None
+
+
+# ── parse with params ──────────────────────────────────────────────────────
+
+
+def test_parse_with_params_defaults_only(env):
+    spec = _svc(env).parse(
+        """
+        params:
+          owner:
+            type: string
+            default: "alice"
+        room:
+          name: "{owner} local-deploy"
+          description: "{owner}'s room"
+        """
+    )
+    assert spec.name == "alice local-deploy"
+    assert spec.description == "alice's room"
+
+
+def test_parse_with_params_override(env):
+    spec = _svc(env).parse(
+        """
+        params:
+          owner:
+            type: string
+            default: "alice"
+        room:
+          name: "{owner} local-deploy"
+          description: "{owner}'s room"
+        """,
+        inputs={"owner": "bob"},
+    )
+    assert spec.name == "bob local-deploy"
+
+
+def test_parse_with_params_missing_required_raises(env):
+    with pytest.raises(ValueError, match="Missing required param.*owner"):
+        _svc(env).parse(
+            """
+            params:
+              owner:
+                type: string
+            room:
+              name: "{owner} room"
+              description: "d"
+            """
+        )
+
+
+def test_parse_with_params_undeclared_input_raises(env):
+    with pytest.raises(ValueError, match="Undeclared input.*extra"):
+        _svc(env).parse(
+            """
+            params:
+              owner:
+                type: string
+            room:
+              name: "{owner} room"
+              description: "d"
+            """,
+            inputs={"owner": "a", "extra": "b"},
+        )
+
+
+def test_parse_inputs_against_paramless_file_raises(env):
+    with pytest.raises(ValueError, match="no params"):
+        _svc(env).parse(
+            """
+            room:
+              name: "R"
+              description: "d"
+            """,
+            inputs={"owner": "a"},
+        )
+
+
+def test_parse_unknown_placeholder_left_intact(env):
+    spec = _svc(env).parse(
+        """
+        params:
+          owner:
+            type: string
+        room:
+          name: "{owner} room"
+          description: "JSON brace {not_a_param} survives"
+        """,
+        inputs={"owner": "alice"},
+    )
+    assert spec.description == "JSON brace {not_a_param} survives"
+
+
+def test_parse_whole_field_typed_substitution(env):
+    """An enum param used as the whole value of channel_type stays valid."""
+    spec = _svc(env).parse(
+        """
+        params:
+          visibility:
+            type: enum
+            enum: [channel_public, channel_private]
+            default: channel_private
+        room:
+          name: "R"
+          description: "d"
+          channel_type: "{visibility}"
+        """
+    )
+    assert spec.channel_type == "channel_private"
+
+
+def test_parse_interpolation_into_docs_content(env):
+    spec = _svc(env).parse(
+        """
+        params:
+          owner:
+            type: string
+        room:
+          name: "R"
+          description: "d"
+          docs:
+            - name: "Guide"
+              description: "d"
+              instructions: "i"
+              content: "Welcome, {owner}."
+        """,
+        inputs={"owner": "alice"},
+    )
+    assert spec.docs[0].content == "Welcome, alice."
+
+
+def test_parse_interpolation_into_references_value(env):
+    spec = _svc(env).parse(
+        """
+        params:
+          repo:
+            type: string
+        room:
+          name: "R"
+          description: "d"
+          references:
+            - type: github
+              name: "Repo"
+              description: "d"
+              instructions: "i"
+              value:
+                urls: ["https://github.com/{repo}"]
+        """,
+        inputs={"repo": "org/project"},
+    )
+    assert spec.references[0].value == {"urls": ["https://github.com/org/project"]}  # type: ignore[union-attr]
+
+
+def test_parse_version_key_accepted(env):
+    spec = _svc(env).parse(
+        """
+        version: 0
+        room:
+          name: "R"
+          description: "d"
+        """
+    )
+    assert spec.name == "R"
+
+
+def test_parse_version_non_integer_rejected(env):
+    with pytest.raises(ValueError, match="integer"):
+        _svc(env).parse(
+            """
+            version: "one"
+            room:
+              name: "R"
+              description: "d"
+            """
+        )
+
+
+def test_parse_unknown_top_level_key_rejected(env):
+    with pytest.raises(ValueError, match="Unknown top-level key"):
+        _svc(env).parse(
+            """
+            room:
+              name: "R"
+              description: "d"
+            extra_key: bad
+            """
+        )
