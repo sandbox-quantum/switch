@@ -11,6 +11,7 @@ from starlette.responses import Response
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from switch_core.bridges.agent.api_key_cache import ApiKeyCache
+from switch_core.bridges.agent.registration_bootstrap import REGISTRATION_KEY_TYPES
 from switch_core.db.models import Agent, ApiKey
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.api_key_store import ApiKeyStore
@@ -71,8 +72,9 @@ class BearerAuthMiddleware:
        Used by agent-bridge HTTP endpoints and MCP.
     2. OIDC token — validated against the configured issuer, mapped to an
        agent via the ``oauth_client_id`` field on Agent.
-    3. Registration token — an ApiKey row of type ``"registration"`` that
-       has no associated agent. Used by the registration endpoint
+    3. Registration token — an ApiKey row of type ``"registration"`` or
+       ``"bootstrap"`` (see ``registration_bootstrap.py``) that has no
+       associated agent. Used by the registration endpoint
        (``POST /agents``). Sets ``scope["api_key"]`` so downstream
        handlers can validate it again.
 
@@ -137,7 +139,7 @@ class BearerAuthMiddleware:
         # Registration token: pass through (handler validates again). MCP rejects.
         if (
             api_key is not None
-            and api_key.type == "registration"
+            and api_key.type in REGISTRATION_KEY_TYPES
             and not path.startswith("/mcp")
         ):
             scope["api_key"] = api_key

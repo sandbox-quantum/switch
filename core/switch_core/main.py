@@ -22,6 +22,12 @@ from switch_core.bridges.agent.protocol.connections import (
 )
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
 from switch_core.bridges.agent.protocol.service import ProtocolService
+from switch_core.bridges.agent.registration_bootstrap import (
+    BOOTSTRAP_KEY_LABEL,
+    BOOTSTRAP_KEY_TYPE,
+    LEGACY_BOOTSTRAP_KEY_LABEL,
+    ensure_bootstrap_owner,
+)
 from switch_core.bridges.agent.server_connectors.lifecycle import (
     ServerSideConnectorLifecycleService,
 )
@@ -208,9 +214,9 @@ async def run() -> None:
     message_store = MessageStore()
     media_store = MediaStore()
 
-    # ── Seed admin user + registration key ──────────────────────────────────
+    # ── Seed admin user + agent-registration bootstrap key ──────────────────
     await _seed_admin_user(session_factory, user_store, config)
-    await _seed_admin_registration_key(
+    await _seed_agent_registration_bootstrap_key(
         session_factory, user_store, api_key_store, config
     )
 
@@ -487,41 +493,110 @@ async def _seed_admin_user(
         logger.info("Seeded admin user: %s", config.gateway_admin_email)
 
 
-async def _seed_admin_registration_key(
+# Marker recorded on the admin user's metadata once the agent-registration
+# bootstrap key has been seeded. Independent of the ApiKey row itself so that
+# an operator who deletes the key (revoking it from the gateway's API Keys
+# page) gets a permanent revocation: the next restart sees the flag, finds no
+# bootstrap-type key, and does not silently recreate one from the still-set
+# AGENT_REGISTRATION_TOKEN. Rotating the env var, by contrast, always takes
+# effect immediately: an existing bootstrap key's hash is kept in sync with
+# whatever the config currently holds.
+_BOOTSTRAP_SEEDED_FLAG = "agent_bootstrap_key_seeded"
+
+
+async def _seed_agent_registration_bootstrap_key(
     session_factory: object,
     user_store: UserStore,
     api_key_store: ApiKeyStore,
     config: SwitchConfig,
 ) -> None:
+    """Seed the deployment-wide agent-registration bootstrap key.
+
+    Unlike a personal registration key (minted by, and owned by, a single
+    gateway user), this key is handed out to bring up the first agents
+    against a fresh deployment before anyone has logged in. Agents it
+    registers are attributed to a dedicated, non-admin account (see
+    ``registration_bootstrap.py``), not to the admin user this key's ApiKey
+    row is filed under — the row lives on the admin so it is listed and
+    revocable from the admin's own API Keys page, but holding the token
+    itself confers no admin authority.
+    """
     async with session_factory() as session:  # type: ignore[operator]
         admin = await user_store.get_by_email(session, config.gateway_admin_email)
         if admin is None:
-            logger.error(
-                "Cannot seed registration key: admin user %s not found",
-                config.gateway_admin_email,
+            raise RuntimeError(
+                "Cannot seed agent-registration bootstrap key: admin user "
+                f"{config.gateway_admin_email} not found"
             )
-            return
+        await ensure_bootstrap_owner(session, user_store)
 
         token_hash = hashlib.sha256(
             config.agent_registration_token.encode()
         ).hexdigest()
-        existing = await api_key_store.get_by_hash(session, token_hash)
-        if existing is not None:
-            logger.info("Admin registration key already seeded")
-            return
-
-        key = ApiKey(
-            user_id=admin.id,
-            key_hash=token_hash,
-            encrypted_key=encrypt_token(
-                config.agent_registration_token, config.jwt_secret_key
-            ),
-            label="Default (from AGENT_REGISTRATION_TOKEN)",
-            type="registration",
+        encrypted_key = encrypt_token(
+            config.agent_registration_token, config.jwt_secret_key
         )
-        await api_key_store.create(session, key)
+
+        admin_keys = await api_key_store.get_by_user(session, admin.id)
+        legacy_key = next(
+            (
+                k
+                for k in admin_keys
+                if k.type == "registration" and k.label == LEGACY_BOOTSTRAP_KEY_LABEL
+            ),
+            None,
+        )
+        bootstrap_key = next(
+            (k for k in admin_keys if k.type == BOOTSTRAP_KEY_TYPE), None
+        )
+        already_seeded = bool((admin.metadata_ or {}).get(_BOOTSTRAP_SEEDED_FLAG))
+
+        if legacy_key is not None and bootstrap_key is None:
+            legacy_key.type = BOOTSTRAP_KEY_TYPE
+            legacy_key.label = BOOTSTRAP_KEY_LABEL
+            legacy_key.key_hash = token_hash
+            legacy_key.encrypted_key = encrypted_key
+            bootstrap_key = legacy_key
+            already_seeded = True
+            logger.info(
+                "Migrated the legacy admin-owned registration key to a "
+                "scoped agent-registration bootstrap key"
+            )
+
+        if bootstrap_key is not None:
+            if bootstrap_key.key_hash != token_hash:
+                bootstrap_key.key_hash = token_hash
+                bootstrap_key.encrypted_key = encrypted_key
+                logger.info(
+                    "Rotated the agent-registration bootstrap key from "
+                    "AGENT_REGISTRATION_TOKEN"
+                )
+        elif already_seeded:
+            logger.warning(
+                "Agent-registration bootstrap key was revoked; not "
+                "reseeding it from AGENT_REGISTRATION_TOKEN. Mint per-user "
+                "registration keys from the gateway's API Keys page instead."
+            )
+        else:
+            key = ApiKey(
+                user_id=admin.id,
+                key_hash=token_hash,
+                encrypted_key=encrypted_key,
+                label=BOOTSTRAP_KEY_LABEL,
+                type=BOOTSTRAP_KEY_TYPE,
+            )
+            await api_key_store.create(session, key)
+            logger.info(
+                "Seeded the agent-registration bootstrap key from "
+                "AGENT_REGISTRATION_TOKEN"
+            )
+
+        if not already_seeded:
+            meta = dict(admin.metadata_ or {})
+            meta[_BOOTSTRAP_SEEDED_FLAG] = True
+            admin.metadata_ = meta
+
         await session.commit()
-        logger.info("Seeded admin registration key from AGENT_REGISTRATION_TOKEN")
 
 
 async def _shutdown(

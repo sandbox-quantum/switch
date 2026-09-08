@@ -51,6 +51,10 @@ from switch_core.bridges.agent.protocol.types import (
     ToolCallReport,
     ToolSpec,
 )
+from switch_core.bridges.agent.registration_bootstrap import (
+    REGISTRATION_KEY_TYPES,
+    resolve_registration_owner_id,
+)
 from switch_core.bridges.resource.service import ResourceService
 from switch_core.crypto import encrypt_token
 from switch_core.db.models import (
@@ -435,14 +439,18 @@ class ProtocolService:
     ) -> RegistrationResult:
         """Resolve a registration token to its owner, then register the agent.
 
-        Raises PermissionError if the token does not match a stored ApiKey.
+        Raises PermissionError if the token does not match a stored ApiKey of
+        a registration type (see ``registration_bootstrap.REGISTRATION_KEY_TYPES``).
         Raises AgentExistsError if the name is taken and ``overwrite`` is False.
         """
         token_hash = hashlib.sha256(registration_token.encode()).hexdigest()
         async with self.session_factory() as session:
             key = await self.api_key_store.get_by_hash(session, token_hash)
-        if key is None:
-            raise PermissionError("Invalid registration token")
+            if key is None or key.type not in REGISTRATION_KEY_TYPES:
+                raise PermissionError("Invalid registration token")
+            owner_id = await resolve_registration_owner_id(
+                session, self.user_store, key
+            )
 
         return await self.register_agent(
             name=name,
@@ -453,7 +461,7 @@ class ProtocolService:
             tools=tools,
             models=models,
             metadata=metadata,
-            owner_id=key.user_id,
+            owner_id=owner_id,
             overwrite=overwrite,
             addressable_by_agent_ids=addressable_by_agent_ids,
             owner_only=owner_only,
