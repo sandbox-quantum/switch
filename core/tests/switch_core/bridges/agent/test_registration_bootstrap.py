@@ -39,6 +39,24 @@ class TestEnsureBootstrapOwner:
             await session.commit()
             assert again.id == owner.id
 
+    async def test_refuses_an_existing_account_with_the_admin_role(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """Nothing reserves this address: a gateway admin can `POST /users`
+        with it and an admin role, or an OIDC provider can hand it to any
+        identity that asserts it. Adopting that account would silently
+        restore the exact escalation this module exists to close."""
+        user_store = UserStore()
+        async with session_factory() as session:
+            session.add(
+                User(name="squatter", email=BOOTSTRAP_OWNER_EMAIL, role="admin")
+            )
+            await session.commit()
+
+        async with session_factory() as session:
+            with pytest.raises(RuntimeError, match="admin"):
+                await ensure_bootstrap_owner(session, user_store)
+
 
 class TestResolveRegistrationOwnerId:
     async def test_registration_key_resolves_to_its_own_user(
@@ -93,4 +111,34 @@ class TestResolveRegistrationOwnerId:
         )
         async with session_factory() as session:
             with pytest.raises(RuntimeError):
+                await resolve_registration_owner_id(session, user_store, key)
+
+    async def test_bootstrap_owner_promoted_to_admin_after_startup_fails_loud(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """`ensure_bootstrap_owner` only runs once at startup, so a later
+        promotion of the bootstrap owner to admin (e.g. by a gateway admin
+        editing the account, or an OIDC identity being linked to it after
+        #397) must still be caught here, at registration time."""
+        user_store = UserStore()
+        admin_id = await _make_user(session_factory, role="admin")
+        async with session_factory() as session:
+            bootstrap_owner = await ensure_bootstrap_owner(session, user_store)
+            await session.commit()
+
+        async with session_factory() as session:
+            promoted = await session.get(User, bootstrap_owner.id)
+            assert promoted is not None
+            promoted.role = "admin"
+            await session.commit()
+
+        key = ApiKey(
+            user_id=admin_id,
+            key_hash="h",
+            encrypted_key="e",
+            label="deployment bootstrap",
+            type=BOOTSTRAP_KEY_TYPE,
+        )
+        async with session_factory() as session:
+            with pytest.raises(RuntimeError, match="admin"):
                 await resolve_registration_owner_id(session, user_store, key)

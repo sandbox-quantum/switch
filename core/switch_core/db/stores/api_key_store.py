@@ -50,6 +50,16 @@ class ApiKeyStore:
         )
         return list(result.scalars().all())
 
+    async def get_by_type(self, session: AsyncSession, key_type: str) -> list[ApiKey]:
+        """Every key of a given type, regardless of which user owns it.
+
+        Used where a type is meant to be a deployment-wide singleton (the
+        agent-registration bootstrap key) and existence must not depend on
+        which user currently holds it.
+        """
+        result = await session.execute(select(ApiKey).where(ApiKey.type == key_type))
+        return list(result.scalars().all())
+
     async def delete(self, session: AsyncSession, key_id: str) -> None:
         key = await session.get(ApiKey, key_id)
         if key:

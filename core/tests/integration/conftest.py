@@ -398,7 +398,11 @@ async def harness(session_env: SessionEnv) -> AsyncIterator[Harness]:
     # boot, so a test can register through REGISTRATION_TOKEN exactly as a
     # standalone agent does, without duplicating that seeding logic here.
     await _seed_agent_registration_bootstrap_key(
-        session_factory, session_env.user_store, session_env.api_key_store, config
+        session_factory,
+        session_env.user_store,
+        session_env.api_key_store,
+        session_env.agent_store,
+        config,
     )
 
     # Per-test in-memory wiring: a fresh EventBuffer / client registry so queued
