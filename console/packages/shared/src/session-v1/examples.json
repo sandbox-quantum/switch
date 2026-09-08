@@ -1,0 +1,210 @@
+{
+  "initialSnapshot": {
+    "contractVersion": 1,
+    "throughSequence": 10,
+    "session": {
+      "sessionId": "session-demo",
+      "agentId": "agent-demo",
+      "provider": "claude",
+      "hostId": "host-demo",
+      "epoch": "epoch-demo",
+      "status": "running",
+      "connectivity": "online",
+      "capabilities": {
+        "input": "queue",
+        "approvals": true,
+        "questions": true,
+        "interrupt": true,
+        "reset": false,
+        "compact": false,
+        "modelChange": false,
+        "attachmentMimeTypes": []
+      },
+      "pendingRequestIds": ["request-demo"]
+    },
+    "turns": [
+      {
+        "type": "turn.upsert",
+        "turnId": "turn-demo",
+        "status": "running",
+        "commandId": "message-demo"
+      }
+    ],
+    "items": [],
+    "requests": [
+      {
+        "requestId": "request-demo",
+        "turnId": "turn-demo",
+        "revision": 1,
+        "state": "open",
+        "content": {
+          "kind": "approval",
+          "title": "Run project tests",
+          "detail": "pnpm test",
+          "options": [
+            {
+              "optionId": "allow-once",
+              "label": "Allow once",
+              "decision": "accept"
+            },
+            {
+              "optionId": "deny",
+              "label": "Deny",
+              "decision": "decline"
+            }
+          ]
+        },
+        "audience": {
+          "kind": "room",
+          "roomId": "room-demo",
+          "threadId": "thread-demo"
+        },
+        "expiresAt": null,
+        "result": null,
+        "decidedBy": null
+      }
+    ],
+    "commandStatuses": [],
+    "nextPageToken": null
+  },
+  "hostRequest": {
+    "contractVersion": 1,
+    "eventId": "event-demo",
+    "sessionId": "session-demo",
+    "epoch": "epoch-demo",
+    "hostSequence": 10,
+    "occurredAt": "2026-09-07T12:00:00Z",
+    "body": {
+      "type": "request.opened",
+      "request": {
+        "requestId": "request-demo",
+        "turnId": "turn-demo",
+        "revision": 1,
+        "state": "open",
+        "content": {
+          "kind": "approval",
+          "title": "Run project tests",
+          "detail": "pnpm test",
+          "options": [
+            {
+              "optionId": "allow-once",
+              "label": "Allow once",
+              "decision": "accept"
+            },
+            {
+              "optionId": "deny",
+              "label": "Deny",
+              "decision": "decline"
+            }
+          ]
+        },
+        "audience": {
+          "kind": "room",
+          "roomId": "room-demo",
+          "threadId": "thread-demo"
+        },
+        "expiresAt": null
+      }
+    }
+  },
+  "platformAnswer": {
+    "contractVersion": 1,
+    "commandId": "answer-demo",
+    "sessionId": "session-demo",
+    "epoch": "epoch-demo",
+    "origin": {
+      "surface": "mattermost",
+      "actorId": "actor-demo",
+      "roomId": "room-demo",
+      "threadId": "thread-demo",
+      "messageId": "message-answer"
+    },
+    "body": {
+      "type": "request.answer",
+      "requestId": "request-demo",
+      "expectedRevision": 1,
+      "answer": {
+        "kind": "approval",
+        "optionId": "allow-once"
+      }
+    }
+  },
+  "answerLifecycle": [
+    {
+      "contractVersion": 1,
+      "eventId": "server-event-11",
+      "sessionId": "session-demo",
+      "sequence": 11,
+      "occurredAt": "2026-09-07T12:00:01Z",
+      "body": {
+        "type": "command.status",
+        "commandId": "answer-demo",
+        "status": "accepted",
+        "code": null,
+        "message": null
+      }
+    },
+    {
+      "contractVersion": 1,
+      "eventId": "server-event-12",
+      "sessionId": "session-demo",
+      "sequence": 12,
+      "occurredAt": "2026-09-07T12:00:01Z",
+      "body": {
+        "type": "request.submitting",
+        "requestId": "request-demo",
+        "revision": 1,
+        "commandId": "answer-demo",
+        "actorId": "actor-demo",
+        "surface": "mattermost"
+      }
+    },
+    {
+      "contractVersion": 1,
+      "eventId": "server-event-13",
+      "sessionId": "session-demo",
+      "sequence": 13,
+      "occurredAt": "2026-09-07T12:00:02Z",
+      "body": {
+        "type": "request.settled",
+        "requestId": "request-demo",
+        "revision": 2,
+        "outcome": "answered",
+        "commandId": "answer-demo",
+        "result": {
+          "kind": "approval",
+          "optionId": "allow-once"
+        }
+      }
+    },
+    {
+      "contractVersion": 1,
+      "eventId": "server-event-14",
+      "sessionId": "session-demo",
+      "sequence": 14,
+      "occurredAt": "2026-09-07T12:00:02Z",
+      "body": {
+        "type": "command.status",
+        "commandId": "answer-demo",
+        "status": "applied",
+        "code": null,
+        "message": null
+      }
+    }
+  ],
+  "cancelledQuestion": {
+    "contractVersion": 1,
+    "eventId": "question-closed",
+    "sessionId": "session-demo",
+    "sequence": 15,
+    "occurredAt": "2026-09-07T12:00:03Z",
+    "body": {
+      "type": "request.settled",
+      "requestId": "question-demo",
+      "revision": 2,
+      "outcome": "interrupted",
+      "commandId": null,
+      "result": null
+    }
+  }
+}
