@@ -479,7 +479,7 @@ class TestOidcCallback:
                 )
             assert exc.value.status_code == 502
 
-    async def test_missing_userinfo_endpoint_maps_to_500(
+    async def test_missing_userinfo_endpoint_maps_to_503(
         self,
         session_factory: async_sessionmaker[AsyncSession],
         monkeypatch: pytest.MonkeyPatch,
@@ -488,8 +488,9 @@ class TestOidcCallback:
         # optional in the OIDC spec — WorkOS's User Management surface is one
         # such provider) combined with a token carrying no id_token leaves
         # nowhere to read claims from. That's a configuration mistake for
-        # this deployment, not a transient upstream fault, so it must not be
-        # confused with the 502 cases above.
+        # this deployment, not a transient upstream fault — 503, not 500,
+        # since it's diagnosed precisely enough to name rather than
+        # unanticipated, and not a 502 since the provider didn't misbehave.
         monkeypatch.setattr(
             oidc_routes,
             "_client",
@@ -504,7 +505,10 @@ class TestOidcCallback:
                     session=session,
                     user_store=UserStore(),
                 )
-            assert exc.value.status_code == 500
+            assert exc.value.status_code == 503
+            assert exc.value.detail == (
+                "OIDC provider has no userinfo endpoint and issued no id_token"
+            )
 
 
 class TestAuthConfigEndpoint:
