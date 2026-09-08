@@ -25,7 +25,7 @@ import re
 from typing import TYPE_CHECKING, Any, Literal, cast
 
 import yaml
-from pydantic import BaseModel, ValidationError, model_validator
+from pydantic import BaseModel, Field, ValidationError, model_validator
 
 from switch_core.bridges.collaboration.models import ChannelType
 from switch_core.bridges.resource.registry import validate_reference_value
@@ -144,7 +144,7 @@ def interpolate(
 
         return PLACEHOLDER_RE.sub(_replace, node)
     if isinstance(node, dict):
-        return {k: interpolate(v, values) for k, v in node.items()}
+        return {interpolate(k, values): interpolate(v, values) for k, v in node.items()}
     if isinstance(node, list):
         return [interpolate(item, values) for item in node]
     return node
@@ -239,18 +239,10 @@ class ProvisionResult(BaseModel):
 
 
 class GroupLinkSpec(BaseModel):
-    model_config = {"extra": "forbid"}
-    from_: str  # room name within the document
+    model_config = {"extra": "forbid", "populate_by_name": True}
+    from_: str = Field(alias="from")
     to: str
     label: str
-
-    @model_validator(mode="before")
-    @classmethod
-    def _rename_from(cls, data: Any) -> Any:
-        """Accept ``from`` in YAML (a Python keyword) as ``from_``."""
-        if isinstance(data, dict) and "from" in data:
-            data = {**data, "from_": data.pop("from")}
-        return data
 
 
 class GroupMeta(BaseModel):
