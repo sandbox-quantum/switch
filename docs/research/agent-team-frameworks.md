@@ -196,7 +196,7 @@ Two emerging cross-lab standards are worth naming: **MCP** (Anthropic, now unive
 
 ## 5. Productized "spin up an agent"
 
-Across Manus and its peers the out-of-box unit is consistent: a **task or session**, not a configured "agent object." The user writes a natural-language goal; the environment, tool wiring, planning loop and sub-agent orchestration are pre-built and hidden. What differs between products is what the user gets to *keep and reuse*.
+Across Manus and its peers the out-of-the-box unit is consistent: a **task or session**, not a configured "agent object." The user writes a natural-language goal; the environment, tool wiring, planning loop and sub-agent orchestration are pre-built and hidden. What differs between products is what the user gets to *keep and reuse*.
 
 - **Manus.** Each task spins up its own isolated cloud VM (browser, terminal, filesystem, on E2B). The user picks a mode (Agent / Chat) and writes the goal. What is templated away: the sandbox, tool selection, the planner/executor/verifier decomposition, and sub-agent orchestration (its "Wide Research" fans a task across many parallel sub-agents). What the user can reuse: **Agent Skills** (reusable workflow modules written as Markdown, progressive-disclosure loading, portable via an "open standard" and a **Team Skill Library**: explicitly positioned against Claude Skills), **Scheduled Tasks** (recurring runs with an output destination), and **Playbooks** (a catalog of starting-point templates). Weakest axis: durable cross-task memory.
 - **Peers, same lens.** OpenAI's **ChatGPT Agent** (a task in a cloud "virtual computer"; user configures connector permissions and takes over for logins). **Genspark** (a "Mixture-of-Agents" router picks model and tools; user connects an MCP store of integrations). **Devin** (a per-session coding sandbox ending in a PR; user configures a codebase **knowledge base** and approves an interactive plan). **Replit Agent** (builds and deploys apps in a browser cloud; user sets an autonomy level and can roll back to checkpoints; can itself build other agents and scheduled automations). **Lindy** (the outlier: a no-code **agent builder** where the reusable unit is front-and-centre, 100+ templates, custom agents, triggers, multi-agent handoffs).
@@ -288,23 +288,23 @@ Two things stand out. First, **every piece the template would stamp out already 
 Internal (this repo): `docs/official/building/payments-room.md`, `docs/official/building/grow-into-an-organization.md`, `switch-expert/knowledge/PATTERNS.md` and `INDEX.md`, `core/switch_core/db/models.py`, `core/switch_core/room_service.py`, `core/switch_core/rooms_yaml.py`.
 
 **CrewAI** (classic two-file template still supported; docs now lead with a JSONC model, flagged in §2):
-- Template files: `https://github.com/crewAIInc/crewAI/blob/main/lib/cli/src/crewai_cli/templates/crew/config/agents.yaml`, `.../config/tasks.yaml`, `.../crew.py`
-- Concepts: `https://docs.crewai.com/en/concepts/agents`, `.../tasks`, `.../crews`; quickstart `https://docs.crewai.com/en/quickstart`
+- Template files: `https://github.com/crewAIInc/crewAI/blob/main/lib/cli/src/crewai_cli/templates/crew/config/agents.yaml`, `https://github.com/crewAIInc/crewAI/blob/main/lib/cli/src/crewai_cli/templates/crew/config/tasks.yaml`, `https://github.com/crewAIInc/crewAI/blob/main/lib/cli/src/crewai_cli/templates/crew/crew.py`
+- Concepts: `https://docs.crewai.com/en/concepts/agents`, `https://docs.crewai.com/en/concepts/tasks`, `https://docs.crewai.com/en/concepts/crews`; quickstart `https://docs.crewai.com/en/quickstart`
 - Full-YAML feature request (closed): `https://github.com/crewAIInc/crewAI/issues/1474`
 
 **AutoGen / AG2, LangGraph, OpenAI Agents SDK:**
-- AutoGen teams + declarative components: `https://microsoft.github.io/autogen/stable/user-guide/agentchat-user-guide/tutorial/teams.html`, `.../core-user-guide/framework/component-config.html`; AG2 group chat: `https://docs.ag2.ai/latest/docs/user-guide/advanced-concepts/orchestration/group-chat/patterns/`
+- AutoGen teams + declarative components: `https://microsoft.github.io/autogen/stable/user-guide/agentchat-user-guide/tutorial/teams.html`, `https://microsoft.github.io/autogen/stable/user-guide/core-user-guide/framework/component-config.html`; AG2 group chat: `https://docs.ag2.ai/latest/docs/user-guide/advanced-concepts/orchestration/group-chat/patterns/`
 - LangGraph: `https://langchain-ai.github.io/langgraph/`; supervisor/swarm: `https://github.com/langchain-ai/langgraph-supervisor-py`, `https://github.com/langchain-ai/langgraph-swarm-py`
-- OpenAI Agents SDK: `https://openai.github.io/openai-agents-python/`, `.../handoffs/`, `.../quickstart/`
+- OpenAI Agents SDK: `https://openai.github.io/openai-agents-python/`, `https://openai.github.io/openai-agents-python/handoffs/`, `https://openai.github.io/openai-agents-python/quickstart/`
 
 **Flowise:**
-- `https://docs.flowiseai.com/using-flowise/agentflowv2`, `.../document-stores`, `.../variables`, `.../workspaces`
+- `https://docs.flowiseai.com/using-flowise/agentflowv2`, `https://docs.flowiseai.com/using-flowise/document-stores`, `https://docs.flowiseai.com/using-flowise/variables`, `https://docs.flowiseai.com/using-flowise/workspaces`
 - Entity source: `https://raw.githubusercontent.com/FlowiseAI/Flowise/main/packages/server/src/database/entities/ChatFlow.ts`; templates: `https://github.com/FlowiseAI/Flowise/tree/main/packages/server/marketplaces/chatflows`
 
 **Frontier CLIs (Claude Code / Gemini CLI / Codex) + standards:**
-- Claude Code: `https://code.claude.com/docs/en/sub-agents`, `.../skills`, `.../mcp`, `.../hooks`, `.../plugins`, `.../memory`, `.../permissions`
-- Gemini CLI: `https://github.com/google-gemini/gemini-cli/blob/main/docs/core/subagents.md`, `.../docs/cli/skills.md`, `.../docs/extensions/index.md`, `.../docs/hooks/reference.md`
-- Codex: `https://learn.chatgpt.com/docs/config-file/config-reference`, `https://developers.openai.com/codex/skills`, `.../hooks`
+- Claude Code: `https://code.claude.com/docs/en/sub-agents`, `https://code.claude.com/docs/en/skills`, `https://code.claude.com/docs/en/mcp`, `https://code.claude.com/docs/en/hooks`, `https://code.claude.com/docs/en/plugins`, `https://code.claude.com/docs/en/memory`, `https://code.claude.com/docs/en/permissions`
+- Gemini CLI: `https://github.com/google-gemini/gemini-cli/blob/main/docs/core/subagents.md`, `https://github.com/google-gemini/gemini-cli/blob/main/docs/cli/skills.md`, `https://github.com/google-gemini/gemini-cli/blob/main/docs/extensions/index.md`, `https://github.com/google-gemini/gemini-cli/blob/main/docs/hooks/reference.md`
+- Codex: `https://learn.chatgpt.com/docs/config-file/config-reference`, `https://developers.openai.com/codex/skills`, `https://developers.openai.com/codex/hooks`
 - Standards: `https://agents.md` (AGENTS.md); MCP (Anthropic-originated, adopted by all three)
 
 **Productized agents:**
