@@ -258,6 +258,10 @@ class Room(Base):
             unique=True,
             postgresql_where=text("external_channel_id IS NOT NULL"),
         ),
+        # group_id is a foreign key with no index, so listing rooms by group
+        # and the ON DELETE SET NULL when a group is removed both scan the
+        # table. Mirrors ix_agents_parent_agent_id.
+        Index("ix_rooms_group_id", "group_id"),
     )
 
     id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
