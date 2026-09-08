@@ -44,9 +44,19 @@ whatever their own default is. Set it explicitly, and **make sure it includes
 all, and the callback has nothing to read claims from.
 
 Quote the value in your env file. `GATEWAY_OIDC_SCOPES=openid profile email`
-(unquoted, with spaces) breaks env-file parsers that split on whitespace —
-`uv run` refuses to start with an "Error parsing line" rather than silently
-truncating the value. Write it as:
+(unquoted, with spaces) breaks `just`'s env-file parser — every recipe loads
+`.env` through it (`set dotenv-load := true` in the justfile), and it fails
+loudly: `error: failed to load environment file ... Error parsing line`, exit
+1, the recipe never runs. That protection only applies through `just`,
+though: running `uv run python -m switch_core.main` directly skips it
+entirely. Plain `uv run` doesn't read `.env` at all, so the variable is
+simply unset there; `uv run --env-file .env` reads it but only warns on the
+bad line and continues. Either way, going around `just` trades the loud
+parse error for a silent one: `GATEWAY_OIDC_SCOPES` ends up unset, the
+provider is asked for whatever scope it defaults to, and if that default
+doesn't include `openid` the failure only shows up later — at the callback,
+as a missing `id_token` — with nothing pointing back at the scope
+configuration. Write it as:
 
 ```
 GATEWAY_OIDC_SCOPES="openid profile email"
