@@ -115,13 +115,15 @@ async def oidc_callback(
         )
     name = claims.get("name") or email.split("@")[0]
 
-    # Bind to the immutable issuer+subject, never the mutable email.
+    # A returning identity is looked up on the immutable issuer+subject, never
+    # the mutable email; email only decides which account a *new* identity
+    # lands in, and only once it's verified (see get_or_create_oidc_user).
     iss = claims.get("iss") or config.gateway_oidc_issuer_url
     if not iss:
         raise HTTPException(status_code=401, detail="OIDC token missing issuer")
     try:
         user = await user_store.get_or_create_oidc_user(
-            session, iss=iss, email=email, name=name, sub=sub
+            session, iss=iss, email=email, name=name, sub=sub, email_verified=verified
         )
     except OidcIdentityConflictError as exc:
         logger.warning("OIDC identity conflict: %s", exc)

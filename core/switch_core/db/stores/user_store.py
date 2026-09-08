@@ -3,14 +3,16 @@ from __future__ import annotations
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from switch_core.db.models import User
+from switch_core.db.models import OidcIdentity, User
 
 
 class OidcIdentityConflictError(Exception):
-    """An OIDC login's email already belongs to a different local account.
+    """An unverified OIDC login's email already belongs to a different account.
 
     Raised instead of silently linking the IdP identity to a pre-existing
-    account: auto-linking by email is an account-takeover vector.
+    account: an unverified email is attacker-controllable, so trusting it to
+    pick an account is an account-takeover vector. A verified email links
+    instead — see ``get_or_create_oidc_user``.
     """
 
 
@@ -29,20 +31,13 @@ class UserStore:
     async def get_by_oidc_identity(
         self, session: AsyncSession, *, iss: str, sub: str
     ) -> User | None:
-        """Find the user bound to this IdP identity by its immutable (iss, sub).
-
-        Legacy rows (provisioned before iss was stored) carry only ``oidc_sub``;
-        those match on sub alone and get their ``oidc_iss`` backfilled by the
-        caller. ``sub`` is unique per issuer, so matching on it is safe.
-        """
+        """Find the user linked to this IdP identity by its immutable (iss, sub)."""
         result = await session.execute(
-            select(User).where(User.metadata_["oidc_sub"].astext == sub)
+            select(User)
+            .join(OidcIdentity, OidcIdentity.user_id == User.id)
+            .where(OidcIdentity.iss == iss, OidcIdentity.sub == sub)
         )
-        for user in result.scalars().all():
-            stored_iss = (user.metadata_ or {}).get("oidc_iss")
-            if stored_iss is None or stored_iss == iss:
-                return user
-        return None
+        return result.scalar_one_or_none()
 
     async def get_or_create_oidc_user(
         self,
@@ -52,42 +47,48 @@ class UserStore:
         email: str,
         name: str,
         sub: str,
+        email_verified: bool,
     ) -> User:
         """Resolve an OIDC identity to a gateway user, provisioning on first
         login (JIT).
 
-        Identity is bound to the immutable ``(iss, sub)`` pair, never to the
-        mutable email: an existing user is only returned when its stored IdP
-        subject matches. A brand-new subject provisions a fresh ``user`` (no
-        password hash). If the email is already taken by a different local
-        account (a password user, or a different IdP subject), we refuse rather
-        than link, so a token bearing someone else's email cannot take over
-        their account (including the seeded admin).
+        Accounts are keyed on verified email, not on login method: a subject
+        already linked to a user is returned as-is (looked up on the
+        immutable ``(iss, sub)`` pair, never the mutable email). Otherwise, a
+        *verified* email that matches an existing account links this identity
+        to it — one user can hold several linked identities — so someone who
+        signed up with a password and later signs in with an IdP sharing that
+        email lands in the same account instead of a second one.
+
+        An unverified email must never pick an existing account: that is an
+        attacker-controllable claim, so a collision with a pre-existing
+        account is refused rather than linked. A brand-new email — verified
+        or not — provisions a fresh ``user`` (no password hash).
         """
         user = await self.get_by_oidc_identity(session, iss=iss, sub=sub)
         if user is not None:
-            meta = dict(user.metadata_ or {})
-            if meta.get("oidc_iss") != iss:
-                meta["oidc_iss"] = iss
-                user.metadata_ = meta
-                await session.flush()
             return user
 
-        if await self.get_by_email(session, email) is not None:
-            raise OidcIdentityConflictError(
-                f"An account with email {email!r} already exists and is not "
-                "linked to this identity."
-            )
+        existing = await self.get_by_email(session, email)
+        if existing is not None:
+            if not email_verified:
+                raise OidcIdentityConflictError(
+                    f"An account with email {email!r} already exists and this "
+                    "identity's email is not verified."
+                )
+            await self._link_identity(session, user=existing, iss=iss, sub=sub)
+            return existing
 
-        user = User(
-            name=name,
-            email=email,
-            role="user",
-            password_hash=None,
-            metadata_={"oidc_iss": iss, "oidc_sub": sub},
-        )
+        user = User(name=name, email=email, role="user", password_hash=None)
         await self.create(session, user)
+        await self._link_identity(session, user=user, iss=iss, sub=sub)
         return user
+
+    async def _link_identity(
+        self, session: AsyncSession, *, user: User, iss: str, sub: str
+    ) -> None:
+        session.add(OidcIdentity(user_id=user.id, iss=iss, sub=sub))
+        await session.flush()
 
     async def get_all(self, session: AsyncSession) -> list[User]:
         result = await session.execute(select(User))

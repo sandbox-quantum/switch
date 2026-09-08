@@ -10,6 +10,7 @@ import switch_core.gateway.oidc_routes as oidc_routes
 from switch_core.config import SwitchConfig
 from switch_core.db.models import User
 from switch_core.db.stores.user_store import UserStore
+from switch_core.gateway.auth import hash_password
 from switch_core.gateway.auth_routes import auth_config
 
 
@@ -75,10 +76,11 @@ class TestOidcCallback:
             assert user is not None
             assert user.role == "user"
             assert user.password_hash is None
-            assert user.metadata_ == {
-                "oidc_iss": "https://idp.example",
-                "oidc_sub": "okta|123",
-            }
+            assert user.metadata_ is None
+            linked = await UserStore().get_by_oidc_identity(
+                session, iss="https://idp.example", sub="okta|123"
+            )
+            assert linked is not None and linked.id == user.id
 
     @pytest.mark.parametrize("email_verified", [False, None, "false"])
     async def test_unverified_email_is_rejected(
@@ -140,10 +142,10 @@ class TestOidcCallback:
             assert response.status_code == 303
             user = await UserStore().get_by_email(session, "bob@example.com")
             assert user is not None
-            assert user.metadata_ == {
-                "oidc_iss": "https://idp.example",
-                "oidc_sub": "okta|55",
-            }
+            linked = await UserStore().get_by_oidc_identity(
+                session, iss="https://idp.example", sub="okta|55"
+            )
+            assert linked is not None and linked.id == user.id
 
     async def test_missing_email_claim_still_rejected_when_check_disabled(
         self,
@@ -170,8 +172,6 @@ class TestOidcCallback:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         # The takeover guard is independent of the verified-email check.
-        from switch_core.gateway.auth import hash_password
-
         async with session_factory() as session:
             await UserStore().create(
                 session,
@@ -204,15 +204,15 @@ class TestOidcCallback:
                 )
             assert exc.value.status_code == 409
 
-    async def test_email_collision_with_existing_account_is_rejected(
+    async def test_verified_email_links_to_existing_account(
         self,
         session_factory: async_sessionmaker[AsyncSession],
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        # A verified token whose email matches an existing account but whose
-        # subject does not must not take that account over.
-        from switch_core.gateway.auth import hash_password
-
+        # A verified token whose email matches an existing (password) account
+        # but whose subject does not must land the login in that account,
+        # rather than being refused: accounts are keyed on verified email, not
+        # on login method.
         async with session_factory() as session:
             admin = User(
                 name="Admin",
@@ -222,26 +222,93 @@ class TestOidcCallback:
             )
             await UserStore().create(session, admin)
             await session.commit()
+            admin_id = admin.id
 
         token = {
             "userinfo": {
                 "email": "admin@example.com",
                 "email_verified": True,
-                "sub": "okta|attacker",
-                "name": "Not Admin",
+                "sub": "okta|second-device",
+                "name": "Admin",
             }
         }
         monkeypatch.setattr(oidc_routes, "_client", lambda: _FakeClient(token))
 
         async with session_factory() as session:
-            with pytest.raises(HTTPException) as exc:
-                await oidc_routes.oidc_callback(
-                    request=SimpleNamespace(),  # type: ignore[arg-type]
-                    config=_config(),
-                    session=session,
-                    user_store=UserStore(),
-                )
-            assert exc.value.status_code == 409
+            response = await oidc_routes.oidc_callback(
+                request=SimpleNamespace(),  # type: ignore[arg-type]
+                config=_config(),
+                session=session,
+                user_store=UserStore(),
+            )
+            assert response.status_code == 303
+
+            user = await UserStore().get_by_email(session, "admin@example.com")
+            assert user is not None
+            assert user.id == admin_id
+            # The link must not weaken password login on the account.
+            assert user.password_hash is not None
+            assert user.role == "admin"
+
+            linked = await UserStore().get_by_oidc_identity(
+                session, iss="https://idp.example", sub="okta|second-device"
+            )
+            assert linked is not None and linked.id == admin_id
+
+    async def test_bound_identity_is_not_relinked_by_a_different_claimed_email(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # Once (iss, sub) is linked, that binding decides the account on every
+        # later login, regardless of what email the claim carries this time.
+        token = {
+            "userinfo": {
+                "email": "carol@example.com",
+                "email_verified": True,
+                "sub": "okta|77",
+                "name": "Carol",
+            }
+        }
+        monkeypatch.setattr(oidc_routes, "_client", lambda: _FakeClient(token))
+
+        async with session_factory() as session:
+            first = await oidc_routes.oidc_callback(
+                request=SimpleNamespace(),  # type: ignore[arg-type]
+                config=_config(),
+                session=session,
+                user_store=UserStore(),
+            )
+            assert first.status_code == 303
+            carol = await UserStore().get_by_email(session, "carol@example.com")
+            assert carol is not None
+            carol_id = carol.id
+
+        other_email_token = {
+            "userinfo": {
+                "email": "carol-renamed@example.com",
+                "email_verified": True,
+                "sub": "okta|77",
+                "name": "Carol",
+            }
+        }
+        monkeypatch.setattr(
+            oidc_routes, "_client", lambda: _FakeClient(other_email_token)
+        )
+
+        async with session_factory() as session:
+            response = await oidc_routes.oidc_callback(
+                request=SimpleNamespace(),  # type: ignore[arg-type]
+                config=_config(),
+                session=session,
+                user_store=UserStore(),
+            )
+            assert response.status_code == 303
+            linked = await UserStore().get_by_oidc_identity(
+                session, iss="https://idp.example", sub="okta|77"
+            )
+            assert linked is not None and linked.id == carol_id
+            assert linked.email == "carol@example.com"
 
     async def test_missing_email_claim_raises_401(
         self,

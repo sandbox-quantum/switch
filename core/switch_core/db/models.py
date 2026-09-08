@@ -51,6 +51,30 @@ class User(Base):
     )
 
 
+class OidcIdentity(Base):
+    """A verified IdP identity linked to a user (CHOO-2624).
+
+    One row per linked ``(iss, sub)``, unique so a subject can never bind to
+    more than one account. A user may hold several — accounts are keyed on
+    verified email, not on login method, so a password sign-up that later
+    signs in with an IdP sharing its email gets this identity added to the
+    same account rather than a second one.
+    """
+
+    __tablename__ = "oidc_identities"
+    __table_args__ = (
+        UniqueConstraint("iss", "sub", name="uq_oidc_identities_iss_sub"),
+    )
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
+    user_id: Mapped[str] = mapped_column(Text, ForeignKey("users.id"), nullable=False)
+    iss: Mapped[str] = mapped_column(Text, nullable=False)
+    sub: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[str] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
 # ── API Keys ─────────────────────────────────────────────────────────────────
 
 
