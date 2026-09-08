@@ -29,7 +29,6 @@ from switch_core.bridges.collaboration.models import (
 from switch_core.bridges.collaboration.session.contract import Command, Surface
 from switch_core.bridges.collaboration.session.inbound import (
     InboundActor,
-    Refused,
     SessionInteractions,
 )
 from switch_core.clients.admin_messages import ADMIN_MARKER, AdminMessageType
@@ -1083,14 +1082,8 @@ class BridgeCore:
         interactions = self._session_interactions
         if interactions is None:
             return
-        outcome = await interactions.command_for(interaction)
-        if isinstance(outcome, Refused):
-            # A press says nothing about where in the channel it happened, so
-            # the notice goes to the channel rather than to a thread. It names
-            # the card, which is the part that has to be right.
-            await self._tell_refused(interaction, outcome, thread_ref=None)
-            return
-        self._drop_session_command(outcome, interaction.sender_id)
+        command = await interactions.command_for(interaction)
+        self._drop_session_command(command, interaction.sender_id)
 
     async def _handle_text_answer(self, msg: InboundMessage) -> None:
         """The same answer, typed rather than pressed.
@@ -1102,25 +1095,8 @@ class BridgeCore:
         interactions = self._session_interactions
         if interactions is None:
             return
-        outcome = await interactions.command_for_text(msg)
-        if isinstance(outcome, Refused):
-            await self._tell_refused(msg, outcome, thread_ref=msg.root_id)
-            return
-        self._drop_session_command(outcome, msg.sender_id)
-
-    async def _tell_refused(
-        self, actor: InboundActor, refused: Refused, thread_ref: str | None
-    ) -> None:
-        """Tell whoever answered that it did not land.
-
-        The refusal is already in the log by the time this runs; this is the
-        half of it the person can see. Where the platform cannot say something
-        to one person, the base adapter logs and returns, so this is best
-        effort by design and never the thing that decides an answer.
-        """
-        await self._adapter.tell_actor(
-            actor.channel_id, actor.sender_id, thread_ref, refused.told()
-        )
+        command = await interactions.command_for_text(msg)
+        self._drop_session_command(command, msg.sender_id)
 
     def _drop_session_command(self, command: Command | None, sender_id: str) -> None:
         """Say out loud that an answer went nowhere.

@@ -19,7 +19,6 @@ import pytest
 from switch_core.bridges.collaboration.bridge_core import BridgeCore
 from switch_core.bridges.collaboration.models import InboundMessage
 from switch_core.bridges.collaboration.session.form import posted_form
-from switch_core.bridges.collaboration.session.inbound import Refused
 from switch_core.bridges.collaboration.session.transport import (
     FixtureEventSource,
     project,
@@ -192,9 +191,7 @@ def test_a_bare_yes_will_not_grant_a_permission_for_the_whole_session() -> None:
         _post(form=_approval_form(("always", "acceptForSession"), ("deny", "decline")))
     )
 
-    assert isinstance(
-        _run(interactions.command_for_text(_typed("yes", root_id=CARD))), Refused
-    )
+    assert _run(interactions.command_for_text(_typed("yes", root_id=CARD))) is None
 
 
 def test_a_word_that_fits_two_options_fits_neither() -> None:
@@ -207,9 +204,7 @@ def test_a_word_that_fits_two_options_fits_neither() -> None:
         )
     )
 
-    assert isinstance(
-        _run(interactions.command_for_text(_typed("yes", root_id=CARD))), Refused
-    )
+    assert _run(interactions.command_for_text(_typed("yes", root_id=CARD))) is None
 
 
 def test_a_bare_no_still_finds_the_one_way_to_decline() -> None:
@@ -227,27 +222,27 @@ def test_a_bare_no_still_finds_the_one_way_to_decline() -> None:
 def test_a_number_the_card_has_no_option_at_answers_nothing() -> None:
     interactions = _interactions(_post())
 
-    assert isinstance(_run(interactions.command_for_text(_typed("R42 9"))), Refused)
+    assert _run(interactions.command_for_text(_typed("R42 9"))) is None
 
 
 def test_a_handle_from_another_channel_names_no_request_here() -> None:
     """A handle is only unambiguous as far as a person can see, so no further."""
     interactions = _interactions(_post(external_channel_id="C2"))
 
-    assert isinstance(_run(interactions.command_for_text(_typed("R42 1"))), Refused)
+    assert _run(interactions.command_for_text(_typed("R42 1"))) is None
 
 
 def test_a_handle_minted_by_another_bridge_names_no_request_here() -> None:
     interactions = _interactions(_post(bridge_id="bridge-2"))
 
-    assert isinstance(_run(interactions.command_for_text(_typed("R42 1"))), Refused)
+    assert _run(interactions.command_for_text(_typed("R42 1"))) is None
 
 
 def test_an_actor_with_no_switch_identity_answers_nothing() -> None:
     """Same refusal as a press: an answer carries who gave it, or it is not sent."""
     interactions = _interactions(_post(), actor=None)
 
-    assert isinstance(_run(interactions.command_for_text(_typed("R42 1"))), Refused)
+    assert _run(interactions.command_for_text(_typed("R42 1"))) is None
 
 
 def test_an_app_cannot_answer_a_request() -> None:
@@ -283,18 +278,6 @@ def test_ordinary_talk_never_reaches_the_store() -> None:
 # ── Where the bridge picks it up ─────────────────────────────────────────────
 
 
-class _Notices:
-    """An adapter that only records what it was asked to say to one person."""
-
-    def __init__(self) -> None:
-        self.told: list[tuple[str, str, str | None, str]] = []
-
-    async def tell_actor(
-        self, channel_id: str, actor_ref: str, thread_ref: str | None, text: str
-    ) -> None:
-        self.told.append((channel_id, actor_ref, thread_ref, text))
-
-
 def _bridge(interactions: Any) -> tuple[Any, list[dict[str, str]]]:
     """A bridge core, and the list of messages that got past the answer path.
 
@@ -302,9 +285,6 @@ def _bridge(interactions: Any) -> tuple[Any, list[dict[str, str]]]:
     for and then hands back nothing, which is where the relay stops. So a
     message in that list is one the answer path let through on its way to the
     room, and an empty list after a message is a message the room lost.
-
-    Its adapter is a `_Notices`, so `bridge._adapter.told` is what the person
-    who typed would have seen.
     """
     relayed: list[dict[str, str]] = []
 
@@ -322,7 +302,6 @@ def _bridge(interactions: Any) -> tuple[Any, list[dict[str, str]]]:
     bridge._channel_to_room = {CHANNEL: ("room-uuid", "!room:test")}
     bridge._channel_locks = {}
     bridge._session_interactions = interactions
-    bridge._adapter = _Notices()
     # Instance attrs shadow the class methods so the DB is never touched.
     bridge._is_registered_agent = _is_registered_agent  # type: ignore[assignment]
     bridge._repair_placeholder_username = _repair_placeholder_username  # type: ignore[assignment]
@@ -349,21 +328,20 @@ def test_a_message_in_a_channel_is_offered_to_the_session(
     assert len(relayed) == 1
 
 
-def test_a_platform_that_has_never_posted_a_card_finds_nothing_to_answer() -> None:
+def test_a_platform_that_has_never_posted_a_card_finds_nothing_to_answer(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     """Every bridge type is a contract surface, so every one runs this path.
 
     Mattermost, Discord, Teams and Telegram post no request cards yet, but they
     do parse. What stops them is that the handle resolves to no row of theirs,
-    not that they skip the attempt — and someone who typed a handle out is told
-    so, whichever platform they typed it on.
+    not that they skip the attempt.
     """
     bridge, relayed = _bridge(_interactions(surface="mattermost"))
-    _run(bridge._handle_inbound_message(_typed("R42 1")))
+    with caplog.at_level(logging.WARNING):
+        _run(bridge._handle_inbound_message(_typed("R42 1")))
 
-    assert [text for _, _, _, text in bridge._adapter.told] == [
-        "Your answer to R42 did not land, because no card in this channel is "
-        "called that."
-    ]
+    assert caplog.text == ""
     assert len(relayed) == 1
 
 

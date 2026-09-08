@@ -911,35 +911,6 @@ class CollaborationAdapter(ABC):
         )
         return False
 
-    async def tell_actor(
-        self, channel_id: str, actor_ref: str, thread_ref: str | None, text: str
-    ) -> None:
-        """Say something to one person in a channel that nobody else sees.
-
-        Used when an answer someone gave a request card could not be applied.
-        Only they need to know, and a channel post saying so would put the
-        failure in front of everyone who was not answering.
-
-        `text` is plain words. An adapter whose platform renders markup escapes
-        it, the same way every other send on that platform does.
-
-        Saying nothing is the answer whenever a platform has no private reply,
-        and this base is a platform that has none — the refusal is already in
-        the log, and that is where it stays. Only reachable on a platform that
-        posts request cards.
-
-        An implementation must not raise. This runs on the inbound path of
-        every message, ahead of the relay, so an exception out of it is not an
-        unreported refusal but a message the room never sees."""
-        logger.warning(
-            "Cannot tell %s in %s that their answer did not land: %s has no way "
-            "to say something to one person in a channel. The notice was: %s",
-            actor_ref,
-            channel_id,
-            self.platform_name,
-            text,
-        )
-
     def set_agent_presentation_resolver(
         self, resolver: Callable[[str], Awaitable[AgentPresentation | None]]
     ) -> None:

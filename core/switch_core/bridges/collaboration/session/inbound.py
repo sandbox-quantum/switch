@@ -12,15 +12,6 @@ on the record when it was posted. It is what the person can see, so it is what
 "1" means, and an answer against a card the session has moved past is refused
 on revision rather than applied to whatever the request became. `form.py` owns
 that resolution and both ends of it; this is where its refusals get logged.
-
-Neither path returns only a command. `None` and `Refused` are different
-answers, and the difference is whether anyone was trying to answer. Almost
-everything said in a channel is not an answer, and a bridge that told people so
-would be a bridge nobody could talk near a card; but a press, or a handle
-someone typed out, is unambiguous, and one of those going nowhere in silence is
-indistinguishable from one that worked. So: `None` where this decided the
-message was not an answer, `Refused` where it took it as one and then could not
-complete it.
 """
 
 from __future__ import annotations
@@ -29,7 +20,6 @@ import json
 import logging
 import uuid
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol
 
 from switch_core.bridges.collaboration.models import InboundInteraction, InboundMessage
@@ -107,46 +97,6 @@ def _command_id(
     return str(uuid.uuid5(_COMMAND_NAMESPACE, key))
 
 
-# The one refusal that is not about the card, and the only one both paths
-# reach, so it is written once and reads the same either way.
-_NO_IDENTITY = (
-    "Switch does not know who this account belongs to, and an answer is only "
-    "ever recorded against someone it can name"
-)
-
-# A reason can quote something the host chose the length of: an option id is
-# `min_length=1` in the contract and has no maximum. Short, because this is one
-# sentence in a channel and the whole of it is meant to be read at a glance.
-_MAX_REASON = 300
-
-
-@dataclass(frozen=True)
-class Refused:
-    """An answer that was aimed at a card and did not land.
-
-    `reason` finishes the sentence "…, because", the same way `Unanswerable`'s
-    does, because most of these are one: the wording that explains a refusal to
-    whoever reads the log is the wording that explains it to whoever typed.
-    `handle` names the card when it is known, so the person can be told which
-    of several they were answering.
-    """
-
-    reason: str
-    handle: str | None
-
-    def told(self) -> str:
-        """What to say to the person who gave the answer.
-
-        One sentence, and never an apology: they did something reasonable and
-        it did not work, so the useful part is which card and why.
-        """
-        card = f" to {self.handle}" if self.handle else ""
-        reason = self.reason
-        if len(reason) > _MAX_REASON:
-            reason = reason[: _MAX_REASON - 1].rstrip() + "…"
-        return f"Your answer{card} did not land, because {reason}."
-
-
 class InboundActor(Protocol):
     """As much of an inbound event as naming who sent it needs.
 
@@ -189,14 +139,11 @@ class SessionInteractions:
         self._identify = identify
         self._is_first_reply = is_first_reply
 
-    async def command_for(
-        self, interaction: InboundInteraction
-    ) -> Command | Refused | None:
-        """The command a press amounts to, or why it amounts to none.
+    async def command_for(self, interaction: InboundInteraction) -> Command | None:
+        """The command an interaction amounts to, or None if it amounts to none.
 
-        Only a control this layer did not write is None here. Everything else
-        is someone pressing a button we put in front of them, which is as clear
-        an attempt to answer as there is.
+        None covers a control this layer did not write, a token that names no
+        request here, and an actor the bridge cannot put a Switch identity to.
         """
         option_id = parse_answer_action(interaction.action_id)
         if option_id is None:
@@ -212,10 +159,7 @@ class SessionInteractions:
                 "The card outlived its record, or the payload was not ours.",
                 self._bridge_id,
             )
-            return Refused(
-                reason="this card is no longer connected to a live request",
-                handle=None,
-            )
+            return None
 
         answer = resolve_pressed_option(post.form, option_id)
         if isinstance(answer, Unanswerable):
@@ -225,7 +169,7 @@ class SessionInteractions:
                 self._bridge_id,
                 answer.reason,
             )
-            return Refused(reason=answer.reason, handle=post.handle)
+            return None
 
         actor_id = await self._identify(interaction)
         if actor_id is None:
@@ -236,7 +180,7 @@ class SessionInteractions:
                 interaction.sender_id,
                 self._bridge_id,
             )
-            return Refused(reason=_NO_IDENTITY, handle=post.handle)
+            return None
 
         origin = Origin(
             surface=self._surface,
@@ -247,10 +191,8 @@ class SessionInteractions:
         )
         return answer_command(post, answer=answer, origin=origin)
 
-    async def command_for_text(
-        self, message: InboundMessage
-    ) -> Command | Refused | None:
-        """The command a typed answer amounts to, or why it amounts to none.
+    async def command_for_text(self, message: InboundMessage) -> Command | None:
+        """The command a typed answer amounts to, or None if it is not one.
 
         Almost everything said in a channel is not an answer, so None is the
         ordinary outcome and not a failure. What is refused rather than ignored
@@ -261,22 +203,19 @@ class SessionInteractions:
         if answer is None:
             return None
 
+        post = await self._post_for(message, answer)
+        if post is None:
+            return None
+
         if message.sender_is_app:
-            # Asked before the card is found rather than after: an app cannot
-            # answer whichever card it named, so a refusal here would be one
-            # aimed at nobody who can read it.
             logger.warning(
-                "Ignoring an answer in %s on bridge %s: it was posted by an "
-                "app, and a decision is attributed to whoever made it. No "
+                "Ignoring an answer to request %s on bridge %s: it was posted by "
+                "an app, and a decision is attributed to whoever made it. No "
                 "button press can come from an app either.",
-                message.channel_id,
+                post.request_id,
                 self._bridge_id,
             )
             return None
-
-        post = await self._post_for(message, answer)
-        if post is None or isinstance(post, Refused):
-            return post
 
         resolved = resolve_text_answer(post.form, answer)
         if isinstance(resolved, Unanswerable):
@@ -286,7 +225,7 @@ class SessionInteractions:
                 self._bridge_id,
                 resolved.reason,
             )
-            return Refused(reason=resolved.reason, handle=post.handle)
+            return None
 
         actor_id = await self._identify(message)
         if actor_id is None:
@@ -297,7 +236,7 @@ class SessionInteractions:
                 message.sender_id,
                 self._bridge_id,
             )
-            return Refused(reason=_NO_IDENTITY, handle=post.handle)
+            return None
 
         origin = Origin(
             surface=self._surface,
@@ -310,7 +249,7 @@ class SessionInteractions:
 
     async def _post_for(
         self, message: InboundMessage, answer: TextAnswer
-    ) -> SessionRequestPost | Refused | None:
+    ) -> SessionRequestPost | None:
         """The card an answer is against: the one it named, or the one it replies to.
 
         A bare decision names nothing, so it only counts as a direct reply to a
@@ -318,31 +257,12 @@ class SessionInteractions:
         a thread that has become a conversation — it is someone agreeing with
         someone. Naming the request lifts that: a handle says which card, so it
         answers from anywhere in the channel however long afterwards.
-
-        Which is also what decides who gets told. A typed handle is a person
-        addressing a card by name, so a handle that names none is worth saying
-        out loud. Everything else here is this layer concluding the message was
-        not an answer at all, and telling someone their "yes" was not accepted
-        as one would be telling them about a card they were not answering.
         """
         async with self._session_factory() as session:
             if answer.handle is not None:
-                named = await self._posts.get_by_handle(
+                return await self._posts.get_by_handle(
                     session, self._bridge_id, message.channel_id, answer.handle
                 )
-                if named is None:
-                    logger.warning(
-                        "Ignoring an answer on bridge %s: nothing in channel %s is "
-                        "called %s.",
-                        self._bridge_id,
-                        message.channel_id,
-                        answer.handle,
-                    )
-                    return Refused(
-                        reason="no card in this channel is called that",
-                        handle=answer.handle,
-                    )
-                return named
             if message.root_id is None:
                 return None
             post = await self._posts.get_by_post(
@@ -354,9 +274,6 @@ class SessionInteractions:
             # Refused here rather than after resolving, because working out
             # whether this was the first reply is a call to the platform and a
             # card that asks questions has no decision for a word to name.
-            # Which is also why nobody is told: without that call this cannot
-            # tell someone answering the card from someone agreeing in its
-            # thread, and only the first of those wants to hear about it.
             logger.warning(
                 "Ignoring a bare answer to request %s on bridge %s: that card asks "
                 "questions rather than for a decision. Answering %s by name says "
