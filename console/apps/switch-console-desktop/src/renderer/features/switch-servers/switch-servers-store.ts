@@ -165,7 +165,7 @@ export class SwitchServersStore {
    * that never got its auth config stuck on "Checking sign-in options…".
    */
   async refreshServer(serverId: string): Promise<void> {
-    await Promise.all([this.refreshStatus(serverId), this.ensureAuthConfig(serverId)]);
+    await Promise.all([this.refreshStatus(serverId), this.refreshAuthConfig(serverId)]);
   }
 
   async refreshStatus(serverId: string): Promise<void> {
@@ -209,6 +209,26 @@ export class SwitchServersStore {
       this.authConfigWanted.add(serverId);
     });
     if (this.authConfigs.has(serverId)) return;
+    await this.fetchAuthConfig(serverId);
+  }
+
+  /**
+   * Re-fetch a server's login methods even though one is already cached — for
+   * the manual refresh path, where the cached answer is exactly what might be
+   * wrong (an operator turning on OIDC after Console cached password-only). A
+   * failed refresh leaves the stale config in place rather than clearing it:
+   * `unreachable` is the disclosed signal that the answer might be out of
+   * date, so dropping the cache would only trade one indefinite state for
+   * another.
+   */
+  async refreshAuthConfig(serverId: string): Promise<void> {
+    runInAction(() => {
+      this.authConfigWanted.add(serverId);
+    });
+    await this.fetchAuthConfig(serverId);
+  }
+
+  private async fetchAuthConfig(serverId: string): Promise<void> {
     if (this.authConfigInFlight.has(serverId)) return;
     // The gateway of a server on an unreachable host cannot answer, and the
     // host-unreachable surface already states why — don't paint the global

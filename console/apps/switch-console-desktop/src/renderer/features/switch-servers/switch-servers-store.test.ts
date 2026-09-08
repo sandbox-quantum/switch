@@ -235,6 +235,36 @@ describe('the manual refresh button', () => {
     expect(getConnectionStatus).toHaveBeenCalledWith('srv-a');
     expect(store.authConfigFor('srv-a')).toEqual(authConfig);
   });
+
+  it('re-fetches sign-in options even when a config is already cached', async () => {
+    // The bug: once cached, ensureAuthConfig's short-circuit meant Refresh
+    // never asked again — a server that gained OIDC after Console cached
+    // password-only kept showing password-only until the app restarted.
+    const store = newStore([server('srv-a')]);
+    await store.ensureAuthConfig('srv-a');
+    expect(store.authConfigFor('srv-a')).toEqual(authConfig);
+
+    const updatedConfig = {
+      passwordLoginEnabled: true,
+      oidcEnabled: true,
+      oidcProviderLabel: 'WorkOS',
+    };
+    getAuthConfig.mockResolvedValueOnce(updatedConfig);
+
+    await store.refreshServer('srv-a');
+
+    expect(store.authConfigFor('srv-a')).toEqual(updatedConfig);
+  });
+
+  it('does not make the mount path re-fetch a cached config', async () => {
+    const store = newStore([server('srv-a')]);
+    await store.ensureAuthConfig('srv-a');
+    getAuthConfig.mockClear();
+
+    await store.ensureAuthConfig('srv-a');
+
+    expect(getAuthConfig).not.toHaveBeenCalled();
+  });
 });
 
 describe('a server that cannot be reached', () => {
