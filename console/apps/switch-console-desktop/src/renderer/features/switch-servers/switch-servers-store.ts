@@ -123,6 +123,13 @@ export class SwitchServersStore {
     return this.authConfigUnreachable.has(serverId);
   }
 
+  /** Whether a sign-in-options read is in flight right now. The sign-in panel
+   * reads this alongside {@link authConfigCheckFailed} so a fresh retry does
+   * not get reported as a failure while it is still running. */
+  authConfigChecking(serverId: string): boolean {
+    return this.authConfigInFlight.has(serverId);
+  }
+
   async init(): Promise<void> {
     runInAction(() => {
       this.loadingServers = true;
@@ -283,8 +290,15 @@ export class SwitchServersStore {
     // The gateway of a server on an unreachable host cannot answer, and the
     // host-unreachable surface already states why — don't paint the global
     // error banner with a doomed fetch (CHOO-1780). The host un-blocking is
-    // itself a recovery signal, so this is a skip, not a giving up.
-    if (this.isHostBlocked(serverId)) return;
+    // itself a recovery signal, so this is a skip, not a giving up — and a
+    // failure recorded before the host went down does not belong to this
+    // skip, so it does not survive it either.
+    if (this.isHostBlocked(serverId)) {
+      runInAction(() => {
+        this.authConfigUnreachable.delete(serverId);
+      });
+      return;
+    }
     runInAction(() => {
       this.authConfigInFlight.add(serverId);
     });

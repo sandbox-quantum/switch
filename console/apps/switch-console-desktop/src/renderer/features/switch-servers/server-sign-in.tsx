@@ -24,6 +24,10 @@ export type ServerSignIn = {
    * this is the only place that failure is visible — `config` may be a stale
    * answer from before the endpoint broke, or null if it never succeeded. */
   configCheckFailed: boolean;
+  /** Whether a sign-in-options read is in flight right now — checked before
+   * `configCheckFailed` so a fresh retry after a failure is not reported as
+   * still failing while it is still running. */
+  configChecking: boolean;
   email: string;
   password: string;
   setEmail: (value: string) => void;
@@ -63,6 +67,7 @@ export function useServerSignIn(serverId: string): ServerSignIn {
   return {
     config: switchServersStore.authConfigFor(serverId),
     configCheckFailed: switchServersStore.authConfigCheckFailed(serverId),
+    configChecking: switchServersStore.authConfigChecking(serverId),
     email,
     password,
     setEmail,
@@ -116,7 +121,7 @@ export const ServerSignInFields = observer(function ServerSignInFields({
   if (!config) {
     return (
       <p className="text-sm text-foreground-muted">
-        {signIn.configCheckFailed
+        {signIn.configCheckFailed && !signIn.configChecking
           ? 'Could not check sign-in options.'
           : 'Checking sign-in options…'}
       </p>

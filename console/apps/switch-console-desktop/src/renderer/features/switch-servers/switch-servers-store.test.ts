@@ -131,6 +131,30 @@ describe('fetching sign-in options', () => {
     expect(getAuthConfig).toHaveBeenCalledTimes(1);
     expect(store.authConfigFor('srv-a')).toEqual(authConfig);
   });
+
+  it('reports a retry as checking rather than still failed while it runs', async () => {
+    // The panel picks its message from configCheckFailed and configChecking
+    // together: without this signal, a retry after a failure would claim the
+    // check failed right up until the moment it actually succeeds or fails
+    // again, even while it is genuinely in flight.
+    const store = newStore([server('srv-a')]);
+    getAuthConfig.mockRejectedValueOnce(new Error('fetch failed'));
+    await store.ensureAuthConfig('srv-a');
+    expect(store.authConfigCheckFailed('srv-a')).toBe(true);
+    expect(store.authConfigChecking('srv-a')).toBe(false);
+
+    const retryPending = deferred<typeof authConfig>();
+    getAuthConfig.mockReturnValueOnce(retryPending.promise);
+    const retrying = store.ensureAuthConfig('srv-a');
+    await flush();
+    expect(store.authConfigChecking('srv-a')).toBe(true);
+
+    retryPending.resolve(authConfig);
+    await retrying;
+
+    expect(store.authConfigChecking('srv-a')).toBe(false);
+    expect(store.authConfigCheckFailed('srv-a')).toBe(false);
+  });
 });
 
 describe('recovering when connectivity returns', () => {
@@ -230,6 +254,23 @@ describe('a server on an unreachable host', () => {
     await store.ensureAuthConfig('srv-a');
 
     expect(store.authConfigFor('srv-a')).toEqual(authConfig);
+  });
+
+  it('does not carry a pre-outage sign-in-options failure past the skip', async () => {
+    // The failure recorded before the host went down belongs to a check that
+    // is no longer running — the skip must not let it sit there as if it
+    // were still current, or unblocking would show it "once more" for a
+    // check that never actually happened during the outage.
+    const store = newStore([remoteServer('srv-a', 'host-1')]);
+    getAuthConfig.mockRejectedValueOnce(new Error('fetch failed'));
+    await store.ensureAuthConfig('srv-a');
+    expect(store.authConfigCheckFailed('srv-a')).toBe(true);
+
+    blockedHosts.add('host-1');
+    await store.ensureAuthConfig('srv-a');
+
+    expect(store.authConfigCheckFailed('srv-a')).toBe(false);
+    expect(getAuthConfig).toHaveBeenCalledTimes(1);
   });
 });
 
