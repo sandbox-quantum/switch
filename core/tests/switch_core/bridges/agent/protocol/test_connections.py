@@ -198,8 +198,10 @@ def test_reattach_too_soon_is_refused() -> None:
     _open(registry, "c1")
     _open(registry, "c1")  # first reattach (sets last_reattach)
 
-    with pytest.raises(ReattachTooSoonError):
+    with pytest.raises(ReattachTooSoonError) as exc_info:
         _open(registry, "c1")  # immediate second — refused
+    # The error exposes how long a client should wait before retrying.
+    assert 0 < exc_info.value.retry_after_seconds <= 2.0
 
 
 def test_reattach_after_interval_succeeds() -> None:

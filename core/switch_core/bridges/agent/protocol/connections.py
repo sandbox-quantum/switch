@@ -190,12 +190,15 @@ class ProtocolVersionError(ConnectionError_):
 class ReattachTooSoonError(ConnectionError_):
     """A reattach arrived before the minimum interval elapsed (CHOO-2653)."""
 
-    def __init__(self, connection_id: str, wait_seconds: float) -> None:
+    def __init__(self, connection_id: str, elapsed_seconds: float) -> None:
+        retry_after = max(0.0, MIN_REATTACH_INTERVAL_SECONDS - elapsed_seconds)
         super().__init__(
-            f"connection {connection_id} was reattached {wait_seconds:.1f}s ago; "
-            "wait before trying again"
+            f"connection {connection_id} was reattached {elapsed_seconds:.1f}s "
+            f"ago; retry in {retry_after:.1f}s"
         )
         self.connection_id = connection_id
+        self.elapsed_seconds = elapsed_seconds
+        self.retry_after_seconds = retry_after
 
 
 class TooManyConnectionsError(ConnectionError_):

@@ -551,14 +551,25 @@ export class RemoteSidecarLauncher {
     if (ready.pid == null) return null;
     try {
       await this.host.exec('kill', ['-0', String(ready.pid)]);
-      this.log.debug('RemoteSidecarLauncher: sidecar PID alive outside its tmux session', {
-        sidecarTmuxName: this.sidecarTmuxName,
-        pid: ready.pid,
-      });
-      return ready;
     } catch {
       return null; // PID is gone
     }
+    // A live PID can be a recycled one. Confirm the process is actually a
+    // sidecar (a node process) before trusting the ready line — a wrong yes
+    // here leaves the launcher believing a sidecar serves this agent while
+    // nothing listens on the reported port. A wrong no is safe: relaunching
+    // hits the sidecar's own single-instance guard and exits cleanly.
+    try {
+      const { stdout } = await this.host.exec('ps', ['-p', String(ready.pid), '-o', 'args=']);
+      if (!/node|sidecar/i.test(stdout)) return null;
+    } catch {
+      return null; // ps unavailable or PID vanished — treat as not running
+    }
+    this.log.debug('RemoteSidecarLauncher: sidecar PID alive outside its tmux session', {
+      sidecarTmuxName: this.sidecarTmuxName,
+      pid: ready.pid,
+    });
+    return ready;
   }
 
   /**

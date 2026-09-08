@@ -50,7 +50,8 @@ export async function existingSidecarIsHealthy(
   if (typeof parsed.port !== 'number' || typeof parsed.token !== 'string') return false;
   try {
     const resp = await fetch(`http://127.0.0.1:${parsed.port}/sessions`, {
-      headers: { Authorization: `Bearer ${parsed.token}` },
+      // The hook server gates on this header, not Authorization (hook-server.ts).
+      headers: { 'x-switchdash-token': parsed.token },
       signal: AbortSignal.timeout(2000),
     });
     if (resp.ok) {

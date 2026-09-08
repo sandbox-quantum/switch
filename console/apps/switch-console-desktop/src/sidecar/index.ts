@@ -34,9 +34,9 @@ import {
   sidecarWatchEnabledRelPath,
 } from './sidecar-paths';
 import { defaultRoomConnectionFactory, SidecarRuntime } from './sidecar-runtime';
-import { existingSidecarIsHealthy } from './single-instance-guard';
 import { SidecarStateStore } from './sidecar-state';
 import { SIDECAR_CONTROL, SIDECAR_VERSION } from './sidecar-version';
+import { existingSidecarIsHealthy } from './single-instance-guard';
 import { exactTmuxTarget, parseAgentTmuxSessionName } from './vm-tmux';
 
 /**
