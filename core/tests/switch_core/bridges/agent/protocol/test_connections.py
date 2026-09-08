@@ -9,12 +9,14 @@ import pytest
 from switch_core.bridges.agent.protocol.connections import (
     HEARTBEAT_TTL_SECONDS,
     MAX_CONNECTIONS_PER_AGENT,
+    MIN_REATTACH_INTERVAL_SECONDS,
     PROTOCOL_ACCEPTS,
     PROTOCOL_VERSION,
     ClientDeclaration,
     ConnectionRegistry,
     NoStreamAttachedError,
     ProtocolVersionError,
+    ReattachTooSoonError,
     RoomOccupiedError,
     TooManyConnectionsError,
     UnknownConnectionError,
@@ -174,6 +176,43 @@ def test_a_reattach_replaces_the_declaration() -> None:
     )
 
     assert conn.declaration.version == "1.1.0"
+
+
+# ── Reattach throttle (CHOO-2653) ─────────────────────────────────────────
+
+
+def test_first_reattach_always_succeeds() -> None:
+    """The interval check is skipped on the very first reattach (last_reattach == 0)."""
+    registry = ConnectionRegistry()
+    conn = _open(registry, "c1")
+    assert conn.stream_generation == 0
+
+    # Immediate reattach — no prior reattach timestamp to throttle against.
+    _open(registry, "c1")
+    assert conn.stream_generation == 1
+
+
+def test_reattach_too_soon_is_refused() -> None:
+    """Two reattaches within MIN_REATTACH_INTERVAL_SECONDS raises."""
+    registry = ConnectionRegistry()
+    _open(registry, "c1")
+    _open(registry, "c1")  # first reattach (sets last_reattach)
+
+    with pytest.raises(ReattachTooSoonError):
+        _open(registry, "c1")  # immediate second — refused
+
+
+def test_reattach_after_interval_succeeds() -> None:
+    """A reattach that waits long enough is allowed."""
+    registry = ConnectionRegistry()
+    _open(registry, "c1")
+    conn = _open(registry, "c1")  # first reattach (generation 0 → 1)
+
+    # Simulate time passing beyond the minimum interval.
+    conn.last_reattach = time.monotonic() - MIN_REATTACH_INTERVAL_SECONDS - 0.1
+
+    _open(registry, "c1")
+    assert conn.stream_generation == 2
 
 
 def test_connection_cap_is_enforced_loudly() -> None:
