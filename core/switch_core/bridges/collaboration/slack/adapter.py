@@ -39,6 +39,7 @@ from switch_core.bridges.collaboration.slack.agent_groups import (
     SlackAgentGroupDirectory,
 )
 from switch_core.bridges.collaboration.slack.avatar import on_slack_background
+from switch_core.bridges.collaboration.slack.mrkdwn import escape_mrkdwn
 
 logger = logging.getLogger(__name__)
 
@@ -1883,17 +1884,9 @@ class SlackAdapter(CollaborationAdapter):
         from text these three replacements do not touch. The `@` the base class
         defuses is what closes that.
 
-        mrkdwn's emphasis characters (`*`, `_`, `~`, backtick) have no escape
-        sequence — Slack documents none — so a label containing them can still
-        unbalance the bold run it sits in. That is cosmetic; the markup a label
-        could forge is not, and this closes it."""
-        return (
-            super()
-            .escape_label_for_body(label)
-            .replace("&", "&amp;")
-            .replace("<", "&lt;")
-            .replace(">", "&gt;")
-        )
+        The three replacements themselves are `escape_mrkdwn`, shared with
+        anything else that writes mrkdwn for this workspace."""
+        return escape_mrkdwn(super().escape_label_for_body(label))
 
     def translate_inbound(self, raw_message: str) -> str:
         return self._translate_links_to_markdown(

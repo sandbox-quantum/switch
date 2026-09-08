@@ -143,21 +143,51 @@ def test_the_card_says_how_to_answer_in_words() -> None:
     assert "2. Deny" in message.text
 
 
-def test_agent_text_cannot_forge_slack_markup() -> None:
+FORGERY = "<!channel> & <https://example.test|click>"
+
+
+def _forged() -> Any:
     request = _projection().open_room_requests("room-demo")[0]
-    forged = request.model_copy(
+    content = request.content
+    return request.model_copy(
         update={
-            "content": request.content.model_copy(
-                update={"title": "<!channel> & <https://example.test|click>"}
+            "content": content.model_copy(
+                update={
+                    "title": FORGERY,
+                    "detail": FORGERY,
+                    "options": [
+                        option.model_copy(update={"label": FORGERY})
+                        for option in content.options
+                    ],
+                }
             )
         }
     )
 
-    message = render_approval(forged, REFERENCE)
+
+def test_agent_text_cannot_forge_markup_in_the_card() -> None:
+    message = render_approval(_forged(), REFERENCE)
     section = message.blocks[0]["text"]["text"]
 
     assert "<!channel>" not in section
     assert "&lt;!channel&gt; &amp; " in section
+
+
+def test_agent_text_cannot_forge_markup_in_the_text_fallback() -> None:
+    """Slack reads a message's `text` as mrkdwn, blocks or no blocks."""
+    text = render_approval_text(_forged(), REFERENCE)
+
+    assert "<!channel>" not in text
+    assert "&lt;!channel&gt; &amp; " in text
+    assert text.count("&lt;!channel&gt;") == 4  # title, detail, two labels
+
+
+def test_a_button_label_is_left_as_the_author_wrote_it() -> None:
+    """`plain_text` is not parsed, so an entity would show as an entity."""
+    message = render_approval(_forged(), REFERENCE)
+    actions = next(block for block in message.blocks if block["type"] == "actions")
+
+    assert all("&amp;" not in e["text"]["text"] for e in actions["elements"])
 
 
 def test_a_pressed_button_names_the_option_it_chose() -> None:

@@ -5,12 +5,20 @@ where a person will see it, with a button per option. It also carries the text
 form of the same question: a card can fail to render, a person can be on a
 client that will not press buttons, and the contract requires every bridge to
 accept an explicit text answer as well as a control.
+
+A title, a detail and an option label are all written by whatever asked for the
+approval, so every one of them is escaped before it reaches somewhere Slack
+parses mrkdwn — which is both the section text and the message's own `text`.
+Button labels are `plain_text`, which Slack does not parse, and escaping one
+would put the entity in front of the reader instead of the character.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any
+
+from switch_core.bridges.collaboration.slack.mrkdwn import escape_mrkdwn
 
 from ..contract import ApprovalContent, ApprovalOption, SnapshotRequest
 from . import RequestReference
@@ -50,9 +58,9 @@ def render_approval(
             f"Slack renders at most {_MAX_ELEMENTS} buttons."
         )
 
-    prompt = f"*Permission needed*\n{escape(content.title)}"
+    prompt = f"*Permission needed*\n{escape_mrkdwn(content.title)}"
     if content.detail:
-        prompt += f"\n`{escape(content.detail)}`"
+        prompt += f"\n`{escape_mrkdwn(content.detail)}`"
 
     blocks: list[dict[str, Any]] = [
         {"type": "section", "text": {"type": "mrkdwn", "text": prompt}},
@@ -63,7 +71,9 @@ def render_approval(
         },
         {
             "type": "context",
-            "elements": [{"type": "mrkdwn", "text": escape(_reply_hint(reference))}],
+            "elements": [
+                {"type": "mrkdwn", "text": escape_mrkdwn(_reply_hint(reference))}
+            ],
         },
     ]
     return SlackMessage(text=render_approval_text(request, reference), blocks=blocks)
@@ -75,20 +85,26 @@ def render_approval_text(request: SnapshotRequest, reference: RequestReference) 
     This is the notification fallback and, once the answer parser lands, the
     thing a person is answering when they type. Numbering matches the button
     order, so "1" means the same on both.
+
+    Slack reads a message's `text` as mrkdwn, so this is not a plain string it
+    can be careless with: every value is escaped, and only the quote markers
+    and the numbering are markup this wrote.
     """
     content = request.content
     if not isinstance(content, ApprovalContent):
         raise ValueError(
             f"Request {request.request_id} is not an approval: {content.kind}."
         )
-    lines = [f"> Request {reference.handle}: {content.title}"]
+    lines = [
+        f"> Request {escape_mrkdwn(reference.handle)}: {escape_mrkdwn(content.title)}"
+    ]
     if content.detail:
-        lines.append(f"> {content.detail}")
+        lines.append(f"> {escape_mrkdwn(content.detail)}")
     lines += [
-        f"{index}. {option.label}"
+        f"{index}. {escape_mrkdwn(option.label)}"
         for index, option in enumerate(content.options, start=1)
     ]
-    lines.append(_reply_hint(reference))
+    lines.append(escape_mrkdwn(_reply_hint(reference)))
     return "\n".join(lines)
 
 
@@ -102,11 +118,6 @@ def parse_answer_action(action_id: str) -> str | None:
         return None
     option_id = action_id[len(prefix) :]
     return option_id or None
-
-
-def escape(text: str) -> str:
-    """Slack's three reserved characters, so agent text cannot forge markup."""
-    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
 def _button(option: ApprovalOption, reference: RequestReference) -> dict[str, Any]:
