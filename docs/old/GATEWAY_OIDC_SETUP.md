@@ -40,8 +40,9 @@ default.
 `GATEWAY_OIDC_SCOPES` has no default — if you don't set it, the gateway asks
 authlib to request an unspecified scope, which most providers resolve to
 whatever their own default is. Set it explicitly, and **make sure it includes
-`openid`**: without that scope the token response carries no `id_token` at
-all, and the callback has nothing to read claims from.
+`openid`**: without that scope the token response carries no `id_token`, and
+the callback is left asking the provider's userinfo endpoint for claims
+instead — which some providers answer and some refuse.
 
 Quote the value in your env file. `GATEWAY_OIDC_SCOPES=openid profile email`
 (unquoted, with spaces) breaks `just`'s env-file parser — every recipe loads
