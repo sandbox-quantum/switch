@@ -417,7 +417,8 @@ const ServerUnreachableCard = observer(function ServerUnreachableCard({
   // something would leave a server that recovered looking down. This only
   // re-checks connectivity, not sign-in options: those keep their once-cached
   // behavior so a real outage does not turn into two doomed round trips on
-  // every tick, forever.
+  // every tick, forever. A single explicit click is a different budget — see
+  // the Retry button below, which pays for the full check.
   useEffect(() => {
     const timer = setInterval(() => {
       if (!document.hidden) void store.retryConnection(serverId);
@@ -438,7 +439,11 @@ const ServerUnreachableCard = observer(function ServerUnreachableCard({
         variant="outline"
         size="sm"
         disabled={retrying}
-        onClick={() => void store.retryConnection(serverId)}
+        // A full refreshServer, not the lighter retryConnection the timer
+        // above uses: a click is one bounded request, not a forever-repeating
+        // one, so it can afford to also re-check sign-in options — the one
+        // way a persistently broken sign-in-options endpoint gets re-driven.
+        onClick={() => void store.refreshServer(serverId)}
       >
         <RefreshCw className={retrying ? 'size-4 animate-spin' : 'size-4'} />
         Retry

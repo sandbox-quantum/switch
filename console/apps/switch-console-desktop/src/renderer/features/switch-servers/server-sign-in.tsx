@@ -1,3 +1,4 @@
+import { TriangleAlert } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useEffect, useState } from 'react';
 import { Button } from '@renderer/lib/ui/button';
@@ -18,6 +19,11 @@ import { switchServersStore } from './switch-servers-store';
 export type ServerSignIn = {
   /** Which methods the server offers, or null while that is still unknown. */
   config: SwitchAuthConfig | null;
+  /** Whether the last attempt to read sign-in options failed. The page never
+   * lets this evict a reachable server (see `isUnreachable` on the store), so
+   * this is the only place that failure is visible — `config` may be a stale
+   * answer from before the endpoint broke, or null if it never succeeded. */
+  configCheckFailed: boolean;
   email: string;
   password: string;
   setEmail: (value: string) => void;
@@ -56,6 +62,7 @@ export function useServerSignIn(serverId: string): ServerSignIn {
 
   return {
     config: switchServersStore.authConfigFor(serverId),
+    configCheckFailed: switchServersStore.authConfigCheckFailed(serverId),
     email,
     password,
     setEmail,
@@ -107,11 +114,24 @@ export const ServerSignInFields = observer(function ServerSignInFields({
   };
 
   if (!config) {
-    return <p className="text-sm text-foreground-muted">Checking sign-in options…</p>;
+    return (
+      <p className="text-sm text-foreground-muted">
+        {signIn.configCheckFailed
+          ? 'Could not check sign-in options.'
+          : 'Checking sign-in options…'}
+      </p>
+    );
   }
 
   return (
     <div className="flex flex-col gap-4">
+      {signIn.configCheckFailed && (
+        <p className="flex items-center gap-1 text-xs text-amber-600 dark:text-amber-500">
+          <TriangleAlert className="size-3 shrink-0" />
+          Could not check for updated sign-in options — showing what was last known.
+        </p>
+      )}
+
       {config.passwordLoginEnabled && (
         <div className="flex flex-col gap-3">
           <div className="space-y-1.5">

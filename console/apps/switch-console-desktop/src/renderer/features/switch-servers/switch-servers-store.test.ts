@@ -305,6 +305,42 @@ describe('the reachability flag under concurrent checks', () => {
   });
 });
 
+describe('a persistently broken sign-in-options endpoint', () => {
+  it('stays disclosed to the sign-in panel without evicting an otherwise reachable server', async () => {
+    // The durable case, as opposed to the transient one above: the
+    // sign-in-options endpoint never recovers while the server itself stays
+    // fine. isUnreachable must not flip true — once a status read has ever
+    // landed, it is the sole authority, so this failure can never reach it
+    // again — but the failure must still be visible *somewhere*, or the panel
+    // would silently keep showing a stale answer as if it were current,
+    // forever, for the rest of the session.
+    const store = newStore([server('srv-a')]);
+    await store.ensureAuthConfig('srv-a');
+    expect(store.authConfigFor('srv-a')).toEqual(authConfig);
+    getAuthConfig.mockRejectedValue(new Error('fetch failed'));
+
+    await store.refreshServer('srv-a');
+    await store.refreshServer('srv-a');
+    await store.refreshServer('srv-a');
+
+    expect(store.isUnreachable('srv-a')).toBe(false);
+    expect(store.authConfigCheckFailed('srv-a')).toBe(true);
+    expect(store.authConfigFor('srv-a')).toEqual(authConfig);
+  });
+
+  it('clears once the endpoint answers again', async () => {
+    const store = newStore([server('srv-a')]);
+    await store.ensureAuthConfig('srv-a');
+    getAuthConfig.mockRejectedValueOnce(new Error('fetch failed'));
+    await store.refreshServer('srv-a');
+    expect(store.authConfigCheckFailed('srv-a')).toBe(true);
+
+    await store.refreshServer('srv-a');
+
+    expect(store.authConfigCheckFailed('srv-a')).toBe(false);
+  });
+});
+
 describe('a server that cannot be reached', () => {
   it('is flagged when the sign-in read fails', async () => {
     const store = newStore([server('srv-a')]);

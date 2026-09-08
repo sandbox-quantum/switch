@@ -39,10 +39,16 @@ export class SwitchServersStore {
    * {@link authConfigUnreachable} so a hiccup on the sign-in-options endpoint
    * cannot evict a server whose status just came back fine. */
   readonly statusUnreachable = new Set<string>();
-  /** Server ids whose last auth-config read failed. Only decisive before any
-   * status read has ever run for that server — the mount-time window where
-   * status is still unknown but a totally unreachable gateway has already
-   * failed the auth-config call. */
+  /**
+   * Server ids whose last auth-config read failed. Decisive for page-level
+   * reachability only before any status read has ever run for that server —
+   * once one has, {@link isUnreachable} never looks at this again, since a
+   * server can be perfectly reachable while only its sign-in-options endpoint
+   * stays broken. It does not stop mattering there: {@link
+   * authConfigCheckFailed} exposes it separately so the sign-in panel can
+   * disclose a persistently failing check instead of silently reusing a
+   * cached answer forever.
+   */
   readonly authConfigUnreachable = new Set<string>();
 
   loadingServers = false;
@@ -101,6 +107,19 @@ export class SwitchServersStore {
    */
   isUnreachable(serverId: string): boolean {
     if (this.statuses.has(serverId)) return this.statusUnreachable.has(serverId);
+    return this.authConfigUnreachable.has(serverId);
+  }
+
+  /**
+   * Whether the last sign-in-options read failed, regardless of what
+   * {@link isUnreachable} says. A server can be fully reachable — status
+   * fine, maybe even signed in — while its sign-in-options endpoint stays
+   * persistently broken; that failure never gates the page, so this is the
+   * only place it is visible. The sign-in panel reads it to disclose that the
+   * options on screen might be out of date rather than silently offering a
+   * cached answer forever.
+   */
+  authConfigCheckFailed(serverId: string): boolean {
     return this.authConfigUnreachable.has(serverId);
   }
 
@@ -174,20 +193,25 @@ export class SwitchServersStore {
   }
 
   /**
-   * The server page's manual re-check. Covers both what the status card reads
-   * and what the sign-in panel needs — refreshing only the status leaves a page
-   * that never got its auth config stuck on "Checking sign-in options…".
+   * A manual, explicit re-check: the server page's header button and the
+   * unreachable card's own Retry click. Covers both what the status card
+   * reads and what the sign-in panel needs — refreshing only the status
+   * leaves a page that never got its auth config stuck on "Checking sign-in
+   * options…", and a click is a single bounded request, so it can afford the
+   * full check even where the automatic probe below cannot.
    */
   async refreshServer(serverId: string): Promise<void> {
     await Promise.all([this.refreshStatus(serverId), this.refreshAuthConfig(serverId)]);
   }
 
   /**
-   * The unreachable card's probe, on its 10-second timer and its own Retry
-   * button alike. Only connectivity is worth re-checking on a fixed interval;
-   * sign-in options keep the once-cached behavior of {@link ensureAuthConfig}
-   * so a genuine outage does not turn into two doomed round trips forever —
-   * only one, until either succeeds.
+   * The unreachable card's automatic 10-second timer. Only connectivity is
+   * worth re-checking on a fixed interval; sign-in options keep the
+   * once-cached behavior of {@link ensureAuthConfig} so a genuine outage does
+   * not turn into two doomed round trips on every tick, forever — the panel's
+   * own {@link authConfigCheckFailed} disclosure, plus the card's manual
+   * Retry button, are what re-drive a persistently broken sign-in-options
+   * endpoint instead.
    */
   async retryConnection(serverId: string): Promise<void> {
     await Promise.all([this.refreshStatus(serverId), this.ensureAuthConfig(serverId)]);
@@ -241,10 +265,11 @@ export class SwitchServersStore {
    * Re-fetch a server's login methods even though one is already cached — for
    * the manual refresh path, where the cached answer is exactly what might be
    * wrong (an operator turning on OIDC after Console cached password-only). A
-   * failed refresh leaves the stale config in place rather than clearing it:
-   * a server that is otherwise reachable keeps working on what it already
-   * knew, and {@link isUnreachable} does not let this failure alone evict a
-   * server whose connection status is fine (see {@link authConfigUnreachable}).
+   * failed refresh leaves the stale config in place rather than clearing it,
+   * and {@link isUnreachable} does not let this failure alone evict a server
+   * whose connection status is fine — but the staleness itself is not
+   * silent: {@link authConfigCheckFailed} discloses it to the sign-in panel,
+   * which is the one place still showing what this fetch returned.
    */
   async refreshAuthConfig(serverId: string): Promise<void> {
     runInAction(() => {
