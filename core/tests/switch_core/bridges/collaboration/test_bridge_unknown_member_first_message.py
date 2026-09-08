@@ -35,6 +35,11 @@ async def _noop_repair(*_args: object, **_kwargs: object) -> None:
     return None
 
 
+async def _no_text_answer(_msg: object) -> None:
+    """These tests exercise the relay, not the session half of a message."""
+    return None
+
+
 class _FakePuppet:
     """Stands in for a ClientBase puppet whose join lands after the invite."""
 
@@ -191,6 +196,7 @@ async def test_first_message_from_app_sender_is_relayed() -> None:
         _ensure_user_in_matrix_room=_ensure_user_in_matrix_room,
         _record_message_map=_record_message_map,
         _adapter=SimpleNamespace(translate_inbound=lambda text: text),
+        _handle_text_answer=_no_text_answer,
         _channel_to_room={"chan-1": ("room-uuid", MATRIX_ROOM_ID)},
         _channel_locks={},
     )
@@ -233,6 +239,7 @@ async def test_first_message_from_unknown_member_is_relayed() -> None:
         _ensure_user_in_matrix_room=_ensure_user_in_matrix_room,
         _record_message_map=_record_message_map,
         _adapter=SimpleNamespace(translate_inbound=lambda text: text),
+        _handle_text_answer=_no_text_answer,
         _channel_to_room={"chan-1": ("room-uuid", MATRIX_ROOM_ID)},
         _channel_locks={},
     )

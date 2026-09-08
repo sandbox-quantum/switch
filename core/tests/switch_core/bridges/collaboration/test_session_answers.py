@@ -10,11 +10,15 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 from switch_core.bridges.collaboration.models import InboundInteraction
-from switch_core.bridges.collaboration.session.inbound import SessionInteractions
+from switch_core.bridges.collaboration.session.inbound import (
+    InboundActor,
+    SessionInteractions,
+)
 from switch_core.bridges.collaboration.session.renderers import ANSWER_ACTION
 from switch_core.db.models import SessionRequestPost
 
@@ -55,14 +59,32 @@ class _Posts:
     async def get_by_token(
         self, session: object, bridge_id: str, token: str
     ) -> SessionRequestPost | None:
-        return next(
-            (
-                row
-                for row in self._rows
-                if row.bridge_id == bridge_id and row.token == token
-            ),
-            None,
+        return self._one(lambda row: row.bridge_id == bridge_id and row.token == token)
+
+    async def get_by_handle(
+        self, session: object, bridge_id: str, channel_id: str, handle: str
+    ) -> SessionRequestPost | None:
+        return self._one(
+            lambda row: (
+                row.bridge_id == bridge_id
+                and row.external_channel_id == channel_id
+                and row.handle.lower() == handle.lower()
+            )
         )
+
+    async def get_by_post(
+        self, session: object, bridge_id: str, external_post_id: str
+    ) -> SessionRequestPost | None:
+        return self._one(
+            lambda row: (
+                row.bridge_id == bridge_id and row.external_post_id == external_post_id
+            )
+        )
+
+    def _one(
+        self, matches: Callable[[SessionRequestPost], bool]
+    ) -> SessionRequestPost | None:
+        return next((row for row in self._rows if matches(row)), None)
 
 
 def _post(**overrides: Any) -> SessionRequestPost:
@@ -78,6 +100,10 @@ def _post(**overrides: Any) -> SessionRequestPost:
         "epoch": "epoch-demo",
         "request_id": "request-demo",
         "revision": 1,
+        "options": [
+            {"optionId": "allow-once", "decision": "accept"},
+            {"optionId": "deny", "decision": "decline"},
+        ],
     }
     fields.update(overrides)
     return SessionRequestPost(**fields)
@@ -88,7 +114,7 @@ def _interactions(
     actor: str | None = "@someone:test",
     surface: Any = "slack",
 ) -> SessionInteractions:
-    async def identify(interaction: InboundInteraction) -> str | None:
+    async def identify(actor_of: InboundActor) -> str | None:
         return actor
 
     return SessionInteractions(

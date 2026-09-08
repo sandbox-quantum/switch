@@ -152,3 +152,90 @@ class TestSessionRequestPostStore:
                         request_id="request-other",
                     ),
                 )
+
+    async def test_a_typed_handle_resolves_however_it_was_capitalised(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """A handle is retyped by a person, not handed back by a platform."""
+        store = SessionRequestPostStore()
+        async with session_factory() as session:
+            bridge_id = await _make_bridge(session)
+            room_id = await _make_room(session)
+            await store.create(session, _post(bridge_id, room_id))
+            await session.commit()
+
+        async with session_factory() as session:
+            found = await store.get_by_handle(session, bridge_id, "C1", "r42")
+
+        assert found is not None
+        assert found.request_id == "request-demo"
+
+    async def test_a_handle_names_nothing_in_another_channel(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """Handles only have to be unique as far as a reader can see."""
+        store = SessionRequestPostStore()
+        async with session_factory() as session:
+            bridge_id = await _make_bridge(session)
+            room_id = await _make_room(session)
+            await store.create(session, _post(bridge_id, room_id))
+            await session.commit()
+
+        async with session_factory() as session:
+            assert await store.get_by_handle(session, bridge_id, "C2", "R42") is None
+
+    async def test_a_handle_names_nothing_on_another_bridge(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        store = SessionRequestPostStore()
+        async with session_factory() as session:
+            bridge_id = await _make_bridge(session)
+            other_bridge_id = await _make_bridge(session)
+            room_id = await _make_room(session)
+            await store.create(session, _post(bridge_id, room_id))
+            await session.commit()
+
+        async with session_factory() as session:
+            found = await store.get_by_handle(session, other_bridge_id, "C1", "R42")
+
+        assert found is None
+
+    async def test_a_reply_to_a_card_finds_the_request_it_replies_to(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """What makes a bare "yes" answerable: the thread root is the card."""
+        store = SessionRequestPostStore()
+        async with session_factory() as session:
+            bridge_id = await _make_bridge(session)
+            room_id = await _make_room(session)
+            await store.create(session, _post(bridge_id, room_id))
+            await session.commit()
+
+        async with session_factory() as session:
+            found = await store.get_by_post(session, bridge_id, "C1:111.0")
+            elsewhere = await store.get_by_post(session, bridge_id, "C1:999.0")
+
+        assert found is not None
+        assert found.request_id == "request-demo"
+        assert elsewhere is None
+
+    async def test_the_options_the_card_offered_survive_the_round_trip(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """A typed number resolves against these, so their order is the record."""
+        store = SessionRequestPostStore()
+        options = [
+            {"optionId": "allow-once", "decision": "accept"},
+            {"optionId": "deny", "decision": "decline"},
+        ]
+        async with session_factory() as session:
+            bridge_id = await _make_bridge(session)
+            room_id = await _make_room(session)
+            await store.create(session, _post(bridge_id, room_id, options=options))
+            await session.commit()
+
+        async with session_factory() as session:
+            found = await store.get_by_handle(session, bridge_id, "C1", "R42")
+
+        assert found is not None
+        assert found.options == options

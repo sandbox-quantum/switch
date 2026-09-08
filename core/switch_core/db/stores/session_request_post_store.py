@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from switch_core.db.models import SessionRequestPost
 
@@ -32,6 +32,42 @@ class SessionRequestPostStore:
             select(SessionRequestPost).where(
                 SessionRequestPost.bridge_id == bridge_id,
                 SessionRequestPost.token == token,
+            )
+        )
+        return result.scalar_one_or_none()
+
+    async def get_by_handle(
+        self, session: AsyncSession, bridge_id: str, channel_id: str, handle: str
+    ) -> SessionRequestPost | None:
+        """The request a typed handle names, within one channel of one bridge.
+
+        Matched without regard to case, because a handle is something a person
+        retypes rather than something a platform hands back, and "r42" is what
+        they meant. It is unique per channel, which is as far as a person can
+        see: the same handle in another channel is another request.
+        """
+        result = await session.execute(
+            select(SessionRequestPost).where(
+                SessionRequestPost.bridge_id == bridge_id,
+                SessionRequestPost.external_channel_id == channel_id,
+                func.lower(SessionRequestPost.handle) == handle.lower(),
+            )
+        )
+        return result.scalar_one_or_none()
+
+    async def get_by_post(
+        self, session: AsyncSession, bridge_id: str, external_post_id: str
+    ) -> SessionRequestPost | None:
+        """The request a message is a reply to, if that message is a card.
+
+        This is what makes a bare "yes" answerable: it stands for a decision
+        only when it is a direct reply to exactly one card, and a thread rooted
+        at a card is exactly that.
+        """
+        result = await session.execute(
+            select(SessionRequestPost).where(
+                SessionRequestPost.bridge_id == bridge_id,
+                SessionRequestPost.external_post_id == external_post_id,
             )
         )
         return result.scalar_one_or_none()

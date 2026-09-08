@@ -898,6 +898,13 @@ class SessionRequestPost(Base):
     # The revision an answer is submitted against. The session rejects an answer
     # that names a revision it has moved past.
     revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    # What the card offered, in the order it offered it: `{"optionId", "decision"}`
+    # per option. A button hands its own option back; a typed "1" names a
+    # position on the card the person can see, and this is what that resolves
+    # against.
+    options: Mapped[list[dict]] = mapped_column(
+        JSONB, nullable=False, server_default=text("'[]'::jsonb")
+    )
     created_at: Mapped[str] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

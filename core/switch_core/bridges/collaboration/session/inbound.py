@@ -1,10 +1,16 @@
-"""What comes back when someone operates a control the renderers put out.
+"""What comes back when someone answers a request.
 
-A platform hands back the control's id and the opaque token the bridge minted
-when it posted the message, and that is deliberately all it is trusted for. The
-session, the epoch and the revision an answer stands against are read from the
-record the token resolves to; the actor is the identity the bridge verified for
-itself. Nothing an answer carries is taken from the payload that prompted it.
+Two ways in, and one rule for both. A press hands back the control's id and the
+opaque token the bridge minted when it posted the message; a typed answer hands
+back a handle and a number. That is all either is trusted for. The session, the
+epoch and the revision an answer stands against are read from the record those
+resolve to; the actor is the identity the bridge verified for itself. Nothing an
+answer carries is taken from the payload that prompted it.
+
+The typed path resolves a number against the options the card offered, kept on
+the record when it was posted. It is what the person can see, so it is what
+"1" means, and an answer against a card the session has moved past is refused
+on revision rather than applied to whatever the request became.
 """
 
 from __future__ import annotations
@@ -12,14 +18,15 @@ from __future__ import annotations
 import logging
 import uuid
 from collections.abc import Awaitable, Callable
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Protocol
 
-from switch_core.bridges.collaboration.models import InboundInteraction
+from switch_core.bridges.collaboration.models import InboundInteraction, InboundMessage
 from switch_core.db.models import SessionRequestPost
 from switch_core.db.stores.session_request_post_store import SessionRequestPostStore
 
 from .contract import ApprovalResult, Command, Origin, RequestAnswer, Surface
 from .renderers import parse_answer_action
+from .text import TextAnswer, parse_text_answer
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -74,12 +81,41 @@ def _command_id(post: SessionRequestPost, *, option_id: str, actor_id: str) -> s
     return str(uuid.uuid5(_COMMAND_NAMESPACE, key))
 
 
+def _chosen(post: SessionRequestPost, answer: TextAnswer) -> str | None:
+    """Which option a typed answer picked, out of the ones the card offered.
+
+    A number is a position on the card, counted as the card counts. A word is
+    the one option whose decision it names, and only when there is exactly one:
+    `acceptForSession` and `cancel` are reachable by number alone, because
+    "yes" must never quietly grant a permission for the rest of a session.
+    """
+    options = post.options
+    if answer.index is not None:
+        if not 1 <= answer.index <= len(options):
+            return None
+        return str(options[answer.index - 1]["optionId"])
+    matching = [option for option in options if option["decision"] == answer.decision]
+    return str(matching[0]["optionId"]) if len(matching) == 1 else None
+
+
+class InboundActor(Protocol):
+    """As much of an inbound event as naming who sent it needs.
+
+    A press and a typed answer arrive as different models, and the bridge names
+    the person behind either one the same way.
+    """
+
+    channel_id: str
+    sender_id: str
+    sender_name: str
+
+
 class SessionInteractions:
-    """One bridge's inbound half: a control someone operated, as a command.
+    """One bridge's inbound half: an answer, however it was given, as a command.
 
     `identify` is how the bridge names the person who acted. It is given the
-    interaction and returns the Switch identity behind the platform account, or
-    None when there is not one — which is a refusal, not a default actor.
+    inbound event and returns the Switch identity behind the platform account,
+    or None when there is not one — which is a refusal, not a default actor.
     """
 
     def __init__(
@@ -89,7 +125,7 @@ class SessionInteractions:
         surface: Surface,
         posts: SessionRequestPostStore,
         session_factory: async_sessionmaker[AsyncSession],
-        identify: Callable[[InboundInteraction], Awaitable[str | None]],
+        identify: Callable[[InboundActor], Awaitable[str | None]],
     ) -> None:
         self._bridge_id = bridge_id
         self._surface = surface
@@ -138,3 +174,70 @@ class SessionInteractions:
             message_id=interaction.message_ref,
         )
         return answer_command(post, option_id=option_id, origin=origin)
+
+    async def command_for_text(self, message: InboundMessage) -> Command | None:
+        """The command a typed answer amounts to, or None if it is not one.
+
+        Almost everything said in a channel is not an answer, so None is the
+        ordinary outcome and not a failure. What is refused rather than ignored
+        is an answer that named a card and then did not fit it — a number the
+        card has no option at, or a word that fits more than one.
+        """
+        answer = parse_text_answer(message.content)
+        if answer is None:
+            return None
+
+        post = await self._post_for(message, answer)
+        if post is None:
+            return None
+
+        option_id = _chosen(post, answer)
+        if option_id is None:
+            logger.warning(
+                "Ignoring an answer to request %s on bridge %s: %s names none of "
+                "the %d options that card offered.",
+                post.request_id,
+                self._bridge_id,
+                answer.index if answer.index is not None else answer.decision,
+                len(post.options),
+            )
+            return None
+
+        actor_id = await self._identify(message)
+        if actor_id is None:
+            logger.warning(
+                "Ignoring an answer to request %s: no Switch identity for %s on "
+                "bridge %s. An answer is only ever attributed to a verified actor.",
+                post.request_id,
+                message.sender_id,
+                self._bridge_id,
+            )
+            return None
+
+        origin = Origin(
+            surface=self._surface,
+            actor_id=actor_id,
+            room_id=post.room_id,
+            thread_id=post.thread_id,
+            message_id=message.message_ref,
+        )
+        return answer_command(post, option_id=option_id, origin=origin)
+
+    async def _post_for(
+        self, message: InboundMessage, answer: TextAnswer
+    ) -> SessionRequestPost | None:
+        """The card an answer is against: the one it named, or the one it replies to.
+
+        A bare decision names nothing, so it only counts as a direct reply to a
+        card. Anywhere else it is someone agreeing with someone.
+        """
+        async with self._session_factory() as session:
+            if answer.handle is not None:
+                return await self._posts.get_by_handle(
+                    session, self._bridge_id, message.channel_id, answer.handle
+                )
+            if message.root_id is None:
+                return None
+            return await self._posts.get_by_post(
+                session, self._bridge_id, message.root_id
+            )

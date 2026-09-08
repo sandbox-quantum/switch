@@ -20,11 +20,30 @@ from slack_sdk.errors import SlackApiError
 from switch_core.bridges.collaboration.slack.adapter import SlackAdapter
 from switch_core.db.models import SessionRequestPost
 
-from .contract import SnapshotRequest
+from .contract import ApprovalContent, SnapshotRequest
 from .renderers import RequestReference
 from .renderers.slack import render_approval
 
 logger = logging.getLogger(__name__)
+
+
+def posted_options(request: SnapshotRequest) -> list[dict[str, str]]:
+    """What the card offered, in the order it offered it, for the record.
+
+    A typed "1" means the first thing on the card the person is looking at, and
+    nothing else in Switch holds that. Kept in the same order the renderers
+    number and lay out, so the record and the card cannot disagree about which
+    option is which.
+    """
+    content = request.content
+    if not isinstance(content, ApprovalContent):
+        raise ValueError(
+            f"Request {request.request_id} is not an approval: {content.kind}."
+        )
+    return [
+        {"optionId": option.option_id, "decision": option.decision}
+        for option in content.options
+    ]
 
 
 class SessionRequestCards:

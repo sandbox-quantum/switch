@@ -62,6 +62,11 @@ class _FakeAdapter:
         return content
 
 
+async def _no_text_answer(_msg: object) -> None:
+    """These tests exercise the relay, not the session half of a message."""
+    return None
+
+
 def _fake_bridge() -> SimpleNamespace:
     puppet = _FakePuppet()
     recorded: list[dict[str, str]] = []
@@ -80,6 +85,7 @@ def _fake_bridge() -> SimpleNamespace:
         return None
 
     ns = SimpleNamespace(
+        _handle_text_answer=_no_text_answer,
         _repair_placeholder_username=_repair_placeholder_username,
         _adapter=_FakeAdapter(),
         _channel_to_room={"chan-1": ("room-1", "!room:s")},

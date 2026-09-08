@@ -5,6 +5,12 @@ from types import SimpleNamespace
 from switch_core.bridges.collaboration.bridge_core import BridgeCore
 from switch_core.bridges.collaboration.models import InboundMessage
 
+
+async def _no_text_answer(_msg: object) -> None:
+    """These tests exercise the relay, not the session half of a message."""
+    return None
+
+
 # The Slack app's DM ("lobby") is deprecated as a place to talk to agents.
 # A message there must NOT auto-create a room or route — the bridge replies with
 # a generic pointer to use a channel instead and stops.
@@ -73,6 +79,7 @@ async def test_inbound_lobby_message_short_circuits_routing() -> None:
         _is_registered_agent=_is_registered_agent,
         _handle_lobby_message=_handle_lobby_message,
         _ensure_user_in_matrix_room=_ensure_user_in_matrix_room,
+        _handle_text_answer=_no_text_answer,
         _channel_to_room={},
         _channel_locks={},
     )
@@ -102,6 +109,7 @@ async def test_inbound_non_lobby_message_is_not_short_circuited() -> None:
         _is_registered_agent=_is_registered_agent,
         _handle_lobby_message=_handle_lobby_message,
         _create_room_for_channel=_create_room_for_channel,
+        _handle_text_answer=_no_text_answer,
         _channel_to_room={},
         _channel_locks={},
     )

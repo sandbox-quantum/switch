@@ -26,8 +26,11 @@ from switch_core.bridges.collaboration.models import (
     InboundUserJoin,
     OutboundAttachment,
 )
-from switch_core.bridges.collaboration.session.contract import Surface
-from switch_core.bridges.collaboration.session.inbound import SessionInteractions
+from switch_core.bridges.collaboration.session.contract import Command, Surface
+from switch_core.bridges.collaboration.session.inbound import (
+    InboundActor,
+    SessionInteractions,
+)
 from switch_core.clients.admin_messages import ADMIN_MARKER, AdminMessageType
 from switch_core.clients.client_base import ClientBase, ClientConfig
 from switch_core.clients.mentions import mention_regex, strip_emphasis
@@ -490,6 +493,10 @@ class BridgeCore:
             # and routing the message. Only Slack im/mpim map to "lobby".
             await self._handle_lobby_message(msg)
             return
+        # An answer typed in words. Almost no message is one, and the check is a
+        # parse before it is a query, so this costs a channel nothing. It does
+        # not consume the message: the room still sees what was said.
+        await self._handle_text_answer(msg)
         room_ids = self._channel_to_room.get(msg.channel_id)
         if room_ids is None:
             lock = self._channel_locks.setdefault(msg.channel_id, asyncio.Lock())
@@ -1075,6 +1082,28 @@ class BridgeCore:
         if interactions is None:
             return
         command = await interactions.command_for(interaction)
+        self._drop_session_command(command, interaction.sender_id)
+
+    async def _handle_text_answer(self, msg: InboundMessage) -> None:
+        """The same answer, typed rather than pressed.
+
+        Runs alongside the relay rather than instead of it: an answer is also
+        something the person said in the channel, and the room sees it either
+        way.
+        """
+        interactions = self._session_interactions
+        if interactions is None:
+            return
+        command = await interactions.command_for_text(msg)
+        self._drop_session_command(command, msg.sender_id)
+
+    def _drop_session_command(self, command: Command | None, sender_id: str) -> None:
+        """Say out loud that an answer went nowhere.
+
+        There is no route into a session yet — that is the server half. Until
+        there is, an answer is built and discarded, and a discard nobody can see
+        is the one thing this must not be.
+        """
         if command is None:
             return
         logger.warning(
@@ -1082,27 +1111,27 @@ class BridgeCore:
             "consumes session commands, so the session does not see this answer",
             command.command_id,
             command.session_id,
-            interaction.sender_id,
+            sender_id,
         )
 
-    async def _identify_actor(self, interaction: InboundInteraction) -> str | None:
+    async def _identify_actor(self, actor: InboundActor) -> str | None:
         """The Switch identity behind the platform account that acted.
 
         None where the channel maps to no room, or the puppet cannot be brought
         into it. Both are refusals: an answer carries who gave it, and there is
         no default actor to fall back on.
         """
-        room_ids = self._channel_to_room.get(interaction.channel_id)
+        room_ids = self._channel_to_room.get(actor.channel_id)
         if room_ids is None:
             logger.warning(
-                "Ignoring an interaction in %s: the channel maps to no room",
-                interaction.channel_id,
+                "Ignoring an answer in %s: the channel maps to no room",
+                actor.channel_id,
             )
             return None
         room_id, matrix_room_id = room_ids
         puppet = await self._ensure_user_in_matrix_room(
-            external_user_id=interaction.sender_id,
-            external_username=interaction.sender_name,
+            external_user_id=actor.sender_id,
+            external_username=actor.sender_name,
             room_id=room_id,
             matrix_room_id=matrix_room_id,
         )

@@ -399,3 +399,56 @@ def test_the_card_and_the_press_agree_on_the_option() -> None:
 
     assert parse_answer_action(interaction.action_id) == "deny"
     assert interaction.value == REFERENCE.token
+
+
+# ── The typed reply ──────────────────────────────────────────────────────────
+
+
+def _said(text: str, **event: Any) -> list[Any]:
+    """Drive a human message all the way from the socket envelope."""
+    adapter, _ = _adapter()
+    seen: list[Any] = []
+
+    async def record(message: Any) -> None:
+        seen.append(message)
+
+    adapter._on_message = record
+    payload: dict[str, Any] = {
+        "type": "event_callback",
+        "event": {
+            "type": "message",
+            "channel": "C1",
+            "channel_type": "channel",
+            "user": "U1",
+            "text": text,
+            "ts": "222.0",
+        },
+    }
+    payload["event"].update(event)
+    socket = _FakeSocketClient()
+    _run(
+        adapter._handle_socket_event(
+            socket,  # type: ignore[arg-type]
+            SocketModeRequest(type="events_api", envelope_id="e2", payload=payload),
+        )
+    )
+    assert socket.acked == ["e2"]
+    return seen
+
+
+def test_a_typed_answer_arrives_with_the_words_intact() -> None:
+    """The grammar is read off `content`, so nothing may rewrite it on the way."""
+    message = _said("R42 1")[0]
+
+    assert message.content == "R42 1"
+    assert message.channel_id == "C1"
+    assert message.sender_id == "U1"
+    assert message.root_id is None
+
+
+def test_a_reply_in_a_card_s_thread_says_which_card() -> None:
+    """What a bare "yes" is resolved against: the root is the card's own post."""
+    message = _said("yes", thread_ts="111.0")[0]
+
+    assert message.content == "yes"
+    assert message.root_id == "C1:111.0"
