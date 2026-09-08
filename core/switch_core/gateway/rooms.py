@@ -392,6 +392,8 @@ async def create_room_from_yaml(
             if not isinstance(payload, dict) or "yaml" not in payload:
                 raise ValueError("JSON body must have a 'yaml' key")
             text = payload["yaml"]
+            if not isinstance(text, str):
+                raise ValueError("'yaml' must be a string")
             inputs = payload.get("inputs")
         else:
             text = (await request.body()).decode("utf-8")

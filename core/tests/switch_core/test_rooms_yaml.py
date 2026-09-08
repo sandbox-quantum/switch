@@ -1028,45 +1028,37 @@ async def test_provision_template_missing_required_400(env):
 
 @pytest.mark.asyncio
 async def test_endpoint_json_body(env):
-    """The from-yaml endpoint accepts JSON with yaml + inputs."""
+    """Call the real create_room_from_yaml with a JSON request."""
     import json
+    from unittest.mock import AsyncMock
 
-    from httpx import ASGITransport, AsyncClient
-    from starlette.applications import Starlette
-    from starlette.requests import Request
-    from starlette.responses import JSONResponse
-    from starlette.routing import Route
+    from fastapi import HTTPException
+
+    from switch_core.gateway.rooms import create_room_from_yaml
 
     svc = _svc(env)
     user_id = env["user_id"]
+    user = User(name="alice", email="alice@example.com", role="member")
+    # Poke the id to match the seeded user so provision works.
+    object.__setattr__(user, "id", user_id)
 
-    async def _from_yaml(request: Request) -> JSONResponse:
-        content_type = request.headers.get("content-type", "")
-        if "application/json" in content_type:
-            payload = json.loads(await request.body())
-            text = payload["yaml"]
-            inputs = payload.get("inputs")
-        else:
-            text = (await request.body()).decode("utf-8")
-            inputs = None
-        try:
-            spec = svc.parse(text, inputs=inputs)
-            result = await svc.provision(spec, user_id=user_id, is_admin=False)
-            return JSONResponse(result.model_dump(), status_code=201)
-        except ValueError as e:
-            return JSONResponse({"detail": str(e)}, status_code=400)
+    body = json.dumps(
+        {
+            "yaml": TEMPLATE,
+            "inputs": {"owner": "carol", "deploy_agent": "claude-code.alice"},
+        }
+    ).encode()
 
-    app = Starlette(routes=[Route("/rooms/from-yaml", _from_yaml, methods=["POST"])])
+    request = AsyncMock()
+    request.headers = {"content-type": "application/json"}
+    request.body.return_value = body
 
-    transport = ASGITransport(app=app)  # type: ignore[arg-type]
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
-        resp = await client.post(
-            "/rooms/from-yaml",
-            json={
-                "yaml": TEMPLATE,
-                "inputs": {"owner": "carol", "deploy_agent": "claude-code.alice"},
-            },
-        )
-    assert resp.status_code == 201
-    body = resp.json()
-    assert body["room_name"] == "carol local-deploy"
+    result = await create_room_from_yaml(request, svc, user)
+    assert result.room_name == "carol local-deploy"
+
+    # Non-string yaml value → 400.
+    bad_body = json.dumps({"yaml": 123}).encode()
+    request.body.return_value = bad_body
+    with pytest.raises(HTTPException) as exc_info:
+        await create_room_from_yaml(request, svc, user)
+    assert exc_info.value.status_code == 400

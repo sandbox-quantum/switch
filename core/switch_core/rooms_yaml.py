@@ -68,7 +68,7 @@ def _coerce(value: Any, spec: ParamSpec, name: str) -> str | int | float | bool:
         try:
             f = float(value)
             return int(f) if f == int(f) else f
-        except (ValueError, TypeError) as e:
+        except (ValueError, TypeError, OverflowError) as e:
             raise ValueError(f"param {name!r}: expected a number, got {value!r}") from e
     if t == "boolean":
         if isinstance(value, bool):
