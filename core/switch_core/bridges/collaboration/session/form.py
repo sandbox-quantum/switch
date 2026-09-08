@@ -221,6 +221,13 @@ def _questions_answer(
         return Unanswerable(
             "a word answers a permission request, and that card asks questions"
         )
+    if not questions:
+        # Otherwise nothing is missing and nothing is answered, and the form
+        # resolves to an empty `QuestionsResult` — an answer to a card that
+        # asked nothing, which the host would apply as though it had.
+        return Unanswerable(
+            "that card asks no questions, so there is nothing to answer"
+        )
 
     given = _by_question(questions, answer.parts)
     if isinstance(given, Unanswerable):

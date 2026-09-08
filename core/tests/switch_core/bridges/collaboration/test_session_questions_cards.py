@@ -13,6 +13,7 @@ was recorded. This one has the shapes it has no case for.
 from __future__ import annotations
 
 import asyncio
+import itertools
 import json
 import re
 from pathlib import Path
@@ -242,13 +243,32 @@ def test_one_unanswerable_question_names_itself_on_a_longer_form() -> None:
     )
 
 
-def test_no_question_shape_makes_the_card_offer_an_answer_it_would_refuse() -> None:
+def test_a_form_that_asks_nothing_makes_the_card_say_so() -> None:
+    """The same defect one question short of the last one.
+
+    `questions: []` has no number to type, no word the grammar would take and
+    no button, so every reading of it is a card with no way off. Neither reader
+    of the contract forbids it, and this is the wrong place to start: refusing
+    the event would cost the whole snapshot rather than one card, and would
+    have the Python reader reject a shape the TypeScript one accepts.
+    """
+    request = _amend_questions(_form(), [])
+
+    assert _footer(render_questions(request, FORM).blocks) == (
+        "This card cannot be answered: it asks no questions."
+    )
+    assert _actions(render_questions(request, FORM).blocks) is None
+
+
+def test_no_form_shape_makes_the_card_offer_an_answer_it_would_refuse() -> None:
     """The card's instruction and the resolver's rules are one claim.
 
-    Enumerated rather than sampled, because the shape that broke this was a
-    corner of it: zero options with both flags off reads as a perfectly
-    ordinary question and can never be answered. Every form here either says
-    it cannot be answered, or offers an example that parses and resolves.
+    Enumerated rather than sampled, because both shapes that broke this were
+    corners of it: zero options with both flags off reads as a perfectly
+    ordinary question, and a form of no questions at all reads as nothing
+    unusual until the example comes out empty. So the enumeration starts at
+    zero questions rather than one. Every form here either says it cannot be
+    answered, or offers an example that parses and resolves against it.
     """
     shapes = [
         (count, multi, custom)
@@ -256,26 +276,27 @@ def test_no_question_shape_makes_the_card_offer_an_answer_it_would_refuse() -> N
         for multi in (False, True)
         for custom in (False, True)
     ]
+    forms = [
+        [
+            _question(position, *shape)
+            for position, shape in enumerate(combination, start=1)
+        ]
+        for length in range(3)
+        for combination in itertools.product(shapes, repeat=length)
+    ]
 
-    for first in shapes:
-        for rest in [None, *shapes]:
-            request = _amend_questions(
-                _form(),
-                [_question(1, *first)]
-                + ([] if rest is None else [_question(2, *rest)]),
-            )
-            footer = _footer(render_questions(request, FORM).blocks)
-            if footer.startswith("This card cannot be answered"):
-                continue
+    for questions in forms:
+        request = _amend_questions(_form(), questions)
+        footer = _footer(render_questions(request, FORM).blocks)
+        if footer.startswith("This card cannot be answered"):
+            continue
 
-            example = re.search(r"`([^`]+)`", footer)
-            assert example is not None, f"{first}, {rest}: no example in {footer!r}"
-            answer = parse_text_answer(example.group(1))
-            assert answer is not None, f"{first}, {rest}: {footer!r} does not parse"
-            resolved = resolve_text_answer(posted_form(request), answer)
-            assert not isinstance(resolved, Unanswerable), (
-                f"{first}, {rest}: {resolved}"
-            )
+        example = re.search(r"`([^`]+)`", footer)
+        assert example is not None, f"no example in {footer!r}"
+        answer = parse_text_answer(example.group(1))
+        assert answer is not None, f"{footer!r} does not parse"
+        resolved = resolve_text_answer(posted_form(request), answer)
+        assert not isinstance(resolved, Unanswerable), f"{footer!r}: {resolved}"
 
 
 # ── The text fallback ────────────────────────────────────────────────────────

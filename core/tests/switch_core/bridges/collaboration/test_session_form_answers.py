@@ -186,6 +186,24 @@ def test_a_number_on_a_question_with_nothing_to_number_is_refused() -> None:
     assert _refusal("R43 q1=1; q2=1; q3=1") == "q3 offers 0 options, not 1"
 
 
+def test_a_card_that_asks_nothing_cannot_be_answered_either() -> None:
+    """Nothing is missing from an answer to no questions, which is the danger.
+
+    Without this the whole-form check passes vacuously — no question went
+    unanswered — and an empty `QuestionsResult` goes to the host, which applies
+    it as though it were an answer. The card says the same thing at the other
+    end: `questions: []` is a card with no way off.
+    """
+    empty: dict[str, Any] = {"kind": "questions", "questions": []}
+
+    assert _refusal('R43 "anything"', empty) == (
+        "that card asks no questions, so there is nothing to answer"
+    )
+    assert _refusal("R43 1", empty) == (
+        "that card asks no questions, so there is nothing to answer"
+    )
+
+
 def test_a_word_answers_a_permission_and_not_a_question() -> None:
     """ "yes" names a decision, and a form has no decisions to name."""
     assert _refusal("R43 yes") == (
@@ -324,6 +342,7 @@ _FORMS: list[dict[str, Any]] = [
     _questions_form(("q1", ["a"], False, False)),
     _questions_form(("q1", [], False, True)),
     {"kind": "approval", "options": []},
+    {"kind": "questions", "questions": []},
     {"kind": "questions", "questions": [{}]},
     {"kind": "approval", "options": "nonsense"},
     {"kind": "questions", "questions": [1, 2]},

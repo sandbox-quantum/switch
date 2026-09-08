@@ -515,16 +515,8 @@ def _questions_footer(
     """
     if request.state == "open":
         stuck = _unanswerable(content.questions)
-        if stuck:
-            where = (
-                ""
-                if len(content.questions) == 1
-                else " on " + ", ".join(f"q{position}" for position in stuck)
-            )
-            return (
-                f"This card cannot be answered: nothing to choose{where}, "
-                "and no written answer allowed."
-            )
+        if stuck is not None:
+            return stuck
         example = f"`{_example(reference.handle, content.questions)}`"
         if buttons:
             return f"Reply with {example}, or press a button."
@@ -545,20 +537,45 @@ def _questions_footer(
     )
 
 
-def _unanswerable(questions: list[Question]) -> list[int]:
-    """The questions offering nothing to choose and taking no written answer.
+def _unanswerable(questions: list[Question]) -> str | None:
+    """What the card says instead of an instruction, when there is no answering it.
 
-    A question like that cannot be answered on any surface — there is no number
-    to type and words are refused — and because every question has to be
-    answered for the answer to be sent at all, one of them makes the whole form
-    unanswerable. It is the host's mistake rather than the reader's, so the card
-    says so instead of printing an instruction the resolver would then refuse.
+    Two shapes reach this, and they are the same defect a question apart. A
+    question offering nothing to choose and taking no written answer cannot be
+    answered on any surface — there is no number to type and words are refused —
+    and because every question has to be answered for the answer to be sent at
+    all, one of them stops the whole form. A form with no questions in it has
+    nothing to say back either: there is no number, no word and no button, and
+    the grammar has no shape for an answer to nothing.
+
+    Both are the host's mistake rather than the reader's, so the card says so
+    where a person can see the session is stuck on it, instead of printing an
+    instruction the resolver would then refuse.
+
+    The contract permits both — `questions` has no minimum length in either
+    reader — and this is the wrong place to start forbidding them: rejecting
+    the event would cost the whole snapshot rather than one card, and the
+    Python reader would refuse a shape the TypeScript one accepts. So the
+    refusal is on the card, where it is visible and costs nothing else.
     """
-    return [
+    if not questions:
+        return "This card cannot be answered: it asks no questions."
+    stuck = [
         position
         for position, question in enumerate(questions, start=1)
         if not question.options and not question.allow_custom_answer
     ]
+    if not stuck:
+        return None
+    where = (
+        ""
+        if len(questions) == 1
+        else " on " + ", ".join(f"q{position}" for position in stuck)
+    )
+    return (
+        f"This card cannot be answered: nothing to choose{where}, "
+        "and no written answer allowed."
+    )
 
 
 def _example(handle: str, questions: list[Question]) -> str:
@@ -567,8 +584,8 @@ def _example(handle: str, questions: list[Question]) -> str:
     Built from the form rather than fixed, because the shapes need different
     things said: one question takes a number on its own, several need saying
     which is which, and a question with nothing to number is answered in words.
-    Only ever called for a form every question of which can be answered, so
-    there is always something for each part to say.
+    Only ever called for a form that has questions and every one of which can
+    be answered, so there is always something for each part to say.
     """
     values = [_example_value(question) for question in questions]
     if len(values) == 1:
