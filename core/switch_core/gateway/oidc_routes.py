@@ -104,21 +104,28 @@ async def oidc_callback(
             claims = await client.userinfo(token=token)
         except KeyError as exc:
             # authlib's userinfo() looks up metadata["userinfo_endpoint"],
-            # which OIDC discovery makes optional. A provider that omits it
-            # while also not returning an id_token leaves no way to read
-            # claims at all — a configuration mistake (the wrong issuer for
-            # this deployment), not a transient upstream fault, so retrying
-            # won't help. Not a 500: that's for something unanticipated, and
-            # this is diagnosed precisely enough to name.
+            # which OIDC discovery makes optional. We only reach this call
+            # because token["userinfo"] was falsy, which authlib sets only
+            # when both an id_token and the stored nonce were present — so
+            # that can mean no id_token came back, or one did but the nonce
+            # didn't match. Either way, a provider that also has no
+            # userinfo_endpoint leaves no way to read claims at all — a
+            # configuration mistake (the wrong issuer for this deployment),
+            # not a transient upstream fault, so retrying won't help. Not a
+            # 500: that's for something unanticipated, and this is diagnosed
+            # precisely enough to name.
             logger.error(
                 "OIDC callback failed: the provider published no "
-                "userinfo_endpoint and no id_token was returned, so there "
-                "is nowhere to read claims from (%s)",
+                "userinfo_endpoint and no claims were available from the "
+                "token, so there is nowhere to read claims from (%s)",
                 exc,
             )
             raise HTTPException(
                 status_code=503,
-                detail="OIDC provider has no userinfo endpoint and issued no id_token",
+                detail=(
+                    "OIDC provider has no userinfo endpoint and no claims "
+                    "were available from the token"
+                ),
             ) from exc
         except (httpx.HTTPError, json.JSONDecodeError) as exc:
             # A non-2xx response, a transport failure (timeout, connection
