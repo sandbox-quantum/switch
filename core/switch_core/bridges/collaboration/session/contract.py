@@ -430,11 +430,14 @@ class Snapshot(_Model):
 def event_bytes(event: Any) -> int:
     """The size the host measured.
 
-    Separators are pinned so this counts what `JSON.stringify` counts: Python's
-    default `json.dumps` pads every separator and would read a compliant event
-    as oversized.
+    The host counts `TextEncoder().encode(JSON.stringify(event)).byteLength`, so
+    both of `json.dumps`'s defaults have to go: it pads every separator, and it
+    escapes anything non-ASCII, which makes an emoji twelve bytes here and four
+    on the host. Either one alone reads a compliant event as oversized.
     """
-    return len(json.dumps(event, separators=(",", ":")).encode("utf-8"))
+    return len(
+        json.dumps(event, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    )
 
 
 def parse_host_event(payload: Any) -> HostEvent:

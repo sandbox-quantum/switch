@@ -26,6 +26,7 @@ from switch_core.bridges.collaboration.session.contract import (
     Item,
     ServerEvent,
     Snapshot,
+    event_bytes,
     parse_command,
     parse_host_event,
     parse_server_event,
@@ -142,6 +143,29 @@ def test_rejects_raw_data_reasoning_items_unsafe_counters_and_oversized_events()
                 },
             }
         )
+
+
+def test_the_size_cap_counts_the_bytes_the_host_counted() -> None:
+    """No TypeScript counterpart: it is Python's defaults that differ.
+
+    The host counts UTF-8 of `JSON.stringify`. `json.dumps` escapes non-ASCII
+    unless told not to, which makes an emoji twelve bytes rather than four, and
+    an event the host sent well inside the cap would be refused here.
+    """
+    assert event_bytes({"a": "😀"}) == len('{"a":"😀"}'.encode())
+
+    within_the_cap = {
+        **EXAMPLES["hostRequest"],
+        "body": {
+            "type": "notice",
+            "level": "info",
+            "code": "OUTPUT",
+            "message": "😀" * 10000,
+        },
+    }
+
+    assert event_bytes(within_the_cap) < 65536
+    parse_host_event(within_the_cap)
 
 
 def test_replaces_text_ignores_replay_and_accepts_filtered_sequence_gaps() -> None:
