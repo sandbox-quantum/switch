@@ -843,6 +843,72 @@ class BridgeMessageMap(Base):
     )
 
 
+# ── Session requests on an external surface ─────────────────────────────────
+
+
+class SessionRequestPost(Base):
+    """A session's request for a decision, as it was posted onto a platform.
+
+    One row per request per bridge. It is what a pressed button resolves
+    against: the callback a platform sends back carries the opaque token and
+    nothing else worth having, so which session, which epoch and which revision
+    the answer stands against are read from here rather than from anything the
+    platform returned. `bridge_id` is the workspace fence — a token is only ever
+    looked up within the bridge it was minted for.
+
+    Distinct from `bridge_message_map`, which correlates one bridged message
+    with one external post. This is per *request*, it outlives any single post,
+    and it carries state that changes as the request does.
+    """
+
+    __tablename__ = "session_request_posts"
+    __table_args__ = (
+        UniqueConstraint("token", name="uq_session_request_posts_token"),
+        UniqueConstraint(
+            "bridge_id",
+            "session_id",
+            "request_id",
+            name="uq_session_request_posts_request",
+        ),
+        UniqueConstraint(
+            "bridge_id",
+            "external_channel_id",
+            "handle",
+            name="uq_session_request_posts_handle",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
+    bridge_id: Mapped[str] = mapped_column(
+        Text, ForeignKey("collaboration_bridges.id", ondelete="CASCADE"), nullable=False
+    )
+    # What a control's callback payload carries, and what a person types
+    # instead. Both name the row and neither names the session.
+    token: Mapped[str] = mapped_column(Text, nullable=False)
+    handle: Mapped[str] = mapped_column(Text, nullable=False)
+    external_channel_id: Mapped[str] = mapped_column(Text, nullable=False)
+    external_post_id: Mapped[str] = mapped_column(Text, nullable=False)
+    room_id: Mapped[str] = mapped_column(
+        Text, ForeignKey("rooms.id", ondelete="CASCADE"), nullable=False
+    )
+    thread_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    session_id: Mapped[str] = mapped_column(Text, nullable=False)
+    epoch: Mapped[str] = mapped_column(Text, nullable=False)
+    request_id: Mapped[str] = mapped_column(Text, nullable=False)
+    # The revision an answer is submitted against. The session rejects an answer
+    # that names a revision it has moved past.
+    revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[str] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[str] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+
 # ── Feature flags ────────────────────────────────────────────────────────────
 
 

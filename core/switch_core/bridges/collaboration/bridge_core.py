@@ -5,7 +5,7 @@ import logging
 import re
 import uuid
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast, get_args
 
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -21,10 +21,13 @@ from switch_core.bridges.collaboration.models import (
     InboundAgentJoin,
     InboundAppJoin,
     InboundCommand,
+    InboundInteraction,
     InboundMessage,
     InboundUserJoin,
     OutboundAttachment,
 )
+from switch_core.bridges.collaboration.session.contract import Surface
+from switch_core.bridges.collaboration.session.inbound import SessionInteractions
 from switch_core.clients.admin_messages import ADMIN_MARKER, AdminMessageType
 from switch_core.clients.client_base import ClientBase, ClientConfig
 from switch_core.clients.mentions import mention_regex, strip_emphasis
@@ -34,6 +37,7 @@ from switch_core.db.stores.bridge_message_map_store import BridgeMessageMapStore
 from switch_core.db.stores.client_store import ClientStore
 from switch_core.db.stores.external_user_store import ExternalUserStore
 from switch_core.db.stores.room_store import RoomStore
+from switch_core.db.stores.session_request_post_store import SessionRequestPostStore
 from switch_core.events import AgentRuntimeStateEvent
 from switch_core.provisioning import Provisioning
 from switch_core.room_service import RoomCreateConfig
@@ -115,6 +119,7 @@ class BridgeCore:
         room_store: RoomStore,
         external_user_store: ExternalUserStore,
         bridge_message_map_store: BridgeMessageMapStore,
+        session_request_post_store: SessionRequestPostStore,
         agent_store: AgentStore,
         client_store: ClientStore,
         room_service: RoomService,
@@ -181,6 +186,30 @@ class BridgeCore:
         self._pending_message_maps: dict[str, str] = {}
         # Identity provisioning runs in the background — see _create_agent_identities.
         self._identity_task: asyncio.Task[None] | None = None
+        # Answers to a session's requests, coming back off the platform's own
+        # controls. Absent on a platform the session contract has no surface
+        # name for, because an answer must record where it was given.
+        self._session_interactions = self._build_session_interactions(
+            session_request_post_store
+        )
+
+    def _build_session_interactions(
+        self, posts: SessionRequestPostStore
+    ) -> SessionInteractions | None:
+        if self._bridge_type not in get_args(Surface):
+            logger.warning(
+                "Bridge type %s is not a session contract surface, so answers "
+                "given on it cannot be attributed and its controls stay inert",
+                self._bridge_type,
+            )
+            return None
+        return SessionInteractions(
+            bridge_id=self._bridge_id,
+            surface=cast(Surface, self._bridge_type),
+            posts=posts,
+            session_factory=self._session_factory,
+            identify=self._identify_actor,
+        )
 
     @property
     def adapter(self) -> CollaborationAdapter:
@@ -191,6 +220,8 @@ class BridgeCore:
         await self._load_existing_puppets()
         self._adapter.set_channel_migration_handler(self._handle_channel_migrated)
         self._adapter.set_agent_presentation_resolver(self._agent_presentation)
+        if self._session_interactions is not None:
+            self._adapter.set_interaction_handler(self._handle_inbound_interaction)
         await self._adapter.start(
             on_message=self._handle_inbound_message,
             on_command=self._handle_inbound_command,
@@ -1035,6 +1066,47 @@ class BridgeCore:
             )
             return None
         return puppet
+
+    async def _handle_inbound_interaction(
+        self, interaction: InboundInteraction
+    ) -> None:
+        """Someone operated a control on a message this bridge posted."""
+        interactions = self._session_interactions
+        if interactions is None:
+            return
+        command = await interactions.command_for(interaction)
+        if command is None:
+            return
+        logger.warning(
+            "Built command %s for session %s from %s, and dropped it: nothing "
+            "consumes session commands, so the session does not see this answer",
+            command.command_id,
+            command.session_id,
+            interaction.sender_id,
+        )
+
+    async def _identify_actor(self, interaction: InboundInteraction) -> str | None:
+        """The Switch identity behind the platform account that acted.
+
+        None where the channel maps to no room, or the puppet cannot be brought
+        into it. Both are refusals: an answer carries who gave it, and there is
+        no default actor to fall back on.
+        """
+        room_ids = self._channel_to_room.get(interaction.channel_id)
+        if room_ids is None:
+            logger.warning(
+                "Ignoring an interaction in %s: the channel maps to no room",
+                interaction.channel_id,
+            )
+            return None
+        room_id, matrix_room_id = room_ids
+        puppet = await self._ensure_user_in_matrix_room(
+            external_user_id=interaction.sender_id,
+            external_username=interaction.sender_name,
+            room_id=room_id,
+            matrix_room_id=matrix_room_id,
+        )
+        return puppet.matrix_user_id if puppet is not None else None
 
     async def _handle_user_joined_channel(self, join: InboundUserJoin) -> None:
         """Called by the adapter when an external user joins a bridged

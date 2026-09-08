@@ -108,6 +108,25 @@ class InboundCommand(BaseModel):
     channel_name: str | None = None
 
 
+class InboundInteraction(BaseModel):
+    """Someone operated a control the bridge put on one of its own messages.
+
+    Unlike a message this carries no words. What it means is entirely in the
+    control's id and in `value`, an opaque token the bridge minted when it
+    posted the message and resolves against its own record. Neither is identity:
+    who acted is `sender_id`, which comes from the platform's envelope.
+    """
+
+    channel_id: str
+    sender_id: str
+    sender_name: str
+    action_id: str
+    value: str
+    # The platform's id for the message the control sits on, in the same form
+    # `InboundMessage.message_ref` uses.
+    message_ref: str | None = None
+
+
 class InboundAgentJoin(BaseModel):
     channel_id: str
     channel_type: ChannelType

@@ -9,6 +9,25 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+# Every platform that puts controls on a message gives each one an id it hands
+# straight back when it is operated. The prefix marks the ones this layer wrote,
+# so a control belonging to something else in the same channel is left alone.
+ANSWER_ACTION = "switch:request-answer"
+
+
+def parse_answer_action(action_id: str) -> str | None:
+    """The option a control stands for, or None if it is not one of ours.
+
+    An option id is all the id carries. Which request, and against which
+    revision, comes from the record the token resolves to — not from here, and
+    not from anything else the platform sent back.
+    """
+    prefix = f"{ANSWER_ACTION}:"
+    if not action_id.startswith(prefix):
+        return None
+    option_id = action_id[len(prefix) :]
+    return option_id or None
+
 
 @dataclass(frozen=True)
 class RequestReference:

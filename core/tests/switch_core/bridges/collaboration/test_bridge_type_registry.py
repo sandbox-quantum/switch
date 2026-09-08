@@ -39,6 +39,7 @@ def _service() -> CollaborationBridgeLifecycleService:
         bridge_store=None,  # type: ignore[arg-type]
         external_user_store=None,  # type: ignore[arg-type]
         bridge_message_map_store=None,  # type: ignore[arg-type]
+        session_request_post_store=None,  # type: ignore[arg-type]
         room_store=None,  # type: ignore[arg-type]
         agent_store=None,  # type: ignore[arg-type]
         client_store=None,  # type: ignore[arg-type]

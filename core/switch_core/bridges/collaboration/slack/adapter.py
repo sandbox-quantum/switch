@@ -31,6 +31,7 @@ from switch_core.bridges.collaboration.models import (
     InboundAgentJoin,
     InboundAppJoin,
     InboundCommand,
+    InboundInteraction,
     InboundMessage,
     InboundUserJoin,
     OutboundAttachment,
@@ -1968,6 +1969,10 @@ class SlackAdapter(CollaborationAdapter):
             await self._handle_slash_command(req.payload)
             return
 
+        if req.type == "interactive":
+            await self._handle_interactive(req.payload)
+            return
+
         if req.type != "events_api":
             return
 
@@ -1984,6 +1989,50 @@ class SlackAdapter(CollaborationAdapter):
             await self._handle_member_joined_channel(event)
         elif event_type == "agent_session_stopped":
             await self._handle_session_stopped(event)
+
+    async def _handle_interactive(self, payload: dict[str, Any]) -> None:
+        """Someone operated a Block Kit control on one of our messages.
+
+        Only two things are read out of the payload: who Slack says acted, and
+        which control they operated. A button's `value` is the opaque token this
+        bridge minted when it posted the message, so a payload that was replayed
+        or hand-built names nothing its sender was not already looking at.
+
+        Slack sends one `block_actions` envelope per press, but the field is a
+        list, and a press this bridge did not put there is somebody else's.
+        """
+        if payload.get("type") != "block_actions":
+            return
+        if self._on_interaction is None:
+            return
+
+        user_id = str((payload.get("user") or {}).get("id", ""))
+        container = payload.get("container") or {}
+        channel_id = str(
+            (payload.get("channel") or {}).get("id", "")
+            or container.get("channel_id", "")
+        )
+        message_ts = str(container.get("message_ts", ""))
+        if not user_id or not channel_id:
+            logger.warning("Slack block_actions missing user or channel, skipping")
+            return
+
+        user = await self._resolve_user_name(user_id)
+        for action in payload.get("actions") or []:
+            action_id = str(action.get("action_id", ""))
+            value = str(action.get("value") or "")
+            if not action_id or not value:
+                continue
+            await self._on_interaction(
+                InboundInteraction(
+                    channel_id=channel_id,
+                    sender_id=user_id,
+                    sender_name=user.name,
+                    action_id=action_id,
+                    value=value,
+                    message_ref=f"{channel_id}:{message_ts}" if message_ts else None,
+                )
+            )
 
     async def _handle_member_joined_channel(self, event: dict[str, object]) -> None:
         user_id = str(event.get("user", ""))

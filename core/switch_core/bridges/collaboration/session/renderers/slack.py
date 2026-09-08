@@ -21,9 +21,7 @@ from typing import Any
 from switch_core.bridges.collaboration.slack.mrkdwn import escape_mrkdwn
 
 from ..contract import ApprovalContent, ApprovalOption, SnapshotRequest
-from . import RequestReference
-
-ANSWER_ACTION = "switch:request-answer"
+from . import ANSWER_ACTION, RequestReference
 
 # Slack's own limits. Exceeding one is rejected at the API, so it is caught here
 # where the offending value can still be named.
@@ -106,18 +104,6 @@ def render_approval_text(request: SnapshotRequest, reference: RequestReference) 
     ]
     lines.append(escape_mrkdwn(_reply_hint(reference)))
     return "\n".join(lines)
-
-
-def parse_answer_action(action_id: str) -> str | None:
-    """The option a pressed button chose, or None if it was not one of ours.
-
-    Lives beside the renderer that wrote the action id so the two cannot drift.
-    """
-    prefix = f"{ANSWER_ACTION}:"
-    if not action_id.startswith(prefix):
-        return None
-    option_id = action_id[len(prefix) :]
-    return option_id or None
 
 
 def _button(option: ApprovalOption, reference: RequestReference) -> dict[str, Any]:

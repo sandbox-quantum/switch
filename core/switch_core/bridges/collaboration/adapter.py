@@ -17,6 +17,7 @@ from switch_core.bridges.collaboration.models import (
     InboundAgentJoin,
     InboundAppJoin,
     InboundCommand,
+    InboundInteraction,
     InboundMessage,
     InboundUserJoin,
     OutboundAttachment,
@@ -155,6 +156,12 @@ class CollaborationAdapter(ABC):
         )
         self._on_user_joined: Callable[[InboundUserJoin], Awaitable[None]] | None = None
         self._on_app_joined: Callable[[InboundAppJoin], Awaitable[None]] | None = None
+        # Set by set_interaction_handler. Called when someone operates a control
+        # on a message this bridge posted. Left unset on a platform with no such
+        # controls, and on an adapter running without a bridge core behind it.
+        self._on_interaction: Callable[[InboundInteraction], Awaitable[None]] | None = (
+            None
+        )
         # Set by set_channel_migration_handler. Called with (old_id, new_id)
         # when the platform reissues a channel's id.
         self._on_channel_migrated: Callable[[str, str], Awaitable[None]] | None = None
@@ -860,6 +867,16 @@ class CollaborationAdapter(ABC):
         The symptom without it is one-way traffic — sends still arrive, because
         the platform forwards them, while nothing inbound matches a room again."""
         self._on_channel_migrated = handler
+
+    def set_interaction_handler(
+        self, handler: Callable[[InboundInteraction], Awaitable[None]]
+    ) -> None:
+        """Install the callback for a control on a posted message being operated.
+
+        A setter rather than another argument to `start` because only the
+        platforms with interactive message controls ever call it, and an adapter
+        that never does needs no change to go on working."""
+        self._on_interaction = handler
 
     def set_agent_presentation_resolver(
         self, resolver: Callable[[str], Awaitable[AgentPresentation | None]]

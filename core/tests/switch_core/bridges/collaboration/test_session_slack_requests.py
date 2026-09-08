@@ -14,16 +14,19 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from slack_sdk.socket_mode.request import SocketModeRequest
 
 from switch_core.bridges.collaboration.session.contract import (
     ApprovalOption,
     parse_snapshot,
 )
 from switch_core.bridges.collaboration.session.projection import SessionProjection
-from switch_core.bridges.collaboration.session.renderers import RequestReference
-from switch_core.bridges.collaboration.session.renderers.slack import (
+from switch_core.bridges.collaboration.session.renderers import (
     ANSWER_ACTION,
+    RequestReference,
     parse_answer_action,
+)
+from switch_core.bridges.collaboration.session.renderers.slack import (
     render_approval,
     render_approval_text,
 )
@@ -233,3 +236,106 @@ def test_the_card_reaches_slack_with_its_blocks_and_a_text_fallback() -> None:
     assert posted["blocks"] == message.blocks
     assert posted["text"] == message.text
     assert posted["thread_ts"] == "111.0"
+
+
+# ── The press ────────────────────────────────────────────────────────────────
+
+
+class _FakeSocketClient:
+    """Records the ack, which Slack expects before anything else happens."""
+
+    def __init__(self) -> None:
+        self.acked: list[str] = []
+
+    async def send_socket_mode_response(self, response: Any) -> None:
+        self.acked.append(response.envelope_id)
+
+
+def _block_actions(**overrides: Any) -> dict[str, Any]:
+    """A `block_actions` envelope, in the shape Slack sends one."""
+    payload: dict[str, Any] = {
+        "type": "block_actions",
+        "user": {"id": "U1", "username": "someone", "name": "someone"},
+        "channel": {"id": "C1", "name": "general"},
+        "container": {
+            "type": "message",
+            "channel_id": "C1",
+            "message_ts": "111.0",
+        },
+        "actions": [
+            {
+                "type": "button",
+                "action_id": f"{ANSWER_ACTION}:allow-once",
+                "block_id": f"{ANSWER_ACTION}:request-demo",
+                "value": "opaque-token",
+            }
+        ],
+    }
+    payload.update(overrides)
+    return payload
+
+
+def _pressed(payload: dict[str, Any]) -> list[Any]:
+    """Drive a press all the way from the socket envelope."""
+    adapter, _ = _adapter()
+    seen: list[Any] = []
+
+    async def record(interaction: Any) -> None:
+        seen.append(interaction)
+
+    adapter.set_interaction_handler(record)
+    socket = _FakeSocketClient()
+    _run(
+        adapter._handle_socket_event(
+            socket,  # type: ignore[arg-type]
+            SocketModeRequest(type="interactive", envelope_id="e1", payload=payload),
+        )
+    )
+    assert socket.acked == ["e1"]
+    return seen
+
+
+def test_a_press_is_no_longer_acked_and_dropped() -> None:
+    interaction = _pressed(_block_actions())[0]
+
+    assert interaction.channel_id == "C1"
+    assert interaction.sender_id == "U1"
+    assert interaction.action_id == f"{ANSWER_ACTION}:allow-once"
+    assert interaction.value == "opaque-token"
+    assert interaction.message_ref == "C1:111.0"
+
+
+def test_a_control_with_no_value_names_no_request() -> None:
+    """A select or an overflow carries its choice elsewhere. Not ours to guess."""
+    payload = _block_actions(
+        actions=[{"type": "button", "action_id": f"{ANSWER_ACTION}:x", "value": None}]
+    )
+
+    assert _pressed(payload) == []
+
+
+def test_an_interactive_envelope_that_is_not_a_press_is_left_alone() -> None:
+    assert _pressed(_block_actions(type="view_submission")) == []
+
+
+def test_the_card_and_the_press_agree_on_the_option() -> None:
+    """The loop: the renderer writes the control, the handler reads it back."""
+    request = _projection().open_room_requests("room-demo")[0]
+    message = render_approval(request, REFERENCE)
+    actions = next(block for block in message.blocks if block["type"] == "actions")
+    deny = actions["elements"][1]
+
+    interaction = _pressed(
+        _block_actions(
+            actions=[
+                {
+                    "type": "button",
+                    "action_id": deny["action_id"],
+                    "value": deny["value"],
+                }
+            ]
+        )
+    )[0]
+
+    assert parse_answer_action(interaction.action_id) == "deny"
+    assert interaction.value == REFERENCE.token

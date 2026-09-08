@@ -21,6 +21,7 @@ from switch_core.db.stores.client_store import ClientStore
 from switch_core.db.stores.collaboration_bridge_store import CollaborationBridgeStore
 from switch_core.db.stores.external_user_store import ExternalUserStore
 from switch_core.db.stores.room_store import RoomStore
+from switch_core.db.stores.session_request_post_store import SessionRequestPostStore
 from switch_core.provisioning import Provisioning
 
 if TYPE_CHECKING:
@@ -56,6 +57,7 @@ class CollaborationBridgeLifecycleService:
         bridge_store: CollaborationBridgeStore,
         external_user_store: ExternalUserStore,
         bridge_message_map_store: BridgeMessageMapStore,
+        session_request_post_store: SessionRequestPostStore,
         room_store: RoomStore,
         agent_store: AgentStore,
         client_store: ClientStore,
@@ -69,6 +71,7 @@ class CollaborationBridgeLifecycleService:
         self._bridge_store = bridge_store
         self._external_user_store = external_user_store
         self._bridge_message_map_store = bridge_message_map_store
+        self._session_request_post_store = session_request_post_store
         self._room_store = room_store
         self._agent_store = agent_store
         self._client_store = client_store
@@ -399,6 +402,7 @@ class CollaborationBridgeLifecycleService:
             room_store=self._room_store,
             external_user_store=self._external_user_store,
             bridge_message_map_store=self._bridge_message_map_store,
+            session_request_post_store=self._session_request_post_store,
             agent_store=self._agent_store,
             client_store=self._client_store,
             room_service=self._room_service,
