@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 from typing import Annotated, cast
 
@@ -373,13 +374,29 @@ async def create_room_from_yaml(
     rooms_yaml: Annotated[RoomYamlService, Depends(get_room_yaml_service)],
     user: Annotated[User, Depends(get_current_user)],
 ) -> ProvisionResult:
-    """Provision a single room and its attachments from a YAML spec. The body
-    is the raw YAML text. Best-effort: the room is created first (fail-loud on
-    bad config), then inline references/docs are attached, with post-creation
-    failures surfaced in ``failed_attachments`` rather than dropped."""
-    text = (await request.body()).decode("utf-8")
+    """Provision a single room and its attachments from a YAML spec.
+
+    Two content types are accepted:
+
+    * **Raw YAML** (``text/yaml``, ``text/plain``, or any non-JSON type): the
+      body is the template text.  Only defaults-only templates work here
+      (no way to pass inputs).
+    * **JSON** (``application/json``): ``{"yaml": "<template text>",
+      "inputs": {...}}`` where ``inputs`` supplies values for declared
+      ``params:``.
+    """
+    content_type = request.headers.get("content-type", "")
     try:
-        spec = rooms_yaml.parse(text)
+        if "application/json" in content_type:
+            payload = json.loads(await request.body())
+            if not isinstance(payload, dict) or "yaml" not in payload:
+                raise ValueError("JSON body must have a 'yaml' key")
+            text = payload["yaml"]
+            inputs = payload.get("inputs")
+        else:
+            text = (await request.body()).decode("utf-8")
+            inputs = None
+        spec = rooms_yaml.parse(text, inputs=inputs)
         return await rooms_yaml.provision(
             spec, user_id=user.id, is_admin=user.role == "admin"
         )

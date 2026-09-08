@@ -943,3 +943,130 @@ def test_parse_unknown_top_level_key_rejected(env):
             extra_key: bad
             """
         )
+
+
+# ── provision with params (integration) ────────────────────────────────────
+
+
+TEMPLATE = """\
+params:
+  owner:
+    type: string
+    description: Whose room this is
+  deploy_agent:
+    type: string
+    description: The agent that runs deployments
+  repo:
+    type: string
+    default: "sandbox-quantum/switch"
+  visibility:
+    type: enum
+    enum: [channel_public, channel_private]
+    default: channel_private
+room:
+  name: "{owner} local-deploy"
+  description: "{owner}'s local deployment room for {repo}"
+  channel_type: "{visibility}"
+  agents: ["{deploy_agent}"]
+  instructions: |
+    You run local deployments of {repo} for {owner}.
+"""
+
+
+@pytest.mark.asyncio
+async def test_provision_template_two_owners(env):
+    """The same template instantiates twice with different owners."""
+    svc = _svc(env)
+    r1 = await svc.provision(
+        svc.parse(
+            TEMPLATE, inputs={"owner": "alice", "deploy_agent": "claude-code.alice"}
+        ),
+        user_id=env["user_id"],
+        is_admin=False,
+    )
+    r2 = await svc.provision(
+        svc.parse(TEMPLATE, inputs={"owner": "bob", "deploy_agent": "claude-code.bob"}),
+        user_id=env["user_id"],
+        is_admin=False,
+    )
+    assert r1.room_name == "alice local-deploy"
+    assert r2.room_name == "bob local-deploy"
+    assert r1.room_id != r2.room_id
+
+    # Export shows resolved values, no placeholders.
+    yaml1 = await svc.export(r1.room_id)
+    yaml2 = await svc.export(r2.room_id)
+    assert "{owner}" not in yaml1
+    assert "{owner}" not in yaml2
+    assert "alice" in yaml1
+    assert "bob" in yaml2
+
+
+@pytest.mark.asyncio
+async def test_provision_template_missing_required_400(env):
+    """A required param left blank raises before any room is created."""
+    svc = _svc(env)
+    with pytest.raises(ValueError, match="Missing required param.*owner"):
+        svc.parse(TEMPLATE, inputs={"deploy_agent": "claude-code.alice"})
+
+    # Verify no room was created.
+    async with env["session_factory"]() as session:
+        rooms = (
+            (
+                await session.execute(
+                    select(Room).where(Room.name.like("%local-deploy%"))
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert rooms == []
+
+
+# ── endpoint test (JSON body) ──────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_endpoint_json_body(env):
+    """The from-yaml endpoint accepts JSON with yaml + inputs."""
+    import json
+
+    from httpx import ASGITransport, AsyncClient
+    from starlette.applications import Starlette
+    from starlette.requests import Request
+    from starlette.responses import JSONResponse
+    from starlette.routing import Route
+
+    svc = _svc(env)
+    user_id = env["user_id"]
+
+    async def _from_yaml(request: Request) -> JSONResponse:
+        content_type = request.headers.get("content-type", "")
+        if "application/json" in content_type:
+            payload = json.loads(await request.body())
+            text = payload["yaml"]
+            inputs = payload.get("inputs")
+        else:
+            text = (await request.body()).decode("utf-8")
+            inputs = None
+        try:
+            spec = svc.parse(text, inputs=inputs)
+            result = await svc.provision(spec, user_id=user_id, is_admin=False)
+            return JSONResponse(result.model_dump(), status_code=201)
+        except ValueError as e:
+            return JSONResponse({"detail": str(e)}, status_code=400)
+
+    app = Starlette(routes=[Route("/rooms/from-yaml", _from_yaml, methods=["POST"])])
+
+    transport = ASGITransport(app=app)  # type: ignore[arg-type]
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/rooms/from-yaml",
+            json={
+                "yaml": TEMPLATE,
+                "inputs": {"owner": "carol", "deploy_agent": "claude-code.alice"},
+            },
+        )
+    assert resp.status_code == 201
+    body = resp.json()
+    assert body["room_name"] == "carol local-deploy"
