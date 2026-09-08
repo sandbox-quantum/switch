@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 
 import httpx
@@ -452,6 +453,59 @@ class TestOidcCallback:
                     user_store=UserStore(),
                 )
             assert exc.value.status_code == 502
+
+    async def test_userinfo_non_json_response_maps_to_502(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # A 200 whose body isn't JSON (a proxy or captive portal sitting in
+        # front of the provider) fails in resp.json(), not raise_for_status()
+        # — still the provider's fault, so still a 502.
+        monkeypatch.setattr(
+            oidc_routes,
+            "_client",
+            lambda: _FakeClientNoUserinfoInToken(
+                json.JSONDecodeError("Expecting value", "<html>not json</html>", 0)
+            ),
+        )
+
+        async with session_factory() as session:
+            with pytest.raises(HTTPException) as exc:
+                await oidc_routes.oidc_callback(
+                    request=SimpleNamespace(),  # type: ignore[arg-type]
+                    config=_config(),
+                    session=session,
+                    user_store=UserStore(),
+                )
+            assert exc.value.status_code == 502
+
+    async def test_missing_userinfo_endpoint_maps_to_500(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # A provider whose discovery document has no userinfo_endpoint (it's
+        # optional in the OIDC spec — WorkOS's User Management surface is one
+        # such provider) combined with a token carrying no id_token leaves
+        # nowhere to read claims from. That's a configuration mistake for
+        # this deployment, not a transient upstream fault, so it must not be
+        # confused with the 502 cases above.
+        monkeypatch.setattr(
+            oidc_routes,
+            "_client",
+            lambda: _FakeClientNoUserinfoInToken(KeyError("userinfo_endpoint")),
+        )
+
+        async with session_factory() as session:
+            with pytest.raises(HTTPException) as exc:
+                await oidc_routes.oidc_callback(
+                    request=SimpleNamespace(),  # type: ignore[arg-type]
+                    config=_config(),
+                    session=session,
+                    user_store=UserStore(),
+                )
+            assert exc.value.status_code == 500
 
 
 class TestTheCallbackPlacesTheUserInATenant:
