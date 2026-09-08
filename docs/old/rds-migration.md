@@ -1,0 +1,218 @@
+# Moving Postgres to RDS
+
+Status: **proposal**. Nothing here has been applied. The instance does not
+exist; the cutover has not been rehearsed. Everything in §7 is for a human with
+cluster and account credentials to run, and each step is meant to be read
+before it is run rather than pasted.
+
+Context: multi-tenancy Phase 0 (CHOO-2622), from the design spike's §6. The
+argument for doing it first is short — an in-namespace Postgres on a
+PersistentVolumeClaim is fine for a pilot, customer data needs provable backups
+and point-in-time recovery, and migrating a database with live tenants on it is
+much worse than migrating one now.
+
+## 1. What Switch asks of the database
+
+Read this before choosing an instance shape; two of these have bitten people.
+
+- **PostgreSQL 16.** What the chart runs today (`postgres:16-alpine`), so the
+  migration is homogeneous, same major version. Match it on RDS and the whole
+  question of dump compatibility disappears.
+- **No extensions.** No migration issues `CREATE EXTENSION`, so nothing has to
+  be on the RDS allowlist and nothing needs a superuser to install.
+- **`LISTEN` / `NOTIFY` — load-bearing.** Message delivery is a trigger on
+  `messages` calling `pg_notify`, and one long-lived connection holding a
+  `LISTEN` (`switch_core/db/notify_ddl.py`, `switch_core/messages/notify.py`).
+  This is core Postgres and works on RDS. It does **not** survive a transaction
+  pooler — see §4, which is the one thing in this document that can silently
+  break the product.
+- **Attachments live in the database.** `media_blobs.data` is a `bytea` column,
+  so uploads count against storage and against backup size. Size the volume
+  against attachment traffic, not against row counts.
+- **Two databases on one instance.** The chart provisions `switch` and
+  `mattermost` on the same server. Both move together, or the Mattermost bridge
+  loses its state.
+- **Connections are sized against agents, not people.** Each switch-core
+  replica opens up to `db_pool_size + db_max_overflow` (30 + 10 today), plus
+  one unpooled connection for the listener. Bearer-token auth hits the database
+  on every authenticated request and every agent connection beats every 2s, so
+  the pool is a function of fleet size. RDS derives `max_connections` from
+  instance memory by default — check the resolved value against
+  `replicas × 41 + Mattermost's pool + headroom` rather than assuming.
+
+## 2. Instance shape
+
+Proposed, not decided — the numbers are for whoever provisions it to argue
+with:
+
+| Setting | Proposed | Why |
+|---|---|---|
+| Engine | PostgreSQL 16.x | Same major version as today; homogeneous migration. |
+| Multi-AZ | Yes | The failover is the reason to be on RDS at all. Costs a second instance. |
+| Backup retention | 7 days minimum | Point-in-time recovery is the stated Phase 0 goal; 1 day is not "provable backups". |
+| Storage | gp3, autoscaling on | Attachments are in the database, so growth is not flat. |
+| Storage encryption | Yes | Cannot be turned on later without a snapshot-restore dance. |
+| Public accessibility | No | Reachable from the cluster's VPC only. |
+| Deletion protection | Yes | |
+| `rds.force_ssl` | 1 (the default on 15+) | Makes the TLS work in §5 mandatory rather than optional. |
+| Parameter group | Custom, not default | You will need one eventually; making it at creation avoids a reboot later. |
+| Minor version upgrades | Auto, in a chosen window | Each one is a brief outage — see §6. |
+
+`max_connections` and `effective_cache_size` are the two parameters worth
+setting deliberately rather than inheriting; the connection maths is in §1.
+
+## 3. What is already in place, and what is missing
+
+The chart can already point at an external database:
+`postgresql.mode: existing` skips the StatefulSet and connects to
+`postgresql.external.{host,port,username,database}`, with the password from a
+Secret (`existingSecret` supports external-secrets). `sslMode` is plumbed
+through to both switch-core and Mattermost.
+
+Two gaps, one closed here and one deliberately left:
+
+- **Closed:** a verifying TLS mode had no way to be told which certificate
+  authority to trust, so `verify-ca` and `verify-full` fell back to the system
+  trust store and could not validate an RDS certificate at all. `DB_SSL_ROOT_CERT`
+  now takes a PEM bundle, and the connection is built with an SSL context
+  instead of a bare mode string. A path that is not a readable file, or a
+  bundle set alongside a non-verifying mode, is refused at startup rather than
+  discovered on first connect.
+- **Left open:** the chart has no `DB_SSL_ROOT_CERT` and no way to mount the
+  bundle into the pod. Getting to `verify-full` in a deployment therefore needs
+  a chart change — an env entry plus a ConfigMap or Secret carrying the bundle.
+  It is small, and it is not in this change.
+
+## 4. Do not put a transaction pooler in front of it
+
+The obvious next thought after "RDS" is "RDS Proxy". Do not, without reading
+this first.
+
+- **RDS Proxy.** Listening on a notification channel is one of the documented
+  conditions that *pins* a PostgreSQL connection: the client keeps that backend
+  until the session ends and no other client can reuse it. AWS also documents
+  that session pinning filters are not supported for PostgreSQL, so there is no
+  way to opt out. A pinned listener is not a disaster — it is one permanently
+  pinned backend — but the proxy buys nothing for it, and the pinning metric
+  will look alarming to whoever finds it later.
+- **pgbouncer in transaction mode.** `LISTEN` is marked *never* supported under
+  transaction pooling. `NOTIFY` works, so the failure is asymmetric and quiet:
+  messages are written and announced, and nothing is listening. Rooms simply go
+  slow, then stop delivering. Session pooling is fine.
+
+If connection count becomes the problem, the honest fix is the application's
+pool size, not a pooler.
+
+## 5. TLS
+
+RDS publishes a global CA bundle covering every commercial region:
+
+```
+https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem
+```
+
+The current default authority is `rds-ca-rsa2048-g1`. Register the root only —
+AWS is explicit that intermediates should not be added to a trust store. Server
+certificates are rotated by RDS on their own schedule and do not need the
+bundle re-downloaded.
+
+Then:
+
+```
+DB_SSL_MODE=verify-full
+DB_SSL_ROOT_CERT=/etc/ssl/certs/rds-global-bundle.pem
+```
+
+**`verify-full` checks the hostname**, and the certificate carries the RDS
+endpoint DNS name. Connect to `<instance>.<id>.<region>.rds.amazonaws.com`, not
+to a friendlier CNAME of our own — an alias fails hostname verification. If a
+stable internal name is wanted, that is an argument for `verify-ca`, and it is
+a real downgrade: the certificate is proven to be issued by AWS, not to be this
+database's.
+
+## 6. The listener and failover
+
+A Multi-AZ failover moves a DNS record and every existing connection has to be
+re-established; AWS quotes 60–120 seconds. A minor-version patch takes the
+instance offline briefly for the same effect. So the listener's connection will
+drop, in normal operation, on a schedule someone else chooses.
+
+This is already handled, and worth stating so nobody "fixes" it: the listener
+treats a reconnect as *everything may have moved* and wakes every subscriber,
+which read from their own cursors. Announcements missed while disconnected are
+lost and do not need replaying — the worst a lost announcement costs is a
+delayed read that the next one triggers anyway. What a failover does cost is
+up to two minutes of delivery latency, which should be expected rather than
+investigated.
+
+Two related points for whoever watches this:
+
+- `pool_pre_ping` is on, so pooled connections recover on their own after a
+  failover rather than serving one error each.
+- The notification queue is bounded (8 GB) and fills only if a listener sits in
+  a long transaction. Ours does not, but a queue-full alarm is cheap.
+
+## 7. Cutover
+
+For a database of this size with an agreed downtime window, `pg_dump` /
+`pg_restore` is both the simplest path and the one AWS recommends for a
+homogeneous, whole-database migration. Logical replication (self-managed
+publisher → RDS subscriber) is supported and is the fallback if the window
+turns out to be unacceptable — it does not carry sequences or DDL, so it trades
+a shorter outage for a fiddlier cutover.
+
+**Before the window**
+
+1. Provision the instance (§2) and confirm it is reachable from the cluster and
+   from nowhere else.
+2. Create the `switch` and `mattermost` databases and the application role. The
+   RDS master user is not a superuser, and `pg_dumpall` needs privileges it does
+   not have — so recreate roles by hand rather than restoring a globals dump.
+3. Download the CA bundle, put it where the pods will read it, and make the
+   chart change from §3.
+4. **Rehearse the whole thing** against a scratch database, and time it. The
+   number you get is the downtime estimate; the one you guess is not.
+5. Announce the window.
+
+**In the window**
+
+6. Scale switch-core to zero. Writes must stop before the dump starts — a dump
+   taken from a live database is consistent but stale by the time it lands, and
+   the difference is lost messages.
+7. `pg_dump -Fc` each database; `pg_restore -j` into RDS. Restoring as a
+   non-superuser can trip over ownership from the source; `--no-owner
+   --no-privileges` and re-granting is the usual answer.
+8. Verify before switching anything: row counts per table on both sides, and
+   that the notify trigger and function survived the restore
+   (`\df switch_notify_message`, `\dS+ messages`). The trigger is what delivery
+   depends on and it is exactly the sort of thing a restore with the wrong flags
+   drops.
+9. Point the chart at RDS (`postgresql.mode: existing`, `external.host`,
+   `sslMode`, the CA bundle) and deploy. Leave the old StatefulSet and its PVC
+   in place — that is the rollback.
+10. Scale back up. Watch that migrations report clean, that agents reconnect,
+    and then send a real message in a real room and confirm it arrives. Delivery
+    is the one thing unit tests here cannot prove for you: it needs the trigger,
+    the listener and TLS all working at once.
+
+**Rollback**: revert the chart to `mode: managed` and redeploy. The old volume
+still holds the data as of the dump, so the loss is whatever was written to RDS
+after the switch — which is why step 10 comes before announcing success.
+
+**After**
+
+11. Keep the old PVC for an agreed period, then delete it deliberately.
+12. Confirm a point-in-time restore actually works, on a throwaway instance. An
+    untested backup is a belief, not a backup, and proving it is the reason for
+    the whole exercise.
+
+## 8. Open questions
+
+- Which environments move, and in what order? Doing the lowest-traffic one
+  first is how the runbook gets debugged cheaply.
+- Multi-AZ everywhere, or only where downtime is contractual? It roughly
+  doubles the instance cost.
+- Does the demo environment share an instance with anything else, or stay
+  separate as the deployment discussion assumed?
+- Who owns the maintenance window, and does anyone need telling before a minor
+  version upgrade takes delivery down for a minute?
