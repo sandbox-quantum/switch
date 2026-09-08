@@ -258,6 +258,16 @@ the first connection of a rolled-out pod.
 {{- end }}
 
 {{/*
+Reject a log format switch-core would refuse at startup, so a typo is a render
+error rather than a crash loop.
+*/}}
+{{- define "switch.validateLogging" -}}
+{{- if not (has .Values.switchCore.logging.format (list "text" "json")) -}}
+{{- fail (printf "switchCore.logging.format must be text or json, not %q." .Values.switchCore.logging.format) -}}
+{{- end -}}
+{{- end }}
+
+{{/*
 switch-core container env. Shared by the switch-core Deployment and the
 pre-upgrade migration Job so they always run against the same configuration
 (env.py builds a full SwitchConfig, so the migration Job needs every var too).
@@ -348,6 +358,18 @@ Include with `nindent 12`.
   value: {{ .Values.switchCore.cookieSecure | quote }}
 - name: SWITCH_LOG_LEVEL
   value: {{ .Values.switchCore.logLevel | default "INFO" | quote }}
+- name: LOG_FORMAT
+  value: {{ .Values.switchCore.logging.format | quote }}
+- name: LOG_LEVEL
+  value: {{ .Values.switchCore.logging.rootLevel | quote }}
+- name: TENANT_ID
+  value: {{ .Values.switchCore.logging.tenantId | quote }}
+- name: SERVICE_NAME
+  value: {{ .Values.switchCore.logging.serviceName | quote }}
+{{- with .Values.switchCore.logging.environment }}
+- name: ENVIRONMENT
+  value: {{ . | quote }}
+{{- end }}
 # switch-core sits behind the cluster/ALB and enforces its own
 # BearerAuthMiddleware, so fastmcp's browser-oriented DNS-rebinding
 # Host/Origin guard (default-on since mcp 1.28) only rejects the

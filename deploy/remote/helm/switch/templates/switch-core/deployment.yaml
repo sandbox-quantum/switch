@@ -2,6 +2,7 @@
 {{- fail "switchCore.replicaCount must be 1: switch-core keeps live Matrix sync sessions in memory and cannot be horizontally scaled (a second replica would duplicate every client and split session state)." }}
 {{- end }}
 {{- include "switch.validateDbTls" . }}
+{{- include "switch.validateLogging" . }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
