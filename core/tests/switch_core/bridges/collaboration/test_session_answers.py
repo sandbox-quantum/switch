@@ -87,6 +87,33 @@ class _Posts:
         return next((row for row in self._rows if matches(row)), None)
 
 
+def _approval_form(*options: tuple[str, str]) -> dict[str, Any]:
+    """An approval's record: which options, in the order the card drew them."""
+    return {
+        "kind": "approval",
+        "options": [
+            {"optionId": option_id, "decision": decision}
+            for option_id, decision in options
+        ],
+    }
+
+
+def _questions_form(*questions: tuple[str, list[str], bool, bool]) -> dict[str, Any]:
+    """A form's record: per question, its options and what it will accept."""
+    return {
+        "kind": "questions",
+        "questions": [
+            {
+                "questionId": question_id,
+                "optionIds": option_ids,
+                "multiSelect": multi_select,
+                "allowCustomAnswer": allow_custom,
+            }
+            for question_id, option_ids, multi_select, allow_custom in questions
+        ],
+    }
+
+
 def _post(**overrides: Any) -> SessionRequestPost:
     fields: dict[str, Any] = {
         "bridge_id": BRIDGE,
@@ -100,10 +127,7 @@ def _post(**overrides: Any) -> SessionRequestPost:
         "epoch": "epoch-demo",
         "request_id": "request-demo",
         "revision": 1,
-        "options": [
-            {"optionId": "allow-once", "decision": "accept"},
-            {"optionId": "deny", "decision": "decline"},
-        ],
+        "form": _approval_form(("allow-once", "accept"), ("deny", "decline")),
     }
     fields.update(overrides)
     return SessionRequestPost(**fields)

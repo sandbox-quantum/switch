@@ -36,6 +36,10 @@ from ..contract import (
     ApprovalOption,
     ApprovalResult,
     DecidedBy,
+    Question,
+    QuestionOption,
+    QuestionsContent,
+    QuestionsResult,
     SnapshotRequest,
     Surface,
 )
@@ -59,6 +63,22 @@ _MAX_DETAIL = 1200
 # short of what Slack accepts for a message body.
 _MAX_LABEL = 150
 
+# A question's own budgets. Each question is its own section, so these bound
+# one section between them rather than the message: a title, a prompt and the
+# option lines that fit in what is left of `_MAX_SECTION`.
+_MAX_QUESTION_TITLE = 150
+_MAX_PROMPT = 800
+_MAX_DESCRIPTION = 200
+# The settled footer names every question and what was said to it, and both are
+# agent-supplied. A context block takes 3000 characters.
+_MAX_ANSWERED = 1800
+_MAX_SECTION = 2800
+# Blocks per message are capped at 50 and a form needs one each plus framing.
+# A card asking more questions than this is not a card, so it is refused rather
+# than posted with questions missing: every question has to be answered, and
+# one that was never shown cannot be.
+_MAX_QUESTIONS = 20
+
 _DANGEROUS = {"decline", "cancel"}
 
 _HEADINGS = {
@@ -66,6 +86,13 @@ _HEADINGS = {
     "submitting": "Permission needed",
     "resolved": "Permission answered",
     "closed": "Permission request closed",
+}
+
+_QUESTION_HEADINGS = {
+    "open": "Questions",
+    "submitting": "Questions",
+    "resolved": "Questions answered",
+    "closed": "Questions closed",
 }
 
 # Where the person who answered was, in the words a reader of that platform
@@ -96,6 +123,15 @@ class SlackMessage:
 
     text: str
     blocks: list[dict[str, Any]]
+
+
+def render_request(
+    request: SnapshotRequest, reference: RequestReference
+) -> SlackMessage:
+    """Whichever card `request` calls for, by the kind of thing it asks."""
+    if isinstance(request.content, QuestionsContent):
+        return render_questions(request, reference)
+    return render_approval(request, reference)
 
 
 def render_approval(
@@ -191,7 +227,11 @@ def _footer(
     whether something was answered.
     """
     if request.state == "open":
-        return f'Reply with "{reference.handle} 1", or press a button.'
+        # A code span, because the reader is meant to copy this and quote marks
+        # around it are not part of the answer: `"R42 1"` parses as a handle of
+        # `"R42`, which resolves to nothing and changes nothing on the card.
+        # Slack draws a span from the backticks and the grammar strips them.
+        return f"Reply with `{reference.handle} 1`, or press a button."
     if request.state == "submitting":
         if request.decided_by is None:
             return "An answer is on its way."
@@ -255,6 +295,274 @@ def _button(option: ApprovalOption, reference: RequestReference) -> dict[str, An
     elif option.decision == "accept":
         button["style"] = "primary"
     return button
+
+
+# ── Questions ────────────────────────────────────────────────────────────────
+
+
+def render_questions(
+    request: SnapshotRequest, reference: RequestReference
+) -> SlackMessage:
+    """Render a questions request as the card that stands for it right now.
+
+    A question is not a permission, and the difference shows in what the card
+    offers. Buttons appear only where a single press can finish the answer —
+    one question, one choice — because a form that needs several answers cannot
+    be assembled by pressing, and half-pressed controls with no draft behind
+    them would submit whichever part was pressed last.
+
+    Everything else is answered in words. The card numbers its questions and
+    their options, and the footer says what to type against this particular
+    form, so the instruction on the card is the grammar the parser accepts.
+    """
+    content = _questions(request)
+    if len(content.questions) > _MAX_QUESTIONS:
+        raise ValueError(
+            f"Request {request.request_id} asks {len(content.questions)} questions; "
+            f"Slack shows at most {_MAX_QUESTIONS} and every one has to be answered."
+        )
+
+    heading = _QUESTION_HEADINGS[request.state]
+    blocks: list[dict[str, Any]] = [
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": f"*{heading}*\n{_fit(content.title, _MAX_TITLE)}",
+            },
+        }
+    ]
+    open_now = request.state == "open"
+    if open_now:
+        blocks += [
+            {"type": "section", "text": {"type": "mrkdwn", "text": section}}
+            for section in (
+                _question_section(position, question)
+                for position, question in enumerate(content.questions, start=1)
+            )
+        ]
+    pressable = _pressable(request, content)
+    if pressable is not None:
+        blocks.append(
+            {
+                "type": "actions",
+                "block_id": f"{ANSWER_ACTION}:{request.request_id}",
+                "elements": [
+                    _option_button(option, reference) for option in pressable.options
+                ],
+            }
+        )
+    blocks.append(
+        {
+            "type": "context",
+            "elements": [
+                {
+                    "type": "mrkdwn",
+                    "text": escape_mrkdwn(
+                        _questions_footer(
+                            request, content, reference, buttons=pressable is not None
+                        )
+                    ),
+                }
+            ],
+        }
+    )
+    return SlackMessage(text=render_questions_text(request, reference), blocks=blocks)
+
+
+def render_questions_text(request: SnapshotRequest, reference: RequestReference) -> str:
+    """The same form with no card at all, and the whole of it.
+
+    The notification fallback, and what someone reads when they answer by
+    typing. Numbering matches the card exactly, because the numbers are what an
+    answer is made of. Unlike the card it never drops an option: a message body
+    has room for the whole form, so the one place every option is guaranteed to
+    be visible is here.
+    """
+    content = _questions(request)
+    lines = [
+        f"> Request {escape_mrkdwn(reference.handle)}: "
+        f"{_fit(content.title, _MAX_TITLE)}"
+    ]
+    if request.state == "open":
+        for position, question in enumerate(content.questions, start=1):
+            lines.append(
+                f"*{position}. {_fit(question.title, _MAX_QUESTION_TITLE)}*"
+                if question.title
+                else f"*{position}.*"
+            )
+            if question.prompt:
+                lines.append(_fit(question.prompt, _MAX_PROMPT))
+            lines += [
+                _option_line(index, option)
+                for index, option in enumerate(question.options, start=1)
+            ]
+    lines.append(
+        escape_mrkdwn(
+            _questions_footer(
+                request,
+                content,
+                reference,
+                buttons=_pressable(request, content) is not None,
+            )
+        )
+    )
+    return "\n".join(lines)
+
+
+def _questions(request: SnapshotRequest) -> QuestionsContent:
+    content = request.content
+    if not isinstance(content, QuestionsContent):
+        raise ValueError(
+            f"Request {request.request_id} is not a set of questions: {content.kind}."
+        )
+    return content
+
+
+def _pressable(request: SnapshotRequest, content: QuestionsContent) -> Question | None:
+    """The one question a press could answer on its own, if there is one.
+
+    Only while the request is open, and only when the whole form is a single
+    choice out of a list Slack will draw. Anything else is answered in words.
+    """
+    if request.state != "open" or len(content.questions) != 1:
+        return None
+    question = content.questions[0]
+    if question.multi_select or not question.options:
+        return None
+    if len(question.options) > _MAX_ELEMENTS:
+        return None
+    return question
+
+
+def _question_section(position: int, question: Question) -> str:
+    """One question, numbered, with as many of its options as will fit.
+
+    Slack rejects a section over 3000 characters and takes the whole post with
+    it, so a long list is cut. The cut is said out loud and the numbering is
+    untouched: an option that is not shown here is still shown in the message
+    text and still answerable by its number.
+    """
+    heading = f"*{position}. {_fit(question.title, _MAX_QUESTION_TITLE)}*"
+    if question.prompt:
+        heading += f"\n{_fit(question.prompt, _MAX_PROMPT)}"
+
+    lines: list[str] = []
+    spent = len(heading)
+    for index, option in enumerate(question.options, start=1):
+        line = _option_line(index, option)
+        if spent + len(line) + 1 > _MAX_SECTION:
+            left = len(question.options) - index + 1
+            lines.append(f"_…and {left} more, numbered {index} up. Answer by number._")
+            break
+        lines.append(line)
+        spent += len(line) + 1
+    return "\n".join([heading, *lines])
+
+
+def _option_line(index: int, option: QuestionOption) -> str:
+    line = f"{index}. {_fit(option.label, _MAX_LABEL)}"
+    if option.description:
+        line += f" — {_fit(option.description, _MAX_DESCRIPTION)}"
+    return line
+
+
+def _option_button(
+    option: QuestionOption, reference: RequestReference
+) -> dict[str, Any]:
+    action_id = f"{ANSWER_ACTION}:{option.option_id}"
+    if len(action_id) > _MAX_ACTION_ID:
+        raise ValueError(f"Option id is too long for Slack: {option.option_id!r}.")
+    if len(reference.token) > _MAX_VALUE:
+        raise ValueError("Request reference is too long for a Slack button value.")
+    return {
+        "type": "button",
+        "action_id": action_id,
+        "value": reference.token,
+        "text": {
+            "type": "plain_text",
+            "text": _truncate(option.label, _MAX_BUTTON_TEXT),
+            "emoji": True,
+        },
+    }
+
+
+def _questions_footer(
+    request: SnapshotRequest,
+    content: QuestionsContent,
+    reference: RequestReference,
+    *,
+    buttons: bool,
+) -> str:
+    """The one line under the form that says how to answer it, or how it went."""
+    if request.state == "open":
+        example = f"`{_example(reference.handle, content.questions)}`"
+        if buttons:
+            return f"Reply with {example}, or press a button."
+        if len(content.questions) > 1:
+            return f"Reply with {example} — every question needs an answer."
+        return f"Reply with {example}."
+    if request.state == "submitting":
+        if request.decided_by is None:
+            return "An answer is on its way."
+        return f"Answering: {_actor(request.decided_by)}."
+    if request.state == "resolved":
+        return _answered_questions(request, content)
+    settled = request.result
+    if settled is None:
+        return "Closed without being answered."
+    return _CLOSED.get(
+        settled.outcome, f"Closed, though the host called it {settled.outcome}."
+    )
+
+
+def _example(handle: str, questions: list[Question]) -> str:
+    """What answering this form actually looks like, typed out.
+
+    Built from the form rather than fixed, because the shapes need different
+    things said: one question takes a number on its own, several need saying
+    which is which, and a question with nothing to number is answered in words.
+    """
+    values = [_example_value(question) for question in questions]
+    if len(values) == 1:
+        return f"{handle} {values[0]}"
+    return f"{handle} " + "; ".join(
+        f"q{position}={value}" for position, value in enumerate(values, start=1)
+    )
+
+
+def _example_value(question: Question) -> str:
+    if not question.options:
+        return '"your answer"'
+    if question.multi_select and len(question.options) > 1:
+        return "1,2"
+    return "1"
+
+
+def _answered_questions(request: SnapshotRequest, content: QuestionsContent) -> str:
+    settled = request.result
+    result = settled.result if settled else None
+    by = f" by {_actor(request.decided_by)}" if request.decided_by else ""
+    if not isinstance(result, QuestionsResult):
+        return f"Answered{by}, but the host did not say what was chosen."
+    labels = {
+        option.option_id: option.label
+        for question in content.questions
+        for option in question.options
+    }
+    titles = {question.question_id: question.title for question in content.questions}
+    said: list[str] = []
+    for answer in result.answers:
+        # An id the content never offered is still named rather than hidden,
+        # for the same reason an approval names one: it is what the host said,
+        # and dropping it would read as an answer to a question nobody asked.
+        chosen = [labels.get(x, x) for x in answer.selected_option_ids]
+        if answer.custom_text:
+            chosen.append(f"“{answer.custom_text}”")
+        title = titles.get(answer.question_id, answer.question_id)
+        said.append(f"{title}: {', '.join(chosen) if chosen else 'nothing'}")
+    answered = _truncate("; ".join(said), _MAX_ANSWERED)
+    return f"{answered} — answered{by}." if by else f"{answered}."
 
 
 def _truncate(text: str, limit: int) -> str:

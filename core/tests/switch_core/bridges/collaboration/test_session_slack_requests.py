@@ -32,6 +32,10 @@ from switch_core.bridges.collaboration.session.renderers.slack import (
     render_approval,
     render_approval_text,
 )
+from switch_core.bridges.collaboration.session.text import (
+    AnswerPart,
+    parse_text_answer,
+)
 from switch_core.bridges.collaboration.session.transport import (
     FixtureEventSource,
     project,
@@ -141,11 +145,39 @@ def test_the_card_says_how_to_answer_in_words() -> None:
     message = render_approval(request, REFERENCE)
 
     context = next(block for block in message.blocks if block["type"] == "context")
-    assert 'Reply with "R42 1"' in context["elements"][0]["text"]
+    assert "Reply with `R42 1`" in context["elements"][0]["text"]
     assert message.text == render_approval_text(request, REFERENCE)
     assert message.text.startswith("> Request R42: Run project tests")
     assert "1. Allow once" in message.text
     assert "2. Deny" in message.text
+
+
+def test_what_the_card_tells_you_to_type_is_what_the_grammar_reads() -> None:
+    """The instruction and the parser are one claim, so they are tested as one.
+
+    The card used to quote its own example — `Reply with "R42 1"` — and a reader
+    who copied it verbatim got a handle of `"R42`, which resolves to nothing,
+    logs nothing and leaves the card unchanged. A code span is what makes the
+    example copy back: Slack draws it as one and the grammar strips the marks.
+    """
+    request = _projection().open_room_requests("room-demo")[0]
+
+    footer = _footer_of(render_approval(request, REFERENCE))
+    example = re.search(r"`([^`]+)`", footer)
+
+    assert example is not None, f"the card offers no example to copy: {footer}"
+    for typed in (example.group(1), f"`{example.group(1)}`", f"_{example.group(1)}_"):
+        answer = parse_text_answer(typed)
+        assert answer is not None, f"the card's own instruction does not parse: {typed}"
+        assert answer.handle == "R42"
+        assert answer.parts == (
+            AnswerPart(question=None, options=(1,), custom_text=None),
+        )
+
+
+def _footer_of(message: Any) -> str:
+    context = next(block for block in message.blocks if block["type"] == "context")
+    return str(context["elements"][0]["text"])
 
 
 FORGERY = "<!channel> & <https://example.test|click>"

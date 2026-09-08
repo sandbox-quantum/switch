@@ -7,14 +7,16 @@ epoch and the revision an answer stands against are read from the record those
 resolve to; the actor is the identity the bridge verified for itself. Nothing an
 answer carries is taken from the payload that prompted it.
 
-The typed path resolves a number against the options the card offered, kept on
-the record when it was posted. It is what the person can see, so it is what
+Both paths resolve what they were given against the form the card offered, kept
+on the record when it was posted. It is what the person can see, so it is what
 "1" means, and an answer against a card the session has moved past is refused
-on revision rather than applied to whatever the request became.
+on revision rather than applied to whatever the request became. `form.py` owns
+that resolution and both ends of it; this is where its refusals get logged.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import uuid
 from collections.abc import Awaitable, Callable
@@ -24,7 +26,13 @@ from switch_core.bridges.collaboration.models import InboundInteraction, Inbound
 from switch_core.db.models import SessionRequestPost
 from switch_core.db.stores.session_request_post_store import SessionRequestPostStore
 
-from .contract import ApprovalResult, Command, Origin, RequestAnswer, Surface
+from .contract import Command, Origin, RequestAnswer, RequestResult, Surface
+from .form import (
+    Unanswerable,
+    resolve_pressed_option,
+    resolve_text_answer,
+    takes_a_bare_decision,
+)
 from .renderers import parse_answer_action
 from .text import TextAnswer, parse_text_answer
 
@@ -39,9 +47,9 @@ _COMMAND_NAMESPACE = uuid.UUID("6f5a2d18-9a1e-4f0b-9d3c-0a2f7c1b84e5")
 
 
 def answer_command(
-    post: SessionRequestPost, *, option_id: str, origin: Origin
+    post: SessionRequestPost, *, answer: RequestResult, origin: Origin
 ) -> Command:
-    """The `request.answer` an operated control stands for.
+    """The `request.answer` a resolved answer stands for.
 
     `expectedRevision` comes off the record rather than the callback, so an
     answer to a card that has since been superseded is rejected by the session
@@ -49,7 +57,7 @@ def answer_command(
     """
     return Command(
         contract_version=1,
-        command_id=_command_id(post, option_id=option_id, actor_id=origin.actor_id),
+        command_id=_command_id(post, answer=answer, actor_id=origin.actor_id),
         session_id=post.session_id,
         epoch=post.epoch,
         origin=origin,
@@ -57,16 +65,20 @@ def answer_command(
             type="request.answer",
             request_id=post.request_id,
             expected_revision=post.revision,
-            answer=ApprovalResult(kind="approval", option_id=option_id),
+            answer=answer,
         ),
     )
 
 
-def _command_id(post: SessionRequestPost, *, option_id: str, actor_id: str) -> str:
-    """Derived, so that one person pressing twice is one command.
+def _command_id(
+    post: SessionRequestPost, *, answer: RequestResult, actor_id: str
+) -> str:
+    """Derived, so that one person answering twice the same way is one command.
 
-    Two people choosing differently stay two commands, and the session settles
-    on whichever arrives first; the other is refused on its revision.
+    Two people answering differently stay two commands, and the session settles
+    on whichever arrives first; the other is refused on its revision. The answer
+    itself is serialised with its keys sorted so that the same choices give the
+    same id whichever order they were typed in.
     """
     key = "|".join(
         [
@@ -74,28 +86,15 @@ def _command_id(post: SessionRequestPost, *, option_id: str, actor_id: str) -> s
             post.epoch,
             post.request_id,
             str(post.revision),
-            option_id,
+            json.dumps(
+                answer.model_dump(by_alias=True),
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
             actor_id,
         ]
     )
     return str(uuid.uuid5(_COMMAND_NAMESPACE, key))
-
-
-def _chosen(post: SessionRequestPost, answer: TextAnswer) -> str | None:
-    """Which option a typed answer picked, out of the ones the card offered.
-
-    A number is a position on the card, counted as the card counts. A word is
-    the one option whose decision it names, and only when there is exactly one:
-    `acceptForSession` and `cancel` are reachable by number alone, because
-    "yes" must never quietly grant a permission for the rest of a session.
-    """
-    options = post.options
-    if answer.index is not None:
-        if not 1 <= answer.index <= len(options):
-            return None
-        return str(options[answer.index - 1]["optionId"])
-    matching = [option for option in options if option["decision"] == answer.decision]
-    return str(matching[0]["optionId"]) if len(matching) == 1 else None
 
 
 class InboundActor(Protocol):
@@ -162,6 +161,16 @@ class SessionInteractions:
             )
             return None
 
+        answer = resolve_pressed_option(post.form, option_id)
+        if isinstance(answer, Unanswerable):
+            logger.warning(
+                "Ignoring a press on request %s on bridge %s, because %s.",
+                post.request_id,
+                self._bridge_id,
+                answer.reason,
+            )
+            return None
+
         actor_id = await self._identify(interaction)
         if actor_id is None:
             logger.warning(
@@ -180,7 +189,7 @@ class SessionInteractions:
             thread_id=post.thread_id,
             message_id=interaction.message_ref,
         )
-        return answer_command(post, option_id=option_id, origin=origin)
+        return answer_command(post, answer=answer, origin=origin)
 
     async def command_for_text(self, message: InboundMessage) -> Command | None:
         """The command a typed answer amounts to, or None if it is not one.
@@ -208,15 +217,13 @@ class SessionInteractions:
             )
             return None
 
-        option_id = _chosen(post, answer)
-        if option_id is None:
+        resolved = resolve_text_answer(post.form, answer)
+        if isinstance(resolved, Unanswerable):
             logger.warning(
-                "Ignoring an answer to request %s on bridge %s: %s names none of "
-                "the %d options that card offered.",
+                "Ignoring an answer to request %s on bridge %s, because %s.",
                 post.request_id,
                 self._bridge_id,
-                answer.index if answer.index is not None else answer.decision,
-                len(post.options),
+                resolved.reason,
             )
             return None
 
@@ -238,7 +245,7 @@ class SessionInteractions:
             thread_id=post.thread_id,
             message_id=message.message_ref,
         )
-        return answer_command(post, option_id=option_id, origin=origin)
+        return answer_command(post, answer=resolved, origin=origin)
 
     async def _post_for(
         self, message: InboundMessage, answer: TextAnswer
@@ -262,6 +269,19 @@ class SessionInteractions:
                 session, self._bridge_id, message.root_id
             )
         if post is None:
+            return None
+        if not takes_a_bare_decision(post.form):
+            # Refused here rather than after resolving, because working out
+            # whether this was the first reply is a call to the platform and a
+            # card that asks questions has no decision for a word to name.
+            logger.warning(
+                "Ignoring a bare answer to request %s on bridge %s: that card asks "
+                "questions rather than for a decision. Answering %s by name says "
+                "which question.",
+                post.request_id,
+                self._bridge_id,
+                post.handle,
+            )
             return None
         if not await self._is_first_reply(
             message.channel_id, message.root_id, message.message_ref

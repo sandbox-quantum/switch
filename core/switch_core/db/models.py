@@ -910,13 +910,13 @@ class SessionRequestPost(Base):
     # The revision an answer is submitted against. The session rejects an answer
     # that names a revision it has moved past.
     revision: Mapped[int] = mapped_column(Integer, nullable=False)
-    # What the card offered, in the order it offered it: `{"optionId", "decision"}`
-    # per option. A button hands its own option back; a typed "1" names a
-    # position on the card the person can see, and this is what that resolves
-    # against.
-    options: Mapped[list[dict]] = mapped_column(
-        JSONB, nullable=False, server_default=text("'[]'::jsonb")
-    )
+    # What the card offered, in the order it offered it, and which sort of
+    # answer it takes: an approval's options, or a question's options per
+    # question. A typed "1" names a position on the card the person can see and
+    # this is what that resolves against; `kind` is what says whether the answer
+    # it builds is one option or one per question, and it is read rather than
+    # inferred. `session/form.py` is both ends of the shape.
+    form: Mapped[dict] = mapped_column(JSONB, nullable=False)
     created_at: Mapped[str] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

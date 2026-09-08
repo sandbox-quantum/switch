@@ -46,6 +46,33 @@ async def _make_room(session: AsyncSession) -> str:
     return room.id
 
 
+APPROVAL = {
+    "kind": "approval",
+    "options": [
+        {"optionId": "allow-once", "decision": "accept"},
+        {"optionId": "deny", "decision": "decline"},
+    ],
+}
+
+QUESTIONS = {
+    "kind": "questions",
+    "questions": [
+        {
+            "questionId": "q-scope",
+            "optionIds": ["all", "one-package"],
+            "multiSelect": False,
+            "allowCustomAnswer": False,
+        },
+        {
+            "questionId": "q-branch",
+            "optionIds": [],
+            "multiSelect": False,
+            "allowCustomAnswer": True,
+        },
+    ],
+}
+
+
 def _post(bridge_id: str, room_id: str, **overrides: object) -> SessionRequestPost:
     fields: dict[str, object] = {
         "bridge_id": bridge_id,
@@ -59,6 +86,7 @@ def _post(bridge_id: str, room_id: str, **overrides: object) -> SessionRequestPo
         "epoch": "epoch-demo",
         "request_id": "request-demo",
         "revision": 1,
+        "form": APPROVAL,
     }
     fields.update(overrides)
     return SessionRequestPost(**fields)
@@ -280,23 +308,52 @@ class TestSessionRequestPostStore:
         assert found.request_id == "request-demo"
         assert elsewhere is None
 
-    async def test_the_options_the_card_offered_survive_the_round_trip(
-        self, session_factory: async_sessionmaker[AsyncSession]
+    @pytest.mark.parametrize("form", [APPROVAL, QUESTIONS], ids=["approval", "form"])
+    async def test_the_form_the_card_offered_survives_the_round_trip(
+        self, session_factory: async_sessionmaker[AsyncSession], form: dict[str, object]
     ) -> None:
-        """A typed number resolves against these, so their order is the record."""
+        """A typed number resolves against this, so its order is the record.
+
+        Both kinds, because `kind` is what the press path reads to know which
+        result to build: a record that came back without it would be answered
+        as whichever kind the reader guessed.
+        """
         store = SessionRequestPostStore()
-        options = [
-            {"optionId": "allow-once", "decision": "accept"},
-            {"optionId": "deny", "decision": "decline"},
-        ]
         async with session_factory() as session:
             bridge_id = await _make_bridge(session)
             room_id = await _make_room(session)
-            await store.create(session, _post(bridge_id, room_id, options=options))
+            await store.create(session, _post(bridge_id, room_id, form=form))
             await session.commit()
 
         async with session_factory() as session:
             found = await store.get_by_handle(session, bridge_id, "C1", "R42")
 
         assert found is not None
-        assert found.options == options
+        assert found.form == form
+
+    async def test_a_card_cannot_be_recorded_without_saying_what_it_offered(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """There is no default form, deliberately.
+
+        A row that defaulted to an empty approval would be a card every typed
+        answer refuses and every press resolves to nothing, with the column
+        looking populated. The caller knows what it rendered; it has to say.
+        """
+        store = SessionRequestPostStore()
+        async with session_factory() as session:
+            formless = SessionRequestPost(
+                bridge_id=await _make_bridge(session),
+                room_id=await _make_room(session),
+                token="opaque-token",
+                handle="R42",
+                external_channel_id="C1",
+                external_post_id="C1:111.0",
+                thread_id="thread-demo",
+                session_id="session-demo",
+                epoch="epoch-demo",
+                request_id="request-demo",
+                revision=1,
+            )
+            with pytest.raises(IntegrityError):
+                await store.create(session, formless)

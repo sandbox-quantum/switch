@@ -1,0 +1,287 @@
+{
+  "_comment": "Recorded questions requests, in the shapes examples.json has no case for: several questions at once, multi-select, and a question with no options that is answered in words. Same file layout as examples.json and read by the same loaders, kept beside it rather than inside it because that file is agreed wire evidence and stays byte-identical.",
+  "initialSnapshot": {
+    "contractVersion": 1,
+    "throughSequence": 20,
+    "session": {
+      "sessionId": "session-questions",
+      "agentId": "agent-demo",
+      "provider": "codex",
+      "hostId": "host-demo",
+      "epoch": "epoch-questions",
+      "status": "running",
+      "connectivity": "online",
+      "capabilities": {
+        "input": "queue",
+        "approvals": true,
+        "questions": true,
+        "interrupt": true,
+        "reset": false,
+        "compact": false,
+        "modelChange": false,
+        "attachmentMimeTypes": []
+      },
+      "pendingRequestIds": ["request-form", "request-one"]
+    },
+    "turns": [
+      {
+        "type": "turn.upsert",
+        "turnId": "turn-questions",
+        "status": "running",
+        "commandId": "message-questions"
+      }
+    ],
+    "items": [],
+    "requests": [
+      {
+        "requestId": "request-form",
+        "turnId": "turn-questions",
+        "revision": 1,
+        "state": "open",
+        "content": {
+          "kind": "questions",
+          "title": "Before I start the migration",
+          "questions": [
+            {
+              "questionId": "q-scope",
+              "title": "How much should I migrate?",
+              "prompt": "There are 14 call sites. I can do all of them or stop at the first package.",
+              "options": [
+                {
+                  "optionId": "all",
+                  "label": "All 14 call sites",
+                  "description": "One commit, nothing left half migrated."
+                },
+                {
+                  "optionId": "one-package",
+                  "label": "The first package only",
+                  "description": "Smaller diff, but the pattern lands twice."
+                }
+              ],
+              "multiSelect": false,
+              "allowCustomAnswer": false
+            },
+            {
+              "questionId": "q-checks",
+              "title": "Which checks should run before I push?",
+              "prompt": "Pick as many as you want.",
+              "options": [
+                { "optionId": "unit", "label": "Unit tests", "description": null },
+                { "optionId": "types", "label": "Type check", "description": null },
+                { "optionId": "lint", "label": "Lint", "description": null }
+              ],
+              "multiSelect": true,
+              "allowCustomAnswer": false
+            },
+            {
+              "questionId": "q-branch",
+              "title": "What should the branch be called?",
+              "prompt": "Anything you like; I will not guess this one.",
+              "options": [],
+              "multiSelect": false,
+              "allowCustomAnswer": true
+            }
+          ]
+        },
+        "audience": {
+          "kind": "room",
+          "roomId": "room-demo",
+          "threadId": "thread-questions"
+        },
+        "expiresAt": null,
+        "result": null,
+        "decidedBy": null
+      },
+      {
+        "requestId": "request-one",
+        "turnId": "turn-questions",
+        "revision": 1,
+        "state": "open",
+        "content": {
+          "kind": "questions",
+          "title": "One thing before I carry on",
+          "questions": [
+            {
+              "questionId": "q-target",
+              "title": "Which environment?",
+              "prompt": "The deploy needs one and the config names two.",
+              "options": [
+                { "optionId": "staging", "label": "Staging", "description": null },
+                { "optionId": "production", "label": "Production", "description": null }
+              ],
+              "multiSelect": false,
+              "allowCustomAnswer": false
+            }
+          ]
+        },
+        "audience": {
+          "kind": "room",
+          "roomId": "room-demo",
+          "threadId": "thread-questions"
+        },
+        "expiresAt": null,
+        "result": null,
+        "decidedBy": null
+      }
+    ],
+    "commandStatuses": [],
+    "nextPageToken": null
+  },
+  "hostQuestions": {
+    "contractVersion": 1,
+    "eventId": "event-questions",
+    "sessionId": "session-questions",
+    "epoch": "epoch-questions",
+    "hostSequence": 20,
+    "occurredAt": "2026-09-07T12:00:00Z",
+    "body": {
+      "type": "request.opened",
+      "request": {
+        "requestId": "request-one",
+        "turnId": "turn-questions",
+        "revision": 1,
+        "state": "open",
+        "content": {
+          "kind": "questions",
+          "title": "One thing before I carry on",
+          "questions": [
+            {
+              "questionId": "q-target",
+              "title": "Which environment?",
+              "prompt": "The deploy needs one and the config names two.",
+              "options": [
+                { "optionId": "staging", "label": "Staging", "description": null },
+                { "optionId": "production", "label": "Production", "description": null }
+              ],
+              "multiSelect": false,
+              "allowCustomAnswer": false
+            }
+          ]
+        },
+        "audience": {
+          "kind": "room",
+          "roomId": "room-demo",
+          "threadId": "thread-questions"
+        },
+        "expiresAt": null
+      }
+    }
+  },
+  "platformFormAnswer": {
+    "contractVersion": 1,
+    "commandId": "answer-form",
+    "sessionId": "session-questions",
+    "epoch": "epoch-questions",
+    "origin": {
+      "surface": "slack",
+      "actorId": "actor-demo",
+      "roomId": "room-demo",
+      "threadId": "thread-questions",
+      "messageId": "message-form-answer"
+    },
+    "body": {
+      "type": "request.answer",
+      "requestId": "request-form",
+      "expectedRevision": 1,
+      "answer": {
+        "kind": "questions",
+        "answers": [
+          {
+            "questionId": "q-scope",
+            "selectedOptionIds": ["all"],
+            "customText": null
+          },
+          {
+            "questionId": "q-checks",
+            "selectedOptionIds": ["unit", "lint"],
+            "customText": null
+          },
+          {
+            "questionId": "q-branch",
+            "selectedOptionIds": [],
+            "customText": "work/one-commit-migration"
+          }
+        ]
+      }
+    }
+  },
+  "formAnswerLifecycle": [
+    {
+      "contractVersion": 1,
+      "eventId": "questions-event-21",
+      "sessionId": "session-questions",
+      "sequence": 21,
+      "occurredAt": "2026-09-07T12:00:01Z",
+      "body": {
+        "type": "command.status",
+        "commandId": "answer-form",
+        "status": "accepted",
+        "code": null,
+        "message": null
+      }
+    },
+    {
+      "contractVersion": 1,
+      "eventId": "questions-event-22",
+      "sessionId": "session-questions",
+      "sequence": 22,
+      "occurredAt": "2026-09-07T12:00:01Z",
+      "body": {
+        "type": "request.submitting",
+        "requestId": "request-form",
+        "revision": 1,
+        "commandId": "answer-form",
+        "actorId": "actor-demo",
+        "surface": "slack"
+      }
+    },
+    {
+      "contractVersion": 1,
+      "eventId": "questions-event-23",
+      "sessionId": "session-questions",
+      "sequence": 23,
+      "occurredAt": "2026-09-07T12:00:02Z",
+      "body": {
+        "type": "request.settled",
+        "requestId": "request-form",
+        "revision": 2,
+        "outcome": "answered",
+        "commandId": "answer-form",
+        "result": {
+          "kind": "questions",
+          "answers": [
+            {
+              "questionId": "q-scope",
+              "selectedOptionIds": ["all"],
+              "customText": null
+            },
+            {
+              "questionId": "q-checks",
+              "selectedOptionIds": ["unit", "lint"],
+              "customText": null
+            },
+            {
+              "questionId": "q-branch",
+              "selectedOptionIds": [],
+              "customText": "work/one-commit-migration"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "contractVersion": 1,
+      "eventId": "questions-event-24",
+      "sessionId": "session-questions",
+      "sequence": 24,
+      "occurredAt": "2026-09-07T12:00:02Z",
+      "body": {
+        "type": "command.status",
+        "commandId": "answer-form",
+        "status": "applied",
+        "code": null,
+        "message": null
+      }
+    }
+  ]
+}

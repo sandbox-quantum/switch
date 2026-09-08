@@ -18,14 +18,21 @@ import pytest
 
 from switch_core.bridges.collaboration.bridge_core import BridgeCore
 from switch_core.bridges.collaboration.models import InboundMessage
-from switch_core.bridges.collaboration.session.outbound import posted_options
+from switch_core.bridges.collaboration.session.form import posted_form
 from switch_core.bridges.collaboration.session.transport import (
     FixtureEventSource,
     project,
 )
 from switch_core.bridges.collaboration.telegram.adapter import TelegramAdapter
 
-from .test_session_answers import EXAMPLES_PATH, _interactions, _post, _press, _run
+from .test_session_answers import (
+    EXAMPLES_PATH,
+    _approval_form,
+    _interactions,
+    _post,
+    _press,
+    _run,
+)
 
 CHANNEL = "C1"
 CARD = "C1:111.0"
@@ -95,12 +102,13 @@ def test_the_positions_are_the_ones_the_card_actually_rendered() -> None:
     source = FixtureEventSource.from_examples(EXAMPLES_PATH, events=[])
     request = _run(project(source, "session-demo")).open_room_requests("room-demo")[0]
 
-    options = posted_options(request)
+    form = posted_form(request)
 
-    assert [option["optionId"] for option in options] == [
+    assert form["kind"] == "approval"
+    assert [option["optionId"] for option in form["options"]] == [
         option.option_id for option in request.content.options
     ]
-    assert [option["decision"] for option in options] == [
+    assert [option["decision"] for option in form["options"]] == [
         option.decision for option in request.content.options
     ]
 
@@ -180,12 +188,7 @@ def test_naming_the_card_answers_it_from_anywhere_in_the_thread() -> None:
 def test_a_bare_yes_will_not_grant_a_permission_for_the_whole_session() -> None:
     """Allow-once and allow-for-the-session must not be one word apart."""
     interactions = _interactions(
-        _post(
-            options=[
-                {"optionId": "always", "decision": "acceptForSession"},
-                {"optionId": "deny", "decision": "decline"},
-            ]
-        )
+        _post(form=_approval_form(("always", "acceptForSession"), ("deny", "decline")))
     )
 
     assert _run(interactions.command_for_text(_typed("yes", root_id=CARD))) is None
@@ -195,10 +198,9 @@ def test_a_word_that_fits_two_options_fits_neither() -> None:
     """Two ways to say yes and no way to tell which was meant. Refuse and say so."""
     interactions = _interactions(
         _post(
-            options=[
-                {"optionId": "allow-once", "decision": "accept"},
-                {"optionId": "allow-and-remember", "decision": "accept"},
-            ]
+            form=_approval_form(
+                ("allow-once", "accept"), ("allow-and-remember", "accept")
+            )
         )
     )
 

@@ -38,6 +38,11 @@ REPO_ROOT = Path(__file__).resolve().parents[5]
 EXAMPLES_PATH = REPO_ROOT / "console/packages/shared/src/session-v1/examples.json"
 EXAMPLES: dict[str, Any] = json.loads(EXAMPLES_PATH.read_text())
 
+QUESTIONS_PATH = (
+    REPO_ROOT / "console/packages/shared/src/session-v1/examples.questions.json"
+)
+QUESTIONS: dict[str, Any] = json.loads(QUESTIONS_PATH.read_text())
+
 
 def initial() -> Snapshot:
     return parse_snapshot(EXAMPLES["initialSnapshot"])
@@ -229,3 +234,53 @@ def test_keeps_execution_state_on_connection_loss_and_closes_interruptions() -> 
     assert projection.snapshot.session.status == "running"
     assert projection.snapshot.requests[0].state == "closed"
     assert projection.snapshot.requests[0].decided_by is None
+
+
+# ── The shapes `examples.json` has no case for ───────────────────────────────
+
+
+def test_validates_the_recorded_questions_and_settles_the_form() -> None:
+    """`examples.questions.json`, through the same parsers as its neighbour.
+
+    One-sided, unlike everything above it: `session-v1.test.ts` is lifted from
+    the contract's own repository and stays byte-identical, so a case added
+    here cannot be added there. That makes this weaker evidence than the rest
+    of the file — it says the Python reader accepts these shapes, not that both
+    readers agree on them. When the contract repository grows a questions
+    example, this fixture is what its counterpart should replace.
+    """
+    parse_command(QUESTIONS["platformFormAnswer"])
+    parse_host_event(QUESTIONS["hostQuestions"])
+
+    projection = SessionProjection(parse_snapshot(QUESTIONS["initialSnapshot"]))
+    for update in QUESTIONS["formAnswerLifecycle"]:
+        projection.apply(parse_server_event(update))
+
+    settled = next(
+        request
+        for request in projection.snapshot.requests
+        if request.request_id == "request-form"
+    )
+    assert settled.state == "resolved"
+    assert settled.result is not None and settled.result.result is not None
+    assert [answer.question_id for answer in settled.result.result.answers] == [
+        "q-scope",
+        "q-checks",
+        "q-branch",
+    ]
+    # The other card is still open: settling one request settles one request.
+    assert projection.snapshot.session.pending_request_ids == ["request-one"]
+
+
+def test_a_question_with_no_options_still_has_to_invite_an_answer() -> None:
+    """`options: []` is only a question at all because words are allowed.
+
+    Nothing can be numbered and nothing can be pressed, so a form that also
+    refused a written answer would be a card with no way to complete it and no
+    way to say so.
+    """
+    snapshot = parse_snapshot(QUESTIONS["initialSnapshot"])
+    written = snapshot.requests[0].content.questions[2]  # type: ignore[union-attr]
+
+    assert written.options == []
+    assert written.allow_custom_answer is True
