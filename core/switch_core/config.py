@@ -57,6 +57,12 @@ class SwitchConfig(BaseSettings):
     # directory-provisioned users are permanently false and cannot be fixed
     # from the Okta side. Set false ONLY for a single-tenant IdP whose
     # addresses are authoritative (corporate directory, HR-provisioned).
+    #
+    # This only controls whether an unverified login is accepted at all — for
+    # a brand-new identity, or one already linked to an account. It never lets
+    # an unverified email link a new identity into a *different*, pre-existing
+    # account: that always requires the IdP to assert `email_verified=true`,
+    # regardless of this setting. See UserStore.get_or_create_oidc_user.
     gateway_oidc_require_email_verified: bool = True
     # Lets the password login path be disabled (OIDC-only) without code changes.
     gateway_password_login_enabled: bool = True

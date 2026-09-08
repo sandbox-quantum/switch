@@ -1,9 +1,19 @@
 from __future__ import annotations
 
-from sqlalchemy import select
+import logging
+
+from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from switch_core.db.models import OidcIdentity, User
+
+logger = logging.getLogger(__name__)
+
+# One retry: after a unique-constraint conflict, the row the other transaction
+# just committed is visible to the retry's lookups, so a second collision
+# would mean something other than the race this exists for.
+_MAX_ATTEMPTS = 2
 
 
 class OidcIdentityConflictError(Exception):
@@ -25,19 +35,49 @@ class UserStore:
         return await session.get(User, user_id)
 
     async def get_by_email(self, session: AsyncSession, email: str) -> User | None:
-        result = await session.execute(select(User).where(User.email == email))
-        return result.scalar_one_or_none()
+        """Case-insensitive: an IdP and a person typing a password don't
+        reliably agree on the casing of the same mailbox, and accounts must
+        be the same account regardless. Backed by ``ix_users_email_lower``.
+
+        Uses the first match rather than requiring exactly one: two rows
+        differing only in case could already exist from before this method
+        compared case-insensitively, and a login must not turn that into a
+        500.
+        """
+        result = await session.execute(
+            select(User).where(func.lower(User.email) == email.lower())
+        )
+        return result.scalars().first()
 
     async def get_by_oidc_identity(
         self, session: AsyncSession, *, iss: str, sub: str
     ) -> User | None:
-        """Find the user linked to this IdP identity by its immutable (iss, sub)."""
+        """Find the user linked to this IdP identity by its immutable (iss, sub).
+
+        A row with no stored issuer predates CHOO-2624 tracking one at all; it
+        matches on ``sub`` alone and has its issuer backfilled here, same as
+        this identity did before it had its own table.
+        """
         result = await session.execute(
             select(User)
             .join(OidcIdentity, OidcIdentity.user_id == User.id)
             .where(OidcIdentity.iss == iss, OidcIdentity.sub == sub)
         )
-        return result.scalar_one_or_none()
+        user = result.scalar_one_or_none()
+        if user is not None:
+            return user
+
+        legacy = await session.execute(
+            select(OidcIdentity).where(
+                OidcIdentity.iss.is_(None), OidcIdentity.sub == sub
+            )
+        )
+        identity = legacy.scalars().first()
+        if identity is None:
+            return None
+        identity.iss = iss
+        await session.flush()
+        return await session.get(User, identity.user_id)
 
     async def get_or_create_oidc_user(
         self,
@@ -64,29 +104,58 @@ class UserStore:
         attacker-controllable claim, so a collision with a pre-existing
         account is refused rather than linked. A brand-new email — verified
         or not — provisions a fresh ``user`` (no password hash).
+
+        Two logins racing to provision or link the same identity or the same
+        new email hit a unique-constraint conflict rather than either one
+        silently overwriting the other; this retries once against whichever
+        row won, so the raced request resolves to that row instead of a 500.
         """
-        user = await self.get_by_oidc_identity(session, iss=iss, sub=sub)
-        if user is not None:
+        for attempt in range(1, _MAX_ATTEMPTS + 1):
+            user = await self.get_by_oidc_identity(session, iss=iss, sub=sub)
+            if user is not None:
+                return user
+
+            existing = await self.get_by_email(session, email)
+            if existing is not None:
+                if not email_verified:
+                    raise OidcIdentityConflictError(
+                        f"An account with email {email!r} already exists and "
+                        "this identity's email is not verified."
+                    )
+                try:
+                    await self._link_identity(session, user=existing, iss=iss, sub=sub)
+                except IntegrityError:
+                    await self._recover_from_race(session, attempt)
+                    continue
+                return existing
+
+            user = User(name=name, email=email, role="user", password_hash=None)
+            try:
+                await self.create(session, user)
+                await self._link_identity(session, user=user, iss=iss, sub=sub)
+            except IntegrityError:
+                await self._recover_from_race(session, attempt)
+                continue
             return user
 
-        existing = await self.get_by_email(session, email)
-        if existing is not None:
-            if not email_verified:
-                raise OidcIdentityConflictError(
-                    f"An account with email {email!r} already exists and this "
-                    "identity's email is not verified."
-                )
-            await self._link_identity(session, user=existing, iss=iss, sub=sub)
-            return existing
+        raise AssertionError("unreachable: the loop above always returns or raises")
 
-        user = User(name=name, email=email, role="user", password_hash=None)
-        await self.create(session, user)
-        await self._link_identity(session, user=user, iss=iss, sub=sub)
-        return user
+    async def _recover_from_race(self, session: AsyncSession, attempt: int) -> None:
+        await session.rollback()
+        if attempt == _MAX_ATTEMPTS:
+            raise OidcIdentityConflictError(
+                "OIDC identity resolution raced twice in a row; refusing to "
+                "guess a winner a third time."
+            )
 
     async def _link_identity(
         self, session: AsyncSession, *, user: User, iss: str, sub: str
     ) -> None:
+        # The most security-relevant event this store performs: it decides
+        # which account an external identity provider can now sign in as.
+        logger.warning(
+            "Linking OIDC identity (iss=%r, sub=%r) to user %s", iss, sub, user.id
+        )
         session.add(OidcIdentity(user_id=user.id, iss=iss, sub=sub))
         await session.flush()
 

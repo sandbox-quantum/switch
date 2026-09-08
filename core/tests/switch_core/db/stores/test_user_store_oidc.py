@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import logging
+
 import pytest
+from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from switch_core.db.models import User
+from switch_core.db.models import OidcIdentity, User
 from switch_core.db.stores.user_store import OidcIdentityConflictError, UserStore
 
 _ISS = "https://idp.example.com"
@@ -62,9 +66,9 @@ class TestGetOrCreateOidcUser:
     async def test_verified_email_links_to_existing_account(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
-        # The reversal this fix makes: someone who signed up with a password
-        # and later signs in with an IdP sharing that verified email lands in
-        # the same account, not a second one.
+        # Accounts are keyed on verified email, not on login method: a
+        # password sign-up that later signs in with an IdP sharing that
+        # verified email lands in the same account, not a second one.
         store = UserStore()
         async with session_factory() as session:
             existing = User(
@@ -94,6 +98,34 @@ class TestGetOrCreateOidcUser:
                 session, iss=_ISS, sub="okta|42"
             )
             assert by_identity is not None and by_identity.id == existing.id
+
+    async def test_verified_email_links_case_insensitively(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        # Accounts must be the same account regardless of how the mailbox's
+        # case was typed at signup versus how the IdP asserts it.
+        store = UserStore()
+        async with session_factory() as session:
+            existing = User(
+                name="Pat",
+                email="pat@example.com",
+                role="user",
+                password_hash="bcrypt-hash",
+            )
+            await store.create(session, existing)
+            await session.commit()
+
+            linked = await store.get_or_create_oidc_user(
+                session,
+                iss=_ISS,
+                email="Pat@Example.com",
+                name="Pat",
+                sub="okta|43",
+                email_verified=True,
+            )
+            await session.commit()
+
+            assert linked.id == existing.id
 
     async def test_two_subjects_same_issuer_can_both_link_to_one_account(
         self, session_factory: async_sessionmaker[AsyncSession]
@@ -135,9 +167,8 @@ class TestGetOrCreateOidcUser:
     async def test_unverified_email_collision_with_different_identity_is_refused(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
-        # The takeover this closes: an existing (password) admin must not be
-        # handed to an OIDC login that merely shares its email with a
-        # different, unverified subject.
+        # An unverified email is attacker-controllable, so a collision with an
+        # existing (password) account must be refused, never linked.
         store = UserStore()
         async with session_factory() as session:
             admin = User(
@@ -195,3 +226,203 @@ class TestGetOrCreateOidcUser:
                 email_verified=True,
             )
             assert again.id == owner.id
+
+    async def test_legacy_identity_without_issuer_matches_by_sub_and_backfills(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        # A row migrated from before the issuer was tracked at all (oidc_sub
+        # only) must keep resolving on sub alone, exactly as it did when this
+        # identity lived in users.metadata instead of its own table.
+        store = UserStore()
+        async with session_factory() as session:
+            legacy_user = User(
+                name="Legacy",
+                email="legacy@example.com",
+                role="user",
+                password_hash=None,
+            )
+            await store.create(session, legacy_user)
+            session.add(OidcIdentity(user_id=legacy_user.id, iss=None, sub="okta|7"))
+            await session.commit()
+
+            got = await store.get_or_create_oidc_user(
+                session,
+                iss=_ISS,
+                email="legacy@example.com",
+                name="Legacy",
+                sub="okta|7",
+                email_verified=True,
+            )
+            assert got.id == legacy_user.id
+
+            result = await session.execute(
+                select(OidcIdentity).where(OidcIdentity.sub == "okta|7")
+            )
+            identity = result.scalar_one()
+            assert identity.iss == _ISS
+
+    async def test_legacy_identity_without_issuer_resolves_even_if_email_changed(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        # A deployment with GATEWAY_OIDC_REQUIRE_EMAIL_VERIFIED=false (e.g. an
+        # Okta org authorization server, which never emits email_verified for
+        # directory users) matched a legacy sub-only row before this identity
+        # had its own table, regardless of email. That must still hold: the
+        # account is not orphaned, and no second account is forked, just
+        # because the claimed email no longer matches.
+        store = UserStore()
+        async with session_factory() as session:
+            legacy_admin = User(
+                name="Admin",
+                email="admin-old@example.com",
+                role="admin",
+                password_hash=None,
+            )
+            await store.create(session, legacy_admin)
+            session.add(OidcIdentity(user_id=legacy_admin.id, iss=None, sub="okta|8"))
+            await session.commit()
+
+            got = await store.get_or_create_oidc_user(
+                session,
+                iss=_ISS,
+                email="admin-new@example.com",
+                name="Admin",
+                sub="okta|8",
+                email_verified=False,
+            )
+            assert got.id == legacy_admin.id
+            assert got.role == "admin"
+            assert got.email == "admin-old@example.com"
+
+    async def test_linking_an_identity_is_logged(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        store = UserStore()
+        with caplog.at_level(
+            logging.WARNING, logger="switch_core.db.stores.user_store"
+        ):
+            async with session_factory() as session:
+                user = await store.get_or_create_oidc_user(
+                    session,
+                    iss=_ISS,
+                    email="logged@example.com",
+                    name="Logged",
+                    sub="okta|logged",
+                    email_verified=True,
+                )
+                await session.commit()
+
+        assert any(
+            _ISS in record.message
+            and "okta|logged" in record.message
+            and user.id in record.message
+            for record in caplog.records
+        )
+
+    async def test_iss_sub_unique_constraint_is_enforced_at_the_db_level(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        store = UserStore()
+        async with session_factory() as session:
+            first = User(name="A", email="a@example.com", role="user")
+            second = User(name="B", email="b@example.com", role="user")
+            await store.create(session, first)
+            await store.create(session, second)
+            session.add(OidcIdentity(user_id=first.id, iss=_ISS, sub="dup"))
+            await session.commit()
+
+            session.add(OidcIdentity(user_id=second.id, iss=_ISS, sub="dup"))
+            with pytest.raises(IntegrityError):
+                await session.commit()
+
+    async def test_concurrent_creation_of_the_same_identity_resolves_to_the_winner(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # Two logins racing to provision the same brand-new (iss, sub) collide
+        # on the unique constraint; the loser must resolve to the winner's
+        # row instead of surfacing that as a 500.
+        store = UserStore()
+        async with session_factory() as winner_session:
+            winner = await store.get_or_create_oidc_user(
+                winner_session,
+                iss=_ISS,
+                email="race@example.com",
+                name="Race",
+                sub="okta|race",
+                email_verified=True,
+            )
+            await winner_session.commit()
+
+        async with session_factory() as session:
+            original_lookup = store.get_by_oidc_identity
+            calls = {"n": 0}
+
+            async def lookup_that_misses_once(
+                sess: AsyncSession, *, iss: str, sub: str
+            ):
+                calls["n"] += 1
+                if calls["n"] == 1:
+                    return None
+                return await original_lookup(sess, iss=iss, sub=sub)
+
+            monkeypatch.setattr(store, "get_by_oidc_identity", lookup_that_misses_once)
+
+            resolved = await store.get_or_create_oidc_user(
+                session,
+                iss=_ISS,
+                email="someone-else@example.com",
+                name="Other",
+                sub="okta|race",
+                email_verified=True,
+            )
+            assert resolved.id == winner.id
+
+    async def test_concurrent_new_email_provisioning_resolves_to_one_account(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # Two logins racing to provision the same brand-new email collide on
+        # the email unique constraint; the loser must link its identity to
+        # the winner's row instead of surfacing that as a 500.
+        store = UserStore()
+        async with session_factory() as winner_session:
+            winner = await store.get_or_create_oidc_user(
+                winner_session,
+                iss=_ISS,
+                email="shared-new@example.com",
+                name="First",
+                sub="okta|first",
+                email_verified=True,
+            )
+            await winner_session.commit()
+
+        async with session_factory() as session:
+            original_lookup = store.get_by_email
+            calls = {"n": 0}
+
+            async def lookup_that_misses_once(sess: AsyncSession, email: str):
+                calls["n"] += 1
+                if calls["n"] == 1:
+                    return None
+                return await original_lookup(sess, email)
+
+            monkeypatch.setattr(store, "get_by_email", lookup_that_misses_once)
+
+            resolved = await store.get_or_create_oidc_user(
+                session,
+                iss=_ISS,
+                email="shared-new@example.com",
+                name="Second",
+                sub="okta|second",
+                email_verified=True,
+            )
+            assert resolved.id == winner.id
+
+            for sub in ("okta|first", "okta|second"):
+                identity = await store.get_by_oidc_identity(session, iss=_ISS, sub=sub)
+                assert identity is not None and identity.id == winner.id

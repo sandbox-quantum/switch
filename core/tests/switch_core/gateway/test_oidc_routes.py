@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 import switch_core.gateway.oidc_routes as oidc_routes
 from switch_core.config import SwitchConfig
-from switch_core.db.models import User
+from switch_core.db.models import OidcIdentity, User
 from switch_core.db.stores.user_store import UserStore
 from switch_core.gateway.auth import hash_password
 from switch_core.gateway.auth_routes import auth_config
@@ -309,6 +309,54 @@ class TestOidcCallback:
             )
             assert linked is not None and linked.id == carol_id
             assert linked.email == "carol@example.com"
+
+    async def test_legacy_sub_only_identity_logs_in_when_check_disabled_despite_unverified_and_changed_email(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # A deployment that disabled the verified-email check (its IdP never
+        # emits the claim, e.g. an Okta org authorization server for
+        # directory users) must keep logging a pre-existing sub-only identity
+        # in — main did, by matching on sub alone regardless of email — even
+        # though this account's email claim has since changed and is
+        # unverified. Losing this would be both a lockout and, worse, a
+        # silent fork into a brand-new "user"-role account.
+        async with session_factory() as session:
+            legacy = User(
+                name="Legacy Admin",
+                email="legacy-admin@example.com",
+                role="admin",
+                password_hash=None,
+            )
+            await UserStore().create(session, legacy)
+            session.add(OidcIdentity(user_id=legacy.id, iss=None, sub="okta|legacy"))
+            await session.commit()
+            legacy_id = legacy.id
+
+        token = {
+            "userinfo": {
+                "email": "legacy-admin-new-address@example.com",
+                "email_verified": False,
+                "sub": "okta|legacy",
+                "name": "Legacy Admin",
+            }
+        }
+        monkeypatch.setattr(oidc_routes, "_client", lambda: _FakeClient(token))
+
+        async with session_factory() as session:
+            response = await oidc_routes.oidc_callback(
+                request=SimpleNamespace(),  # type: ignore[arg-type]
+                config=_config(gateway_oidc_require_email_verified=False),
+                session=session,
+                user_store=UserStore(),
+            )
+            assert response.status_code == 303
+
+            user = await UserStore().get(session, legacy_id)
+            assert user is not None
+            assert user.role == "admin"
+            assert user.email == "legacy-admin@example.com"
 
     async def test_missing_email_claim_raises_401(
         self,
