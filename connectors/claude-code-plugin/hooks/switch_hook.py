@@ -477,8 +477,12 @@ def handle_post_tool_use(event: dict) -> None:
     # needs no Switch credentials, so it happens before the check below — an
     # agent whose mediation cannot run still reads its room, and leaving the
     # tally climbing would tell it it is behind when it is not.
+    # A read aimed at another room says nothing about this one, so the tally
+    # only clears when the read covered the room the channel is following.
     if tool_name.endswith("read_context"):
-        _notify_channel("/read-context", {})
+        read_room = tool_input.get("room_id") if isinstance(tool_input, dict) else None
+        if read_room in (None, "", room_id):
+            _notify_channel("/read-context", {})
 
     if not _has_credentials(agent_id):
         return

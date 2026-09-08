@@ -512,8 +512,9 @@ async def read_context(
     limit: int = 50,
     since: str | None = None,
     before: str | None = None,
+    room_id: str | None = None,
 ) -> dict[str, Any]:
-    """Get the conversation timeline for the connected room, grouped into threads.
+    """Get a room's conversation timeline, grouped into threads.
 
     Returns::
 
@@ -560,12 +561,18 @@ async def read_context(
             time are returned; history is paged backwards to reach them, so
             this genuinely walks into older history. Combine with `since` to
             page through a window. None = no upper bound.
-
-    The room is implicit (the session's currently connected room). Reads
-    fail if you have not called connect_to_room first.
+        room_id: Which room to read. Omit it — the usual case — and the
+            session's currently connected room is read; that read fails if
+            you are not connected to one. Pass a room id to read ANY room you
+            are a member of WITHOUT connecting to it, so you can catch up on
+            another room while staying where you are. Membership is the
+            boundary and is checked here: reading a room you do not belong to
+            is refused. A cross-room read does not change which room you are
+            connected to, and does not clear that room's unread count.
     """
     agent_id = get_agent_id()
-    room_id = await require_connected_room()
+    if room_id is None:
+        room_id = await require_connected_room()
 
     protocol = get_protocol()
     since_ms = parse_timestamp_ms(since) if since else None

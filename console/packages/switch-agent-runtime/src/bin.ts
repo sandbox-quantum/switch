@@ -584,6 +584,7 @@ const mcp = new Server(
       'When you receive a task_cancel event, the task is dead — do not finalise it.',
       '',
       'read_context, post_message, send_targeted_message and the task tools all act on the room you are connected to, so connect_to_room comes first — once. That connection then holds for the rest of the session: do not reconnect before each call. Call connect_to_room again only to switch rooms, to return after switching, or when a tool fails saying you are not connected.',
+      "read_context also takes an optional room_id: pass one to read any room you are a member of without connecting to it, so you can catch up elsewhere while staying in the room you are attending. It does not move you, and it does not clear the other room's unread count. Reading a room you are not a member of is refused.",
     ].join('\n'),
   }
 );
