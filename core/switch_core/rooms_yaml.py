@@ -215,6 +215,7 @@ class RoomSpec(BaseModel):
     roles: list[RoleSpec] = []
     references: list[ExternalReferenceEntry] = []
     docs: list[DocSpec] = []
+    aliases: dict[str, str] | None = None
 
 
 class ProvisionResult(BaseModel):
@@ -348,6 +349,7 @@ class RoomYamlService:
             write_visibility=spec.write_visibility,
             roles=spec.roles or None,
             reference_ids=attached_ref_ids or None,
+            aliases=spec.aliases,
         )
         result = await self._rooms.create_room(config)
         room_id = result.room.id
@@ -538,13 +540,20 @@ class RoomYamlService:
 
             if agents:
                 agent_ids = await self._room_store.get_agent_ids(session, room.id)
-                names: list[str] = []
+                id_to_name: dict[str, str] = {}
                 for aid in agent_ids:
                     agent = await self._agent_store.get(session, aid)
                     if agent is not None:
-                        names.append(agent.name)
-                if names:
-                    data["agents"] = sorted(names)
+                        id_to_name[aid] = agent.name
+                if id_to_name:
+                    data["agents"] = sorted(id_to_name.values())
+                alias_map = await self._room_store.list_aliases(session, room.id)
+                if alias_map:
+                    data["aliases"] = {
+                        id_to_name[aid]: alias
+                        for aid, alias in alias_map.items()
+                        if aid in id_to_name
+                    }
 
             if users and room.bridge_id:
                 client_ids = await self._room_store.get_client_ids(session, room.id)
