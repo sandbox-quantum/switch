@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import pytest
 
+from switch_core.room_service import RoomCreateConfig
 from tests.integration.conftest import REGISTRATION_TOKEN, Harness, SessionEnv
 
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="session")]
@@ -63,3 +64,40 @@ async def test_bootstrap_token_registration_is_repeatable_and_stable(
         agent_two = await harness.protocol.agent_store.get(session, second.agent_id)
         assert agent_one is not None and agent_two is not None
         assert agent_one.owner_id == agent_two.owner_id
+
+
+async def test_bootstrap_owned_agent_cannot_write_a_private_room_it_does_not_own(
+    harness: Harness, session_env: SessionEnv
+) -> None:
+    """Drives the actual authorization decision this fix closes, not just
+    the ownership attribute: before this fix, a bootstrap-registered agent's
+    owner was the admin, and `_resolve_acting_identity` would have resolved
+    it as `owner_is_admin=True` — an admin-equivalent bypass on every
+    private room in the deployment, including this one."""
+    bootstrap_result = await harness.register_agent_via_registration_token(
+        "colleague-agent", REGISTRATION_TOKEN
+    )
+    admin_owned = await harness.register_agent("admin-owned-agent")
+
+    private_room = await harness.room_service.create_room(
+        RoomCreateConfig(
+            name="admins-private-room",
+            description="owned by the admin, not the bootstrap account",
+            agent_ids=[admin_owned.agent_id],
+            owner_id=harness.owner_id,
+            created_by=harness.owner_id,
+            read_visibility="private",
+            write_visibility="private",
+        )
+    )
+
+    async with session_env.session_factory() as session:  # type: ignore[operator]
+        # Control: the admin's own agent is the room's owner and must pass.
+        await harness.protocol._require_room_action(
+            session, admin_owned.agent_id, private_room.room.id, "write"
+        )
+
+        with pytest.raises(PermissionError):
+            await harness.protocol._require_room_action(
+                session, bootstrap_result.agent_id, private_room.room.id, "write"
+            )

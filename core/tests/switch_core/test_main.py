@@ -130,6 +130,46 @@ class TestSeedAgentRegistrationBootstrapKey:
         assert bootstrap_keys[0].label == BOOTSTRAP_KEY_LABEL
         assert not any(k.type == "registration" for k in keys)
 
+    async def test_revoking_a_migrated_legacy_key_survives_a_restart(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """The durable-seeded flag must be recorded on the very call that
+        migrates a legacy key, not only on a later, unrelated call — an
+        operator can revoke (delete) the freshly migrated key immediately,
+        with no intervening restart to have backfilled the flag."""
+        user_store, api_key_store = UserStore(), ApiKeyStore()
+        admin_id = await _make_admin(session_factory)
+        config = _config("dev-test-token")
+
+        async with session_factory() as session:
+            legacy = ApiKey(
+                user_id=admin_id,
+                key_hash=_hash("dev-test-token"),
+                encrypted_key="irrelevant",
+                label=LEGACY_BOOTSTRAP_KEY_LABEL,
+                type="registration",
+            )
+            session.add(legacy)
+            await session.commit()
+
+        await _seed_agent_registration_bootstrap_key(
+            session_factory, user_store, api_key_store, config
+        )
+
+        async with session_factory() as session:
+            keys = await api_key_store.get_by_user(session, admin_id)
+            (bootstrap_key,) = [k for k in keys if k.type == BOOTSTRAP_KEY_TYPE]
+            await api_key_store.delete(session, bootstrap_key.id)
+            await session.commit()
+
+        await _seed_agent_registration_bootstrap_key(
+            session_factory, user_store, api_key_store, config
+        )
+
+        async with session_factory() as session:
+            keys = await api_key_store.get_by_user(session, admin_id)
+        assert not any(k.type == BOOTSTRAP_KEY_TYPE for k in keys)
+
     async def test_rotating_the_token_updates_the_existing_key_in_place(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:

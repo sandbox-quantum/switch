@@ -549,7 +549,15 @@ async def _seed_agent_registration_bootstrap_key(
         bootstrap_key = next(
             (k for k in admin_keys if k.type == BOOTSTRAP_KEY_TYPE), None
         )
-        already_seeded = bool((admin.metadata_ or {}).get(_BOOTSTRAP_SEEDED_FLAG))
+        # Whether the flag is *already durably recorded* — read-only, used to
+        # decide whether a missing key means "revoked" vs. "never seeded".
+        # Deliberately not reused as a "did something get provisioned this
+        # call" flag: that conflated the migration branch (which provisions a
+        # key without having recorded the flag yet) with a true revocation,
+        # so the flag write below was skipped on the exact call that migrates
+        # a legacy key, leaving a revocation made shortly after unable to
+        # stick past the next restart.
+        flag_already_set = bool((admin.metadata_ or {}).get(_BOOTSTRAP_SEEDED_FLAG))
 
         if legacy_key is not None and bootstrap_key is None:
             legacy_key.type = BOOTSTRAP_KEY_TYPE
@@ -557,7 +565,6 @@ async def _seed_agent_registration_bootstrap_key(
             legacy_key.key_hash = token_hash
             legacy_key.encrypted_key = encrypted_key
             bootstrap_key = legacy_key
-            already_seeded = True
             logger.info(
                 "Migrated the legacy admin-owned registration key to a "
                 "scoped agent-registration bootstrap key"
@@ -571,27 +578,27 @@ async def _seed_agent_registration_bootstrap_key(
                     "Rotated the agent-registration bootstrap key from "
                     "AGENT_REGISTRATION_TOKEN"
                 )
-        elif already_seeded:
+        elif flag_already_set:
             logger.warning(
                 "Agent-registration bootstrap key was revoked; not "
                 "reseeding it from AGENT_REGISTRATION_TOKEN. Mint per-user "
                 "registration keys from the gateway's API Keys page instead."
             )
         else:
-            key = ApiKey(
+            bootstrap_key = ApiKey(
                 user_id=admin.id,
                 key_hash=token_hash,
                 encrypted_key=encrypted_key,
                 label=BOOTSTRAP_KEY_LABEL,
                 type=BOOTSTRAP_KEY_TYPE,
             )
-            await api_key_store.create(session, key)
+            await api_key_store.create(session, bootstrap_key)
             logger.info(
                 "Seeded the agent-registration bootstrap key from "
                 "AGENT_REGISTRATION_TOKEN"
             )
 
-        if not already_seeded:
+        if bootstrap_key is not None and not flag_already_set:
             meta = dict(admin.metadata_ or {})
             meta[_BOOTSTRAP_SEEDED_FLAG] = True
             admin.metadata_ = meta
