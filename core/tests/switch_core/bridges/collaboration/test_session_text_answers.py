@@ -23,6 +23,7 @@ from switch_core.bridges.collaboration.session.transport import (
     FixtureEventSource,
     project,
 )
+from switch_core.bridges.collaboration.telegram.adapter import TelegramAdapter
 
 from .test_session_answers import EXAMPLES_PATH, _interactions, _post, _press, _run
 
@@ -126,6 +127,56 @@ def test_a_bare_yes_anywhere_else_answers_nothing() -> None:
     )
 
 
+def test_a_bare_yes_further_down_the_thread_answers_nothing() -> None:
+    """Once a card's thread has a conversation in it, "yes" is part of that.
+
+    Someone reads the request, someone else asks what it will touch, a third
+    says "yes" — to the question, not the card. Only the first reply is
+    unambiguous enough to decide a permission from.
+    """
+    interactions = _interactions(_post(), first_reply=False)
+
+    assert _run(interactions.command_for_text(_typed("yes", root_id=CARD))) is None
+
+
+def test_a_platform_that_cannot_say_is_a_platform_that_does_not_answer() -> None:
+    """The refusal and the not-knowing are the same outcome, deliberately.
+
+    Fail closed: refusing costs someone the retype of a handle, accepting
+    decides a permission from a word that may have been about something else.
+    """
+    interactions = _interactions(_post(), first_reply=False)
+
+    assert _run(interactions.command_for_text(_typed("no", root_id=CARD))) is None
+
+
+def test_a_platform_with_no_way_to_read_a_thread_never_says_first(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The default every adapter inherits until it can actually check.
+
+    Slack is the only platform posting cards today. The next one to grow them
+    must not silently turn every "yes" in a card's thread into an answer by
+    saying nothing about threads at all — so the base refuses, and says why.
+    """
+    adapter = TelegramAdapter.__new__(TelegramAdapter)
+
+    with caplog.at_level(logging.WARNING):
+        assert _run(adapter.is_first_reply("C1", "C1:111.0", "C1:222.0")) is False
+
+    assert "Telegram" in caplog.text
+
+
+def test_naming_the_card_answers_it_from_anywhere_in_the_thread() -> None:
+    """The first-reply rule is what stands in for a handle, not a rule about threads."""
+    interactions = _interactions(_post(), first_reply=False)
+
+    command = _run(interactions.command_for_text(_typed("R42 1", root_id=CARD)))
+
+    assert command is not None
+    assert command.body.answer.option_id == "allow-once"
+
+
 def test_a_bare_yes_will_not_grant_a_permission_for_the_whole_session() -> None:
     """Allow-once and allow-for-the-session must not be one word apart."""
     interactions = _interactions(
@@ -225,23 +276,35 @@ def test_ordinary_talk_never_reaches_the_store() -> None:
 # ── Where the bridge picks it up ─────────────────────────────────────────────
 
 
-def _bridge(interactions: Any) -> Any:
-    """A bridge core with just enough of itself to take one inbound message."""
+def _bridge(interactions: Any) -> tuple[Any, list[dict[str, str]]]:
+    """A bridge core, and the list of messages that got past the answer path.
+
+    The channel maps to a room and the puppet step records what it was asked
+    for and then hands back nothing, which is where the relay stops. So a
+    message in that list is one the answer path let through on its way to the
+    room, and an empty list after a message is a message the room lost.
+    """
+    relayed: list[dict[str, str]] = []
 
     async def _is_registered_agent(name: str) -> bool:
         return False
 
-    async def _create_room_for_channel(**kwargs: Any) -> None:
+    async def _repair_placeholder_username(*args: Any, **kwargs: Any) -> None:
+        return None
+
+    async def _ensure_user_in_matrix_room(**kwargs: str) -> None:
+        relayed.append(kwargs)
         return None
 
     bridge = BridgeCore.__new__(BridgeCore)
-    bridge._channel_to_room = {}
+    bridge._channel_to_room = {CHANNEL: ("room-uuid", "!room:test")}
     bridge._channel_locks = {}
     bridge._session_interactions = interactions
     # Instance attrs shadow the class methods so the DB is never touched.
     bridge._is_registered_agent = _is_registered_agent  # type: ignore[assignment]
-    bridge._create_room_for_channel = _create_room_for_channel  # type: ignore[assignment]
-    return bridge
+    bridge._repair_placeholder_username = _repair_placeholder_username  # type: ignore[assignment]
+    bridge._ensure_user_in_matrix_room = _ensure_user_in_matrix_room  # type: ignore[assignment]
+    return bridge, relayed
 
 
 def test_a_message_in_a_channel_is_offered_to_the_session(
@@ -253,12 +316,14 @@ def test_a_message_in_a_channel_is_offered_to_the_session(
     but dropped out loud, because an answer that vanishes is the one outcome
     nobody could debug.
     """
-    interactions = _interactions(_post())
+    bridge, relayed = _bridge(_interactions(_post()))
     with caplog.at_level(logging.WARNING):
-        _run(_bridge(interactions)._handle_inbound_message(_typed("R42 1")))
+        _run(bridge._handle_inbound_message(_typed("R42 1")))
 
     assert "dropped it" in caplog.text
     assert "session-demo" in caplog.text
+    # Answering is not instead of speaking: the channel still said this.
+    assert len(relayed) == 1
 
 
 def test_a_platform_that_has_never_posted_a_card_finds_nothing_to_answer(
@@ -270,21 +335,32 @@ def test_a_platform_that_has_never_posted_a_card_finds_nothing_to_answer(
     do parse. What stops them is that the handle resolves to no row of theirs,
     not that they skip the attempt.
     """
-    interactions = _interactions(surface="mattermost")
+    bridge, relayed = _bridge(_interactions(surface="mattermost"))
     with caplog.at_level(logging.WARNING):
-        _run(_bridge(interactions)._handle_inbound_message(_typed("R42 1")))
+        _run(bridge._handle_inbound_message(_typed("R42 1")))
 
     assert caplog.text == ""
+    assert len(relayed) == 1
 
 
-def test_a_message_the_grammar_refuses_does_not_take_the_relay_with_it() -> None:
+@pytest.mark.parametrize("said", ["①", "10²", "just shipped 2 fixes", "ok"])
+def test_a_message_the_grammar_refuses_still_reaches_the_room(said: str) -> None:
     """The parse runs on everything said in a channel, so it must never raise.
 
     An exception here climbs out of `_handle_inbound_message`, the platform SDK
     logs it and moves on, and the message never reaches the room — with nothing
-    in the channel to say why.
+    in the channel to say why. So the proof is the relay carrying on, not the
+    absence of a traceback.
     """
-    interactions = _interactions(_post())
+    bridge, relayed = _bridge(_interactions(_post()))
 
-    for said in ["①", "10²", "just shipped 2 fixes", "ok"]:
-        _run(_bridge(interactions)._handle_inbound_message(_typed(said)))
+    _run(bridge._handle_inbound_message(_typed(said)))
+
+    assert relayed == [
+        {
+            "external_user_id": "U1",
+            "external_username": "someone",
+            "room_id": "room-uuid",
+            "matrix_room_id": "!room:test",
+        }
+    ]

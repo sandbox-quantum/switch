@@ -212,6 +212,7 @@ class BridgeCore:
             posts=posts,
             session_factory=self._session_factory,
             identify=self._identify_actor,
+            is_first_reply=self._adapter.is_first_reply,
         )
 
     @property

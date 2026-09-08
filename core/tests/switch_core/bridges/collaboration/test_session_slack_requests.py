@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import re
 from pathlib import Path
 from typing import Any
@@ -452,3 +453,57 @@ def test_a_reply_in_a_card_s_thread_says_which_card() -> None:
 
     assert message.content == "yes"
     assert message.root_id == "C1:111.0"
+
+
+# ── Where in the thread it landed ────────────────────────────────────────────
+
+
+def _thread(*replies: str) -> tuple[SlackAdapter, FakeWebClient]:
+    """A card at 111.0 with `replies` under it, as Slack lays a thread out."""
+    adapter, client = _adapter()
+    client.thread = [{"ts": "111.0"}] + [{"ts": ts} for ts in replies]
+    return adapter, client
+
+
+def test_the_first_reply_under_a_card_is_recognised_as_the_first() -> None:
+    adapter, client = _thread("222.0", "333.0")
+
+    assert _run(adapter.is_first_reply("C1", "C1:111.0", "C1:222.0")) is True
+    method, params = client.api_calls[0]
+    assert method == "conversations.replies"
+    assert params == {"channel": "C1", "ts": "111.0", "limit": 2}
+
+
+def test_a_later_reply_is_not() -> None:
+    """The rule someone's bare "yes" turns on: was anything said before it."""
+    adapter, _ = _thread("222.0", "333.0")
+
+    assert _run(adapter.is_first_reply("C1", "C1:111.0", "C1:333.0")) is False
+
+
+def test_a_card_nobody_has_replied_to_yet_has_no_first_reply() -> None:
+    """The read raced the message it is about. Refusing is the safe direction."""
+    adapter, _ = _thread()
+
+    assert _run(adapter.is_first_reply("C1", "C1:111.0", "C1:222.0")) is False
+
+
+def test_slack_refusing_the_read_is_not_a_yes(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Fail closed, and out loud: the cost is a retype, but it needs explaining."""
+    adapter, client = _thread("222.0")
+    client.replies_error = "channel_not_found"
+
+    with caplog.at_level(logging.WARNING):
+        assert _run(adapter.is_first_reply("C1", "C1:111.0", "C1:222.0")) is False
+
+    assert "channel_not_found" in caplog.text
+
+
+def test_a_disconnected_adapter_answers_nothing_rather_than_raising() -> None:
+    """This runs on the inbound path of every message, so it may not throw."""
+    adapter, _ = _thread("222.0")
+    adapter._web_client = None
+
+    assert _run(adapter.is_first_reply("C1", "C1:111.0", "C1:222.0")) is False

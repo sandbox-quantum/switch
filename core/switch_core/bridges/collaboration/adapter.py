@@ -878,6 +878,35 @@ class CollaborationAdapter(ABC):
         that never does needs no change to go on working."""
         self._on_interaction = handler
 
+    async def is_first_reply(
+        self, channel_id: str, root_ref: str, message_ref: str
+    ) -> bool:
+        """Whether `message_ref` is the first thing said under `root_ref`.
+
+        Asked when someone answers a request card with a word that names no
+        request — a bare "yes". That only counts as an answer while nothing
+        else has been said under the card, because once a thread has a
+        conversation in it a "yes" is as likely to be about the conversation.
+
+        Read from the platform each time rather than tracked here: two replies
+        arriving at once would both look like the first to anything counting
+        locally, and each would decide the request.
+
+        False is the answer whenever a platform cannot tell, and this base is a
+        platform that cannot. Refusing costs someone the retype of a handle;
+        accepting decides a permission from a word that was about something
+        else. Only reachable on a platform that posts request cards."""
+        logger.warning(
+            "Cannot tell whether %s is the first reply under %s in %s, so it "
+            "does not answer the card there. %s posts request cards without a "
+            "way to read a thread back.",
+            message_ref,
+            root_ref,
+            channel_id,
+            self.platform_name,
+        )
+        return False
+
     def set_agent_presentation_resolver(
         self, resolver: Callable[[str], Awaitable[AgentPresentation | None]]
     ) -> None:

@@ -500,6 +500,46 @@ class SlackAdapter(CollaborationAdapter):
             channel=channel_id, ts=ts, text=text, blocks=blocks
         )
 
+    async def is_first_reply(
+        self, channel_id: str, root_ref: str, message_ref: str
+    ) -> bool:
+        """Whether this message is the first reply under a thread root.
+
+        Slack's message event names the thread but not the position in it, so
+        the thread itself is the only place the answer exists. `messages[0]` is
+        always the root, which makes `messages[1]` the first reply and two the
+        whole page worth fetching.
+        """
+        if not self._web_client:
+            logger.warning(
+                "Cannot read the thread under %s in %s: Slack client not "
+                "connected. Treating %s as not the first reply.",
+                root_ref,
+                channel_id,
+                message_ref,
+            )
+            return False
+        _, root_ts = self._parse_message_ref(root_ref)
+        _, ts = self._parse_message_ref(message_ref)
+        if not root_ts or not ts:
+            return False
+        try:
+            result = await self._web_client.conversations_replies(
+                channel=channel_id, ts=root_ts, limit=2
+            )
+        except SlackApiError as e:
+            logger.warning(
+                "Could not read the thread under %s in %s: %s. Treating %s as "
+                "not the first reply.",
+                root_ts,
+                channel_id,
+                e,
+                ts,
+            )
+            return False
+        messages = result.get("messages") or []
+        return len(messages) > 1 and messages[1].get("ts") == ts
+
     def adapt_icon_url(self, raw: str | None, agent_name: str) -> str:
         # Overridden for Slack alone: it flattens a transparent avatar onto
         # white. Adjusting here rather than at each call site keeps every place

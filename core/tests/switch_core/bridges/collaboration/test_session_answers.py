@@ -113,9 +113,13 @@ def _interactions(
     *rows: SessionRequestPost,
     actor: str | None = "@someone:test",
     surface: Any = "slack",
+    first_reply: bool = True,
 ) -> SessionInteractions:
     async def identify(actor_of: InboundActor) -> str | None:
         return actor
+
+    async def is_first_reply(channel_id: str, root_ref: str, ref: str) -> bool:
+        return first_reply
 
     return SessionInteractions(
         bridge_id=BRIDGE,
@@ -123,6 +127,7 @@ def _interactions(
         posts=_Posts(*rows),  # type: ignore[arg-type]
         session_factory=_NoSession(),  # type: ignore[arg-type]
         identify=identify,
+        is_first_reply=is_first_reply,
     )
 
 

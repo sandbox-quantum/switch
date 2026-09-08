@@ -870,11 +870,23 @@ class SessionRequestPost(Base):
             "request_id",
             name="uq_session_request_posts_request",
         ),
-        UniqueConstraint(
+        # A handle is matched without regard to case, so it has to be unique
+        # without regard to case: the lookup reads one row or none, and "R42"
+        # beside "r42" in one channel would make it raise instead — into the
+        # relay, where the cost is the message never reaching the room.
+        Index(
+            "uq_session_request_posts_handle",
             "bridge_id",
             "external_channel_id",
-            "handle",
-            name="uq_session_request_posts_handle",
+            text("lower(handle)"),
+            unique=True,
+        ),
+        # One posted card stands for one request, and the bare form reads a
+        # request back off the card it replies to. Same lookup, same reason.
+        UniqueConstraint(
+            "bridge_id",
+            "external_post_id",
+            name="uq_session_request_posts_post",
         ),
     )
 

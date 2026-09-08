@@ -59,6 +59,12 @@ class SessionRequestCards:
         stale card is the one failure that cannot be left silent: it goes on
         showing buttons for a request that has already settled, and a reader has
         no way to tell that pressing one will do nothing.
+
+        That reply lands in the card's own thread, which is also the one place a
+        bare "yes" answers — and only as the first reply. So a failed edit takes
+        that slot and leaves the card answerable by name alone. Accepted rather
+        than worked around: the card is already known to be wrong, and losing a
+        shorthand is the safer of the two directions.
         """
         message = render_approval(
             request, RequestReference(token=post.token, handle=post.handle)

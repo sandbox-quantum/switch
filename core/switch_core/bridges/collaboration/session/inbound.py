@@ -116,6 +116,11 @@ class SessionInteractions:
     `identify` is how the bridge names the person who acted. It is given the
     inbound event and returns the Switch identity behind the platform account,
     or None when there is not one — which is a refusal, not a default actor.
+
+    `is_first_reply` is how it asks the platform whether a message is the first
+    thing said under a card, which is the only place a bare "yes" is an answer.
+    It is given the channel, the card and the message, and False is its answer
+    whenever the platform cannot tell.
     """
 
     def __init__(
@@ -126,12 +131,14 @@ class SessionInteractions:
         posts: SessionRequestPostStore,
         session_factory: async_sessionmaker[AsyncSession],
         identify: Callable[[InboundActor], Awaitable[str | None]],
+        is_first_reply: Callable[[str, str, str], Awaitable[bool]],
     ) -> None:
         self._bridge_id = bridge_id
         self._surface = surface
         self._posts = posts
         self._session_factory = session_factory
         self._identify = identify
+        self._is_first_reply = is_first_reply
 
     async def command_for(self, interaction: InboundInteraction) -> Command | None:
         """The command an interaction amounts to, or None if it amounts to none.
@@ -239,7 +246,10 @@ class SessionInteractions:
         """The card an answer is against: the one it named, or the one it replies to.
 
         A bare decision names nothing, so it only counts as a direct reply to a
-        card. Anywhere else it is someone agreeing with someone.
+        card, and only as the first one. Anywhere else — including further down
+        a thread that has become a conversation — it is someone agreeing with
+        someone. Naming the request lifts that: a handle says which card, so it
+        answers from anywhere in the channel however long afterwards.
         """
         async with self._session_factory() as session:
             if answer.handle is not None:
@@ -248,6 +258,21 @@ class SessionInteractions:
                 )
             if message.root_id is None:
                 return None
-            return await self._posts.get_by_post(
+            post = await self._posts.get_by_post(
                 session, self._bridge_id, message.root_id
             )
+        if post is None:
+            return None
+        if not await self._is_first_reply(
+            message.channel_id, message.root_id, message.message_ref
+        ):
+            logger.warning(
+                "Ignoring a bare answer to request %s on bridge %s: it is not "
+                "the first reply to the card, or the platform could not say. "
+                "Answering %s by name works from anywhere.",
+                post.request_id,
+                self._bridge_id,
+                post.handle,
+            )
+            return None
+        return post

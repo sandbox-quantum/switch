@@ -127,7 +127,13 @@ class TestSessionRequestPostStore:
             with pytest.raises(IntegrityError):
                 await store.create(
                     session,
-                    _post(bridge_id, room_id, token="another-token", handle="R43"),
+                    _post(
+                        bridge_id,
+                        room_id,
+                        token="another-token",
+                        handle="R43",
+                        external_post_id="C1:222.0",
+                    ),
                 )
 
     async def test_a_handle_is_unambiguous_within_a_channel(
@@ -148,6 +154,61 @@ class TestSessionRequestPostStore:
                     _post(
                         bridge_id,
                         room_id,
+                        token="another-token",
+                        external_post_id="C1:222.0",
+                        request_id="request-other",
+                    ),
+                )
+
+    async def test_two_handles_that_differ_only_in_case_are_one_handle(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """The lookup ignores case, so uniqueness has to as well.
+
+        `R42` beside `r42` in one channel makes the read find two rows and
+        raise, and it raises into the relay — where the cost is not a refused
+        answer but a message the room never sees.
+        """
+        store = SessionRequestPostStore()
+        async with session_factory() as session:
+            bridge_id = await _make_bridge(session)
+            room_id = await _make_room(session)
+            await store.create(session, _post(bridge_id, room_id))
+            await session.commit()
+
+        async with session_factory() as session:
+            with pytest.raises(IntegrityError):
+                await store.create(
+                    session,
+                    _post(
+                        bridge_id,
+                        room_id,
+                        handle="r42",
+                        token="another-token",
+                        external_post_id="C1:222.0",
+                        request_id="request-other",
+                    ),
+                )
+
+    async def test_one_posted_card_stands_for_one_request(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """The bare form reads a request back off the card it replies to."""
+        store = SessionRequestPostStore()
+        async with session_factory() as session:
+            bridge_id = await _make_bridge(session)
+            room_id = await _make_room(session)
+            await store.create(session, _post(bridge_id, room_id))
+            await session.commit()
+
+        async with session_factory() as session:
+            with pytest.raises(IntegrityError):
+                await store.create(
+                    session,
+                    _post(
+                        bridge_id,
+                        room_id,
+                        handle="R43",
                         token="another-token",
                         request_id="request-other",
                     ),
