@@ -157,7 +157,7 @@ def render_approval(
     blocks: list[dict[str, Any]] = [
         {"type": "section", "text": {"type": "mrkdwn", "text": prompt}}
     ]
-    if request.state == "open":
+    if request.state == "open" and content.options:
         # Only a card that is still offering buttons can exceed the limit, so a
         # settled one with too many options still redraws rather than sticking.
         if len(content.options) > _MAX_ELEMENTS:
@@ -232,6 +232,14 @@ def _footer(
     else is escaped here, where it is also measured.
     """
     if request.state == "open":
+        if not content.options:
+            # The same shape as a form with no questions in it, and refused the
+            # same way and for the same reasons: there is no number to type, no
+            # word to say and nothing to press, so an instruction here would be
+            # one the resolver goes on to refuse. Neither reader of the contract
+            # gives `options` a minimum length, and the schema is still the
+            # wrong place to add one — see `_unanswerable`.
+            return "This card cannot be answered: it offers no options."
         # A code span, because the reader is meant to copy this and quote marks
         # around it are not part of the answer: `"R42 1"` parses as a handle of
         # `"R42`, which resolves to nothing and changes nothing on the card.

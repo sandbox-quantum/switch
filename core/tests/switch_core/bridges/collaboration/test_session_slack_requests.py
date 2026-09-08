@@ -22,6 +22,11 @@ from switch_core.bridges.collaboration.session.contract import (
     ApprovalOption,
     parse_snapshot,
 )
+from switch_core.bridges.collaboration.session.form import (
+    Unanswerable,
+    posted_form,
+    resolve_text_answer,
+)
 from switch_core.bridges.collaboration.session.projection import SessionProjection
 from switch_core.bridges.collaboration.session.renderers import (
     ANSWER_ACTION,
@@ -231,6 +236,64 @@ def test_a_pressed_button_names_the_option_it_chose() -> None:
     assert parse_answer_action(f"{ANSWER_ACTION}:allow-once") == "allow-once"
     assert parse_answer_action(f"{ANSWER_ACTION}:") is None
     assert parse_answer_action("switch:something-else") is None
+
+
+def test_an_approval_that_offers_no_options_makes_the_card_say_so() -> None:
+    """The same defect as a form with no questions in it, one card over.
+
+    `options` has no minimum length in either reader of the contract, so this
+    is exactly as legal on paper. There is nothing to press, no number to type
+    and no word that names a decision none of the options carry, so an
+    instruction here is one the resolver goes on to refuse.
+
+    The empty actions block matters more than the wrong instruction: Slack
+    wants at least one element in one, so the whole card is likely rejected and
+    the request never appears at all. It is not appended now.
+    """
+    request = _projection().open_room_requests("room-demo")[0]
+    empty = request.model_copy(
+        update={"content": request.content.model_copy(update={"options": []})}
+    )
+
+    message = render_approval(empty, REFERENCE)
+
+    assert _footer_of(message) == "This card cannot be answered: it offers no options."
+    assert not [block for block in message.blocks if block["type"] == "actions"]
+    assert message.text.endswith("This card cannot be answered: it offers no options.")
+
+
+def test_no_option_count_makes_the_card_offer_an_answer_it_would_refuse() -> None:
+    """The questions card's enumeration, on the shape that has one dimension.
+
+    An approval's footer is a fixed string, so there is little here to vary —
+    which is exactly why the empty case got through. Asserting the claim rather
+    than the string means the next shape that cannot be answered fails here
+    instead of in a workspace.
+    """
+    request = _projection().open_room_requests("room-demo")[0]
+
+    for count in range(4):
+        options = [
+            ApprovalOption(
+                option_id=f"option-{index}",
+                label=f"Option {index}",
+                decision="accept" if index else "decline",
+            )
+            for index in range(count)
+        ]
+        card = request.model_copy(
+            update={"content": request.content.model_copy(update={"options": options})}
+        )
+        footer = _footer_of(render_approval(card, REFERENCE))
+        if footer.startswith("This card cannot be answered"):
+            continue
+
+        example = re.search(r"`([^`]+)`", footer)
+        assert example is not None, f"{count} options: no example in {footer!r}"
+        answer = parse_text_answer(example.group(1))
+        assert answer is not None, f"{count} options: {footer!r} does not parse"
+        resolved = resolve_text_answer(posted_form(card), answer)
+        assert not isinstance(resolved, Unanswerable), f"{count} options: {resolved}"
 
 
 def test_an_approval_with_more_options_than_slack_renders_is_refused() -> None:
