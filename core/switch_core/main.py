@@ -26,6 +26,7 @@ from switch_core.bridges.agent.registration_bootstrap import (
     BOOTSTRAP_KEY_LABEL,
     BOOTSTRAP_KEY_TYPE,
     BOOTSTRAP_LAST_SEEDED_HASH_META_KEY,
+    BOOTSTRAP_REVOKED_HASHES_META_KEY,
     LEGACY_BOOTSTRAP_KEY_LABEL,
     ensure_bootstrap_owner,
 )
@@ -552,40 +553,98 @@ async def _seed_agent_registration_bootstrap_key(
         )
 
         bootstrap_keys = await api_key_store.get_by_type(session, BOOTSTRAP_KEY_TYPE)
+        if len(bootstrap_keys) > 1:
+            raise RuntimeError(
+                f"Found {len(bootstrap_keys)} agent-registration bootstrap "
+                "keys; expected at most one. This needs a direct database fix."
+            )
         bootstrap_key = bootstrap_keys[0] if bootstrap_keys else None
 
-        if bootstrap_key is None:
-            legacy_candidate = await api_key_store.get_by_hash(session, token_hash)
-            if (
-                legacy_candidate is not None
-                and legacy_candidate.type == "registration"
-                and legacy_candidate.label == LEGACY_BOOTSTRAP_KEY_LABEL
-            ):
-                legacy_candidate.type = BOOTSTRAP_KEY_TYPE
-                legacy_candidate.label = BOOTSTRAP_KEY_LABEL
-                bootstrap_key = legacy_candidate
-                logger.info(
-                    "Migrated the legacy admin-owned registration key to a "
-                    "scoped agent-registration bootstrap key"
-                )
+        # Every row carrying the legacy label, not just one matching the
+        # current token: an admin who rotated AGENT_REGISTRATION_TOKEN at or
+        # before this upgrade leaves the old row's hash stale, so a hash-only
+        # lookup for the current token would miss it — and a `type:
+        # "registration"` row at that label is otherwise indistinguishable
+        # from a live credential that still authenticates as the admin.
+        legacy_rows = [
+            row
+            for row in await api_key_store.get_by_label(
+                session, LEGACY_BOOTSTRAP_KEY_LABEL
+            )
+            if row.type == "registration"
+        ]
+        matching_legacy = next(
+            (row for row in legacy_rows if row.key_hash == token_hash), None
+        )
+        if bootstrap_key is None and matching_legacy is not None:
+            matching_legacy.type = BOOTSTRAP_KEY_TYPE
+            matching_legacy.label = BOOTSTRAP_KEY_LABEL
+            matching_legacy.encrypted_key = encrypted_key
+            bootstrap_key = matching_legacy
+            logger.info(
+                "Migrated the legacy admin-owned registration key to a "
+                "scoped agent-registration bootstrap key"
+            )
+        for stale in legacy_rows:
+            if stale is matching_legacy:
+                continue
+            logger.warning(
+                "Removing a stale admin-owned registration key (id %s, "
+                "label %r): its value no longer matches "
+                "AGENT_REGISTRATION_TOKEN, so it predates a token rotation "
+                "and would otherwise keep registering agents with admin "
+                "authority indefinitely.",
+                stale.id,
+                LEGACY_BOOTSTRAP_KEY_LABEL,
+            )
+            await api_key_store.delete(session, stale.id)
 
         last_seeded_hash = (bootstrap_owner.metadata_ or {}).get(
             BOOTSTRAP_LAST_SEEDED_HASH_META_KEY
         )
+        revoked_hashes: list[str] = list(
+            (bootstrap_owner.metadata_ or {}).get(BOOTSTRAP_REVOKED_HASHES_META_KEY)
+            or []
+        )
+        meta_dirty = False
+
+        if (
+            bootstrap_key is None
+            and last_seeded_hash is not None
+            and last_seeded_hash not in revoked_hashes
+        ):
+            # A key was active as of the last seed call and is gone now: it
+            # was deleted (revoked) since then. Remember its value forever,
+            # not just until the next rotation — see the constant's docstring.
+            revoked_hashes.append(last_seeded_hash)
+            meta_dirty = True
+            logger.warning(
+                "Agent-registration bootstrap key was deleted since the "
+                "last restart; its value is now permanently refused, even "
+                "if AGENT_REGISTRATION_TOKEN is later set back to it."
+            )
 
         if bootstrap_key is not None:
             if bootstrap_key.key_hash != token_hash:
-                bootstrap_key.key_hash = token_hash
-                bootstrap_key.encrypted_key = encrypted_key
-                logger.info(
-                    "Rotated the agent-registration bootstrap key from "
-                    "AGENT_REGISTRATION_TOKEN"
-                )
-        elif last_seeded_hash == token_hash:
+                if token_hash in revoked_hashes:
+                    logger.warning(
+                        "AGENT_REGISTRATION_TOKEN matches a previously "
+                        "revoked agent-registration bootstrap key; refusing "
+                        "to rotate onto it. Set a new, never-used value to "
+                        "change the active key."
+                    )
+                else:
+                    bootstrap_key.key_hash = token_hash
+                    bootstrap_key.encrypted_key = encrypted_key
+                    logger.info(
+                        "Rotated the agent-registration bootstrap key from "
+                        "AGENT_REGISTRATION_TOKEN"
+                    )
+        elif token_hash in revoked_hashes:
             logger.warning(
                 "Agent-registration bootstrap key was revoked; not "
-                "reseeding it from AGENT_REGISTRATION_TOKEN. Rotate the "
-                "token to a new value to re-enable deployment-wide bootstrap "
+                "reseeding it from AGENT_REGISTRATION_TOKEN. Set a new, "
+                "never-used value to re-enable deployment-wide bootstrap "
                 "registration, or mint per-user registration keys from the "
                 "gateway's API Keys page instead."
             )
@@ -603,9 +662,14 @@ async def _seed_agent_registration_bootstrap_key(
                 "AGENT_REGISTRATION_TOKEN"
             )
 
-        if bootstrap_key is not None and last_seeded_hash != token_hash:
+        new_last_seeded_hash = bootstrap_key.key_hash if bootstrap_key else None
+        if new_last_seeded_hash != last_seeded_hash:
+            meta_dirty = True
+
+        if meta_dirty:
             meta = dict(bootstrap_owner.metadata_ or {})
-            meta[BOOTSTRAP_LAST_SEEDED_HASH_META_KEY] = token_hash
+            meta[BOOTSTRAP_LAST_SEEDED_HASH_META_KEY] = new_last_seeded_hash
+            meta[BOOTSTRAP_REVOKED_HASHES_META_KEY] = revoked_hashes
             bootstrap_owner.metadata_ = meta
 
         await session.commit()

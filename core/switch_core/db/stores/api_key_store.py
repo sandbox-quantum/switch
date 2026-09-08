@@ -60,6 +60,17 @@ class ApiKeyStore:
         result = await session.execute(select(ApiKey).where(ApiKey.type == key_type))
         return list(result.scalars().all())
 
+    async def get_by_label(self, session: AsyncSession, label: str) -> list[ApiKey]:
+        """Every key carrying a given label, regardless of type or owner.
+
+        Labels are free text, so this is a discovery aid, not an identity
+        lookup — a caller matching against a known auto-generated label
+        (never one a user is expected to type) still has to check the type
+        and, ideally, the hash, before treating a match as authoritative.
+        """
+        result = await session.execute(select(ApiKey).where(ApiKey.label == label))
+        return list(result.scalars().all())
+
     async def delete(self, session: AsyncSession, key_id: str) -> None:
         key = await session.get(ApiKey, key_id)
         if key:

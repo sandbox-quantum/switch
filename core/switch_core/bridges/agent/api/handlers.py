@@ -151,7 +151,10 @@ async def _resolve_registration_user_id(
     key = await api_key_store.get_by_hash(session, token_hash)
     if key is None or key.type not in REGISTRATION_KEY_TYPES:
         raise HTTPException(status_code=401, detail="Invalid registration token")
-    return await resolve_registration_owner_id(session, protocol.user_store, key)
+    try:
+        return await resolve_registration_owner_id(session, protocol.user_store, key)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
 # Registration endpoints

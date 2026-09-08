@@ -166,35 +166,82 @@ class TestSeedAgentRegistrationBootstrapKey:
         assert bootstrap_keys[0].label == BOOTSTRAP_KEY_LABEL
         assert not any(k.type == "registration" for k in keys)
 
-    async def test_a_personal_key_sharing_the_legacy_label_but_not_the_hash_is_untouched(
+    async def test_a_legacy_key_rotated_before_the_upgrade_is_retired_not_left_live(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
-        """A label is free text an admin could reuse by coincidence; only a
-        matching hash proves a row really is the historical bootstrap key."""
+        """An operator who rotates AGENT_REGISTRATION_TOKEN at or before the
+        upgrade (ordinary practice) leaves the legacy row's hash stale, so a
+        hash-only lookup for the *current* token would never find it to
+        migrate. Left alone, that row keeps authenticating as
+        `type="registration"`, owned by the admin — exactly the escalation
+        this PR exists to close, and permanently, since a bootstrap key
+        exists after this run and later runs never look for it again."""
+        user_store, api_key_store = UserStore(), ApiKeyStore()
+        admin_id = await _make_admin(session_factory)
+
+        async with session_factory() as session:
+            legacy = ApiKey(
+                user_id=admin_id,
+                key_hash=_hash("old-token"),
+                encrypted_key="irrelevant",
+                label=LEGACY_BOOTSTRAP_KEY_LABEL,
+                type="registration",
+            )
+            session.add(legacy)
+            await session.commit()
+
+        await _seed(session_factory, user_store, api_key_store, _config("new-token"))
+
+        async with session_factory() as session:
+            keys = await api_key_store.get_by_user(session, admin_id)
+        bootstrap_keys = [k for k in keys if k.type == BOOTSTRAP_KEY_TYPE]
+        assert len(bootstrap_keys) == 1
+        assert bootstrap_keys[0].key_hash == _hash("new-token")
+        # The stale row must not still be live as a registration credential
+        # under the old value.
+        assert not any(
+            k.type == "registration" and k.key_hash == _hash("old-token") for k in keys
+        )
+
+    async def test_a_hash_mismatched_legacy_labeled_key_is_retired_and_warned_about(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """The label alone cannot tell a stale, rotated-out bootstrap key
+        (finding 1: dangerous — admin-owned, still registers agents with
+        admin authority) apart from a personal key an admin happened to
+        label identically (finding 5's contrived scenario). Nothing in the
+        schema distinguishes them once the hash no longer matches, so this
+        favours closing the real, silent escalation: retire the row (so it
+        can no longer register anything) and name it loudly in a warning, so
+        the rare coincidental case is at least visible and cheap to recover
+        from (recreate a personal key) rather than a permanent, silent hole."""
         user_store, api_key_store = UserStore(), ApiKeyStore()
         admin_id = await _make_admin(session_factory)
         config = _config("dev-test-token")
 
         async with session_factory() as session:
-            personal = ApiKey(
+            stale = ApiKey(
                 user_id=admin_id,
-                key_hash=_hash("some-unrelated-personal-secret"),
+                key_hash=_hash("some-other-value"),
                 encrypted_key="irrelevant",
                 label=LEGACY_BOOTSTRAP_KEY_LABEL,
                 type="registration",
             )
-            session.add(personal)
+            session.add(stale)
             await session.commit()
-            personal_id = personal.id
+            stale_id = stale.id
 
-        await _seed(session_factory, user_store, api_key_store, config)
+        with caplog.at_level("WARNING", logger="switch_core.main"):
+            await _seed(session_factory, user_store, api_key_store, config)
 
         async with session_factory() as session:
             keys = await api_key_store.get_by_user(session, admin_id)
-        by_id = {k.id: k for k in keys}
-        assert by_id[personal_id].type == "registration"
-        assert by_id[personal_id].key_hash == _hash("some-unrelated-personal-secret")
+        assert not any(k.id == stale_id for k in keys)
         assert len([k for k in keys if k.type == BOOTSTRAP_KEY_TYPE]) == 1
+        warnings = [r.message for r in caplog.records if r.levelname == "WARNING"]
+        assert any(stale_id in w for w in warnings)
 
     async def test_revoking_a_migrated_legacy_key_survives_a_restart(
         self, session_factory: async_sessionmaker[AsyncSession]
@@ -301,6 +348,39 @@ class TestSeedAgentRegistrationBootstrapKey:
         assert len(bootstrap_keys) == 1
         assert bootstrap_keys[0].key_hash == _hash("new-token")
 
+    async def test_rotating_back_to_a_revoked_value_does_not_reinstate_it(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """Revoke X, rotate to Y and restart, rotate back to X and restart:
+        the deployment must keep serving Y (or nothing), never X again — a
+        revoked value is refused forever, not just until the next rotation."""
+        user_store, api_key_store = UserStore(), ApiKeyStore()
+        admin_id = await _make_admin(session_factory)
+
+        await _seed(session_factory, user_store, api_key_store, _config("x-token"))
+        async with session_factory() as session:
+            keys = await api_key_store.get_by_user(session, admin_id)
+            (bootstrap_key,) = [k for k in keys if k.type == BOOTSTRAP_KEY_TYPE]
+            await api_key_store.delete(session, bootstrap_key.id)
+            await session.commit()
+
+        # Rotate forward to Y: re-enabled at the new value.
+        await _seed(session_factory, user_store, api_key_store, _config("y-token"))
+        async with session_factory() as session:
+            keys = await api_key_store.get_by_user(session, admin_id)
+        bootstrap_keys = [k for k in keys if k.type == BOOTSTRAP_KEY_TYPE]
+        assert len(bootstrap_keys) == 1
+        assert bootstrap_keys[0].key_hash == _hash("y-token")
+
+        # Rotate back to X: must not reinstate the revoked value. Y stays active.
+        await _seed(session_factory, user_store, api_key_store, _config("x-token"))
+        async with session_factory() as session:
+            keys = await api_key_store.get_by_user(session, admin_id)
+        bootstrap_keys = [k for k in keys if k.type == BOOTSTRAP_KEY_TYPE]
+        assert len(bootstrap_keys) == 1
+        assert bootstrap_keys[0].key_hash == _hash("y-token")
+        assert not any(k.key_hash == _hash("x-token") for k in keys)
+
     async def test_missing_admin_user_fails_loud(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
@@ -313,9 +393,8 @@ class TestSeedAgentRegistrationBootstrapKey:
     async def test_bootstrap_owner_promoted_to_admin_blocks_seeding(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
-        """Adversarial: something (a gateway admin via POST /users, or an
-        OIDC identity provider on an upgrading deployment) has already
-        claimed the bootstrap owner's reserved address with the admin role.
+        """Adversarial: a gateway admin has already claimed the bootstrap
+        owner's reserved address with the admin role via `POST /users`.
         Seeding must refuse rather than adopt it — that account would confer
         admin authority on every agent registered through the shared token,
         exactly the escalation this fix closes."""
@@ -325,6 +404,22 @@ class TestSeedAgentRegistrationBootstrapKey:
         config = _config("dev-test-token")
 
         with pytest.raises(RuntimeError, match="admin"):
+            await _seed(session_factory, user_store, api_key_store, config)
+
+    async def test_role_user_squatter_at_bootstrap_address_blocks_seeding(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """The realistic squatter: an identity claimed the bootstrap owner's
+        address (e.g. an OIDC login, which always provisions `role="user"`)
+        before agent-registration bootstrap ever ran. A role check alone
+        would silently adopt this account; only the creation marker this
+        module stamps on its own account catches it."""
+        user_store, api_key_store = UserStore(), ApiKeyStore()
+        await _make_admin(session_factory)
+        await _make_user(session_factory, email=BOOTSTRAP_OWNER_EMAIL, role="user")
+        config = _config("dev-test-token")
+
+        with pytest.raises(RuntimeError, match="not created by"):
             await _seed(session_factory, user_store, api_key_store, config)
 
     async def test_admin_owned_agents_are_logged_as_a_warning(
@@ -367,10 +462,11 @@ class TestSeedAgentRegistrationBootstrapKey:
         await _seed(session_factory, user_store, api_key_store, new_config)
 
         async with session_factory() as session:
-            all_keys_by_hash = await api_key_store.get_by_hash(
-                session, _hash("dev-test-token")
+            bootstrap_keys = await api_key_store.get_by_type(
+                session, BOOTSTRAP_KEY_TYPE
             )
-        assert all_keys_by_hash is not None
+        assert len(bootstrap_keys) == 1
+        assert bootstrap_keys[0].key_hash == _hash("dev-test-token")
 
     async def test_changing_the_admin_email_after_revocation_does_not_resurrect_it(
         self, session_factory: async_sessionmaker[AsyncSession]

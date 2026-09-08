@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from switch_core.bridges.agent.registration_bootstrap import (
     BOOTSTRAP_KEY_TYPE,
     BOOTSTRAP_OWNER_EMAIL,
+    BOOTSTRAP_OWNER_MARKER_META_KEY,
     ensure_bootstrap_owner,
     resolve_registration_owner_id,
 )
@@ -24,7 +25,7 @@ async def _make_user(
 
 
 class TestEnsureBootstrapOwner:
-    async def test_creates_a_non_admin_user_once(
+    async def test_creates_a_marked_non_admin_user_once(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
         user_store = UserStore()
@@ -33,19 +34,37 @@ class TestEnsureBootstrapOwner:
             await session.commit()
             assert owner.email == BOOTSTRAP_OWNER_EMAIL
             assert owner.role != "admin"
+            assert (owner.metadata_ or {}).get(BOOTSTRAP_OWNER_MARKER_META_KEY) is True
 
         async with session_factory() as session:
             again = await ensure_bootstrap_owner(session, user_store)
             await session.commit()
             assert again.id == owner.id
 
+    async def test_refuses_a_role_user_account_squatting_the_address(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """The realistic squatter: an identity claimed this address — via
+        OIDC JIT provisioning, or any other path — before bootstrap seeding
+        ever ran. JIT provisioning always creates `role="user"`, so a role
+        check alone would silently adopt it; only the creation marker this
+        module stamps distinguishes a genuine bootstrap owner from one."""
+        user_store = UserStore()
+        async with session_factory() as session:
+            session.add(User(name="squatter", email=BOOTSTRAP_OWNER_EMAIL, role="user"))
+            await session.commit()
+
+        async with session_factory() as session:
+            with pytest.raises(RuntimeError, match="not created by"):
+                await ensure_bootstrap_owner(session, user_store)
+
     async def test_refuses_an_existing_account_with_the_admin_role(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
-        """Nothing reserves this address: a gateway admin can `POST /users`
-        with it and an admin role, or an OIDC provider can hand it to any
-        identity that asserts it. Adopting that account would silently
-        restore the exact escalation this module exists to close."""
+        """A gateway admin can `POST /users` with this exact email and an
+        admin role. Adopting that account would silently restore the exact
+        escalation this module exists to close — caught here as a second,
+        independent check even though the missing marker already refuses it."""
         user_store = UserStore()
         async with session_factory() as session:
             session.add(
@@ -141,4 +160,27 @@ class TestResolveRegistrationOwnerId:
         )
         async with session_factory() as session:
             with pytest.raises(RuntimeError, match="admin"):
+                await resolve_registration_owner_id(session, user_store, key)
+
+    async def test_role_user_squatter_at_the_bootstrap_address_fails_loud(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """Registration-time counterpart of the squatter case above: even
+        without ever having run `ensure_bootstrap_owner`, a bootstrap-type
+        key must not resolve to an unmarked account at that address."""
+        user_store = UserStore()
+        admin_id = await _make_user(session_factory, role="admin")
+        async with session_factory() as session:
+            session.add(User(name="squatter", email=BOOTSTRAP_OWNER_EMAIL, role="user"))
+            await session.commit()
+
+        key = ApiKey(
+            user_id=admin_id,
+            key_hash="h",
+            encrypted_key="e",
+            label="deployment bootstrap",
+            type=BOOTSTRAP_KEY_TYPE,
+        )
+        async with session_factory() as session:
+            with pytest.raises(RuntimeError, match="not created by"):
                 await resolve_registration_owner_id(session, user_store, key)
