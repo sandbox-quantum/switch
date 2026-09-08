@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import httpx
 import pytest
 from fastapi import HTTPException
 from sqlalchemy import select
@@ -30,6 +31,7 @@ def _config(**overrides: object) -> SwitchConfig:
         gateway_oidc_issuer_url="https://idp.example",
         gateway_oidc_client_id="cid",
         gateway_oidc_client_secret="sec",
+        gateway_oidc_scopes="openid email profile",
     )
     base.update(overrides)
     return SwitchConfig(**base)  # type: ignore[arg-type]
@@ -43,6 +45,19 @@ class _FakeClient:
 
     async def authorize_access_token(self, _request: object) -> dict:
         return self._token
+
+
+class _FakeClientNoUserinfoInToken:
+    """A token with no embedded userinfo, forcing the userinfo HTTP call."""
+
+    def __init__(self, userinfo_error: Exception) -> None:
+        self._userinfo_error = userinfo_error
+
+    async def authorize_access_token(self, _request: object) -> dict:
+        return {"access_token": "at"}
+
+    async def userinfo(self, **_kwargs: object) -> dict:
+        raise self._userinfo_error
 
 
 class TestOidcCallback:
@@ -412,6 +427,32 @@ class TestOidcCallback:
                 )
             assert exc.value.status_code == 401
 
+    async def test_userinfo_upstream_failure_maps_to_502(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # A token with no embedded userinfo forces the fallback HTTP call to
+        # the provider's userinfo endpoint; that call failing is the IdP's
+        # fault, not the caller's, and must not surface as an unhandled 500.
+        monkeypatch.setattr(
+            oidc_routes,
+            "_client",
+            lambda: _FakeClientNoUserinfoInToken(
+                httpx.ConnectError("connection refused")
+            ),
+        )
+
+        async with session_factory() as session:
+            with pytest.raises(HTTPException) as exc:
+                await oidc_routes.oidc_callback(
+                    request=SimpleNamespace(),  # type: ignore[arg-type]
+                    config=_config(),
+                    session=session,
+                    user_store=UserStore(),
+                )
+            assert exc.value.status_code == 502
+
 
 class TestTheCallbackPlacesTheUserInATenant:
     """Sign-in provisions accounts, and an account with no membership can
@@ -550,6 +591,7 @@ class TestAuthConfigEndpoint:
             gateway_oidc_issuer_url=None,
             gateway_oidc_client_id=None,
             gateway_oidc_client_secret=None,
+            gateway_oidc_scopes=None,
             gateway_password_login_enabled=False,
         )
         result = await auth_config(config=config)

@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 from typing import Annotated, Any
 
+import httpx
 from authlib.integrations.starlette_client import OAuth, OAuthError
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -98,7 +99,13 @@ async def oidc_callback(
 
     claims = token.get("userinfo")
     if not claims:
-        claims = await client.userinfo(token=token)
+        try:
+            claims = await client.userinfo(token=token)
+        except httpx.HTTPError as exc:
+            logger.error("OIDC userinfo request failed: %s", exc)
+            raise HTTPException(
+                status_code=502, detail="OIDC provider did not respond"
+            ) from exc
     email = claims.get("email")
     sub = claims.get("sub")
     if not email or not sub:
