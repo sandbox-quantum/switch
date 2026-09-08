@@ -436,6 +436,34 @@ def test_a_settled_form_heavy_in_entities_still_fits_a_context_block() -> None:
     assert re.search(r"…and \d+ more", footer), footer
 
 
+def test_a_settled_form_with_no_answers_in_it_says_so_rather_than_nothing() -> None:
+    """The last shape of the same family, and the mildest.
+
+    `answers` has no minimum length in either reader, and a settled event is
+    the host's rather than ours: a card answered from the console, or by a host
+    that settles empty, arrives here. The loop then produces nothing and the
+    footer is `" — answered by … ."`, or a bare full stop with no actor — a card
+    that reads as answered and shows no answer. Nobody is stuck on it, which is
+    what makes it the silent kind: it looks fine.
+    """
+    answered = _requests("formAnswerLifecycle")["request-form"]
+    assert answered.result is not None
+    empty = QuestionsResult(kind="questions", answers=[])
+    request = answered.model_copy(
+        update={"result": answered.result.model_copy(update={"result": empty})}
+    )
+
+    assert _footer(render_questions(request, FORM).blocks) == (
+        "Answered by actor-demo from Slack, but the host did not say what was chosen."
+    )
+
+    nameless = request.model_copy(update={"decided_by": None})
+
+    assert _footer(render_questions(nameless, FORM).blocks) == (
+        "Answered, but the host did not say what was chosen."
+    )
+
+
 def test_a_settled_form_stops_asking() -> None:
     """A card still showing its questions is a card inviting a lost answer."""
     request = _requests("formAnswerLifecycle")["request-form"]

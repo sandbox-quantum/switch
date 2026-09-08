@@ -615,7 +615,13 @@ def _answered_questions(request: SnapshotRequest, content: QuestionsContent) -> 
     settled = request.result
     result = settled.result if settled else None
     by = f" by {_actor(request.decided_by)}" if request.decided_by else ""
-    if not isinstance(result, QuestionsResult):
+    # An empty `answers` is as legal as a missing result and says as little.
+    # Neither reader gives the list a minimum length, and the settled event is
+    # the host's rather than ours, so a card settled from the console or by a
+    # host that answers nothing lands here. Without this the loop below produces
+    # nothing and the whole footer comes out as " — answered by …." or, with no
+    # actor, as a full stop: a card that looks answered and shows no answer.
+    if not isinstance(result, QuestionsResult) or not result.answers:
         return f"Answered{by}, but the host did not say what was chosen."
     labels = {
         option.option_id: option.label
