@@ -307,6 +307,27 @@ postgresql:
   # managed cloud databases generally require "require" or stricter.
   sslMode: disable
 
+  # Certificate authorities the server certificate is checked against, as a PEM
+  # bundle. The two verifying sslModes require one and the others ignore one, so
+  # the chart refuses a mismatch rather than rendering a release that fails on
+  # first connect. A managed database is signed by the provider's own root
+  # rather than a publicly trusted one, which is why the system trust store is
+  # not enough; AWS publishes a bundle covering every commercial region at
+  # https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem
+  #
+  # Supply it inline as `contents` (rendered into a chart-managed ConfigMap) or
+  # name a ConfigMap you already have — not both. It is mounted into
+  # switch-core, the migration Job and Mattermost, all of which connect.
+  #
+  # verify-full additionally checks the hostname, so external.host must be the
+  # name the certificate was issued for — for RDS the instance endpoint, not a
+  # CNAME of your own. A CNAME means settling for verify-ca.
+  caBundle:
+    contents: ""
+    existingConfigMap: ""
+    key: ca.pem
+    mountPath: /etc/ssl/switch-db
+
   # switch-core's SQLAlchemy connection pool. Size this against the number of
   # live agent connections, not human traffic: bearer-token auth hits the
   # database on every authenticated request and each agent connection beats

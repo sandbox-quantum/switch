@@ -36,4 +36,12 @@ spec:
           command: ["alembic", "upgrade", "head"]
           env:
             {{- include "switch.coreEnv" . | nindent 12 }}
+          {{- if include "switch.dbCaBundleConfigMap" . }}
+          volumeMounts:
+            {{- include "switch.dbCaBundleVolumeMount" . | nindent 12 }}
+          {{- end }}
+      {{- if include "switch.dbCaBundleConfigMap" . }}
+      volumes:
+        {{- include "switch.dbCaBundleVolume" . | nindent 8 }}
+      {{- end }}
 {{- end }}

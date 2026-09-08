@@ -202,6 +202,62 @@ imagePullSecrets:
 {{- end }}
 
 {{/*
+Name of the ConfigMap holding the database CA bundle — the user's own, or the
+chart-managed one rendered from postgresql.caBundle.contents. Empty when no
+bundle is configured, which is what every caller tests to decide whether to
+mount anything.
+*/}}
+{{- define "switch.dbCaBundleConfigMap" -}}
+{{- if .Values.postgresql.caBundle.existingConfigMap -}}
+{{- .Values.postgresql.caBundle.existingConfigMap -}}
+{{- else if .Values.postgresql.caBundle.contents -}}
+{{- include "switch.fullname" . }}-db-ca
+{{- end -}}
+{{- end }}
+
+{{/*
+Path the CA bundle is mounted at inside every container that connects to the
+database.
+*/}}
+{{- define "switch.dbCaBundlePath" -}}
+{{- printf "%s/%s" (trimSuffix "/" .Values.postgresql.caBundle.mountPath) .Values.postgresql.caBundle.key -}}
+{{- end }}
+
+{{- define "switch.dbCaBundleVolume" -}}
+- name: db-ca-bundle
+  configMap:
+    name: {{ include "switch.dbCaBundleConfigMap" . }}
+    items:
+      - key: {{ .Values.postgresql.caBundle.key }}
+        path: {{ .Values.postgresql.caBundle.key }}
+{{- end }}
+
+{{- define "switch.dbCaBundleVolumeMount" -}}
+- name: db-ca-bundle
+  mountPath: {{ .Values.postgresql.caBundle.mountPath }}
+  readOnly: true
+{{- end }}
+
+{{/*
+Refuse a TLS configuration that cannot work, at template time rather than on
+the first connection of a rolled-out pod.
+*/}}
+{{- define "switch.validateDbTls" -}}
+{{- $ca := .Values.postgresql.caBundle -}}
+{{- if and $ca.contents $ca.existingConfigMap -}}
+{{- fail "postgresql.caBundle: set contents or existingConfigMap, not both." -}}
+{{- end -}}
+{{- $bundle := include "switch.dbCaBundleConfigMap" . -}}
+{{- $verifying := has .Values.postgresql.sslMode (list "verify-ca" "verify-full") -}}
+{{- if and $verifying (not $bundle) -}}
+{{- fail (printf "postgresql.sslMode=%s checks the server certificate against a CA bundle, but postgresql.caBundle is empty. Supply the provider's root CA (for RDS, https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem) or use sslMode=require." .Values.postgresql.sslMode) -}}
+{{- end -}}
+{{- if and $bundle (not $verifying) -}}
+{{- fail (printf "postgresql.caBundle is set but postgresql.sslMode=%s never checks the server certificate, so the bundle would have no effect. Use verify-ca or verify-full." .Values.postgresql.sslMode) -}}
+{{- end -}}
+{{- end }}
+
+{{/*
 switch-core container env. Shared by the switch-core Deployment and the
 pre-upgrade migration Job so they always run against the same configuration
 (env.py builds a full SwitchConfig, so the migration Job needs every var too).
@@ -223,6 +279,10 @@ Include with `nindent 12`.
   value: {{ include "switch.postgresDatabase" . | quote }}
 - name: DB_SSL_MODE
   value: {{ .Values.postgresql.sslMode | quote }}
+{{- if include "switch.dbCaBundleConfigMap" . }}
+- name: DB_SSL_ROOT_CERT
+  value: {{ include "switch.dbCaBundlePath" . | quote }}
+{{- end }}
 - name: DB_POOL_SIZE
   value: {{ .Values.postgresql.pool.size | quote }}
 - name: DB_MAX_OVERFLOW

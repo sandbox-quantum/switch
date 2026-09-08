@@ -69,19 +69,20 @@ The chart can already point at an external database:
 Secret (`existingSecret` supports external-secrets). `sslMode` is plumbed
 through to both switch-core and Mattermost.
 
-Two gaps, one closed here and one deliberately left:
+What was missing was a certificate authority. A verifying TLS mode had no way
+to be told which one to trust, so `verify-ca` and `verify-full` fell back to
+the system trust store and could not validate an RDS certificate at all. Both
+halves of that are now closed:
 
-- **Closed:** a verifying TLS mode had no way to be told which certificate
-  authority to trust, so `verify-ca` and `verify-full` fell back to the system
-  trust store and could not validate an RDS certificate at all. `DB_SSL_ROOT_CERT`
-  now takes a PEM bundle, and the connection is built with an SSL context
-  instead of a bare mode string. A path that is not a readable file, or a
-  bundle set alongside a non-verifying mode, is refused at startup rather than
-  discovered on first connect.
-- **Left open:** the chart has no `DB_SSL_ROOT_CERT` and no way to mount the
-  bundle into the pod. Getting to `verify-full` in a deployment therefore needs
-  a chart change — an env entry plus a ConfigMap or Secret carrying the bundle.
-  It is small, and it is not in this change.
+- `DB_SSL_ROOT_CERT` takes a PEM bundle, and the connection is built from an
+  SSL context rather than a bare mode string. A path that is not a readable
+  file, or a bundle set alongside a non-verifying mode, is refused at startup
+  rather than discovered on the first connection.
+- `postgresql.caBundle` in the chart carries the bundle — inline, or the name
+  of a ConfigMap you already have — and mounts it into everything that connects:
+  switch-core, the migration Job and Mattermost. A verifying `sslMode` with no
+  bundle, or a bundle with a mode that would ignore it, fails at template time
+  rather than rolling out pods that cannot connect.
 
 ## 4. Do not put a transaction pooler in front of it
 
@@ -103,6 +104,10 @@ this first.
 If connection count becomes the problem, the honest fix is the application's
 pool size, not a pooler.
 
+Nothing enforces this today — it is a note, and notes are forgotten. A
+follow-up should make the constraint impossible to miss from the outside, in
+whatever provisions the database.
+
 ## 5. TLS
 
 RDS publishes a global CA bundle covering every commercial region:
@@ -116,12 +121,9 @@ AWS is explicit that intermediates should not be added to a trust store. Server
 certificates are rotated by RDS on their own schedule and do not need the
 bundle re-downloaded.
 
-Then:
-
-```
-DB_SSL_MODE=verify-full
-DB_SSL_ROOT_CERT=/etc/ssl/certs/rds-global-bundle.pem
-```
+In a deployment that is `postgresql.sslMode: verify-full` plus
+`postgresql.caBundle`; outside one, the same two settings are `DB_SSL_MODE` and
+`DB_SSL_ROOT_CERT`.
 
 **`verify-full` checks the hostname**, and the certificate carries the RDS
 endpoint DNS name. Connect to `<instance>.<id>.<region>.rds.amazonaws.com`, not
@@ -168,8 +170,8 @@ a shorter outage for a fiddlier cutover.
 2. Create the `switch` and `mattermost` databases and the application role. The
    RDS master user is not a superuser, and `pg_dumpall` needs privileges it does
    not have — so recreate roles by hand rather than restoring a globals dump.
-3. Download the CA bundle, put it where the pods will read it, and make the
-   chart change from §3.
+3. Download the CA bundle and put it in `postgresql.caBundle` — as
+   `existingConfigMap` if it is synced in from elsewhere, otherwise inline.
 4. **Rehearse the whole thing** against a scratch database, and time it. The
    number you get is the downtime estimate; the one you guess is not.
 5. Announce the window.
