@@ -1151,6 +1151,21 @@ def test_parse_group_empty_rooms_list(env):
         )
 
 
+def test_parse_group_duplicate_room_names(env):
+    with pytest.raises(ValueError, match="Duplicate room name"):
+        _svc(env).parse(
+            """
+            group:
+              name: "G"
+            rooms:
+              - name: "lobby"
+                description: "d"
+              - name: "lobby"
+                description: "d2"
+            """
+        )
+
+
 def test_parse_group_link_bad_name(env):
     with pytest.raises(ValueError, match="does not match"):
         _svc(env).parse(

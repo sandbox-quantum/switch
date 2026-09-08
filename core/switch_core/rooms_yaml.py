@@ -410,6 +410,10 @@ class RoomYamlService:
             except ValidationError as e:
                 raise ValueError(f"Invalid link spec at index {i}: {e}") from e
         room_names = {r.name for r in rooms}
+        if len(room_names) != len(rooms):
+            seen: set[str] = set()
+            dupes = [r.name for r in rooms if r.name in seen or seen.add(r.name)]  # type: ignore[func-returns-value]
+            raise ValueError(f"Duplicate room name(s): {', '.join(dupes)}")
         for link in links:
             for end, name in [("from", link.from_), ("to", link.to)]:
                 if name not in room_names:
@@ -421,7 +425,12 @@ class RoomYamlService:
     # ── Provision ───────────────────────────────────────────────────────────
 
     async def provision(
-        self, spec: RoomSpec, *, user_id: str, is_admin: bool
+        self,
+        spec: RoomSpec,
+        *,
+        user_id: str,
+        is_admin: bool,
+        group_id: str | None = None,
     ) -> ProvisionResult:
         bridge_id = await self._resolve_bridge_id(spec.bridge)
         if spec.users and bridge_id is None:
@@ -442,6 +451,7 @@ class RoomYamlService:
             agent_names=spec.agents or None,
             user_names=spec.users or None,
             bridge_id=bridge_id,
+            group_id=group_id,
             created_by=user_id,
             owner_id=user_id,
             acting_user_id=user_id,
@@ -498,8 +508,11 @@ class RoomYamlService:
 
         for i, room_spec in enumerate(spec.rooms):
             try:
-                result = await self._provision_room_in_group(
-                    room_spec, group_id=group_id, user_id=user_id, is_admin=is_admin
+                result = await self.provision(
+                    room_spec,
+                    user_id=user_id,
+                    is_admin=is_admin,
+                    group_id=group_id,
                 )
                 room_results.append(result)
                 name_to_room_id[room_spec.name] = result.room_id
@@ -545,66 +558,6 @@ class RoomYamlService:
             group_name=spec.group.name,
             rooms=room_results,
             errors=errors,
-        )
-
-    async def _provision_room_in_group(
-        self,
-        spec: RoomSpec,
-        *,
-        group_id: str,
-        user_id: str,
-        is_admin: bool,
-    ) -> ProvisionResult:
-        """Provision a single room with ``group_id`` set."""
-        bridge_id = await self._resolve_bridge_id(spec.bridge)
-        if spec.users and bridge_id is None:
-            raise ValueError(
-                "Cannot attach users to a room with no bridge "
-                "(users live on a collaboration bridge)"
-            )
-
-        attached_ref_ids, inline_refs = await self._resolve_references(
-            spec.references, user_id=user_id, is_admin=is_admin
-        )
-
-        config = RoomCreateConfig(
-            name=spec.name,
-            description=spec.description,
-            instructions=spec.instructions,
-            channel_type=cast(ChannelType, spec.channel_type),
-            agent_names=spec.agents or None,
-            user_names=spec.users or None,
-            bridge_id=bridge_id,
-            group_id=group_id,
-            created_by=user_id,
-            owner_id=user_id,
-            acting_user_id=user_id,
-            acting_is_admin=is_admin,
-            read_visibility=spec.read_visibility,
-            write_visibility=spec.write_visibility,
-            roles=spec.roles or None,
-            reference_ids=attached_ref_ids or None,
-            aliases=spec.aliases,
-        )
-        result = await self._rooms.create_room(config)
-        room_id = result.room.id
-        failures: list[dict[str, Any]] = list(result.failed_attachments)
-
-        created_ref_ids = await self._create_inline_references(
-            room_id, inline_refs, user_id=user_id, is_admin=is_admin, failures=failures
-        )
-        created_doc_ids = await self._create_inline_docs(
-            room_id, spec.docs, user_id=user_id, failures=failures
-        )
-
-        return ProvisionResult(
-            room_id=room_id,
-            room_name=result.room.name,
-            attached_reference_ids=attached_ref_ids,
-            created_reference_ids=created_ref_ids,
-            created_document_ids=created_doc_ids,
-            role_names=[r.name for r in spec.roles],
-            failed_attachments=failures,
         )
 
     async def _resolve_bridge_id(self, bridge_name: str | None) -> str | None:
