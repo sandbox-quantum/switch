@@ -21,7 +21,8 @@ code. Every stage commits separately so any of it can be undone on its own.
 
 ## ⚠️ Open safety register
 
-**D6 — the email path authenticates nobody, and this is accepted for now.**
+**D6 — the email path authenticates nobody. MERGE BLOCKER for the email
+bridge.**
 Inbound mail is admitted on its `From` header matching `allowed_senders`. A
 `From` header is free text. Nothing verifies it — `authentication.py` is parked
 on `feat/us6-verified-senders` and the adapter does not import it, which is why
@@ -40,13 +41,18 @@ would need separate access to. The webhook secret protects the HTTP endpoint but
 not the mail path: with the IMAP poller, anything delivered to the polled
 mailbox is ingested.
 
-**Why it is being accepted:** the demo runs on a throwaway mailbox with a
-two-address allowlist, and the fix is understood and costed (see below). It is
-recorded here rather than fixed so that nobody discovers it by reasoning about
-the code, and so that it is a deliberate decision rather than an oversight.
+**Why it is not fixed yet:** the demo runs on a throwaway mailbox with a
+two-address allowlist, so it was not worth interrupting the demo for. It is
+recorded rather than left implicit so that nobody has to discover it by
+reasoning about the code.
 
-**It must be closed before this bridge points at a real inbox.** Wiring the
-parked module is roughly half a day: a `trusted_authserv_id` on the config,
+**This must be fixed before the email bridge is merged**, not before it is
+deployed. Once it is on a default branch someone will enable it, and the
+warning at startup is not a substitute for the check. Treat the bridge and its
+authentication as one change: `authenticates_senders = False` should never
+reach a release.
+
+Wiring the parked module is roughly half a day: a `trusted_authserv_id` on the config,
 one call after the allowlist, a decision on what a failure does, and flipping
 `authenticates_senders`. Verified against real mail: Gmail stamps
 a `dmarc=pass` verdict aligned to the `From` domain, which is exactly what it reads.

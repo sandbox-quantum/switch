@@ -218,8 +218,10 @@ In the order the evidence supports, not the order the design doc assumed:
    system can record. Until then, D3 enforcement should not be built on it.
 3. **Persist standing instructions.** Room documents already exist. Nothing
    connects a "from now on…" said in a room to anything durable.
-4. **Then** US-3, US-5, US-6 verification — each of which already has its code
-   written and waiting.
+4. **US-6 verification is not optional and not fourth.** It is D6, it blocks
+   the email bridge from merging, and the code is written and parked. Do it
+   with D5, in the same PR as the bridge.
+5. **Then** US-3 and US-5, each of which also has code written and waiting.
 
 ---
 
@@ -241,7 +243,7 @@ lives in these design docs.
 | **2. audience labelling** | `disclosure.py` (wired half), `clients/{room_meta,agent_client}.py`, `protocol/instructions.py`, runtime `surface.ts`, console `switch-event-format.ts`, tests | 1 (conceptually) | after §4.2 |
 | **3. runtime client** | `room-set.ts`, `bin.ts`, `event-stream.ts`, `index.ts`, `types.ts`, tests, the three `SKILL.md`, plugin versions, `artifacts.yaml` | 1 | yes, but needs the npm tag |
 | **4. Switch Console multi-room** | `room-connection.ts`, `switch-notification-poller.ts`, `sidecar-runtime.ts`, `switch-room-service.ts`, `shared/…/switch-rooms.ts`, `auto-session-watcher.ts`, tests | 1, 3 | yes |
-| **5. email bridge** | `email/adapter.py`, `collaboration/adapter.py`, `lifecycle_service.py`, `main.py`, `test_email_adapter.py`, the deploy override, `scripts/email-imap-poll.py` | 1 | **hold for D5** |
+| **5. email bridge** | `email/adapter.py`, `collaboration/adapter.py`, `lifecycle_service.py`, `main.py`, `test_email_adapter.py`, the deploy override, `scripts/email-imap-poll.py` | 1 | **hold for D5, and D6 blocks the merge** |
 | **6. the unwired code** | `may_carry`/`disclosed_span`, `email/authentication.py`, `email/reply.py` | its own story | **do not submit** |
 
 ### Order and timing
@@ -252,6 +254,11 @@ Landing it early removes about a third of the branch and de-risks the rest.
 
 **PRs 2 and 5 should wait** on the two decisions in §4 — otherwise they are
 written twice.
+
+**PR 5 additionally cannot merge with D6 open.** The bridge admits mail on a
+forgeable `From`, and shipping it that way puts an unauthenticated path on a
+default branch where someone will enable it. Wire `authentication.py` in the
+same PR; the bridge and its authentication are one change.
 
 **PR 3 carries a release step**, not just a merge: the connector pins must name
 a *published* runtime, so the tag (`git tag switch-agent-runtime-v<version>`)

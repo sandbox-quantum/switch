@@ -142,7 +142,8 @@ correspondent without making them the agent's owner.
 **Say also — this is the honest caveat, and it is stronger than "unverified":**
 for email the sender is **not authenticated at all**, and a forged `From` from an
 allowlisted address is treated as that person — including as the agent's owner.
-See **D6** in the progress log. The bridge logs it at startup:
+See **D6** in the progress log, which blocks the bridge from merging. It logs
+this about itself at startup:
 
 > *"the identity on an inbound message is a claim the platform did not verify"*
 
