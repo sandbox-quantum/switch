@@ -19,7 +19,8 @@ site presents them.
 ## `old/`
 
 Design and operator material written for this repository: the architecture
-overview, the agent protocol, and per-bridge setup guides. None of it is
+overview, the agent protocol, per-bridge setup guides, and design spikes for
+work that has not been built. A spike says so in its first line. None of it is
 published, and none of it is covered by the pages under `official/` — where the
 two describe the same thing, this is the deeper account and the published page is
 the one users act on.
