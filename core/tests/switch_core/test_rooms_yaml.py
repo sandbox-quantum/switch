@@ -40,6 +40,7 @@ from switch_core.db.stores.external_user_store import ExternalUserStore
 from switch_core.db.stores.package_store import PackageStore
 from switch_core.db.stores.reference_store import ReferenceStore
 from switch_core.db.stores.reference_type_store import ReferenceTypeStore
+from switch_core.db.stores.room_group_store import RoomGroupStore
 from switch_core.db.stores.room_link_store import RoomLinkStore
 from switch_core.db.stores.room_role_store import RoomRoleStore
 from switch_core.db.stores.room_store import RoomStore
@@ -163,6 +164,7 @@ async def env(session_factory: async_sessionmaker[AsyncSession]):
         agent_store=agent_store,
         bridge_store=CollaborationBridgeStore(),
         external_user_store=ExternalUserStore(),
+        room_group_store=RoomGroupStore(),
         room_role_store=RoomRoleStore(),
         session_factory=session_factory,
     )
