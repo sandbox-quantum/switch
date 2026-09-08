@@ -158,25 +158,33 @@ class TestGetOrCreateOidcUser:
         # users.email is still case-sensitively unique, so two rows differing
         # only by case can exist from before get_by_email compared
         # case-insensitively (or from a path that bypasses this store
-        # entirely). A login must not crash on that, but silently guessing
-        # between two real accounts is exactly the quiet fallback CLAUDE.md
-        # rules out: the choice must be deterministic and disclosed.
+        # entirely). A login must not crash on that, and it must not silently
+        # guess between two real accounts either — a pick that could change
+        # between calls, or that nobody is ever told about, is worse than a
+        # stable pick that gets logged. This asserts stability and disclosure,
+        # not "the right one": which id sorts lowest is arbitrary, so the test
+        # doesn't assign either row a role that implies it should win.
         store = UserStore()
         async with session_factory() as session:
-            older = User(name="Old", email="dup@example.com", role="admin")
-            newer = User(name="New", email="Dup@Example.com", role="user")
-            await store.create(session, older)
-            await store.create(session, newer)
+            first = User(name="First", email="dup@example.com", role="user")
+            second = User(name="Second", email="Dup@Example.com", role="user")
+            await store.create(session, first)
+            await store.create(session, second)
             await session.commit()
+            expected = min(first.id, second.id)
 
             with caplog.at_level(
                 logging.ERROR, logger="switch_core.db.stores.user_store"
             ):
-                found = await store.get_by_email(session, "DUP@EXAMPLE.COM")
+                # Called twice: the point being tested is that this is a
+                # stable pick, not one that happens to vary between calls.
+                first_call = await store.get_by_email(session, "DUP@EXAMPLE.COM")
+                second_call = await store.get_by_email(session, "dup@example.com")
 
-            assert found is not None and found.id == older.id
+            assert first_call is not None and first_call.id == expected
+            assert second_call is not None and second_call.id == expected
             assert any(
-                older.id in record.message and newer.id in record.message
+                first.id in record.message and second.id in record.message
                 for record in caplog.records
             )
 

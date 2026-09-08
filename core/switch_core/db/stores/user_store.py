@@ -56,28 +56,32 @@ class UserStore:
 
         ``users.email`` is still case-sensitively unique, so two rows
         differing only in case can already exist from before this method
-        compared case-insensitively. A login must not turn that into a 500,
-        but silently guessing between two real accounts — one of which could
-        be an admin — is exactly the kind of quiet fallback CLAUDE.md rules
-        out: ordering is made deterministic (oldest account wins, as the
-        presumed original) and the ambiguity itself is logged loudly so it
+        compared case-insensitively. A login must not turn that into a 500;
+        neither should it silently guess between two real accounts — one of
+        which could be an admin — since a random pick that happens to change
+        between calls is a worse failure mode than a wrong-but-stable one, and
+        a wrong one nobody hears about is worse than either. So the pick is
+        made deterministic — ordered by ``id``, which is an arbitrary but
+        stable tiebreak, not a claim that the lower id is the "real" or
+        original account — and the ambiguity itself is logged loudly so it
         gets noticed and cleaned up rather than repeating unnoticed on every
         login.
         """
         result = await session.execute(
             select(User)
             .where(func.lower(User.email) == email.lower())
-            .order_by(User.created_at, User.id)
+            .order_by(User.id)
         )
         users = result.scalars().all()
         if len(users) > 1:
             logger.error(
                 "Multiple users share email %r case-insensitively (ids: %s); "
-                "returning the oldest. This is pre-existing duplicate data, "
-                "not something this login caused — merge or rename the "
-                "extra account(s).",
+                "returning %s (lowest id, an arbitrary but stable pick). This "
+                "is pre-existing duplicate data, not something this login "
+                "caused — merge or rename the extra account(s).",
                 email,
                 [u.id for u in users],
+                users[0].id,
             )
         return users[0] if users else None
 

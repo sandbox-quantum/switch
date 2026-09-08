@@ -26,11 +26,21 @@ out or forked into a second account by a changed email.
 considers two NULLs equal — so a separate partial unique index enforces at
 most one such row per subject; without it, two different users sharing a
 legacy subject would both migrate cleanly and a login would then resolve to
-whichever one the lookup happened to see first. Two users cannot share a
-legacy subject in practice (each was some real person's login), so this
-refuses to proceed rather than guess which one is right if it ever finds one:
-that is a data problem for a human to resolve by hand, not one this migration
-should paper over by silently picking a side.
+whichever one the lookup happened to see first. The pre-flight check below
+refuses to proceed rather than guess if it ever finds two users sharing an
+``oidc_sub`` value at all, not only the no-issuer case: two full pairs
+sharing the same ``(iss, sub)`` would otherwise die on the new unique
+constraint with a bare violation instead of a message naming which users are
+involved, and a legacy row sharing a subject with a full-pair row would
+migrate cleanly on *both* sides and then never resolve on the legacy side
+again — later logins would always match the full pair first, silently
+orphaning whichever account only the legacy row named. Either way that is a
+data problem for a human to resolve by hand, not one this migration should
+paper over by silently picking a side. The check also catches — and blocks —
+the rare legitimate case of two different issuers happening to assign the
+same subject string to two different users: telling that apart from a real
+collision automatically isn't implemented, so a human has to look and
+disambiguate it by hand either way.
 
 The email column also gains a case-insensitive index: linking now matches an
 existing account by email, and a compare that ignored case here would defeat
@@ -54,9 +64,11 @@ def upgrade() -> None:
     duplicates = connection.execute(
         sa.text(
             """
-            SELECT metadata->>'oidc_sub' AS sub, count(*) AS n
+            SELECT metadata->>'oidc_sub' AS sub,
+                   count(*) AS n,
+                   array_agg(metadata->>'oidc_iss') AS issuers
             FROM users
-            WHERE metadata ? 'oidc_sub' AND NOT (metadata ? 'oidc_iss')
+            WHERE metadata ? 'oidc_sub'
             GROUP BY metadata->>'oidc_sub'
             HAVING count(*) > 1
             """
@@ -64,13 +76,25 @@ def upgrade() -> None:
     ).fetchall()
     if duplicates:
         raise RuntimeError(
-            "Refusing to migrate: more than one user shares the same legacy "
-            "oidc_sub with no recorded issuer, which cannot be told apart by "
-            "subject alone: "
-            + ", ".join(f"{row.sub!r} ({row.n} users)" for row in duplicates)
-            + ". Resolve by hand — decide which account actually owns each "
+            "Refusing to migrate: more than one user's oidc_sub metadata "
+            "names the same subject, and this migration cannot safely tell "
+            "them apart — two users sharing an identical (iss, sub) pair "
+            "would violate the unique constraint this migration adds, and a "
+            "legacy (no-issuer) row sharing a subject with a full pair would "
+            "migrate cleanly but then never be reachable again, since a "
+            "later login always matches the full pair first: "
+            + ", ".join(
+                f"{row.sub!r}: issuers {[iss or '<no issuer>' for iss in row.issuers]}"
+                for row in duplicates
+            )
+            + ". This includes the rare legitimate case of two different "
+            "issuers happening to assign the same subject string to two "
+            "different users — telling that apart from a real collision "
+            "automatically isn't implemented, so it blocks here too. Resolve "
+            "by hand: for a real collision, decide which account owns the "
             "subject and clear oidc_sub from users.metadata for the "
-            "other(s) — then re-run this migration."
+            "other(s); for a coincidence, disambiguate the values yourself "
+            "(this migration will not do it for you) — then re-run."
         )
 
     op.create_table(

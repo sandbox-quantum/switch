@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 import switch_core.gateway.oidc_routes as oidc_routes
 from switch_core.config import SwitchConfig
 from switch_core.db.models import OidcIdentity, User
-from switch_core.db.stores.user_store import UserStore
+from switch_core.db.stores.user_store import OidcIdentityRaceError, UserStore
 from switch_core.gateway.auth import hash_password
 from switch_core.gateway.auth_routes import auth_config
 
@@ -357,6 +357,41 @@ class TestOidcCallback:
             assert user is not None
             assert user.role == "admin"
             assert user.email == "legacy-admin@example.com"
+
+    async def test_identity_race_contention_maps_to_503(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # A raced login is transient contention, not a rejected security
+        # decision (that's OidcIdentityConflictError's 409) — it must not
+        # surface as a generic 500, and it must be told apart from a 409 so
+        # an operator can distinguish a retry storm from an attack signal.
+        token = {
+            "userinfo": {
+                "email": "race@example.com",
+                "email_verified": True,
+                "sub": "okta|race-503",
+                "name": "Race",
+            }
+        }
+        monkeypatch.setattr(oidc_routes, "_client", lambda: _FakeClient(token))
+
+        class _AlwaysRacingStore:
+            async def get_or_create_oidc_user(self, *args: object, **kwargs: object):
+                raise OidcIdentityRaceError("raced twice in a row")
+
+        async with session_factory() as session:
+            with pytest.raises(HTTPException) as exc:
+                await oidc_routes.oidc_callback(
+                    request=SimpleNamespace(),  # type: ignore[arg-type]
+                    config=_config(),
+                    session=session,
+                    user_store=_AlwaysRacingStore(),  # type: ignore[arg-type]
+                )
+            assert exc.value.status_code == 503
+            assert exc.value.headers is not None
+            assert exc.value.headers.get("Retry-After") == "1"
 
     async def test_missing_email_claim_raises_401(
         self,

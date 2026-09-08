@@ -163,3 +163,89 @@ async def test_backfill_refuses_when_two_users_share_a_legacy_subject(
             assert table_exists.scalar() is False
     finally:
         await engine.dispose()
+
+
+async def test_backfill_refuses_when_two_users_share_an_identical_full_pair(
+    backfill_url: str,
+) -> None:
+    # Two users with the exact same (iss, sub) would otherwise die on the new
+    # UNIQUE(iss, sub) constraint mid-migration with a bare violation and no
+    # indication which users are involved; the pre-flight check must catch
+    # this case too, not only the no-issuer one.
+    engine = create_async_engine(backfill_url)
+    try:
+        async with engine.begin() as connection:
+            await connection.run_sync(_upgrade_to(_PRE_MIGRATION_REVISION))
+
+        async with engine.begin() as connection:
+            await connection.execute(
+                text(
+                    """
+                    INSERT INTO users (id, name, email, role, password_hash, metadata)
+                    VALUES
+                        ('full-a', 'A', 'full-a@example.com', 'admin', NULL,
+                         '{"oidc_iss": "https://idp.example", "oidc_sub": "okta|shared-full"}'),
+                        ('full-b', 'B', 'full-b@example.com', 'user', NULL,
+                         '{"oidc_iss": "https://idp.example", "oidc_sub": "okta|shared-full"}')
+                    """
+                )
+            )
+
+        with pytest.raises(RuntimeError, match="okta\\|shared-full"):
+            async with engine.begin() as connection:
+                await connection.run_sync(_upgrade_to(_MIGRATION_UNDER_TEST))
+
+        async with engine.connect() as connection:
+            table_exists = await connection.execute(
+                text(
+                    "SELECT to_regclass('public.oidc_identities') IS NOT NULL AS exists"
+                )
+            )
+            assert table_exists.scalar() is False
+    finally:
+        await engine.dispose()
+
+
+async def test_backfill_refuses_when_a_legacy_row_shares_a_subject_with_a_full_pair(
+    backfill_url: str,
+) -> None:
+    # The case that previously failed silently: a legacy (no-issuer) row and
+    # a full-pair row sharing one subject would both migrate cleanly on their
+    # own — no constraint stops either insert — and the legacy row would then
+    # be permanently unreachable, since a later login always matches the
+    # full pair via the exact (iss, sub) lookup first. The pre-flight must
+    # catch this even though neither row alone, nor together, would trip
+    # either unique index at insert time.
+    engine = create_async_engine(backfill_url)
+    try:
+        async with engine.begin() as connection:
+            await connection.run_sync(_upgrade_to(_PRE_MIGRATION_REVISION))
+
+        async with engine.begin() as connection:
+            await connection.execute(
+                text(
+                    """
+                    INSERT INTO users (id, name, email, role, password_hash, metadata)
+                    VALUES
+                        ('orphaned-legacy', 'Legacy', 'orphaned-legacy@example.com',
+                         'admin', NULL, '{"oidc_sub": "okta|mixed-shared"}'),
+                        ('winning-full', 'Full', 'winning-full@example.com', 'user',
+                         NULL,
+                         '{"oidc_iss": "https://idp.example", "oidc_sub": "okta|mixed-shared"}')
+                    """
+                )
+            )
+
+        with pytest.raises(RuntimeError, match="okta\\|mixed-shared"):
+            async with engine.begin() as connection:
+                await connection.run_sync(_upgrade_to(_MIGRATION_UNDER_TEST))
+
+        async with engine.connect() as connection:
+            table_exists = await connection.execute(
+                text(
+                    "SELECT to_regclass('public.oidc_identities') IS NOT NULL AS exists"
+                )
+            )
+            assert table_exists.scalar() is False
+    finally:
+        await engine.dispose()
