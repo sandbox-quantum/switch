@@ -186,6 +186,33 @@ export function LoadExistingAgentsSection({
         description: names.join(', '),
       });
       setSelected(new Set());
+
+      // Mark loaded agents as blocked immediately so the label appears without
+      // waiting for the SSH round trip that a full refetch requires.
+      const loaded = new Set(names);
+      queryClient.setQueryData(
+        [LOAD_AGENTS_QUERY_KEY, sshHost, serverId],
+        (prev: { agents: LoadableAgentRow[]; serverApiUrl: string } | undefined) => {
+          if (!prev) return prev;
+          return {
+            ...prev,
+            agents: prev.agents.map((a) =>
+              loaded.has(a.name)
+                ? { ...a, alreadyAgent: true, blockedReason: 'Already loaded in this Console' }
+                : a
+            ),
+          };
+        }
+      );
+      // Also update manual agents so both lists stay consistent.
+      setManualAgents((prev) =>
+        prev.map((a) =>
+          loaded.has(a.name)
+            ? { ...a, alreadyAgent: true, blockedReason: 'Already loaded in this Console' }
+            : a
+        )
+      );
+
       void queryClient.invalidateQueries({ queryKey: [LOAD_AGENTS_QUERY_KEY, sshHost, serverId] });
     },
     onError: (error) => {
