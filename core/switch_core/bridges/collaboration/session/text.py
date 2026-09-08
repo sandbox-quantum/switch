@@ -121,11 +121,16 @@ def _bare(token: str) -> TextAnswer | None:
 def _selection(token: str) -> tuple[int | None, Decision | None] | None:
     word = _word(token)
     if word.isdecimal():
-        # Not `isdigit`: that is true of "①" and "10²", which `int` then refuses.
+        # Bounded before converting rather than after, because `int` refuses
+        # things `str` calls numbers and every refusal here is a message the
+        # room loses: "①" is a digit but not a decimal, and a string of more
+        # than 4300 decimals is neither. A card offers at most 25 options, so
+        # nothing longer than two digits is a choice in the first place.
+        if len(word) > 2:
+            return None
         index = int(word)
-        # "0" is not an option on any card, and neither is a number so long it
-        # is plainly not one. Refusing beats reading it as a choice.
-        return (index, None) if 1 <= index <= 99 else None
+        # "0" is not an option on any card.
+        return (index, None) if index >= 1 else None
     decision = _DECISIONS.get(word)
     return (None, decision) if decision else None
 

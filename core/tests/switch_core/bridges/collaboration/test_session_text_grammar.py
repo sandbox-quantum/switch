@@ -91,16 +91,28 @@ def test_anything_else_is_just_someone_talking(body: str) -> None:
     assert parse_text_answer(body) is None
 
 
-@pytest.mark.parametrize("body", ["①", "²", "R42 ①", "R42 10²", "R42 ٤"])
+@pytest.mark.parametrize(
+    "body",
+    [
+        "①",
+        "²",
+        "R42 ①",
+        "R42 10²",
+        "R42 ٤",
+        "R42 " + "1" * 4400,
+        "1" * 4400,
+    ],
+)
 def test_something_shaped_like_a_number_does_not_take_the_message_with_it(
     body: str,
 ) -> None:
     """Refuse it, or don't, but never raise.
 
     The parser runs on every message a channel sends, so an exception out of it
-    is a message the room never sees and nobody can account for. `str.isdigit`
-    is true of "①" and "10²", which `int` then refuses — a combination that
-    swallowed the message rather than declining to read it as an answer.
+    is a message the room never sees and nobody can account for. `int` refuses
+    things `str` is happy to call numbers: "①" is a digit but not a decimal,
+    and CPython converts at most 4300 decimals. Both swallowed the message
+    rather than declining to read it as an answer.
     """
     answer = parse_text_answer(body)
 
