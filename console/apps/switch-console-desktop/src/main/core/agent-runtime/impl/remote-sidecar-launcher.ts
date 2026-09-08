@@ -541,7 +541,7 @@ export class RemoteSidecarLauncher {
 
     const raw = await this.readReadyFile();
     const ready = raw ? parseReady(raw) : null;
-    if (!ready) return tmuxAlive ? null : null;
+    if (!ready) return null;
 
     // tmux found it — the common case
     if (tmuxAlive) return ready;
