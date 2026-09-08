@@ -108,10 +108,15 @@ def _is_genuine(owner: User) -> bool:
 def _raise_unless_genuine(owner: User) -> None:
     if not _is_genuine(owner):
         raise RuntimeError(
-            f"An account already exists at {BOOTSTRAP_OWNER_EMAIL} but was "
-            "not created by agent-registration bootstrap seeding, so it "
-            "cannot be trusted to carry no admin authority now or later. "
-            "There is no gateway endpoint that removes or renames a user: "
+            f"An account already exists at {BOOTSTRAP_OWNER_EMAIL} but "
+            "cannot be proven to have been created by agent-registration "
+            "bootstrap seeding, so it cannot be trusted to carry no admin "
+            "authority now or later. Two things produce this: something "
+            "else claimed the address (a gateway admin, an OIDC login), or "
+            "it was created by an earlier revision of this feature that "
+            "recorded its own state on the admin's account instead of here "
+            "and so left no evidence on this row to check. Either way, "
+            "there is no gateway endpoint that removes or renames a user: "
             "this needs a direct edit to the users table before "
             "agent-registration bootstrap can run."
         )

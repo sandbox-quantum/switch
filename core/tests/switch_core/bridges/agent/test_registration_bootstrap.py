@@ -56,7 +56,7 @@ class TestEnsureBootstrapOwner:
             await session.commit()
 
         async with session_factory() as session:
-            with pytest.raises(RuntimeError, match="not created by"):
+            with pytest.raises(RuntimeError, match="cannot be proven"):
                 await ensure_bootstrap_owner(session, user_store)
 
     async def test_backfills_the_marker_onto_a_row_created_before_it_existed(
@@ -225,5 +225,5 @@ class TestResolveRegistrationOwnerId:
             type=BOOTSTRAP_KEY_TYPE,
         )
         async with session_factory() as session:
-            with pytest.raises(RuntimeError, match="not created by"):
+            with pytest.raises(RuntimeError, match="cannot be proven"):
                 await resolve_registration_owner_id(session, user_store, key)

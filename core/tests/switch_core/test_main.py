@@ -226,6 +226,52 @@ class TestSeedAgentRegistrationBootstrapKey:
         assert len(bootstrap_keys) == 1
         assert bootstrap_keys[0].key_hash == _hash("new-token")
 
+    async def test_deleting_the_retired_row_then_restoring_the_old_token_stays_blocked(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """The case with no constraint to fall back on. Above, restoring the
+        old token while the retired row is still present is blocked twice
+        over: the revoked-hashes check, and (if that ever failed) the unique
+        constraint on key_hash, since the retired row still holds the old
+        value. Once an operator deletes that retired row from the API Keys
+        page — exactly what the warning invites them to do — that row is
+        gone and the constraint can no longer save a bug here. Only the
+        revoked-hashes list, recorded at retirement time, stands between the
+        old token and reinstating admin-authority registration."""
+        user_store, api_key_store = UserStore(), ApiKeyStore()
+        admin_id = await _make_admin(session_factory)
+
+        async with session_factory() as session:
+            legacy = ApiKey(
+                user_id=admin_id,
+                key_hash=_hash("old-token"),
+                encrypted_key="irrelevant",
+                label=LEGACY_BOOTSTRAP_KEY_LABEL,
+                type="registration",
+            )
+            session.add(legacy)
+            await session.commit()
+
+        await _seed(session_factory, user_store, api_key_store, _config("new-token"))
+
+        async with session_factory() as session:
+            keys = await api_key_store.get_by_user(session, admin_id)
+            (retired,) = [k for k in keys if k.type == RETIRED_KEY_TYPE]
+            await api_key_store.delete(session, retired.id)
+            await session.commit()
+
+        # No row anywhere holds H(old-token) now. If this were still guarded
+        # only by the unique constraint, this call would succeed and rotate
+        # the active key back onto the revoked value.
+        await _seed(session_factory, user_store, api_key_store, _config("old-token"))
+
+        async with session_factory() as session:
+            keys = await api_key_store.get_by_user(session, admin_id)
+        bootstrap_keys = [k for k in keys if k.type == BOOTSTRAP_KEY_TYPE]
+        assert len(bootstrap_keys) == 1
+        assert bootstrap_keys[0].key_hash == _hash("new-token")
+        assert not any(k.key_hash == _hash("old-token") for k in keys)
+
     async def test_a_hash_mismatched_legacy_labeled_key_is_retired_and_warned_about(
         self,
         session_factory: async_sessionmaker[AsyncSession],
@@ -500,7 +546,7 @@ class TestSeedAgentRegistrationBootstrapKey:
         await _make_user(session_factory, email=BOOTSTRAP_OWNER_EMAIL, role="user")
         config = _config("dev-test-token")
 
-        with pytest.raises(RuntimeError, match="not created by"):
+        with pytest.raises(RuntimeError, match="cannot be proven"):
             await _seed(session_factory, user_store, api_key_store, config)
 
     async def test_admin_owned_agents_are_logged_as_a_warning(
