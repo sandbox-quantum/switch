@@ -895,7 +895,11 @@ class CollaborationAdapter(ABC):
         False is the answer whenever a platform cannot tell, and this base is a
         platform that cannot. Refusing costs someone the retype of a handle;
         accepting decides a permission from a word that was about something
-        else. Only reachable on a platform that posts request cards."""
+        else. Only reachable on a platform that posts request cards.
+
+        An implementation must not raise. This is asked on the inbound path of
+        every message, ahead of the relay, so an exception out of it is not a
+        refused answer but a message the room never sees."""
         logger.warning(
             "Cannot tell whether %s is the first reply under %s in %s, so it "
             "does not answer the card there. %s posts request cards without a "

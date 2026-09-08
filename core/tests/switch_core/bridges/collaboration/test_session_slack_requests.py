@@ -501,6 +501,29 @@ def test_slack_refusing_the_read_is_not_a_yes(
     assert "channel_not_found" in caplog.text
 
 
+def test_the_network_failing_mid_read_is_not_a_yes_either(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A reset connection or a timed-out read is not a `SlackApiError`.
+
+    slack_sdk wraps what Slack answers, not what the socket does, so the
+    transport failures arrive as themselves. Uncaught, one of them climbs out
+    of the answer path — which runs before the relay — and the message is lost
+    rather than the answer refused.
+    """
+    adapter, client = _thread("222.0")
+
+    async def timed_out(**kwargs: Any) -> Any:
+        raise TimeoutError("read timed out")
+
+    client.conversations_replies = timed_out  # type: ignore[method-assign]
+
+    with caplog.at_level(logging.WARNING):
+        assert _run(adapter.is_first_reply("C1", "C1:111.0", "C1:222.0")) is False
+
+    assert "read timed out" in caplog.text
+
+
 def test_a_disconnected_adapter_answers_nothing_rather_than_raising() -> None:
     """This runs on the inbound path of every message, so it may not throw."""
     adapter, _ = _thread("222.0")

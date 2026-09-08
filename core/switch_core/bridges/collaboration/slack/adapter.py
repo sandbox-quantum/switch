@@ -527,7 +527,11 @@ class SlackAdapter(CollaborationAdapter):
             result = await self._web_client.conversations_replies(
                 channel=channel_id, ts=root_ts, limit=2
             )
-        except SlackApiError as e:
+        except Exception as e:
+            # Broad because this is on the inbound path of every message: a
+            # reset connection or a timed-out read comes out of the client as
+            # neither a SlackApiError nor anything else caught above here, and
+            # raising here loses the message rather than the answer.
             logger.warning(
                 "Could not read the thread under %s in %s: %s. Treating %s as "
                 "not the first reply.",
