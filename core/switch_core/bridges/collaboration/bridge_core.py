@@ -529,7 +529,6 @@ class BridgeCore:
         # parse before it is a query, so this costs a channel nothing. It does
         # not consume the message: the room still sees what was said.
         await self._handle_text_answer(msg)
-        await self._handle_session_demo(msg)
         room_ids = self._channel_to_room.get(msg.channel_id)
         if room_ids is None:
             lock = self._channel_locks.setdefault(msg.channel_id, asyncio.Lock())
@@ -547,6 +546,8 @@ class BridgeCore:
                 return
 
         room_id, matrix_room_id = room_ids
+
+        await self._handle_session_demo(msg, room_id)
 
         # A bot @mention carries no agent name in its text (the platform tags the
         # bot, not the agent). Resolve which agent it addresses so we can inject
@@ -1130,8 +1131,13 @@ class BridgeCore:
         command = await interactions.command_for_text(msg)
         self._drop_session_command(command, msg.sender_id)
 
-    async def _handle_session_demo(self, msg: InboundMessage) -> None:
+    async def _handle_session_demo(self, msg: InboundMessage, room_id: str) -> None:
         """The trigger that stands in for a session, where one is asked for.
+
+        Takes the room rather than looking it up, because it runs after the
+        channel has one: a channel is mapped lazily on its first message, and a
+        channel nobody has spoken in yet is exactly the one somebody makes to
+        show this off.
 
         A failure is reported into the channel rather than raised: this runs on
         the inbound path ahead of the relay, and a demo that cannot post a card
@@ -1140,11 +1146,8 @@ class BridgeCore:
         demo = self._session_demo
         if demo is None:
             return
-        room = self._channel_to_room.get(msg.channel_id)
-        if room is None:
-            return
         try:
-            await demo.handle(msg.content, msg.channel_id, room[0])
+            await demo.handle(msg.content, msg.channel_id, room_id)
         except Exception as error:
             logger.error(
                 "The demo card for channel %s could not be posted: %s",

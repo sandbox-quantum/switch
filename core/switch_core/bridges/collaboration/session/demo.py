@@ -19,6 +19,7 @@ otherwise indistinguishable from one that has.
 from __future__ import annotations
 
 import logging
+import secrets
 from pathlib import Path
 
 from switch_core.db.models import SessionRequestPost
@@ -71,6 +72,15 @@ class SessionDemo:
         return True
 
     async def _post(self, channel_id: str, room_id: str) -> SessionRequestPost:
+        """Post the recording's open request, under a session id of its own.
+
+        A request gets one card, which is right for a real session and would
+        give this one card ever: the recording holds a single request under a
+        single session id, so every replay after the first would be refused as a
+        repeat of it — in another channel, on another day, to another person.
+        Each replay is therefore its own session, which is also what it is.
+        Nothing reads the id back: the command an answer builds is dropped.
+        """
         if not _EXAMPLES.exists():
             raise FileNotFoundError(
                 f"The session fixtures are not at {_EXAMPLES}. SESSION_DEMO_ENABLED "
@@ -90,7 +100,7 @@ class SessionDemo:
             channel_id=channel_id,
             thread_root_id=None,
             room_id=room_id,
-            session_id=session.session_id,
+            session_id=f"{session.session_id}-{secrets.token_hex(4)}",
             epoch=session.epoch,
             agent_name=session.agent_id,
         )

@@ -14,12 +14,16 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any
+from types import SimpleNamespace
+from typing import Any, cast
 
 import pytest
 from slack_sdk.errors import SlackApiError
+from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from switch_core.bridges.collaboration.bridge_core import BridgeCore
 from switch_core.bridges.collaboration.models import (
     InboundInteraction,
     InboundMessage,
@@ -366,6 +370,94 @@ async def test_a_freed_handle_is_the_one_the_next_card_takes(
     assert post.handle == "R1"
 
 
+class _RivalPoster(SessionRequestPostStore):
+    """Another poster that commits its card while this one is still deciding.
+
+    Slotted in after the read that catches a repeat and before the insert,
+    which is the one ordering that read cannot cover. Both posters see no card,
+    both insert, and the index refuses the second — the real race, without
+    having to run two of anything.
+    """
+
+    def __init__(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        *,
+        bridge_id: str,
+        room_id: str,
+        request_id: str,
+    ) -> None:
+        super().__init__()
+        self._session_factory = session_factory
+        self._bridge_id = bridge_id
+        self._room_id = room_id
+        self._request_id = request_id
+        self._raced = False
+
+    async def count_in_channel(
+        self, session: AsyncSession, bridge_id: str, channel_id: str
+    ) -> int:
+        if not self._raced:
+            self._raced = True
+            rival = _row(bridge_id=self._bridge_id, room_id=self._room_id, handle="R1")
+            rival.session_id = "session-demo"
+            rival.request_id = self._request_id
+            async with self._session_factory() as other:
+                await SessionRequestPostStore().create(other, rival)
+                await other.commit()
+        return await super().count_in_channel(session, bridge_id, channel_id)
+
+
+async def test_losing_the_race_is_reported_as_the_repeat_it_is(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """A repeat and a handle clash are one error to Postgres and two to a reader.
+
+    Caught without looking at which, the poster that gets there second is told
+    it could not find a free name — after five tries at a name that was never
+    the problem. It has to name the card that already asks the question,
+    because that is the card the answer belongs on.
+    """
+    client = FakeWebClient()
+    cards, bridge_id, room_id = await _cards(session_factory, client)
+    racing = SessionRequestCards(
+        _adapter(client),
+        bridge_id=bridge_id,
+        posts=_RivalPoster(
+            session_factory,
+            bridge_id=bridge_id,
+            room_id=room_id,
+            request_id=(await _fixture_request()).request_id,
+        ),
+        session_factory=session_factory,
+    )
+
+    with pytest.raises(CardAlreadyPosted) as raised:
+        await _post_one(racing, room_id)
+
+    assert "already has card R1" in str(raised.value)
+    assert "free handle" not in str(raised.value)
+    assert client.posted == []
+
+
+async def test_a_row_that_cannot_be_written_at_all_is_not_retried(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """Only the handle is a guess, so only the handle is worth another go.
+
+    A row refused for any other reason is refused the same way five times over,
+    and then reported as the wrong thing entirely. Here the room does not
+    exist, which is a foreign key and not a name anyone can choose.
+    """
+    client = FakeWebClient()
+    cards, _, _ = await _cards(session_factory, client)
+
+    with pytest.raises(IntegrityError):
+        await _post_one(cards, "00000000-0000-0000-0000-000000000000")
+
+    assert client.posted == []
+
+
 # ── The stand-in session ─────────────────────────────────────────────────────
 
 
@@ -404,6 +496,96 @@ async def test_the_trigger_is_case_insensitive_and_forgives_spacing(
     assert await SessionDemo(cards).handle(f"  {TRIGGER.upper()} ", CHANNEL, room_id)
 
     assert len(client.posted) == 1
+
+
+async def test_the_demo_can_be_shown_more_than_once(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """The recording holds one request under one session id.
+
+    Posted as itself, that request is answered once and refused ever after — in
+    this channel, in another channel, and tomorrow morning in front of someone
+    new, with the only way back a DELETE against Postgres. A demo that works
+    exactly once, and only for whoever ran it first, is not a demo.
+    """
+    client = FakeWebClient()
+    cards, _, room_id = await _cards(session_factory, client)
+    demo = SessionDemo(cards)
+
+    for channel in (CHANNEL, CHANNEL, "C2"):
+        assert await demo.handle(TRIGGER, channel, room_id) is True
+
+    async with session_factory() as session:
+        rows = list(
+            (
+                await session.execute(
+                    select(SessionRequestPost).order_by(SessionRequestPost.created_at)
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+    assert [(row.external_channel_id, row.handle) for row in rows] == [
+        (CHANNEL, "R1"),
+        (CHANNEL, "R2"),
+        ("C2", "R1"),
+    ]
+    assert len({row.session_id for row in rows}) == 3
+
+
+# ── Where the trigger runs on the inbound path ───────────────────────────────
+
+
+async def test_the_trigger_works_in_a_channel_the_bridge_has_not_seen_before() -> None:
+    """A channel is mapped to its room on the first message anyone sends in it.
+
+    A demo channel is new by definition — somebody just made it to show this
+    off — so the hook has to run after that mapping. Run before it, the first
+    `!session-demo` in a fresh channel finds no room and returns: no card, no
+    log line, nothing said in the channel, and only the second one works.
+    """
+    asked: list[str] = []
+
+    async def _handle(_content: str, _channel_id: str, room_id: str) -> bool:
+        asked.append(room_id)
+        return True
+
+    async def _is_registered_agent(_name: str) -> bool:
+        return False
+
+    async def _create_room_for_channel(**_kwargs: object) -> tuple[str, str]:
+        return ("room-made-just-now", "!made:test")
+
+    async def _repair_placeholder_username(*_args: object) -> None:
+        return None
+
+    async def _ensure_user_in_matrix_room(**_kwargs: object) -> None:
+        return None
+
+    bridge = BridgeCore.__new__(BridgeCore)
+    bridge._channel_to_room = {}
+    bridge._channel_locks = {}
+    bridge._session_interactions = None
+    bridge._session_demo = cast(Any, SimpleNamespace(handle=_handle))
+    bridge._is_registered_agent = _is_registered_agent  # type: ignore[assignment]
+    bridge._create_room_for_channel = _create_room_for_channel  # type: ignore[assignment]
+    bridge._repair_placeholder_username = _repair_placeholder_username  # type: ignore[assignment]
+    bridge._ensure_user_in_matrix_room = _ensure_user_in_matrix_room  # type: ignore[assignment]
+
+    await BridgeCore._handle_inbound_message(
+        bridge,
+        InboundMessage(
+            channel_id="a-channel-nobody-has-spoken-in",
+            channel_type="channel_public",
+            sender_id="U1",
+            sender_name="someone",
+            content=TRIGGER,
+            message_ref="slack-post-1",
+        ),
+    )
+
+    assert asked == ["room-made-just-now"]
 
 
 def _row(*, bridge_id: str, room_id: str, handle: str) -> SessionRequestPost:

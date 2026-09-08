@@ -43,6 +43,26 @@ _HANDLE_PREFIX = "R"
 # posted concurrently into a single channel.
 _MINT_ATTEMPTS = 5
 
+# The two refusals this can provoke, named because they are different mistakes
+# and only one of them is worth retrying.
+_HANDLE_CONSTRAINT = "uq_session_request_posts_handle"
+_REQUEST_CONSTRAINT = "uq_session_request_posts_request"
+
+
+def _violates(error: IntegrityError, constraint: str) -> bool:
+    """Whether Postgres refused this particular uniqueness.
+
+    asyncpg records the name on its own exception, and SQLAlchemy re-raises a
+    wrapper `from` it, so the name is on the cause where it is anywhere. Failing
+    that it is still in the message, quoted, because that is how Postgres writes
+    it. Without this every refusal reads as the last one guessed at.
+    """
+    for candidate in (error.orig, getattr(error.orig, "__cause__", None)):
+        name = getattr(candidate, "constraint_name", None)
+        if name:
+            return bool(name == constraint)
+    return f'"{constraint}"' in str(error.orig)
+
 
 class CardNotPosted(RuntimeError):
     """A request that has no card, so nobody was asked and nobody can answer.
@@ -158,18 +178,14 @@ class SessionRequestCards:
 
         The request is checked for a card first, so that a second card for a
         decision that can only be taken once is refused as itself rather than
-        arriving as a handle that will not mint. They are the same constraint
-        violation to the database and different mistakes to a reader.
+        arriving as a handle that will not mint. That read cannot cover the one
+        case where two posters are in flight at once, so the insert is read the
+        same way: by which uniqueness Postgres named. Retrying is only ever
+        right for the handle, which is a guess; anything else is an answer.
         """
-        existing = await self._posts.get_by_request(
-            session, self._bridge_id, session_id, request.request_id
-        )
-        if existing is not None:
-            raise CardAlreadyPosted(
-                f"Request {request.request_id} of session {session_id} already "
-                f"has card {existing.handle} in channel "
-                f"{existing.external_channel_id}."
-            )
+        repeat = await self._repeat_of(session, session_id=session_id, request=request)
+        if repeat is not None:
+            raise repeat
         start = await self._posts.count_in_channel(session, self._bridge_id, channel_id)
         for attempt in range(_MINT_ATTEMPTS):
             row = SessionRequestPost(
@@ -189,13 +205,59 @@ class SessionRequestCards:
             try:
                 async with session.begin_nested():
                     await self._posts.create(session, row)
-            except IntegrityError:
+            except IntegrityError as error:
+                if _violates(error, _REQUEST_CONSTRAINT):
+                    raise await self._lost_the_race(
+                        session, session_id=session_id, request=request
+                    ) from error
+                if not _violates(error, _HANDLE_CONSTRAINT):
+                    raise
                 continue
             return row
         raise CardNotPosted(
             f"Could not find a free handle for request {request.request_id} in "
             f"channel {channel_id} after {_MINT_ATTEMPTS} tries, so it has no "
             f"card: a card nobody can name is one a typed answer cannot reach."
+        )
+
+    async def _repeat_of(
+        self,
+        session: AsyncSession,
+        *,
+        session_id: str,
+        request: SnapshotRequest,
+    ) -> CardAlreadyPosted | None:
+        """The refusal to give this request a second card, if it has one."""
+        existing = await self._posts.get_by_request(
+            session, self._bridge_id, session_id, request.request_id
+        )
+        if existing is None:
+            return None
+        return CardAlreadyPosted(
+            f"Request {request.request_id} of session {session_id} already has "
+            f"card {existing.handle} in channel {existing.external_channel_id}."
+        )
+
+    async def _lost_the_race(
+        self,
+        session: AsyncSession,
+        *,
+        session_id: str,
+        request: SnapshotRequest,
+    ) -> CardAlreadyPosted:
+        """The same refusal, for the poster that got there second.
+
+        Read again rather than reported blind: the winner has committed by the
+        time this insert is refused, so the card it made can be named, and being
+        told which card already asks the question is the whole difference
+        between this and a card that simply did not appear.
+        """
+        repeat = await self._repeat_of(session, session_id=session_id, request=request)
+        if repeat is not None:
+            return repeat
+        return CardAlreadyPosted(
+            f"Request {request.request_id} of session {session_id} was given a "
+            f"card by another poster, which has since gone."
         )
 
     async def refresh(self, post: SessionRequestPost, request: SnapshotRequest) -> None:
