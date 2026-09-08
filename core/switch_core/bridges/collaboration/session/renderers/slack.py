@@ -6,6 +6,11 @@ form of the same question: a card can fail to render, a person can be on a
 client that will not press buttons, and the contract requires every bridge to
 accept an explicit text answer as well as a control.
 
+The card renders whatever state the request is currently in, so the same
+function serves the first post and every edit after it. Buttons appear only
+while the request is open: once an answer is in flight or the request has
+settled, offering one invites a press that cannot land.
+
 A title, a detail and an option label are all written by whatever asked for the
 approval, so every one of them is escaped before it reaches somewhere Slack
 parses mrkdwn — which is both the section text and the message's own `text`.
@@ -20,7 +25,14 @@ from typing import Any
 
 from switch_core.bridges.collaboration.slack.mrkdwn import escape_mrkdwn
 
-from ..contract import ApprovalContent, ApprovalOption, SnapshotRequest
+from ..contract import (
+    ApprovalContent,
+    ApprovalOption,
+    ApprovalResult,
+    DecidedBy,
+    SnapshotRequest,
+    Surface,
+)
 from . import ANSWER_ACTION, RequestReference
 
 # Slack's own limits. Exceeding one is rejected at the API, so it is caught here
@@ -31,6 +43,34 @@ _MAX_VALUE = 2000
 _MAX_ELEMENTS = 25
 
 _DANGEROUS = {"decline", "cancel"}
+
+_HEADINGS = {
+    "open": "Permission needed",
+    "submitting": "Permission needed",
+    "resolved": "Permission answered",
+    "closed": "Permission request closed",
+}
+
+# Where the person who answered was, in the words a reader of that platform
+# would use for it.
+_SURFACES: dict[Surface, str] = {
+    "console": "the console",
+    "switch-web": "Switch",
+    "slack": "Slack",
+    "mattermost": "Mattermost",
+    "discord": "Discord",
+    "teams": "Teams",
+    "telegram": "Telegram",
+}
+
+# Every outcome but `answered`. Each says the request was not answered, because
+# a closed request that reads as answered is the one mistake this must not make.
+_CLOSED = {
+    "cancelled": "Cancelled before it was answered.",
+    "expired": "Expired before it was answered.",
+    "interrupted": "Interrupted before it was answered.",
+    "provider-error": "The provider failed before it was answered.",
+}
 
 
 @dataclass(frozen=True)
@@ -44,36 +84,46 @@ class SlackMessage:
 def render_approval(
     request: SnapshotRequest, reference: RequestReference
 ) -> SlackMessage:
-    """Render an open approval as a card that is also answerable in words."""
-    content = request.content
-    if not isinstance(content, ApprovalContent):
-        raise ValueError(
-            f"Request {request.request_id} is not an approval: {content.kind}."
-        )
-    if len(content.options) > _MAX_ELEMENTS:
-        raise ValueError(
-            f"Request {request.request_id} has {len(content.options)} options; "
-            f"Slack renders at most {_MAX_ELEMENTS} buttons."
-        )
+    """Render an approval as the card that stands for it right now.
 
-    prompt = f"*Permission needed*\n{escape_mrkdwn(content.title)}"
+    Open, it offers a button per option and is also answerable in words. Once
+    an answer is in flight or the request has settled, the buttons go and the
+    card says what became of it instead.
+    """
+    content = _approval(request)
+    prompt = f"*{_HEADINGS[request.state]}*\n{escape_mrkdwn(content.title)}"
     if content.detail:
         prompt += f"\n`{escape_mrkdwn(content.detail)}`"
 
     blocks: list[dict[str, Any]] = [
-        {"type": "section", "text": {"type": "mrkdwn", "text": prompt}},
-        {
-            "type": "actions",
-            "block_id": f"{ANSWER_ACTION}:{request.request_id}",
-            "elements": [_button(option, reference) for option in content.options],
-        },
+        {"type": "section", "text": {"type": "mrkdwn", "text": prompt}}
+    ]
+    if request.state == "open":
+        # Only a card that is still offering buttons can exceed the limit, so a
+        # settled one with too many options still redraws rather than sticking.
+        if len(content.options) > _MAX_ELEMENTS:
+            raise ValueError(
+                f"Request {request.request_id} has {len(content.options)} options; "
+                f"Slack renders at most {_MAX_ELEMENTS} buttons."
+            )
+        blocks.append(
+            {
+                "type": "actions",
+                "block_id": f"{ANSWER_ACTION}:{request.request_id}",
+                "elements": [_button(option, reference) for option in content.options],
+            }
+        )
+    blocks.append(
         {
             "type": "context",
             "elements": [
-                {"type": "mrkdwn", "text": escape_mrkdwn(_reply_hint(reference))}
+                {
+                    "type": "mrkdwn",
+                    "text": escape_mrkdwn(_footer(request, content, reference)),
+                }
             ],
-        },
-    ]
+        }
+    )
     return SlackMessage(text=render_approval_text(request, reference), blocks=blocks)
 
 
@@ -82,28 +132,88 @@ def render_approval_text(request: SnapshotRequest, reference: RequestReference) 
 
     This is the notification fallback, and the form a person is answering when
     they type rather than press. Numbering matches the button order, so "1"
-    means the same on both.
+    means the same on both. It follows the request's state for the same reason
+    the card does: a notification that still asks a settled question is a
+    notification asking for an answer that cannot land.
 
     Slack reads a message's `text` as mrkdwn, so this is not a plain string it
     can be careless with: every value is escaped, and only the quote markers
     and the numbering are markup this wrote.
     """
-    content = request.content
-    if not isinstance(content, ApprovalContent):
-        raise ValueError(
-            f"Request {request.request_id} is not an approval: {content.kind}."
-        )
+    content = _approval(request)
     lines = [
         f"> Request {escape_mrkdwn(reference.handle)}: {escape_mrkdwn(content.title)}"
     ]
     if content.detail:
         lines.append(f"> {escape_mrkdwn(content.detail)}")
-    lines += [
-        f"{index}. {escape_mrkdwn(option.label)}"
-        for index, option in enumerate(content.options, start=1)
-    ]
-    lines.append(escape_mrkdwn(_reply_hint(reference)))
+    if request.state == "open":
+        lines += [
+            f"{index}. {escape_mrkdwn(option.label)}"
+            for index, option in enumerate(content.options, start=1)
+        ]
+    lines.append(escape_mrkdwn(_footer(request, content, reference)))
     return "\n".join(lines)
+
+
+def _approval(request: SnapshotRequest) -> ApprovalContent:
+    content = request.content
+    if not isinstance(content, ApprovalContent):
+        raise ValueError(
+            f"Request {request.request_id} is not an approval: {content.kind}."
+        )
+    return content
+
+
+def _footer(
+    request: SnapshotRequest, content: ApprovalContent, reference: RequestReference
+) -> str:
+    """The one line under the card that says where the request has got to.
+
+    Shared by the card and the text fallback so the two cannot disagree about
+    whether something was answered.
+    """
+    if request.state == "open":
+        return f'Reply with "{reference.handle} 1", or press a button.'
+    if request.state == "submitting":
+        if request.decided_by is None:
+            return "An answer is on its way."
+        return f"Answering: {_actor(request.decided_by)}."
+    if request.state == "resolved":
+        return _answered(request, content)
+    settled = request.result
+    if settled is None:
+        return "Closed without being answered."
+    # A closed request reporting `answered` contradicts itself. Say both rather
+    # than pick one, and never the word that would read as a decision.
+    return _CLOSED.get(
+        settled.outcome, f"Closed, though the host called it {settled.outcome}."
+    )
+
+
+def _answered(request: SnapshotRequest, content: ApprovalContent) -> str:
+    settled = request.result
+    result = settled.result if settled else None
+    by = f" by {_actor(request.decided_by)}" if request.decided_by else ""
+    if not isinstance(result, ApprovalResult):
+        return f"Answered{by}, but the host did not say which option was chosen."
+    chosen = next(
+        (option for option in content.options if option.option_id == result.option_id),
+        None,
+    )
+    # An option the content never offered still gets named rather than hidden:
+    # the id is what the host said, and saying nothing would read as a plain
+    # answer to a question that was not the one asked.
+    label = chosen.label if chosen else result.option_id
+    scope = (
+        " (applies for the rest of this session)"
+        if chosen and chosen.decision == "acceptForSession"
+        else ""
+    )
+    return f"{label}{scope} — chosen{by}." if by else f"{label}{scope}."
+
+
+def _actor(decided_by: DecidedBy) -> str:
+    return f"{decided_by.actor_id} from {_SURFACES[decided_by.surface]}"
 
 
 def _button(option: ApprovalOption, reference: RequestReference) -> dict[str, Any]:
@@ -127,10 +237,6 @@ def _button(option: ApprovalOption, reference: RequestReference) -> dict[str, An
     elif option.decision == "accept":
         button["style"] = "primary"
     return button
-
-
-def _reply_hint(reference: RequestReference) -> str:
-    return f'Reply with "{reference.handle} 1", or press a button.'
 
 
 def _truncate(text: str, limit: int) -> str:
