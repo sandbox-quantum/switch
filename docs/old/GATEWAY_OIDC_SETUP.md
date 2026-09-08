@@ -52,11 +52,10 @@ though: running `uv run python -m switch_core.main` directly skips it
 entirely. Plain `uv run` doesn't read `.env` at all, so the variable is
 simply unset there; `uv run --env-file .env` reads it but only warns on the
 bad line and continues. Either way, going around `just` trades the loud
-parse error for a silent one: `GATEWAY_OIDC_SCOPES` ends up unset, the
-provider is asked for whatever scope it defaults to, and if that default
-doesn't include `openid` the failure only shows up later — at the callback,
-as a missing `id_token` — with nothing pointing back at the scope
-configuration. Write it as:
+parse error for a silent one: `GATEWAY_OIDC_SCOPES` ends up unset, and the
+provider is asked for whatever scope it defaults to instead — with nothing
+pointing back at the scope configuration if that default happens not to
+include `openid`. Write it as:
 
 ```
 GATEWAY_OIDC_SCOPES="openid profile email"
