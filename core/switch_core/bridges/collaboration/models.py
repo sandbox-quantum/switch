@@ -85,6 +85,12 @@ class InboundMessage(BaseModel):
     # itself (e.g. Slack's "Agent Switch" app). None when the bot was not
     # tagged. Lets the bridge guide users who tag the app instead of an agent.
     self_mention_token: str | None = None
+    # The platform reported this post as coming from an app rather than a
+    # person (a Slack workflow, a third-party integration). Such a post is
+    # relayed like any other, but it cannot answer a request: a decision is
+    # attributed to whoever made it, and an app made none. Only Slack reports
+    # it today, and Slack is the only platform posting request cards.
+    sender_is_app: bool = False
 
 
 class InboundCommand(BaseModel):

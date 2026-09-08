@@ -2230,6 +2230,7 @@ class SlackAdapter(CollaborationAdapter):
                     attachments=attachments,
                     attachment_failures=attachment_failures,
                     self_mention_token=self._bot_user_id if self_mention else None,
+                    sender_is_app=bool(bot_id),
                 )
             )
 

@@ -191,6 +191,16 @@ class SessionInteractions:
         if post is None:
             return None
 
+        if message.sender_is_app:
+            logger.warning(
+                "Ignoring an answer to request %s on bridge %s: it was posted by "
+                "an app, and a decision is attributed to whoever made it. No "
+                "button press can come from an app either.",
+                post.request_id,
+                self._bridge_id,
+            )
+            return None
+
         option_id = _chosen(post, answer)
         if option_id is None:
             logger.warning(

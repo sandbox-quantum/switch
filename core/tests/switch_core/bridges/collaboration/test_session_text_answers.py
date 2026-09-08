@@ -192,6 +192,19 @@ def test_an_actor_with_no_switch_identity_answers_nothing() -> None:
     assert _run(interactions.command_for_text(_typed("R42 1"))) is None
 
 
+def test_an_app_cannot_answer_a_request() -> None:
+    """A Slack workflow posting "yes" in a card's thread decides nothing.
+
+    A press cannot come from an app, and neither can a decision: an answer is
+    attributed to whoever made it, and an app made none.
+    """
+    interactions = _interactions(_post())
+
+    assert (
+        _run(interactions.command_for_text(_typed("R42 1", sender_is_app=True))) is None
+    )
+
+
 def test_ordinary_talk_never_reaches_the_store() -> None:
     """The grammar runs before the query, so a channel pays nothing for this."""
 
@@ -248,11 +261,30 @@ def test_a_message_in_a_channel_is_offered_to_the_session(
     assert "session-demo" in caplog.text
 
 
-def test_a_bridge_with_no_session_half_relays_as_it_always_did(
+def test_a_platform_that_has_never_posted_a_card_finds_nothing_to_answer(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """Four of the five platforms have no request cards. They notice nothing."""
-    with caplog.at_level(logging.WARNING):
-        _run(_bridge(None)._handle_inbound_message(_typed("R42 1")))
+    """Every bridge type is a contract surface, so every one runs this path.
 
-    assert "dropped it" not in caplog.text
+    Mattermost, Discord, Teams and Telegram post no request cards yet, but they
+    do parse. What stops them is that the handle resolves to no row of theirs,
+    not that they skip the attempt.
+    """
+    interactions = _interactions(surface="mattermost")
+    with caplog.at_level(logging.WARNING):
+        _run(_bridge(interactions)._handle_inbound_message(_typed("R42 1")))
+
+    assert caplog.text == ""
+
+
+def test_a_message_the_grammar_refuses_does_not_take_the_relay_with_it() -> None:
+    """The parse runs on everything said in a channel, so it must never raise.
+
+    An exception here climbs out of `_handle_inbound_message`, the platform SDK
+    logs it and moves on, and the message never reaches the room — with nothing
+    in the channel to say why.
+    """
+    interactions = _interactions(_post())
+
+    for said in ["①", "10²", "just shipped 2 fixes", "ok"]:
+        _run(_bridge(interactions)._handle_inbound_message(_typed(said)))

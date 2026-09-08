@@ -91,6 +91,37 @@ def test_anything_else_is_just_someone_talking(body: str) -> None:
     assert parse_text_answer(body) is None
 
 
+@pytest.mark.parametrize("body", ["①", "²", "R42 ①", "R42 10²", "R42 ٤"])
+def test_something_shaped_like_a_number_does_not_take_the_message_with_it(
+    body: str,
+) -> None:
+    """Refuse it, or don't, but never raise.
+
+    The parser runs on every message a channel sends, so an exception out of it
+    is a message the room never sees and nobody can account for. `str.isdigit`
+    is true of "①" and "10²", which `int` then refuses — a combination that
+    swallowed the message rather than declining to read it as an answer.
+    """
+    answer = parse_text_answer(body)
+
+    assert answer is None or answer.index == 4
+
+
+@pytest.mark.parametrize("body", ["ok", "Okay!", "`ok`"])
+def test_an_acknowledgement_on_its_own_grants_nothing(body: str) -> None:
+    """ "ok" in a channel is "got it" far more often than "yes, run it"."""
+    assert parse_text_answer(body) is None
+
+
+def test_the_same_acknowledgement_answers_the_card_it_names() -> None:
+    """Naming the request is what makes the intent unambiguous."""
+    answer = parse_text_answer("R42 ok")
+
+    assert answer is not None
+    assert answer.handle == "R42"
+    assert answer.decision == "accept"
+
+
 def test_a_number_on_its_own_is_not_an_answer() -> None:
     """Unlike a bare word, it is far more often a count than a choice.
 

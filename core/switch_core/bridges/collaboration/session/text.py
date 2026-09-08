@@ -47,6 +47,11 @@ _DECISIONS: dict[str, Decision] = {
     "reject": "decline",
 }
 
+# Words above that only answer when the card is named. "ok" is how a channel
+# says "got it" far more often than "yes, run it", and a bare acknowledgement
+# in a thread must not be what grants a permission.
+_ONLY_WITH_A_HANDLE = frozenset({"ok", "okay"})
+
 # A handle is followed by nothing, or by the punctuation a person would put
 # after it — "R42: 1" and "R42 - 1" are the same answer as "R42 1".
 _SEPARATOR_CHARS = ":.-–—,"
@@ -79,18 +84,13 @@ def parse_text_answer(body: str) -> TextAnswer | None:
     if not tokens or len(tokens) > 2:
         return None
 
+    if len(tokens) == 1:
+        return _bare(tokens[0])
+
     selection = _selection(tokens[-1])
     if selection is None:
         return None
     index, decision = selection
-
-    if len(tokens) == 1:
-        # A bare word is worth acting on as a reply to a card; a bare number is
-        # not. "yes" said to a permission prompt means one thing, and "2" in a
-        # channel is far more often a count, a version or an hour.
-        return (
-            TextAnswer(handle=None, index=None, decision=decision) if decision else None
-        )
     handle = tokens[0].rstrip(_SEPARATOR_CHARS)
     return TextAnswer(handle=handle, index=index, decision=decision) if handle else None
 
@@ -104,12 +104,31 @@ def _clean(body: str) -> str:
     return body.strip().strip("*_`~ ").rstrip(_TRAILING).strip()
 
 
+def _bare(token: str) -> TextAnswer | None:
+    """A message that is one word, as an answer to the card it replies to.
+
+    A word is worth acting on; a number is not. "yes" said to a permission
+    prompt means one thing, and "2" in a channel is far more often a count, a
+    version or an hour.
+    """
+    word = _word(token)
+    if word in _ONLY_WITH_A_HANDLE:
+        return None
+    decision = _DECISIONS.get(word)
+    return TextAnswer(handle=None, index=None, decision=decision) if decision else None
+
+
 def _selection(token: str) -> tuple[int | None, Decision | None] | None:
-    word = token.rstrip(_TRAILING).lower()
-    if word.isdigit():
+    word = _word(token)
+    if word.isdecimal():
+        # Not `isdigit`: that is true of "①" and "10²", which `int` then refuses.
         index = int(word)
         # "0" is not an option on any card, and neither is a number so long it
         # is plainly not one. Refusing beats reading it as a choice.
         return (index, None) if 1 <= index <= 99 else None
     decision = _DECISIONS.get(word)
     return (None, decision) if decision else None
+
+
+def _word(token: str) -> str:
+    return token.rstrip(_TRAILING).lower()
