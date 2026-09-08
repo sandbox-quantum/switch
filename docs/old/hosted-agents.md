@@ -136,7 +136,7 @@ either lives in that one process or lives somewhere new.
 There is nowhere for a hosted customer to talk to their agent.
 
 The gateway API has thirteen routers and none of them read or post messages;
-`rooms.py` has twenty-one routes covering roles, groups, protection, membership
+`rooms.py` has twenty-two routes covering roles, groups, protection, membership
 and archiving, and not one of them touches the conversation. Reading and writing
 messages exists only on the agent-facing bridge — `read_context`, `post_message`,
 `send_targeted_message`, `send_attachment`. The operator dashboard has no message
@@ -172,8 +172,9 @@ Five things, and the runtime is the only one that exists:
 5. Somebody's credential pays for the model, and the licence permits it being
    that somebody's.
 
-The rest of this document takes them in that order, then argues about whether to
-do it at all.
+The rest of this document takes them roughly in that order — the chat surface
+waits until §11, because what it should be depends on who is enrolling and why.
+§10 then argues about whether to do any of it.
 
 ---
 
@@ -244,7 +245,9 @@ and `aws.amazon.com/fargate/pricing/`.
 AWS's own guidance is that a new Fargate task normally takes **thirty to
 forty-five seconds or longer** to start, and practitioner reports range much wider
 depending on image size. The billing clock starts when the image pull begins, not
-when the container is healthy.
+when the container is healthy. Both figures come from AWS's task-startup guidance
+rather than from our own measurement — which is why phase 0 measures it before
+anything is built on top of it.
 
 Set that against the trigger this whole design exists to serve: somebody
 addresses an agent in a chat window and waits for it to answer. Forty-five
@@ -257,7 +260,8 @@ Three mitigations genuinely help, in ascending order of effort:
 - **An aggressively small image.** Node, `tmux`, `git`, the sidecar bundle and
   one agent CLI. Every megabyte is pull time on the critical path.
 - **Seekable OCI lazy image loading**, which AWS reports as the single
-  highest-return optimisation available here, at over fifty per cent.
+  highest-return optimisation available here, at over fifty per cent. That is
+  AWS's number for its own workloads, not ours.
 - **A small pre-warmed pool** rather than scaling to zero.
 
 The pool deserves a caveat, because it is easy to over-claim. A warm pool answers
@@ -340,7 +344,9 @@ Estimates, with the assumptions stated, because every one of them turns on a
 ratio we do not have data for.
 
 Fargate is roughly $0.04 per vCPU-hour and $0.0044 per GB-hour in the cheapest
-region, with European regions typically ten to thirty per cent higher. A 2 vCPU /
+region. European regions run higher; ten to thirty per cent is the working
+assumption here rather than a quoted rate, and the real figure should be read off
+the pricing page for whichever region is chosen. A 2 vCPU /
 4 GB task is therefore about `2 × $0.04 + 4 × $0.0044 = $0.098` per hour before
 the regional uplift, so call it **$0.10 to $0.13 an hour in Europe**. ARM is
 around twenty per cent cheaper again, and billing granularity is one minute. For
@@ -355,7 +361,7 @@ in §6 the model bill is not ours to pay at all.
 
 Which means our entire exposure is idle time, and idle time is the number we have
 no data for. Two bounds make the shape clear. An agent kept warm around the clock
-costs roughly $0.12 × 24 × 30 ≈ **$85 a month**, whether or not anyone speaks to
+costs roughly $0.12 × 24 × 30 ≈ **$86 a month**, whether or not anyone speaks to
 it. An agent that is destroyed when idle and works one hour a day costs about
 **$3.60 a month**, and pays for it in a cold start every time. Nothing sensible
 sits at the first number for every agent; the design lives somewhere between,
@@ -508,7 +514,11 @@ And, under *Authentication and credential use*:
 
 Read plainly: **hosting Claude Code is explicitly contemplated and explicitly
 permitted, on conditions.** A hosted Switch where the customer brings their own
-credential is allowed. A free tier on our tokens is not.
+credential is allowed. A free tier that runs Claude Code on our tokens is not.
+
+That last sentence is narrower than it looks, and §9 turns on the difference: it
+closes the door on *Claude* usage we pay for, and says nothing at all about a
+different model from a different vendor under a different contract.
 
 Three consequences that are not obvious from the headline:
 
@@ -565,8 +575,10 @@ CLI, inside the sandbox, straight to the provider. No amount of accounting in
 
 That leaves four options and only two of them enforce anything.
 
-- **Own the credential and cap it at the provider.** The cleanest hard stop and
-  unavailable to us, because §6 says the credential is the customer's.
+- **Own the credential and cap it at the provider.** The cleanest hard stop, and
+  unavailable on the paid path because §6 says the credential is the customer's.
+  It becomes available again on the free tier, where the account is ours — see
+  §9.
 - **Run an inline proxy.** Point the CLI at a base URL we control and the request
   path is ours again. This is the only way to hard-stop model spend, and it is
   the shape of the option in §9. Whether a proxy carrying the *customer's own*
@@ -704,57 +716,142 @@ indefensible once registration is a self-serve action.
 
 ---
 
-## 9. The option to assess: OpenCode behind a spend-capped proxy
+## 9. The free tier: an open model on our own account
 
-A proposal worth taking seriously rather than adopting: ship OpenCode rather than
-Claude Code, pointed at an internal model proxy with per-key spend limits.
+§6 closes a door. This section finds the one next to it that is open.
 
-It is attractive for three real reasons. OpenCode is not Anthropic's binary, so
-the terms quoted in §6 do not bind it and the specific prohibition on paying for
-end users' usage does not apply. A proxy is exactly the mechanism §7 says a hard
-stop requires, and it is the only one of the four options that both enforces and
-does not require the customer to bring anything. And it removes the single worst
-step in the enrollment path — a stranger who has to produce an API key before
-they can see anything is a stranger who does not see anything.
+The original proposal was to ship OpenCode rather than Claude Code, pointed at an
+internal model proxy with per-key spend limits. It was attractive because OpenCode
+is not Anthropic's binary, so the terms quoted in §6 do not bind it; because a
+proxy is exactly the mechanism §7 says a hard stop requires; and because it
+removes the worst step in the enrollment path — a stranger who has to produce an
+API key before they can see anything is a stranger who does not see anything.
 
-Be clear about what it moves rather than solves:
+The objection to it was that serving external customers through our own model
+account raises the same resale question with the inference provider that
+Anthropic's terms raise for Claude. That objection turns out not to survive
+contact with the terms.
 
-- **Serving external customers through our own model account raises resale
-  questions with the inference provider that internal use does not.** A proxy set
-  up so employees can use models is a different contract from one serving paying
-  strangers, and every major provider's terms have some version of the clause
-  quoted in §6. This needs a commercial answer before it needs an engineering
-  one.
-- **A proxy that logs prompts becomes a place where customer code is stored** —
-  and unlike a per-tenant sandbox, it is one system holding every tenant's code,
-  which is the worst possible blast radius for the most sensitive data in the
-  product. If this is built, prompt logging is off by default and turning it on
-  is a decision with a paper trail.
-- **It makes the trial experience a different product from the paid one.** If
-  most customers run Claude Code, a free tier that only runs OpenCode is not a
-  trial of what they will buy. That is survivable if it is deliberate and stated;
-  it is a problem if it is discovered later.
+### The door that is open
 
-Assessment: worth building, as the free and trial tier only, explicitly not as
-the paid path, and only after the resale question is answered contractually. It
-is not a substitute for the bring-your-own-credential model — it is the thing
-that lets someone see the product before they decide to bring one.
+**AWS's terms for third-party models on Bedrock distinguish our own engineers
+from our product's end users, and permit serving end users — including free
+ones.** That is the ordinary SaaS-wrapper pattern, and it is allowed. What they
+prohibit is handing customers raw API-level access to the model, and training a
+competing model on it. Neither describes what we would be doing.
 
-Two assessments bearing on this section were commissioned while the document was
-written and had not arrived by the time it was finished: one on the proxy option
-itself, and one on cheap open-weight models for a free tier, including whether
-self-hosting on GPU instances ever beats paying per token for bursty usage. The
-second matters because it decides what sits behind the proxy: a per-token API
-from a commodity provider has the resale question above, while a model we run
-ourselves does not — at the cost of a GPU bill that, for a workload as bursty as
-this one, is very likely the wrong shape.
+So the resolution to the credential problem the rest of this document sets up is:
 
-So the paragraphs above are argued from the proposal, from §6 and from §7. The
-commercial claims in particular are reasoning about how these terms usually read,
-not a verified account of any specific provider's contract, and the choice of
-model behind the proxy is left open rather than assumed. **Treat this section as
-the weakest in the document until both assessments land**, and do not let the
-free tier be scheduled on the strength of it.
+> **A free tier on a cheap open model through our own account. The customer
+> connects their own Claude or OpenAI credential when they want the good
+> models.**
+
+That is a coherent product shape rather than a workaround. The free tier is not a
+crippled version of the paid one; it is a different model tier, which is a thing
+users already understand from every other tool they use.
+
+It also simplifies §7 considerably. On the free tier we *are* the account holder,
+so the first of the four metering options — own the credential and cap it at the
+provider — becomes available after all, and it is the strongest of the four. What
+owning the account does not give us for free is *per-tenant* attribution, and
+whether that comes from provider-side request tagging or from a thin gateway of
+our own is an open question rather than a solved one. The global cap is the
+safety net; the per-tenant cap is the product.
+
+### The candidate
+
+**Qwen's 30B coder model**, served on Bedrock on demand. It is available in
+Ireland, Frankfurt, Milan and Stockholm — all inside the European footprint the
+rest of this design assumes, so it does not reopen the residency question. And it
+is genuinely capable at agentic work rather than only at chat, which is the
+distinction that matters for a harness that expects tool calls rather than
+prose.
+
+On cost: roughly **$0.13 per active session-hour**, against about **$3.90** for a
+mid-tier commercial model on the same assumptions. State the assumptions, because
+they do the work — about sixty model calls an hour over a growing context, with
+no prompt caching applied. That is deliberately unflattering to the commercial
+model, since caching is exactly what a real deployment would use. It is the right
+comparison for a free tier all the same: a free tier is where caching is least
+likely to be working, because sessions are short, cold and unrelated.
+
+Note that this $3.90 and the $1.50-to-$7.50 range in §3 come from different
+assumed call rates and context sizes, so they are not the same calculation
+disagreeing with itself. Read them together as one range — somewhere between a
+dollar and eight dollars an active hour for a commercial model, depending mostly
+on whether caching is working — inside which $3.90 is an unremarkable point. The
+comparison that matters is not the absolute figure but the ratio to $0.13.
+
+### Self-hosting: ruled out, with numbers
+
+The obvious next thought is to run the open model ourselves on GPU instances and
+avoid the per-token bill entirely. At the duty cycle a free tier actually
+produces — bursty, mostly idle, five to twenty concurrent sessions at around ten
+per cent utilisation — **owning the GPU costs twenty to a hundred and sixty times
+the API price for the same model.**
+
+The sharpest way to put it: self-hosting a cheap open model would cost more per
+session than paying full price, per token, for a top-tier commercial model. That
+is not a marginal call requiring a spreadsheet, it is two orders of magnitude.
+
+Part of the cause is structural rather than economic. The European regions we
+would deploy in have no current-generation datacentre GPUs available on demand at
+all, so every throughput figure in the analysis is an optimistic extrapolation
+from hardware we could not actually rent. The real number is worse than the
+stated one, not better.
+
+### What the cheap models actually get wrong
+
+This is the part that a leaderboard will not tell you, and it is the reason the
+recommendation is a process rather than a name.
+
+Every cheap model surveyed has a dated, concrete failure mode in exactly this
+class of harness. One has a reproduced infinite-loop bug in OpenCode's own issue
+tracker. Another has a structural tool-calling protocol mismatch despite strong
+benchmark scores — it scores well and then cannot drive the harness. And the
+choice of inference backend alone has been observed to swing a single model's
+measured score by forty points, which means "which model" is not even a
+well-formed question without "served by what".
+
+**So the recommendation is to validate a model-and-backend pairing against the
+harness's own issue history before shipping it, not to pick from a leaderboard.**
+That validation is a phase-6 task with a real cost, and pretending otherwise is
+how a free tier ships that loops forever on its first conversation.
+
+One licence caution that is independent of all of the above: **Meta's open-weight
+licence excludes European-domiciled companies from the grant.** That is a legal
+question about our own entity, not about which region we deploy in, and it rules
+their open weights out for us regardless of how they benchmark.
+
+### The closed flagship, briefly
+
+Meta's new closed flagship was raised as a candidate. It is real, and it is the
+wrong tier: priced like a mid-range commercial model rather than a
+cheap one, and its cheap variant requires that the vendor be allowed to train on
+prompts — which a governance product cannot accept on its customers' behalf and
+should not want to. Its open-weight sibling has no agentic benchmarks yet, which
+makes it a thing to revisit rather than a candidate to evaluate.
+
+### What stays uncertain
+
+Two cautions from the original objection survive and should not be lost in the
+good news.
+
+- **Anything in the request path that logs prompts becomes a place where customer
+  code is stored** — and unlike a per-agent sandbox, it is one system holding
+  every tenant's code, which is the worst available blast radius for the most
+  sensitive data in the product. If a gateway is built for per-tenant
+  attribution, prompt logging is off by default and turning it on is a decision
+  with a paper trail.
+- **The trial is a different product from the paid one.** If most customers
+  intend to run Claude Code, a free tier on OpenCode and an open model is not a
+  trial of what they will buy. That is survivable when it is deliberate and
+  stated on the page; it is a problem when a user discovers it by being
+  disappointed.
+
+Assessment: build it, as the free and trial tier only, explicitly not as the paid
+path. It is not a substitute for the bring-your-own-credential model of §6 — it
+is what lets someone see the product before deciding to bring one.
 
 ---
 
@@ -783,18 +880,22 @@ round-the-clock expectation. Four environments are deployed by hand today, the
 cluster is on an unsupported Kubernetes version, and nobody is on call. Adding
 customer workloads to that is adding a promise we have no mechanism to keep.
 
-**The market has already run this experiment.** Every vendor who built hosted
-agent execution themselves repriced upward during 2026 once real per-session
-costs landed. The honest counter is that their exposure was the model bill and
+**The market has already run this experiment.** From a separate market review
+rather than from anything derived here: every vendor who built hosted agent
+execution themselves repriced upward during 2026 once real per-session costs
+landed. No vendor is named and no underlying data is reproduced, so treat it as a
+read rather than a citation. The honest counter is that their exposure was the
+model bill and
 ours would not be — under §6 the customer pays for inference and we pay for
 compute, and compute is the part that has commoditised. That materially changes
 the outcome, and it is worth saying so rather than treating the repricing as a
 verdict on all hosting.
 
 **And the argument for.** Sandbox infrastructure is now a commodity, so the cost
-of trying is low. The closest competitor to Switch's pitch shipped a coding agent
-into team chat in August with governance at the protocol level, so "agents in
-chat" is no longer differentiating on its own. The genuine white space is
+of trying is low. From the same market review: the closest competitor to Switch's
+pitch shipped a coding agent into team chat in August with governance at the
+protocol level — again unnamed here and unsourced — so "agents in chat" is no
+longer differentiating on its own. The genuine white space is
 multiple agents *from different vendors* collaborating in one room under one
 governance layer — something no single-vendor product has a reason to build.
 That is the thing worth demonstrating, and today demonstrating it requires
@@ -884,7 +985,9 @@ grows past that, the positioning objection was right.
 | Client-reported usage | Telemetry, labelled as such | Enforcement or billing — the process reporting the number belongs to the tenant. |
 | Permission model for a hosted session | VM boundary, default-deny egress, scoped filesystem, compute cap | Today's defaults — checks disabled off-laptop, name-based matching, shell allowed, one host of three. The mediation hook is not an enforcement plane. |
 | First chat surface | A message list and composer in the gateway, scoped to first-run and support | Slack first — depends on an app install review a stranger cannot complete during signup. |
-| Free tier | Deferred, and only via a non-Anthropic host behind a spend-capped proxy | A free tier on our Claude credentials — prohibited. |
+| Free tier | OpenCode on a cheap open model through our own account | A free tier on our Claude credentials — prohibited by the terms in §6. AWS's terms for third-party models permit serving end users, which is the door §6 leaves open. |
+| Free-tier model | Qwen's 30B coder on Bedrock on demand, validated against the harness before shipping | Picking from a leaderboard — the surveyed cheap models each have a dated failure mode in this class of harness, and the inference backend alone can move a score by forty points. Meta's open weights are excluded by a licence term about European-domiciled companies. |
+| Serving the free-tier model | Per-token through our own account | Self-hosting on GPUs — twenty to a hundred and sixty times the price at a free tier's duty cycle, and the European regions we would use have no current-generation datacentre GPUs on demand anyway. |
 | Relationship to multi-tenancy | Downstream of it for self-serve; the existing-deployment case ships first | Building hosting first — signup, tenant isolation and the Slack app are all prerequisites for a stranger. |
 
 ---
@@ -935,7 +1038,13 @@ tenant, the tenant's first agent is hosted, payment.
 *Done when:* a stranger with a card and an API key has a working agent without
 talking to anyone.
 
-**Phase 6 — the free tier**, if and only if §9's commercial question is answered.
+**Phase 6 — the free tier.** OpenCode plus a cheap open model served from our own
+account, with the global spend cap that owning the account makes possible. The
+real work here is validation, not plumbing: a model-and-backend pairing has to be
+driven through the actual harness and checked against that harness's own issue
+history before anyone sees it.
+*Done when:* a stranger who has brought no credential at all can hold a working
+conversation with an agent, and a runaway one stops at a cap we set.
 
 ---
 
@@ -974,8 +1083,18 @@ talking to anyone.
   Whether a resumed session reloads context from the room, from the CLI's own
   transcript, or starts clean is a product decision that nobody has taken and
   that hosting forces.
-- Does the `replicaCount must be 1` constraint hold once one process supervises a
-  fleet? At what number does it stop holding?
+- §5 guesses that one supervising process is fine at ten sandboxes and not at a
+  thousand. Nobody has established where between those the `replicaCount must be
+  1` constraint actually breaks, or what breaks first — the reconciliation loop,
+  the connection registry, or the database pool.
+- **Per-tenant attribution for free-tier model spend.** Owning the account gives
+  a global cap. Whether per-tenant numbers come from provider-side request tagging
+  or from a thin gateway of our own is unresolved, and the second answer puts a
+  system holding every tenant's prompts into the request path.
+- Our production cluster is in a region with no on-demand models available at
+  all, so any model call from our own infrastructure would be cross-region today.
+  That is outside this document's scope but it lands squarely on whoever builds
+  the free tier.
 - Should hosted customers be a separate deployment from self-hosted ones, the way
   the multi-tenancy spike keeps the demo environment separate?
 - Who is on call, and what is the promise? Neither has an answer today, and
