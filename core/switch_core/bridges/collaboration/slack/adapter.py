@@ -544,6 +544,49 @@ class SlackAdapter(CollaborationAdapter):
         messages = result.get("messages") or []
         return len(messages) > 1 and messages[1].get("ts") == ts
 
+    async def tell_actor(
+        self, channel_id: str, actor_ref: str, thread_ref: str | None, text: str
+    ) -> None:
+        """Slack's ephemeral message: one person, in place, and not kept.
+
+        It suits a notice about an answer that did not land. That notice is
+        only useful to whoever gave the answer, and only until they give
+        another, so leaving nothing behind is the point rather than a
+        limitation.
+
+        Ephemerals are not deliverable to someone who is not in the channel,
+        and Slack says so rather than failing quietly. Nothing here can put
+        them there, so it is logged and left.
+        """
+        if not self._web_client:
+            logger.warning(
+                "Cannot tell %s in %s that their answer did not land: Slack "
+                "client not connected. The notice was: %s",
+                actor_ref,
+                channel_id,
+                text,
+            )
+            return
+        try:
+            await self._web_client.chat_postEphemeral(
+                channel=channel_id,
+                user=actor_ref,
+                text=escape_mrkdwn(text),
+                thread_ts=self._thread_ts_of(thread_ref),
+            )
+        except Exception as e:
+            # Broad for the same reason `is_first_reply` is: this runs on the
+            # inbound path of every message, so raising loses the message and
+            # not just the notice.
+            logger.warning(
+                "Could not tell %s in %s that their answer did not land: %s. "
+                "The notice was: %s",
+                actor_ref,
+                channel_id,
+                e,
+                text,
+            )
+
     def adapt_icon_url(self, raw: str | None, agent_name: str) -> str:
         # Overridden for Slack alone: it flattens a transparent avatar onto
         # white. Adjusting here rather than at each call site keeps every place
