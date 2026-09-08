@@ -453,6 +453,7 @@ class TestOidcCallback:
                     user_store=UserStore(),
                 )
             assert exc.value.status_code == 502
+            assert exc.value.detail == "OIDC provider did not respond"
 
     async def test_userinfo_non_json_response_maps_to_502(
         self,
