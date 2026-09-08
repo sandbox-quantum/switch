@@ -1,9 +1,9 @@
 """Where a projection gets its snapshot and its events.
 
-The contract's server routes do not exist yet, so this is a seam with one
-implementation: a replay of recorded fixtures. Everything downstream — the
-projection, the renderers, the Slack call — is driven through it, so when the
-routes land the only new thing is another `SessionEventSource`.
+Everything downstream — the projection, the renderers, the Slack call — is
+driven through this seam, so where a session's state comes from is the only
+thing a new backing has to supply. One implementation replays recorded
+fixtures, which is also how the whole path is tested.
 """
 
 from __future__ import annotations

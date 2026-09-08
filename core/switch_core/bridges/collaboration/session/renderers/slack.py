@@ -82,9 +82,9 @@ def render_approval(
 def render_approval_text(request: SnapshotRequest, reference: RequestReference) -> str:
     """The same approval with no card at all.
 
-    This is the notification fallback and, once the answer parser lands, the
-    thing a person is answering when they type. Numbering matches the button
-    order, so "1" means the same on both.
+    This is the notification fallback, and the form a person is answering when
+    they type rather than press. Numbering matches the button order, so "1"
+    means the same on both.
 
     Slack reads a message's `text` as mrkdwn, so this is not a plain string it
     can be careless with: every value is escaped, and only the quote markers
