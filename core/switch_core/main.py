@@ -88,6 +88,7 @@ from switch_core.db.stores.task_store import TaskStore
 from switch_core.db.stores.user_store import UserStore
 from switch_core.gateway.app import create_gateway_app
 from switch_core.gateway.auth import hash_password
+from switch_core.logging_config import configure_logging
 from switch_core.messages.notify import MessageListener
 from switch_core.provisioning import Provisioning
 from switch_core.provisioning.postgres import PostgresProvisioning
@@ -154,9 +155,6 @@ async def _connection_sweep_loop(protocol: ProtocolService) -> None:
             logger.exception("Connection sweep failed")
 
 
-logging.getLogger("httpx").setLevel(logging.WARNING)
-
-
 class _QuietPollFilter(logging.Filter):
     _SUPPRESSED = [
         "/events?timeout=",
@@ -172,8 +170,7 @@ class _QuietPollFilter(logging.Filter):
 logging.getLogger("uvicorn.access").addFilter(_QuietPollFilter())
 
 
-async def run() -> None:
-    config = SwitchConfig()
+async def run(config: SwitchConfig) -> None:
     # ── Database ─────────────────────────────────────────────────────────────
     engine = create_engine_from_config(config)
     session_factory = create_session_factory(engine)
@@ -544,21 +541,18 @@ async def _shutdown(
 
 
 def main() -> None:
+    config = SwitchConfig()
+    running_version = switch_core_version()
+    configure_logging(config, running_version)
+
+    logger.info("Starting switch-core %s", running_version or "(version unknown)")
+
     alembic_ini = Path(__file__).resolve().parent.parent / "alembic.ini"
     alembic_cfg = AlembicConfig(str(alembic_ini))
     alembic_command.upgrade(alembic_cfg, "head")
-
-    log_level = os.environ.get("LOG_LEVEL", "INFO").upper()
-    switch_log_level = os.environ.get("SWITCH_LOG_LEVEL", "INFO").upper()
-    logging.getLogger().setLevel(log_level)
-    logging.getLogger("switch_core").setLevel(switch_log_level)
-
-    running_version = switch_core_version()
-    logger.info("Starting switch-core %s", running_version or "(version unknown)")
-
     logger.info("Database migrations applied")
 
-    asyncio.run(run())
+    asyncio.run(run(config))
 
 
 if __name__ == "__main__":
