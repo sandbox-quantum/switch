@@ -27,10 +27,13 @@ from switch_core.bridges.collaboration.models import (
     OutboundAttachment,
 )
 from switch_core.bridges.collaboration.session.contract import Command, Surface
+from switch_core.bridges.collaboration.session.demo import SessionDemo
 from switch_core.bridges.collaboration.session.inbound import (
     InboundActor,
     SessionInteractions,
 )
+from switch_core.bridges.collaboration.session.outbound import SessionRequestCards
+from switch_core.bridges.collaboration.slack.adapter import SlackAdapter
 from switch_core.clients.admin_messages import ADMIN_MARKER, AdminMessageType
 from switch_core.clients.client_base import ClientBase, ClientConfig
 from switch_core.clients.mentions import mention_regex, strip_emphasis
@@ -132,6 +135,7 @@ class BridgeCore:
         matrix_server_name: str,
         bridge_client_matrix_user_id: str,
         max_attachment_bytes: int,
+        session_demo_enabled: bool,
     ) -> None:
         self._bridge_id = bridge_id
         self._bridge_type = bridge_type
@@ -194,6 +198,33 @@ class BridgeCore:
         # name for, because an answer must record where it was given.
         self._session_interactions = self._build_session_interactions(
             session_request_post_store
+        )
+        # A recorded session, posting a real card into a real channel, so the
+        # answer path above has something to resolve against before any host
+        # can speak the contract. Absent unless asked for. See session/demo.py.
+        self._session_demo = self._build_session_demo(
+            session_request_post_store, enabled=session_demo_enabled
+        )
+
+    def _build_session_demo(
+        self, posts: SessionRequestPostStore, *, enabled: bool
+    ) -> SessionDemo | None:
+        if not enabled:
+            return None
+        if not isinstance(self._adapter, SlackAdapter):
+            logger.warning(
+                "SESSION_DEMO_ENABLED is set, but %s posts no request cards, so "
+                "the demo trigger does nothing on this bridge",
+                self._bridge_type,
+            )
+            return None
+        return SessionDemo(
+            SessionRequestCards(
+                self._adapter,
+                bridge_id=self._bridge_id,
+                posts=posts,
+                session_factory=self._session_factory,
+            )
         )
 
     def _build_session_interactions(
@@ -498,6 +529,7 @@ class BridgeCore:
         # parse before it is a query, so this costs a channel nothing. It does
         # not consume the message: the room still sees what was said.
         await self._handle_text_answer(msg)
+        await self._handle_session_demo(msg)
         room_ids = self._channel_to_room.get(msg.channel_id)
         if room_ids is None:
             lock = self._channel_locks.setdefault(msg.channel_id, asyncio.Lock())
@@ -1097,6 +1129,33 @@ class BridgeCore:
             return
         command = await interactions.command_for_text(msg)
         self._drop_session_command(command, msg.sender_id)
+
+    async def _handle_session_demo(self, msg: InboundMessage) -> None:
+        """The trigger that stands in for a session, where one is asked for.
+
+        A failure is reported into the channel rather than raised: this runs on
+        the inbound path ahead of the relay, and a demo that cannot post a card
+        must not also cost the room the message.
+        """
+        demo = self._session_demo
+        if demo is None:
+            return
+        room = self._channel_to_room.get(msg.channel_id)
+        if room is None:
+            return
+        try:
+            await demo.handle(msg.content, msg.channel_id, room[0])
+        except Exception as error:
+            logger.error(
+                "The demo card for channel %s could not be posted: %s",
+                msg.channel_id,
+                error,
+            )
+            await self._adapter.admin_message(
+                msg.channel_id,
+                f"The demo request card could not be posted: {error}",
+                msg.root_id or msg.message_ref,
+            )
 
     def _drop_session_command(self, command: Command | None, sender_id: str) -> None:
         """Say out loud that an answer went nowhere.

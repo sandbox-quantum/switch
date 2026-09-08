@@ -1,9 +1,12 @@
-"""Keeping a posted request card in step with the request behind it.
+"""Putting a request card in a channel, and keeping it in step afterwards.
 
-The inbound half turns a press into a command; this is what the room sees
-afterwards. A request moves open → submitting → resolved or closed, and the
-card that stands for it is edited in place each time, so the channel carries
-one message per request rather than a running commentary.
+The inbound half turns a press into a command; this is the other side of it. A
+card is posted once and then edited in place as the request moves open →
+submitting → resolved or closed, so the channel carries one message per request
+rather than a running commentary.
+
+Posting is also what makes the inbound half reachable at all: the row written
+here is the only thing a token, a handle or a reply to a card ever resolves to.
 
 Slack-shaped, for the same reason `post_blocks` is: Block Kit is Slack's own
 form and the platforms that need something like a card need something
@@ -14,24 +17,186 @@ before.
 from __future__ import annotations
 
 import logging
+import secrets
 
 from slack_sdk.errors import SlackApiError
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.bridges.collaboration.slack.adapter import SlackAdapter
 from switch_core.db.models import SessionRequestPost
+from switch_core.db.stores.session_request_post_store import SessionRequestPostStore
 
 from .contract import SnapshotRequest
+from .form import posted_form
 from .renderers import RequestReference
 from .renderers.slack import render_request
 
 logger = logging.getLogger(__name__)
 
+# What a person types to name a card. Short because it is retyped by hand, and
+# unique only within one channel, which is as far as anyone can see.
+_HANDLE_PREFIX = "R"
+
+# A clash means another card took the number between the count and the insert.
+# Each retry counts one further up, so the loop only needs to outlast the cards
+# posted concurrently into a single channel.
+_MINT_ATTEMPTS = 5
+
+
+class CardNotPosted(RuntimeError):
+    """A request that has no card, so nobody was asked and nobody can answer.
+
+    Raised rather than logged: the session is waiting on an answer, and the
+    caller is the only thing that can tell it no one is going to give one.
+    """
+
+
+class CardAlreadyPosted(CardNotPosted):
+    """The request was already asked, so this is a repeat and not a failure.
+
+    A subclass because a caller that only wants to know nobody was asked is
+    right either way, and one that can tell a repeat from a refusal can.
+    """
+
 
 class SessionRequestCards:
     """One bridge's posted request cards, as the requests behind them change."""
 
-    def __init__(self, adapter: SlackAdapter) -> None:
+    def __init__(
+        self,
+        adapter: SlackAdapter,
+        *,
+        bridge_id: str,
+        posts: SessionRequestPostStore,
+        session_factory: async_sessionmaker[AsyncSession],
+    ) -> None:
         self._adapter = adapter
+        self._bridge_id = bridge_id
+        self._posts = posts
+        self._session_factory = session_factory
+
+    async def post(
+        self,
+        request: SnapshotRequest,
+        *,
+        channel_id: str,
+        thread_root_id: str | None,
+        room_id: str,
+        session_id: str,
+        epoch: str,
+        agent_name: str,
+    ) -> SessionRequestPost:
+        """Draw `request` as a card in a channel, and record what it offers.
+
+        The handle is reserved before the card is drawn, because the card
+        carries it: minting after posting would mean a clash could only be
+        resolved by editing a message someone may already be reading. So the row
+        goes in first, holding its own token where the post ref will go — unique
+        already, so two reservations cannot collide on it either — and the ref
+        is filled in once Slack has one.
+
+        Which leaves one ordering to be deliberate about: a card that posts and
+        then fails to record is a card offering buttons that resolve to nothing,
+        and that cannot happen here, because the recording came first. A
+        reservation that fails to post is the other way round — a handle held
+        for a card nobody can see — so it is released before raising.
+        """
+        form = posted_form(request)
+        token = secrets.token_urlsafe(16)
+        async with self._session_factory() as session:
+            post = await self._reserve(
+                session,
+                token=token,
+                form=form,
+                channel_id=channel_id,
+                thread_root_id=thread_root_id,
+                room_id=room_id,
+                session_id=session_id,
+                epoch=epoch,
+                request=request,
+            )
+            message = render_request(
+                request, RequestReference(token=post.token, handle=post.handle)
+            )
+            ref = await self._adapter.post_blocks(
+                channel_id, agent_name, message.text, message.blocks, thread_root_id
+            )
+            if ref is None:
+                await session.delete(post)
+                await session.commit()
+                raise CardNotPosted(
+                    f"Slack did not accept the card for request "
+                    f"{request.request_id} in channel {channel_id}, so nobody "
+                    f"has been asked and the handle {post.handle} was released."
+                )
+            post.external_post_id = ref
+            await session.commit()
+            logger.info(
+                "Posted card %s for request %s of session %s in channel %s",
+                post.handle,
+                request.request_id,
+                session_id,
+                channel_id,
+            )
+            return post
+
+    async def _reserve(
+        self,
+        session: AsyncSession,
+        *,
+        token: str,
+        form: dict[str, object],
+        channel_id: str,
+        thread_root_id: str | None,
+        room_id: str,
+        session_id: str,
+        epoch: str,
+        request: SnapshotRequest,
+    ) -> SessionRequestPost:
+        """Hold a handle nobody else in this channel has, or say it could not.
+
+        The request is checked for a card first, so that a second card for a
+        decision that can only be taken once is refused as itself rather than
+        arriving as a handle that will not mint. They are the same constraint
+        violation to the database and different mistakes to a reader.
+        """
+        existing = await self._posts.get_by_request(
+            session, self._bridge_id, session_id, request.request_id
+        )
+        if existing is not None:
+            raise CardAlreadyPosted(
+                f"Request {request.request_id} of session {session_id} already "
+                f"has card {existing.handle} in channel "
+                f"{existing.external_channel_id}."
+            )
+        start = await self._posts.count_in_channel(session, self._bridge_id, channel_id)
+        for attempt in range(_MINT_ATTEMPTS):
+            row = SessionRequestPost(
+                bridge_id=self._bridge_id,
+                token=token,
+                handle=f"{_HANDLE_PREFIX}{start + 1 + attempt}",
+                external_channel_id=channel_id,
+                external_post_id=token,
+                room_id=room_id,
+                thread_id=thread_root_id,
+                session_id=session_id,
+                epoch=epoch,
+                request_id=request.request_id,
+                revision=request.revision,
+                form=form,
+            )
+            try:
+                async with session.begin_nested():
+                    await self._posts.create(session, row)
+            except IntegrityError:
+                continue
+            return row
+        raise CardNotPosted(
+            f"Could not find a free handle for request {request.request_id} in "
+            f"channel {channel_id} after {_MINT_ATTEMPTS} tries, so it has no "
+            f"card: a card nobody can name is one a typed answer cannot reach."
+        )
 
     async def refresh(self, post: SessionRequestPost, request: SnapshotRequest) -> None:
         """Redraw the card for `request` where it was posted.

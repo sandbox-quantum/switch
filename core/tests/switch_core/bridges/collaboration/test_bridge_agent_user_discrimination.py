@@ -66,6 +66,7 @@ def _fake_bridge(*, agents: set[str]) -> SimpleNamespace:
 
     return SimpleNamespace(
         _handle_text_answer=_no_text_answer,
+        _handle_session_demo=_no_text_answer,
         _repair_placeholder_username=_noop_repair,
         _is_registered_agent=_is_registered_agent,
         _ensure_user_in_matrix_room=_ensure_user_in_matrix_room,

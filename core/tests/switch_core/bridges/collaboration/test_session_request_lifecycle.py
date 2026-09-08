@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from switch_core.bridges.collaboration.session.contract import SnapshotRequest
 from switch_core.bridges.collaboration.session.outbound import SessionRequestCards
@@ -32,6 +32,7 @@ from switch_core.bridges.collaboration.slack.adapter import (
     SlackConnectionConfig,
 )
 from switch_core.db.models import SessionRequestPost
+from switch_core.db.stores.session_request_post_store import SessionRequestPostStore
 
 from .test_slack_agent_sessions import FakeWebClient
 
@@ -257,6 +258,16 @@ def _post() -> SessionRequestPost:
     )
 
 
+def _cards(adapter: SlackAdapter) -> SessionRequestCards:
+    """A refresh needs none of the posting half, so it is given none of it."""
+    return SessionRequestCards(
+        adapter,
+        bridge_id="bridge-1",
+        posts=SessionRequestPostStore(),
+        session_factory=cast(Any, None),
+    )
+
+
 def _adapter() -> tuple[SlackAdapter, FakeWebClient]:
     adapter = SlackAdapter(
         config=SlackConnectionConfig(
@@ -274,7 +285,7 @@ async def test_the_card_is_edited_in_place_rather_than_reposted() -> None:
     request = await _request(through=SETTLED)
     adapter, client = _adapter()
 
-    await SessionRequestCards(adapter).refresh(_post(), request)
+    await _cards(adapter).refresh(_post(), request)
 
     assert len(client.updated) == 1
     edit = client.updated[0]
@@ -291,7 +302,7 @@ async def test_a_failed_edit_puts_the_outcome_in_the_thread_instead() -> None:
     adapter, client = _adapter()
     client.update_error = "message_not_found"
 
-    await SessionRequestCards(adapter).refresh(_post(), request)
+    await _cards(adapter).refresh(_post(), request)
 
     assert client.updated == []
     assert len(client.posted) == 1

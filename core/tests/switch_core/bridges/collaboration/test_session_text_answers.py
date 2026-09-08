@@ -302,6 +302,7 @@ def _bridge(interactions: Any) -> tuple[Any, list[dict[str, str]]]:
     bridge._channel_to_room = {CHANNEL: ("room-uuid", "!room:test")}
     bridge._channel_locks = {}
     bridge._session_interactions = interactions
+    bridge._session_demo = None
     # Instance attrs shadow the class methods so the DB is never touched.
     bridge._is_registered_agent = _is_registered_agent  # type: ignore[assignment]
     bridge._repair_placeholder_username = _repair_placeholder_username  # type: ignore[assignment]

@@ -20,6 +20,45 @@ class SessionRequestPostStore:
         await session.flush()
         return post
 
+    async def count_in_channel(
+        self, session: AsyncSession, bridge_id: str, channel_id: str
+    ) -> int:
+        """How many cards this bridge has posted in one channel.
+
+        What a freshly minted handle counts up from. It is a starting point and
+        not a reservation — two cards posted at once would compute the same one
+        — so the unique index is what actually settles it and the caller retries
+        from here.
+        """
+        result = await session.execute(
+            select(func.count())
+            .select_from(SessionRequestPost)
+            .where(
+                SessionRequestPost.bridge_id == bridge_id,
+                SessionRequestPost.external_channel_id == channel_id,
+            )
+        )
+        return int(result.scalar_one())
+
+    async def get_by_request(
+        self, session: AsyncSession, bridge_id: str, session_id: str, request_id: str
+    ) -> SessionRequestPost | None:
+        """The card a request already has on this bridge, if it has one.
+
+        One request, one card: a second would be a second set of buttons for a
+        decision that can only be taken once, and the unique index refuses it.
+        Read before posting so that refusal arrives as an answer rather than as
+        a constraint violation.
+        """
+        result = await session.execute(
+            select(SessionRequestPost).where(
+                SessionRequestPost.bridge_id == bridge_id,
+                SessionRequestPost.session_id == session_id,
+                SessionRequestPost.request_id == request_id,
+            )
+        )
+        return result.scalar_one_or_none()
+
     async def get_by_token(
         self, session: AsyncSession, bridge_id: str, token: str
     ) -> SessionRequestPost | None:

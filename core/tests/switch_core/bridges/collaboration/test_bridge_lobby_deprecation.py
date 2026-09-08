@@ -80,6 +80,7 @@ async def test_inbound_lobby_message_short_circuits_routing() -> None:
         _handle_lobby_message=_handle_lobby_message,
         _ensure_user_in_matrix_room=_ensure_user_in_matrix_room,
         _handle_text_answer=_no_text_answer,
+        _handle_session_demo=_no_text_answer,
         _channel_to_room={},
         _channel_locks={},
     )
@@ -110,6 +111,7 @@ async def test_inbound_non_lobby_message_is_not_short_circuited() -> None:
         _handle_lobby_message=_handle_lobby_message,
         _create_room_for_channel=_create_room_for_channel,
         _handle_text_answer=_no_text_answer,
+        _handle_session_demo=_no_text_answer,
         _channel_to_room={},
         _channel_locks={},
     )

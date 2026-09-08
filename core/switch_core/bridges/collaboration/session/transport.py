@@ -62,6 +62,11 @@ class FixtureEventSource:
             session_id=recorded["initialSnapshot"]["session"]["sessionId"],
         )
 
+    @property
+    def session_id(self) -> str:
+        """Which session the recording holds, for a caller that only has the file."""
+        return self._session_id
+
     async def snapshot(self, session_id: str) -> Snapshot:
         self._require(session_id)
         return self._snapshot

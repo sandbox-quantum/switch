@@ -86,6 +86,7 @@ def _fake_bridge() -> SimpleNamespace:
 
     ns = SimpleNamespace(
         _handle_text_answer=_no_text_answer,
+        _handle_session_demo=_no_text_answer,
         _repair_placeholder_username=_repair_placeholder_username,
         _adapter=_FakeAdapter(),
         _channel_to_room={"chan-1": ("room-1", "!room:s")},
