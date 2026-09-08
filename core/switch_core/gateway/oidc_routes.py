@@ -9,7 +9,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.responses import RedirectResponse
 
 from switch_core.config import SwitchConfig
-from switch_core.db.stores.user_store import OidcIdentityConflictError, UserStore
+from switch_core.db.stores.user_store import (
+    OidcIdentityConflictError,
+    OidcIdentityRaceError,
+    UserStore,
+)
 from switch_core.gateway.auth import set_session_cookie
 from switch_core.gateway.dependencies import get_config, get_session, get_user_store
 
@@ -128,6 +132,17 @@ async def oidc_callback(
     except OidcIdentityConflictError as exc:
         logger.warning("OIDC identity conflict: %s", exc)
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except OidcIdentityRaceError as exc:
+        # Transient contention, not a rejected security decision (see the
+        # exception's docstring) — 503 so an operator's dashboards can tell
+        # this apart from the 409s above rather than lumping a retry storm in
+        # with attack signal.
+        logger.warning("OIDC identity resolution raced: %s", exc)
+        raise HTTPException(
+            status_code=503,
+            detail="Login is temporarily contended, please try again",
+            headers={"Retry-After": "1"},
+        ) from exc
     await session.commit()
 
     # Verify-at-login only: we don't persist the IdP tokens. Land the browser

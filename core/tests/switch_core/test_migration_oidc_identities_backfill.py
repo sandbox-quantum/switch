@@ -122,3 +122,44 @@ async def test_backfill_migrates_full_pairs_and_legacy_rows_and_leaves_others_al
     # A row untouched by OIDC (no oidc_sub key, NULL metadata outright) is
     # left exactly as it was.
     assert by_id["password"] is None
+
+
+async def test_backfill_refuses_when_two_users_share_a_legacy_subject(
+    backfill_url: str,
+) -> None:
+    # Two users with the same oidc_sub and no recorded issuer can't be told
+    # apart by subject alone; UNIQUE(sub) WHERE iss IS NULL would reject the
+    # second INSERT anyway, but the pre-flight check exists to fail with a
+    # message a human can act on instead of a bare constraint violation.
+    engine = create_async_engine(backfill_url)
+    try:
+        async with engine.begin() as connection:
+            await connection.run_sync(_upgrade_to(_PRE_MIGRATION_REVISION))
+
+        async with engine.begin() as connection:
+            await connection.execute(
+                text(
+                    """
+                    INSERT INTO users (id, name, email, role, password_hash, metadata)
+                    VALUES
+                        ('claimant-a', 'A', 'claimant-a@example.com', 'admin', NULL,
+                         '{"oidc_sub": "okta|shared"}'),
+                        ('claimant-b', 'B', 'claimant-b@example.com', 'user', NULL,
+                         '{"oidc_sub": "okta|shared"}')
+                    """
+                )
+            )
+
+        with pytest.raises(RuntimeError, match="okta\\|shared"):
+            async with engine.begin() as connection:
+                await connection.run_sync(_upgrade_to(_MIGRATION_UNDER_TEST))
+
+        async with engine.connect() as connection:
+            table_exists = await connection.execute(
+                text(
+                    "SELECT to_regclass('public.oidc_identities') IS NOT NULL AS exists"
+                )
+            )
+            assert table_exists.scalar() is False
+    finally:
+        await engine.dispose()

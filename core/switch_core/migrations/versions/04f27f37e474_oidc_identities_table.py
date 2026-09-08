@@ -22,6 +22,16 @@ never emits ``email_verified``, e.g. Okta's org authorization server for
 directory users) keeps logging that account in rather than being newly locked
 out or forked into a second account by a changed email.
 
+``UNIQUE(iss, sub)`` does not constrain a NULL issuer at all — Postgres never
+considers two NULLs equal — so a separate partial unique index enforces at
+most one such row per subject; without it, two different users sharing a
+legacy subject would both migrate cleanly and a login would then resolve to
+whichever one the lookup happened to see first. Two users cannot share a
+legacy subject in practice (each was some real person's login), so this
+refuses to proceed rather than guess which one is right if it ever finds one:
+that is a data problem for a human to resolve by hand, not one this migration
+should paper over by silently picking a side.
+
 The email column also gains a case-insensitive index: linking now matches an
 existing account by email, and a compare that ignored case here would defeat
 the very guarantee this migration exists to add.
@@ -39,6 +49,30 @@ depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
+    connection = op.get_bind()
+
+    duplicates = connection.execute(
+        sa.text(
+            """
+            SELECT metadata->>'oidc_sub' AS sub, count(*) AS n
+            FROM users
+            WHERE metadata ? 'oidc_sub' AND NOT (metadata ? 'oidc_iss')
+            GROUP BY metadata->>'oidc_sub'
+            HAVING count(*) > 1
+            """
+        )
+    ).fetchall()
+    if duplicates:
+        raise RuntimeError(
+            "Refusing to migrate: more than one user shares the same legacy "
+            "oidc_sub with no recorded issuer, which cannot be told apart by "
+            "subject alone: "
+            + ", ".join(f"{row.sub!r} ({row.n} users)" for row in duplicates)
+            + ". Resolve by hand — decide which account actually owns each "
+            "subject and clear oidc_sub from users.metadata for the "
+            "other(s) — then re-run this migration."
+        )
+
     op.create_table(
         "oidc_identities",
         sa.Column("id", sa.Text(), primary_key=True),
@@ -54,9 +88,15 @@ def upgrade() -> None:
         sa.UniqueConstraint("iss", "sub", name="uq_oidc_identities_iss_sub"),
     )
     op.create_index("ix_oidc_identities_sub", "oidc_identities", ["sub"])
+    op.create_index(
+        "ix_oidc_identities_sub_null_iss",
+        "oidc_identities",
+        ["sub"],
+        unique=True,
+        postgresql_where=sa.text("iss IS NULL"),
+    )
     op.create_index("ix_users_email_lower", "users", [sa.text("lower(email)")])
 
-    connection = op.get_bind()
     connection.execute(
         sa.text(
             """
@@ -79,10 +119,13 @@ def downgrade() -> None:
     """Best effort, not a full inverse.
 
     A user linked to more than one identity — impossible under the old
-    single-slot ``metadata`` pair this recreates — keeps only one of them,
-    picked by whichever row this UPDATE visits last for that user. That loss
-    is inherent to the old shape, not a defect in this statement: there is
-    nowhere to put a second identity once ``oidc_identities`` is gone.
+    single-slot ``metadata`` pair this recreates — keeps only one of them.
+    When an UPDATE ... FROM matches a target row against more than one source
+    row, PostgreSQL applies exactly one of them and which one is unspecified
+    — not a documented "last write wins" order, just whichever the query
+    plan happens to produce. That loss is inherent to the old shape, not a
+    defect in this statement: there is nowhere to put a second identity once
+    ``oidc_identities`` is gone.
     """
     connection = op.get_bind()
     connection.execute(
@@ -110,5 +153,6 @@ def downgrade() -> None:
         )
     )
     op.drop_index("ix_users_email_lower", table_name="users")
+    op.drop_index("ix_oidc_identities_sub_null_iss", table_name="oidc_identities")
     op.drop_index("ix_oidc_identities_sub", table_name="oidc_identities")
     op.drop_table("oidc_identities")

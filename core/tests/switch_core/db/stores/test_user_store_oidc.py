@@ -8,7 +8,11 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.db.models import OidcIdentity, User
-from switch_core.db.stores.user_store import OidcIdentityConflictError, UserStore
+from switch_core.db.stores.user_store import (
+    OidcIdentityConflictError,
+    OidcIdentityRaceError,
+    UserStore,
+)
 
 _ISS = "https://idp.example.com"
 
@@ -34,6 +38,25 @@ class TestGetOrCreateOidcUser:
 
             again = await store.get_by_oidc_identity(session, iss=_ISS, sub="okta|9")
             assert again is not None and again.id == user.id
+
+    async def test_new_user_email_is_stored_lowercase(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        # An account this method creates should not add a new case variant of
+        # its own, even though the lookup that precedes creation is already
+        # case-insensitive and would have caught a collision either way.
+        store = UserStore()
+        async with session_factory() as session:
+            user = await store.get_or_create_oidc_user(
+                session,
+                iss=_ISS,
+                email="New.Person@Example.com",
+                name="New",
+                sub="okta|10",
+                email_verified=True,
+            )
+            await session.commit()
+            assert user.email == "new.person@example.com"
 
     async def test_same_identity_is_returned_and_keeps_role(
         self, session_factory: async_sessionmaker[AsyncSession]
@@ -126,6 +149,36 @@ class TestGetOrCreateOidcUser:
             await session.commit()
 
             assert linked.id == existing.id
+
+    async def test_pre_existing_case_duplicate_emails_resolve_deterministically_and_log(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        # users.email is still case-sensitively unique, so two rows differing
+        # only by case can exist from before get_by_email compared
+        # case-insensitively (or from a path that bypasses this store
+        # entirely). A login must not crash on that, but silently guessing
+        # between two real accounts is exactly the quiet fallback CLAUDE.md
+        # rules out: the choice must be deterministic and disclosed.
+        store = UserStore()
+        async with session_factory() as session:
+            older = User(name="Old", email="dup@example.com", role="admin")
+            newer = User(name="New", email="Dup@Example.com", role="user")
+            await store.create(session, older)
+            await store.create(session, newer)
+            await session.commit()
+
+            with caplog.at_level(
+                logging.ERROR, logger="switch_core.db.stores.user_store"
+            ):
+                found = await store.get_by_email(session, "DUP@EXAMPLE.COM")
+
+            assert found is not None and found.id == older.id
+            assert any(
+                older.id in record.message and newer.id in record.message
+                for record in caplog.records
+            )
 
     async def test_two_subjects_same_issuer_can_both_link_to_one_account(
         self, session_factory: async_sessionmaker[AsyncSession]
@@ -336,6 +389,65 @@ class TestGetOrCreateOidcUser:
             session.add(OidcIdentity(user_id=second.id, iss=_ISS, sub="dup"))
             with pytest.raises(IntegrityError):
                 await session.commit()
+
+    async def test_null_issuer_sub_unique_constraint_is_enforced_at_the_db_level(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        # UNIQUE(iss, sub) does not constrain a NULL issuer at all — Postgres
+        # never treats two NULLs as equal — so this must be a separate,
+        # partial index; without it, two different users could each hold a
+        # legacy identity for the same subject and a lookup would resolve to
+        # whichever one it saw first.
+        store = UserStore()
+        async with session_factory() as session:
+            first = User(name="A", email="legacy-a@example.com", role="user")
+            second = User(name="B", email="legacy-b@example.com", role="admin")
+            await store.create(session, first)
+            await store.create(session, second)
+            session.add(OidcIdentity(user_id=first.id, iss=None, sub="dup-legacy"))
+            await session.commit()
+
+            session.add(OidcIdentity(user_id=second.id, iss=None, sub="dup-legacy"))
+            with pytest.raises(IntegrityError):
+                await session.commit()
+
+    async def test_race_exhausted_twice_raises_a_distinct_contention_error(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # A single retry is meant for one raced write, not a store that keeps
+        # lying about what exists; a second collision must raise loudly under
+        # its own error type rather than being retried forever or mistaken
+        # for the security-rejection OidcIdentityConflictError.
+        store = UserStore()
+        async with session_factory() as winner_session:
+            await store.get_or_create_oidc_user(
+                winner_session,
+                iss=_ISS,
+                email="always-races@example.com",
+                name="Winner",
+                sub="okta|always-races",
+                email_verified=True,
+            )
+            await winner_session.commit()
+
+        async with session_factory() as session:
+
+            async def always_misses(sess: AsyncSession, *, iss: str, sub: str):
+                return None
+
+            monkeypatch.setattr(store, "get_by_oidc_identity", always_misses)
+
+            with pytest.raises(OidcIdentityRaceError):
+                await store.get_or_create_oidc_user(
+                    session,
+                    iss=_ISS,
+                    email="someone-else-again@example.com",
+                    name="Loser",
+                    sub="okta|always-races",
+                    email_verified=True,
+                )
 
     async def test_concurrent_creation_of_the_same_identity_resolves_to_the_winner(
         self,

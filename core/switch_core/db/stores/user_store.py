@@ -23,6 +23,21 @@ class OidcIdentityConflictError(Exception):
     account: an unverified email is attacker-controllable, so trusting it to
     pick an account is an account-takeover vector. A verified email links
     instead — see ``get_or_create_oidc_user``.
+
+    A rejected security decision, not a retry-able condition — distinct from
+    ``OidcIdentityRaceError``, so an operator watching for the latter is not
+    drowned in the former (or vice versa).
+    """
+
+
+class OidcIdentityRaceError(Exception):
+    """Two logins raced to provision or link the same identity or email twice
+    in a row.
+
+    Transient contention, not a security decision: the caller should retry
+    the login rather than treat this as an attack signal. Kept separate from
+    ``OidcIdentityConflictError`` so the two can be told apart in logs and
+    given different HTTP treatment at the callback.
     """
 
 
@@ -39,15 +54,32 @@ class UserStore:
         reliably agree on the casing of the same mailbox, and accounts must
         be the same account regardless. Backed by ``ix_users_email_lower``.
 
-        Uses the first match rather than requiring exactly one: two rows
-        differing only in case could already exist from before this method
-        compared case-insensitively, and a login must not turn that into a
-        500.
+        ``users.email`` is still case-sensitively unique, so two rows
+        differing only in case can already exist from before this method
+        compared case-insensitively. A login must not turn that into a 500,
+        but silently guessing between two real accounts — one of which could
+        be an admin — is exactly the kind of quiet fallback CLAUDE.md rules
+        out: ordering is made deterministic (oldest account wins, as the
+        presumed original) and the ambiguity itself is logged loudly so it
+        gets noticed and cleaned up rather than repeating unnoticed on every
+        login.
         """
         result = await session.execute(
-            select(User).where(func.lower(User.email) == email.lower())
+            select(User)
+            .where(func.lower(User.email) == email.lower())
+            .order_by(User.created_at, User.id)
         )
-        return result.scalars().first()
+        users = result.scalars().all()
+        if len(users) > 1:
+            logger.error(
+                "Multiple users share email %r case-insensitively (ids: %s); "
+                "returning the oldest. This is pre-existing duplicate data, "
+                "not something this login caused — merge or rename the "
+                "extra account(s).",
+                email,
+                [u.id for u in users],
+            )
+        return users[0] if users else None
 
     async def get_by_oidc_identity(
         self, session: AsyncSession, *, iss: str, sub: str
@@ -57,6 +89,8 @@ class UserStore:
         A row with no stored issuer predates CHOO-2624 tracking one at all; it
         matches on ``sub`` alone and has its issuer backfilled here, same as
         this identity did before it had its own table.
+        ``ix_oidc_identities_sub_null_iss`` guarantees at most one such row per
+        ``sub``, so this is a well-defined lookup and not a guess between rows.
         """
         result = await session.execute(
             select(User)
@@ -72,7 +106,7 @@ class UserStore:
                 OidcIdentity.iss.is_(None), OidcIdentity.sub == sub
             )
         )
-        identity = legacy.scalars().first()
+        identity = legacy.scalar_one_or_none()
         if identity is None:
             return None
         identity.iss = iss
@@ -100,15 +134,24 @@ class UserStore:
         signed up with a password and later signs in with an IdP sharing that
         email lands in the same account instead of a second one.
 
-        An unverified email must never pick an existing account: that is an
-        attacker-controllable claim, so a collision with a pre-existing
-        account is refused rather than linked. A brand-new email — verified
-        or not — provisions a fresh ``user`` (no password hash).
+        An unverified email must never pick an *existing, different* account:
+        that is an attacker-controllable claim, so a collision is refused
+        rather than linked. A brand-new email — verified or not — provisions
+        a fresh ``user`` (no password hash), stored lower-cased so accounts
+        this method creates don't add new case variants of their own; this
+        does not touch the casing of any pre-existing row. This guarantee
+        does not extend to a legacy identity already linked before issuers
+        were tracked (see ``get_by_oidc_identity``): that keeps resolving,
+        and backfilling its issuer, purely by matching ``sub`` — without
+        consulting email, ``email_verified``, or even the issuer on the
+        incoming claim — exactly as it did before this identity had its own
+        table.
 
         Two logins racing to provision or link the same identity or the same
-        new email hit a unique-constraint conflict rather than either one
-        silently overwriting the other; this retries once against whichever
-        row won, so the raced request resolves to that row instead of a 500.
+        new email hit a unique-constraint conflict inside a savepoint rather
+        than either one silently overwriting the other or losing the rest of
+        the caller's transaction; this retries once against whichever row
+        won, so the raced request resolves to that row instead of a 500.
         """
         for attempt in range(1, _MAX_ATTEMPTS + 1):
             user = await self.get_by_oidc_identity(session, iss=iss, sub=sub)
@@ -123,27 +166,32 @@ class UserStore:
                         "this identity's email is not verified."
                     )
                 try:
-                    await self._link_identity(session, user=existing, iss=iss, sub=sub)
+                    async with session.begin_nested():
+                        await self._link_identity(
+                            session, user=existing, iss=iss, sub=sub
+                        )
                 except IntegrityError:
-                    await self._recover_from_race(session, attempt)
+                    self._raise_if_exhausted(attempt)
                     continue
                 return existing
 
-            user = User(name=name, email=email, role="user", password_hash=None)
+            user = User(name=name, email=email.lower(), role="user", password_hash=None)
             try:
-                await self.create(session, user)
-                await self._link_identity(session, user=user, iss=iss, sub=sub)
+                async with session.begin_nested():
+                    await self.create(session, user)
+                    await self._link_identity(session, user=user, iss=iss, sub=sub)
             except IntegrityError:
-                await self._recover_from_race(session, attempt)
+                self._raise_if_exhausted(attempt)
                 continue
             return user
 
         raise AssertionError("unreachable: the loop above always returns or raises")
 
-    async def _recover_from_race(self, session: AsyncSession, attempt: int) -> None:
-        await session.rollback()
+    def _raise_if_exhausted(self, attempt: int) -> None:
+        # The savepoint above already rolled back just the failed write, not
+        # the caller's whole transaction, so nothing to undo here.
         if attempt == _MAX_ATTEMPTS:
-            raise OidcIdentityConflictError(
+            raise OidcIdentityRaceError(
                 "OIDC identity resolution raced twice in a row; refusing to "
                 "guess a winner a third time."
             )
@@ -151,13 +199,16 @@ class UserStore:
     async def _link_identity(
         self, session: AsyncSession, *, user: User, iss: str, sub: str
     ) -> None:
+        session.add(OidcIdentity(user_id=user.id, iss=iss, sub=sub))
+        await session.flush()
         # The most security-relevant event this store performs: it decides
         # which account an external identity provider can now sign in as.
+        # Logged only after the flush succeeds, so a racer that loses to a
+        # concurrent write (see get_or_create_oidc_user) never logs a link
+        # that didn't happen.
         logger.warning(
             "Linking OIDC identity (iss=%r, sub=%r) to user %s", iss, sub, user.id
         )
-        session.add(OidcIdentity(user_id=user.id, iss=iss, sub=sub))
-        await session.flush()
 
     async def get_all(self, session: AsyncSession) -> list[User]:
         result = await session.execute(select(User))
