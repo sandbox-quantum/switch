@@ -38,11 +38,16 @@ class SwitchConfig(BaseSettings):
     # Gateway OIDC login (optional — bring-your-own identity provider for the
     # gateway browser login, e.g. Okta). Distinct from the agent oauth_*
     # settings above, which gate the MCP/agent bridge and may point at a
-    # different IdP. Active only when issuer + client id + secret are all
-    # set; the provider's endpoints are read from OIDC discovery.
+    # different IdP. Active only when issuer + client id + secret + scopes
+    # are all set; the provider's endpoints are read from OIDC discovery.
     gateway_oidc_issuer_url: str | None = None
     gateway_oidc_client_id: str | None = None
     gateway_oidc_client_secret: str | None = None
+    # Must include "openid": authlib omits the scope parameter entirely when
+    # this is unset, so the provider applies its own default scope, which may
+    # not include "openid" — the provider then issues no id_token, and the
+    # callback falls back to the provider's userinfo endpoint, which may not
+    # answer.
     gateway_oidc_scopes: str | None = None
     gateway_oidc_provider_label: str | None = None
     # Absolute callback URL registered with the IdP. Must exactly match the
@@ -208,13 +213,24 @@ class SwitchConfig(BaseSettings):
             self.gateway_oidc_issuer_url,
             self.gateway_oidc_client_id,
             self.gateway_oidc_client_secret,
+            self.gateway_oidc_scopes,
         )
         set_count = sum(1 for value in required if value)
         if 0 < set_count < len(required):
             raise ValueError(
                 "Partial gateway OIDC config: set all of "
                 "GATEWAY_OIDC_ISSUER_URL / GATEWAY_OIDC_CLIENT_ID / "
-                "GATEWAY_OIDC_CLIENT_SECRET, or none of them."
+                "GATEWAY_OIDC_CLIENT_SECRET / GATEWAY_OIDC_SCOPES, or none "
+                "of them."
+            )
+        if self.gateway_oidc_scopes and "openid" not in (
+            self.gateway_oidc_scopes.split()
+        ):
+            raise ValueError(
+                "GATEWAY_OIDC_SCOPES must include 'openid': without it the "
+                "provider issues no id_token, and the callback falls back "
+                "to the provider's userinfo endpoint, which may not answer. "
+                f"Got {self.gateway_oidc_scopes!r}."
             )
         return self
 
