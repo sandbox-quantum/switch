@@ -106,14 +106,42 @@ dashboard, such as the OIDC login redirect — it should match wherever
 Switch Console (the desktop app) talks to a Switch server over two
 addresses: a **Gateway URL** and an **API URL** — see [Add a
 server](../official/getting-started/add-a-server.md) for what each field
-means in general. Against a `just run` backend, both are the same thing:
-`http://localhost:8000`. There's one process serving both surfaces, so there
-is no separate gateway host to point at, and — unlike the browser dashboard
-— Console never goes through the Vite dev server on `:5173` at all; it talks
-to switch-core directly.
+means in general. They are not the same address in local dev, and getting
+either one wrong fails in a way that points somewhere else:
+
+- **API URL** is `http://localhost:8000` — switch-core directly. This is the
+  address Console writes into each connected agent's own config as the
+  endpoint it registers against and talks to (the Agent Bridge / MCP
+  surface), so it always names switch-core itself.
+- **Gateway URL** is `http://localhost:5173` — the Vite dev server, **not**
+  `:8000`. Console uses this address for everything session-cookie-based:
+  its own calls into `/gateway/*` (signing in, listing agents and rooms),
+  the **Open** button under "Full admin interface" (which opens this exact
+  URL in your browser), and the periodic check that decides whether the
+  server shows as reachable. `just gateway-dev` has to be running for any of
+  that to work — Vite's `/gateway` proxy is what makes `:5173` stand in for
+  switch-core's session-authenticated surface, the same way it does for the
+  browser dashboard above.
+
+Setting the Gateway URL to `:8000` looks reasonable, since switch-core does
+answer `/gateway/*` on that port directly, but it hits the thing this page
+already warned about: switch-core never serves the dashboard's static
+assets. The reachability check still passes — `/gateway/*` genuinely
+answers on `:8000` — so the only symptom is the **Open** button loading a
+bare JSON response instead of the admin UI; nothing on the server list looks
+wrong.
+
+The opposite mistake is quieter and easier to hit by accident: forget to
+start `just gateway-dev`, and there is nothing at `:5173` to answer the
+Gateway URL check, so Console reports the **whole server** as unreachable —
+even though switch-core (`just run`) is healthy and the API URL is
+answering fine. The symptom points at the backend; the actual cause is the
+frontend dev server not running.
 
 In Switch Console, add a server, choose **Connect to an existing server**,
-and enter `http://localhost:8000` for both fields.
+and enter `http://localhost:5173` as the Gateway URL and
+`http://localhost:8000` as the API URL — with `just gateway-dev` already
+running.
 
 ## Other useful recipes
 
