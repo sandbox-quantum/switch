@@ -1,5 +1,5 @@
 {
-  "_comment": "A turn with work in it: what the agent did, what it said, and what it stopped to ask. Sits beside examples.json rather than inside it because that file is a byte-identical lift and cannot be edited here. Every item carries an `audience` the readers no longer interpret; it goes when the field does.",
+  "_comment": "A turn with work in it: what the agent did, what it said, and what it stopped to ask. Sits beside examples.json rather than inside it because that file is a byte-identical lift and cannot be edited here. Every item carries an `audience` the readers no longer interpret; it goes when the field does. `turnEnd` stops the same turn where it stands: nobody answered the permission, so the request closes unanswered and the edit it was waiting on is left unfinished.",
   "initialSnapshot": {
     "contractVersion": 1,
     "throughSequence": 0,
@@ -285,6 +285,36 @@
           "audience": { "kind": "room", "roomId": "room-activity" },
           "expiresAt": null
         }
+      }
+    }
+  ],
+  "turnEnd": [
+    {
+      "contractVersion": 1,
+      "eventId": "event-a12",
+      "sessionId": "session-activity",
+      "sequence": 12,
+      "occurredAt": "2026-09-08T09:02:30Z",
+      "body": {
+        "type": "request.settled",
+        "requestId": "request-activity",
+        "revision": 2,
+        "outcome": "interrupted",
+        "commandId": null,
+        "result": null
+      }
+    },
+    {
+      "contractVersion": 1,
+      "eventId": "event-a13",
+      "sessionId": "session-activity",
+      "sequence": 13,
+      "occurredAt": "2026-09-08T09:02:31Z",
+      "body": {
+        "type": "turn.upsert",
+        "turnId": "turn-activity",
+        "status": "interrupted",
+        "commandId": "message-activity"
       }
     }
   ]

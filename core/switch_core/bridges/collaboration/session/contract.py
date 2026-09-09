@@ -233,6 +233,10 @@ class TurnUpsert(_Model):
     command_id: Id | None
 
 
+# The three of those statuses after which nothing more arrives for the turn.
+TURN_ENDED = frozenset({"completed", "interrupted", "error"})
+
+
 class ItemUpsert(_Model):
     type: Literal["item.upsert"]
     item: Item

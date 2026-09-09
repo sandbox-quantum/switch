@@ -18,7 +18,7 @@ from pathlib import Path
 
 import pytest
 
-from switch_core.bridges.collaboration.session.contract import Item
+from switch_core.bridges.collaboration.session.contract import Item, TurnUpsert
 from switch_core.bridges.collaboration.session.projection import SessionProjection
 from switch_core.bridges.collaboration.session.renderers.slack import (
     render_activity,
@@ -37,13 +37,22 @@ ACTIVITY_PATH = (
 TURN = "turn-activity"
 
 
-async def _projection() -> SessionProjection:
-    source = FixtureEventSource.from_examples(ACTIVITY_PATH, events=["turnActivity"])
+async def _projection(*streams: str) -> SessionProjection:
+    source = FixtureEventSource.from_examples(
+        ACTIVITY_PATH, events=streams or ("turnActivity",)
+    )
     return await project(source, source.session_id)
 
 
 async def _items() -> list[Item]:
     return (await _projection()).turn_activity(TURN)
+
+
+def _turn(status: str = "running") -> TurnUpsert:
+    """The turn itself, which is what says whether any of this is still moving."""
+    return TurnUpsert.model_validate(
+        {"type": "turn.upsert", "turnId": TURN, "status": status, "commandId": None}
+    )
 
 
 def _item(**fields: object) -> Item:
@@ -66,14 +75,21 @@ def _item(**fields: object) -> Item:
 
 
 def _blocks(items: list[Item]) -> str:
-    return json.dumps(render_activity(items).blocks)
+    return json.dumps(render_activity(items, _turn()).blocks)
 
 
 def _context(items: list[Item]) -> str:
-    """The disclosure: the last block, where the tool log goes."""
-    blocks = render_activity(items).blocks
-    assert blocks[-1]["type"] == "context"
-    text = blocks[-1]["elements"][0]["text"]
+    """The disclosure, where the tool log goes: the block above the state line."""
+    blocks = render_activity(items, _turn()).blocks
+    assert blocks[-2]["type"] == "context"
+    text = blocks[-2]["elements"][0]["text"]
+    assert isinstance(text, str)
+    return text
+
+
+def _state(items: list[Item], turn: TurnUpsert) -> str:
+    """The last block: where the turn itself got to."""
+    text = render_activity(items, turn).blocks[-1]["elements"][0]["text"]
     assert isinstance(text, str)
     return text
 
@@ -116,6 +132,31 @@ async def test_a_turn_is_only_its_own_items() -> None:
     assert len(projection.turn_activity(TURN)) == 5
 
 
+async def test_the_recording_says_where_its_turn_got_to() -> None:
+    """The turn's own state, which is a separate upsert from any of its items."""
+    running = await _projection()
+    stopped = await _projection("turnActivity", "turnEnd")
+
+    assert running.turn(TURN) is not None
+    assert running.turn(TURN).status == "running"  # type: ignore[union-attr]
+    assert stopped.turn(TURN).status == "interrupted"  # type: ignore[union-attr]
+    assert stopped.turn("turn-nobody-ran") is None
+
+
+async def test_the_end_of_the_recording_closes_the_request_it_was_waiting_on() -> None:
+    """Interrupted with the permission unanswered, which is why the edit hangs."""
+    stopped = await _projection("turnActivity", "turnEnd")
+    request = stopped.request("request-activity")
+
+    assert request is not None
+    assert (request.state, request.result.outcome) == (  # type: ignore[union-attr]
+        "closed",
+        "interrupted",
+    )
+    assert stopped.open_requests() == []
+    assert [item.status for item in stopped.turn_activity(TURN)][-1] == "in-progress"
+
+
 # ── Saying, and doing ────────────────────────────────────────────────────────
 
 
@@ -126,11 +167,12 @@ async def test_what_was_said_is_the_body_and_what_was_done_is_the_disclosure() -
     Drawn the same size, the tool calls are all a reader sees.
     """
     items = await _items()
-    blocks = render_activity(items).blocks
+    blocks = render_activity(items, _turn()).blocks
 
     assert [block["type"] for block in blocks] == [
         "section",
         "section",
+        "context",
         "context",
     ]
     assert "flaky all week" in blocks[0]["text"]["text"]
@@ -167,7 +209,7 @@ async def test_a_person_speaking_is_quoted_and_attributed() -> None:
     one typed in the channel, so an unattributed body would read as the agent
     talking to itself.
     """
-    blocks = render_activity(await _items()).blocks
+    blocks = render_activity(await _items(), _turn()).blocks
 
     assert blocks[0]["text"]["text"].startswith("> *operator* in Slack: ")
     assert not blocks[1]["text"]["text"].startswith(">")
@@ -181,6 +223,66 @@ async def test_the_tool_log_reads_in_the_order_the_work_happened() -> None:
         "Ran tests/auth/test_login.py",
         "Editing tests/auth/conftest.py",
     ]
+
+
+# ── Where the turn itself got to ─────────────────────────────────────────────
+
+
+async def test_the_last_line_says_whether_the_turn_is_still_moving() -> None:
+    """One message per turn, edited in place, so the message has to say.
+
+    Without it a turn that finished and a turn that died look the same: the
+    same tool log, the same last line, and nothing to tell them apart.
+    """
+    items = await _items()
+
+    assert _state(items, _turn("running")) == "_Working…_"
+    assert _state(items, _turn("queued")) == "_Queued._"
+
+
+async def test_a_turn_that_stopped_with_a_step_open_says_what_it_left() -> None:
+    """The recording's edit is still waiting on the permission nobody gave.
+
+    Its `▸` is the last thing the host said about that call and stays as it is,
+    because the host is the only thing that knows how the call really ended.
+    What must not stay is the impression that it is still running.
+    """
+    items = await _items()
+
+    assert _state(items, _turn("interrupted")) == (
+        "_Turn interrupted. 1 step left unfinished._"
+    )
+    assert _state(items, _turn("error")) == (
+        "_Turn ended with an error. 1 step left unfinished._"
+    )
+
+
+async def test_a_turn_that_finished_everything_it_started_says_only_that() -> None:
+    items = [_item(itemId="i1", status="completed", title="Ran the tests")]
+
+    assert _state(items, _turn("completed")) == "_Turn complete._"
+
+
+async def test_a_running_turn_is_not_told_off_for_work_still_in_flight() -> None:
+    """Counting unfinished steps before the turn ends is counting the present."""
+    items = [_item(itemId="i1", status="in-progress", title="Running the tests")]
+
+    assert _state(items, _turn("running")) == "_Working…_"
+
+
+async def test_more_than_one_unfinished_step_is_counted_as_more_than_one() -> None:
+    items = [
+        _item(itemId=f"i{n}", status="in-progress", title=f"Step {n}") for n in range(3)
+    ]
+
+    assert _state(items, _turn("interrupted")).endswith("3 steps left unfinished._")
+
+
+async def test_the_fallback_carries_the_turn_state_too() -> None:
+    """It is the whole message on a client that will not render blocks."""
+    text = render_activity_text(await _items(), _turn("completed"))
+
+    assert text.splitlines()[-1] == "Turn complete. 1 step left unfinished."
 
 
 # ── What a host wrote, in somewhere Slack parses ─────────────────────────────
@@ -209,7 +311,7 @@ async def test_a_long_message_is_cut_rather_than_taking_the_post_with_it() -> No
     """
     items = [_item(itemId="i1", kind="assistant-message", title="", text="&" * 4000)]
 
-    text = render_activity(items).blocks[0]["text"]["text"]
+    text = render_activity(items, _turn()).blocks[0]["text"]["text"]
 
     assert len(text) <= 2400
     assert text.endswith("…")
@@ -227,7 +329,7 @@ async def test_a_quoted_message_is_budgeted_after_it_is_quoted() -> None:
     lines = "\n".join(f"line {n}" for n in range(300))
     items = [_item(itemId="i1", kind="user-message", title="", text=lines)]
 
-    text = render_activity(items).blocks[0]["text"]["text"]
+    text = render_activity(items, _turn()).blocks[0]["text"]["text"]
 
     assert len(text) <= 3000
     assert text.startswith("> line 0")
@@ -246,11 +348,11 @@ async def test_the_fallback_stays_inside_what_slack_takes_for_one_string() -> No
         for n in range(20)
     ]
 
-    text = render_activity_text(items)
+    text = render_activity_text(items, _turn())
 
     assert len(text) <= 40000
     assert text.splitlines()[0] == "…4 earlier entries, not shown."
-    assert text.endswith("x")
+    assert text.splitlines()[-1] == "Working…"
 
 
 async def test_what_the_fallback_dropped_is_counted_in_what_it_dropped() -> None:
@@ -267,7 +369,7 @@ async def test_what_the_fallback_dropped_is_counted_in_what_it_dropped() -> None
         for n in range(20)
     ]
 
-    first = render_activity_text(items).splitlines()[0]
+    first = render_activity_text(items, _turn()).splitlines()[0]
 
     assert first == "…3 earlier entries, not shown."
 
@@ -289,9 +391,9 @@ async def test_many_messages_keep_the_recent_end_and_say_what_they_dropped() -> 
         for n in range(25)
     ]
 
-    blocks = render_activity(items).blocks
+    blocks = render_activity(items, _turn()).blocks
 
-    assert len(blocks) == 21
+    assert len(blocks) == 22
     assert blocks[0]["elements"][0]["text"] == "_…5 earlier in this turn, not shown._"
     assert blocks[1]["text"]["text"] == "Line 5"
 
@@ -302,9 +404,9 @@ async def test_many_messages_keep_the_recent_end_and_say_what_they_dropped() -> 
 async def test_a_turn_with_nothing_in_it_is_refused_rather_than_posted_empty() -> None:
     """A message with no blocks is rejected by Slack and says nothing anyway."""
     with pytest.raises(ValueError, match="nothing to show"):
-        render_activity([])
+        render_activity([], _turn())
     with pytest.raises(ValueError, match="nothing to show"):
-        render_activity_text([])
+        render_activity_text([], _turn())
 
 
 async def test_an_untitled_tool_call_is_still_a_line() -> None:
@@ -316,13 +418,15 @@ async def test_an_untitled_tool_call_is_still_a_line() -> None:
 async def test_a_message_with_no_text_says_so() -> None:
     items = [_item(itemId="i1", kind="assistant-message", title="", text="")]
 
-    assert render_activity(items).blocks[0]["text"]["text"] == "_(nothing said)_"
+    assert (
+        render_activity(items, _turn()).blocks[0]["text"]["text"] == "_(nothing said)_"
+    )
 
 
 async def test_a_person_the_host_did_not_place_is_quoted_without_a_name() -> None:
     items = [_item(itemId="i1", kind="user-message", title="", text="do it")]
 
-    assert render_activity(items).blocks[0]["text"]["text"] == "> do it"
+    assert render_activity(items, _turn()).blocks[0]["text"]["text"] == "> do it"
 
 
 # ── The notification string ──────────────────────────────────────────────────
@@ -334,7 +438,7 @@ async def test_the_text_fallback_carries_the_doing_as_well_as_the_saying() -> No
     A fallback holding only the conversation would drop the whole disclosure
     rather than shrink it, which is the one thing this file is here to prevent.
     """
-    text = render_activity_text(await _items())
+    text = render_activity_text(await _items(), _turn())
 
     assert "flaky all week" in text
     assert "same fixture user" in text
@@ -343,9 +447,9 @@ async def test_the_text_fallback_carries_the_doing_as_well_as_the_saying() -> No
 
 async def test_the_card_and_its_fallback_say_the_same_things() -> None:
     items = await _items()
-    message = render_activity(items)
+    message = render_activity(items, _turn())
 
-    assert message.text == render_activity_text(items)
+    assert message.text == render_activity_text(items, _turn())
 
 
 # ── What the contract no longer decides ──────────────────────────────────────

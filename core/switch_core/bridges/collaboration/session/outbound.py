@@ -1,10 +1,16 @@
 """Putting a session's state in a channel, and keeping it in step afterwards.
 
-Two things go out. A **request card** is something someone has to answer, so it
-is posted once and then edited in place as the request moves open → submitting
-→ resolved or closed, and the channel carries one message per request rather
-than a running commentary. **Turn activity** is not addressed to anyone: it is
-what the agent said and did, and it is posted for reading.
+Two things go out, and both are posted once and edited in place afterwards. A
+**request card** is something someone has to answer, so it moves open →
+submitting → resolved or closed and the channel carries one message per request
+rather than a running commentary. **Turn activity** is not addressed to anyone —
+it is what the agent said and did, and it is read rather than answered — but it
+changes for the same reason, so it gets the same treatment: one message per
+turn, kept in step, ending on the turn's final state.
+
+What differs is what is remembered. A card's message is a row, because an
+answer typed tomorrow has to find it; a turn's is held in memory for as long as
+the turn is running, because nothing resolves against it.
 
 The inbound half turns a press into a command; this is the other side of it.
 
@@ -21,6 +27,8 @@ from __future__ import annotations
 
 import logging
 import secrets
+from collections import OrderedDict
+from dataclasses import dataclass
 
 from slack_sdk.errors import SlackApiError
 from sqlalchemy.exc import IntegrityError
@@ -30,7 +38,7 @@ from switch_core.bridges.collaboration.slack.adapter import SlackAdapter
 from switch_core.db.models import SessionRequestPost
 from switch_core.db.stores.session_request_post_store import SessionRequestPostStore
 
-from .contract import Item, SnapshotRequest
+from .contract import TURN_ENDED, Item, SnapshotRequest, TurnUpsert
 from .form import posted_form
 from .renderers import RequestReference
 from .renderers.slack import render_activity, render_request
@@ -50,6 +58,19 @@ _MINT_ATTEMPTS = 5
 # and only one of them is worth retrying.
 _HANDLE_CONSTRAINT = "uq_session_request_posts_handle"
 _REQUEST_CONSTRAINT = "uq_session_request_posts_request"
+
+# How many unended turns one bridge keeps a message to edit for. Far more than
+# a bridge has live turns, and small enough that a session leaking them cannot
+# take the process with it.
+_MAX_ANCHORS = 512
+
+
+@dataclass(frozen=True)
+class _Anchor:
+    """The message a turn is being kept in, and the channel it is in."""
+
+    channel_id: str
+    message_ref: str
 
 
 def _violates(error: IntegrityError, constraint: str) -> bool:
@@ -84,45 +105,118 @@ class CardAlreadyPosted(CardNotPosted):
 
 
 class SessionTurnActivity:
-    """A turn's work, shown in a channel.
+    """A turn's work, shown in a channel and kept in step as it runs.
 
-    Nothing is recorded for it and nothing is edited afterwards, which is the
-    difference between this and a card. A card is a question, so it needs a row
-    to resolve an answer against and has to stop offering buttons once it is
-    settled; a turn is a report, and a report that is out of date is still what
-    happened. Keeping one message per turn in step with a live session needs an
-    anchor to edit, and where that anchor lives is the same open question as
-    which room a session's activity belongs to.
+    One message per turn, posted the first time and edited every time after,
+    because a turn is a report and reposting one is a running commentary: a
+    reader scrolling a channel would find six versions of the same turn and no
+    way to tell which is current. The message that was posted is the anchor
+    every later edit goes to, and the last edit is the turn's final state.
+
+    Still not a card, which is the difference in how failure is handled here. A
+    card has buttons, so one left showing a stale state invites a press that
+    cannot land and has to be raised about; a turn is read, so a failed edit is
+    logged and the next one tries the same anchor again.
+
+    **The anchors are held in memory, and that is this slice's boundary.** They
+    live as long as the process does, so a bridge restarted mid-turn reposts
+    the turn instead of editing it — one duplicate in the channel, visible, and
+    not silence. Making them durable is the publisher's work in the server-side
+    branch, which has a record with a sweep behind it; there is nothing here
+    for it to migrate, only a store to hand in.
     """
 
     def __init__(self, adapter: SlackAdapter) -> None:
         self._adapter = adapter
+        self._anchors: OrderedDict[tuple[str, str], _Anchor] = OrderedDict()
 
-    async def post(
+    async def publish(
         self,
         items: list[Item],
+        turn: TurnUpsert,
         *,
+        session_id: str,
         channel_id: str,
         thread_root_id: str | None,
         agent_name: str,
     ) -> None:
-        """Draw the turn in a channel, saying so in the log if Slack refuses.
+        """Draw the turn where it already is, or where it is not yet.
 
         Logged rather than raised, unlike a card that cannot be posted: nobody
         is waiting on this to answer anything, so the session is no worse off
         than it was before the contract existed and whatever asked for it can
         get on with the part that someone is waiting for.
+
+        The anchor is dropped once the turn has ended, because nothing more is
+        coming for it — including when the last edit is the one that failed,
+        which is the one case worth a different sentence in the log: what is
+        left in the channel then says the turn is still running, and no later
+        call will correct it.
         """
-        message = render_activity(items)
-        ref = await self._adapter.post_blocks(
-            channel_id, agent_name, message.text, message.blocks, thread_root_id
-        )
-        if ref is None:
-            logger.error(
-                "Slack did not accept the activity for turn %s in channel %s, so "
-                "the channel shows what the agent asked without what it did.",
-                items[0].turn_id,
-                channel_id,
+        message = render_activity(items, turn)
+        key = (session_id, turn.turn_id)
+        anchor = self._anchors.pop(key, None)
+        ended = turn.status in TURN_ENDED
+
+        if anchor is None:
+            ref = await self._adapter.post_blocks(
+                channel_id, agent_name, message.text, message.blocks, thread_root_id
+            )
+            if ref is None:
+                logger.error(
+                    "Slack did not accept the activity for turn %s of session %s "
+                    "in channel %s, so the channel shows what the agent asked "
+                    "without what it did.",
+                    turn.turn_id,
+                    session_id,
+                    channel_id,
+                )
+                return
+            anchor = _Anchor(channel_id=channel_id, message_ref=ref)
+        else:
+            try:
+                await self._adapter.update_blocks(
+                    anchor.channel_id,
+                    anchor.message_ref,
+                    message.text,
+                    message.blocks,
+                )
+            except SlackApiError as error:
+                logger.error(
+                    "Could not update the activity for turn %s of session %s in "
+                    "channel %s: %s. %s",
+                    turn.turn_id,
+                    session_id,
+                    anchor.channel_id,
+                    error,
+                    "The turn has ended, so the channel is left showing it as "
+                    "still running."
+                    if ended
+                    else "The next change to the turn will try the same message.",
+                )
+
+        if ended:
+            return
+        self._anchors[key] = anchor
+        self._forget_the_oldest()
+
+    def _forget_the_oldest(self) -> None:
+        """Keep the anchors bounded by dropping the least recently published.
+
+        A turn that stops without ever saying so holds its anchor for the life
+        of the process, and the ids come from outside, so without a bound this
+        grows for as long as the bridge runs. Dropping one costs a reposted
+        turn rather than a lost one, and it says which turn it will happen to.
+        """
+        while len(self._anchors) > _MAX_ANCHORS:
+            (session_id, turn_id), _ = self._anchors.popitem(last=False)
+            logger.warning(
+                "Holding activity anchors for more than %s turns, so turn %s of "
+                "session %s is being forgotten: if it changes again it will be "
+                "posted afresh rather than edited in place.",
+                _MAX_ANCHORS,
+                turn_id,
+                session_id,
             )
 
 

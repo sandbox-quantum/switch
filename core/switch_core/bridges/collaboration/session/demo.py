@@ -10,6 +10,11 @@ says what it found, and stops to ask permission for the edit that would fix it.
 So the channel gets the work and then the question, which is the order they
 happened in and the order they make sense in.
 
+`!session-demo end` plays the same recording one step further, to where the
+turn is interrupted with the permission still unanswered. Nothing new is
+posted for it: the turn message and the card are both edited where they are,
+which is the whole of what that variant is there to show.
+
 Both go to the channel the trigger was typed in. Nothing in the contract says
 where a session's activity should be shown, by design — that is Switch's
 decision — and here the person asking for it has made it.
@@ -34,11 +39,18 @@ from pathlib import Path
 from switch_core.db.models import SessionRequestPost
 
 from .outbound import SessionRequestCards, SessionTurnActivity
+from .projection import SessionProjection
 from .transport import FixtureEventSource, project
 
 logger = logging.getLogger(__name__)
 
 TRIGGER = "!session-demo"
+
+# `!session-demo end` plays the same recording to the end of its turn, which is
+# the only way to see the turn message and the card being *edited* rather than
+# posted: the turn ends interrupted and the request closes unanswered, so the
+# card that comes out of it is not one anybody can press.
+_TO_THE_END = "end"
 
 # The fixture the parity suite already reads, so what lands in the channel is
 # the same recorded session the tests assert against.
@@ -47,10 +59,14 @@ _RECORDING = (
     / "console/packages/shared/src/session-v1/examples.activity.json"
 )
 _STREAM = "turnActivity"
+_ENDING = "turnEnd"
 
 
 class SessionDemo:
-    """Posts the recorded session's turn, and then its open request."""
+    """Posts the recorded session's turn, and then its open request.
+
+    Or, asked to run to the end, edits both where they already are.
+    """
 
     def __init__(
         self, cards: SessionRequestCards, activity: SessionTurnActivity
@@ -60,7 +76,8 @@ class SessionDemo:
 
     async def handle(self, content: str, channel_id: str, room_id: str) -> bool:
         """Whether this message was the trigger, having acted on it if so."""
-        if content.strip().lower() != TRIGGER:
+        said = content.strip().lower()
+        if said not in (TRIGGER, f"{TRIGGER} {_TO_THE_END}"):
             return False
         logger.warning(
             "Posting a demo turn and request card in channel %s. There is no "
@@ -69,16 +86,28 @@ class SessionDemo:
             "dropped like any other.",
             channel_id,
         )
-        post = await self._post(channel_id, room_id)
-        logger.warning(
-            "Demo card %s is answerable by pressing it, by typing `%s 1`, or "
-            "by replying `yes` directly under it.",
-            post.handle,
-            post.handle,
-        )
+        to_the_end = said.endswith(_TO_THE_END)
+        post = await self._post(channel_id, room_id, to_the_end=to_the_end)
+        if to_the_end:
+            logger.warning(
+                "Demo card %s was closed unanswered, and the turn above it was "
+                "edited in place rather than posted again. Run `%s` on its own "
+                "for a card that can still be answered.",
+                post.handle,
+                TRIGGER,
+            )
+        else:
+            logger.warning(
+                "Demo card %s is answerable by pressing it, by typing `%s 1`, or "
+                "by replying `yes` directly under it.",
+                post.handle,
+                post.handle,
+            )
         return True
 
-    async def _post(self, channel_id: str, room_id: str) -> SessionRequestPost:
+    async def _post(
+        self, channel_id: str, room_id: str, *, to_the_end: bool
+    ) -> SessionRequestPost:
         """Post the recording's turn and then its request, under a fresh id.
 
         A request gets one card, which is right for a real session and would
@@ -108,18 +137,53 @@ class SessionDemo:
             )
         request = requests[0]
         session = projection.snapshot.session
-        await self._activity.post(
-            projection.turn_activity(request.turn_id),
-            channel_id=channel_id,
-            thread_root_id=None,
-            agent_name=session.agent_id,
-        )
-        return await self._cards.post(
+        session_id = f"{session.session_id}-{secrets.token_hex(4)}"
+        await self._publish(projection, request.turn_id, channel_id, session_id)
+        post = await self._cards.post(
             request,
             channel_id=channel_id,
             thread_root_id=None,
             room_id=room_id,
-            session_id=f"{session.session_id}-{secrets.token_hex(4)}",
+            session_id=session_id,
             epoch=session.epoch,
             agent_name=session.agent_id,
+        )
+        if not to_the_end:
+            return post
+        ending = FixtureEventSource.from_examples(_RECORDING, events=[_STREAM, _ENDING])
+        async for event in ending.subscribe(
+            source.session_id, projection.through_sequence
+        ):
+            projection.apply(event)
+        await self._publish(projection, request.turn_id, channel_id, session_id)
+        settled = projection.request(request.request_id)
+        if settled is None:
+            raise ValueError(
+                f"The recording lost request {request.request_id} on the way to "
+                f"the end of its turn, so there is nothing to redraw the card from."
+            )
+        await self._cards.refresh(post, settled)
+        return post
+
+    async def _publish(
+        self,
+        projection: SessionProjection,
+        turn_id: str,
+        channel_id: str,
+        session_id: str,
+    ) -> None:
+        """The turn as the projection currently has it, in its one message."""
+        turn = projection.turn(turn_id)
+        if turn is None:
+            raise ValueError(
+                f"The recording has items for turn {turn_id} but never said what "
+                f"the turn itself was doing, so its state cannot be shown."
+            )
+        await self._activity.publish(
+            projection.turn_activity(turn_id),
+            turn,
+            session_id=session_id,
+            channel_id=channel_id,
+            thread_root_id=None,
+            agent_name=projection.snapshot.session.agent_id,
         )

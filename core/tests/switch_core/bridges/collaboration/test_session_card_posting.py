@@ -494,6 +494,29 @@ async def test_the_trigger_posts_the_recorded_turn_and_then_its_card(
     assert "Edit tests/auth/conftest.py?" in card
 
 
+async def test_running_the_recording_to_the_end_edits_what_is_already_there(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """Two messages, four states between them, and nothing posted twice.
+
+    The variant exists to make the anchor visible in a real channel: without
+    it, a turn only ever gets one publish and nothing shows that the second
+    one lands on the first message rather than beside it.
+    """
+    client = FakeWebClient()
+    demo, room_id = await _demo(session_factory, client)
+
+    assert await demo.handle(f"{TRIGGER} end", CHANNEL, room_id) is True
+
+    assert len(client.posted) == 2
+    turn, card = (
+        json.dumps(call["blocks"], ensure_ascii=False) for call in client.updated
+    )
+    assert "Turn interrupted. 1 step left unfinished." in turn
+    assert "Permission request closed" in card
+    assert "Interrupted before it was answered." in card
+
+
 async def test_the_trigger_is_the_whole_message_or_it_is_not_the_trigger(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
