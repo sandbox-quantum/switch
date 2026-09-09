@@ -1,6 +1,8 @@
-"""Escaping for text Slack will read as mrkdwn."""
+"""Escaping for text Slack will read as mrkdwn, and stripping for where it won't."""
 
 from __future__ import annotations
+
+import re
 
 
 def escape_mrkdwn(text: str) -> str:
@@ -18,3 +20,17 @@ def escape_mrkdwn(text: str) -> str:
     not, and this closes that.
     """
     return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def plain_text(text: str) -> str:
+    """Strip Switch's markup for somewhere that renders none.
+
+    A task card's title is plain text, so markup passed into it arrives as
+    literal `_underscores_` and backticks rather than emphasis. The opposite
+    problem to escaping, and the same reason: what Slack does with a string
+    depends on where it is put, so the string has to be prepared for the place.
+    """
+    text = re.sub(r"`([^`]*)`", r"\1", text)
+    text = re.sub(r"\*\*([^*]+)\*\*", r"\1", text)
+    text = re.sub(r"(?<!\w)[*_]([^*_]+)[*_](?!\w)", r"\1", text)
+    return text.strip()

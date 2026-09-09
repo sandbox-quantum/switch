@@ -13,11 +13,17 @@ happened in and the order they make sense in.
 `!session-demo end` plays the same recording one step further, to where the
 turn is interrupted with the permission still unanswered. Nothing new is
 posted for it: the turn message and the card are both edited where they are,
-which is the whole of what that variant is there to show.
+which is the whole of what that variant is there to show. It is a whole replay
+of its own, though, and not a continuation of a `!session-demo` typed a moment
+before — that one is a different session with a different card, and it is left
+exactly where it was.
 
-Both go to the channel the trigger was typed in. Nothing in the contract says
-where a session's activity should be shown, by design — that is Switch's
-decision — and here the person asking for it has made it.
+The turn goes in a thread under the trigger, because Slack will only stream
+into a channel as a reply and a turn with no thread is drawn as blocks instead.
+The card stays at the channel root, where it is in front of whoever has to
+press it. Nothing in the contract says where a session's activity should be
+shown, by design — that is Switch's decision — and here the person asking for
+it has made half of it by choosing the channel.
 
 What it stands in for is the *session*, not the bridge. Rendering the card,
 minting its handle, writing its row, and everything an answer to it then goes
@@ -74,8 +80,16 @@ class SessionDemo:
         self._cards = cards
         self._activity = activity
 
-    async def handle(self, content: str, channel_id: str, room_id: str) -> bool:
-        """Whether this message was the trigger, having acted on it if so."""
+    async def handle(
+        self, content: str, channel_id: str, room_id: str, trigger_ref: str
+    ) -> bool:
+        """Whether this message was the trigger, having acted on it if so.
+
+        `trigger_ref` is the message that asked, and the turn is threaded under
+        it. Slack will only stream into a channel as a reply to somebody, so a
+        turn with no thread is a turn drawn as blocks — which is the one thing
+        this demo exists to show is no longer the only option.
+        """
         said = content.strip().lower()
         if said not in (TRIGGER, f"{TRIGGER} {_TO_THE_END}"):
             return False
@@ -87,7 +101,7 @@ class SessionDemo:
             channel_id,
         )
         to_the_end = said.endswith(_TO_THE_END)
-        post = await self._post(channel_id, room_id, to_the_end=to_the_end)
+        post = await self._post(channel_id, room_id, trigger_ref, to_the_end=to_the_end)
         if to_the_end:
             logger.warning(
                 "Demo card %s was closed unanswered, and the turn above it was "
@@ -106,7 +120,7 @@ class SessionDemo:
         return True
 
     async def _post(
-        self, channel_id: str, room_id: str, *, to_the_end: bool
+        self, channel_id: str, room_id: str, trigger_ref: str, *, to_the_end: bool
     ) -> SessionRequestPost:
         """Post the recording's turn and then its request, under a fresh id.
 
@@ -138,7 +152,9 @@ class SessionDemo:
         request = requests[0]
         session = projection.snapshot.session
         session_id = f"{session.session_id}-{secrets.token_hex(4)}"
-        await self._publish(projection, request.turn_id, channel_id, session_id)
+        await self._publish(
+            projection, request.turn_id, channel_id, session_id, trigger_ref
+        )
         post = await self._cards.post(
             request,
             channel_id=channel_id,
@@ -155,7 +171,9 @@ class SessionDemo:
             source.session_id, projection.through_sequence
         ):
             projection.apply(event)
-        await self._publish(projection, request.turn_id, channel_id, session_id)
+        await self._publish(
+            projection, request.turn_id, channel_id, session_id, trigger_ref
+        )
         settled = projection.request(request.request_id)
         if settled is None:
             raise ValueError(
@@ -171,6 +189,7 @@ class SessionDemo:
         turn_id: str,
         channel_id: str,
         session_id: str,
+        trigger_ref: str,
     ) -> None:
         """The turn as the projection currently has it, in its one message."""
         turn = projection.turn(turn_id)
@@ -184,6 +203,6 @@ class SessionDemo:
             turn,
             session_id=session_id,
             channel_id=channel_id,
-            thread_root_id=None,
+            thread_root_id=trigger_ref,
             agent_name=projection.snapshot.session.agent_id,
         )

@@ -1,12 +1,14 @@
 """Putting a session's state in a channel, and keeping it in step afterwards.
 
-Two things go out, and both are posted once and edited in place afterwards. A
-**request card** is something someone has to answer, so it moves open →
-submitting → resolved or closed and the channel carries one message per request
-rather than a running commentary. **Turn activity** is not addressed to anyone —
-it is what the agent said and did, and it is read rather than answered — but it
-changes for the same reason, so it gets the same treatment: one message per
-turn, kept in step, ending on the turn's final state.
+Two things go out, and each occupies one message that is kept in step rather
+than reposted. A **request card** is something someone has to answer, so it
+moves open → submitting → resolved or closed and the channel carries one
+message per request rather than a running commentary. **Turn activity** is not
+addressed to anyone — it is what the agent said and did, and it is read rather
+than answered — but it changes for the same reason, so it gets the same
+treatment: one message per turn, ending on the turn's final state. Where Slack
+will stream it, it is a stream and the tool calls are cards in its timeline;
+where it will not, it is a Block Kit message rewritten in place.
 
 What differs is what is remembered. A card's message is a row, because an
 answer typed tomorrow has to find it; a turn's is held in memory for as long as
@@ -25,6 +27,7 @@ before.
 
 from __future__ import annotations
 
+import json
 import logging
 import secrets
 from collections import OrderedDict
@@ -41,7 +44,13 @@ from switch_core.db.stores.session_request_post_store import SessionRequestPostS
 from .contract import TURN_ENDED, Item, SnapshotRequest, TurnUpsert
 from .form import posted_form
 from .renderers import RequestReference
-from .renderers.slack import render_activity, render_request
+from .renderers.slack import (
+    render_activity,
+    render_request,
+    stream_message_chunk,
+    stream_state_chunk,
+    stream_task_chunk,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -65,12 +74,23 @@ _REQUEST_CONSTRAINT = "uq_session_request_posts_request"
 _MAX_ANCHORS = 512
 
 
-@dataclass(frozen=True)
+@dataclass
 class _Anchor:
-    """The message a turn is being kept in, and the channel it is in."""
+    """The message a turn is being kept in, and how it is being kept there.
+
+    `sent` is what separates the two ways of keeping it. `None` is a Block Kit
+    message, rewritten whole on every change. A dict is an open stream, which
+    can only be added to, so it records what each item last resolved to and the
+    next change sends the difference.
+
+    That dict is not "what is on screen". An item whose text was revised after
+    it was streamed is recorded too, because a stream cannot unsay it and the
+    record is what stops the same complaint being logged on every change after.
+    """
 
     channel_id: str
     message_ref: str
+    sent: dict[str, str] | None
 
 
 def _violates(error: IntegrityError, constraint: str) -> bool:
@@ -107,11 +127,20 @@ class CardAlreadyPosted(CardNotPosted):
 class SessionTurnActivity:
     """A turn's work, shown in a channel and kept in step as it runs.
 
-    One message per turn, posted the first time and edited every time after,
-    because a turn is a report and reposting one is a running commentary: a
-    reader scrolling a channel would find six versions of the same turn and no
-    way to tell which is current. The message that was posted is the anchor
-    every later edit goes to, and the last edit is the turn's final state.
+    One message per turn, whichever way it is drawn, because a turn is a report
+    and reposting one is a running commentary: a reader scrolling a channel
+    would find six versions of the same turn and no way to tell which is
+    current. The message is the anchor every later change goes to, and the last
+    change is the turn's final state.
+
+    There are two ways to draw it, and which one a turn gets is settled when it
+    starts. **Streamed**, where Slack will open a stream for it: the tool calls
+    become task cards in a timeline Slack collapses until a reader wants it,
+    which is the disclosure the alternative can only imitate. **Posted**, where
+    it will not: one Block Kit message, rewritten whole on every change. A
+    stream needs a thread, somebody to address it to, and an app declared as an
+    Agent, so the posted form is not a degraded mode — it is what a channel
+    with no thread in it gets, and all any other platform has.
 
     Still not a card, which is the difference in how failure is handled here. A
     card has buttons, so one left showing a stale state invites a press that
@@ -153,52 +182,209 @@ class SessionTurnActivity:
         left in the channel then says the turn is still running, and no later
         call will correct it.
         """
-        message = render_activity(items, turn)
         key = (session_id, turn.turn_id)
         anchor = self._anchors.pop(key, None)
         ended = turn.status in TURN_ENDED
 
         if anchor is None:
-            ref = await self._adapter.post_blocks(
-                channel_id, agent_name, message.text, message.blocks, thread_root_id
+            anchor = await self._begin(
+                items,
+                turn,
+                session_id=session_id,
+                channel_id=channel_id,
+                thread_root_id=thread_root_id,
+                agent_name=agent_name,
             )
-            if ref is None:
-                logger.error(
-                    "Slack did not accept the activity for turn %s of session %s "
-                    "in channel %s, so the channel shows what the agent asked "
-                    "without what it did.",
-                    turn.turn_id,
-                    session_id,
-                    channel_id,
-                )
+            if anchor is None:
                 return
-            anchor = _Anchor(channel_id=channel_id, message_ref=ref)
+        elif anchor.sent is None:
+            await self._edit(anchor, items, turn, session_id=session_id, ended=ended)
         else:
-            try:
-                await self._adapter.update_blocks(
-                    anchor.channel_id,
-                    anchor.message_ref,
-                    message.text,
-                    message.blocks,
-                )
-            except SlackApiError as error:
-                logger.error(
-                    "Could not update the activity for turn %s of session %s in "
-                    "channel %s: %s. %s",
-                    turn.turn_id,
-                    session_id,
-                    anchor.channel_id,
-                    error,
-                    "The turn has ended, so the channel is left showing it as "
-                    "still running."
-                    if ended
-                    else "The next change to the turn will try the same message.",
-                )
+            await self._extend(
+                anchor,
+                items,
+                turn,
+                session_id=session_id,
+                agent_name=agent_name,
+                ended=ended,
+            )
 
         if ended:
             return
         self._anchors[key] = anchor
         self._forget_the_oldest()
+
+    async def _begin(
+        self,
+        items: list[Item],
+        turn: TurnUpsert,
+        *,
+        session_id: str,
+        channel_id: str,
+        thread_root_id: str | None,
+        agent_name: str,
+    ) -> _Anchor | None:
+        """Start the turn where Slack will best draw it, or say it could not.
+
+        A stream is preferred wherever one can be opened, because Slack draws
+        the tool calls in it as a timeline of its own that is collapsed until
+        somebody wants it. Where one cannot — no thread to reply into, nobody
+        recorded to reply to, an app not declared as an Agent — the Block Kit
+        message is posted instead, and it is what every other platform gets.
+        """
+        ref = await self._adapter.open_activity_stream(
+            channel_id, thread_root_id, agent_name
+        )
+        if ref is not None:
+            anchor = _Anchor(channel_id=channel_id, message_ref=ref, sent={})
+            await self._extend(
+                anchor,
+                items,
+                turn,
+                session_id=session_id,
+                agent_name=agent_name,
+                ended=turn.status in TURN_ENDED,
+            )
+            return anchor
+
+        message = render_activity(items, turn)
+        posted = await self._adapter.post_blocks(
+            channel_id, agent_name, message.text, message.blocks, thread_root_id
+        )
+        if posted is None:
+            logger.error(
+                "Slack did not accept the activity for turn %s of session %s "
+                "in channel %s, so the channel shows what the agent asked "
+                "without what it did.",
+                turn.turn_id,
+                session_id,
+                channel_id,
+            )
+            return None
+        return _Anchor(channel_id=channel_id, message_ref=posted, sent=None)
+
+    async def _edit(
+        self,
+        anchor: _Anchor,
+        items: list[Item],
+        turn: TurnUpsert,
+        *,
+        session_id: str,
+        ended: bool,
+    ) -> None:
+        """Rewrite the posted message with the turn as it now stands."""
+        message = render_activity(items, turn)
+        try:
+            await self._adapter.update_blocks(
+                anchor.channel_id, anchor.message_ref, message.text, message.blocks
+            )
+        except SlackApiError as error:
+            logger.error(
+                "Could not update the activity for turn %s of session %s in "
+                "channel %s: %s. %s",
+                turn.turn_id,
+                session_id,
+                anchor.channel_id,
+                error,
+                "The turn has ended, so the channel is left showing it as "
+                "still running."
+                if ended
+                else "The next change to the turn will try the same message.",
+            )
+
+    async def _extend(
+        self,
+        anchor: _Anchor,
+        items: list[Item],
+        turn: TurnUpsert,
+        *,
+        session_id: str,
+        agent_name: str,
+        ended: bool,
+    ) -> None:
+        """Send the stream whatever has changed since the last time.
+
+        Nothing is recorded as sent until Slack has taken it, so an append it
+        refuses is tried again on the next change rather than dropped — which
+        is the difference between a stream that skips a step and one that is a
+        step behind.
+
+        The stream is closed whether or not the last append landed. Nothing
+        more is coming for an ended turn, and a stream left open goes on
+        showing the channel a turn in progress.
+        """
+        sent = anchor.sent
+        if sent is None:
+            raise ValueError("This turn is not being streamed.")
+        chunks, pending = self._difference(sent, items, turn, session_id=session_id)
+        if ended:
+            chunks.append(stream_state_chunk(items, turn))
+        if chunks:
+            pushed = await self._adapter.append_activity_stream(
+                anchor.channel_id, anchor.message_ref, chunks, agent_name=agent_name
+            )
+            if pushed:
+                sent.update(pending)
+            else:
+                logger.error(
+                    "Slack would not take %s change(s) to turn %s of session %s "
+                    "in channel %s. %s",
+                    len(chunks),
+                    turn.turn_id,
+                    session_id,
+                    anchor.channel_id,
+                    "The turn has ended, so the channel is left without them."
+                    if ended
+                    else "They will be sent again with the next change.",
+                )
+        if ended:
+            await self._adapter.close_activity_stream(
+                anchor.channel_id, anchor.message_ref, agent_name=agent_name
+            )
+
+    def _difference(
+        self,
+        sent: dict[str, str],
+        items: list[Item],
+        turn: TurnUpsert,
+        *,
+        session_id: str,
+    ) -> tuple[list[dict[str, object]], dict[str, str]]:
+        """The chunks this stream has not had yet, in the order they happened.
+
+        A tool call is sent every time it changes, because Slack merges an
+        update into the card already carrying its id. A message is sent once
+        and only once it has finished: a stream can move a card but it cannot
+        unsay a sentence, so appending a revision would leave both on screen.
+        Which is why an unfinished message waits — a half-written paragraph
+        appended now is one that can never be corrected.
+        """
+        chunks: list[dict[str, object]] = []
+        pending: dict[str, str] = {}
+        for item in items:
+            if item.kind == "tool-activity":
+                chunk = stream_task_chunk(item)
+            elif item.status == "in-progress":
+                continue
+            else:
+                chunk = stream_message_chunk(item)
+            signature = json.dumps(chunk, sort_keys=True, ensure_ascii=False)
+            if sent.get(item.item_id) == signature:
+                continue
+            if item.kind != "tool-activity" and item.item_id in sent:
+                logger.warning(
+                    "Item %s of turn %s in session %s was revised after it was "
+                    "streamed, and a stream cannot unsay what it has said, so "
+                    "the channel is left showing the earlier text.",
+                    item.item_id,
+                    turn.turn_id,
+                    session_id,
+                )
+                sent[item.item_id] = signature
+                continue
+            chunks.append(chunk)
+            pending[item.item_id] = signature
+        return chunks, pending
 
     def _forget_the_oldest(self) -> None:
         """Keep the anchors bounded by dropping the least recently published.

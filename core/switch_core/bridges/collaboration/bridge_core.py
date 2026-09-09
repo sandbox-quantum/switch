@@ -1175,7 +1175,9 @@ class BridgeCore:
         if demo is None:
             return
         try:
-            await demo.handle(msg.content, msg.channel_id, room_id)
+            await demo.handle(
+                msg.content, msg.channel_id, room_id, msg.root_id or msg.message_ref
+            )
         except Exception as error:
             logger.error(
                 "The demo card for channel %s could not be posted: %s",

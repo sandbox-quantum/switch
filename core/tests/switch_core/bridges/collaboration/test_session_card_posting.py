@@ -64,6 +64,10 @@ EXAMPLES_PATH = REPO_ROOT / "console/packages/shared/src/session-v1/examples.jso
 
 CHANNEL = "C1"
 
+# The message that typed the trigger. The turn is threaded under it, so it is
+# also where the activity goes.
+TRIGGERED_BY = f"{CHANNEL}:1700000000.000100"
+
 
 class _RefusingWebClient(FakeWebClient):
     """Slack taking the card and declining it."""
@@ -571,7 +575,7 @@ async def test_the_trigger_posts_the_recorded_turn_and_then_its_card(
     client = FakeWebClient()
     demo, room_id = await _demo(session_factory, client)
 
-    assert await demo.handle(TRIGGER, CHANNEL, room_id) is True
+    assert await demo.handle(TRIGGER, CHANNEL, room_id, TRIGGERED_BY) is True
 
     assert len(client.posted) == 2
     turn, card = (json.dumps(post["blocks"]) for post in client.posted)
@@ -592,7 +596,7 @@ async def test_running_the_recording_to_the_end_edits_what_is_already_there(
     client = FakeWebClient()
     demo, room_id = await _demo(session_factory, client)
 
-    assert await demo.handle(f"{TRIGGER} end", CHANNEL, room_id) is True
+    assert await demo.handle(f"{TRIGGER} end", CHANNEL, room_id, TRIGGERED_BY) is True
 
     assert len(client.posted) == 2
     turn, card = (
@@ -611,7 +615,7 @@ async def test_the_trigger_is_the_whole_message_or_it_is_not_the_trigger(
     demo, room_id = await _demo(session_factory, client)
 
     for said in [f"about {TRIGGER}", f"{TRIGGER} please", "hello", ""]:
-        assert await demo.handle(said, CHANNEL, room_id) is False
+        assert await demo.handle(said, CHANNEL, room_id, TRIGGERED_BY) is False
 
     assert client.posted == []
 
@@ -622,7 +626,7 @@ async def test_the_trigger_is_case_insensitive_and_forgives_spacing(
     client = FakeWebClient()
     demo, room_id = await _demo(session_factory, client)
 
-    assert await demo.handle(f"  {TRIGGER.upper()} ", CHANNEL, room_id)
+    assert await demo.handle(f"  {TRIGGER.upper()} ", CHANNEL, room_id, TRIGGERED_BY)
 
     assert len(client.posted) == 2
 
@@ -641,7 +645,7 @@ async def test_the_demo_can_be_shown_more_than_once(
     demo, room_id = await _demo(session_factory, client)
 
     for channel in (CHANNEL, CHANNEL, "C2"):
-        assert await demo.handle(TRIGGER, channel, room_id) is True
+        assert await demo.handle(TRIGGER, channel, room_id, TRIGGERED_BY) is True
 
     async with session_factory() as session:
         rows = list(
@@ -675,7 +679,9 @@ async def test_the_trigger_works_in_a_channel_the_bridge_has_not_seen_before() -
     """
     asked: list[str] = []
 
-    async def _handle(_content: str, _channel_id: str, room_id: str) -> bool:
+    async def _handle(
+        _content: str, _channel_id: str, room_id: str, _trigger_ref: str
+    ) -> bool:
         asked.append(room_id)
         return True
 
