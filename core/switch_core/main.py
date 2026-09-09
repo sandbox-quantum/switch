@@ -22,6 +22,15 @@ from switch_core.bridges.agent.protocol.connections import (
 )
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
 from switch_core.bridges.agent.protocol.service import ProtocolService
+from switch_core.bridges.agent.registration_bootstrap import (
+    BOOTSTRAP_KEY_LABEL,
+    BOOTSTRAP_KEY_TYPE,
+    BOOTSTRAP_LAST_SEEDED_HASH_META_KEY,
+    BOOTSTRAP_REVOKED_HASHES_META_KEY,
+    LEGACY_BOOTSTRAP_KEY_LABEL,
+    RETIRED_KEY_TYPE,
+    ensure_bootstrap_owner,
+)
 from switch_core.bridges.agent.server_connectors.lifecycle import (
     ServerSideConnectorLifecycleService,
 )
@@ -89,6 +98,7 @@ from switch_core.db.stores.task_store import TaskStore
 from switch_core.db.stores.user_store import UserStore
 from switch_core.gateway.app import create_gateway_app
 from switch_core.gateway.auth import hash_password
+from switch_core.logging_config import configure_logging
 from switch_core.messages.notify import MessageListener
 from switch_core.provisioning import Provisioning
 from switch_core.provisioning.postgres import PostgresProvisioning
@@ -155,9 +165,6 @@ async def _connection_sweep_loop(protocol: ProtocolService) -> None:
             logger.exception("Connection sweep failed")
 
 
-logging.getLogger("httpx").setLevel(logging.WARNING)
-
-
 class _QuietPollFilter(logging.Filter):
     _SUPPRESSED = [
         "/events?timeout=",
@@ -173,8 +180,7 @@ class _QuietPollFilter(logging.Filter):
 logging.getLogger("uvicorn.access").addFilter(_QuietPollFilter())
 
 
-async def run() -> None:
-    config = SwitchConfig()
+async def run(config: SwitchConfig) -> None:
     # ── Database ─────────────────────────────────────────────────────────────
     engine = create_engine_from_config(config)
     session_factory = create_session_factory(engine)
@@ -210,10 +216,10 @@ async def run() -> None:
     message_store = MessageStore()
     media_store = MediaStore()
 
-    # ── Seed admin user + registration key ──────────────────────────────────
+    # ── Seed admin user + agent-registration bootstrap key ──────────────────
     await _seed_admin_user(session_factory, user_store, config)
-    await _seed_admin_registration_key(
-        session_factory, user_store, api_key_store, config
+    await _seed_agent_registration_bootstrap_key(
+        session_factory, user_store, api_key_store, agent_store, config
     )
 
     # ── Event queue + request trackers ───────────────────────────────────────
@@ -490,41 +496,209 @@ async def _seed_admin_user(
         logger.info("Seeded admin user: %s", config.gateway_admin_email)
 
 
-async def _seed_admin_registration_key(
+async def _seed_agent_registration_bootstrap_key(
     session_factory: object,
     user_store: UserStore,
     api_key_store: ApiKeyStore,
+    agent_store: AgentStore,
     config: SwitchConfig,
 ) -> None:
+    """Seed the deployment-wide agent-registration bootstrap key.
+
+    Unlike a personal registration key (minted by, and owned by, a single
+    gateway user), this key is handed out to bring up the first agents
+    against a fresh deployment before anyone has logged in. Agents it
+    registers are attributed to a dedicated, non-admin account (see
+    ``registration_bootstrap.py``), not to the admin user this key's ApiKey
+    row is filed under — the row lives on the admin so it is listed and
+    revocable from the admin's own API Keys page, but holding the token
+    itself confers no admin authority.
+
+    Existence and rotation are resolved by the key's own hash and type
+    globally, never by which user the configured admin email currently
+    resolves to: an admin row is looked up here only to own a freshly
+    created key, and can be swapped out (``GATEWAY_ADMIN_EMAIL`` changed to a
+    different account) without this re-inserting a duplicate of a key that
+    already exists under the old one, which would collide on the unique
+    ``key_hash`` and fail the whole boot.
+    """
     async with session_factory() as session:  # type: ignore[operator]
         admin = await user_store.get_by_email(session, config.gateway_admin_email)
         if admin is None:
-            logger.error(
-                "Cannot seed registration key: admin user %s not found",
-                config.gateway_admin_email,
+            raise RuntimeError(
+                "Cannot seed agent-registration bootstrap key: admin user "
+                f"{config.gateway_admin_email} not found"
             )
-            return
+        bootstrap_owner = await ensure_bootstrap_owner(session, user_store)
+
+        admin_owned_agents = [
+            a for a in await agent_store.get_all(session) if a.owner_id == admin.id
+        ]
+        if admin_owned_agents:
+            logger.warning(
+                "%d agent(s) are owned by the admin user (%s) and carry "
+                "admin-equivalent authority over every room and resource in "
+                "this deployment, not just their own: %s. If any were "
+                "registered through AGENT_REGISTRATION_TOKEN, reassign or "
+                "re-register them under a non-admin owner.",
+                len(admin_owned_agents),
+                config.gateway_admin_email,
+                ", ".join(a.name for a in admin_owned_agents),
+            )
 
         token_hash = hashlib.sha256(
             config.agent_registration_token.encode()
         ).hexdigest()
-        existing = await api_key_store.get_by_hash(session, token_hash)
-        if existing is not None:
-            logger.info("Admin registration key already seeded")
-            return
-
-        key = ApiKey(
-            user_id=admin.id,
-            key_hash=token_hash,
-            encrypted_key=encrypt_token(
-                config.agent_registration_token, config.jwt_secret_key
-            ),
-            label="Default (from AGENT_REGISTRATION_TOKEN)",
-            type="registration",
+        encrypted_key = encrypt_token(
+            config.agent_registration_token, config.jwt_secret_key
         )
-        await api_key_store.create(session, key)
+
+        bootstrap_keys = await api_key_store.get_by_type(session, BOOTSTRAP_KEY_TYPE)
+        if len(bootstrap_keys) > 1:
+            raise RuntimeError(
+                f"Found {len(bootstrap_keys)} agent-registration bootstrap "
+                "keys; expected at most one. This needs a direct database fix."
+            )
+        bootstrap_key = bootstrap_keys[0] if bootstrap_keys else None
+
+        last_seeded_hash = (bootstrap_owner.metadata_ or {}).get(
+            BOOTSTRAP_LAST_SEEDED_HASH_META_KEY
+        )
+        raw_revoked_hashes = (bootstrap_owner.metadata_ or {}).get(
+            BOOTSTRAP_REVOKED_HASHES_META_KEY
+        )
+        if raw_revoked_hashes is not None and not isinstance(raw_revoked_hashes, list):
+            raise RuntimeError(
+                f"{BOOTSTRAP_REVOKED_HASHES_META_KEY} on the agent-registration "
+                "bootstrap owner is not a list; refusing to guess which "
+                "hashes are revoked. This needs a direct database fix."
+            )
+        revoked_hashes: list[str] = list(raw_revoked_hashes or [])
+        meta_dirty = False
+
+        if (
+            bootstrap_key is None
+            and last_seeded_hash is not None
+            and last_seeded_hash not in revoked_hashes
+        ):
+            # A key was active as of the last seed call and is gone now: it
+            # was deleted (revoked) since then. Remember its value forever,
+            # not just until the next rotation — see the constant's docstring.
+            revoked_hashes.append(last_seeded_hash)
+            meta_dirty = True
+            logger.warning(
+                "Agent-registration bootstrap key was deleted since the "
+                "last restart; its value is now permanently refused, even "
+                "if AGENT_REGISTRATION_TOKEN is later set back to it."
+            )
+
+        if bootstrap_key is None:
+            # Every row carrying the legacy label, not just one matching the
+            # current token: an admin who rotated AGENT_REGISTRATION_TOKEN at
+            # or before this upgrade leaves the old row's hash stale, so a
+            # hash-only lookup for the current token would miss it — and a
+            # `type: "registration"` row at that label is otherwise
+            # indistinguishable from a live credential that still
+            # authenticates as the admin. Scoped to "no bootstrap key yet":
+            # once one exists, any startup that still finds a legacy-labeled
+            # row here already retired it on an earlier pass.
+            legacy_rows = [
+                row
+                for row in await api_key_store.get_by_label(
+                    session, LEGACY_BOOTSTRAP_KEY_LABEL
+                )
+                if row.type == "registration"
+            ]
+            matching_legacy = next(
+                (row for row in legacy_rows if row.key_hash == token_hash), None
+            )
+            if matching_legacy is not None:
+                matching_legacy.type = BOOTSTRAP_KEY_TYPE
+                matching_legacy.label = BOOTSTRAP_KEY_LABEL
+                matching_legacy.encrypted_key = encrypted_key
+                bootstrap_key = matching_legacy
+                logger.info(
+                    "Migrated the legacy admin-owned registration key to a "
+                    "scoped agent-registration bootstrap key"
+                )
+            for stale in legacy_rows:
+                if stale is matching_legacy:
+                    continue
+                # Retired, not deleted: every consumer already refuses
+                # RETIRED_KEY_TYPE (it is not in REGISTRATION_KEY_TYPES), so
+                # this stops it authenticating exactly as deletion would —
+                # but the row stays on the API Keys page (filtered on type,
+                # not existence) with a label that says why, so an operator
+                # can tell a stale bootstrap key apart from a personal key
+                # that coincidentally shared the label, and delete it
+                # themselves once they have. Its hash is also permanently
+                # revoked: restoring an old .env or values file must not
+                # bring it back to life via the rotation path below.
+                stale.type = RETIRED_KEY_TYPE
+                stale.label = f"{stale.label} (retired: stale, no longer authenticates)"
+                if stale.key_hash not in revoked_hashes:
+                    revoked_hashes.append(stale.key_hash)
+                    meta_dirty = True
+                logger.warning(
+                    "Retired a stale admin-owned registration key (id %s, "
+                    "label %r): its value no longer matches "
+                    "AGENT_REGISTRATION_TOKEN, so it predates a token "
+                    "rotation and would otherwise keep registering agents "
+                    "with admin authority indefinitely. It is now visible "
+                    "on the API Keys page for a human to review and delete.",
+                    stale.id,
+                    LEGACY_BOOTSTRAP_KEY_LABEL,
+                )
+
+        if bootstrap_key is not None:
+            if bootstrap_key.key_hash != token_hash:
+                if token_hash in revoked_hashes:
+                    logger.warning(
+                        "AGENT_REGISTRATION_TOKEN matches a previously "
+                        "revoked agent-registration bootstrap key; refusing "
+                        "to rotate onto it. Set a new, never-used value to "
+                        "change the active key."
+                    )
+                else:
+                    bootstrap_key.key_hash = token_hash
+                    bootstrap_key.encrypted_key = encrypted_key
+                    logger.info(
+                        "Rotated the agent-registration bootstrap key from "
+                        "AGENT_REGISTRATION_TOKEN"
+                    )
+        elif token_hash in revoked_hashes:
+            logger.warning(
+                "Agent-registration bootstrap key was revoked; not "
+                "reseeding it from AGENT_REGISTRATION_TOKEN. Set a new, "
+                "never-used value to re-enable deployment-wide bootstrap "
+                "registration, or mint per-user registration keys from the "
+                "gateway's API Keys page instead."
+            )
+        else:
+            bootstrap_key = ApiKey(
+                user_id=admin.id,
+                key_hash=token_hash,
+                encrypted_key=encrypted_key,
+                label=BOOTSTRAP_KEY_LABEL,
+                type=BOOTSTRAP_KEY_TYPE,
+            )
+            await api_key_store.create(session, bootstrap_key)
+            logger.info(
+                "Seeded the agent-registration bootstrap key from "
+                "AGENT_REGISTRATION_TOKEN"
+            )
+
+        new_last_seeded_hash = bootstrap_key.key_hash if bootstrap_key else None
+        if new_last_seeded_hash != last_seeded_hash:
+            meta_dirty = True
+
+        if meta_dirty:
+            meta = dict(bootstrap_owner.metadata_ or {})
+            meta[BOOTSTRAP_LAST_SEEDED_HASH_META_KEY] = new_last_seeded_hash
+            meta[BOOTSTRAP_REVOKED_HASHES_META_KEY] = revoked_hashes
+            bootstrap_owner.metadata_ = meta
+
         await session.commit()
-        logger.info("Seeded admin registration key from AGENT_REGISTRATION_TOKEN")
 
 
 async def _shutdown(
@@ -547,21 +721,18 @@ async def _shutdown(
 
 
 def main() -> None:
+    config = SwitchConfig()
+    running_version = switch_core_version()
+    configure_logging(config, running_version)
+
+    logger.info("Starting switch-core %s", running_version or "(version unknown)")
+
     alembic_ini = Path(__file__).resolve().parent.parent / "alembic.ini"
     alembic_cfg = AlembicConfig(str(alembic_ini))
     alembic_command.upgrade(alembic_cfg, "head")
-
-    log_level = os.environ.get("LOG_LEVEL", "INFO").upper()
-    switch_log_level = os.environ.get("SWITCH_LOG_LEVEL", "INFO").upper()
-    logging.getLogger().setLevel(log_level)
-    logging.getLogger("switch_core").setLevel(switch_log_level)
-
-    running_version = switch_core_version()
-    logger.info("Starting switch-core %s", running_version or "(version unknown)")
-
     logger.info("Database migrations applied")
 
-    asyncio.run(run())
+    asyncio.run(run(config))
 
 
 if __name__ == "__main__":
