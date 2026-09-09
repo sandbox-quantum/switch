@@ -1391,7 +1391,9 @@ class SlackAdapter(CollaborationAdapter):
         somebody, so it needs a thread and a person in it, and the workspace's
         own id to address them by. A channel nobody has spoken in has none of
         those. The caller has a Block Kit message to post instead, which is why
-        this reports rather than raises.
+        this reports rather than raises. It reports at warning: blocks are the
+        degraded rendering of a turn, and at debug the only sign of it was the
+        channel looking the way it did before any of this existed.
 
         `task_display_mode` is left at Slack's default of `timeline`, named
         anyway because it is the whole reason for streaming this rather than
@@ -1407,9 +1409,9 @@ class SlackAdapter(CollaborationAdapter):
             return None
         thread_ts = self._thread_ts_of(thread_root_id)
         if not thread_ts:
-            logger.debug(
-                _TRACE + "no activity stream for %s in %s: Slack will only "
-                "stream into a channel as a reply, and this has no thread",
+            logger.warning(
+                "Drawing %s's turn in %s as blocks: Slack will only stream into "
+                "a channel as a reply, and this has no thread.",
                 agent_name,
                 channel_id,
             )
@@ -1417,16 +1419,17 @@ class SlackAdapter(CollaborationAdapter):
         key = (channel_id, thread_ts)
         requester = self._thread_requester.get(key)
         if not requester:
-            logger.debug(
-                _TRACE + "no activity stream for %s on %s: nobody recorded to "
-                "stream to",
+            logger.warning(
+                "Drawing %s's turn on %s as blocks: a stream is addressed to "
+                "somebody and nobody was recorded for this thread.",
                 agent_name,
                 thread_ts,
             )
             return None
         if not self._team_id:
-            logger.debug(
-                _TRACE + "no activity stream for %s: the bot's team id is unknown",
+            logger.warning(
+                "Drawing %s's turn as blocks: the bot's team id is unknown, so "
+                "there is no workspace to address the stream in.",
                 agent_name,
             )
             return None

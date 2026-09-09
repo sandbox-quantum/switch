@@ -175,6 +175,25 @@ async def test_a_thread_with_nobody_recorded_on_it_is_posted_instead() -> None:
     assert len(client.posted) == 1
 
 
+async def test_falling_back_to_blocks_says_so_out_loud(caplog: Any) -> None:
+    """Blocks are the degraded drawing of a turn, so the log has to name it.
+
+    At debug the only sign was a channel that looked the way it did before any
+    of this existed, which is indistinguishable from a server still running the
+    old build — and that is exactly the confusion it caused.
+    """
+    client = FakeWebClient()
+    activity = SessionTurnActivity(_adapter(client, streamable=False))
+
+    with caplog.at_level(logging.WARNING):
+        await _publish(
+            activity, [_item("call-1")], _turn("running"), thread_root_id=None
+        )
+
+    assert "as blocks" in caplog.text
+    assert "has no thread" in caplog.text
+
+
 # ── The timeline accumulates ─────────────────────────────────────────────────
 
 
