@@ -1553,6 +1553,81 @@ async def get_room_group_detail(group_id: str) -> dict[str, Any]:
 
 
 @operation
+async def create_room_from_yaml(
+    yaml: str,
+    inputs: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Provision a room or group of rooms from a YAML template.
+
+    Parses the YAML document (a ``room:`` or ``group:`` template, optionally
+    with ``params:`` declarations) and provisions the result — the agent-side
+    mirror of the gateway's ``POST /rooms/from-yaml``.
+
+    Args:
+        yaml: The YAML template text. Must contain a top-level ``room:`` key
+            (single room) or ``group:`` key (group of rooms with links).
+            May include a ``params:`` block declaring parameters with
+            defaults, descriptions and constraints; parameter placeholders
+            in the template are interpolated before provisioning.
+        inputs: Optional dict of parameter values to supply when the template
+            declares ``params:``. Keys that match a declared parameter
+            override its default; required parameters with no default must
+            be supplied here or provisioning fails with a clear error
+            naming the missing input.
+
+    Returns:
+        For a single room: ``{room_id, room_name, attached_reference_ids,
+        created_reference_ids, created_document_ids, role_names,
+        failed_attachments}``.
+        For a group: ``{group_id, group_name, rooms: [...], errors: [...]}``.
+    """
+    from switch_core.db.models import User
+    from switch_core.rooms_yaml import GroupSpec, RoomYamlService
+
+    agent_id = get_agent_id()
+    protocol = get_protocol()
+
+    async with protocol.session_factory() as session:
+        agent = await protocol.agent_store.get(session, agent_id)
+        if agent is None:
+            raise ValueError(f"Unknown agent: {agent_id}")
+        if agent.owner_id is None:
+            raise ValueError(
+                f"Agent {agent_id} has no owner and cannot provision rooms"
+            )
+        owner_is_admin = False
+        owner = await session.get(User, agent.owner_id)
+        owner_is_admin = owner is not None and owner.role == "admin"
+
+    owner_id: str = agent.owner_id
+
+    rooms_yaml = RoomYamlService(
+        room_service=protocol.room_service,
+        resource_service=protocol.resource_service,
+        room_store=protocol.room_store,
+        agent_store=protocol.agent_store,
+        bridge_store=protocol.bridge_store,
+        external_user_store=protocol.external_user_store,
+        room_group_store=protocol.room_group_store,
+        room_role_store=protocol.room_role_store,
+        session_factory=protocol.session_factory,
+    )
+
+    spec = rooms_yaml.parse(yaml, inputs=inputs)
+
+    if isinstance(spec, GroupSpec):
+        return (
+            await rooms_yaml.provision_group(
+                spec, user_id=owner_id, is_admin=owner_is_admin
+            )
+        ).model_dump()
+
+    return (
+        await rooms_yaml.provision(spec, user_id=owner_id, is_admin=owner_is_admin)
+    ).model_dump()
+
+
+@operation
 async def list_agents(
     name_contains: str | None = None,
     owner_name: str | None = None,
