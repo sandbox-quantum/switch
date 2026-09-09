@@ -154,6 +154,7 @@ async function fixture() {
 
 it('retries lost acknowledgements and duplicate commands, then resumes the same native conversation', async () => {
   const f = await fixture();
+  await writeFile(join(f.root, 'shared-recovery.lock'), '');
   let stop = new AbortController();
   let running = runSharedHost(f.options, f.adapter, stop.signal);
   try {

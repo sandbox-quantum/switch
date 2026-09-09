@@ -1,9 +1,10 @@
 import { randomUUID } from 'node:crypto';
-import { mkdir, open, readFile, unlink } from 'node:fs/promises';
+import { mkdir, readFile, unlink } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { sessionSchema, snapshotSchema } from '@switch-console/shared/session-v1';
 import { z } from 'zod';
 import { Journal } from './journal';
+import { replaceOwner, withOwnershipLock } from './ownership-lock';
 import { fenceDeadOwner, ownProcessGroup } from './process-fence';
 import type { SharedHostOptions } from './shared-host';
 
@@ -41,13 +42,7 @@ export class SharedState {
   static async open(options: SharedHostOptions): Promise<SharedState> {
     await mkdir(options.root, { recursive: true, mode: 0o700 });
     const lock = join(options.root, 'shared-owner.lock');
-    let file;
-    try {
-      file = await open(lock, 'wx', 0o600);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
-      const recoveryLock = join(options.root, 'shared-recovery.lock');
-      const guard = await open(recoveryLock, 'wx', 0o600);
+    await withOwnershipLock(options.root, async () => {
       try {
         const owner = z
           .strictObject({
@@ -56,16 +51,12 @@ export class SharedState {
           })
           .parse(JSON.parse(await readFile(lock, 'utf8')));
         await fenceDeadOwner(owner.pid, owner.group);
-        await unlink(lock);
-        file = await open(lock, 'wx', 0o600);
-      } finally {
-        await guard.close();
-        await unlink(recoveryLock);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
       }
-    }
+      await replaceOwner(lock, { pid: process.pid, group: await ownProcessGroup() });
+    });
     try {
-      await file.writeFile(JSON.stringify({ pid: process.pid, group: await ownProcessGroup() }));
-      await file.sync();
       const journal = await Journal.load(join(options.root, 'shared-state.jsonl'), (value) =>
         schema.parse(value)
       );
@@ -95,8 +86,6 @@ export class SharedState {
     } catch (error) {
       await unlink(lock);
       throw error;
-    } finally {
-      await file.close();
     }
   }
 
