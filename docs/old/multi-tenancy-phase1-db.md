@@ -1,0 +1,457 @@
+# Multi-tenancy Phase 1: the database design
+
+Status: design, reviewed once. Implements §2 of `multi-tenancy.md` (spike
+CHOO-2603) for CHOO-2623. Not yet built.
+
+This document is the schema half of Phase 1: what tables change, what the
+policies look like, how a session learns which tenant it is acting for, and
+what the one migration does.
+
+Postgres 16 everywhere — local Compose, the chart, and the test containers —
+and two things below need at least 15, so that is a floor, not an incidental
+detail.
+
+## The rule
+
+Everything follows from one sentence:
+
+> **Every table holding customer data carries a non-null `tenant_id`, carries
+> the same isolation policy, and every foreign key between two such tables
+> carries `tenant_id` as well.**
+
+Uniformity is the point. A reviewer should be able to open any table and know
+without thinking whether it is scoped and what its policy says, because there
+is only one kind of scoped table and one policy text.
+
+The rule buys two separate guarantees, and they are worth separating:
+
+- **A query that forgets its filter returns nothing** rather than another
+  tenant's rows. That is row-level security.
+- **A row cannot reference a parent in another tenant.** That is the composite
+  foreign key, and row-level security does not give it — referential integrity
+  checks in Postgres deliberately bypass policies, so without it a bug can
+  write a message into tenant A pointing at tenant B's room. The row is
+  unreadable from either side, but it exists, and cleaning that up later is
+  worse than preventing it now.
+
+## New tables
+
+```
+tenants
+  id          text primary key
+  slug        text not null unique
+  name        text not null
+  created_at  timestamptz not null default now()
+
+tenant_members
+  tenant_id   text not null references tenants(id)
+  user_id     text not null references users(id)
+  role        text not null check (role in ('owner','admin','member'))
+  created_at  timestamptz not null default now()
+  primary key (tenant_id, user_id)
+```
+
+Membership is a row, not a column on the user: a person has one login and may
+belong to several tenants. That decision is argued in the spike.
+
+`tenants` deliberately has no `plan`, `status` or `deleted_at`. Phase 3 adds
+plans, Phase 5 adds deletion, and a `deleted_at` that nothing honours is worse
+than no column — it reads as a guarantee the code does not make.
+
+`role` is a checked string rather than an enum type, matching how `users.role`
+is already stored. Phase 2 owns making these roles mean something; Phase 1 only
+records them so the migration loses no information.
+
+## Which tables are scoped
+
+**Scoped — 36 tables, each gains `tenant_id text not null references
+tenants(id)`:**
+
+`api_keys`, `clients`, `client_rooms`, `agents`, `tools`, `models`, `skills`,
+`agent_skills`, `rooms`, `room_agents`, `room_skills`, `room_groups`,
+`room_links`, `room_roles`, `role_leases`, `tasks`, `references`,
+`reference_types`, `documents`, `room_references`, `room_documents`,
+`packages`, `room_packages`, `package_references`, `package_documents`,
+`collaboration_bridges`, `server_connectors`, `external_users`,
+`external_user_claims`, `agent_sessions`, `agent_runtime_states`,
+`bridge_message_map`, `messages`, `message_attachments`, `delivery_cursors`,
+`media_blobs`.
+
+Longer than the spike's thirteen, because the spike named top-level entities
+and the schema has children hanging off them. The test is mechanical: if a row
+would be meaningless to another customer, it is scoped.
+
+Three entries are worth justifying:
+
+- **Junction tables are scoped like everything else.** `room_agents` joins a
+  room to an agent; both parents are scoped, and the pair is exactly where a
+  cross-tenant reference gets introduced. Its own `tenant_id` plus composite
+  keys to both parents makes "an agent from tenant B in a room from tenant A"
+  unrepresentable. Inheriting tenancy through a subquery policy instead is
+  slower and needs per-table reasoning.
+- **`media_blobs` is scoped** although nothing references it by foreign key. It
+  holds attachment bytes reached by an opaque URI, and unguessable identifiers
+  are not an isolation boundary.
+- **`clients` is scoped**, so the admin/system client becomes one row per
+  tenant rather than one per deployment. Today that is a no-op — the single
+  existing row backfills to tenant zero — and it is the right shape later.
+
+**Global — no `tenant_id`, no policy:** `users`, `oidc_identities`,
+`feature_flags`, `alembic_version`.
+
+A user is a person, not a tenant member; the membership row is the per-tenant
+object. `oidc_identities` records how that person proves who they are, equally
+tenant-independent. `feature_flags` is a deployment switch; a flag that needs
+to vary per tenant is a new table, not a nullable column.
+
+Leaving `users` and `oidc_identities` unpoliced has a consequence, and it is
+recorded as an open item rather than buried: see "What Phase 1 does not close".
+
+## Uniqueness changes
+
+Adding a column is the easy half. Constraints are what break silently when a
+second tenant appears, so the whole list was walked.
+
+**Becomes per-tenant:**
+
+- `agents.name` → `unique (tenant_id, name)`. Two customers can both have a
+  `reviewer`. The registration path already treats owner equality as a de facto
+  tenant boundary and calls a mismatch a cross-tenant takeover; this makes it
+  real.
+- `clients.matrix_user_id` → `unique (tenant_id, matrix_user_id)`, required by
+  per-tenant system clients.
+- `rooms.matrix_room_id` → `unique (tenant_id, matrix_room_id)`.
+- `reference_types` primary key → `(tenant_id, type)`. Customer-defined type
+  slugs collide. This table has no `id` column at all, so it is the one scoped
+  table that cannot carry a `unique (id, tenant_id)` — harmless, because
+  nothing references it by foreign key.
+- `collaboration_bridges` default-bridge index → `unique (tenant_id) where
+  is_default`. "One default bridge for the deployment" is exactly the global
+  singleton that breaks on the second tenant.
+
+**Stays global, deliberately:**
+
+- `users.email`. A person is one account across tenants.
+- `api_keys.key_hash`. Bearer authentication resolves the hash *before* it
+  knows a tenant. Load-bearing — see the bootstrap section.
+- `oidc_identities (iss, sub)`. The issuer already namespaces it.
+- `media_blobs.uri`, `messages.transport_event_id`. Random globally-unique
+  identifiers; scoping them buys nothing.
+
+**Already scoped transitively, left alone:** `messages (room_id, seq)`,
+`documents (room_id, name)`, `room_roles (room_id, name)`,
+`delivery_cursors (agent_id, room_id)`, `agent_sessions`,
+`agent_runtime_states`, `external_users (bridge_id, external_user_id)`,
+`bridge_message_map`, `rooms (bridge_id, external_channel_id)`,
+`agents.client_id`. Each is unique within a parent that is itself scoped, and
+the composite foreign key keeps the parent honest.
+
+`role_leases` is unique on `agent_id` alone across all rooms by design — an
+agent has one session and one lease — and an agent implies a tenant, so no
+change.
+
+## Composite foreign keys
+
+Every foreign key from a scoped table to a scoped table gains `tenant_id`:
+
+```sql
+alter table rooms add constraint uq_rooms_id_tenant unique (id, tenant_id);
+
+alter table messages
+  add constraint fk_messages_room
+  foreign key (tenant_id, room_id) references rooms (tenant_id, id);
+```
+
+Only tables that are actually referenced need the extra `unique (id,
+tenant_id)` — about thirteen, not one per scoped table. Foreign keys to
+*global* tables (`rooms.owner_id → users.id` and friends) stay single-column.
+
+Two mechanical details decide whether this works at all:
+
+- **Nullable parents keep Postgres's default `MATCH SIMPLE`**, under which a
+  NULL in any column skips the check entirely. That is what we want: no parent,
+  nothing to verify. `MATCH FULL` would reject a row with a non-null tenant and
+  a null parent, which is a legitimate row.
+- **`ON DELETE SET NULL` must name its column.** A plain multi-column `SET
+  NULL` nulls *every* referencing column, `tenant_id` included, so the delete
+  fails on the not-null constraint. Five scoped-to-scoped keys are affected —
+  `agents.parent_agent_id`, `rooms.group_id`, `room_groups.parent_group_id`,
+  `documents.created_by_agent_id`, `messages.sender_client_id` — and each needs
+  the Postgres 15+ form `on delete set null (parent_agent_id)`. Without it,
+  deleting a room group or a parent agent is broken from day one. This is the
+  single easiest thing to get wrong here.
+
+`ON DELETE CASCADE` needs no such care: it removes the child row entirely.
+
+The cost is every foreign key rewritten and thirteen indexes added. The benefit
+is invisible until something goes wrong. The cheaper variant is composite keys
+on the junction tables and `messages` only, accepting that everything else
+relies on the application writing the right parent id; I recommend against it,
+because an inconsistent rule is harder to hold in your head than a uniform one
+and the tables left out would be the ones nobody thinks about.
+
+## Row-level security
+
+One function, one policy text, applied identically to all 38 scoped tables (the
+36 above plus `tenants` and `tenant_members`).
+
+```sql
+create or replace function require_tenant_id() returns text
+language plpgsql stable as $$
+declare v text := current_setting('app.tenant_id', true);
+begin
+  if v is null or v = '' then
+    raise exception 'app.tenant_id is not set on this session'
+      using errcode = '42501';
+  end if;
+  return v;
+end $$;
+```
+
+Three cases, one behaviour. Never set in this session returns NULL because of
+the `true`; set and then released at commit returns the empty string, not NULL
+— the trap that produced a P1 elsewhere in the company; set returns the value.
+Both empty cases raise. **The function fails closed, and every other safety
+property here rests on that.**
+
+```sql
+alter table <t> enable row level security;
+
+create policy tenant_isolation on <t>
+  for all
+  using       (tenant_id = (select require_tenant_id()))
+  with check  (tenant_id = (select require_tenant_id()));
+```
+
+- **`with check` is not optional.** `using` filters what you can read; without
+  `with check` a write is unconstrained and you can insert a row into another
+  tenant that you cannot then read back. Two of the four prior-art bugs are
+  this.
+- **`(select require_tenant_id())`** rather than a bare call, so the planner
+  evaluates it once per query as an InitPlan rather than once per row. Marking
+  the function `stable` is not sufficient on its own.
+- **No `TO <role>` clause.** An earlier draft named the runtime role; that
+  makes the DDL fail wherever the role does not exist yet, including
+  `create_all` in tests. The owner-bypass model below already defines exactly
+  who is and is not subject to policies, so the clause bought nothing.
+- `tenants` uses `id = (select require_tenant_id())`; every other table uses
+  `tenant_id`.
+
+## One new database role
+
+Today the application connects to Postgres as the superuser in local Compose,
+in the chart and in the test containers. **A superuser ignores row-level
+security unconditionally** — not "unless forced", unconditionally. Shipping
+policies without changing this produces a schema full of decoration and an
+isolation test that passes for the wrong reason. This is the largest piece of
+work in Phase 1 and the only part that touches deployment.
+
+The change is deliberately small: **add one role, transfer nothing.**
+
+- **The existing role keeps owning the schema** and keeps running Alembic.
+  Because it owns the tables it bypasses their policies, and we deliberately do
+  **not** set `force row level security`, so that stays true. No `ALTER TABLE
+  … OWNER TO`, no `REASSIGN OWNED`, nothing to go wrong during a cutover.
+- **`switch_app` is new**: the runtime role, not the owner, not a superuser, no
+  `BYPASSRLS`. Policies apply to it and it is the only role the request path
+  ever uses.
+
+Roles are cluster-level, so the migration does not create them — it grants to a
+role that must already exist and fails loudly if it does not. Creating the role
+belongs to Compose, to the chart, and to the RDS runbook, which already
+recreates roles by hand. `alter default privileges` covers tables added later,
+so a future migration cannot ship a table the runtime cannot read.
+
+**The check that matters runs at startup, not in CI.** CI asserts nothing about
+production, and the failure mode here is silent. On boot the service verifies
+its own connection: not a superuser, no `BYPASSRLS`, not the owner of
+`messages`, and a probe query against a scoped table with no tenant set must
+raise. If any of those is wrong the service refuses to start, because a Switch
+that thinks it is isolating tenants and is not is worse than one that is down.
+
+**Sequencing.** The role is cheapest to add during the RDS cutover
+(CHOO-2622), which already creates an application role by hand, and that
+restore uses `--no-owner --no-privileges` — so who ends up owning the restored
+tables is a decision that has to be made deliberately there, not discovered
+afterwards. Coordinate, do not race.
+
+## Setting the tenant
+
+```sql
+select set_config('app.tenant_id', $1, true)   -- is_local = true
+```
+
+Transaction-scoped, released at commit, so it cannot leak to the next request
+that borrows the pooled connection. Both remaining prior-art bugs are
+session-scoped settings on a pooled connection; this is the fix, and the
+fail-closed function is the backstop when it is missed. Issuing it outside an
+explicit transaction only warns and does nothing — survivable here only because
+a missing tenant raises rather than matching nothing.
+
+**Where the tenant comes from, per principal:**
+
+| Principal | Source |
+| --- | --- |
+| Gateway user (JWT cookie) | the user's membership row |
+| Agent bearer token | `api_keys.tenant_id` |
+| Bridge inbound event | the bridge row's tenant |
+| Per-room background work | the room's tenant |
+
+Never from a request parameter; no endpoint accepts a tenant id as input.
+
+Phase 1 has one tenant, so membership resolution returns the single row and
+raises if there is more than one. Phase 2 adds tenant switching and an
+active-tenant claim; that is a change to one function.
+
+**The request seam has to move.** `get_session` is a FastAPI dependency that
+resolves *before* the one that authenticates the user, so there is no moment
+today where the principal is known and the session is not yet open. Endpoints
+therefore stop depending on `get_session` and depend on a `tenant_session` that
+composes it with the principal and issues the `set_config`. That is a
+mechanical edit at 107 call sites, and it puts the seam in every signature
+where a reader can see it. A test asserts no endpoint uses the raw session.
+
+**Background work is not a short list.** There are roughly 206 places that open
+a session from the factory directly. They fall into three shapes — acting for a
+room, acting for a bridge, acting for the deployment — so they get two named
+helpers, `tenant_session(tenant_id)` and `system_session()`, and a test that
+the raw factory is not called anywhere else.
+
+**Writes fill the column automatically.** `tenant_id` gets a Python-side
+default reading the request's tenant, so ordinary ORM inserts need no change
+across roughly 250 store methods, and `with check` catches anything that
+disagrees. Two caveats, both real: the default yields nothing in a system
+session, so the startup seeding paths must pass tenant zero explicitly; and one
+Core `executemany` in the room store needs checking rather than assuming.
+
+The same context value feeds the logging filter, which has had a `tenant_id`
+field since before tenants existed and which nothing has ever bound
+per-request. That closes half of Phase 0's logging item as a side effect.
+
+## The bootstrap problem, and the two exceptions
+
+Authentication happens before a tenant is known — resolving an API key by hash,
+or a JWT subject to its memberships, is unscoped by definition. So:
+
+> **Authentication and tenant resolution run in a system session. Everything
+> downstream runs in a tenant session as `switch_app`.**
+
+The same escape hatch covers work that is legitimately cross-tenant: Alembic,
+admin and bootstrap seeding at startup, the bridge and connector lifecycle
+loops that start every row at boot, and the runtime-state and connection
+sweeps. A test pins the set of modules allowed to open one, so a new one is a
+deliberate act.
+
+The delivery listener needs no exception: it holds one unpooled connection that
+relays NOTIFY payloads and never reads a scoped table. Its consumers do read
+per room — so **the notify payload gains `tenant_id`** alongside the room, seq
+and id it already carries. Without it a consumer has to make an unscoped read
+just to learn which tenant to scope by, which is a circle.
+
+Two exceptions to the uniform rule, in full:
+
+1. **`api_keys.key_hash` stays globally unique**, because authentication
+   resolves it before a tenant exists.
+2. **System sessions bypass policies by ownership.** This is a fail-open hatch
+   inside a fail-closed design and is named as such: nothing stops a pinned
+   module reading across tenants once a second one exists. Phase 1 accepts
+   that; the pinned list is what keeps it reviewable.
+
+An earlier draft had a third — a membership-based policy on `users` — and it
+was wrong. Its `with check` made creating a user impossible: the membership row
+cannot exist before the user, and the user cannot be inserted before the
+membership. It also would not have held, because `tenant_members` has no
+constraint on *which* user id a tenant may add to itself. Both problems are
+Phase 2's to solve properly, alongside invitations.
+
+## Where the SQL lives
+
+The repository already has the pattern in the delivery trigger: the DDL lives
+in one module, is attached to the tables so `create_all` builds it, and each
+migration carries its own frozen verbatim copy so that editing the module never
+changes what a past migration means. The policies follow it exactly, in
+`db/rls_ddl.py`.
+
+This matters more than it sounds. Tests build their schema from the model
+metadata rather than by running migrations, so a policy that existed only in a
+migration would be invisible to every test — the isolation test would pass
+against a database with no isolation in it.
+
+A `TenantScoped` declarative mixin carries the column, its default and its
+registration in the policy list, so adding a table means inheriting from it and
+writing the foreign keys. Without the mixin a new table needs seven separate
+things remembered; with it, two, and both are checked by tests.
+
+## The migration
+
+One revision:
+
+1. Create `tenants` and `tenant_members`; create `require_tenant_id()`.
+2. Insert tenant zero, slug `default`, with a fixed id constant written into
+   the migration. Not read from the environment: `TENANT_ID` is config today
+   and a later edit to it must not silently desync from the row.
+3. Insert a membership for every existing user — `owner` for accounts with the
+   global admin role, `member` otherwise.
+4. Per scoped table: `add column tenant_id text not null default '<zero>'`,
+   then drop the default. Since Postgres 11 that is a metadata-only operation;
+   the add-nullable-then-backfill-then-set-not-null sequence the spike
+   describes rewrites the whole table under an exclusive lock, which on
+   `messages` and on `media_blobs` with its 20MB rows is the difference between
+   a blink and an outage.
+5. Add the foreign key to `tenants` and, where the table is referenced, the
+   `unique (id, tenant_id)`.
+6. Swap the uniqueness constraints listed above.
+7. Rewrite each scoped-to-scoped foreign key as composite, `not valid` first
+   and `validate constraint` after, so the validation scan does not hold an
+   exclusive lock.
+8. Enable row-level security and create the policy on each table.
+9. Grant to `switch_app` and set default privileges.
+
+Only tenant zero exists when this runs, so the usual expand-then-contract
+caution does not apply yet. From the next customer onward it does, and that
+note belongs in the migration's docstring.
+
+## Done when
+
+An integration test proves tenant A cannot read tenant B's rows through the
+ordinary application paths — connected as the runtime role, through the store
+layer, not by hand-written SQL. That needs test infrastructure that does not
+exist yet: the fixtures create `switch_app`, grant to it, connect as it, and
+seed tenant zero, because the truncation between tests now empties `tenants`
+too.
+
+Alongside it, three cheap tests that catch the regressions this design exists
+to prevent:
+
+- Every scoped table has row-level security enabled and a policy, asserted by
+  querying `pg_policies` and `pg_tables` rather than by reading the code.
+- Every foreign key between two scoped tables includes `tenant_id`, asserted
+  the same way from the catalogue. Without this a new table passes every other
+  check while quietly falling back to a single-column key.
+- A query issued with no tenant set raises rather than returning nothing.
+
+## What Phase 1 does not close
+
+Named so they are decisions rather than omissions.
+
+- **Cross-tenant user enumeration.** `users` and `oidc_identities` have no
+  policy, so any tenant session can read every account. There is no exposure
+  while one tenant exists, and the correct fix needs invitations and a
+  per-tenant user list, which is Phase 2's scope. It must not ship without it.
+- **`tenant_members` self-service.** A tenant session can insert a membership
+  row naming any user id. Same owner, same phase.
+- **`users.email` is globally unique**, so signing up with an address that
+  exists in another tenant fails on the index rather than being handled — an
+  existence oracle and a bad error. Phase 2.
+- **System sessions can read across tenants** by design, as above.
+- **No indexes on `tenant_id`.** With one tenant the column has no selectivity
+  and an index is pure write cost. Add them when the second tenant lands, in
+  one migration, `concurrently`, with data to measure against.
+- No plan, status or soft-delete on `tenants`; no tenant deletion; no
+  per-tenant feature flags; no tenant switching.
+- No per-tenant agent registration credential — Phase 2 owns it as a security
+  item, not a refactor.
+- No renaming of the residual `matrix_*` columns. Worth doing while these
+  tables are open, but not in the migration that changes isolation.
+- The room advisory lock hashes only the room id, so it is a cluster-global
+  namespace shared across tenants. Harmless at today's scale, worth a note.
