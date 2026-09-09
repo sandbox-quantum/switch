@@ -100,7 +100,7 @@ export type HostBody =
   | {
       type: 'command.result';
       commandId: Id;
-      status: 'applied' | 'rejected';
+      status: 'applied' | 'rejected' | 'unknown';
       code: string | null;
       message: string | null;
     }

@@ -57,7 +57,9 @@ class SessionAuthority:
     def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
         self._sessions = session_factory
 
-    async def acquire(self, agent_id: str, session: Session) -> Snapshot:
+    async def acquire(
+        self, agent_id: str, session: Session, operation_id: str | None = None
+    ) -> Snapshot:
         if session.agent_id != agent_id:
             raise SessionError("NOT_AUTHORIZED", "Session belongs to another agent.")
         async with self._sessions() as db, db.begin():
@@ -80,6 +82,17 @@ class SessionAuthority:
                     raise SessionError(
                         "NOT_AUTHORIZED", "Session belongs to another agent."
                     )
+                if (
+                    operation_id is not None
+                    and row.recovery.get("acquire_id") == operation_id
+                ):
+                    if row.recovery.get("acquire_session") != session.model_dump(
+                        by_alias=True
+                    ):
+                        raise SessionError(
+                            "IDEMPOTENCY_CONFLICT", "Acquisition host changed."
+                        )
+                    return Snapshot.model_validate(row.snapshot)
                 if row.lease_expires_at > now:
                     raise SessionError(
                         "LEASE_BUSY", "The session already has a live host."
@@ -113,11 +126,134 @@ class SessionAuthority:
                 lease_expires_at=now + timedelta(seconds=LEASE_SECONDS),
                 snapshot=snapshot.model_dump(by_alias=True),
                 host_sequence=0,
+                recovery={
+                    "acquire_id": operation_id,
+                    "acquire_session": session.model_dump(by_alias=True),
+                    "quiesced": False,
+                },
             )
             db.add(row)
             await db.flush()
             await self._append(
                 db, row, SessionUpsert(type="session.upsert", session=verified)
+            )
+            return Snapshot.model_validate(row.snapshot)
+
+    async def quiesce(
+        self, agent_id: str, session_id: str, host_id: str, epoch: str
+    ) -> None:
+        async with self._sessions() as db, db.begin():
+            row = await self._host_identity(db, agent_id, session_id, host_id, epoch)
+            if row.recovery.get("quiesced"):
+                return
+            row.recovery = {**row.recovery, "quiesced": True}
+            row.lease_expires_at = datetime.now(UTC)
+            await self._append(
+                db,
+                row,
+                SessionConnectivity(
+                    type="session.connectivity", connectivity="offline"
+                ),
+            )
+
+    async def recover(
+        self,
+        agent_id: str,
+        session_id: str,
+        host_id: str,
+        previous_epoch: str,
+        operation_id: str,
+        through_host_sequence: int,
+    ) -> Snapshot:
+        async with self._sessions() as db, db.begin():
+            row = await self._locked(db, session_id)
+            if row.agent_id != agent_id or row.host_id != host_id:
+                raise SessionError(
+                    "NOT_AUTHORIZED", "Recovery belongs to another host."
+                )
+            if row.recovery.get("operation_id") == operation_id:
+                if (
+                    row.recovery.get("previous_epoch") != previous_epoch
+                    or row.recovery.get("through_host_sequence")
+                    != through_host_sequence
+                ):
+                    raise SessionError(
+                        "IDEMPOTENCY_CONFLICT", "Recovery operation changed."
+                    )
+                return Snapshot.model_validate(row.snapshot)
+            if row.epoch != previous_epoch:
+                raise SessionError("STALE_EPOCH", "Session generation changed.")
+            if not row.recovery.get("quiesced"):
+                raise SessionError(
+                    "FENCING_REQUIRED",
+                    "Confirm the previous execution has stopped before recovery.",
+                )
+            if row.host_sequence != through_host_sequence:
+                raise SessionError(
+                    "EXPECTED_SEQUENCE",
+                    "Reconcile every durable upload before recovery.",
+                )
+            snapshot = Snapshot.model_validate(row.snapshot)
+            for request in snapshot.requests:
+                if request.state in ("open", "submitting"):
+                    await self._append(
+                        db,
+                        row,
+                        RequestSettled(
+                            type="request.settled",
+                            request_id=request.request_id,
+                            revision=request.revision + 1,
+                            outcome="interrupted",
+                            command_id=None,
+                            result=None,
+                        ),
+                    )
+            for turn in snapshot.turns:
+                if turn.status in ("queued", "running"):
+                    await self._append(
+                        db, row, turn.model_copy(update={"status": "interrupted"})
+                    )
+            commands = (
+                await db.scalars(
+                    select(SdkSessionCommand).where(
+                        SdkSessionCommand.session_id == row.id
+                    )
+                )
+            ).all()
+            for command in commands:
+                status = CommandStatus.model_validate(command.status)
+                if status.status in ("accepted", "dispatched"):
+                    status = status.model_copy(
+                        update={
+                            "status": "unknown",
+                            "code": "HOST_RESTARTED",
+                            "message": "The host restarted before confirming the command. It will not resend it.",
+                        }
+                    )
+                    command.status = status.model_dump(by_alias=True)
+                    await self._append(db, row, status)
+            row.epoch = str(uuid.uuid4())
+            row.host_sequence = 0
+            row.lease_expires_at = datetime.now(UTC) + timedelta(seconds=LEASE_SECONDS)
+            row.recovery = {
+                "operation_id": operation_id,
+                "previous_epoch": previous_epoch,
+                "through_host_sequence": through_host_sequence,
+                "quiesced": False,
+            }
+            snapshot = Snapshot.model_validate(row.snapshot)
+            session = snapshot.session.model_copy(
+                update={
+                    "epoch": row.epoch,
+                    "connectivity": "online",
+                    "status": "starting",
+                }
+            )
+            row.snapshot = snapshot.model_copy(update={"session": session}).model_dump(
+                by_alias=True
+            )
+            await self._append(
+                db, row, SessionUpsert(type="session.upsert", session=session)
             )
             return Snapshot.model_validate(row.snapshot)
 
@@ -128,13 +264,26 @@ class SessionAuthority:
             row = await self._host(db, agent_id, session_id, host_id, epoch)
             row.lease_expires_at = datetime.now(UTC) + timedelta(seconds=LEASE_SECONDS)
 
-    async def ingest(self, agent_id: str, host_id: str, event: HostEvent) -> int:
+    async def ingest(
+        self, agent_id: str, host_id: str, event: HostEvent, *, reconcile: bool = False
+    ) -> int:
         try:
             event = parse_host_event(event.model_dump(by_alias=True))
         except ValueError as exc:
             raise SessionError("INVALID_EVENT", str(exc)) from exc
         async with self._sessions() as db, db.begin():
-            row = await self._host(db, agent_id, event.session_id, host_id, event.epoch)
+            if reconcile:
+                row = await self._host_identity(
+                    db, agent_id, event.session_id, host_id, event.epoch
+                )
+                if not row.recovery.get("quiesced"):
+                    raise SessionError(
+                        "FENCING_REQUIRED", "Reconciliation requires stopped execution."
+                    )
+            else:
+                row = await self._host(
+                    db, agent_id, event.session_id, host_id, event.epoch
+                )
             previous = await db.scalar(
                 select(SdkSessionEvent).where(
                     SdkSessionEvent.session_id == row.id,
@@ -419,13 +568,21 @@ class SessionAuthority:
     async def _host(
         self, db: AsyncSession, agent_id: str, session_id: str, host_id: str, epoch: str
     ) -> SdkSession:
+        row = await self._host_identity(db, agent_id, session_id, host_id, epoch)
+        if row.recovery.get("quiesced"):
+            raise SessionError("HOST_OFFLINE", "Host execution is quiesced.")
+        if row.lease_expires_at <= datetime.now(UTC):
+            raise SessionError("HOST_OFFLINE", "Host lease expired.")
+        return row
+
+    async def _host_identity(
+        self, db: AsyncSession, agent_id: str, session_id: str, host_id: str, epoch: str
+    ) -> SdkSession:
         row = await self._locked(db, session_id)
         if row.agent_id != agent_id or row.host_id != host_id:
             raise SessionError("NOT_AUTHORIZED", "This host does not own the session.")
         if row.epoch != epoch:
             raise SessionError("STALE_EPOCH", "Session generation changed.")
-        if row.lease_expires_at <= datetime.now(UTC):
-            raise SessionError("HOST_OFFLINE", "Host lease expired.")
         return row
 
     async def _owner(self, db: AsyncSession, row: SdkSession, user_id: str) -> None:
@@ -614,6 +771,8 @@ class SessionAuthority:
             request = next(
                 (r for r in snapshot.requests if r.request_id == body.request_id), None
             )
+            if request is not None and request.result == body:
+                return
             if (
                 request is None
                 or request.state in ("closed", "resolved")

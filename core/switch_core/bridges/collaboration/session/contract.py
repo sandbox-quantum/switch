@@ -244,7 +244,7 @@ class RequestSettled(_Model):
 class CommandResult(_Model):
     type: Literal["command.result"]
     command_id: Id
-    status: Literal["applied", "rejected"]
+    status: Literal["applied", "rejected", "unknown"]
     code: str | None
     message: str | None
 

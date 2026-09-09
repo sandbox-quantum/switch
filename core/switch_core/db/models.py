@@ -1145,6 +1145,8 @@ class SdkSession(Base):
     snapshot: Mapped[dict] = mapped_column(JSONB, nullable=False)
     host_sequence: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
 
+    recovery: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+
 
 class SdkSessionEvent(Base):
     __tablename__ = "sdk_session_events"

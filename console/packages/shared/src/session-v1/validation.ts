@@ -134,7 +134,7 @@ const hostBodies = [
   z.strictObject({
     type: z.literal('command.result'),
     commandId: id,
-    status: z.enum(['applied', 'rejected']),
+    status: z.enum(['applied', 'rejected', 'unknown']),
     code: z.string().nullable(),
     message: z.string().nullable(),
   }),
