@@ -2,10 +2,16 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime, timedelta
+from typing import get_args
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from switch_core.bridges.agent.protocol.event_buffer import (
+    CursorExpiredError,
+    EventBuffer,
+)
+from switch_core.bridges.agent.protocol.types import MessagePayload
 from switch_core.bridges.collaboration.session.contract import (
     ApprovalContent,
     ApprovalResult,
@@ -27,6 +33,7 @@ from switch_core.bridges.collaboration.session.contract import (
     SessionStop,
     SessionUpsert,
     Snapshot,
+    Surface,
     TurnInterrupt,
     TurnUpsert,
     parse_host_event,
@@ -342,124 +349,230 @@ class SessionAuthority:
         async with self._sessions() as db, db.begin():
             row = await self._locked(db, command.session_id)
             await self._authorize(db, row, command.origin, user_id, bridge_id)
-            if command.epoch != row.epoch:
-                raise SessionError("STALE_EPOCH", "Session generation changed.")
-            previous = await db.get(SdkSessionCommand, (row.id, command.command_id))
-            payload = command.model_dump(by_alias=True)
+            return await self._accept(db, row, command, bridge_id)
+
+    async def submit_room_message(
+        self,
+        agent_id: str,
+        session_id: str,
+        host_id: str,
+        epoch: str,
+        room_id: str,
+        message_id: str,
+        sequence: int,
+        buffer: EventBuffer,
+    ) -> CommandStatus:
+        command_id = str(
+            uuid.uuid5(
+                uuid.NAMESPACE_URL, f"switch-room:{agent_id}:{room_id}:{message_id}"
+            )
+        )
+        async with self._sessions() as db, db.begin():
+            agent = await db.scalar(
+                select(Agent).where(Agent.id == agent_id).with_for_update()
+            )
+            row = await self._host(db, agent_id, session_id, host_id, epoch)
+            room = await db.get(Room, room_id)
+            if (
+                agent is None
+                or room is None
+                or await db.get(ClientRoom, (agent.client_id, room_id)) is None
+            ):
+                raise SessionError(
+                    "NOT_AUTHORIZED", "The agent is not a member of this room."
+                )
+            previous = await db.scalar(
+                select(SdkSessionCommand)
+                .join(SdkSession, SdkSession.id == SdkSessionCommand.session_id)
+                .where(
+                    SdkSession.agent_id == agent_id,
+                    SdkSessionCommand.command_id == command_id,
+                )
+            )
             if previous is not None:
-                if self._command_identity(previous.command) != self._command_identity(
-                    payload
-                ):
+                if previous.session_id != session_id:
                     raise SessionError(
-                        "IDEMPOTENCY_CONFLICT",
-                        "Command ID has different content or origin.",
+                        "ROOM_MESSAGE_RESERVED",
+                        "This room message belongs to another session.",
                     )
                 return CommandStatus.model_validate(previous.status)
-            if row.lease_expires_at <= datetime.now(UTC):
-                raise SessionError("HOST_OFFLINE", "The session host is offline.")
-            snapshot = Snapshot.model_validate(row.snapshot)
-            body = command.body
-            if isinstance(body, RequestAnswer):
-                request = next(
-                    (r for r in snapshot.requests if r.request_id == body.request_id),
-                    None,
+            try:
+                candidates = buffer.read_from(agent_id, sequence - 1, limit=1)
+            except CursorExpiredError as error:
+                raise SessionError(
+                    "ROOM_EVENT_UNAVAILABLE",
+                    "The room event is no longer retained; it was not submitted.",
+                ) from error
+            entry = candidates[0] if candidates else None
+            if entry is None or entry.seq != sequence or entry.room_id != room_id:
+                raise SessionError(
+                    "ROOM_EVENT_UNAVAILABLE", "The verified room event is unavailable."
                 )
-                if request is None or request.state in ("resolved", "closed"):
-                    raise SessionError(
-                        "REQUEST_CLOSED", "This request is no longer open."
-                    )
-                if bridge_id is not None:
-                    turn = next(
-                        t for t in snapshot.turns if t.turn_id == request.turn_id
-                    )
-                    source = await db.get(SdkSessionCommand, (row.id, turn.command_id))
-                    if source is None:
-                        raise SessionError(
-                            "NOT_FOUND", "Request has no source command."
-                        )
-                    origin = Command.model_validate(source.command).origin
-                    if (origin.room_id, origin.thread_id) != (
-                        command.origin.room_id,
-                        command.origin.thread_id,
-                    ):
-                        raise SessionError(
-                            "NOT_AUTHORIZED",
-                            "Answer came from a different request destination.",
-                        )
-                if request.revision != body.expected_revision:
-                    raise SessionError("STALE_REVISION", "The request has changed.")
-                if request.state == "submitting":
-                    raise SessionError(
-                        "REQUEST_BUSY", "Another answer has reserved this request."
-                    )
-                if request.expires_at and datetime.fromisoformat(
-                    request.expires_at
-                ) <= datetime.now(UTC):
-                    raise SessionError("REQUEST_CLOSED", "The request expired.")
-                try:
-                    validate_answer(request.content, body.answer)
-                except ValueError as exc:
-                    raise SessionError("INVALID_ANSWER", str(exc)) from exc
-            elif isinstance(body, MessageSend):
-                if body.delivery != "queue" or body.attachments:
-                    raise SessionError(
-                        "UNSUPPORTED_CAPABILITY", "Only queued text is supported."
-                    )
-                if snapshot.session.status not in ("ready", "running"):
-                    raise SessionError("HOST_OFFLINE", "The session is not ready.")
-            elif isinstance(body, TurnInterrupt):
-                if not snapshot.session.capabilities.interrupt:
-                    raise SessionError(
-                        "UNSUPPORTED_CAPABILITY", "Interrupt is unavailable."
-                    )
-                if not any(
-                    turn.turn_id == body.turn_id and turn.status == "running"
-                    for turn in snapshot.turns
+            payload = entry.event.payload
+            if (
+                not isinstance(payload, MessagePayload)
+                or not payload.addressed
+                or payload.message_id != message_id
+            ):
+                raise SessionError(
+                    "NOT_AUTHORIZED",
+                    "Only the verified addressed message can be submitted.",
+                )
+            bridge = (
+                await db.get(CollaborationBridge, room.bridge_id)
+                if room.bridge_id
+                else None
+            )
+            if (
+                bridge is None
+                or bridge.type not in get_args(Surface)
+                or entry.event.bridge_id != bridge.id
+            ):
+                raise SessionError(
+                    "NOT_AUTHORIZED", "The room event has no verified platform origin."
+                )
+            if payload.attachments:
+                raise SessionError(
+                    "UNSUPPORTED_CAPABILITY", "Room attachment staging is unavailable."
+                )
+            command = Command(
+                contract_version=1,
+                command_id=command_id,
+                session_id=session_id,
+                epoch=epoch,
+                origin=Origin.model_validate(
+                    {
+                        "actorId": payload.sender,
+                        "surface": bridge.type,
+                        "roomId": room_id,
+                        "threadId": payload.thread_id,
+                        "messageId": payload.message_id,
+                    }
+                ),
+                body=MessageSend(
+                    type="message.send",
+                    text=f"[Switch] {payload.sender_name} addressed you in room {room_id} (message_id {message_id}):\n{payload.body}",
+                    attachments=[],
+                    delivery="queue",
+                ),
+            )
+            if len(command.model_dump_json().encode("utf-8")) > 60 * 1024:
+                raise SessionError("PAYLOAD_TOO_LARGE", "Command exceeds 60 KiB.")
+            return await self._accept(db, row, command, bridge.id)
+
+    async def _accept(
+        self, db: AsyncSession, row: SdkSession, command: Command, bridge_id: str | None
+    ) -> CommandStatus:
+        if command.epoch != row.epoch:
+            raise SessionError("STALE_EPOCH", "Session generation changed.")
+        previous = await db.get(SdkSessionCommand, (row.id, command.command_id))
+        payload = command.model_dump(by_alias=True)
+        if previous is not None:
+            if self._command_identity(previous.command) != self._command_identity(
+                payload
+            ):
+                raise SessionError(
+                    "IDEMPOTENCY_CONFLICT",
+                    "Command ID has different content or origin.",
+                )
+            return CommandStatus.model_validate(previous.status)
+        if row.lease_expires_at <= datetime.now(UTC):
+            raise SessionError("HOST_OFFLINE", "The session host is offline.")
+        snapshot = Snapshot.model_validate(row.snapshot)
+        body = command.body
+        if isinstance(body, RequestAnswer):
+            request = next(
+                (r for r in snapshot.requests if r.request_id == body.request_id),
+                None,
+            )
+            if request is None or request.state in ("resolved", "closed"):
+                raise SessionError("REQUEST_CLOSED", "This request is no longer open.")
+            if bridge_id is not None:
+                turn = next(t for t in snapshot.turns if t.turn_id == request.turn_id)
+                source = await db.get(SdkSessionCommand, (row.id, turn.command_id))
+                if source is None:
+                    raise SessionError("NOT_FOUND", "Request has no source command.")
+                origin = Command.model_validate(source.command).origin
+                if (origin.room_id, origin.thread_id) != (
+                    command.origin.room_id,
+                    command.origin.thread_id,
                 ):
                     raise SessionError(
-                        "TURN_NOT_ACTIVE", "The turn is no longer running."
+                        "NOT_AUTHORIZED",
+                        "Answer came from a different request destination.",
                     )
-            elif isinstance(body, SessionStop):
-                if snapshot.session.status == "stopped":
-                    raise SessionError(
-                        "SESSION_STOPPED", "The session has already stopped."
-                    )
-            else:
+            if request.revision != body.expected_revision:
+                raise SessionError("STALE_REVISION", "The request has changed.")
+            if request.state == "submitting":
                 raise SessionError(
-                    "UNSUPPORTED_CAPABILITY",
-                    "This session command is not available yet.",
+                    "REQUEST_BUSY", "Another answer has reserved this request."
                 )
-            status = CommandStatus(
-                type="command.status",
+            if request.expires_at and datetime.fromisoformat(
+                request.expires_at
+            ) <= datetime.now(UTC):
+                raise SessionError("REQUEST_CLOSED", "The request expired.")
+            try:
+                validate_answer(request.content, body.answer)
+            except ValueError as exc:
+                raise SessionError("INVALID_ANSWER", str(exc)) from exc
+        elif isinstance(body, MessageSend):
+            if body.delivery != "queue" or body.attachments:
+                raise SessionError(
+                    "UNSUPPORTED_CAPABILITY", "Only queued text is supported."
+                )
+            if snapshot.session.status not in ("ready", "running"):
+                raise SessionError("HOST_OFFLINE", "The session is not ready.")
+        elif isinstance(body, TurnInterrupt):
+            if not snapshot.session.capabilities.interrupt:
+                raise SessionError(
+                    "UNSUPPORTED_CAPABILITY", "Interrupt is unavailable."
+                )
+            if not any(
+                turn.turn_id == body.turn_id and turn.status == "running"
+                for turn in snapshot.turns
+            ):
+                raise SessionError("TURN_NOT_ACTIVE", "The turn is no longer running.")
+        elif isinstance(body, SessionStop):
+            if snapshot.session.status == "stopped":
+                raise SessionError(
+                    "SESSION_STOPPED", "The session has already stopped."
+                )
+        else:
+            raise SessionError(
+                "UNSUPPORTED_CAPABILITY",
+                "This session command is not available yet.",
+            )
+        status = CommandStatus(
+            type="command.status",
+            command_id=command.command_id,
+            status="accepted",
+            code=None,
+            message=None,
+        )
+        db.add(
+            SdkSessionCommand(
+                session_id=row.id,
                 command_id=command.command_id,
-                status="accepted",
-                code=None,
-                message=None,
+                accepted_sequence=snapshot.through_sequence + 1,
+                command=payload,
+                status=status.model_dump(by_alias=True),
             )
-            db.add(
-                SdkSessionCommand(
-                    session_id=row.id,
+        )
+        await self._append(db, row, status)
+        if isinstance(body, RequestAnswer):
+            await self._append(
+                db,
+                row,
+                RequestSubmitting(
+                    type="request.submitting",
+                    request_id=body.request_id,
+                    revision=body.expected_revision,
                     command_id=command.command_id,
-                    accepted_sequence=snapshot.through_sequence + 1,
-                    command=payload,
-                    status=status.model_dump(by_alias=True),
-                )
+                    actor_id=command.origin.actor_id,
+                    surface=command.origin.surface,
+                ),
             )
-            await self._append(db, row, status)
-            if isinstance(body, RequestAnswer):
-                await self._append(
-                    db,
-                    row,
-                    RequestSubmitting(
-                        type="request.submitting",
-                        request_id=body.request_id,
-                        revision=body.expected_revision,
-                        command_id=command.command_id,
-                        actor_id=command.origin.actor_id,
-                        surface=command.origin.surface,
-                    ),
-                )
-            return status
+        return status
 
     async def pending(
         self, agent_id: str, session_id: str, host_id: str, epoch: str

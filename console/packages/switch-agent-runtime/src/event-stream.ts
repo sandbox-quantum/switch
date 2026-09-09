@@ -289,8 +289,8 @@ export class SwitchEventStream {
         });
 
         for await (const frame of readSse(resp.body, socketAbort.signal)) {
-          if (frame.id) this.cursor = Math.max(this.cursor, Number(frame.id) || 0);
           await this.handleFrame(frame);
+          if (frame.id) this.cursor = Math.max(this.cursor, Number(frame.id) || 0);
         }
       } catch (error) {
         if (signal.aborted) return;

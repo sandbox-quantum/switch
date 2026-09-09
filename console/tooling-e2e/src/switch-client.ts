@@ -348,7 +348,7 @@ export class SwitchClient {
    * be added to a channel.
    */
   async registerKnownAgent(params: {
-    agentType: 'opencode' | 'codex' | 'claude-code';
+    agentType: 'opencode' | 'codex' | 'claude-code' | 'gemini' | 'cursor';
     name: string;
     description: string;
     options?: Record<string, unknown>;
@@ -389,10 +389,7 @@ export class SwitchClient {
    *
    * Returns `[]` on the server's 204 (nothing within the timeout).
    */
-  async pollNotifications(
-    agent: RegisteredAgent,
-    timeoutSeconds = 10
-  ): Promise<AgentEvent[]> {
+  async pollNotifications(agent: RegisteredAgent, timeoutSeconds = 10): Promise<AgentEvent[]> {
     const body = await this.request<{ events?: AgentEvent[] } | undefined>(
       'GET',
       `/agents/${agent.id}/notifications?timeout=${timeoutSeconds}`,
@@ -462,11 +459,7 @@ export class SwitchClient {
    * the agent. The bridge relays it to Mattermost as the agent's bot. Returns
    * the Matrix event id.
    */
-  async sendMessage(
-    agent: RegisteredAgent,
-    roomId: string,
-    content: string
-  ): Promise<string> {
+  async sendMessage(agent: RegisteredAgent, roomId: string, content: string): Promise<string> {
     const body = await this.request<{ ok: boolean; event_id: string }>(
       'POST',
       `/agents/${agent.id}/message`,

@@ -7,13 +7,16 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from switch_core.bridges.agent.auth import get_agent_from_scope
 from switch_core.bridges.agent.dependencies import (
     get_collab_lifecycle,
+    get_event_buffer,
     get_session_factory,
 )
+from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
 from switch_core.bridges.collaboration.lifecycle_service import (
     CollaborationBridgeLifecycleService,
 )
 from switch_core.bridges.collaboration.session.contract import (
     Command,
+    CommandStatus,
     HostEvent,
     Session,
     Snapshot,
@@ -137,3 +140,29 @@ async def recover(
     )
     await lifecycle.refresh_sdk_session(session_id)
     return snapshot
+
+
+class RoomMessage(HostLease):
+    room_id: str = Field(min_length=1)
+    message_id: str = Field(min_length=1)
+    sequence: int = Field(ge=1)
+
+
+@router.post("/{session_id}/room-message")
+async def room_message(
+    session_id: str,
+    body: RoomMessage,
+    agent: AuthenticatedAgent,
+    factory: Factory,
+    buffer: Annotated[EventBuffer, Depends(get_event_buffer)],
+) -> CommandStatus:
+    return await SessionAuthority(factory).submit_room_message(
+        agent.id,
+        session_id,
+        body.host_id,
+        body.epoch,
+        body.room_id,
+        body.message_id,
+        body.sequence,
+        buffer,
+    )
