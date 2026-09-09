@@ -3,6 +3,7 @@ import { observer } from 'mobx-react-lite';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ParamSpec, ParsedTemplate } from '@main/core/room-templates/controller';
 import type { GuardResult, ViewDefinition } from '@renderer/app/view-registry';
+import { refreshSidebarRoomState } from '@renderer/features/sidebar/sidebar-tree-data';
 import { ServerPage } from '@renderer/features/switch-servers/server-page';
 import { ServerSectionTitlebar } from '@renderer/features/switch-servers/server-section-titlebar';
 import { failureText } from '@renderer/lib/errors/describe-failure';
@@ -504,6 +505,7 @@ const TemplateImportPanel = observer(function TemplateImportPanel() {
         }
 
         const result = await rpc.switchServers.createRoomFromTemplate(serverId, yamlText, inputs);
+        await refreshSidebarRoomState(true);
         appState.navigation.navigate('room', { roomId: result.roomId });
       } catch (e) {
         const serverDetail =
