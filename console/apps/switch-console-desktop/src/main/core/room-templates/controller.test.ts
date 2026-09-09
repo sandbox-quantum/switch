@@ -8,6 +8,9 @@ describe('roomTemplatesController.parse', () => {
     const result = parse(`
 room:
   name: test-room
+  agents:
+    - bot-a
+    - '{deploy_agent}'
 params:
   label:
     type: string
@@ -24,6 +27,7 @@ params:
     enum: [dev, prod]
 `);
     expect(result.roomName).toBe('test-room');
+    expect(result.agents).toEqual(['bot-a', '{deploy_agent}']);
     expect(result.params).toHaveLength(4);
     expect(result.params[0]).toMatchObject({
       name: 'label',

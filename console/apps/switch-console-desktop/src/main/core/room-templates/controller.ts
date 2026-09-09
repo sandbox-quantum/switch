@@ -13,6 +13,7 @@ export type ParamSpec = {
 export type ParsedTemplate = {
   params: ParamSpec[];
   roomName: string | null;
+  agents: string[];
   warnings: string[];
 };
 
@@ -69,12 +70,16 @@ export const roomTemplatesController = createRPCController({
 
     const room = doc.room as Record<string, unknown> | undefined;
     const roomName = room && typeof room.name === 'string' ? room.name : null;
+    const agents =
+      room && Array.isArray(room.agents)
+        ? (room.agents as unknown[]).filter((a): a is string => typeof a === 'string')
+        : [];
     const paramSpecs = extractParams(doc.params);
 
     if (!room) {
       warnings.push('Template has no "room:" block — the server may reject it.');
     }
 
-    return { params: paramSpecs, roomName, warnings };
+    return { params: paramSpecs, roomName, agents, warnings };
   },
 });
