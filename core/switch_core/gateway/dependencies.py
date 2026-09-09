@@ -23,9 +23,14 @@ from switch_core.db.stores.external_user_store import ExternalUserStore
 from switch_core.db.stores.room_group_store import RoomGroupStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.server_connector_store import ServerConnectorStore
+from switch_core.db.stores.session_room_association_store import (
+    SessionRoomAssociationStore,
+)
+from switch_core.db.stores.session_store import SessionStore
 from switch_core.db.stores.user_store import UserStore
 from switch_core.room_service import RoomService
 from switch_core.rooms_yaml import RoomYamlService
+from switch_core.session_association import SessionAssociationService
 
 _state: dict[str, Any] = {}
 
@@ -98,6 +103,15 @@ def get_agent_store() -> AgentStore:
 
 def get_room_store() -> RoomStore:
     return _state["room_store"]  # type: ignore[no-any-return]
+
+
+def get_session_association_service() -> SessionAssociationService:
+    return SessionAssociationService(
+        SessionStore(),
+        SessionRoomAssociationStore(),
+        _state["room_store"],
+        _state["agent_store"],
+    )
 
 
 def get_room_group_store() -> RoomGroupStore:

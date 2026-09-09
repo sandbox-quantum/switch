@@ -38,6 +38,7 @@ from switch_core.db.stores.session_lease_store import (
 )
 from switch_core.db.stores.session_publication_store import SessionPublicationStore
 from switch_core.db.stores.session_room_association_store import (
+    SessionAlreadyAssociated,
     SessionRoomAssociationStore,
 )
 from switch_core.db.stores.session_store import SessionAlreadyRegistered, SessionStore
@@ -1088,16 +1089,20 @@ class TestSessionRoomAssociationStore:
 
         async with session_factory() as session:
             second_room = await _make_room(session)
-            with pytest.raises(IntegrityError):
+            with pytest.raises(SessionAlreadyAssociated):
                 await store.associate(
                     session,
                     SessionRoomAssociation(
                         session_id="s-1",
                         room_id=second_room,
                         granted_by_actor_id="actor-2",
-                        source="grant",
+                        source="granted",
                     ),
                 )
+
+            held = await store.get(session, "s-1")
+            assert held is not None
+            assert held.room_id == first_room
 
 
 class TestSessionPublicationStore:

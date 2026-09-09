@@ -1006,3 +1006,14 @@ class PackageMemberRemoveResponse(BaseModel):
     member_id: str
     affected_room_ids: list[str]
     affected_room_names: list[str]
+
+
+class SessionAssociationRequest(BaseModel):
+    room_id: str
+
+
+class SessionAssociationResponse(BaseModel):
+    session_id: str
+    room_id: str
+    source: str
+    granted_by_actor_id: str
