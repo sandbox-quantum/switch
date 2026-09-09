@@ -30,7 +30,8 @@ from switch_core.bridges.agent.protocol.connections import (
 from switch_core.bridges.agent.protocol.instructions import build_room_instructions
 from switch_core.bridges.agent.protocol.service import ProtocolService
 from switch_core.bridges.agent.protocol.types import IntegrationProfile
-from switch_core.db.models import CollaborationBridge
+from switch_core.db.models import CollaborationBridge, User
+from switch_core.rooms_yaml import GroupSpec, RoomYamlService
 
 logger = logging.getLogger(__name__)
 
@@ -1581,9 +1582,6 @@ async def create_room_from_yaml(
         failed_attachments}``.
         For a group: ``{group_id, group_name, rooms: [...], errors: [...]}``.
     """
-    from switch_core.db.models import User
-    from switch_core.rooms_yaml import GroupSpec, RoomYamlService
-
     agent_id = get_agent_id()
     protocol = get_protocol()
 
