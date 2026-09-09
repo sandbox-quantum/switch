@@ -112,10 +112,9 @@ room:
     expect(result.roomName).toBe('simple-room');
   });
 
-  it('rejects params on a server without schema support', () => {
-    expect(() => parse('room:\n  name: test\nparams:\n  x:\n    type: string\n')).toThrow(
-      /does not support template features: params/
-    );
+  it('passes through params without schema (server validates on create)', () => {
+    const result = parse('room:\n  name: test\nparams:\n  x:\n    type: string\n');
+    expect(result.params).toHaveLength(1);
   });
 
   it('throws on invalid YAML', () => {
@@ -126,10 +125,8 @@ room:
     expect(() => parse('- a\n- b\n')).toThrow('Template must be a YAML mapping');
   });
 
-  it('rejects template without room block on old server', () => {
-    expect(() => parse('something_else:\n  name: test\n')).toThrow(
-      /does not support template features/
-    );
+  it('rejects template without room block', () => {
+    expect(() => parse('something_else:\n  name: test\n')).toThrow(/must have a "room:" block/);
   });
 
   it('handles bare param names (no spec object)', () => {
