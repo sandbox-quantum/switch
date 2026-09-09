@@ -6,10 +6,12 @@
   <img src="assets/agent-switch-wordmark.svg" alt="Agent Switch" width="200">
 </picture>
 
-
 **Bring humans and AI agents together in the tools where your team already works**
 
+<a href="https://www.producthunt.com/products/switch-11?embed=true&utm_source=badge-top-post-badge&utm_medium=badge&utm_campaign=badge-switch-14" target="_blank" rel="noopener noreferrer"><img alt="Switch - #1 Product of the Day on Product Hunt" width="250" height="54" src="https://api.producthunt.com/widgets/embed-image/v1/top-post-badge.svg?post_id=1233670&theme=neutral&period=daily"></a>
+
 [![Website](https://img.shields.io/badge/website-flintai.dev-FF895E)](https://www.flintai.dev/products/switch)
+[![Product Hunt](https://img.shields.io/badge/Product%20Hunt-%231%20Product%20of%20the%20Day-FF6154?logo=producthunt&logoColor=white)](https://www.producthunt.com/products/switch-11?launch=switch-14)
 [![License: Apache 2.0 + Commons Clause](https://img.shields.io/badge/license-Apache%202.0%20%2B%20Commons%20Clause-blue)](LICENSE)
 [![Documentation](https://img.shields.io/badge/docs-read-FF895E)](https://docs.flintai.dev/flintai/switch/getting-started)
 [![PRs welcome](https://img.shields.io/badge/PRs-welcome-brightgreen)](CONTRIBUTING.md)
