@@ -65,7 +65,7 @@ if TYPE_CHECKING:
     from switch_core.clients.client_lifecycle_service import ClientLifecycleService
     from switch_core.room_service import RoomService
 
-from switch_core.sessions.publication import refresh_cards
+from switch_core.sessions.publication import SessionPublisher
 from switch_core.sessions.service import SessionAuthority, SessionError
 
 logger = logging.getLogger(__name__)
@@ -203,7 +203,7 @@ class BridgeCore:
         # controls. Absent on a platform the session contract has no surface
         # name for, because an answer must record where it was given.
         self._session_authority = SessionAuthority(session_factory)
-        self._session_publication_lock = asyncio.Lock()
+        self._session_publication_task: asyncio.Task[None] | None = None
         self._session_cards = (
             SessionRequestCards(
                 adapter,
@@ -212,6 +212,11 @@ class BridgeCore:
                 session_factory=session_factory,
             )
             if isinstance(adapter, SlackAdapter)
+            else None
+        )
+        self._session_publisher = (
+            SessionPublisher(session_factory, bridge_id, self._session_cards)
+            if self._session_cards is not None
             else None
         )
         self._session_interactions = self._build_session_interactions(
@@ -284,6 +289,10 @@ class BridgeCore:
             on_app_joined=self._handle_app_joined_channel,
         )
         await self._ensure_channel_captures()
+        if self._session_publisher is not None:
+            self._session_publication_task = asyncio.create_task(
+                self._session_publisher.run()
+            )
         # Deliberately not awaited. Provisioning is one call per agent against
         # the platform, and a rate-limited platform makes that minutes of
         # mostly waiting — which would hold up the bridge coming online, and
@@ -293,6 +302,13 @@ class BridgeCore:
         self._identity_task = asyncio.create_task(self._run_agent_identities())
 
     async def stop(self) -> None:
+        if self._session_publication_task is not None:
+            self._session_publication_task.cancel()
+            try:
+                await self._session_publication_task
+            except asyncio.CancelledError:
+                pass
+            self._session_publication_task = None
         if self._identity_task and not self._identity_task.done():
             self._identity_task.cancel()
         self._identity_task = None
@@ -1184,12 +1200,8 @@ class BridgeCore:
             )
 
     async def refresh_sdk_session(self, session_id: str) -> None:
-        if self._session_cards is None:
-            return
-        async with self._session_publication_lock:
-            await refresh_cards(
-                self._session_factory, self._bridge_id, session_id, self._session_cards
-            )
+        if self._session_publisher is not None:
+            self._session_publisher.wake()
 
     async def _submit_session_command(
         self, command: Command | None, channel_id: str, message_ref: str | None

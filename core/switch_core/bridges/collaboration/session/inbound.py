@@ -216,6 +216,14 @@ class SessionInteractions:
         if post is None:
             return None
 
+        if post.external_post_id == post.token:
+            logger.warning(
+                "Refusing a typed answer to unconfirmed card %s on bridge %s.",
+                post.handle,
+                self._bridge_id,
+            )
+            return None
+
         if message.sender_is_app:
             logger.warning(
                 "Ignoring an answer to request %s on bridge %s: it was posted by "
