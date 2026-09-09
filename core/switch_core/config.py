@@ -160,6 +160,22 @@ class SwitchConfig(BaseSettings):
     # never killed mid-transaction.
     db_idle_in_transaction_session_timeout: str | None = None
 
+    # A Postgres server that goes away without closing its sockets — a managed
+    # instance failing over to its standby — leaves every connection open and
+    # apparently healthy. Nothing above the socket can tell the difference:
+    # reads block, the listener's heartbeat never returns, and the process goes
+    # on reporting itself connected while delivering nothing. Only the kernel
+    # finds out, and left to its own defaults it takes around fifteen minutes.
+    #
+    # These two mechanisms bound that, and both are needed because they cover
+    # different sockets. Keepalive probes fail a connection that was idle when
+    # the server vanished; the user timeout fails one that had already sent
+    # something, which keepalives never look at. Seconds; 0 disables either.
+    db_tcp_keepalive_idle: int = 10
+    db_tcp_keepalive_interval: int = 5
+    db_tcp_keepalive_count: int = 3
+    db_tcp_user_timeout: int = 30
+
     # libpq-style TLS mode for the Postgres connection, forwarded to asyncpg.
     # "disable" (the default) keeps in-cluster / local-dev connections plain,
     # matching current behaviour. Managed Postgres (RDS / Cloud SQL / Azure)

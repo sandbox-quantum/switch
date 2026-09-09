@@ -52,6 +52,14 @@ logger = logging.getLogger(__name__)
 # catch: without it the process looks connected and silently stops receiving.
 HEARTBEAT_SECONDS = 20.0
 
+# And a bound on the heartbeat itself, because proving the connection alive is
+# worth nothing if the proof can hang. The socket options set in
+# `db/engine.py` are what should fail a vanished server, and they act sooner
+# than this — this is the backstop for a platform that has none of them, or a
+# connection they could not be applied to. Reaching it means the socket-level
+# detection did not work.
+HEARTBEAT_TIMEOUT_SECONDS = 60.0
+
 # Backoff for a listener that cannot connect. Capped low: the whole system's
 # delivery latency is behind this, so a long sleep is a long outage.
 RECONNECT_BACKOFF_BASE = 1.0
@@ -210,7 +218,7 @@ class MessageListener:
         """Keep the connection until it fails, proving it alive as we go."""
         while self._running:
             await asyncio.sleep(HEARTBEAT_SECONDS)
-            await driver.execute("SELECT 1")
+            await driver.execute("SELECT 1", timeout=HEARTBEAT_TIMEOUT_SECONDS)
 
     def _on_notify(
         self, _connection: Any, _pid: int, _channel: str, payload: str

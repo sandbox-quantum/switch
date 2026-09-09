@@ -366,6 +366,25 @@ postgresql:
     # SQLAlchemy's 30s default hides starvation as latency.
     timeout: 5
 
+  # How quickly switch-core notices a database server that stopped answering
+  # without closing its connections — what a managed instance does when it
+  # fails over to its standby. Nothing above the socket can tell: the
+  # connections stay open, reads never return, and the process goes on
+  # reporting itself healthy while delivering nothing. Left to the kernel's own
+  # defaults that lasts about fifteen minutes, all of it silent.
+  #
+  # Both mechanisms are needed; they cover different sockets. Keepalive probes
+  # fail a connection that was idle when the server went. userTimeout fails one
+  # that had already sent something, which keepalives never look at. Raise them
+  # on a lossy network, where a brief stall would otherwise cost good
+  # connections. Seconds; 0 disables either. Linux only — a developer's macOS
+  # applies what it can and says at startup what it could not.
+  tcp:
+    keepaliveIdle: 10
+    keepaliveInterval: 5
+    keepaliveCount: 3
+    userTimeout: 30
+
   # Postgres kills a switch-core connection that sits inside an open
   # transaction without executing anything for longer than this (e.g. "15s"),
   # so a leaked checkout becomes a loud, attributable error instead of a slot

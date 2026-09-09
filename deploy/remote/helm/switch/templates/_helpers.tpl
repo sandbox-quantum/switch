@@ -333,6 +333,14 @@ Include with `nindent 12`.
   value: {{ .Values.postgresql.pool.maxOverflow | quote }}
 - name: DB_POOL_TIMEOUT
   value: {{ .Values.postgresql.pool.timeout | quote }}
+- name: DB_TCP_KEEPALIVE_IDLE
+  value: {{ .Values.postgresql.tcp.keepaliveIdle | quote }}
+- name: DB_TCP_KEEPALIVE_INTERVAL
+  value: {{ .Values.postgresql.tcp.keepaliveInterval | quote }}
+- name: DB_TCP_KEEPALIVE_COUNT
+  value: {{ .Values.postgresql.tcp.keepaliveCount | quote }}
+- name: DB_TCP_USER_TIMEOUT
+  value: {{ .Values.postgresql.tcp.userTimeout | quote }}
 {{- with .Values.postgresql.idleInTransactionSessionTimeout }}
 - name: DB_IDLE_IN_TRANSACTION_SESSION_TIMEOUT
   value: {{ . | quote }}
