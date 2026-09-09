@@ -101,8 +101,6 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-MEDIATION_TIMEOUT_SECONDS = 10.0
-
 
 def parse_timestamp_ms(iso: str) -> int:
     dt = datetime.fromisoformat(iso)
@@ -1185,7 +1183,10 @@ async def list_task_agents(
     except PermissionError as e:
         raise HTTPException(status_code=403, detail=str(e)) from e
 
-    agents = [AgentInfo(id=p.id, name=p.name, description="") for p in performers]
+    agents = [
+        AgentInfo(id=p.id, name=p.name, description="", display_name=p.display_name)
+        for p in performers
+    ]
 
     return TaskAgentsResponse(agents=agents)
 
@@ -1274,8 +1275,6 @@ async def pre_tool_call(
             req.room_id,
             req.tool_name,
             req.arguments,
-            req.request_id,
-            MEDIATION_TIMEOUT_SECONDS,
         )
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
@@ -1301,8 +1300,6 @@ async def pre_llm_request(
             req.room_id,
             req.model,
             req.messages,
-            req.request_id,
-            MEDIATION_TIMEOUT_SECONDS,
         )
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
@@ -1328,8 +1325,6 @@ async def post_tool_result(
             req.room_id,
             req.tool_name,
             req.result,
-            req.request_id,
-            MEDIATION_TIMEOUT_SECONDS,
         )
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
@@ -1355,8 +1350,6 @@ async def post_llm_response(
             req.room_id,
             req.model,
             req.response,
-            req.request_id,
-            MEDIATION_TIMEOUT_SECONDS,
         )
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
@@ -1411,6 +1404,7 @@ async def create_room(
     return CreateModerationRoomResponse(
         id=result.room.id,
         name=result.room.name,
+        transport_room_id=result.room.matrix_room_id,
         matrix_room_id=result.room.matrix_room_id,
         failed_attachments=result.failed_attachments,
     )
@@ -1488,7 +1482,13 @@ async def list_agents(
     agents = await protocol.list_all_agents(agent.id)
     return AgentListResponse(
         agents=[
-            AgentInfo(id=a.id, name=a.name, description=a.description) for a in agents
+            AgentInfo(
+                id=a.id,
+                name=a.name,
+                description=a.description,
+                display_name=a.display_name,
+            )
+            for a in agents
         ]
     )
 

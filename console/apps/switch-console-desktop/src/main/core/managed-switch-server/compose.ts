@@ -82,6 +82,49 @@ export function composeUp(
   );
 }
 
+/**
+ * Run one command in a throwaway container of `image`, on the stack's network.
+ *
+ * Deliberately `docker run` and not `compose run`: the caller needs a specific
+ * image, and the compose file on disk is whatever version the stack was last
+ * started with. A `compose run` would take the service definition — and the
+ * image — from that file, which for the case this exists to serve does not
+ * contain the service at all.
+ *
+ * The stack's `.env` supplies the credentials. What it cannot supply is where
+ * the other containers are: those come from each service's own definition in
+ * the compose file, so the few that matter are passed explicitly here. They are
+ * compose service names, stable across the versions this runs against, and
+ * they override anything the `.env` says — a `.env` written for the host names
+ * `localhost`, which is not where Postgres is from inside the network.
+ *
+ * Rejects on a non-zero exit.
+ */
+export function dockerRunOneOff(
+  host: ServerHost,
+  spec: { image: string; command: string[]; env: Record<string, string> },
+  onLog: (line: string) => void
+): Promise<void> {
+  log.info(`local-switch-server: docker run ${spec.image} (${host.label})`);
+  const env = Object.entries(spec.env).flatMap(([key, value]) => ['-e', `${key}=${value}`]);
+  return host.streamCommand(
+    host.dockerBin,
+    [
+      'run',
+      '--rm',
+      '--network',
+      `${host.composeProjectName}_default`,
+      '--env-file',
+      ENV_FILE_NAME,
+      ...env,
+      spec.image,
+      ...spec.command,
+    ],
+    onLog,
+    { timeoutMs: COMPOSE_TIMEOUT_MS }
+  );
+}
+
 /** Stop and remove the stack's containers. `removeVolumes` also destroys the
  * data volumes (the reset path) — irreversible. */
 export async function composeDown(host: ServerHost, removeVolumes: boolean): Promise<void> {

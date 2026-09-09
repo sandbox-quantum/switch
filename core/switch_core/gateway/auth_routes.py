@@ -27,6 +27,7 @@ from switch_core.gateway.dependencies import (
 )
 from switch_core.gateway.schemas import (
     AuthConfigResponse,
+    ChangePasswordRequest,
     CreateUserRequest,
     LinkedIdentity,
     LoginRequest,
@@ -174,6 +175,20 @@ async def my_identities(
             )
         )
     return linked
+
+
+@router.put("/auth/me/password")
+async def change_password(
+    req: ChangePasswordRequest,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    user: Annotated[User, Depends(get_current_user)],
+) -> dict[str, bool]:
+    if not verify_password(req.current_password, user.password_hash):
+        raise HTTPException(status_code=403, detail="Current password is incorrect")
+
+    user.password_hash = hash_password(req.new_password)
+    await session.commit()
+    return {"ok": True}
 
 
 @router.get("/users")

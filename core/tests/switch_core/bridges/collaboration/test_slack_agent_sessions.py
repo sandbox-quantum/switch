@@ -45,11 +45,17 @@ class FakeWebClient:
     def __init__(self) -> None:
         self.api_calls: list[tuple[str, dict[str, Any]]] = []
         self.posted: list[dict[str, Any]] = []
+        self.updated: list[dict[str, Any]] = []
+        self.update_error: str | None = None
         self.deleted: list[dict[str, Any]] = []
         self.reactions: list[tuple[str, str, str]] = []
         self.stream_error: str | None = None
         self.error_headers: dict[str, str] = {}
         self.reaction_error: str | None = None
+        # A thread as conversations.replies hands it back: the root first, then
+        # its replies in order.
+        self.thread: list[dict[str, Any]] = []
+        self.replies_error: str | None = None
         self._ts = 0
 
     def _fail(self) -> None:
@@ -102,7 +108,16 @@ class FakeWebClient:
         return FakeResponse({"ok": True})
 
     async def chat_update(self, **kwargs: Any) -> FakeResponse:
+        if self.update_error:
+            raise SlackApiError("failed", FakeResponse({"error": self.update_error}))
+        self.updated.append(kwargs)
         return FakeResponse({"ok": True})
+
+    async def conversations_replies(self, **kwargs: Any) -> FakeResponse:
+        if self.replies_error:
+            raise SlackApiError("failed", FakeResponse({"error": self.replies_error}))
+        self.api_calls.append(("conversations.replies", kwargs))
+        return FakeResponse({"messages": self.thread[: kwargs.get("limit", 100)]})
 
     async def conversations_info(self, **kwargs: Any) -> FakeResponse:
         return FakeResponse({"channel": {"is_private": False}})

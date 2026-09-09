@@ -155,6 +155,7 @@ async def _build_room_detail(
         write_visibility=room.write_visibility,
         created_at=str(room.created_at),
         archived=room.archived_at is not None,
+        transport_room_id=room.matrix_room_id,
         matrix_room_id=room.matrix_room_id,
         external_channel_id=room.external_channel_id,
         instructions=room.instructions,

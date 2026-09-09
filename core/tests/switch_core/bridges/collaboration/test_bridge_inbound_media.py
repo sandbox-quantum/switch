@@ -62,6 +62,16 @@ class _FakeAdapter:
         return content
 
 
+async def _no_text_answer(_msg: object) -> None:
+    """These tests exercise the relay, not the session half of a message."""
+    return None
+
+
+async def _no_session_demo(_msg: object, _room_id: str) -> None:
+    """The demo harness is off in production and off here."""
+    return None
+
+
 def _fake_bridge() -> SimpleNamespace:
     puppet = _FakePuppet()
     recorded: list[dict[str, str]] = []
@@ -80,6 +90,8 @@ def _fake_bridge() -> SimpleNamespace:
         return None
 
     ns = SimpleNamespace(
+        _handle_text_answer=_no_text_answer,
+        _handle_session_demo=_no_session_demo,
         _repair_placeholder_username=_repair_placeholder_username,
         _adapter=_FakeAdapter(),
         _channel_to_room={"chan-1": ("room-1", "!room:s")},
@@ -146,7 +158,7 @@ async def test_three_attachments_are_stamped_as_one_group() -> None:
     assert bridge.recorded == [
         {
             "external_channel_id": "chan-1",
-            "matrix_event_id": "$evt-0",
+            "transport_event_id": "$evt-0",
             "external_post_id": "post-1",
         }
     ]

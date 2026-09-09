@@ -10,7 +10,7 @@
 #   docker compose -f standalone-docker-compose.yml -f standalone-docker-compose.build.yml up
 #
 # Profiles keep optional services opt-in:
-#   (core, no profile) postgres, tuwunel, switch  — always started
+#   (core, no profile) postgres, switch  — always started
 #   collab            init-db, mattermost, setup  — Mattermost bridge + seeder
 #   gateway           gateway                      — operator dashboard
 # Select them with `--profile collab --profile gateway` or COMPOSE_PROFILES.
@@ -55,6 +55,10 @@ services:
       POSTGRES_PASSWORD: ${DB_PASSWORD}
       POSTGRES_DB: ${DB_NAME}
     volumes:
+  # Kept deliberately after Tuwunel was removed. It still holds every media
+  # blob and the raw history, and it is the only copy — the backfill moved the
+  # messages into Postgres but not the files. Dropping it belongs to a later
+  # release than the one that stops reading it.
       - pgdata:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${DB_USER}"]
@@ -89,20 +93,6 @@ services:
       postgres:
         condition: service_healthy
 
-  tuwunel:
-    image: jevolk/tuwunel:v1.7.1
-    volumes:
-      - tuwuneldata:/var/lib/tuwunel
-    environment:
-      TUWUNEL_SERVER_NAME: localhost
-      TUWUNEL_DATABASE_PATH: /var/lib/tuwunel
-      TUWUNEL_ADDRESS: 0.0.0.0
-      TUWUNEL_PORT: "8008"
-      TUWUNEL_ALLOW_FEDERATION: "false"
-      TUWUNEL_ALLOW_REGISTRATION: "false"
-      TUWUNEL_REGISTRATION_SHARED_SECRET: ${MATRIX_REGISTRATION_SHARED_SECRET}
-      TUWUNEL_MAX_REQUEST_SIZE: "20000000"
-
   mattermost:
     # Pinned rather than `latest`: Switch Console embeds this Mattermost's web UI
     # and depends on its DOM structure, so an unattended upgrade could break
@@ -115,6 +105,10 @@ services:
     ports:
       - "${SWITCH_BIND_ADDR:-127.0.0.1}:${MATTERMOST_HOST_PORT:-8065}:8065"
     volumes:
+  # Kept deliberately after Tuwunel was removed. It still holds every media
+  # blob and the raw history, and it is the only copy — the backfill moved the
+  # messages into Postgres but not the files. Dropping it belongs to a later
+  # release than the one that stops reading it.
       - mmdata:/mattermost/data
     environment:
       MM_SQLSETTINGS_DRIVERNAME: postgres
@@ -132,6 +126,7 @@ services:
       MM_SERVICESETTINGS_ENABLEBOTACCOUNTCREATION: "true"
       MM_SERVICESETTINGS_ENABLEUSERACCESSTOKENS: "true"
       MM_TEAMSETTINGS_ENABLEOPENSERVER: "true"
+      MM_TEAMSETTINGS_TEAMMATENAMEDISPLAY: "full_name"
       # Neither plugin is usable in a bundled Switch deployment: Copilot has no
       # configured provider and throws a 404 looking up its bot on every page
       # load, and Calls ships a WebRTC service nothing here can reach.
@@ -151,11 +146,7 @@ services:
       DB_USER: ${DB_USER}
       DB_PASSWORD: ${DB_PASSWORD}
       DB_NAME: ${DB_NAME}
-      MATRIX_SERVER: http://tuwunel:8008
       MATRIX_SERVER_NAME: localhost
-      MATRIX_ADMIN_USER: ${MATRIX_ADMIN_USER}
-      MATRIX_ADMIN_PASSWORD: ${MATRIX_ADMIN_PASSWORD}
-      MATRIX_REGISTRATION_SHARED_SECRET: ${MATRIX_REGISTRATION_SHARED_SECRET}
       AGENT_REGISTRATION_TOKEN: ${AGENT_REGISTRATION_TOKEN}
       JWT_SECRET_KEY: ${JWT_SECRET_KEY}
       GATEWAY_ADMIN_EMAIL: ${GATEWAY_ADMIN_EMAIL}
@@ -165,8 +156,6 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-      tuwunel:
-        condition: service_started
 
   gateway:
     image: ${SWITCH_REGISTRY:-ghcr.io}/${SWITCH_IMAGE_NAMESPACE:-sandbox-quantum}/gateway:${SWITCH_VERSION:?required, set it in .env, there is no default}
@@ -196,6 +185,10 @@ services:
       - switch
 
 volumes:
+  # Kept deliberately after Tuwunel was removed. It still holds every media
+  # blob and the raw history, and it is the only copy — the backfill moved the
+  # messages into Postgres but not the files. Dropping it belongs to a later
+  # release than the one that stops reading it.
   pgdata:
   mmdata:
   tuwuneldata:

@@ -73,6 +73,22 @@ export function switchVersionDowngradeMessage(deployed: string, expected: string
 }
 
 /**
+ * Why an upgrade stopped short of removing the message server, in one message.
+ *
+ * Says the two things a user needs: nothing has changed, and trying again is
+ * the fix. Deliberately does not offer a way past it — the history is only on
+ * the message server, and the version being upgraded to is the one that
+ * removes it.
+ */
+export function matrixMigrationFailedMessage(deployed: string, expected: string): string {
+  return (
+    `Your room history has to be copied out of the message server before updating to ` +
+    `switch-core ${expected}, and the copy did not finish. Nothing has changed — the stack is ` +
+    `still on ${deployed}. Try starting it again; the copy carries on from where it stopped.`
+  );
+}
+
+/**
  * Image tag a checkout build is tagged with. Deliberately not a semver and
  * deliberately not the pin: it must never be mistaken for a released version,
  * and it must not overwrite the pinned image in the local image store. Shared
@@ -155,4 +171,8 @@ export type StartLocalServerResult =
   | { kind: 'started'; serverId: string }
   | { kind: 'docker-unavailable'; reason: 'not-installed' | 'daemon-down'; detail: string }
   | { kind: 'version-downgrade'; deployed: string; expected: string }
+  // The upgrade would have removed the message server before this stack's
+  // history was copied out of it, and the copy failed. The stack is untouched
+  // and still on `deployed`; retrying is safe and resumes where it stopped.
+  | { kind: 'matrix-migration-failed'; deployed: string; expected: string; detail: string }
   | { kind: 'error'; message: string };

@@ -18,6 +18,8 @@ function startFailureReason(result: StartLocalServerResult): TelemetryManagedSer
       return result.reason === 'not-installed' ? 'docker_not_installed' : 'docker_daemon_down';
     case 'version-downgrade':
       return 'version_downgrade';
+    case 'matrix-migration-failed':
+      return 'matrix_migration_failed';
     case 'error':
       return 'error';
   }

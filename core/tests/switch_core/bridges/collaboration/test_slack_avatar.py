@@ -2,6 +2,7 @@ import asyncio
 from urllib.parse import parse_qs, urlsplit
 
 from switch_core.agent_icon import default_icon_url
+from switch_core.bridges.collaboration.adapter import AgentPresentation
 from switch_core.bridges.collaboration.slack.adapter import (
     SlackAdapter,
     SlackConnectionConfig,
@@ -73,10 +74,10 @@ def test_the_slack_adapter_applies_it_to_a_resolved_icon() -> None:
         )
     )
 
-    async def resolver(name: str) -> str | None:
-        return DICEBEAR
+    async def resolver(name: str) -> AgentPresentation | None:
+        return AgentPresentation(display_name=None, icon_url=DICEBEAR)
 
-    adapter.set_agent_icon_resolver(resolver)
+    adapter.set_agent_presentation_resolver(resolver)
 
     resolved = asyncio.run(adapter.agent_icon_url("worker"))
     assert _background(resolved) == [SLACK_SURFACE]

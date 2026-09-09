@@ -46,3 +46,5 @@ export { EventOutbox } from './session-v1/event-outbox';
 export { HostConnection } from './host/client';
 export type { HostEndpoint, HostStartRequest } from './host/server';
 export { connectHost } from './host/launcher';
+export { runSharedHost } from './host/shared-host';
+export type { SharedHostOptions } from './host/shared-host';

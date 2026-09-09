@@ -7,8 +7,6 @@ import type { LocalServerSecrets } from './secret-values';
 
 const secrets: LocalServerSecrets = {
   dbPassword: 'db-pw',
-  matrixRegistrationSharedSecret: 'matrix-shared',
-  matrixAdminPassword: 'matrix-admin',
   agentRegistrationToken: 'agent-token',
   jwtSecretKey: 'jwt-key',
   gatewayAdminPassword: 'gw-admin',
@@ -60,8 +58,6 @@ describe('buildEnvFile', () => {
 
   it('injects every secret into its env var', () => {
     expect(vars.DB_PASSWORD).toBe('db-pw');
-    expect(vars.MATRIX_REGISTRATION_SHARED_SECRET).toBe('matrix-shared');
-    expect(vars.MATRIX_ADMIN_PASSWORD).toBe('matrix-admin');
     expect(vars.AGENT_REGISTRATION_TOKEN).toBe('agent-token');
     expect(vars.JWT_SECRET_KEY).toBe('jwt-key');
     expect(vars.GATEWAY_ADMIN_PASSWORD).toBe('gw-admin');

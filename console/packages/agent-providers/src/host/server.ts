@@ -24,7 +24,7 @@ const mcp = z.discriminatedUnion('transport', [
   }),
   z.object({ transport: z.literal('http'), url: z.string(), headers: env.optional() }),
 ]);
-const startSchema = z.strictObject({
+export const startSchema = z.strictObject({
   provider: z.enum(['claude', 'codex', 'opencode', 'gemini', 'cursor']),
   input: z.strictObject({
     sessionId: id,
@@ -47,7 +47,7 @@ export interface HostEndpoint {
 const folder = (root: string, sessionId: string) =>
   join(root, 'sessions', createHash('sha256').update(sessionId).digest('hex'));
 
-function adapterFor(provider: Session['provider']): ProviderAdapter {
+export function adapterFor(provider: Session['provider']): ProviderAdapter {
   switch (provider) {
     case 'claude':
       return createClaudeAdapter();

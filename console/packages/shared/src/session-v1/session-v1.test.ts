@@ -3,6 +3,8 @@ import { SessionChatClient } from './client';
 import type { CommandStatus, SessionTransport } from './client';
 import type { Item, ServerEvent, Snapshot } from './contract';
 import examples from './examples.json';
+import activity from './examples.activity.json';
+import questions from './examples.questions.json';
 import { SessionReplica } from './replica';
 import { commandSchema, parseHostEvent, serverEventSchema, snapshotSchema } from './validation';
 
@@ -280,5 +282,17 @@ it('retains the verified actor for cancellation and clears an unrelated reservat
         : null
     );
     expect(new SessionReplica(replica.snapshot()).snapshot().requests[0]).toEqual(request);
+  }
+});
+
+it('validates the bridge question and activity recordings with the SDK reader', () => {
+  parseHostEvent(questions.hostQuestions);
+  commandSchema.parse(questions.platformFormAnswer);
+  for (const [snapshot, events] of [
+    [questions.initialSnapshot, questions.formAnswerLifecycle],
+    [activity.initialSnapshot, activity.turnActivity],
+  ] as const) {
+    const replica = new SessionReplica(snapshot);
+    for (const event of events) replica.apply(event);
   }
 });

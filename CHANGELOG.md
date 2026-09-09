@@ -44,6 +44,67 @@ version of their own to them without also giving them a release of their own.
 
 ### [Unreleased]
 
+### [0.25.0] - 2026-09-06
+
+#### Added
+- `GATEWAY_OIDC_REQUIRE_EMAIL_VERIFIED` (default true) makes the OIDC
+  `email_verified` check configurable, so a deployment whose IdP addresses are
+  authoritative (e.g. Okta directory-provisioned users that never report the
+  claim as true) can opt out. The relaxed check logs a warning on every login
+  naming the claim value, so it is never silent (#387).
+
+#### Removed
+- **Matrix is gone.** Following the 0.24.0 move to a Postgres message store,
+  switch-core no longer runs or talks to a Matrix homeserver: the Tuwunel
+  service, the `matrix-nio` dependency, and all `MATRIX_*` configuration are
+  removed, and the Helm chart drops the tuwunel deployment, service and PVC. The
+  standalone compose no longer ships a Tuwunel service. Ships a migration
+  (`drop_matrix_columns`) that drops the now-unused Matrix columns (#380).
+
+#### Changed
+- **`stack-compose` contract → speaks 2** (accepts 1). The published standalone
+  compose no longer carries the `tuwunel` service or the `MATRIX_*` environment
+  variables; Switch Console's local-server mode drives the new shape (#380).
+
+### [0.24.1] - 2026-09-06
+
+#### Changed
+- The one-time history backfill now carries a bounded amount of each room's
+  history — 50 messages per room, newest first, instead of walking every room
+  to its start (an unbounded migration that could never finish on a busy,
+  long-lived channel and ran at boot with switch-core waiting on it). Override
+  with `--messages-per-room` (`0` restores the old full walk). A capped room is
+  marked backfilled and reported as `capped`, not `incomplete` (#379).
+
+### [0.24.0] - 2026-09-06
+
+#### Security
+- Mattermost connections verify TLS by default; disabling it is now an explicit
+  opt-in (#294).
+- OIDC logins are bound to the identity provider's `(iss, sub)` pair rather than
+  email, so a changed or reused email address can no longer take over an account
+  (#291).
+- Room roster changes are gated on room membership, not on a resource's
+  write-visibility (#292).
+- Room-scoped resource endpoints now require access to the room (#293).
+- Agent registration and re-registration are confined to the owner's tenant, and
+  re-registration cannot overwrite an agent owned by someone else (#290).
+
+#### Changed
+- **Internal message transport moved to Postgres `LISTEN`/`NOTIFY`.** The
+  message/notify path and event cursors are served from Postgres instead of
+  Matrix, which is kept alongside for now. Ships a database migration
+  (`message_notify_and_cursors`) (#363).
+
+#### Added
+- Agents render under their human display name on every collaboration bridge,
+  defused so an agent still never sees its own echo (#330).
+
+#### Fixed
+- `!command` now resolves `@mentions` and runs code-wrapped commands, matching
+  `/command` behaviour — both had broken once agents gained autocomplete user
+  groups (#313).
+
 ### [0.23.0] - 2026-09-03
 
 #### Performance
@@ -1179,6 +1240,31 @@ version of their own to them without also giving them a release of their own.
 ## switch-console
 
 ### [Unreleased]
+
+### [0.34.0] - 2026-09-06
+
+#### Changed
+- **Local-server mode drops Matrix.** The bundled standalone stack no longer
+  runs a Tuwunel service or sets `MATRIX_*` environment, matching switch-core
+  0.25.0; an existing local stack is migrated off Matrix on start. Bundles
+  **switch-core 0.25.0** (was 0.24.x) (#380).
+
+### [0.33.0] - 2026-09-06
+
+#### Added
+- **Local control API for programmatic agent management.** A localhost-only,
+  token-gated HTTP server in the main process (127.0.0.1 on an OS-assigned port,
+  credentials in a 0600 file in the app data dir) exposes the same
+  agent-management operations as the UI — list/read agents, list an agent's
+  sessions, and start a session (#362).
+
+#### Changed
+- Agent names are auto-lowercased as you type in the New Agent dialog, matching
+  the identifier rules (rather than rejecting after the fact).
+- Local-server mode now bundles **switch-core 0.24.0** (was 0.23.0), and picks
+  up the internal Postgres LISTEN/NOTIFY transport client-side (#363).
+- Refreshes the connectors so installs pick up the display-name skill updates
+  (Claude Code 0.9.13, Codex 0.3.14, OpenCode 0.1.9).
 
 ### [0.32.0] - 2026-09-03
 
@@ -2891,6 +2977,17 @@ compatibility signal. History for those is in the git log.
 
 ### [Unreleased]
 
+### [0.9.14] - 2026-09-06
+#### Changed
+- Skill updated: Matrix references removed to match the Postgres-backed message
+  store (#380). Plugin version bumps so installs re-download.
+
+### [0.9.13] - 2026-09-06
+#### Changed
+- Skills updated for agent display names: the switch and configure skills note
+  that agents may render under a human display name on the bridges (#330).
+  Plugin version bumps so installs re-download.
+
 ### [0.9.12] - 2026-09-03
 #### Changed
 - Pin `@sandboxaq/switch-agent-runtime@0.4.1` (was `0.3.4`) — a deleted room no
@@ -3127,6 +3224,17 @@ manifest history.
 
 ### [Unreleased]
 
+### [0.3.15] - 2026-09-06
+#### Changed
+- Skill updated: Matrix references removed to match the Postgres-backed message
+  store (#380). Plugin version bumps so installs re-download.
+
+### [0.3.14] - 2026-09-06
+#### Changed
+- Skills updated for agent display names: the switch and configure skills note
+  that agents may render under a human display name on the bridges (#330).
+  Plugin version bumps so installs re-download.
+
 ### [0.3.13] - 2026-09-03
 #### Changed
 - Pin `@sandboxaq/switch-agent-runtime@0.4.1` (was `0.3.4`) — a deleted room no
@@ -3317,6 +3425,18 @@ for humans reading a diff rather than for an installer, and an install reports
 the app version that wrote it rather than a version of its own.
 
 ### [Unreleased]
+
+### [0.1.10] - 2026-09-06
+#### Changed
+- Skill updated: Matrix references removed to match the Postgres-backed message
+  store (#380). (Delivered at the next Switch Console update, which rewrites the
+  embedded connector.)
+
+### [0.1.9] - 2026-09-06
+#### Changed
+- Skill updated for agent display names: the switch skill notes that agents may
+  render under a human display name on the bridges (#330). (Delivered at the
+  next Switch Console update, which rewrites the embedded connector.)
 
 ### [0.1.8] - 2026-09-03
 #### Changed

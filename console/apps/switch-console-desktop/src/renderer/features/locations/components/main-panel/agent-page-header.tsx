@@ -33,13 +33,18 @@ export const AgentPageHeader = observer(function AgentPageHeader() {
   // Never the location's name: a directory is not an agent, and standing its
   // basename in here also seeds the generated avatar from it, so the page
   // presents a whole identity that belongs to no agent.
-  const title = agent?.name ?? agentName ?? 'Agent';
+  const agentMachineName = agent?.name ?? agentName ?? 'Agent';
   const provider = agent?.providerId ? providerDisplayName(agent.providerId) : null;
 
   const serverId = agent?.serverId ?? null;
   const { data: remoteAgents } = useRemoteAgents(serverId);
   const remote = (remoteAgents ?? []).find((a) => a.id === agent?.switchAgentId) ?? null;
   const description = remote?.description ?? null;
+
+  // Use displayName as primary title, with fallback to the machine name
+  const title = remote?.displayName ?? agentMachineName;
+  // Show machine name as subtitle only if displayName exists and differs from name
+  const showMachineName = remote?.displayName != null && remote.displayName !== agentMachineName;
 
   const roomable = serverId !== null && agent?.switchAgentId != null;
 
@@ -94,6 +99,11 @@ export const AgentPageHeader = observer(function AgentPageHeader() {
             </Badge>
           )}
         </div>
+        {showMachineName && (
+          <p className="text-sm text-foreground-muted">
+            Machine name: <span className="font-mono">{agentMachineName}</span>
+          </p>
+        )}
         {description && <p className="text-sm text-foreground-muted">{description}</p>}
         <div className="mt-2 flex flex-wrap items-center gap-2">
           <Button

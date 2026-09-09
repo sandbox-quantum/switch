@@ -36,23 +36,3 @@ class ClientStore:
         if client:
             await session.delete(client)
             await session.flush()
-
-    async def update_state(
-        self,
-        session: AsyncSession,
-        client_id: str,
-        *,
-        access_token: str | None = None,
-        device_id: str | None = None,
-        next_batch_token: str | None = None,
-    ) -> None:
-        client = await session.get(Client, client_id)
-        if client is None:
-            return
-        if access_token is not None:
-            client.access_token = access_token
-        if device_id is not None:
-            client.device_id = device_id
-        if next_batch_token is not None:
-            client.next_batch_token = next_batch_token
-        await session.flush()

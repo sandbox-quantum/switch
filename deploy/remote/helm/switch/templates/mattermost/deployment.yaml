@@ -53,6 +53,8 @@ spec:
               value: "true"
             - name: MM_TEAMSETTINGS_ENABLEOPENSERVER
               value: "true"
+            - name: MM_TEAMSETTINGS_TEAMMATENAMEDISPLAY
+              value: "full_name"
             # For Switch Console's embedded room view (CHOO-1674): suppress the
             # onboarding modal, and linkify the `switchdash://` deeplinks
             # agents post. Kept in step with the standalone compose.

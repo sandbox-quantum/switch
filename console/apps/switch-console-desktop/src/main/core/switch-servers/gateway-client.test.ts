@@ -505,6 +505,7 @@ describe('registerKnownAgent', () => {
       agentType: 'codex',
       options: { channels_enabled: true, repo_dir: '/repo' },
       iconUrl: null,
+      displayName: null,
     });
 
     expect(registered).toEqual({ id: 'sw-1', apiKey: 'tok-123' });
@@ -515,7 +516,28 @@ describe('registerKnownAgent', () => {
       description: 'Codex running in repo',
       options: { channels_enabled: true, repo_dir: '/repo' },
       icon_url: null,
+      display_name: null,
       overwrite: false,
+    });
+  });
+
+  it('sends the human display name alongside the identifier', async () => {
+    // The two are different strings on purpose: `name` routes, `display_name`
+    // is what a chat platform renders. Dropping the label here would leave the
+    // create form's field with nowhere to land.
+    await registerKnownAgent(SERVER, {
+      name: 'switch-dev',
+      description: 'Codex running in repo',
+      agentType: 'codex',
+      options: { channels_enabled: true, repo_dir: '/repo' },
+      iconUrl: null,
+      displayName: 'Switch Dev',
+    });
+
+    const [, init] = fetchMock.mock.calls[0] as unknown as [string, { body: string }];
+    expect(JSON.parse(init.body)).toMatchObject({
+      name: 'switch-dev',
+      display_name: 'Switch Dev',
     });
   });
 });

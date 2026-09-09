@@ -21,7 +21,8 @@
       "default": "./dist/testing.mjs"
     },
     "./package.json": "./package.json",
-    "./host-daemon": "./dist/host-daemon.mjs"
+    "./host-daemon": "./dist/host-daemon.mjs",
+    "./shared-host-daemon": "./dist/shared-host-daemon.mjs"
   },
   "scripts": {
     "dev": "tsdown --watch",

@@ -29,10 +29,10 @@ approvals and question forms. It is not the production session route.
 
 ## Current boundary
 
-This host accepts local-only sessions. It rejects Switch identity credentials;
-shared commands require the Switch server's lease, authorization and reservation
-path. SSH deployment, the shared server transport and production session routing
-are not implemented here yet. No tmux fallback is used by this host.
+The local daemon accepts local-only sessions and rejects Switch identity
+credentials. The separate experimental shared daemon uses the Switch server's
+lease, authorization and reservation path described below. No tmux fallback is
+used by either host.
 
 Host events and client commands contain no publication authority. Verified command
 origin is context only. The shared server must select any request card destination
@@ -58,3 +58,33 @@ SDK_HOST_LIVE=1 pnpm exec vitest run src/host/host.integration.test.ts
 ```
 
 The live test uses scratch directories and consumes provider usage.
+
+## Experimental shared host
+
+`runSharedHost` connects one provider session to the Switch session authority.
+The standalone entry point is `dist/shared-host-daemon.mjs`:
+
+```sh
+node dist/shared-host-daemon.mjs /path/to/new-state /path/to/session-config.json
+```
+
+Supply `SWITCH_API_ENDPOINT` (the agent API base URL) and `SWITCH_API_TOKEN`
+through the process environment. The JSON file contains `session` (the session-v1
+session shape) and `start` (the local host's provider/input shape). Do not put the
+host credential in that file or pass it to the provider environment. The state
+directory must not exist. Switch assigns the session epoch. No local command
+endpoint is exposed by this process.
+
+Apply the backend migrations first. Owner-authenticated gateway routes under
+`/gateway/sessions` provide snapshots, replay and command submission. The DEV
+Console host workbench's **Shared sessions** tab attaches through a saved server
+sign-in. A gateway message command can supply `roomId` to select a request-card
+room; the server checks agent membership and chooses the channel. Cards use the
+verified owner's linked platform identity for answers. Ordinary transcript items
+are never sent through the card publisher.
+
+Lease renewal failure stops the provider. Existing shared-session directories and
+expired leases require explicit recovery; this entry point does not take over an
+old execution or silently start a replacement. Local host resume remains separate.
+Shared commands currently support queued text and request answers. SSH deployment
+and production session routing remain outside this experimental path.

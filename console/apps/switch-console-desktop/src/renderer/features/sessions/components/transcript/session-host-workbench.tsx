@@ -13,6 +13,7 @@ import { ThemeProvider } from '@renderer/lib/providers/theme-provider';
 import { queryClient } from '@renderer/lib/query-client';
 import { Button } from '@renderer/lib/ui/button';
 import { SessionV1Chat } from './session-v1-chat';
+import { SharedSessionWorkbench } from './shared-session-workbench';
 
 const transport: SessionTransport = {
   snapshot: (id) => rpc.sdkHost.snapshot(id),
@@ -82,7 +83,7 @@ function Workbench() {
     }
   };
   return (
-    <div className="flex h-screen flex-col bg-background text-foreground">
+    <div className="flex h-full flex-col bg-background text-foreground">
       <div className="flex items-center gap-3 border-b border-border p-4">
         <span className="font-medium">Local sessions</span>
         <select
@@ -145,11 +146,24 @@ function Workbench() {
   );
 }
 export function SessionHostWorkbench() {
+  const [shared, setShared] = useState(false);
   return (
     <QueryClientProvider client={queryClient}>
       <ThemeProvider>
         <ErrorBoundary>
-          <Workbench />
+          <div className="flex h-screen flex-col">
+            <div className="flex gap-2 border-b border-border p-2">
+              <Button variant={shared ? 'outline' : 'default'} onClick={() => setShared(false)}>
+                Local sessions
+              </Button>
+              <Button variant={shared ? 'default' : 'outline'} onClick={() => setShared(true)}>
+                Shared sessions
+              </Button>
+            </div>
+            <div className="min-h-0 flex-1">
+              {shared ? <SharedSessionWorkbench /> : <Workbench />}
+            </div>
+          </div>
         </ErrorBoundary>
       </ThemeProvider>
     </QueryClientProvider>

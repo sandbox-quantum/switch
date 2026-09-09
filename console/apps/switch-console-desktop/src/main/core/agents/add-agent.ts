@@ -43,6 +43,9 @@ export type AddAgentParams = {
   /** The registered Switch server to mint the identity on. */
   serverId: string;
   description: string;
+  /** The human label chat platforms render the agent under. Null means it is
+   * shown under `name` instead — `name` stays the routing key either way. */
+  displayName: string | null;
   /** The icon picked in the create form. Null means the form offered no
    * choice, and the agent is registered with the avatar its name generates. */
   iconUrl: string | null;
@@ -182,6 +185,7 @@ async function runAddAgent(params: AddAgentParams): Promise<AddAgentResult> {
   const registered = await registerAgentIdentity(server, {
     name: params.name,
     description: params.description,
+    displayName: params.displayName,
     repoDir: params.dir,
     autoSession: params.autoSession,
     agentType: knownAgentTypeForProvider(params.providerId),

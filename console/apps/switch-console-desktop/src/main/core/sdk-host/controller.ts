@@ -11,6 +11,14 @@ import type { ClientCommand } from '@switch-console/shared/session-v1';
 import { resolveDatabasePath } from '@main/db/path';
 import { createRPCController } from '@shared/lib/ipc/rpc';
 import { prepareCodexSessionHome } from '../agent-runtime/impl/codex-session-home';
+import {
+  fetchSdkSessions,
+  fetchSdkSnapshot,
+  fetchSdkEvents,
+  fetchSdkCommandStatus,
+  submitSdkCommand,
+} from '../switch-servers/gateway-client';
+import { getServer } from '../switch-servers/servers-store';
 
 let connecting: Promise<HostConnection> | null = null;
 function host(): Promise<HostConnection> {
@@ -42,7 +50,21 @@ async function runHost<T>(operation: (connection: HostConnection) => Promise<T>)
     throw error;
   }
 }
+async function sharedServer(serverId: string) {
+  const server = await getServer(serverId);
+  if (!server) throw new Error('Switch server not found.');
+  return server;
+}
 export const sdkHostController = createRPCController({
+  sharedList: async (serverId: string) => fetchSdkSessions(await sharedServer(serverId)),
+  sharedSnapshot: async (serverId: string, sessionId: string) =>
+    fetchSdkSnapshot(await sharedServer(serverId), sessionId),
+  sharedEvents: async (serverId: string, sessionId: string, after: number) =>
+    fetchSdkEvents(await sharedServer(serverId), sessionId, after),
+  sharedSubmit: async (serverId: string, command: ClientCommand) =>
+    submitSdkCommand(await sharedServer(serverId), command),
+  sharedCommandStatus: async (serverId: string, sessionId: string, commandId: string) =>
+    fetchSdkCommandStatus(await sharedServer(serverId), sessionId, commandId),
   list: async () => runHost((connection) => connection.list()),
   start: async (input: { provider: HostStartRequest['provider']; cwd: string }) => {
     const env: Record<string, string> = {};

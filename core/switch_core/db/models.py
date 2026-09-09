@@ -1,15 +1,21 @@
 import uuid
+from datetime import datetime
 
 from sqlalchemy import (
+    DDL,
+    BigInteger,
     Boolean,
     CheckConstraint,
     Column,
     DateTime,
     ForeignKey,
     Index,
+    Integer,
+    LargeBinary,
     Table,
     Text,
     UniqueConstraint,
+    event,
     func,
     text,
 )
@@ -17,6 +23,11 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from switch_core.db.base import Base
+from switch_core.db.notify_ddl import (
+    CREATE_NOTIFY_FUNCTION,
+    CREATE_NOTIFY_TRIGGER,
+    DROP_NOTIFY_TRIGGER,
+)
 
 
 def _uuid() -> str:
@@ -68,10 +79,6 @@ class Client(Base):
     matrix_user_id: Mapped[str] = mapped_column(Text, unique=True, nullable=False)
     display_name: Mapped[str] = mapped_column(Text, nullable=False)
     type: Mapped[str] = mapped_column(Text, nullable=False)
-    password: Mapped[str] = mapped_column(Text, nullable=False)
-    device_id: Mapped[str | None] = mapped_column(Text, nullable=True)
-    access_token: Mapped[str | None] = mapped_column(Text, nullable=True)
-    next_batch_token: Mapped[str | None] = mapped_column(Text, nullable=True)
     config: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     created_at: Mapped[str] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
@@ -95,6 +102,7 @@ class ClientRoom(Base):
 
 class Agent(Base):
     __tablename__ = "agents"
+    __table_args__ = (Index("ix_agents_parent_agent_id", "parent_agent_id"),)
 
     id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
     name: Mapped[str] = mapped_column(Text, unique=True, nullable=False)
@@ -612,6 +620,7 @@ class ExternalUserClaim(Base):
     """
 
     __tablename__ = "external_user_claims"
+    __table_args__ = (Index("ix_external_user_claims_user_id", "user_id"),)
 
     external_user_id: Mapped[str] = mapped_column(
         Text,
@@ -657,6 +666,8 @@ class AgentSession(Base):
             text("coalesce(room_id, '')"),
             unique=True,
         ),
+        Index("ix_agent_sessions_agent_room", "agent_id", "room_id"),
+        Index("ix_agent_sessions_transport_session_id", "transport_session_id"),
     )
 
     id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
@@ -806,18 +817,18 @@ class RoleLease(Base):
 
 
 class BridgeMessageMap(Base):
-    """Durable correlation between a Matrix event and its external counterpart.
+    """Durable correlation between a Switch event and its external counterpart.
 
-    One row per bridged message, written in both directions (Matrix→external
-    and external→Matrix). Powers thread bridging (resolving a Matrix thread
-    root to its external post and vice versa) and the edit/delete sync that
-    previously relied on a volatile in-memory dict. Unique in both directions
-    per bridge so either id resolves the other.
+    One row per bridged message, written in both directions. Powers thread
+    bridging (resolving a Switch thread root to its external post and vice
+    versa) and the edit/delete sync that previously relied on a volatile
+    in-memory dict. Unique in both directions per bridge so either id resolves
+    the other.
     """
 
     __tablename__ = "bridge_message_map"
     __table_args__ = (
-        UniqueConstraint("bridge_id", "matrix_event_id"),
+        UniqueConstraint("bridge_id", "transport_event_id"),
         UniqueConstraint("bridge_id", "external_post_id"),
     )
 
@@ -826,10 +837,95 @@ class BridgeMessageMap(Base):
         Text, ForeignKey("collaboration_bridges.id", ondelete="CASCADE"), nullable=False
     )
     external_channel_id: Mapped[str] = mapped_column(Text, nullable=False)
-    matrix_event_id: Mapped[str] = mapped_column(Text, nullable=False)
+    transport_event_id: Mapped[str] = mapped_column(Text, nullable=False)
     external_post_id: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[str] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+# ── Session requests on an external surface ─────────────────────────────────
+
+
+class SessionRequestPost(Base):
+    """A session's request for a decision, as it was posted onto a platform.
+
+    One row per request per bridge. It is what a pressed button resolves
+    against: the callback a platform sends back carries the opaque token and
+    nothing else worth having, so which session, which epoch and which revision
+    the answer stands against are read from here rather than from anything the
+    platform returned. `bridge_id` is the workspace fence — a token is only ever
+    looked up within the bridge it was minted for.
+
+    Distinct from `bridge_message_map`, which correlates one bridged message
+    with one external post. This is per *request*, it outlives any single post,
+    and it carries state that changes as the request does.
+    """
+
+    __tablename__ = "session_request_posts"
+    __table_args__ = (
+        UniqueConstraint("token", name="uq_session_request_posts_token"),
+        UniqueConstraint(
+            "bridge_id",
+            "session_id",
+            "request_id",
+            name="uq_session_request_posts_request",
+        ),
+        # A handle is matched without regard to case, so it has to be unique
+        # without regard to case: the lookup reads one row or none, and "R42"
+        # beside "r42" in one channel would make it raise instead — into the
+        # relay, where the cost is the message never reaching the room.
+        Index(
+            "uq_session_request_posts_handle",
+            "bridge_id",
+            "external_channel_id",
+            text("lower(handle)"),
+            unique=True,
+        ),
+        # One posted card stands for one request, and the bare form reads a
+        # request back off the card it replies to. Same lookup, same reason.
+        UniqueConstraint(
+            "bridge_id",
+            "external_post_id",
+            name="uq_session_request_posts_post",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
+    bridge_id: Mapped[str] = mapped_column(
+        Text, ForeignKey("collaboration_bridges.id", ondelete="CASCADE"), nullable=False
+    )
+    # What a control's callback payload carries, and what a person types
+    # instead. Both name the row and neither names the session.
+    token: Mapped[str] = mapped_column(Text, nullable=False)
+    handle: Mapped[str] = mapped_column(Text, nullable=False)
+    external_channel_id: Mapped[str] = mapped_column(Text, nullable=False)
+    external_post_id: Mapped[str] = mapped_column(Text, nullable=False)
+    room_id: Mapped[str] = mapped_column(
+        Text, ForeignKey("rooms.id", ondelete="CASCADE"), nullable=False
+    )
+    thread_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    session_id: Mapped[str] = mapped_column(Text, nullable=False)
+    epoch: Mapped[str] = mapped_column(Text, nullable=False)
+    request_id: Mapped[str] = mapped_column(Text, nullable=False)
+    # The revision an answer is submitted against. The session rejects an answer
+    # that names a revision it has moved past.
+    revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    # What the card offered, in the order it offered it, and which sort of
+    # answer it takes: an approval's options, or a question's options per
+    # question. A typed "1" names a position on the card the person can see and
+    # this is what that resolves against; `kind` is what says whether the answer
+    # it builds is one option or one per question, and it is read rather than
+    # inferred. `session/form.py` is both ends of the shape.
+    form: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    created_at: Mapped[str] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[str] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
     )
 
 
@@ -854,3 +950,227 @@ class FeatureFlag(Base):
         onupdate=func.now(),
         nullable=False,
     )
+
+
+# ── Messages ─────────────────────────────────────────────────────────────────
+
+
+class Message(Base):
+    """A message as it was sent into a room.
+
+    Written alongside the send to the message bus, which remains the source of
+    truth for history until the read path moves here. Rows are therefore a
+    parallel record, not yet an authoritative one: a write that fails after a
+    successful send leaves a gap, by design, so that a database problem cannot
+    make messaging less reliable.
+
+    Every participant in a room is a Switch-owned client, so recording each
+    send captures the whole room exactly once — including messages a human
+    originates on a bridged platform, which enter through that user's puppet.
+
+    `content` is the full event body as sent. The columns beside it are
+    denormalised out of it for querying; for a custom `com.switch.*` event
+    they are mostly null and `content` carries everything.
+    """
+
+    __tablename__ = "messages"
+    __table_args__ = (
+        UniqueConstraint("room_id", "seq", name="uq_messages_room_seq"),
+        # `seq` orders the room and is what the read path pages on; `sent_at`
+        # is what a caller asking for a time window filters by, so it needs an
+        # index of its own rather than a scan back along seq.
+        Index("ix_messages_room_sent_at", "room_id", "sent_at"),
+        Index(
+            "ix_messages_thread_root",
+            "room_id",
+            "thread_root_event_id",
+            postgresql_where=text("thread_root_event_id IS NOT NULL"),
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
+    # Position within the room, from 1, and the cursor the read path pages on.
+    # Assigned by MessageStore.create under a per-room lock rather than by a
+    # sequence: a sequence hands out numbers when a statement runs, not when it
+    # commits, so a row can commit after one with a higher number and a reader
+    # paging on `seq > n` would step straight over it. See the store for the
+    # argument in full.
+    seq: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    room_id: Mapped[str] = mapped_column(
+        Text, ForeignKey("rooms.id", ondelete="CASCADE"), nullable=False
+    )
+    transport_event_id: Mapped[str] = mapped_column(Text, unique=True, nullable=False)
+    sender_id: Mapped[str] = mapped_column(Text, nullable=False)
+    sender_client_id: Mapped[str | None] = mapped_column(
+        Text, ForeignKey("clients.id", ondelete="SET NULL"), nullable=True
+    )
+    sender_name: Mapped[str | None] = mapped_column(Text, nullable=True)
+    event_type: Mapped[str] = mapped_column(Text, nullable=False)
+    msgtype: Mapped[str | None] = mapped_column(Text, nullable=True)
+    body: Mapped[str | None] = mapped_column(Text, nullable=True)
+    formatted_body: Mapped[str | None] = mapped_column(Text, nullable=True)
+    thread_root_event_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    content: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    sent_at: Mapped[str] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class MessageAttachment(Base):
+    """A file carried by a message.
+
+    One row per file, so a multi-file send is several rows against one message
+    in the order they were sent.
+    """
+
+    __tablename__ = "message_attachments"
+    __table_args__ = (Index("ix_message_attachments_message", "message_id"),)
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
+    message_id: Mapped[str] = mapped_column(
+        Text, ForeignKey("messages.id", ondelete="CASCADE"), nullable=False
+    )
+    position: Mapped[int] = mapped_column(Integer, nullable=False)
+    uri: Mapped[str] = mapped_column(Text, nullable=False)
+    filename: Mapped[str | None] = mapped_column(Text, nullable=True)
+    mimetype: Mapped[str | None] = mapped_column(Text, nullable=True)
+    size: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    created_at: Mapped[str] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class DeliveryCursor(Base):
+    """How far one agent has been delivered in one room.
+
+    The cursor it replaces lived in memory in the event buffer, so a restart
+    resumed from wherever that buffer happened to be rather than from what the
+    agent had actually been given. Persisting it makes "what has this agent
+    seen" outlive the process, which is what lets delivery be driven from the
+    table instead of from a live connection.
+
+    `last_seq` is a position in the room, not a count: `seq` is a per-room
+    total order, so "everything up to n" is unambiguous and re-reading from it
+    is idempotent. It is only ever advanced, never rewound — a cursor that
+    could go backwards would redeliver, and a redelivered message is
+    indistinguishable to a reader from a new one.
+    """
+
+    __tablename__ = "delivery_cursors"
+    __table_args__ = (
+        UniqueConstraint("agent_id", "room_id", name="uq_delivery_cursors_agent_room"),
+    )
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
+    agent_id: Mapped[str] = mapped_column(
+        Text, ForeignKey("agents.id", ondelete="CASCADE"), nullable=False
+    )
+    room_id: Mapped[str] = mapped_column(
+        Text, ForeignKey("rooms.id", ondelete="CASCADE"), nullable=False
+    )
+    last_seq: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    updated_at: Mapped[str] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+
+class MediaBlob(Base):
+    """The bytes behind an attachment.
+
+    Media used to live in the homeserver's own store, reached by an opaque
+    handle that travelled on the message. The handle is still opaque and still
+    travels on the message; only what is behind it changed. Callers must not
+    parse `uri` — it is a key, and the store behind it is free to become object
+    storage without the protocol noticing.
+
+    `bytea` rather than a large object: attachments are capped
+    (`agent_media_max_bytes`, 20MB by default) and are written and read whole,
+    which is exactly what TOAST handles well and what large objects add
+    lifecycle problems to. A blob that would not fit is rejected at the edge,
+    loudly, as it already is.
+
+    Rows are not reference-counted against the attachments pointing at them.
+    Deleting a room deletes its messages; the bytes it referenced are then
+    unreferenced and a later sweep can find them by that. Cascading from the
+    attachment instead would delete the bytes of a file that two messages
+    quote.
+    """
+
+    __tablename__ = "media_blobs"
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
+    uri: Mapped[str] = mapped_column(Text, unique=True, nullable=False)
+    content_type: Mapped[str | None] = mapped_column(Text, nullable=True)
+    filename: Mapped[str | None] = mapped_column(Text, nullable=True)
+    size: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    data: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    created_at: Mapped[str] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+# `create_all` builds the schema for tests; the trigger has to come with it or
+# the delivery tests would exercise a table that announces nothing. Real
+# databases get the same DDL from a migration.
+event.listen(
+    Message.__table__,
+    "after_create",
+    DDL(CREATE_NOTIFY_FUNCTION).execute_if(dialect="postgresql"),
+)
+event.listen(
+    Message.__table__,
+    "after_create",
+    DDL(CREATE_NOTIFY_TRIGGER).execute_if(dialect="postgresql"),
+)
+event.listen(
+    Message.__table__,
+    "before_drop",
+    DDL(DROP_NOTIFY_TRIGGER).execute_if(dialect="postgresql"),
+)
+
+
+class SdkSession(Base):
+    __tablename__ = "sdk_sessions"
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True)
+    agent_id: Mapped[str] = mapped_column(Text, ForeignKey("agents.id"), nullable=False)
+    host_id: Mapped[str] = mapped_column(Text, nullable=False)
+    epoch: Mapped[str] = mapped_column(Text, nullable=False)
+    lease_expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    snapshot: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    host_sequence: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+
+
+class SdkSessionEvent(Base):
+    __tablename__ = "sdk_session_events"
+    __table_args__ = (
+        UniqueConstraint("session_id", "epoch", "host_sequence"),
+        UniqueConstraint("session_id", "event_id"),
+    )
+
+    session_id: Mapped[str] = mapped_column(
+        Text, ForeignKey("sdk_sessions.id", ondelete="CASCADE"), primary_key=True
+    )
+    sequence: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    epoch: Mapped[str] = mapped_column(Text, nullable=False)
+    event_id: Mapped[str] = mapped_column(Text, nullable=False)
+    host_sequence: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    host_event: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    event: Mapped[dict] = mapped_column(JSONB, nullable=False)
+
+
+class SdkSessionCommand(Base):
+    __tablename__ = "sdk_session_commands"
+
+    session_id: Mapped[str] = mapped_column(
+        Text, ForeignKey("sdk_sessions.id", ondelete="CASCADE"), primary_key=True
+    )
+    command_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    accepted_sequence: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    command: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    status: Mapped[dict] = mapped_column(JSONB, nullable=False)

@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.responses import RedirectResponse
 
 from switch_core.config import SwitchConfig
-from switch_core.db.stores.user_store import UserStore
+from switch_core.db.stores.user_store import OidcIdentityConflictError, UserStore
 from switch_core.gateway.auth import set_session_cookie
 from switch_core.gateway.dependencies import get_config, get_session, get_user_store
 
@@ -93,11 +93,39 @@ async def oidc_callback(
         raise HTTPException(
             status_code=401, detail="OIDC token missing email or sub claim"
         )
+    # Provisioning trusts the email, so an unverified (attacker-set) one must
+    # not be accepted — unless the deployment vouches for its IdP's addresses.
+    email_verified = claims.get("email_verified")
+    verified = email_verified is True or str(email_verified).lower() == "true"
+    if not verified:
+        if config.gateway_oidc_require_email_verified:
+            logger.warning(
+                "OIDC login rejected: email_verified=%r (sub %s). If this IdP's "
+                "addresses are authoritative, set "
+                "GATEWAY_OIDC_REQUIRE_EMAIL_VERIFIED=false.",
+                email_verified,
+                sub,
+            )
+            raise HTTPException(status_code=401, detail="OIDC email is not verified")
+        logger.warning(
+            "OIDC email_verified=%r accepted (sub %s): the email claim is trusted "
+            "because GATEWAY_OIDC_REQUIRE_EMAIL_VERIFIED is false.",
+            email_verified,
+            sub,
+        )
     name = claims.get("name") or email.split("@")[0]
 
-    user = await user_store.get_or_create_oidc_user(
-        session, email=email, name=name, sub=sub
-    )
+    # Bind to the immutable issuer+subject, never the mutable email.
+    iss = claims.get("iss") or config.gateway_oidc_issuer_url
+    if not iss:
+        raise HTTPException(status_code=401, detail="OIDC token missing issuer")
+    try:
+        user = await user_store.get_or_create_oidc_user(
+            session, iss=iss, email=email, name=name, sub=sub
+        )
+    except OidcIdentityConflictError as exc:
+        logger.warning("OIDC identity conflict: %s", exc)
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     await session.commit()
 
     # Verify-at-login only: we don't persist the IdP tokens. Land the browser

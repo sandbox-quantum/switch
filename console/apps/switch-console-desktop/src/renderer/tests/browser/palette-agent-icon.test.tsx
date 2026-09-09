@@ -55,6 +55,7 @@ function remoteAgent(iconUrl: string | null): RemoteAgentSummary {
   return {
     id: SWITCH_AGENT_ID,
     name: AGENT_NAME,
+    displayName: null,
     description: '',
     connectorType: 'agent',
     ownerId: null,

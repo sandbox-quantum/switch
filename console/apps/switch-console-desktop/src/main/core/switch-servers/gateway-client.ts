@@ -1,3 +1,4 @@
+import type { ClientCommand } from '@switch-console/shared/session-v1';
 import type { KnownAgentType } from '@main/core/agents/known-agent-type';
 import {
   managedServerHostBlocked,
@@ -317,6 +318,11 @@ export async function registerKnownAgent(
      * one. Required rather than optional so a create flow states which it
      * means instead of dropping the user's choice by forgetting the field. */
     iconUrl: string | null;
+    /** The label chat platforms render the agent under, or null to leave it
+     * unset and be shown under `name`. Required rather than optional for the
+     * same reason as `iconUrl`: the create form holds a label the user typed,
+     * and an omitted field would drop it without saying so. */
+    displayName: string | null;
   }
 ): Promise<RegisteredAgent> {
   const res = await gatewayFetch(server, '/agents/register', {
@@ -328,6 +334,7 @@ export async function registerKnownAgent(
       description: params.description,
       options: params.options,
       icon_url: params.iconUrl,
+      display_name: params.displayName,
       overwrite: false,
     },
   });
@@ -341,6 +348,7 @@ export async function registerKnownAgent(
 type AgentSummaryJson = {
   id: string;
   name: string;
+  display_name?: string | null;
   description: string;
   connector_type: string;
   owner_id?: string | null;
@@ -358,6 +366,7 @@ function toRemoteAgentSummary(json: AgentSummaryJson): RemoteAgentSummary {
   return {
     id: json.id,
     name: json.name,
+    displayName: json.display_name ?? null,
     description: json.description,
     connectorType: json.connector_type,
     ownerId: json.owner_id ?? null,
@@ -1236,4 +1245,57 @@ export async function createRoom(
     },
   });
   return mapRoomSummary((await res.json()) as RoomSummaryJson);
+}
+
+export async function fetchSdkSessions(server: SwitchServer): Promise<unknown> {
+  return (await gatewayFetch(server, '/sessions', { authenticated: true })).json();
+}
+export async function fetchSdkSnapshot(server: SwitchServer, sessionId: string): Promise<unknown> {
+  return (
+    await gatewayFetch(server, `/sessions/${encodeURIComponent(sessionId)}`, {
+      authenticated: true,
+    })
+  ).json();
+}
+export async function fetchSdkEvents(
+  server: SwitchServer,
+  sessionId: string,
+  after: number
+): Promise<unknown> {
+  return (
+    await gatewayFetch(server, `/sessions/${encodeURIComponent(sessionId)}/events?after=${after}`, {
+      authenticated: true,
+    })
+  ).json();
+}
+export async function fetchSdkCommandStatus(
+  server: SwitchServer,
+  sessionId: string,
+  commandId: string
+): Promise<unknown> {
+  return (
+    await gatewayFetch(
+      server,
+      `/sessions/${encodeURIComponent(sessionId)}/commands/${encodeURIComponent(commandId)}`,
+      { authenticated: true }
+    )
+  ).json();
+}
+export async function submitSdkCommand(
+  server: SwitchServer,
+  command: ClientCommand
+): Promise<unknown> {
+  return (
+    await gatewayFetch(server, `/sessions/${encodeURIComponent(command.sessionId)}/commands`, {
+      authenticated: true,
+      method: 'POST',
+      body: {
+        commandId: command.commandId,
+        epoch: command.epoch,
+        surface: 'console',
+        roomId: null,
+        body: command.body,
+      },
+    })
+  ).json();
 }

@@ -4,10 +4,13 @@ import asyncio
 from types import SimpleNamespace
 from typing import Any
 
-import nio
-from nio import DownloadError
-
 from switch_core.bridges.collaboration.bridge_core import BridgeCore
+from switch_core.transport import (
+    DownloadResult,
+    InboundMedia,
+    RoomRef,
+    TransportError,
+)
 
 
 def _media_event(
@@ -21,7 +24,7 @@ def _media_event(
     group: dict[str, Any] | None = None,
     mimetype: str = "image/png",
     event_id: str = "$media-event",
-) -> nio.RoomMessageMedia:
+) -> InboundMedia:
     content: dict[str, Any] = {
         "msgtype": msgtype,
         "body": body,
@@ -36,15 +39,21 @@ def _media_event(
         content["sender_name"] = sender_name
     if thread_root is not None:
         content["m.relates_to"] = {"rel_type": "m.thread", "event_id": thread_root}
-    cls = nio.RoomMessageImage if msgtype == "m.image" else nio.RoomMessageFile
-    return cls.from_dict(
-        {
-            "type": "m.room.message",
-            "event_id": event_id,
-            "sender": sender,
-            "origin_server_ts": 1700000000000,
-            "content": content,
-        }
+    return InboundMedia(
+        room_id="!room:s",
+        event_id=event_id,
+        sender=sender,
+        timestamp=1700000000000,
+        content=content,
+        body=body,
+        sender_name=sender_name,
+        msgtype=msgtype,
+        uri="mxc://s/abc",
+        filename=filename or body,
+        mimetype=mimetype,
+        size=5,
+        thread_root_id=thread_root,
+        group=group,
     )
 
 
@@ -111,7 +120,7 @@ class _FakeAdapter:
 
 def _fake_bridge(
     *,
-    download: object = SimpleNamespace(body=b"bytes"),
+    download: DownloadResult | TransportError = DownloadResult(body=b"bytes"),
     matrix_to_external: dict[str, str] | None = None,
     max_bytes: int = 1024,
 ) -> SimpleNamespace:
@@ -119,8 +128,8 @@ def _fake_bridge(
     recorded: list[dict[str, str]] = []
     lookup = matrix_to_external or {}
 
-    async def _external_post_for_matrix_event(matrix_event_id: str) -> str | None:
-        return lookup.get(matrix_event_id)
+    async def _external_post_for_matrix_event(transport_event_id: str) -> str | None:
+        return lookup.get(transport_event_id)
 
     async def _record_message_map(**kwargs: str) -> None:
         recorded.append(kwargs)
@@ -155,15 +164,19 @@ def _fake_bridge(
         BridgeCore._flush_incomplete_outbound_group.__get__(ns)
     )
 
-    async def _nio_download(mxc: str):
+    async def _download_media(uri: str) -> DownloadResult:
+        if isinstance(download, TransportError):
+            raise download
         return download
 
-    ns.client = SimpleNamespace(nio_client=SimpleNamespace(download=_nio_download))
+    ns.client = SimpleNamespace(
+        transport=SimpleNamespace(download_media=_download_media)
+    )
     return ns
 
 
-def _room() -> SimpleNamespace:
-    return SimpleNamespace(room_id="!room:s")
+def _room() -> RoomRef:
+    return RoomRef("!room:s")
 
 
 async def test_image_relays_via_send_attachment_and_records_map() -> None:
@@ -187,7 +200,7 @@ async def test_image_relays_via_send_attachment_and_records_map() -> None:
     assert bridge.recorded == [
         {
             "external_channel_id": "chan-1",
-            "matrix_event_id": "$media-event",
+            "transport_event_id": "$media-event",
             "external_post_id": "ext-ref-1",
         }
     ]
@@ -264,7 +277,7 @@ async def test_non_image_file_relays_natively() -> None:
 
 
 async def test_download_failure_posts_disclosed_fallback() -> None:
-    bridge = _fake_bridge(download=DownloadError("boom"))
+    bridge = _fake_bridge(download=TransportError("boom"))
 
     await BridgeCore.handle_outbound_media(
         bridge, _room(), _media_event(), bridge.client
@@ -276,7 +289,7 @@ async def test_download_failure_posts_disclosed_fallback() -> None:
 
 
 async def test_oversize_media_posts_disclosed_fallback() -> None:
-    bridge = _fake_bridge(download=SimpleNamespace(body=b"too big"), max_bytes=3)
+    bridge = _fake_bridge(download=DownloadResult(body=b"too big"), max_bytes=3)
 
     await BridgeCore.handle_outbound_media(
         bridge, _room(), _media_event(), bridge.client
@@ -322,7 +335,7 @@ async def test_grouped_attachments_relay_as_one_platform_post() -> None:
     assert [f.filename for f in batch["files"]] == ["cat.png", "notes.md", "data.csv"]
     assert batch["caption"] == "three files"
     # The group correlates via its first event, so replies thread back.
-    assert bridge.recorded[0]["matrix_event_id"] == "$part-0"
+    assert bridge.recorded[0]["transport_event_id"] == "$part-0"
     assert bridge.recorded[0]["external_post_id"] == "ext-ref-3"
     assert bridge._outbound_groups == {}
 

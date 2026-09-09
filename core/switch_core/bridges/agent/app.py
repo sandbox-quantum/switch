@@ -8,6 +8,7 @@ from fastapi.responses import JSONResponse
 
 from switch_core.bridges.agent.api.handlers import router as api_router
 from switch_core.bridges.agent.api.operations import router as operations_router
+from switch_core.bridges.agent.api.session_routes import router as sessions_router
 from switch_core.bridges.agent.api.version_routes import router as version_router
 from switch_core.bridges.agent.api_key_cache import ApiKeyCache
 from switch_core.bridges.agent.auth import BearerAuthMiddleware
@@ -17,12 +18,10 @@ from switch_core.bridges.agent.mcp import create_mcp_app
 from switch_core.bridges.agent.protocol.connections import ConnectionRegistry
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
 from switch_core.bridges.agent.protocol.service import ProtocolService
-from switch_core.bridges.agent.request_tracker import RequestTracker
 from switch_core.bridges.collaboration.lifecycle_service import (
     CollaborationBridgeLifecycleService,
 )
 from switch_core.bridges.resource.service import ResourceService
-from switch_core.bridges.resource.tracker import ResourceRequestTracker
 from switch_core.clients.client_lifecycle_service import ClientLifecycleService
 from switch_core.config import SwitchConfig
 from switch_core.db.stores.agent_session_store import AgentSessionStore
@@ -33,6 +32,8 @@ from switch_core.db.stores.external_user_store import ExternalUserStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.task_store import TaskStore
 from switch_core.room_service import RoomService
+from switch_core.sessions.http import session_error_response
+from switch_core.sessions.service import SessionError
 
 logger = logging.getLogger(__name__)
 
@@ -47,8 +48,6 @@ def create_agent_bridge_app(
     collab_lifecycle: CollaborationBridgeLifecycleService,
     event_buffer: EventBuffer,
     task_store: TaskStore,
-    request_tracker: RequestTracker,
-    resource_request_tracker: ResourceRequestTracker,
     resource_service: ResourceService,
     api_key_store: ApiKeyStore,
     external_user_store: ExternalUserStore,
@@ -82,8 +81,6 @@ def create_agent_bridge_app(
         event_buffer=event_buffer,
         connections=connections,
         task_store=task_store,
-        request_tracker=request_tracker,
-        resource_request_tracker=resource_request_tracker,
         resource_service=resource_service,
         api_key_store=api_key_store,
         api_key_cache=api_key_cache,
@@ -103,8 +100,6 @@ def create_agent_bridge_app(
         event_buffer=event_buffer,
         connections=connections,
         task_store=task_store,
-        request_tracker=request_tracker,
-        resource_request_tracker=resource_request_tracker,
         resource_service=resource_service,
         api_key_store=api_key_store,
         api_key_cache=api_key_cache,
@@ -144,6 +139,8 @@ def create_agent_bridge_app(
         )
         return JSONResponse(status_code=422, content={"detail": exc.errors()})
 
+    app.add_exception_handler(SessionError, session_error_response)
+    app.include_router(sessions_router, tags=["sessions"])
     app.include_router(api_router, prefix="/agents", tags=["api"])
     app.include_router(operations_router)
     app.include_router(deeplink_router, tags=["deeplink"])

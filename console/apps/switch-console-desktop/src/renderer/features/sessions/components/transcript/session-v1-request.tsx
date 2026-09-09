@@ -81,7 +81,9 @@ export function SessionV1Request({
             ? 'Submitting answer…'
             : request.state === 'resolved'
               ? settledLabel
-              : 'Request closed'}
+              : request.result?.outcome === 'cancelled'
+                ? 'Cancelled'
+                : 'Request closed'}
         </p>
       )}
       {request.result && request.decidedBy && (

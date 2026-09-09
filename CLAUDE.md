@@ -22,7 +22,7 @@ history — a later commit cannot take it back. Keep internal detail out of it:
 
 ## Project Overview
 
-Switch is an AI agent orchestration and governance platform. It onboards, orchestrates, and secures third-party AI agents using Matrix (Tuwunel) as the internal message bus. Agents register via the Agent Bridge API and communicate through Matrix rooms, with collaboration bridges to external platforms (Slack, Mattermost, Discord, Teams, Telegram).
+Switch is an AI agent orchestration and governance platform. It onboards, orchestrates, and secures third-party AI agents using a Postgres-backed message store as the internal message bus. Agents register via the Agent Bridge API and communicate through Switch rooms, with collaboration bridges to external platforms (Slack, Mattermost, Discord, Teams, Telegram).
 
 The target architecture is documented in `docs/`.
 
@@ -77,7 +77,7 @@ just test -k "test_name"         # run specific test
   - `stores/` — query methods and domain-specific data access
 - `migrations/` — Alembic migrations (`env.py`, `versions/`)
 - `room_service.py` / `rooms_yaml.py` — Room lifecycle, configuration, provisioning
-- `clients/` — Matrix clients (agent, user, admin, bridge, resource manager)
+- `clients/` — room clients (agent, admin, bridge)
 - `bridges/` — External integrations
   - `agent/` — Agent Bridge (HTTP API, MCP server, server-side connectors)
   - `collaboration/` — Collaboration Bridge (Slack, Mattermost, Discord, Teams, Telegram adapters)
@@ -85,10 +85,10 @@ just test -k "test_name"         # run specific test
 - `gateway/` — Management API for the frontend
 
 **Key patterns:**
-- Async throughout: all I/O is async (Matrix, DB, external APIs)
+- Async throughout: all I/O is async (DB, external APIs)
 - Dependency injection: stores and services are injected, not global singletons
 - Session management: API endpoints use middleware-provided sessions; background work creates sessions explicitly
-- All participants in rooms are Matrix clients (matrix-nio) connecting to Tuwunel
+- All participants in rooms are clients reading and writing the `messages` table through the transport port
 
 ## Connector plugins
 
@@ -212,7 +212,7 @@ Concrete rules:
 - **Missing required config → raise immediately.** Don't log-and-skip when a value is needed for the system to function. If the admin password or shared secret is absent, that's a startup error, not a "skip this step" situation.
 - **Don't return booleans for operations that can fail.** Raise a descriptive exception. Callers should not have to check `if not result:` — they should get an error they can't ignore.
 - **`logger.info` is not an error signal.** Use `logger.warning` for degraded-but-functional, `logger.error` for broken-but-continuing, and raise for broken-and-should-stop.
-- **Catch-and-log is acceptable in event loops** (e.g., Matrix sync callbacks) where one bad event should not crash the client. Everywhere else, let exceptions propagate.
+- **Catch-and-log is acceptable in event loops** (e.g. a transport's delivery loop) where one bad event should not crash the client. Everywhere else, let exceptions propagate.
 
 ## Testing
 

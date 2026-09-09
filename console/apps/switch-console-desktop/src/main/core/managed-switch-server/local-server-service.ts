@@ -14,6 +14,7 @@ import {
   type DockerAvailability,
   type LocalServerStatus,
   type StartLocalServerResult,
+  matrixMigrationFailedMessage,
   switchVersionDowngradeMessage,
 } from '@shared/core/managed-switch-server/managed-switch-server';
 import {
@@ -170,6 +171,13 @@ class LocalServerService {
           error: switchVersionDowngradeMessage(result.deployed, result.expected),
           deployedVersion: result.deployed,
           drift: { deployed: result.deployed, expected: result.expected, direction: 'downgrade' },
+        });
+      } else if (result.kind === 'matrix-migration-failed') {
+        this.setStatus({
+          phase: 'error',
+          message: null,
+          error: matrixMigrationFailedMessage(result.deployed, result.expected),
+          deployedVersion: result.deployed,
         });
       } else if (result.kind === 'error') {
         this.setStatus({ phase: 'error', error: result.message });

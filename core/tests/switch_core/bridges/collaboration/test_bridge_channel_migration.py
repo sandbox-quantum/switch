@@ -66,6 +66,7 @@ def _make_bridge(rooms: dict[str, SimpleNamespace]) -> BridgeCore:
     bridge._adapter = _Adapter()  # type: ignore[assignment]
     bridge._room_store = _RoomStore(rooms)  # type: ignore[assignment]
     bridge._session_factory = _Session  # type: ignore[assignment]
+    bridge._session_interactions = None
     return bridge
 
 
@@ -84,7 +85,7 @@ def test_the_handler_is_installed_before_the_adapter_starts() -> None:
         def set_channel_migration_handler(self, handler: Any) -> None:
             installed.append(handler)
 
-        def set_agent_icon_resolver(self, resolver: Any) -> None:
+        def set_agent_presentation_resolver(self, resolver: Any) -> None:
             # Not what this test is about; present so the stub satisfies what
             # `start` installs on its adapter.
             return None

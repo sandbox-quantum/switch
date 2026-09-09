@@ -918,11 +918,13 @@ def test_two_agents_get_different_marks_and_keep_them() -> None:
     # Telegram gives a bot no per-message avatar, so a stable mark is the only
     # thing a reader can learn to recognise. It must not move between restarts,
     # which rules out the salted built-in hash.
-    first = TelegramAdapter._attribute("scout", "hello")
-    second = TelegramAdapter._attribute("ranger", "hello")
+    first = TelegramAdapter._attribute("scout", "scout", "hello")
+    second = TelegramAdapter._attribute("ranger", "ranger", "hello")
 
     assert first.split()[0] != second.split()[0]
-    assert TelegramAdapter._attribute("scout", "again").startswith(first.split()[0])
+    assert TelegramAdapter._attribute("scout", "scout", "again").startswith(
+        first.split()[0]
+    )
 
 
 def test_editing_a_message_targets_its_chat_and_id() -> None:
