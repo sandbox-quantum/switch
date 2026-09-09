@@ -258,13 +258,45 @@ def _post() -> SessionRequestPost:
     )
 
 
-def _cards(adapter: SlackAdapter) -> SessionRequestCards:
+class _JustThisRow(SessionRequestPostStore):
+    """The one row the redraw writes back to, with no database under it.
+
+    A redraw brings the row up to the revision the card now shows, so it has to
+    reach a row. That it reaches the *right* one, and that the write survives,
+    is `test_session_card_posting.py`'s claim and is made against real
+    Postgres. This file is about what the channel is left showing, so here the
+    store only has to hand the row over.
+    """
+
+    def __init__(self, row: SessionRequestPost) -> None:
+        self._row = row
+
+    async def get_by_token(
+        self, session: Any, bridge_id: str, token: str
+    ) -> SessionRequestPost | None:
+        return self._row if token == self._row.token else None
+
+
+class _NoDatabase:
+    """A session that goes through the motions and stores nothing."""
+
+    async def __aenter__(self) -> _NoDatabase:
+        return self
+
+    async def __aexit__(self, *exc: Any) -> bool:
+        return False
+
+    async def commit(self) -> None:
+        return None
+
+
+def _cards(adapter: SlackAdapter, post: SessionRequestPost) -> SessionRequestCards:
     """A refresh needs none of the posting half, so it is given none of it."""
     return SessionRequestCards(
         adapter,
         bridge_id="bridge-1",
-        posts=SessionRequestPostStore(),
-        session_factory=cast(Any, None),
+        posts=_JustThisRow(post),
+        session_factory=cast(Any, _NoDatabase),
     )
 
 
@@ -284,8 +316,9 @@ async def test_the_card_is_edited_in_place_rather_than_reposted() -> None:
     """One message per request, not a running commentary in the channel."""
     request = await _request(through=SETTLED)
     adapter, client = _adapter()
+    post = _post()
 
-    await _cards(adapter).refresh(_post(), request)
+    await _cards(adapter, post).refresh(post, request)
 
     assert len(client.updated) == 1
     edit = client.updated[0]
@@ -301,8 +334,9 @@ async def test_a_failed_edit_puts_the_outcome_in_the_thread_instead() -> None:
     request = await _request(through=SETTLED)
     adapter, client = _adapter()
     client.update_error = "message_not_found"
+    post = _post()
 
-    await _cards(adapter).refresh(_post(), request)
+    await _cards(adapter, post).refresh(post, request)
 
     assert client.updated == []
     assert len(client.posted) == 1

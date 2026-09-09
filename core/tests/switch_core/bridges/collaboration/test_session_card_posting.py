@@ -475,6 +475,92 @@ async def test_a_row_that_cannot_be_written_at_all_is_not_retried(
     assert client.posted == []
 
 
+# ── The card, redrawn ────────────────────────────────────────────────────────
+
+
+async def _revised_request() -> SnapshotRequest:
+    """The same request, moved on: a new revision offering a new option.
+
+    Both halves of the row are made to differ, because both are read back on
+    the answer path — the revision an answer stands against, and the options a
+    typed number counts down.
+    """
+    raw = (await _fixture_request()).model_dump(by_alias=True)
+    raw["revision"] = 2
+    raw["content"]["options"].append(
+        {
+            "optionId": "allow-always",
+            "label": "Always allow",
+            "decision": "acceptForSession",
+        }
+    )
+    return SnapshotRequest.model_validate(raw)
+
+
+async def test_a_redrawn_card_is_answered_at_the_revision_it_now_shows(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """The card and the row have to move together, or the answer is thrown away.
+
+    `expectedRevision` comes off the row. Redraw the card without it and the
+    channel shows revision 2 while the row still says 1, so everyone answering
+    the card they can see builds a command the session rejects as stale — and
+    rejects on the far side of a transport this bridge cannot report from, so
+    the person is left watching a card that never moves.
+    """
+    client = FakeWebClient()
+    cards, bridge_id, room_id = await _cards(session_factory, client)
+    post = await _post_one(cards, room_id)
+
+    await cards.refresh(post, await _revised_request())
+
+    command = await _interactions(session_factory, bridge_id).command_for_text(
+        InboundMessage(
+            channel_id=CHANNEL,
+            channel_type="channel_public",
+            sender_id="U1",
+            sender_name="someone",
+            content=f"{post.handle} 3",
+            message_ref="C1:333.0",
+            root_id=None,
+        )
+    )
+
+    assert command is not None
+    assert command.body.expected_revision == 2  # type: ignore[union-attr]
+    assert command.body.answer.option_id == "allow-always"  # type: ignore[union-attr]
+
+
+async def test_a_redraw_slack_refused_leaves_the_row_on_what_is_on_screen(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """A failed edit means the old card is still the one anybody can read.
+
+    Writing the new revision back anyway would point the row at a card nobody
+    was shown: the third option is not on screen, and the two that are would
+    answer at a revision the channel never displayed. Neither revision makes a
+    late answer land — the request has moved on either way — so the row stays
+    with what the reader can actually see.
+    """
+    client = FakeWebClient()
+    cards, bridge_id, room_id = await _cards(session_factory, client)
+    post = await _post_one(cards, room_id)
+    client.update_error = "message_not_found"
+
+    await cards.refresh(post, await _revised_request())
+
+    async with session_factory() as session:
+        row = await SessionRequestPostStore().get_by_token(
+            session, bridge_id, post.token
+        )
+    assert row is not None
+    assert row.revision == 1
+    assert [option["optionId"] for option in row.form["options"]] == [
+        "allow-once",
+        "deny",
+    ]
+
+
 # ── The stand-in session ─────────────────────────────────────────────────────
 
 

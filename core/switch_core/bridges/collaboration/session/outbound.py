@@ -413,6 +413,18 @@ class SessionRequestCards:
         that slot and leaves the card answerable by name alone. Accepted rather
         than worked around: the card is already known to be wrong, and losing a
         shorthand is the safer of the two directions.
+
+        A redraw that lands is written back, because the row is what an answer
+        stands against: `expectedRevision` comes off it, so a card showing
+        revision 2 over a row still saying 1 collects answers the session then
+        rejects as stale — and rejects them somewhere this bridge cannot tell
+        the person about. A redraw that did not land is not written back: the
+        channel is still showing the old card, so the old revision is the one
+        that matches what anyone can actually read.
+
+        The epoch is not touched. Nothing here has a new one, and a session that
+        has changed epoch has invalidated every card it posted rather than moved
+        them on — which is the publisher's to notice, not a redraw's.
         """
         message = render_request(
             request, RequestReference(token=post.token, handle=post.handle)
@@ -439,3 +451,27 @@ class SessionRequestCards:
                 f"work.\n{message.text}",
                 post.external_post_id,
             )
+            return
+        await self._record(post, request)
+
+    async def _record(self, post: SessionRequestPost, request: SnapshotRequest) -> None:
+        """Bring the row up to the revision the card now shows.
+
+        Read again rather than written through the instance handed in: that one
+        belongs to whichever session posted the card, which is closed by now, so
+        assigning to it would update nothing.
+        """
+        async with self._session_factory() as session:
+            row = await self._posts.get_by_token(session, self._bridge_id, post.token)
+            if row is None:
+                logger.error(
+                    "Redrew card %s for request %s at revision %s, but its record "
+                    "is gone, so an answer to it now resolves to nothing.",
+                    post.handle,
+                    post.request_id,
+                    request.revision,
+                )
+                return
+            row.revision = request.revision
+            row.form = posted_form(request)
+            await session.commit()
