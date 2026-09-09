@@ -90,8 +90,13 @@ class SessionIngestService:
         # log's, so deciding "already have it" or "next one" cannot race a
         # second batch reading the same position as free, and the lease row's,
         # so the generation this batch is checked against is still the current
-        # one when it lands. Taken in that order because a lease claim takes
-        # only the second, so the two can never wait on each other.
+        # one when it lands. Both this and a lease claim then go on to write
+        # `sessions`, so three row locks are in play across the two — but every
+        # path that takes both takes `session_leases` first, so neither can be
+        # holding what the other is waiting for. The one path that inverts it,
+        # registering a session and then claiming its lease, cannot overlap a
+        # batch at all: `require_session` above cannot see an uncommitted
+        # session row and refuses long before the lease is read.
         await self.events.lock(db, session_id)
         lease = await self._require_lease(db, session_id)
         self._check_identity(parsed, lease, agent_id)
