@@ -249,8 +249,27 @@ async def test_the_fallback_stays_inside_what_slack_takes_for_one_string() -> No
     text = render_activity_text(items)
 
     assert len(text) <= 40000
-    assert text.startswith("…")
+    assert text.splitlines()[0] == "…4 earlier entries, not shown."
     assert text.endswith("x")
+
+
+async def test_what_the_fallback_dropped_is_counted_in_what_it_dropped() -> None:
+    """Entries, not lines: a message is one entry and hundreds of lines.
+
+    Three dropped messages of 250 lines each is 750 lines gone. Reported as
+    "3 lines" it reads as a rounding error, and this cut is the only thing
+    standing between a turn showing a fraction of itself and a turn appearing
+    to have only done that much.
+    """
+    body = "\n".join("x" * 8 for _ in range(250))
+    items = [
+        _item(itemId=f"i{n}", kind="assistant-message", title="", text=body)
+        for n in range(20)
+    ]
+
+    first = render_activity_text(items).splitlines()[0]
+
+    assert first == "…3 earlier entries, not shown."
 
 
 async def test_a_long_tool_log_keeps_the_recent_end_and_says_what_it_dropped() -> None:

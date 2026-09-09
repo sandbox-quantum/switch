@@ -755,16 +755,22 @@ def render_activity_text(items: list[Item]) -> str:
     return "\n".join(_within(lines, _MAX_TEXT))
 
 
-def _within(lines: list[str], limit: int) -> list[str]:
-    """The last of these lines that fit, whole, with a note for the rest."""
+def _within(entries: list[str], limit: int) -> list[str]:
+    """The last of these entries that fit, whole, with a note for the rest.
+
+    Entries, not lines: one of them is a whole message and may be hundreds of
+    lines, the next is a single tool call. Dropping eight messages and calling
+    it eight lines would undercount what was taken by two orders of magnitude,
+    which is the one thing this cut exists to avoid.
+    """
     kept: list[str] = []
     spent = 0
-    for line in reversed(lines):
-        if spent + len(line) + 1 > limit:
-            kept.append(f"…{len(lines) - len(kept)} earlier lines, not shown.")
+    for entry in reversed(entries):
+        if spent + len(entry) + 1 > limit:
+            kept.append(f"…{len(entries) - len(kept)} earlier entries, not shown.")
             break
-        kept.append(line)
-        spent += len(line) + 1
+        kept.append(entry)
+        spent += len(entry) + 1
     kept.reverse()
     return kept
 
