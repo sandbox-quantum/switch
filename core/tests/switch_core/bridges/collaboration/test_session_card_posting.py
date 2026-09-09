@@ -67,10 +67,6 @@ EXAMPLES_PATH = REPO_ROOT / "console/packages/shared/src/session-v1/examples.jso
 CHANNEL = "C1"
 FRESH_CHANNEL = "a-channel-nobody-has-spoken-in"
 
-# The message that typed the trigger. The turn is threaded under it, so it is
-# also where the activity goes.
-TRIGGERED_BY = f"{CHANNEL}:1700000000.000100"
-
 
 class _RefusingWebClient(FakeWebClient):
     """Slack taking the card and declining it."""
@@ -578,13 +574,14 @@ async def test_the_trigger_posts_the_recorded_turn_and_then_its_card(
     client = FakeWebClient()
     demo, room_id = await _demo(session_factory, client)
 
-    assert await demo.handle(TRIGGER, CHANNEL, room_id, TRIGGERED_BY) is True
+    assert await demo.handle(TRIGGER, CHANNEL, room_id) is True
 
     assert len(client.posted) == 2
     turn, card = (json.dumps(post["blocks"]) for post in client.posted)
     assert "same fixture user" in turn
     assert "Ran tests/auth/test_login.py" in turn
     assert "Edit tests/auth/conftest.py?" in card
+    assert [post.get("thread_ts") for post in client.posted] == [None, None]
 
 
 async def test_running_the_recording_to_the_end_edits_what_is_already_there(
@@ -599,7 +596,7 @@ async def test_running_the_recording_to_the_end_edits_what_is_already_there(
     client = FakeWebClient()
     demo, room_id = await _demo(session_factory, client)
 
-    assert await demo.handle(f"{TRIGGER} end", CHANNEL, room_id, TRIGGERED_BY) is True
+    assert await demo.handle(f"{TRIGGER} end", CHANNEL, room_id) is True
 
     assert len(client.posted) == 2
     turn, card = (
@@ -623,11 +620,9 @@ async def test_ending_carries_on_the_demo_already_in_the_channel(
     client = FakeWebClient()
     demo, room_id = await _demo(session_factory, client)
 
-    assert await demo.handle(TRIGGER, CHANNEL, room_id, TRIGGERED_BY) is True
+    assert await demo.handle(TRIGGER, CHANNEL, room_id) is True
     posted = len(client.posted)
-    assert (
-        await demo.handle(f"{TRIGGER} end", CHANNEL, room_id, "C1:1700000000.9") is True
-    )
+    assert await demo.handle(f"{TRIGGER} end", CHANNEL, room_id) is True
 
     assert len(client.posted) == posted
     turn, card = (
@@ -650,7 +645,7 @@ async def test_ending_a_channel_with_no_demo_in_it_runs_one_through(
     client = FakeWebClient()
     demo, room_id = await _demo(session_factory, client)
 
-    assert await demo.handle(f"{TRIGGER} end", CHANNEL, room_id, TRIGGERED_BY) is True
+    assert await demo.handle(f"{TRIGGER} end", CHANNEL, room_id) is True
 
     assert len(client.posted) == 2
     assert "Permission request closed" in json.dumps(
@@ -670,10 +665,10 @@ async def test_a_demo_can_only_be_ended_once(
     client = FakeWebClient()
     demo, room_id = await _demo(session_factory, client)
 
-    await demo.handle(TRIGGER, CHANNEL, room_id, TRIGGERED_BY)
-    await demo.handle(f"{TRIGGER} end", CHANNEL, room_id, TRIGGERED_BY)
+    await demo.handle(TRIGGER, CHANNEL, room_id)
+    await demo.handle(f"{TRIGGER} end", CHANNEL, room_id)
     posted = len(client.posted)
-    await demo.handle(f"{TRIGGER} end", CHANNEL, room_id, TRIGGERED_BY)
+    await demo.handle(f"{TRIGGER} end", CHANNEL, room_id)
 
     assert len(client.posted) == posted + 2
 
@@ -685,10 +680,10 @@ async def test_each_channel_ends_its_own_demo(
     client = FakeWebClient()
     demo, room_id = await _demo(session_factory, client)
 
-    await demo.handle(TRIGGER, CHANNEL, room_id, TRIGGERED_BY)
-    await demo.handle(TRIGGER, "C2", room_id, "C2:1700000000.1")
+    await demo.handle(TRIGGER, CHANNEL, room_id)
+    await demo.handle(TRIGGER, "C2", room_id)
     posted = len(client.posted)
-    await demo.handle(f"{TRIGGER} end", "C2", room_id, "C2:1700000000.2")
+    await demo.handle(f"{TRIGGER} end", "C2", room_id)
 
     assert len(client.posted) == posted
     assert {call["channel"] for call in client.updated} == {"C2"}
@@ -702,7 +697,7 @@ async def test_the_trigger_is_the_whole_message_or_it_is_not_the_trigger(
     demo, room_id = await _demo(session_factory, client)
 
     for said in [f"about {TRIGGER}", f"{TRIGGER} please", "hello", ""]:
-        assert await demo.handle(said, CHANNEL, room_id, TRIGGERED_BY) is False
+        assert await demo.handle(said, CHANNEL, room_id) is False
 
     assert client.posted == []
 
@@ -713,7 +708,7 @@ async def test_the_trigger_is_case_insensitive_and_forgives_spacing(
     client = FakeWebClient()
     demo, room_id = await _demo(session_factory, client)
 
-    assert await demo.handle(f"  {TRIGGER.upper()} ", CHANNEL, room_id, TRIGGERED_BY)
+    assert await demo.handle(f"  {TRIGGER.upper()} ", CHANNEL, room_id)
 
     assert len(client.posted) == 2
 
@@ -732,7 +727,7 @@ async def test_the_demo_can_be_shown_more_than_once(
     demo, room_id = await _demo(session_factory, client)
 
     for channel in (CHANNEL, CHANNEL, "C2"):
-        assert await demo.handle(TRIGGER, channel, room_id, TRIGGERED_BY) is True
+        assert await demo.handle(TRIGGER, channel, room_id) is True
 
     async with session_factory() as session:
         rows = list(
@@ -846,9 +841,7 @@ async def test_the_trigger_works_in_a_channel_the_bridge_has_not_seen_before() -
     """
     asked: list[tuple[str, str]] = []
 
-    async def _handle(
-        content: str, _channel_id: str, room_id: str, _trigger_ref: str | None
-    ) -> bool:
+    async def _handle(content: str, _channel_id: str, room_id: str) -> bool:
         asked.append((content, room_id))
         return True
 

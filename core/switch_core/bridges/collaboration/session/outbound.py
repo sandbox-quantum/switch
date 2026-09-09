@@ -6,9 +6,10 @@ moves open → submitting → resolved or closed and the channel carries one
 message per request rather than a running commentary. **Turn activity** is not
 addressed to anyone — it is what the agent said and did, and it is read rather
 than answered — but it changes for the same reason, so it gets the same
-treatment: one message per turn, ending on the turn's final state. Where Slack
-will stream it, it is a stream and the tool calls are cards in its timeline;
-where it will not, it is a Block Kit message rewritten in place.
+treatment: one message per turn, ending on the turn's final state. In a thread
+it is a stream and the tool calls are cards in its timeline; at the channel
+root, where a stream cannot exist, it is a Block Kit message rewritten in place
+and the tool calls are the cards of a `plan` block.
 
 What differs is what is remembered. A card's message is a row, because an
 answer typed tomorrow has to find it; a turn's is held in memory for as long as
@@ -133,14 +134,19 @@ class SessionTurnActivity:
     current. The message is the anchor every later change goes to, and the last
     change is the turn's final state.
 
-    There are two ways to draw it, and which one a turn gets is settled when it
-    starts. **Streamed**, where Slack will open a stream for it: the tool calls
-    become task cards in a timeline Slack collapses until a reader wants it,
-    which is the disclosure the alternative can only imitate. **Posted**, where
-    it will not: one Block Kit message, rewritten whole on every change. A
-    stream needs a thread, somebody to address it to, and an app declared as an
-    Agent, so the posted form is not a degraded mode — it is what a channel
-    with no thread in it gets, and all any other platform has.
+    There are two ways to draw it, and which one a turn gets follows from where
+    the caller put it. **Streamed**, in a thread: the tool calls become task
+    cards in a timeline Slack collapses until a reader wants it. **Posted**, at
+    the channel root: one Block Kit message, rewritten whole on every change,
+    with the tool calls as the cards of a `plan` block — the same disclosure,
+    in a block that needs no thread.
+
+    That is Slack's constraint, not a preference. A stream is a reply addressed
+    to somebody, so it exists in a thread and nowhere else; a turn wanted
+    beside the message that prompted it cannot be one. A stream also needs the
+    person recorded on that thread and an app declared as an Agent, and where
+    either is missing a threaded turn is posted instead — that one *is* a
+    fallback, and it says so in the log.
 
     Still not a card, which is the difference in how failure is handled here. A
     card has buttons, so one left showing a stale state invites a press that
@@ -224,28 +230,33 @@ class SessionTurnActivity:
         thread_root_id: str | None,
         agent_name: str,
     ) -> _Anchor | None:
-        """Start the turn where Slack will best draw it, or say it could not.
+        """Start the turn where the caller put it, drawn how that place allows.
 
-        A stream is preferred wherever one can be opened, because Slack draws
-        the tool calls in it as a timeline of its own that is collapsed until
-        somebody wants it. Where one cannot — no thread to reply into, nobody
-        recorded to reply to, an app not declared as an Agent — the Block Kit
-        message is posted instead, and it is what every other platform gets.
+        Where the turn goes decides how it is drawn, because Slack ties the two
+        together: a stream exists only as a reply to somebody, so it can be had
+        in a thread and nowhere else. A turn asked for at the channel root —
+        beside the message that prompted it, which is where a reader is looking
+        — is a posted message, and its tool calls are a `plan` block: the same
+        collapsed cards, in a block that needs no thread to live in.
+
+        Either way Slack can refuse it, and then the channel is told rather
+        than left with a turn that silently never appeared.
         """
-        ref = await self._adapter.open_activity_stream(
-            channel_id, thread_root_id, agent_name
-        )
-        if ref is not None:
-            anchor = _Anchor(channel_id=channel_id, message_ref=ref, sent={})
-            await self._extend(
-                anchor,
-                items,
-                turn,
-                session_id=session_id,
-                agent_name=agent_name,
-                ended=turn.status in TURN_ENDED,
+        if thread_root_id is not None:
+            ref = await self._adapter.open_activity_stream(
+                channel_id, thread_root_id, agent_name
             )
-            return anchor
+            if ref is not None:
+                anchor = _Anchor(channel_id=channel_id, message_ref=ref, sent={})
+                await self._extend(
+                    anchor,
+                    items,
+                    turn,
+                    session_id=session_id,
+                    agent_name=agent_name,
+                    ended=turn.status in TURN_ENDED,
+                )
+                return anchor
 
         message = render_activity(items, turn)
         posted = await self._adapter.post_blocks(

@@ -1185,7 +1185,7 @@ class BridgeCore:
         trigger_ref = cmd.root_id or cmd.message_ref
         content = f"!{cmd.command} {cmd.args}".strip()
         try:
-            return await demo.handle(content, cmd.channel_id, room_id, trigger_ref)
+            return await demo.handle(content, cmd.channel_id, room_id)
         except Exception as error:
             logger.error(
                 "The demo card for channel %s could not be posted: %s",

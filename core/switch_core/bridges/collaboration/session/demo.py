@@ -21,12 +21,12 @@ Only the most recent demo in a channel can be ended, and a channel with none
 gets a whole replay run through to the end — the ending is still what it shows,
 and refusing would leave somebody typing a command that does nothing.
 
-The turn goes in a thread under the trigger, because Slack will only stream
-into a channel as a reply and a turn with no thread is drawn as blocks instead.
-The card stays at the channel root, where it is in front of whoever has to
-press it. Nothing in the contract says where a session's activity should be
-shown, by design — that is Switch's decision — and here the person asking for
-it has made half of it by choosing the channel.
+The turn and the card both go at the channel root, next to the message that
+asked for them: the turn draws its tool calls in a `plan` block, which is a
+collapsed disclosure in an ordinary message and needs no thread to live in.
+Nothing in the contract says where a session's activity should be shown, by
+design — that is Switch's decision — and here the person asking for it has
+made it by choosing the channel.
 
 What it stands in for is the *session*, not the bridge. Rendering the card,
 minting its handle, writing its row, and everything an answer to it then goes
@@ -98,9 +98,7 @@ class _Showing:
 
     The session id and the turn are what make a continuation a continuation:
     the activity message is anchored on the pair, so republishing under the
-    same one edits the message already there. `trigger_ref` is the thread the
-    turn was drawn in, kept because the `!session-demo end` that finishes it is
-    a different message in a different thread and the turn does not move.
+    same one edits the message already there.
     """
 
     session_id: str
@@ -108,7 +106,6 @@ class _Showing:
     request_id: str
     projection: SessionProjection
     post: SessionRequestPost
-    trigger_ref: str | None
 
 
 class SessionDemo:
@@ -124,16 +121,12 @@ class SessionDemo:
         self._activity = activity
         self._showing: dict[str, _Showing] = {}
 
-    async def handle(
-        self, content: str, channel_id: str, room_id: str, trigger_ref: str | None
-    ) -> bool:
+    async def handle(self, content: str, channel_id: str, room_id: str) -> bool:
         """Whether this message was the trigger, having acted on it if so.
 
-        `trigger_ref` is the message that asked, and the turn is threaded under
-        it. Slack will only stream into a channel as a reply to somebody, so a
-        turn with no thread is a turn drawn as blocks — which is the one thing
-        this demo exists to show is no longer the only option. None where the
-        platform gave us no id for the message, and then blocks is all there is.
+        Everything it posts goes at the channel root, beside the message that
+        asked for it, rather than in a thread underneath: that is the point of
+        drawing a turn as a `plan` block instead of streaming it.
         """
         said = content.strip().lower()
         if said not in (TRIGGER, f"{TRIGGER} {_TO_THE_END}"):
@@ -148,7 +141,7 @@ class SessionDemo:
         if said.endswith(_TO_THE_END):
             showing = self._showing.pop(channel_id, None)
             if showing is None:
-                showing = await self._start(channel_id, room_id, trigger_ref)
+                showing = await self._start(channel_id, room_id)
             post = await self._finish(showing)
             logger.warning(
                 "Demo card %s was closed unanswered, and the turn above it was "
@@ -158,7 +151,7 @@ class SessionDemo:
                 TRIGGER,
             )
         else:
-            showing = await self._start(channel_id, room_id, trigger_ref)
+            showing = await self._start(channel_id, room_id)
             self._showing[channel_id] = showing
             post = showing.post
             logger.warning(
@@ -169,9 +162,7 @@ class SessionDemo:
             )
         return True
 
-    async def _start(
-        self, channel_id: str, room_id: str, trigger_ref: str | None
-    ) -> _Showing:
+    async def _start(self, channel_id: str, room_id: str) -> _Showing:
         """Post the recording's turn and then its request, under a fresh id.
 
         A request gets one card, which is right for a real session and would
@@ -197,9 +188,7 @@ class SessionDemo:
         request = requests[0]
         session = projection.snapshot.session
         session_id = f"{session.session_id}-{secrets.token_hex(4)}"
-        await self._publish(
-            projection, request.turn_id, channel_id, session_id, trigger_ref
-        )
+        await self._publish(projection, request.turn_id, channel_id, session_id)
         post = await self._cards.post(
             request,
             channel_id=channel_id,
@@ -215,7 +204,6 @@ class SessionDemo:
             request_id=request.request_id,
             projection=projection,
             post=post,
-            trigger_ref=trigger_ref,
         )
 
     async def _finish(self, showing: _Showing) -> SessionRequestPost:
@@ -240,7 +228,6 @@ class SessionDemo:
             showing.turn_id,
             showing.post.external_channel_id,
             showing.session_id,
-            showing.trigger_ref,
         )
         settled = showing.projection.request(showing.request_id)
         if settled is None:
@@ -257,7 +244,6 @@ class SessionDemo:
         turn_id: str,
         channel_id: str,
         session_id: str,
-        trigger_ref: str | None,
     ) -> None:
         """The turn as the projection currently has it, in its one message."""
         turn = projection.turn(turn_id)
@@ -271,6 +257,6 @@ class SessionDemo:
             turn,
             session_id=session_id,
             channel_id=channel_id,
-            thread_root_id=trigger_ref,
+            thread_root_id=None,
             agent_name=projection.snapshot.session.agent_id,
         )

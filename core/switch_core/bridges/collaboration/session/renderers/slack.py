@@ -104,6 +104,21 @@ _MAX_ACTIVITY = 2800
 # and unlike a form there is nothing here anyone has to answer.
 _MAX_MESSAGES = 20
 _MAX_ACTIVITY_LINES = 12
+
+# A `plan` block draws the tool log itself: one collapsed header with a card
+# per step inside it, expanded by whoever wants the steps. That is the
+# disclosure the context block was only ever standing in for, and unlike a
+# stream it is an ordinary message block — so it goes wherever the turn goes,
+# beside the prompt that started it rather than in a thread under it.
+#
+# Slack caps a plan at 50 tasks and rejects the block over it, taking the whole
+# post with it, so a long turn keeps its newest end and the header says what it
+# dropped. The per-task budgets are ours: nothing here is near a documented
+# limit, and a card is read at a glance.
+_MAX_PLAN_TASKS = 50
+_MAX_PLAN_TITLE = 150
+_MAX_PLAN_TASK_TITLE = 200
+_MAX_PLAN_TASK_DETAILS = 200
 # `chat.postMessage` takes 40,000 characters of `text`, and twenty messages each
 # inside their own budget is more than that, so the fallback is bounded as a
 # whole as well as a message at a time.
@@ -737,10 +752,15 @@ def render_activity(items: list[Item], turn: TurnUpsert) -> SlackMessage:
     The two are drawn differently because they are read differently. What the
     agent and the person said is the conversation, so it goes in the body at
     full size. What the agent *did* is a hundred lines of tool calls nobody
-    reads unless something looks wrong, so it goes in a context block under
-    them — Slack's small grey text, the nearest thing it has to a disclosure.
-    That is a placement decision, not an access one: both are visible to
-    everyone in the channel, and nothing here decides who those people are.
+    reads unless something looks wrong, so it goes in a `plan` block under
+    them: one header carrying where the turn got to, collapsed, with a card per
+    step inside for whoever opens it. That is a placement decision, not an
+    access one: both are visible to everyone in the channel, and nothing here
+    decides who those people are.
+
+    A turn with nothing done has no plan to draw, so its state goes in a
+    context line instead — the header is part of the plan, and a plan with no
+    tasks is a disclosure with nothing behind it.
 
     Tool activity is gathered into that one block rather than interleaved. A
     turn alternates between saying and doing, so keeping the order would put a
@@ -752,7 +772,7 @@ def render_activity(items: list[Item], turn: TurnUpsert) -> SlackMessage:
     took: a turn that quietly showed half of itself would read as a turn that
     only did half.
 
-    The last line is the turn's own state, because this message is edited in
+    Somewhere in it is the turn's own state, because this message is edited in
     place as the turn runs and a reader has to be able to tell a turn that
     finished from one that stopped.
     """
@@ -770,8 +790,9 @@ def render_activity(items: list[Item], turn: TurnUpsert) -> SlackMessage:
         for item in said[len(said) - _MAX_MESSAGES :]
     ]
     if did:
-        blocks.append(_context("\n".join(_activity_lines(did))))
-    blocks.append(_context(f"_{_turn_state(items, turn)}_"))
+        blocks.append(_plan(items, did, turn))
+    else:
+        blocks.append(_context(f"_{_turn_state(items, turn)}_"))
     return SlackMessage(text=render_activity_text(items, turn), blocks=blocks)
 
 
@@ -896,6 +917,75 @@ def _activity_lines(items: list[Item]) -> list[str]:
         spent += len(line) + 1
     lines.reverse()
     return lines
+
+
+def _plan(items: list[Item], did: list[Item], turn: TurnUpsert) -> dict[str, Any]:
+    """The tool log as a plan: a header to read, and the steps behind it.
+
+    The header is the turn's state, because collapsed is how most readers will
+    ever see this block and a header saying only "Activity" would leave a turn
+    that stalled looking like one that finished. What the cut dropped is said
+    there too, for the same reason.
+
+    Cards are keyed on the item's own id, so a turn redrawn as it runs moves
+    each step rather than growing a second copy of it — the same property the
+    streamed timeline is built on, and the reason a plan can be edited in place
+    at all.
+    """
+    kept = did[len(did) - _MAX_PLAN_TASKS :]
+    dropped = len(did) - len(kept)
+    title = _turn_state(items, turn)
+    if dropped:
+        step = "step" if dropped == 1 else "steps"
+        title = f"{title} …{dropped} earlier {step}, not shown."
+    return {
+        "type": "plan",
+        "title": _truncate(title, _MAX_PLAN_TITLE),
+        "tasks": [_plan_task(item) for item in kept],
+    }
+
+
+def _plan_task(item: Item) -> dict[str, Any]:
+    """One tool call as a card inside the plan.
+
+    Plain text, not mrkdwn: a card's title renders none, so markup passed into
+    it arrives as literal underscores and backticks in front of the reader.
+    Escaped all the same — Slack asks for `&`, `<` and `>` escaped in anything
+    sent to the API, and a tool call titled `Ran <!here>` is a host string that
+    would otherwise notify the channel.
+
+    Slack has three states against the contract's four, and `declined` is not
+    an error — the call did what it was told, and what it was told was no. The
+    status says only that the step is over; which of the two it was is carried
+    by the same glyph the text fallback uses. `failed` is marked too, because
+    a collapsed plan shows its cards without a status anywhere a reader can see
+    at a glance.
+    """
+    title = plain_text(item.title) if item.title else ""
+    if item.status in ("failed", "declined"):
+        title = f"{_ACTIVITY[item.status]} {title}".strip()
+    task: dict[str, Any] = {
+        "task_id": _task_id(item.item_id),
+        "title": _fit(title, _MAX_PLAN_TASK_TITLE) or "(untitled)",
+        "status": _TASK_STATUS[item.status],
+    }
+    details = plain_text(item.text) if item.text else ""
+    if details:
+        task["details"] = _rich_text(_fit(details, _MAX_PLAN_TASK_DETAILS))
+    return task
+
+
+def _rich_text(text: str) -> dict[str, Any]:
+    """Plain words in the one block shape a task card's detail will take."""
+    return {
+        "type": "rich_text",
+        "elements": [
+            {
+                "type": "rich_text_section",
+                "elements": [{"type": "text", "text": text}],
+            }
+        ],
+    }
 
 
 # ── Activity, streamed ───────────────────────────────────────────────────────

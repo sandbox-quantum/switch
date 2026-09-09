@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -78,18 +79,32 @@ def _blocks(items: list[Item]) -> str:
     return json.dumps(render_activity(items, _turn()).blocks)
 
 
-def _context(items: list[Item]) -> str:
-    """The disclosure, where the tool log goes: the block above the state line."""
-    blocks = render_activity(items, _turn()).blocks
-    assert blocks[-2]["type"] == "context"
-    text = blocks[-2]["elements"][0]["text"]
+def _plan(items: list[Item]) -> dict[str, Any]:
+    """The disclosure, where the tool log goes: a card per call, collapsed."""
+    block = render_activity(items, _turn()).blocks[-1]
+    assert block["type"] == "plan"
+    return block
+
+
+def _cards(items: list[Item]) -> dict[str, dict[str, Any]]:
+    """The plan's tasks by title, which is what a reader picks one out by."""
+    return {str(task["title"]): task for task in _plan(items)["tasks"]}
+
+
+def _detail(task: dict[str, Any]) -> str:
+    """A card's detail, out of the rich-text block it has to be wrapped in."""
+    section = task["details"]["elements"][0]
+    text = section["elements"][0]["text"]
     assert isinstance(text, str)
     return text
 
 
 def _state(items: list[Item], turn: TurnUpsert) -> str:
-    """The last block: where the turn itself got to."""
-    text = render_activity(items, turn).blocks[-1]["elements"][0]["text"]
+    """Where the turn itself got to: the plan's header, or its own line."""
+    block = render_activity(items, turn).blocks[-1]
+    if block["type"] == "plan":
+        return str(block["title"])
+    text = block["elements"][0]["text"]
     assert isinstance(text, str)
     return text
 
@@ -176,24 +191,25 @@ async def test_what_was_said_is_the_body_and_what_was_done_is_the_disclosure() -
     items = await _items()
     blocks = render_activity(items, _turn()).blocks
 
-    assert [block["type"] for block in blocks] == [
-        "section",
-        "section",
-        "context",
-        "context",
-    ]
+    assert [block["type"] for block in blocks] == ["section", "section", "plan"]
     assert "flaky all week" in blocks[0]["text"]["text"]
     assert "same fixture user" in blocks[1]["text"]["text"]
-    assert "Ran tests/auth/test_login.py" in blocks[2]["elements"][0]["text"]
+    assert "Ran tests/auth/test_login.py" in json.dumps(blocks[2], ensure_ascii=False)
 
 
 async def test_the_tool_log_says_how_each_call_went() -> None:
     """A failed call that reads like a completed one is the whole risk here."""
-    log = _context(await _items())
+    cards = _cards(await _items())
 
-    assert "✓ Searched for the login tests — 4 files" in log
-    assert "✗ Ran tests/auth/test_login.py — 1 failed, 41 passed" in log
-    assert "▸ Editing tests/auth/conftest.py — Waiting for permission" in log
+    searched = cards["Searched for the login tests"]
+    assert searched["status"] == "complete"
+    assert _detail(searched).startswith("4 files")
+    ran = cards["✗ Ran tests/auth/test_login.py"]
+    assert ran["status"] == "error"
+    assert _detail(ran).startswith("1 failed, 41 passed")
+    editing = cards["Editing tests/auth/conftest.py"]
+    assert editing["status"] == "in_progress"
+    assert _detail(editing) == "Waiting for permission"
 
 
 async def test_a_call_still_waiting_does_not_read_as_one_already_refused() -> None:
@@ -203,11 +219,13 @@ async def test_a_call_still_waiting_does_not_read_as_one_already_refused() -> No
     the reader the answer before it asks the question — and tells them the wrong
     one. `declined` is what the answer would make it, not what waiting is.
     """
-    log = _context(await _items()).splitlines()
-    waiting = [line for line in log if "Editing tests/auth/conftest.py" in line]
+    titles = list(_cards(await _items()))
+    waiting = [title for title in titles if "Editing tests/auth/conftest.py" in title]
 
-    assert waiting == ["▸ Editing tests/auth/conftest.py — Waiting for permission"]
-    assert "⊘ Refused it" in _context([_item(status="declined", title="Refused it")])
+    assert waiting == ["Editing tests/auth/conftest.py"]
+    refused = _plan([_item(status="declined", title="Refused it")])["tasks"][0]
+    assert refused["title"] == "⊘ Refused it"
+    assert refused["status"] == "error"
 
 
 async def test_a_person_speaking_is_quoted_and_attributed() -> None:
@@ -224,18 +242,16 @@ async def test_a_person_speaking_is_quoted_and_attributed() -> None:
 
 
 async def test_the_tool_log_reads_in_the_order_the_work_happened() -> None:
-    log = _context(await _items()).splitlines()
-
-    assert [line.split(" ", 1)[1].split(" —")[0] for line in log] == [
+    assert list(_cards(await _items())) == [
         "Searched for the login tests",
         "Read(tests/auth/test_login.py)",
         "Read(tests/auth/conftest.py)",
         "Grep(fixture_user)",
-        "Bash(uv run --project core pytest core/tests/switch_core/bridges/"
+        "✗ Bash(uv run --project core pytest core/tests/switch_core/bridges/"
         "collaboration/test_session_login_fixture_isolation.py -x -q --no-header)",
-        "Ran tests/auth/test_login.py",
+        "✗ Ran tests/auth/test_login.py",
         "Read(tests/session/test_session.py)",
-        "Bash(git log -L :fixture_user:tests/auth/conftest.py)",
+        "⊘ Bash(git log -L :fixture_user:tests/auth/conftest.py)",
         "Editing tests/auth/conftest.py",
     ]
 
@@ -251,8 +267,15 @@ async def test_the_last_line_says_whether_the_turn_is_still_moving() -> None:
     """
     items = await _items()
 
-    assert _state(items, _turn("running")) == "_Working…_"
-    assert _state(items, _turn("queued")) == "_Queued._"
+    assert _state(items, _turn("running")) == "Working…"
+    assert _state(items, _turn("queued")) == "Queued."
+
+
+async def test_a_turn_with_nothing_done_in_it_still_says_where_it_got_to() -> None:
+    """No tool calls is no plan, and the header is part of the plan."""
+    items = [_item(itemId="i1", kind="assistant-message", title="", text="Hello")]
+
+    assert _state(items, _turn("completed")) == "_Turn complete._"
 
 
 async def test_a_turn_that_stopped_with_a_step_open_says_what_it_left() -> None:
@@ -265,24 +288,24 @@ async def test_a_turn_that_stopped_with_a_step_open_says_what_it_left() -> None:
     items = await _items()
 
     assert _state(items, _turn("interrupted")) == (
-        "_Turn interrupted. 1 step left unfinished._"
+        "Turn interrupted. 1 step left unfinished."
     )
     assert _state(items, _turn("error")) == (
-        "_Turn ended with an error. 1 step left unfinished._"
+        "Turn ended with an error. 1 step left unfinished."
     )
 
 
 async def test_a_turn_that_finished_everything_it_started_says_only_that() -> None:
     items = [_item(itemId="i1", status="completed", title="Ran the tests")]
 
-    assert _state(items, _turn("completed")) == "_Turn complete._"
+    assert _state(items, _turn("completed")) == "Turn complete."
 
 
 async def test_a_running_turn_is_not_told_off_for_work_still_in_flight() -> None:
     """Counting unfinished steps before the turn ends is counting the present."""
     items = [_item(itemId="i1", status="in-progress", title="Running the tests")]
 
-    assert _state(items, _turn("running")) == "_Working…_"
+    assert _state(items, _turn("running")) == "Working…"
 
 
 async def test_more_than_one_unfinished_step_is_counted_as_more_than_one() -> None:
@@ -290,7 +313,7 @@ async def test_more_than_one_unfinished_step_is_counted_as_more_than_one() -> No
         _item(itemId=f"i{n}", status="in-progress", title=f"Step {n}") for n in range(3)
     ]
 
-    assert _state(items, _turn("interrupted")).endswith("3 steps left unfinished._")
+    assert _state(items, _turn("interrupted")).endswith("3 steps left unfinished.")
 
 
 async def test_the_fallback_carries_the_turn_state_too() -> None:
@@ -390,14 +413,30 @@ async def test_what_the_fallback_dropped_is_counted_in_what_it_dropped() -> None
 
 
 async def test_a_long_tool_log_keeps_the_recent_end_and_says_what_it_dropped() -> None:
-    """The end a reader is looking at, and never a turn quietly halved."""
+    """The end a reader is looking at, and never a turn quietly halved.
+
+    Slack takes 50 cards in a plan, so the recording's twenty all fit; the cut
+    is asserted on the fallback string, which keeps twelve.
+    """
     items = [_item(itemId=f"i{n}", title=f"Step {n}") for n in range(20)]
 
-    log = _context(items).splitlines()
+    assert list(_cards(items)) == [f"Step {n}" for n in range(20)]
 
+    log = render_activity_text(items, _turn()).splitlines()
     assert log[0] == "_…and 8 more before these._"
     assert log[1].endswith("Step 8")
-    assert log[-1].endswith("Step 19")
+    assert log[-2].endswith("Step 19")
+
+
+async def test_a_plan_longer_than_slack_takes_is_cut_in_its_header() -> None:
+    """Slack rejects a plan over fifty tasks, and takes the whole post with it."""
+    items = [_item(itemId=f"i{n}", title=f"Step {n}") for n in range(60)]
+
+    plan = _plan(items)
+
+    assert len(plan["tasks"]) == 50
+    assert plan["title"] == "Working… …10 earlier steps, not shown."
+    assert plan["tasks"][0]["title"] == "Step 10"
 
 
 async def test_many_messages_keep_the_recent_end_and_say_what_they_dropped() -> None:
@@ -427,7 +466,7 @@ async def test_a_turn_with_nothing_in_it_is_refused_rather_than_posted_empty() -
 async def test_an_untitled_tool_call_is_still_a_line() -> None:
     """`title` has no minimum length in either reader, and a blank line in the
     log reads as a call the renderer lost."""
-    assert "_(untitled)_" in _context([_item(title="")])
+    assert list(_cards([_item(title="")])) == ["(untitled)"]
 
 
 async def test_a_message_with_no_text_says_so() -> None:
@@ -483,4 +522,5 @@ async def test_the_audience_a_host_asked_for_is_not_consulted() -> None:
     private = [item for item in items if item.audience == {"kind": "session-members"}]
 
     assert len(private) == 9
-    assert all(item.title.split()[0] in _context(items) for item in private)
+    rendered = json.dumps(_plan(items), ensure_ascii=False)
+    assert all(item.title.split()[0] in rendered for item in private)

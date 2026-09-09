@@ -1,10 +1,11 @@
 """A turn's activity as a Slack stream, with the tool calls as its timeline.
 
-The posted Block Kit message renders every step inline, which is the whole of
-what a reader gets: no way to collapse the eleven file reads and see the two
-sentences that matter. Slack's streaming API draws `task_update` chunks as a
-timeline it collapses by default, so this routes a turn onto that where it can
-and keeps the posted message for where it cannot.
+Where the turn goes decides how it is drawn, because Slack ties the two
+together: a stream is a reply to somebody and so exists in a thread and nowhere
+else. A turn put in a thread is streamed, and its tool calls are the
+`task_update` timeline Slack collapses by default. A turn put at the channel
+root is a posted message, and its tool calls are a `plan` block — the same
+collapsed cards, drawn by the same client, in a block that needs no thread.
 
 Three things had to be true for the timeline to accumulate rather than
 overwrite itself, and each is a test here: every task chunk carries the
@@ -186,7 +187,7 @@ async def test_a_thread_with_nobody_recorded_on_it_is_posted_instead() -> None:
 
 
 async def test_falling_back_to_blocks_says_so_out_loud(caplog: Any) -> None:
-    """Blocks are the degraded drawing of a turn, so the log has to name it.
+    """Blocks are the degraded drawing of a threaded turn, so the log names it.
 
     At debug the only sign was a channel that looked the way it did before any
     of this existed, which is indistinguishable from a server still running the
@@ -196,12 +197,27 @@ async def test_falling_back_to_blocks_says_so_out_loud(caplog: Any) -> None:
     activity = SessionTurnActivity(_adapter(client, streamable=False))
 
     with caplog.at_level(logging.WARNING):
-        await _publish(
-            activity, [_item("call-1")], _turn("running"), thread_root_id=None
-        )
+        await _publish(activity, [_item("call-1")], _turn("running"))
 
     assert "as blocks" in caplog.text
-    assert "has no thread" in caplog.text
+    assert "nobody was recorded" in caplog.text
+
+
+async def test_a_turn_at_the_channel_root_is_never_asked_to_stream() -> None:
+    """A stream can only be a reply, so asking for one there cannot succeed.
+
+    It is not a fallback either: the plan block draws the same collapsed cards
+    where the reader is already looking, which is why the turn is put there.
+    """
+    client = FakeWebClient()
+    activity = SessionTurnActivity(_adapter(client))
+
+    await _publish(activity, [_item("call-1")], _turn("running"), thread_root_id=None)
+
+    assert _methods(client) == []
+    assert len(client.posted) == 1
+    assert client.posted[0].get("thread_ts") is None
+    assert [block["type"] for block in client.posted[0]["blocks"]] == ["plan"]
 
 
 # ── The timeline accumulates ─────────────────────────────────────────────────
