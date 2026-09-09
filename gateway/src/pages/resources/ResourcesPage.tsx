@@ -9,15 +9,23 @@ import CreateReferenceTypeDialog from "./CreateReferenceTypeDialog";
 import DocumentsTab from "./DocumentsTab";
 import PackagesTab from "./PackagesTab";
 import ReferencesTab from "./ReferencesTab";
+import CreateTemplateDialog from "./CreateTemplateDialog";
 import ReferenceTypesTab from "./ReferenceTypesTab";
+import TemplatesTab from "./TemplatesTab";
 
-type ResourceTab = "references" | "types" | "documents" | "packages";
+type ResourceTab =
+  | "references"
+  | "types"
+  | "documents"
+  | "packages"
+  | "templates";
 
 const NEW_LABELS: Record<ResourceTab, string> = {
   references: "New reference",
   types: "New reference type",
   documents: "New document",
   packages: "New package",
+  templates: "Upload template",
 };
 
 export default function ResourcesPage() {
@@ -31,7 +39,9 @@ export default function ResourcesPage() {
         ? "packages"
         : tabParam === "types"
           ? "types"
-          : "references";
+          : tabParam === "templates"
+            ? "templates"
+            : "references";
   const [createOpen, setCreateOpen] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
 
@@ -57,6 +67,12 @@ export default function ResourcesPage() {
     setCreateOpen(false);
     setRefreshKey((k) => k + 1);
     navigate(`/resources/packages/${id}`);
+  };
+
+  const handleTemplateCreated = (id: string) => {
+    setCreateOpen(false);
+    setRefreshKey((k) => k + 1);
+    navigate(`/resources/templates/${id}`);
   };
 
   const handleReferenceTypeCreated = () => {
@@ -95,6 +111,7 @@ export default function ResourcesPage() {
         {tab === "types" && <ReferenceTypesTab refreshKey={refreshKey} />}
         {tab === "documents" && <DocumentsTab refreshKey={refreshKey} />}
         {tab === "packages" && <PackagesTab refreshKey={refreshKey} />}
+        {tab === "templates" && <TemplatesTab refreshKey={refreshKey} />}
       </Box>
 
       {tab === "references" && (
@@ -123,6 +140,13 @@ export default function ResourcesPage() {
           open={createOpen}
           onClose={() => setCreateOpen(false)}
           onCreated={handlePackageCreated}
+        />
+      )}
+      {tab === "templates" && (
+        <CreateTemplateDialog
+          open={createOpen}
+          onClose={() => setCreateOpen(false)}
+          onCreated={handleTemplateCreated}
         />
       )}
     </Box>
