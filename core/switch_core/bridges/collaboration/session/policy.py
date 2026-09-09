@@ -92,39 +92,32 @@ def publication_policy(
         thread_root_id=association.thread_id or association.origin_message_id,
         cards=tuple(x for x in requests if x.state in LIVE_STATES),
         outcomes=tuple(x for x in requests if x.state not in LIVE_STATES),
-        disclosures=_disclosures(projection, association),
+        disclosures=_disclosures(projection),
     )
 
 
-def _disclosures(
-    projection: SessionProjection, association: SessionRoomAssociation
-) -> tuple[TurnDisclosure, ...]:
+def _disclosures(projection: SessionProjection) -> tuple[TurnDisclosure, ...]:
     """Each turn's publishable activity, skipping turns that have none."""
     disclosures = []
     for turn in projection.snapshot.turns:
         items = tuple(
             item
             for item in projection.turn_activity(turn.turn_id)
-            if _publishable(item, association)
+            if _publishable(item)
         )
         if items:
             disclosures.append(TurnDisclosure(turn_id=turn.turn_id, items=items))
     return tuple(disclosures)
 
 
-def _publishable(item: Item, association: SessionRoomAssociation) -> bool:
-    """Whether this item is a thing done, and not one this room has already seen.
+def _publishable(item: Item) -> bool:
+    """Whether this item is a thing done rather than a thing said.
 
-    The second half is the echo: a turn started by a room message carries that
-    message back as an item, and posting it would be the room quoting itself.
-    Anchoring on it is the point of keeping it — the turn threads under the
-    message that asked for it.
+    There is no separate rule against echoing a room's own message back at it.
+    The only item a room can be the author of is the message that steered the
+    turn, which the host reports as a `user-message` — already excluded, and
+    `Item.kind` admits nothing else that could carry a room's authorship. A
+    turn's activity is not an echo just because a room asked for it, so the
+    room that asked still sees what the agent did.
     """
-    if item.kind in TRANSCRIPT_KINDS:
-        return False
-    origin = item.origin
-    return not (
-        origin is not None
-        and origin.message_id is not None
-        and origin.room_id == association.room_id
-    )
+    return item.kind not in TRANSCRIPT_KINDS

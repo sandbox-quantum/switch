@@ -85,6 +85,17 @@ def _item(**fields: Any) -> Item:
     )
 
 
+def _from_the_room() -> dict[str, Any]:
+    """An origin naming the message in the associated room that steered a turn."""
+    return {
+        "surface": "slack",
+        "actorId": "@someone:test",
+        "roomId": ROOM,
+        "threadId": None,
+        "messageId": "msg-1",
+    }
+
+
 def _request(request_id: str, state: str) -> SnapshotRequest:
     return SnapshotRequest.model_validate(
         {
@@ -228,19 +239,34 @@ class TestRequests:
         assert len(plan.cards) == 5
 
 
-class TestTheEcho:
-    async def test_an_item_from_this_room_is_not_sent_back_to_it(self) -> None:
+class TestARoomSteeredTurn:
+    """A turn a room asked for, where every item carries that room's origin.
+
+    There is no rule against echoing here, and these are why. Being caused by a
+    room is not the same as having been said by it: the message is transcript
+    and goes nowhere, and the work it caused is exactly what the room asked to
+    see. Suppressing on origin instead would empty the disclosure and, because
+    an empty disclosure is dropped, lose the turn.
+    """
+
+    async def test_the_room_that_asked_still_sees_what_the_agent_did(self) -> None:
+        projection = _projection(
+            items=[_item(itemId="what-it-did", origin=_from_the_room())], requests=[]
+        )
+        plan = publication_policy(projection, _association())
+
+        assert plan is not None
+        assert [x.item_id for turn in plan.disclosures for x in turn.items] == [
+            "what-it-did"
+        ]
+
+    async def test_the_message_that_steered_it_is_not_quoted_back(self) -> None:
         projection = _projection(
             items=[
                 _item(
-                    itemId="from-the-room",
-                    origin={
-                        "surface": "slack",
-                        "actorId": "@someone:test",
-                        "roomId": ROOM,
-                        "threadId": None,
-                        "messageId": "msg-1",
-                    },
+                    itemId="what-was-asked",
+                    kind="user-message",
+                    origin=_from_the_room(),
                 )
             ],
             requests=[],
@@ -249,29 +275,6 @@ class TestTheEcho:
 
         assert plan is not None
         assert plan.disclosures == ()
-
-    async def test_an_item_from_a_different_room_still_publishes(self) -> None:
-        projection = _projection(
-            items=[
-                _item(
-                    itemId="from-elsewhere",
-                    origin={
-                        "surface": "slack",
-                        "actorId": "@someone:test",
-                        "roomId": "room-2",
-                        "threadId": None,
-                        "messageId": "msg-1",
-                    },
-                )
-            ],
-            requests=[],
-        )
-        plan = publication_policy(projection, _association())
-
-        assert plan is not None
-        assert [x.item_id for turn in plan.disclosures for x in turn.items] == [
-            "from-elsewhere"
-        ]
 
 
 class TestWhereItGoes:

@@ -5,9 +5,10 @@ of this file is one of them being present and the other missing. Driven through
 the route rather than the service, because the route is where a real caller's
 identity turns into a `Principal` and that conversion is part of the rule.
 
-The last class is the property the slice exists for, and it is a negative:
-nothing on the host's side of the tree can reach this. That is checked by
-looking at the tree, not by calling anything — there is no call to make.
+The last class guards the property the slice exists for, and it is a negative:
+nothing on the host's side of the tree reaches this. There is no call to make,
+so it is checked by reading the tree — a tripwire on the likeliest accident
+rather than a proof.
 """
 
 from __future__ import annotations
@@ -264,17 +265,25 @@ class TestOneRoomPerSession:
 
 
 class TestTheHostCannotAssociateItself:
-    def test_nothing_on_the_agent_bridge_reaches_the_association(self) -> None:
+    def test_nothing_on_the_agent_bridge_names_the_association(self) -> None:
         """The lease and the events route are everything a host credential can
-        reach. Neither imports the association store or this service, and that
-        is what makes "a leaseholder still cannot publish" a fact about the code
-        rather than about the checks currently written into it.
+        reach, and neither goes near this.
+
+        A tripwire, not a proof: it knows three spellings — the store module,
+        the service and the model — and a fourth way in would pass it. It is
+        here because the likeliest way "a leaseholder still cannot publish"
+        stops being true is somebody importing one of those three into the
+        host's side of the tree without noticing what it means.
         """
+        named = (
+            "session_room_association",
+            "SessionAssociationService",
+            "SessionRoomAssociation",
+        )
         agent_side = REPO_ROOT / "core/switch_core/bridges/agent"
         offenders = [
             path.relative_to(REPO_ROOT)
             for path in agent_side.rglob("*.py")
-            if "session_room_association" in path.read_text()
-            or "SessionAssociationService" in path.read_text()
+            if any(name in path.read_text() for name in named)
         ]
         assert offenders == []

@@ -1184,8 +1184,7 @@ class SessionRoomAssociation(Base):
     )
     thread_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     # The room message that started the session, when one did. What a turn is
-    # threaded under, and what stops an item being republished into the room it
-    # came from.
+    # threaded under, so the answer lands where the question was asked.
     origin_message_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     granted_by_actor_id: Mapped[str] = mapped_column(Text, nullable=False)
     source: Mapped[str] = mapped_column(Text, nullable=False)
