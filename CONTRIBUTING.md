@@ -31,6 +31,10 @@ hot-reload while developing: `just run` (switch-core on `:8000`) and
 If you only want to see Switch running rather than develop against it, the
 standalone stack in the [README](README.md#getting-started) is a shorter path.
 
+See [`docs/old/LOCAL_DEVELOPMENT.md`](docs/old/LOCAL_DEVELOPMENT.md) for the
+fuller account of this setup — what each port serves, and how to point
+Switch Console at your local server.
+
 ## Common commands
 
 Run `just` with no arguments to list every recipe. The most-used ones:
@@ -68,6 +72,9 @@ Run `just` with no arguments to list every recipe. The most-used ones:
 
 [`docs/old/ARCHITECTURE.md`](docs/old/ARCHITECTURE.md) describes the service's internal
 module structure and the key request flows.
+[`docs/old/GATEWAY_OIDC_SETUP.md`](docs/old/GATEWAY_OIDC_SETUP.md) covers
+setting up bring-your-own OIDC sign-in for the gateway, including the WorkOS
+setup path.
 
 ## Testing
 
