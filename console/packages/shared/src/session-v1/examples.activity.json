@@ -1,5 +1,5 @@
 {
-  "_comment": "A turn with work in it: what the agent did, what it said, and what it stopped to ask. Sits beside examples.json rather than inside it because that file is a byte-identical lift and cannot be edited here. Every item carries an `audience` the readers no longer interpret; it goes when the field does. `turnEnd` stops the same turn where it stands: nobody answered the permission, so the request closes unanswered and the edit it was waiting on is left unfinished.",
+  "_comment": "A turn with work in it: what the agent did, what it said, and what it stopped to ask. Sits beside examples.json rather than inside it because that file is a byte-identical lift and cannot be edited here. Every item carries an `audience` the readers no longer interpret; it goes when the field does. `turnEnd` stops the same turn where it stands: nobody answered the permission, so the request closes unanswered and the edit it was waiting on is left unfinished. Deliberately messy, because a tidy turn proves nothing: tools overlap and are revised out of the order they opened in, one title is longer than Slack will take on a task card and one detail is longer than the room left after it, a step is declined rather than failed, and the titles mix prose with the tool-call shape a host is as likely to emit — nothing produces these events yet, so the renderer has to survive both.",
   "initialSnapshot": {
     "contractVersion": 1,
     "throughSequence": 0,
@@ -67,7 +67,10 @@
             "threadId": null,
             "messageId": "message-activity"
           },
-          "audience": { "kind": "room", "roomId": "room-activity" }
+          "audience": {
+            "kind": "room",
+            "roomId": "room-activity"
+          }
         }
       }
     },
@@ -89,7 +92,9 @@
           "text": "",
           "attachments": [],
           "origin": null,
-          "audience": { "kind": "session-members" }
+          "audience": {
+            "kind": "session-members"
+          }
         }
       }
     },
@@ -102,6 +107,30 @@
       "body": {
         "type": "item.upsert",
         "item": {
+          "itemId": "item-read-test",
+          "turnId": "turn-activity",
+          "revision": 1,
+          "kind": "tool-activity",
+          "status": "in-progress",
+          "title": "Read(tests/auth/test_login.py)",
+          "text": "",
+          "attachments": [],
+          "origin": null,
+          "audience": {
+            "kind": "session-members"
+          }
+        }
+      }
+    },
+    {
+      "contractVersion": 1,
+      "eventId": "event-a5",
+      "sessionId": "session-activity",
+      "sequence": 5,
+      "occurredAt": "2026-09-08T09:00:08Z",
+      "body": {
+        "type": "item.upsert",
+        "item": {
           "itemId": "item-search",
           "turnId": "turn-activity",
           "revision": 2,
@@ -111,16 +140,186 @@
           "text": "4 files",
           "attachments": [],
           "origin": null,
-          "audience": { "kind": "session-members" }
+          "audience": {
+            "kind": "session-members"
+          }
         }
       }
     },
     {
       "contractVersion": 1,
-      "eventId": "event-a5",
+      "eventId": "event-a6",
       "sessionId": "session-activity",
-      "sequence": 5,
-      "occurredAt": "2026-09-08T09:00:11Z",
+      "sequence": 6,
+      "occurredAt": "2026-09-08T09:00:10Z",
+      "body": {
+        "type": "item.upsert",
+        "item": {
+          "itemId": "item-read-conftest",
+          "turnId": "turn-activity",
+          "revision": 1,
+          "kind": "tool-activity",
+          "status": "in-progress",
+          "title": "Read(tests/auth/conftest.py)",
+          "text": "",
+          "attachments": [],
+          "origin": null,
+          "audience": {
+            "kind": "session-members"
+          }
+        }
+      }
+    },
+    {
+      "contractVersion": 1,
+      "eventId": "event-a7",
+      "sessionId": "session-activity",
+      "sequence": 7,
+      "occurredAt": "2026-09-08T09:00:12Z",
+      "body": {
+        "type": "item.upsert",
+        "item": {
+          "itemId": "item-read-test",
+          "turnId": "turn-activity",
+          "revision": 2,
+          "kind": "tool-activity",
+          "status": "completed",
+          "title": "Read(tests/auth/test_login.py)",
+          "text": "312 lines",
+          "attachments": [],
+          "origin": null,
+          "audience": {
+            "kind": "session-members"
+          }
+        }
+      }
+    },
+    {
+      "contractVersion": 1,
+      "eventId": "event-a8",
+      "sessionId": "session-activity",
+      "sequence": 8,
+      "occurredAt": "2026-09-08T09:00:14Z",
+      "body": {
+        "type": "item.upsert",
+        "item": {
+          "itemId": "item-grep",
+          "turnId": "turn-activity",
+          "revision": 1,
+          "kind": "tool-activity",
+          "status": "in-progress",
+          "title": "Grep(fixture_user)",
+          "text": "",
+          "attachments": [],
+          "origin": null,
+          "audience": {
+            "kind": "session-members"
+          }
+        }
+      }
+    },
+    {
+      "contractVersion": 1,
+      "eventId": "event-a9",
+      "sessionId": "session-activity",
+      "sequence": 9,
+      "occurredAt": "2026-09-08T09:00:16Z",
+      "body": {
+        "type": "item.upsert",
+        "item": {
+          "itemId": "item-read-conftest",
+          "turnId": "turn-activity",
+          "revision": 2,
+          "kind": "tool-activity",
+          "status": "completed",
+          "title": "Read(tests/auth/conftest.py)",
+          "text": "88 lines",
+          "attachments": [],
+          "origin": null,
+          "audience": {
+            "kind": "session-members"
+          }
+        }
+      }
+    },
+    {
+      "contractVersion": 1,
+      "eventId": "event-a10",
+      "sessionId": "session-activity",
+      "sequence": 10,
+      "occurredAt": "2026-09-08T09:00:18Z",
+      "body": {
+        "type": "item.upsert",
+        "item": {
+          "itemId": "item-grep",
+          "turnId": "turn-activity",
+          "revision": 2,
+          "kind": "tool-activity",
+          "status": "completed",
+          "title": "Grep(fixture_user)",
+          "text": "17 matches in 6 files",
+          "attachments": [],
+          "origin": null,
+          "audience": {
+            "kind": "session-members"
+          }
+        }
+      }
+    },
+    {
+      "contractVersion": 1,
+      "eventId": "event-a11",
+      "sessionId": "session-activity",
+      "sequence": 11,
+      "occurredAt": "2026-09-08T09:00:20Z",
+      "body": {
+        "type": "item.upsert",
+        "item": {
+          "itemId": "item-suite",
+          "turnId": "turn-activity",
+          "revision": 1,
+          "kind": "tool-activity",
+          "status": "in-progress",
+          "title": "Bash(uv run --project core pytest core/tests/switch_core/bridges/collaboration/test_session_login_fixture_isolation.py -x -q --no-header)",
+          "text": "",
+          "attachments": [],
+          "origin": null,
+          "audience": {
+            "kind": "session-members"
+          }
+        }
+      }
+    },
+    {
+      "contractVersion": 1,
+      "eventId": "event-a12",
+      "sessionId": "session-activity",
+      "sequence": 12,
+      "occurredAt": "2026-09-08T09:00:22Z",
+      "body": {
+        "type": "item.upsert",
+        "item": {
+          "itemId": "item-suite",
+          "turnId": "turn-activity",
+          "revision": 2,
+          "kind": "tool-activity",
+          "status": "failed",
+          "title": "Bash(uv run --project core pytest core/tests/switch_core/bridges/collaboration/test_session_login_fixture_isolation.py -x -q --no-header)",
+          "text": "1 failed, 41 passed in 12.44s — tests/auth/test_login.py::test_login_rejects_a_stale_session",
+          "attachments": [],
+          "origin": null,
+          "audience": {
+            "kind": "session-members"
+          }
+        }
+      }
+    },
+    {
+      "contractVersion": 1,
+      "eventId": "event-a13",
+      "sessionId": "session-activity",
+      "sequence": 13,
+      "occurredAt": "2026-09-08T09:00:24Z",
       "body": {
         "type": "item.upsert",
         "item": {
@@ -133,16 +332,42 @@
           "text": "",
           "attachments": [],
           "origin": null,
-          "audience": { "kind": "session-members" }
+          "audience": {
+            "kind": "session-members"
+          }
         }
       }
     },
     {
       "contractVersion": 1,
-      "eventId": "event-a6",
+      "eventId": "event-a14",
       "sessionId": "session-activity",
-      "sequence": 6,
-      "occurredAt": "2026-09-08T09:00:48Z",
+      "sequence": 14,
+      "occurredAt": "2026-09-08T09:00:26Z",
+      "body": {
+        "type": "item.upsert",
+        "item": {
+          "itemId": "item-read-session",
+          "turnId": "turn-activity",
+          "revision": 1,
+          "kind": "tool-activity",
+          "status": "in-progress",
+          "title": "Read(tests/session/test_session.py)",
+          "text": "",
+          "attachments": [],
+          "origin": null,
+          "audience": {
+            "kind": "session-members"
+          }
+        }
+      }
+    },
+    {
+      "contractVersion": 1,
+      "eventId": "event-a15",
+      "sessionId": "session-activity",
+      "sequence": 15,
+      "occurredAt": "2026-09-08T09:00:28Z",
       "body": {
         "type": "item.upsert",
         "item": {
@@ -155,16 +380,90 @@
           "text": "1 failed, 41 passed",
           "attachments": [],
           "origin": null,
-          "audience": { "kind": "session-members" }
+          "audience": {
+            "kind": "session-members"
+          }
         }
       }
     },
     {
       "contractVersion": 1,
-      "eventId": "event-a7",
+      "eventId": "event-a16",
       "sessionId": "session-activity",
-      "sequence": 7,
-      "occurredAt": "2026-09-08T09:00:52Z",
+      "sequence": 16,
+      "occurredAt": "2026-09-08T09:00:30Z",
+      "body": {
+        "type": "item.upsert",
+        "item": {
+          "itemId": "item-read-session",
+          "turnId": "turn-activity",
+          "revision": 2,
+          "kind": "tool-activity",
+          "status": "completed",
+          "title": "Read(tests/session/test_session.py)",
+          "text": "204 lines",
+          "attachments": [],
+          "origin": null,
+          "audience": {
+            "kind": "session-members"
+          }
+        }
+      }
+    },
+    {
+      "contractVersion": 1,
+      "eventId": "event-a17",
+      "sessionId": "session-activity",
+      "sequence": 17,
+      "occurredAt": "2026-09-08T09:00:32Z",
+      "body": {
+        "type": "item.upsert",
+        "item": {
+          "itemId": "item-blame",
+          "turnId": "turn-activity",
+          "revision": 1,
+          "kind": "tool-activity",
+          "status": "in-progress",
+          "title": "Bash(git log -L :fixture_user:tests/auth/conftest.py)",
+          "text": "",
+          "attachments": [],
+          "origin": null,
+          "audience": {
+            "kind": "session-members"
+          }
+        }
+      }
+    },
+    {
+      "contractVersion": 1,
+      "eventId": "event-a18",
+      "sessionId": "session-activity",
+      "sequence": 18,
+      "occurredAt": "2026-09-08T09:00:34Z",
+      "body": {
+        "type": "item.upsert",
+        "item": {
+          "itemId": "item-blame",
+          "turnId": "turn-activity",
+          "revision": 2,
+          "kind": "tool-activity",
+          "status": "declined",
+          "title": "Bash(git log -L :fixture_user:tests/auth/conftest.py)",
+          "text": "Not permitted in this session",
+          "attachments": [],
+          "origin": null,
+          "audience": {
+            "kind": "session-members"
+          }
+        }
+      }
+    },
+    {
+      "contractVersion": 1,
+      "eventId": "event-a19",
+      "sessionId": "session-activity",
+      "sequence": 19,
+      "occurredAt": "2026-09-08T09:00:36Z",
       "body": {
         "type": "item.upsert",
         "item": {
@@ -177,16 +476,19 @@
           "text": "It fails whenever it runs after the session test:",
           "attachments": [],
           "origin": null,
-          "audience": { "kind": "room", "roomId": "room-activity" }
+          "audience": {
+            "kind": "room",
+            "roomId": "room-activity"
+          }
         }
       }
     },
     {
       "contractVersion": 1,
-      "eventId": "event-a8",
+      "eventId": "event-a20",
       "sessionId": "session-activity",
-      "sequence": 8,
-      "occurredAt": "2026-09-08T09:00:55Z",
+      "sequence": 20,
+      "occurredAt": "2026-09-08T09:00:38Z",
       "body": {
         "type": "item.upsert",
         "item": {
@@ -199,16 +501,19 @@
           "text": "It fails whenever it runs after the session test: both write to the same fixture user, and only the second one has to notice. Pinning the fixture to one user per test fixes it.",
           "attachments": [],
           "origin": null,
-          "audience": { "kind": "room", "roomId": "room-activity" }
+          "audience": {
+            "kind": "room",
+            "roomId": "room-activity"
+          }
         }
       }
     },
     {
       "contractVersion": 1,
-      "eventId": "event-a9",
+      "eventId": "event-a21",
       "sessionId": "session-activity",
-      "sequence": 9,
-      "occurredAt": "2026-09-08T09:01:02Z",
+      "sequence": 21,
+      "occurredAt": "2026-09-08T09:00:40Z",
       "body": {
         "type": "item.upsert",
         "item": {
@@ -221,16 +526,18 @@
           "text": "",
           "attachments": [],
           "origin": null,
-          "audience": { "kind": "session-members" }
+          "audience": {
+            "kind": "session-members"
+          }
         }
       }
     },
     {
       "contractVersion": 1,
-      "eventId": "event-a10",
+      "eventId": "event-a22",
       "sessionId": "session-activity",
-      "sequence": 10,
-      "occurredAt": "2026-09-08T09:01:03Z",
+      "sequence": 22,
+      "occurredAt": "2026-09-08T09:00:42Z",
       "body": {
         "type": "item.upsert",
         "item": {
@@ -243,16 +550,18 @@
           "text": "Waiting for permission",
           "attachments": [],
           "origin": null,
-          "audience": { "kind": "session-members" }
+          "audience": {
+            "kind": "session-members"
+          }
         }
       }
     },
     {
       "contractVersion": 1,
-      "eventId": "event-a11",
+      "eventId": "event-a23",
       "sessionId": "session-activity",
-      "sequence": 11,
-      "occurredAt": "2026-09-08T09:01:03Z",
+      "sequence": 23,
+      "occurredAt": "2026-09-08T09:00:44Z",
       "body": {
         "type": "request.opened",
         "request": {
@@ -282,7 +591,10 @@
               }
             ]
           },
-          "audience": { "kind": "room", "roomId": "room-activity" },
+          "audience": {
+            "kind": "room",
+            "roomId": "room-activity"
+          },
           "expiresAt": null
         }
       }
@@ -291,10 +603,10 @@
   "turnEnd": [
     {
       "contractVersion": 1,
-      "eventId": "event-a12",
+      "eventId": "event-z1",
       "sessionId": "session-activity",
-      "sequence": 12,
-      "occurredAt": "2026-09-08T09:02:30Z",
+      "sequence": 24,
+      "occurredAt": "2026-09-08T09:00:46Z",
       "body": {
         "type": "request.settled",
         "requestId": "request-activity",
@@ -306,10 +618,10 @@
     },
     {
       "contractVersion": 1,
-      "eventId": "event-a13",
+      "eventId": "event-z2",
       "sessionId": "session-activity",
-      "sequence": 13,
-      "occurredAt": "2026-09-08T09:02:31Z",
+      "sequence": 25,
+      "occurredAt": "2026-09-08T09:00:48Z",
       "body": {
         "type": "turn.upsert",
         "turnId": "turn-activity",

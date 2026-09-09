@@ -610,6 +610,90 @@ async def test_running_the_recording_to_the_end_edits_what_is_already_there(
     assert "Interrupted before it was answered." in card
 
 
+async def test_ending_carries_on_the_demo_already_in_the_channel(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """Nothing new is posted for the ending, which is its whole point.
+
+    Posting a fresh session for it left the first one hanging in the channel
+    forever — it never ends, because nothing produces its events — and buried
+    the one thing the variant shows under a duplicate of what it is showing it
+    about.
+    """
+    client = FakeWebClient()
+    demo, room_id = await _demo(session_factory, client)
+
+    assert await demo.handle(TRIGGER, CHANNEL, room_id, TRIGGERED_BY) is True
+    posted = len(client.posted)
+    assert (
+        await demo.handle(f"{TRIGGER} end", CHANNEL, room_id, "C1:1700000000.9") is True
+    )
+
+    assert len(client.posted) == posted
+    turn, card = (
+        json.dumps(call["blocks"], ensure_ascii=False) for call in client.updated
+    )
+    assert "Turn interrupted. 1 step left unfinished." in turn
+    assert "Permission request closed" in card
+
+    async with session_factory() as session:
+        handles = list(
+            (await session.execute(select(SessionRequestPost.handle))).scalars().all()
+        )
+    assert handles == ["R1"]
+
+
+async def test_ending_a_channel_with_no_demo_in_it_runs_one_through(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """Refusing would leave somebody typing a command that does nothing."""
+    client = FakeWebClient()
+    demo, room_id = await _demo(session_factory, client)
+
+    assert await demo.handle(f"{TRIGGER} end", CHANNEL, room_id, TRIGGERED_BY) is True
+
+    assert len(client.posted) == 2
+    assert "Permission request closed" in json.dumps(
+        client.updated[1]["blocks"], ensure_ascii=False
+    )
+
+
+async def test_a_demo_can_only_be_ended_once(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """The second `end` has nothing on screen to carry on, so it replays.
+
+    Which is the same rule as a channel that never had one: the demo that was
+    ended is over, and the alternative is editing a turn that already says it
+    was interrupted.
+    """
+    client = FakeWebClient()
+    demo, room_id = await _demo(session_factory, client)
+
+    await demo.handle(TRIGGER, CHANNEL, room_id, TRIGGERED_BY)
+    await demo.handle(f"{TRIGGER} end", CHANNEL, room_id, TRIGGERED_BY)
+    posted = len(client.posted)
+    await demo.handle(f"{TRIGGER} end", CHANNEL, room_id, TRIGGERED_BY)
+
+    assert len(client.posted) == posted + 2
+
+
+async def test_each_channel_ends_its_own_demo(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """Two channels showing one each, and `end` in one leaves the other alone."""
+    client = FakeWebClient()
+    demo, room_id = await _demo(session_factory, client)
+
+    await demo.handle(TRIGGER, CHANNEL, room_id, TRIGGERED_BY)
+    await demo.handle(TRIGGER, "C2", room_id, "C2:1700000000.1")
+    posted = len(client.posted)
+    await demo.handle(f"{TRIGGER} end", "C2", room_id, "C2:1700000000.2")
+
+    assert len(client.posted) == posted
+    assert {call["channel"] for call in client.updated} == {"C2"}
+
+
 async def test_the_trigger_is_the_whole_message_or_it_is_not_the_trigger(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:

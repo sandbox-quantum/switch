@@ -10,13 +10,16 @@ says what it found, and stops to ask permission for the edit that would fix it.
 So the channel gets the work and then the question, which is the order they
 happened in and the order they make sense in.
 
-`!session-demo end` plays the same recording one step further, to where the
-turn is interrupted with the permission still unanswered. Nothing new is
-posted for it: the turn message and the card are both edited where they are,
-which is the whole of what that variant is there to show. It is a whole replay
-of its own, though, and not a continuation of a `!session-demo` typed a moment
-before — that one is a different session with a different card, and it is left
-exactly where it was.
+`!session-demo end` carries the demo already on screen in that channel one step
+further, to where the turn is interrupted with the permission still unanswered.
+Nothing new is posted for it: the turn message and the card are both edited
+where they are, which is the whole of what that variant is there to show, and
+posting a second copy of the session to show it made the one thing the variant
+demonstrates the hardest thing in the channel to see.
+
+Only the most recent demo in a channel can be ended, and a channel with none
+gets a whole replay run through to the end — the ending is still what it shows,
+and refusing would leave somebody typing a command that does nothing.
 
 The turn goes in a thread under the trigger, because Slack will only stream
 into a channel as a reply and a turn with no thread is drawn as blocks instead.
@@ -40,6 +43,7 @@ from __future__ import annotations
 
 import logging
 import secrets
+from dataclasses import dataclass
 from pathlib import Path
 
 from switch_core.db.models import SessionRequestPost
@@ -88,6 +92,25 @@ def _recording() -> Path:
     )
 
 
+@dataclass
+class _Showing:
+    """A demo left on screen, so `end` can finish it rather than repeat it.
+
+    The session id and the turn are what make a continuation a continuation:
+    the activity message is anchored on the pair, so republishing under the
+    same one edits the message already there. `trigger_ref` is the thread the
+    turn was drawn in, kept because the `!session-demo end` that finishes it is
+    a different message in a different thread and the turn does not move.
+    """
+
+    session_id: str
+    turn_id: str
+    request_id: str
+    projection: SessionProjection
+    post: SessionRequestPost
+    trigger_ref: str | None
+
+
 class SessionDemo:
     """Posts the recorded session's turn, and then its open request.
 
@@ -99,6 +122,7 @@ class SessionDemo:
     ) -> None:
         self._cards = cards
         self._activity = activity
+        self._showing: dict[str, _Showing] = {}
 
     async def handle(
         self, content: str, channel_id: str, room_id: str, trigger_ref: str | None
@@ -121,9 +145,11 @@ class SessionDemo:
             "dropped like any other.",
             channel_id,
         )
-        to_the_end = said.endswith(_TO_THE_END)
-        post = await self._post(channel_id, room_id, trigger_ref, to_the_end=to_the_end)
-        if to_the_end:
+        if said.endswith(_TO_THE_END):
+            showing = self._showing.pop(channel_id, None)
+            if showing is None:
+                showing = await self._start(channel_id, room_id, trigger_ref)
+            post = await self._finish(showing)
             logger.warning(
                 "Demo card %s was closed unanswered, and the turn above it was "
                 "edited in place rather than posted again. Run `%s` on its own "
@@ -132,6 +158,9 @@ class SessionDemo:
                 TRIGGER,
             )
         else:
+            showing = await self._start(channel_id, room_id, trigger_ref)
+            self._showing[channel_id] = showing
+            post = showing.post
             logger.warning(
                 "Demo card %s is answerable by pressing it, by typing `%s 1`, or "
                 "by replying `yes` directly under it.",
@@ -140,14 +169,9 @@ class SessionDemo:
             )
         return True
 
-    async def _post(
-        self,
-        channel_id: str,
-        room_id: str,
-        trigger_ref: str | None,
-        *,
-        to_the_end: bool,
-    ) -> SessionRequestPost:
+    async def _start(
+        self, channel_id: str, room_id: str, trigger_ref: str | None
+    ) -> _Showing:
         """Post the recording's turn and then its request, under a fresh id.
 
         A request gets one card, which is right for a real session and would
@@ -162,8 +186,7 @@ class SessionDemo:
         picking it from the request is the part that stays true of a session
         doing more than one thing.
         """
-        recording = _recording()
-        source = FixtureEventSource.from_examples(recording, events=[_STREAM])
+        source = FixtureEventSource.from_examples(_recording(), events=[_STREAM])
         projection = await project(source, source.session_id)
         requests = projection.open_requests()
         if not requests:
@@ -186,24 +209,47 @@ class SessionDemo:
             epoch=session.epoch,
             agent_name=session.agent_id,
         )
-        if not to_the_end:
-            return post
-        ending = FixtureEventSource.from_examples(recording, events=[_STREAM, _ENDING])
-        async for event in ending.subscribe(
-            source.session_id, projection.through_sequence
-        ):
-            projection.apply(event)
-        await self._publish(
-            projection, request.turn_id, channel_id, session_id, trigger_ref
+        return _Showing(
+            session_id=session_id,
+            turn_id=request.turn_id,
+            request_id=request.request_id,
+            projection=projection,
+            post=post,
+            trigger_ref=trigger_ref,
         )
-        settled = projection.request(request.request_id)
+
+    async def _finish(self, showing: _Showing) -> SessionRequestPost:
+        """Carry the demo on screen to the end of its turn, where it stands.
+
+        The same session and the same turn, so the activity message is the one
+        already in the channel and the card is the one already posted: what
+        somebody watching sees is a turn ending and a request closing, which is
+        the only reason to type this. A fresh replay would show the same two
+        states in two new messages, and the thing being demonstrated — that
+        neither is reposted — would be the one thing invisible.
+        """
+        source = FixtureEventSource.from_examples(
+            _recording(), events=[_STREAM, _ENDING]
+        )
+        async for event in source.subscribe(
+            source.session_id, showing.projection.through_sequence
+        ):
+            showing.projection.apply(event)
+        await self._publish(
+            showing.projection,
+            showing.turn_id,
+            showing.post.external_channel_id,
+            showing.session_id,
+            showing.trigger_ref,
+        )
+        settled = showing.projection.request(showing.request_id)
         if settled is None:
             raise ValueError(
-                f"The recording lost request {request.request_id} on the way to "
+                f"The recording lost request {showing.request_id} on the way to "
                 f"the end of its turn, so there is nothing to redraw the card from."
             )
-        await self._cards.refresh(post, settled)
-        return post
+        await self._cards.refresh(showing.post, settled)
+        return showing.post
 
     async def _publish(
         self,

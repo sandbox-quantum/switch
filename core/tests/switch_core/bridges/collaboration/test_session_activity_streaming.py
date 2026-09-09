@@ -24,16 +24,26 @@ from __future__ import annotations
 
 import json
 import logging
+from pathlib import Path
 from typing import Any
 
 from switch_core.bridges.collaboration.session.contract import Item, TurnUpsert
 from switch_core.bridges.collaboration.session.outbound import SessionTurnActivity
+from switch_core.bridges.collaboration.session.projection import SessionProjection
+from switch_core.bridges.collaboration.session.transport import (
+    FixtureEventSource,
+)
 from switch_core.bridges.collaboration.slack.adapter import (
     SlackAdapter,
     SlackConnectionConfig,
 )
 
 from .test_slack_agent_sessions import FakeWebClient
+
+REPO_ROOT = Path(__file__).resolve().parents[5]
+ACTIVITY_PATH = (
+    REPO_ROOT / "console/packages/shared/src/session-v1/examples.activity.json"
+)
 
 CHANNEL = "C1"
 THREAD = "111.0"
@@ -424,3 +434,43 @@ async def test_the_runtime_state_card_leaves_a_streamed_thread_alone() -> None:
 
     assert client.api_calls[before:] == []
     assert client.posted == []
+
+
+# ── The whole recording, streamed ────────────────────────────────────────────
+
+
+async def test_the_recorded_turn_streams_within_every_limit_slack_has() -> None:
+    """The messy recording, replayed a step at a time, as the demo replays it.
+
+    Every test above builds the item it needs, so each one proves a rule in
+    isolation and none of them proves the rules hold together on the traffic a
+    real turn produces. This drives the recording — overlapping tools revised
+    out of the order they opened in, a title longer than a task card will take,
+    a detail longer than the room left after it, a declined step — and checks
+    what actually went to Slack.
+
+    The cap is the one that bites: Slack rejects the whole append over it, so
+    one over-long title costs every other step sent with it.
+    """
+    client = FakeWebClient()
+    activity = SessionTurnActivity(_adapter(client))
+    source = FixtureEventSource.from_examples(ACTIVITY_PATH, events=["turnActivity"])
+    projection = SessionProjection(await source.snapshot(source.session_id))
+
+    async for event in source.subscribe(source.session_id, 0):
+        projection.apply(event)
+        await _publish(
+            activity,
+            projection.turn_activity("turn-activity"),
+            _turn("running", "turn-activity"),
+        )
+
+    tasks = _tasks(client)
+    assert all(len(json.dumps(task, ensure_ascii=False)) <= 256 for task in tasks)
+    assert [task["status"] for task in tasks if task["id"].endswith("blame")] == [
+        "in_progress",
+        "error",
+    ]
+    trimmed = [task for task in tasks if task["id"].endswith("suite")]
+    assert trimmed and all("details" not in task for task in trimmed)
+    assert all(task["title"].startswith("Bash(uv run") for task in trimmed)

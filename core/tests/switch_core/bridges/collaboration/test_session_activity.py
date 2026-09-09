@@ -98,17 +98,24 @@ def _state(items: list[Item], turn: TurnUpsert) -> str:
 
 
 async def test_the_recorded_turn_folds_to_its_latest_revision_of_each_item() -> None:
-    """Five items from ten upserts, each showing where it got to."""
+    """Eleven items from twenty-one upserts, each showing where it got to."""
     items = await _items()
 
     assert [(item.item_id, item.status) for item in items] == [
         ("item-asked", "completed"),
         ("item-search", "completed"),
+        ("item-read-test", "completed"),
+        ("item-read-conftest", "completed"),
+        ("item-grep", "completed"),
+        ("item-suite", "failed"),
         ("item-run", "failed"),
+        ("item-read-session", "completed"),
+        ("item-blame", "declined"),
         ("item-said", "completed"),
         ("item-write", "in-progress"),
     ]
-    assert items[3].text.endswith("Pinning the fixture to one user per test fixes it.")
+    said = next(item for item in items if item.item_id == "item-said")
+    assert said.text.endswith("Pinning the fixture to one user per test fixes it.")
 
 
 async def test_an_item_revised_in_place_keeps_the_position_it_opened_in() -> None:
@@ -129,7 +136,7 @@ async def test_a_turn_is_only_its_own_items() -> None:
     projection = await _projection()
 
     assert projection.turn_activity("turn-nobody-ran") == []
-    assert len(projection.turn_activity(TURN)) == 5
+    assert len(projection.turn_activity(TURN)) == 11
 
 
 async def test_the_recording_says_where_its_turn_got_to() -> None:
@@ -196,9 +203,10 @@ async def test_a_call_still_waiting_does_not_read_as_one_already_refused() -> No
     the reader the answer before it asks the question — and tells them the wrong
     one. `declined` is what the answer would make it, not what waiting is.
     """
-    log = _context(await _items())
+    log = _context(await _items()).splitlines()
+    waiting = [line for line in log if "Editing tests/auth/conftest.py" in line]
 
-    assert "⊘" not in log
+    assert waiting == ["▸ Editing tests/auth/conftest.py — Waiting for permission"]
     assert "⊘ Refused it" in _context([_item(status="declined", title="Refused it")])
 
 
@@ -220,7 +228,14 @@ async def test_the_tool_log_reads_in_the_order_the_work_happened() -> None:
 
     assert [line.split(" ", 1)[1].split(" —")[0] for line in log] == [
         "Searched for the login tests",
+        "Read(tests/auth/test_login.py)",
+        "Read(tests/auth/conftest.py)",
+        "Grep(fixture_user)",
+        "Bash(uv run --project core pytest core/tests/switch_core/bridges/"
+        "collaboration/test_session_login_fixture_isolation.py -x -q --no-header)",
         "Ran tests/auth/test_login.py",
+        "Read(tests/session/test_session.py)",
+        "Bash(git log -L :fixture_user:tests/auth/conftest.py)",
         "Editing tests/auth/conftest.py",
     ]
 
@@ -458,7 +473,7 @@ async def test_the_card_and_its_fallback_say_the_same_things() -> None:
 async def test_the_audience_a_host_asked_for_is_not_consulted() -> None:
     """Every tool call in the recording is marked `session-members`.
 
-    All three reach the channel, because who sees a session's activity is
+    All nine reach the channel, because who sees a session's activity is
     Switch's decision and not the host's. Nothing has yet been built that takes
     it — the only caller is the demo, which shows the turn to whoever asked for
     it — so this records where the behaviour stands rather than endorsing it as
@@ -467,5 +482,5 @@ async def test_the_audience_a_host_asked_for_is_not_consulted() -> None:
     items = await _items()
     private = [item for item in items if item.audience == {"kind": "session-members"}]
 
-    assert len(private) == 3
+    assert len(private) == 9
     assert all(item.title.split()[0] in _context(items) for item in private)
