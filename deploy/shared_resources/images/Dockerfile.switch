@@ -21,6 +21,12 @@ COPY core/pyproject.toml core/uv.lock ./
 RUN uv sync --frozen --no-install-project --no-dev
 
 COPY core/switch_core/ switch_core/
+# The session demo replays a recording that lives in the console tree, which is
+# not in this image. Copied in beside the module that reads it so the demo works
+# in a deployed server and not only in a checkout. Goes with the demo when the
+# demo goes.
+COPY console/packages/shared/src/session-v1/examples.activity.json \
+     switch_core/bridges/collaboration/session/
 COPY core/alembic.ini .
 # pyproject's readme field makes hatchling read README.md when it builds the
 # project below, so it must be in the image context.

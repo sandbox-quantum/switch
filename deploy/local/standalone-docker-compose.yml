@@ -153,6 +153,9 @@ services:
       GATEWAY_ADMIN_PASSWORD: ${GATEWAY_ADMIN_PASSWORD}
       FRONTEND_BASE_URL: ${FRONTEND_BASE_URL}
       GATEWAY_PUBLIC_URL: ${GATEWAY_PUBLIC_URL:-}
+      # Off by default. The recorded session behind it posts a card into a
+      # real channel with no session behind it, so it is opt-in per server.
+      SESSION_DEMO_ENABLED: ${SESSION_DEMO_ENABLED:-}
     depends_on:
       postgres:
         condition: service_healthy

@@ -25,9 +25,11 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.bridges.collaboration.bridge_core import BridgeCore
 from switch_core.bridges.collaboration.models import (
+    InboundCommand,
     InboundInteraction,
     InboundMessage,
 )
+from switch_core.bridges.collaboration.session import demo
 from switch_core.bridges.collaboration.session.contract import SnapshotRequest
 from switch_core.bridges.collaboration.session.demo import TRIGGER, SessionDemo
 from switch_core.bridges.collaboration.session.inbound import (
@@ -63,6 +65,7 @@ REPO_ROOT = Path(__file__).resolve().parents[5]
 EXAMPLES_PATH = REPO_ROOT / "console/packages/shared/src/session-v1/examples.json"
 
 CHANNEL = "C1"
+FRESH_CHANNEL = "a-channel-nobody-has-spoken-in"
 
 # The message that typed the trigger. The turn is threaded under it, so it is
 # also where the activity goes.
@@ -666,7 +669,87 @@ async def test_the_demo_can_be_shown_more_than_once(
     assert len({row.session_id for row in rows}) == 3
 
 
+# ── Finding the recording ────────────────────────────────────────────────────
+
+
+def test_the_recording_is_found_in_a_checkout() -> None:
+    """The console tree beside `core/`, which is where a developer runs."""
+    assert demo._recording() == demo._RECORDING_PLACES[0]
+
+
+def test_the_recording_is_found_in_an_image_that_has_no_console_tree(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The shape every deployment has, and the one this could not run in.
+
+    A built image carries `switch_core/` and nothing else, so looking only
+    where a checkout keeps it meant the demo raised on every trigger anywhere
+    it was actually deployed. The image build drops the file beside the module.
+    """
+    beside_the_module = tmp_path / "examples.activity.json"
+    beside_the_module.write_text("{}")
+    monkeypatch.setattr(
+        demo, "_RECORDING_PLACES", (tmp_path / "no-console-tree", beside_the_module)
+    )
+
+    assert demo._recording() == beside_the_module
+
+
+def test_a_recording_in_neither_place_names_both(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two places to look is two places to be told about."""
+    monkeypatch.setattr(demo, "_RECORDING_PLACES", (tmp_path / "a", tmp_path / "b"))
+
+    with pytest.raises(FileNotFoundError) as raised:
+        demo._recording()
+
+    assert str(tmp_path / "a") in str(raised.value)
+    assert str(tmp_path / "b") in str(raised.value)
+
+
 # ── Where the trigger runs on the inbound path ───────────────────────────────
+
+
+def _bridge_for_trigger(
+    handle: Any, *, bridged: list[str], known_channel: bool = False
+) -> BridgeCore:
+    """A bridge stubbed down to the inbound command path and nothing else."""
+
+    async def _create_room_for_channel(**_kwargs: object) -> tuple[str, str]:
+        return ("room-made-just-now", "!made:test")
+
+    async def _ensure_user_in_matrix_room(**kwargs: object) -> None:
+        bridged.append(str(kwargs["room_id"]))
+        return None
+
+    bridge = BridgeCore.__new__(BridgeCore)
+    bridge._channel_to_room = (
+        {FRESH_CHANNEL: ("room-known-already", "!known:test")} if known_channel else {}
+    )
+    bridge._channel_locks = {}
+    bridge._session_demo = cast(Any, SimpleNamespace(handle=handle))
+    bridge._create_room_for_channel = _create_room_for_channel  # type: ignore[assignment]
+    bridge._ensure_user_in_matrix_room = _ensure_user_in_matrix_room  # type: ignore[assignment]
+    return bridge
+
+
+def _typed(content: str) -> InboundCommand:
+    """The trigger as an adapter hands it over: a command, not a message.
+
+    Every adapter routes a leading `!` to the command hook, so this is the only
+    shape `!session-demo` ever arrives in.
+    """
+    command, _, args = content.lstrip("!").partition(" ")
+    return InboundCommand(
+        channel_id=FRESH_CHANNEL,
+        channel_type="channel_public",
+        sender_id="U1",
+        sender_name="someone",
+        command=command,
+        args=args,
+        message_ref="slack-post-1",
+    )
 
 
 async def test_the_trigger_works_in_a_channel_the_bridge_has_not_seen_before() -> None:
@@ -677,49 +760,54 @@ async def test_the_trigger_works_in_a_channel_the_bridge_has_not_seen_before() -
     `!session-demo` in a fresh channel finds no room and returns: no card, no
     log line, nothing said in the channel, and only the second one works.
     """
-    asked: list[str] = []
+    asked: list[tuple[str, str]] = []
 
     async def _handle(
-        _content: str, _channel_id: str, room_id: str, _trigger_ref: str
+        content: str, _channel_id: str, room_id: str, _trigger_ref: str | None
     ) -> bool:
-        asked.append(room_id)
+        asked.append((content, room_id))
         return True
 
-    async def _is_registered_agent(_name: str) -> bool:
-        return False
-
-    async def _create_room_for_channel(**_kwargs: object) -> tuple[str, str]:
-        return ("room-made-just-now", "!made:test")
-
-    async def _repair_placeholder_username(*_args: object) -> None:
-        return None
-
-    async def _ensure_user_in_matrix_room(**_kwargs: object) -> None:
-        return None
-
-    bridge = BridgeCore.__new__(BridgeCore)
-    bridge._channel_to_room = {}
-    bridge._channel_locks = {}
-    bridge._session_interactions = None
-    bridge._session_demo = cast(Any, SimpleNamespace(handle=_handle))
-    bridge._is_registered_agent = _is_registered_agent  # type: ignore[assignment]
-    bridge._create_room_for_channel = _create_room_for_channel  # type: ignore[assignment]
-    bridge._repair_placeholder_username = _repair_placeholder_username  # type: ignore[assignment]
-    bridge._ensure_user_in_matrix_room = _ensure_user_in_matrix_room  # type: ignore[assignment]
-
-    await BridgeCore._handle_inbound_message(
-        bridge,
-        InboundMessage(
-            channel_id="a-channel-nobody-has-spoken-in",
-            channel_type="channel_public",
-            sender_id="U1",
-            sender_name="someone",
-            content=TRIGGER,
-            message_ref="slack-post-1",
-        ),
+    bridged: list[str] = []
+    await BridgeCore._handle_inbound_command(
+        _bridge_for_trigger(_handle, bridged=bridged), _typed(f"{TRIGGER} end")
     )
 
-    assert asked == ["room-made-just-now"]
+    assert asked == [(f"{TRIGGER} end", "room-made-just-now")]
+
+
+async def test_the_trigger_is_answered_here_and_not_relayed_as_a_command() -> None:
+    """The bug this fixes: the room answered `!session-demo` with "unknown command".
+
+    The demo watched the message path, which a leading `!` never reaches, so
+    the trigger was bridged into the room as a command nothing implements.
+    """
+
+    async def _handle(*_args: object) -> bool:
+        return True
+
+    bridged: list[str] = []
+    await BridgeCore._handle_inbound_command(
+        _bridge_for_trigger(_handle, bridged=bridged, known_channel=True),
+        _typed(TRIGGER),
+    )
+
+    assert bridged == []
+
+
+async def test_a_command_that_is_not_the_trigger_is_relayed_as_before() -> None:
+    """Consuming everything would take `!help` with it."""
+
+    async def _handle(*_args: object) -> bool:
+        return False
+
+    bridged: list[str] = []
+    await BridgeCore._handle_inbound_command(
+        _bridge_for_trigger(_handle, bridged=bridged, known_channel=True),
+        _typed("!help"),
+    )
+
+    assert bridged == ["room-known-already"]
 
 
 def _row(*, bridge_id: str, room_id: str, handle: str) -> SessionRequestPost:

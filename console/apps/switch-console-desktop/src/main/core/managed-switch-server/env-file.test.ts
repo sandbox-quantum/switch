@@ -28,6 +28,7 @@ describe('buildEnvFile', () => {
     namespace: 'sandbox-quantum',
     ports: { gateway: 51000, api: 51001, mattermost: 51002, postgres: 51003 },
     secrets,
+    sessionDemo: false,
   });
   const vars = Object.fromEntries(
     env
@@ -80,9 +81,15 @@ describe('buildEnvFile', () => {
     const interpolated = new Set(
       [...composeBody.matchAll(/\$\{([A-Z_][A-Z0-9_]*)/g)].map((m) => m[1])
     );
-    // Nothing is exempt today. An entry here must say why the stack is correct
-    // without it — leaving a var unset is a decision, not a default.
-    const intentionallyUnset = new Set<string>();
+    // An entry here must say why the stack is correct without it — leaving a
+    // var unset is a decision, not a default.
+    const intentionallyUnset = new Set<string>([
+      // The recorded session demo, which posts a card into a real channel with
+      // no session behind it. Off is the correct state for a released Console:
+      // it is written only for a stack built from a local checkout, and this
+      // `env` is the released one. Temporary — goes when the demo does.
+      'SESSION_DEMO_ENABLED',
+    ]);
 
     const missing = [...interpolated]
       .filter((key) => !intentionallyUnset.has(key))
@@ -90,6 +97,22 @@ describe('buildEnvFile', () => {
       .sort();
 
     expect(missing, 'compose interpolates these but the .env does not set them').toEqual([]);
+  });
+
+  it('turns the session demo on for a checkout build and off otherwise', () => {
+    // The .env is regenerated on every start, so a developer has nowhere to set
+    // this by hand — and a released Console runs pinned images that have never
+    // heard of it. Temporary, and it goes when the demo does.
+    expect(env).not.toContain('SESSION_DEMO_ENABLED');
+    const fromCheckout = buildEnvFile({
+      version: 'checkout',
+      registry: 'ghcr.io',
+      namespace: 'sandbox-quantum',
+      ports: { gateway: 51000, api: 51001, mattermost: 51002, postgres: 51003 },
+      secrets,
+      sessionDemo: true,
+    });
+    expect(fromCheckout).toContain('SESSION_DEMO_ENABLED=true');
   });
 
   it('points the deeplink redirect at the API, not the operator UI', () => {

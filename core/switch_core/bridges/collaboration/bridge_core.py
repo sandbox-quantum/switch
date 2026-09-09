@@ -552,8 +552,6 @@ class BridgeCore:
 
         room_id, matrix_room_id = room_ids
 
-        await self._handle_session_demo(msg, room_id)
-
         # A bot @mention carries no agent name in its text (the platform tags the
         # bot, not the agent). Resolve which agent it addresses so we can inject
         # an `@<agent>` the addressing layer matches on; if it can't be resolved,
@@ -699,6 +697,9 @@ class BridgeCore:
             if room_ids is None:
                 return
         room_id, matrix_room_id = room_ids
+
+        if await self._handle_session_demo(cmd, room_id):
+            return
 
         puppet = await self._ensure_user_in_matrix_room(
             external_user_id=cmd.sender_id,
@@ -1159,36 +1160,44 @@ class BridgeCore:
             actor.channel_id, actor.sender_id, thread_ref, refused.told()
         )
 
-    async def _handle_session_demo(self, msg: InboundMessage, room_id: str) -> None:
-        """The trigger that stands in for a session, where one is asked for.
+    async def _handle_session_demo(self, cmd: InboundCommand, room_id: str) -> bool:
+        """Whether this was the demo trigger, having acted on it if so.
 
-        Takes the room rather than looking it up, because it runs after the
-        channel has one: a channel is mapped lazily on its first message, and a
-        channel nobody has spoken in yet is exactly the one somebody makes to
-        show this off.
+        A command rather than a message, because the trigger starts with `!`
+        and every adapter routes a leading `!` to the command hook. Watching
+        the message path for it — which is where this started — meant watching
+        somewhere it could never arrive, and what a channel actually got was
+        the room's "unknown command".
+
+        So it is answered here and consumed: nothing is bridged for it, which
+        is the whole point. Takes the room rather than looking it up, because
+        it runs after the channel has one — a channel is mapped lazily on its
+        first message, and a channel nobody has spoken in yet is exactly the
+        one somebody makes to show this off.
 
         A failure is reported into the channel rather than raised: this runs on
         the inbound path ahead of the relay, and a demo that cannot post a card
-        must not also cost the room the message.
+        must not also cost the room the command.
         """
         demo = self._session_demo
         if demo is None:
-            return
+            return False
+        trigger_ref = cmd.root_id or cmd.message_ref
+        content = f"!{cmd.command} {cmd.args}".strip()
         try:
-            await demo.handle(
-                msg.content, msg.channel_id, room_id, msg.root_id or msg.message_ref
-            )
+            return await demo.handle(content, cmd.channel_id, room_id, trigger_ref)
         except Exception as error:
             logger.error(
                 "The demo card for channel %s could not be posted: %s",
-                msg.channel_id,
+                cmd.channel_id,
                 error,
             )
             await self._adapter.admin_message(
-                msg.channel_id,
+                cmd.channel_id,
                 f"The demo request card could not be posted: {error}",
-                msg.root_id or msg.message_ref,
+                trigger_ref,
             )
+            return True
 
     def _drop_session_command(self, command: Command | None, sender_id: str) -> None:
         """Say out loud that an answer went nowhere.

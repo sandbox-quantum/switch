@@ -60,12 +60,32 @@ _TO_THE_END = "end"
 
 # The fixture the parity suite already reads, so what lands in the channel is
 # the same recorded session the tests assert against.
-_RECORDING = (
+_RECORDING_NAME = "examples.activity.json"
+
+# Where that file is, in each of the two shapes the server runs in. A checkout
+# has the console tree beside `core/`. An image has only the package — the
+# Dockerfile drops the recording in next to this module — so looking in the
+# checkout alone made the demo unreachable anywhere it is actually deployed.
+_RECORDING_PLACES = (
     Path(__file__).resolve().parents[5]
-    / "console/packages/shared/src/session-v1/examples.activity.json"
+    / "console/packages/shared/src/session-v1"
+    / _RECORDING_NAME,
+    Path(__file__).resolve().parent / _RECORDING_NAME,
 )
 _STREAM = "turnActivity"
 _ENDING = "turnEnd"
+
+
+def _recording() -> Path:
+    """The recorded session, wherever this deployment keeps it."""
+    for place in _RECORDING_PLACES:
+        if place.exists():
+            return place
+    raise FileNotFoundError(
+        f"SESSION_DEMO_ENABLED is set but {_RECORDING_NAME} is in none of "
+        f"{[str(place) for place in _RECORDING_PLACES]}. An image build copies "
+        f"it in beside the module; a checkout reads it from the console tree."
+    )
 
 
 class SessionDemo:
@@ -81,14 +101,15 @@ class SessionDemo:
         self._activity = activity
 
     async def handle(
-        self, content: str, channel_id: str, room_id: str, trigger_ref: str
+        self, content: str, channel_id: str, room_id: str, trigger_ref: str | None
     ) -> bool:
         """Whether this message was the trigger, having acted on it if so.
 
         `trigger_ref` is the message that asked, and the turn is threaded under
         it. Slack will only stream into a channel as a reply to somebody, so a
         turn with no thread is a turn drawn as blocks — which is the one thing
-        this demo exists to show is no longer the only option.
+        this demo exists to show is no longer the only option. None where the
+        platform gave us no id for the message, and then blocks is all there is.
         """
         said = content.strip().lower()
         if said not in (TRIGGER, f"{TRIGGER} {_TO_THE_END}"):
@@ -120,7 +141,12 @@ class SessionDemo:
         return True
 
     async def _post(
-        self, channel_id: str, room_id: str, trigger_ref: str, *, to_the_end: bool
+        self,
+        channel_id: str,
+        room_id: str,
+        trigger_ref: str | None,
+        *,
+        to_the_end: bool,
     ) -> SessionRequestPost:
         """Post the recording's turn and then its request, under a fresh id.
 
@@ -136,12 +162,8 @@ class SessionDemo:
         picking it from the request is the part that stays true of a session
         doing more than one thing.
         """
-        if not _RECORDING.exists():
-            raise FileNotFoundError(
-                f"The session fixtures are not at {_RECORDING}. SESSION_DEMO_ENABLED "
-                f"needs the repository checkout, not just the installed package."
-            )
-        source = FixtureEventSource.from_examples(_RECORDING, events=[_STREAM])
+        recording = _recording()
+        source = FixtureEventSource.from_examples(recording, events=[_STREAM])
         projection = await project(source, source.session_id)
         requests = projection.open_requests()
         if not requests:
@@ -166,7 +188,7 @@ class SessionDemo:
         )
         if not to_the_end:
             return post
-        ending = FixtureEventSource.from_examples(_RECORDING, events=[_STREAM, _ENDING])
+        ending = FixtureEventSource.from_examples(recording, events=[_STREAM, _ENDING])
         async for event in ending.subscribe(
             source.session_id, projection.through_sequence
         ):
@@ -189,7 +211,7 @@ class SessionDemo:
         turn_id: str,
         channel_id: str,
         session_id: str,
-        trigger_ref: str,
+        trigger_ref: str | None,
     ) -> None:
         """The turn as the projection currently has it, in its one message."""
         turn = projection.turn(turn_id)
