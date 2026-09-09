@@ -106,7 +106,10 @@ import {
   GatewayError,
   ownsOwnerAddressedAgent,
   releaseBridgeIdentity,
+  createRoomFromTemplate,
+  exportRoomYaml,
   removeRoomAgent,
+  type TemplateProvisionResult,
   updateAddressingPolicy,
   updateAgentIcon,
   updateRoom,
@@ -547,6 +550,16 @@ export const switchServersController = createRPCController({
     report(roomCreateFailureReason(result));
     return result;
   },
+
+  createRoomFromTemplate: async (
+    serverId: string,
+    yamlText: string,
+    inputs: Record<string, string | number | boolean>
+  ): Promise<TemplateProvisionResult> =>
+    createRoomFromTemplate(await requireServer(serverId), yamlText, inputs),
+
+  exportRoomYaml: async (params: { serverId: string; roomId: string }): Promise<string> =>
+    exportRoomYaml(await requireServer(params.serverId), params.roomId),
 
   listAgentRooms: async (params: {
     serverId: string;

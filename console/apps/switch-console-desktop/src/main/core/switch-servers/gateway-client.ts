@@ -1041,6 +1041,86 @@ export async function deleteAgent(server: SwitchServer, agentId: string): Promis
   });
 }
 
+/**
+ * Export a room's configuration as YAML (`GET /rooms/{roomId}/yaml`). Returns
+ * the raw YAML text — the same surface `POST /rooms/from-yaml` accepts, so
+ * the exported file round-trips through import unchanged.
+ *
+ * Each section can be dropped via its boolean toggles (default: all included).
+ */
+export async function exportRoomYaml(
+  server: SwitchServer,
+  roomId: string,
+  sections?: {
+    agents?: boolean;
+    users?: boolean;
+    references?: boolean;
+    docs?: boolean;
+    roles?: boolean;
+  }
+): Promise<string> {
+  const params = new URLSearchParams();
+  if (sections?.agents === false) params.set('agents', 'false');
+  if (sections?.users === false) params.set('users', 'false');
+  if (sections?.references === false) params.set('references', 'false');
+  if (sections?.docs === false) params.set('docs', 'false');
+  if (sections?.roles === false) params.set('roles', 'false');
+  const query = params.toString();
+  const path = `/rooms/${encodeURIComponent(roomId)}/yaml${query ? `?${query}` : ''}`;
+  const res = await gatewayFetch(server, path, { authenticated: true });
+  return res.text();
+}
+
+/**
+ * Export all rooms in a group as YAML (`GET /room-groups/{groupId}/yaml`).
+ * Returns the group document shape (`group:` + `rooms:` + `links:`), matching
+ * the surface `POST /rooms/from-yaml` accepts for group provisioning.
+ */
+export async function exportGroupYaml(server: SwitchServer, groupId: string): Promise<string> {
+  const res = await gatewayFetch(server, `/room-groups/${encodeURIComponent(groupId)}/yaml`, {
+    authenticated: true,
+  });
+  return res.text();
+}
+
+/** The result of provisioning a room from a YAML template. */
+export type TemplateProvisionResult = {
+  roomId: string;
+  roomName: string;
+  failedAttachments: Array<{ kind: string; id: string; error: string }>;
+};
+
+/**
+ * Create a room from a YAML template (`POST /rooms/from-yaml`). Sends the
+ * template as a JSON body with the YAML text and any user-supplied inputs.
+ * The server parses the template, interpolates inputs, and provisions
+ * everything in one call.
+ *
+ * A 400 carries a `detail` naming the bad input; the caller maps it back to
+ * the form field.
+ */
+export async function createRoomFromTemplate(
+  server: SwitchServer,
+  yamlText: string,
+  inputs: Record<string, string | number | boolean>
+): Promise<TemplateProvisionResult> {
+  const res = await gatewayFetch(server, '/rooms/from-yaml', {
+    authenticated: true,
+    method: 'POST',
+    body: { yaml: yamlText, inputs },
+  });
+  const json = (await res.json()) as {
+    room_id: string;
+    room_name: string;
+    failed_attachments?: Array<{ kind: string; id: string; error: string }>;
+  };
+  return {
+    roomId: json.room_id,
+    roomName: json.room_name,
+    failedAttachments: json.failed_attachments ?? [],
+  };
+}
+
 export async function fetchRoomRoles(
   server: SwitchServer,
   roomId: string

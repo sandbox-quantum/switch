@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 from typing import Annotated, cast
 
@@ -51,7 +52,12 @@ from switch_core.gateway.schemas import (
     RoomUsersRequest,
 )
 from switch_core.room_service import RoleSpec, RoomCreateConfig, RoomService
-from switch_core.rooms_yaml import ProvisionResult, RoomYamlService
+from switch_core.rooms_yaml import (
+    GroupProvisionResult,
+    GroupSpec,
+    ProvisionResult,
+    RoomYamlService,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -372,17 +378,43 @@ async def create_room_from_yaml(
     request: Request,
     rooms_yaml: Annotated[RoomYamlService, Depends(get_room_yaml_service)],
     user: Annotated[User, Depends(get_current_user)],
-) -> ProvisionResult:
-    """Provision a single room and its attachments from a YAML spec. The body
-    is the raw YAML text. Best-effort: the room is created first (fail-loud on
-    bad config), then inline references/docs are attached, with post-creation
-    failures surfaced in ``failed_attachments`` rather than dropped."""
-    text = (await request.body()).decode("utf-8")
+) -> ProvisionResult | GroupProvisionResult:
+    """Provision room(s) from a YAML spec.
+
+    The document shape determines the result: a ``room:`` document provisions
+    a single room (returns ``ProvisionResult``); a ``group:`` + ``rooms:``
+    document provisions a room group with its rooms and links (returns
+    ``GroupProvisionResult``).
+
+    Two content types are accepted:
+
+    * **Raw YAML** (``text/yaml``, ``text/plain``, or any non-JSON type): the
+      body is the template text.  Only defaults-only templates work here
+      (no way to pass inputs).
+    * **JSON** (``application/json``): ``{"yaml": "<template text>",
+      "inputs": {...}}`` where ``inputs`` supplies values for declared
+      ``params:``.
+    """
+    content_type = request.headers.get("content-type", "")
     try:
-        spec = rooms_yaml.parse(text)
-        return await rooms_yaml.provision(
-            spec, user_id=user.id, is_admin=user.role == "admin"
-        )
+        if "application/json" in content_type:
+            payload = json.loads(await request.body())
+            if not isinstance(payload, dict) or "yaml" not in payload:
+                raise ValueError("JSON body must have a 'yaml' key")
+            text = payload["yaml"]
+            if not isinstance(text, str):
+                raise ValueError("'yaml' must be a string")
+            inputs = payload.get("inputs")
+        else:
+            text = (await request.body()).decode("utf-8")
+            inputs = None
+        spec = rooms_yaml.parse(text, inputs=inputs)
+        is_admin = user.role == "admin"
+        if isinstance(spec, GroupSpec):
+            return await rooms_yaml.provision_group(
+                spec, user_id=user.id, is_admin=is_admin
+            )
+        return await rooms_yaml.provision(spec, user_id=user.id, is_admin=is_admin)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     except PermissionError as e:
