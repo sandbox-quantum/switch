@@ -97,6 +97,12 @@ class SessionPublicationStore:
         sweep timer, and two passes that both adopt the same in-flight intent
         post the second card this table exists to prevent. The caller holds the
         transaction for as long as it is working on them.
+
+        That makes the sweep a fourth place a transaction stays open across a
+        network call, alongside the three `RoomService` methods named on
+        `db_idle_in_transaction_session_timeout`. The publisher in S5 decides
+        which way to settle it: keep the claim and add the sweep to that list,
+        or hold the lock only long enough to mark the row in-flight.
         """
         result = await session.execute(
             select(SessionPublication)

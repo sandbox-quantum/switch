@@ -102,6 +102,10 @@ def upgrade() -> None:
             "session_id", "sequence", name="uq_session_events_sequence"
         ),
         sa.UniqueConstraint("session_id", "event_id", name="uq_session_events_event"),
+        sa.CheckConstraint(
+            "host_sequence IS NULL OR epoch IS NOT NULL",
+            name="ck_session_events_host_event_names_its_epoch",
+        ),
     )
     op.create_index(
         "uq_session_events_host_sequence",

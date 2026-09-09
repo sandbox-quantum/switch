@@ -424,6 +424,50 @@ class TestSessionEventStore:
                 )
             assert await store.head_sequence(session, "s-1") == 1
 
+    async def test_a_batch_holding_one_duplicate_keeps_the_rest(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """The savepoint is there so ingest can commit what it did accept.
+
+        A host retrying an outbox sends a run of events of which some are
+        already in the log. Dropping the whole batch for one of them would make
+        the retry that fixes a gap the thing that widens it.
+        """
+        store = SessionEventStore()
+        async with session_factory() as session:
+            await _make_session(session)
+            await store.append(session, _event("s-1", event_id="ev-1"))
+            await session.commit()
+
+        async with session_factory() as session:
+            await store.append(session, _event("s-1", event_id="ev-2", host_sequence=2))
+            with pytest.raises(DuplicateEventId):
+                await store.append(
+                    session, _event("s-1", event_id="ev-1", host_sequence=3)
+                )
+            await store.append(session, _event("s-1", event_id="ev-3", host_sequence=4))
+            await session.commit()
+
+        async with session_factory() as session:
+            logged = await store.read_after(session, "s-1", after=0, limit=10)
+
+        assert [event.event_id for event in logged] == ["ev-1", "ev-2", "ev-3"]
+
+    async def test_a_host_event_naming_no_epoch_is_refused(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """Nullable epoch is for server events, and only for those.
+
+        The uniqueness index that refuses a host's retry keys on the epoch, and
+        Postgres NULLs are distinct — so a host position under no epoch reserves
+        nothing and the same position could be logged twice.
+        """
+        store = SessionEventStore()
+        async with session_factory() as session:
+            await _make_session(session)
+            with pytest.raises(IntegrityError):
+                await store.append(session, _event("s-1", epoch=None, host_sequence=1))
+
     async def test_a_new_epoch_restarts_the_host_numbering(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
@@ -669,6 +713,45 @@ class TestSessionCommandStore:
             saved = await store.get_by_command_id(session, "s-1", "cmd-1")
 
         assert saved is not None
+
+    async def test_a_refusal_does_not_undo_a_command_accepted_beside_it(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """Acceptance answers per command, so a refusal cannot roll one back.
+
+        §5.1 refuses the answer that lost the reservation and accepts the one
+        that took it. Both can be decided against the same open session, and the
+        accepted one has to still be there to deliver once the refusal has been
+        answered.
+        """
+        store = SessionCommandStore()
+        async with session_factory() as session:
+            await _make_session(session)
+            await store.create(
+                session,
+                _command(
+                    "s-1",
+                    command_id="cmd-1",
+                    request_id="req-1",
+                    expected_revision=1,
+                ),
+            )
+            with pytest.raises(RequestAlreadyReserved):
+                await store.create(
+                    session,
+                    _command(
+                        "s-1",
+                        command_id="cmd-2",
+                        request_id="req-1",
+                        expected_revision=1,
+                    ),
+                )
+            await session.commit()
+
+        async with session_factory() as session:
+            queued = await store.read_after(session, "s-1", after=0, limit=10)
+
+        assert [command.command_id for command in queued] == ["cmd-1"]
 
     async def test_delivery_pages_from_a_position(
         self, session_factory: async_sessionmaker[AsyncSession]

@@ -1027,7 +1027,9 @@ class SessionEvent(Base):
     `epoch` is the host's generation and is empty on a server event, which has
     none. The one that most needs writing is connectivity going offline, and
     that is emitted exactly when the lease — the only place an epoch is
-    stored — has just gone.
+    stored — has just gone. An event that does carry a `host_sequence` must
+    name its epoch, because Postgres treats NULLs as distinct and a position
+    under no epoch would be a position the uniqueness index cannot refuse.
     """
 
     __tablename__ = "session_events"
@@ -1041,6 +1043,10 @@ class SessionEvent(Base):
             "host_sequence",
             unique=True,
             postgresql_where=text("host_sequence IS NOT NULL"),
+        ),
+        CheckConstraint(
+            "host_sequence IS NULL OR epoch IS NOT NULL",
+            name="ck_session_events_host_event_names_its_epoch",
         ),
     )
 
