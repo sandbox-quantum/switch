@@ -54,14 +54,24 @@ async def log_http_exceptions(request: Request, exc: Exception) -> JSONResponse:
             exc.status_code,
             exc.detail,
         )
+    response: JSONResponse
     if is_session_path(request.url.path):
-        return session_error_response(
+        response = session_error_response(
             code_for_status(exc.status_code),
             str(exc.detail),
             retryable=False,
             status_code=exc.status_code,
         )
-    return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+    else:
+        response = JSONResponse(
+            status_code=exc.status_code, content={"detail": exc.detail}
+        )
+    # Registering this against Starlette's class displaces the built-in handler,
+    # which carried these through. A 405's `Allow` and a 401's
+    # `WWW-Authenticate` are part of the answer, not decoration.
+    if exc.headers:
+        response.headers.update(exc.headers)
+    return response
 
 
 async def log_validation_errors(request: Request, exc: Exception) -> JSONResponse:

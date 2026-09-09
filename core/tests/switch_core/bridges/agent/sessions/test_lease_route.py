@@ -557,3 +557,7 @@ class TestEveryFailureWearsTheEnvelope:
 
         assert resp.status_code == 405
         assert resp.json()["code"] == "INVALID_REQUEST"
+        # Taking over `HTTPException` from the built-in handler means taking
+        # over what it carried: the router puts the allowed methods on the
+        # exception, and dropping them silently narrows the answer.
+        assert resp.headers["allow"] == "POST"
