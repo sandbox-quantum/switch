@@ -11,6 +11,10 @@ from starlette.responses import Response
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from switch_core.bridges.agent.api_key_cache import ApiKeyCache
+from switch_core.bridges.agent.sessions.errors import (
+    is_session_path,
+    session_error_response,
+)
 from switch_core.db.models import Agent, ApiKey
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.api_key_store import ApiKeyStore
@@ -112,10 +116,9 @@ class BearerAuthMiddleware:
         auth_header = headers.get(b"authorization", b"").decode()
 
         if not auth_header.startswith("Bearer "):
-            response = Response(
-                "Missing or invalid Authorization header", status_code=401
+            await self._unauthorized(
+                path, "Missing or invalid Authorization header", scope, receive, send
             )
-            await response(scope, receive, send)
             return
 
         token = auth_header[7:]
@@ -144,7 +147,25 @@ class BearerAuthMiddleware:
             await self.app(scope, receive, send)
             return
 
-        response = Response("Invalid credentials", status_code=401)
+        await self._unauthorized(path, "Invalid credentials", scope, receive, send)
+
+    async def _unauthorized(
+        self, path: str, message: str, scope: Scope, receive: Receive, send: Send
+    ) -> None:
+        """Refuse the request in the shape the caller's route family speaks.
+
+        Plain text everywhere it always was; the session contract's envelope on
+        the paths the contract owns, so a host's one decoder finds a `code`
+        rather than falling through to unknown-error on the one failure it is
+        most likely to hit.
+        """
+        response: Response
+        if is_session_path(path):
+            response = session_error_response(
+                "NOT_AUTHORIZED", message, retryable=False, status_code=401
+            )
+        else:
+            response = Response(message, status_code=401)
         await response(scope, receive, send)
 
     async def _resolve_api_key(self, token: str) -> tuple[ApiKey | None, Agent | None]:

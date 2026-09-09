@@ -20,16 +20,18 @@ from fastapi import FastAPI
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from switch_core.bridges.agent.auth import _is_public_path, get_agent_from_scope
+from switch_core.bridges.agent.api_key_cache import ApiKeyCache
+from switch_core.bridges.agent.app import install_exception_handlers
+from switch_core.bridges.agent.auth import (
+    BearerAuthMiddleware,
+    _is_public_path,
+    get_agent_from_scope,
+)
 from switch_core.bridges.agent.dependencies import (
     get_session,
     get_session_lease_service,
 )
-from switch_core.bridges.agent.sessions.errors import (
-    STATUS_BY_CODE,
-    SessionApiError,
-    session_api_error_handler,
-)
+from switch_core.bridges.agent.sessions.errors import STATUS_BY_CODE, SessionApiError
 from switch_core.bridges.agent.sessions.lease_service import SessionLeaseService
 from switch_core.bridges.agent.sessions.routes import router
 from switch_core.db.models import (
@@ -122,7 +124,7 @@ async def caller(
     """
     agent, other = agents
     app = FastAPI()
-    app.add_exception_handler(SessionApiError, session_api_error_handler)
+    install_exception_handlers(app)
     app.include_router(router)
 
     async def _db() -> AsyncIterator[AsyncSession]:
@@ -344,14 +346,53 @@ class TestOwnership:
         assert (await caller.lease("s2", hostId="host-b")).status_code == 200
 
 
-class TestALeaseReachesNoRoom:
-    """The slice's headline: an agent can take and lose a lease, and a
-    leaseholder still cannot publish.
+class TestReclaimingAfterARestart:
+    """A host that dies inside the TTL has to be able to get its session back.
 
-    Publication authority is a server-owned association, written by something
-    that is not this route and does not exist yet. Nothing on any lease path may
-    create one, or the whole point of separating the two is lost the first time
-    a host takes a lease.
+    Its epoch went with its memory, so it must acquire rather than renew, and
+    the lease row it left is still well inside the 90s window. If that needed
+    `takeover: true`, the flag would be set on every ordinary restart and would
+    stop distinguishing the case it exists for.
+    """
+
+    async def test_the_same_host_reacquires_without_asking_for_a_takeover(
+        self, caller: _Caller
+    ) -> None:
+        first = (await caller.lease("s1", hostId="host-a")).json()["epoch"]
+
+        resp = await caller.lease("s1", hostId="host-a")
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["epoch"] != first
+        assert body["displaced"] == "host-a"
+
+    async def test_the_epoch_the_dead_process_held_is_dead_with_it(
+        self, caller: _Caller
+    ) -> None:
+        """Reacquiring is not renewing: whatever the old process still had in
+        flight is fenced out, which is the whole reason to mint a new epoch."""
+        first = (await caller.lease("s1", hostId="host-a")).json()["epoch"]
+        await caller.lease("s1", hostId="host-a")
+
+        resp = await caller.lease("s1", hostId="host-a", epoch=first)
+
+        assert resp.status_code == 409
+        assert resp.json()["code"] == "STALE_EPOCH"
+
+    async def test_a_different_host_still_has_to_ask(self, caller: _Caller) -> None:
+        await caller.lease("s1", hostId="host-a")
+
+        assert (await caller.lease("s1", hostId="host-b")).status_code == 409
+
+
+class TestALeaseReachesNoRoom:
+    """A regression guard, load-bearing from S4 onwards.
+
+    Publication authority is a server-owned association written by something
+    that is not this route and does not exist yet, so this cannot fail today for
+    the reason it names. It is here to fail the first time a lease path grows a
+    shortcut into a room.
     """
 
     async def test_no_lease_path_creates_a_room_association(
@@ -385,6 +426,22 @@ class TestTheDoor:
 
         assert resp.status_code == 422
 
+    async def test_renew_and_takeover_together_are_refused(
+        self, caller: _Caller
+    ) -> None:
+        """ "Renew, or take it back if I lost it" is two requests, not one.
+
+        Resolving it either way is silent: a renewal that became a takeover
+        hands back an epoch the host did not ask to keep, and a takeover that
+        became a renewal drops the flag.
+        """
+        epoch = (await caller.lease("s1", hostId="host-a")).json()["epoch"]
+
+        resp = await caller.lease("s1", hostId="host-a", epoch=epoch, takeover=True)
+
+        assert resp.status_code == 422
+        assert resp.json()["code"] == "INVALID_REQUEST"
+
     def test_every_error_this_route_raises_has_a_status(self) -> None:
         """`SessionApiError` validates its code against the table, so a code
         with no status cannot be constructed rather than rendering as a 500."""
@@ -394,3 +451,75 @@ class TestTheDoor:
         assert STATUS_BY_CODE["LEASE_HELD"] == 409
         assert STATUS_BY_CODE["STALE_EPOCH"] == 409
         assert STATUS_BY_CODE["NOT_AUTHORIZED"] == 403
+
+
+class TestEveryFailureWearsTheEnvelope:
+    """§6.2 is what the host decodes, and it has one decoder per route family.
+
+    A rejected token or a malformed body arriving as `{"detail": ...}` has no
+    `code` in it, so the host falls through to unknown-error at the two moments
+    the cause is most obvious. Both doors are ahead of the handler, so neither
+    is covered by the handler raising `SessionApiError`.
+    """
+
+    async def test_a_request_with_no_token_still_answers_in_the_envelope(
+        self,
+    ) -> None:
+        app = FastAPI()
+        install_exception_handlers(app)
+        app.include_router(router)
+        app.add_middleware(
+            BearerAuthMiddleware,
+            agent_store=None,  # type: ignore[arg-type]
+            api_key_store=None,  # type: ignore[arg-type]
+            api_key_cache=ApiKeyCache(ttl_seconds=0, max_entries=1),
+            session_factory=None,  # type: ignore[arg-type]
+        )
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://agent-bridge"
+        ) as client:
+            resp = await client.post(
+                "/agent/v1/sessions/s1/lease", json={"hostId": "host-a"}
+            )
+
+        assert resp.status_code == 401
+        body = resp.json()
+        assert body["code"] == "NOT_AUTHORIZED"
+        assert body["retryable"] is False
+
+    async def test_every_other_route_keeps_the_shape_it_had(self) -> None:
+        """The envelope is scoped to the contract's paths on purpose.
+
+        Every existing agent-bridge client reads `{"detail": ...}`, and this
+        middleware is also the MCP door.
+        """
+        app = FastAPI()
+        install_exception_handlers(app)
+        app.add_middleware(
+            BearerAuthMiddleware,
+            agent_store=None,  # type: ignore[arg-type]
+            api_key_store=None,  # type: ignore[arg-type]
+            api_key_cache=ApiKeyCache(ttl_seconds=0, max_entries=1),
+            session_factory=None,  # type: ignore[arg-type]
+        )
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://agent-bridge"
+        ) as client:
+            resp = await client.get("/agents/a1/rooms")
+
+        assert resp.status_code == 401
+        assert "code" not in resp.text
+
+    async def test_a_malformed_body_answers_in_the_envelope(
+        self, caller: _Caller
+    ) -> None:
+        resp = await caller.client.post(
+            "/agent/v1/sessions/s1/lease", json={"epoch": 4}
+        )
+
+        assert resp.status_code == 422
+        body = resp.json()
+        assert body["code"] == "INVALID_REQUEST"
+        assert body["retryable"] is False

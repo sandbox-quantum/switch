@@ -15,7 +15,7 @@ does not have.
 
 from __future__ import annotations
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, model_validator
 from pydantic.alias_generators import to_camel
 
 
@@ -37,12 +37,30 @@ class LeaseRequest(_Model):
     `takeover` is opt-in for the same reason `ConnectionSubscribeRequest` makes
     it opt-in: the usual cause of a collision is a stale process, and refusing
     surfaces that instead of quietly killing whatever was already there. A lease
-    whose holder has stopped heartbeating is free without it.
+    whose holder has stopped heartbeating is free without it, and so is one this
+    same host already holds.
+
+    Sending both `epoch` and `takeover` is refused rather than resolved. It
+    reads as "renew, or take it back if I lost it", and the two halves want
+    opposite answers: a renewal that silently became a takeover would hand the
+    host a different epoch than the one it asked to keep, and a takeover that
+    silently became a renewal would drop the flag on the floor. A host that
+    finds its renewal refused can acquire, which is one more round trip and no
+    ambiguity.
     """
 
     host_id: str
     epoch: str | None = None
     takeover: bool = False
+
+    @model_validator(mode="after")
+    def _renewal_does_not_take_over(self) -> LeaseRequest:
+        if self.epoch is not None and self.takeover:
+            raise ValueError(
+                "epoch and takeover are mutually exclusive: an epoch means "
+                "renew the lease you hold, takeover means acquire one you do not."
+            )
+        return self
 
 
 class LeaseResponse(_Model):

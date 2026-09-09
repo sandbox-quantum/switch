@@ -42,6 +42,11 @@ ingress:
   # gateway: the Bearer-auth agent bridge + MCP, and public OAuth/MCP discovery.
   agentApiPaths:
     - /agents
+    # A separate segment from /agents, so it needs its own entry: Prefix
+    # matching is per segment and /agents does not match /agent/v1/… . The
+    # session interaction contract names this path, and a host that cannot
+    # reach it falls through to the gateway and never sees switch-core.
+    - /agent
     - /mcp
     - /oauth
     - /.well-known

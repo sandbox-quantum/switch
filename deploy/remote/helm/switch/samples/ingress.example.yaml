@@ -37,6 +37,11 @@ spec:
           - path: /agents
             pathType: Prefix
             backend: { service: { name: RELEASE-switch-core, port: { number: 8000 } } }
+          # Its own entry, not covered by /agents: Prefix matching is per
+          # segment. The session contract's host routes live under /agent/v1.
+          - path: /agent
+            pathType: Prefix
+            backend: { service: { name: RELEASE-switch-core, port: { number: 8000 } } }
           - path: /mcp
             pathType: Prefix
             backend: { service: { name: RELEASE-switch-core, port: { number: 8000 } } }

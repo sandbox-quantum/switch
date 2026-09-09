@@ -146,10 +146,15 @@ class SessionLeaseService:
         try:
             await self.sessions.register(session, session_id, agent_id, request.host_id)
         except SessionAlreadyRegistered as error:
+            # Read the winner rather than guessing. The case this constraint
+            # exists for is a different agent getting there first, and there the
+            # answer is the permanent one — telling that loser to retry sends it
+            # back for a `NOT_AUTHORIZED` it could have had immediately.
+            await self._require_ownership(session, session_id, agent_id)
             raise SessionApiError(
                 "LEASE_HELD",
-                f"Session {session_id!r} was registered by another host while "
-                f"this claim was in flight.",
+                f"Session {session_id!r} was registered by another host of this "
+                f"agent while the claim was in flight.",
                 retryable=True,
             ) from error
         return await self._take_free(session, session_id, agent_id, epoch, request)
@@ -189,10 +194,19 @@ class SessionLeaseService:
     ) -> LeaseResponse:
         """Take a session that already has a holder.
 
-        A holder still heartbeating is refused unless the claimant said it meant
-        it. A holder that has stopped is logically free — the same read-time
-        staleness `role_leases` uses — so a host that died does not keep its
-        session hostage until someone intervenes.
+        A *different* host still heartbeating is refused unless the claimant said
+        it meant it. A holder that has stopped is logically free — the same
+        read-time staleness `role_leases` uses — so a host that died does not
+        keep its session hostage until someone intervenes.
+
+        The host already named on the lease is always let through. A process
+        that is killed and restarts loses its epoch with its memory, so it must
+        acquire rather than renew, and the lease row it left behind is still
+        well inside the TTL. Refusing that would make `takeover: true` the
+        ordinary restart path, which is exactly where a flag meaning "I know I
+        am displacing someone" stops meaning anything. Two live processes
+        sharing one `host_id` are already indistinguishable to this table, so
+        the newer one winning is the only answer available.
 
         Either way the incumbent is displaced by the epoch changing under it, not
         by being told. It finds out when its next renew or event is refused,
@@ -204,7 +218,8 @@ class SessionLeaseService:
         # left to name as the loser.
         previous_host = held.host_id
         previous_epoch = held.epoch
-        if self.leases.is_live(held) and not request.takeover:
+        reclaiming = previous_host == request.host_id
+        if self.leases.is_live(held) and not request.takeover and not reclaiming:
             raise SessionApiError(
                 "LEASE_HELD",
                 f"Session {session_id!r} is held by host {previous_host!r}, which "

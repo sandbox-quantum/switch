@@ -19,7 +19,9 @@ from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
 from switch_core.bridges.agent.protocol.service import ProtocolService
 from switch_core.bridges.agent.sessions.errors import (
     SessionApiError,
+    is_session_path,
     session_api_error_handler,
+    session_error_response,
 )
 from switch_core.bridges.agent.sessions.routes import router as sessions_router
 from switch_core.bridges.collaboration.lifecycle_service import (
@@ -38,6 +40,57 @@ from switch_core.db.stores.task_store import TaskStore
 from switch_core.room_service import RoomService
 
 logger = logging.getLogger(__name__)
+
+
+async def log_http_exceptions(request: Request, exc: Exception) -> JSONResponse:
+    assert isinstance(exc, HTTPException)
+    if exc.status_code >= 400:
+        logger.error(
+            "%s %s → %d: %s",
+            request.method,
+            request.url.path,
+            exc.status_code,
+            exc.detail,
+        )
+    if is_session_path(request.url.path):
+        return session_error_response(
+            "NOT_AUTHORIZED" if exc.status_code in (401, 403) else "INVALID_REQUEST",
+            str(exc.detail),
+            retryable=False,
+            status_code=exc.status_code,
+        )
+    return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+
+
+async def log_validation_errors(request: Request, exc: Exception) -> JSONResponse:
+    assert isinstance(exc, RequestValidationError)
+    logger.error(
+        "%s %s → 422 validation: errors=%s body=%r",
+        request.method,
+        request.url.path,
+        exc.errors(),
+        exc.body,
+    )
+    if is_session_path(request.url.path):
+        return session_error_response(
+            "INVALID_REQUEST",
+            f"The request body does not match the contract: {exc.errors()}",
+            retryable=False,
+            status_code=422,
+        )
+    return JSONResponse(status_code=422, content={"detail": exc.errors()})
+
+
+def install_exception_handlers(app: FastAPI) -> None:
+    """The app's three failure shapes, registered together.
+
+    Module-level rather than closures so a test can mount the same three on a
+    router-sized app. The envelope a session path gets is decided here, and a
+    test that registered its own approximation of these would pin nothing.
+    """
+    app.add_exception_handler(HTTPException, log_http_exceptions)
+    app.add_exception_handler(RequestValidationError, log_validation_errors)
+    app.add_exception_handler(SessionApiError, session_api_error_handler)
 
 
 def create_agent_bridge_app(
@@ -112,39 +165,7 @@ def create_agent_bridge_app(
     )
 
     app = FastAPI(title="Switch Agent Bridge API")
-
-    @app.exception_handler(HTTPException)
-    async def log_http_exceptions(request: Request, exc: HTTPException) -> JSONResponse:
-        if exc.status_code >= 400:
-            logger.error(
-                "%s %s → %d: %s",
-                request.method,
-                request.url.path,
-                exc.status_code,
-                exc.detail,
-            )
-        return JSONResponse(
-            status_code=exc.status_code,
-            content={"detail": exc.detail},
-        )
-
-    @app.exception_handler(RequestValidationError)
-    async def log_validation_errors(
-        request: Request, exc: RequestValidationError
-    ) -> JSONResponse:
-        logger.error(
-            "%s %s → 422 validation: errors=%s body=%r",
-            request.method,
-            request.url.path,
-            exc.errors(),
-            exc.body,
-        )
-        return JSONResponse(status_code=422, content={"detail": exc.errors()})
-
-    # Registered alongside the `HTTPException` handler rather than replacing it:
-    # the session routes answer in the contract's `{code, message, retryable}`
-    # envelope, and every other route keeps answering in `{"detail": ...}`.
-    app.add_exception_handler(SessionApiError, session_api_error_handler)
+    install_exception_handlers(app)
 
     app.include_router(api_router, prefix="/agents", tags=["api"])
     app.include_router(operations_router)

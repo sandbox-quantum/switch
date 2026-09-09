@@ -12,6 +12,14 @@ stated once.
 because the host has to acquire a lease before it can send anything the server
 will take; a lease held by a live incumbent is, because the incumbent may let go
 or time out.
+
+**Every failure on a session path wears this envelope, not just the ones a
+handler raises.** A host has one decoder per route family, and a rejected token
+or a malformed body reaching it as `{"detail": ...}` has no `code` to read — it
+falls through to unknown-error at exactly the two moments the cause is most
+obvious. So `SESSION_PATH_PREFIX` is checked by the bearer middleware and by the
+app's own `HTTPException` and validation handlers, which is why this module
+exposes a renderer that takes a status rather than only deriving one.
 """
 
 from __future__ import annotations
@@ -19,19 +27,33 @@ from __future__ import annotations
 from fastapi import Request
 from fastapi.responses import JSONResponse
 
-# Every code in the contract's own table, plus one it does not name.
+# The contract's own routes for the host side. `/gateway/v1/...`, its other
+# half, is served by the gateway app and is not this middleware's business.
+SESSION_PATH_PREFIX = "/agent/v1/"
+
+
+def is_session_path(path: str) -> bool:
+    return path.startswith(SESSION_PATH_PREFIX)
+
+
+# Every code in the contract's own table, plus two it does not name.
 #
-# `LEASE_HELD` is the addition: the contract says the server permits one lease
-# owner and blocks the previous one, but gives no code for refusing the second
-# claimant while the first is alive, and none of the codes it does give is
-# honest about it. `NOT_AUTHORIZED` would say the host may not run this session,
-# which is false and would send a correctly configured host away for good.
+# `LEASE_HELD`: the contract says the server permits one lease owner and blocks
+# the previous one, but gives no code for refusing the second claimant while the
+# first is alive, and none of the codes it does give is honest about it.
+# `NOT_AUTHORIZED` would say the host may not run this session, which is false
+# and would send a correctly configured host away for good.
+#
+# `INVALID_REQUEST`: the table's codes are all semantic outcomes, and none of
+# them covers a body that failed to parse. `INVALID_ANSWER` is 422 too but says
+# something specific and untrue about a malformed lease claim.
 STATUS_BY_CODE: dict[str, int] = {
     "NOT_AUTHORIZED": 403,
     "NOT_FOUND": 404,
     "HOST_OFFLINE": 503,
     "UNSUPPORTED_CAPABILITY": 422,
     "INVALID_ANSWER": 422,
+    "INVALID_REQUEST": 422,
     "PAYLOAD_TOO_LARGE": 413,
     "STALE_EPOCH": 409,
     "STALE_REVISION": 409,
@@ -60,14 +82,24 @@ class SessionApiError(Exception):
         return STATUS_BY_CODE[self.code]
 
 
+def session_error_response(
+    code: str, message: str, retryable: bool, status_code: int
+) -> JSONResponse:
+    """The contract's error body, at a status the caller chooses.
+
+    The status is a parameter because the two doors that use this have already
+    been given one. An unauthenticated request is a 401 — HTTP's own answer to a
+    missing credential, and not something `STATUS_BY_CODE` should be bent to
+    produce, since the contract has only `NOT_AUTHORIZED` at 403 for the
+    different fact that the credential was fine and the session was not yours.
+    """
+    return JSONResponse(
+        status_code=status_code,
+        content={"code": code, "message": message, "retryable": retryable},
+    )
+
+
 async def session_api_error_handler(request: Request, exc: Exception) -> JSONResponse:
     """Render a `SessionApiError` as the contract's error body."""
     assert isinstance(exc, SessionApiError)
-    return JSONResponse(
-        status_code=exc.status_code,
-        content={
-            "code": exc.code,
-            "message": exc.message,
-            "retryable": exc.retryable,
-        },
-    )
+    return session_error_response(exc.code, exc.message, exc.retryable, exc.status_code)
