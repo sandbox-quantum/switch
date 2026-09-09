@@ -1,4 +1,13 @@
 {{- if .Values.switchCore.migrations.preUpgradeJob }}
+{{- $secretOverride := "" }}
+{{- if not .Values.secrets.existingSecret }}
+{{- $secretOverride = printf "%s-migrate" (include "switch.secretName" .) }}
+{{- end }}
+{{- $caOverride := "" }}
+{{- if and .Values.postgresql.caBundle.contents (not .Values.postgresql.caBundle.existingConfigMap) }}
+{{- $caOverride = printf "%s-db-ca-migrate" (include "switch.fullname" .) }}
+{{- end }}
+{{- $ctx := merge (dict "secretNameOverride" $secretOverride "dbCaConfigMapOverride" $caOverride) . }}
 # Runs `alembic upgrade head` before an upgrade rolls the new switch-core pods,
 # so a failed migration blocks the release instead of crash-looping the new
 # pods. pre-upgrade only: on a fresh install the managed Postgres does not exist
@@ -35,13 +44,13 @@ spec:
           imagePullPolicy: {{ .Values.switchCore.imagePullPolicy }}
           command: ["alembic", "upgrade", "head"]
           env:
-            {{- include "switch.coreEnv" . | nindent 12 }}
-          {{- if include "switch.dbCaBundleConfigMap" . }}
+            {{- include "switch.coreEnv" $ctx | nindent 12 }}
+          {{- if include "switch.dbCaBundleConfigMap" $ctx }}
           volumeMounts:
-            {{- include "switch.dbCaBundleVolumeMount" . | nindent 12 }}
+            {{- include "switch.dbCaBundleVolumeMount" $ctx | nindent 12 }}
           {{- end }}
-      {{- if include "switch.dbCaBundleConfigMap" . }}
+      {{- if include "switch.dbCaBundleConfigMap" $ctx }}
       volumes:
-        {{- include "switch.dbCaBundleVolume" . | nindent 8 }}
+        {{- include "switch.dbCaBundleVolume" $ctx | nindent 8 }}
       {{- end }}
 {{- end }}

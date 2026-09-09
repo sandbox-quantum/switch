@@ -31,11 +31,34 @@ the External Secrets Operator / sealed-secrets). When set, the chart renders no
 Secret of its own.
 */}}
 {{- define "switch.secretName" -}}
-{{- if .Values.secrets.existingSecret -}}
+{{- if .secretNameOverride -}}
+{{- .secretNameOverride -}}
+{{- else if .Values.secrets.existingSecret -}}
 {{- .Values.secrets.existingSecret -}}
 {{- else -}}
 {{- include "switch.fullname" . }}-secrets
 {{- end -}}
+{{- end }}
+
+{{/*
+The Secret's data block, so the pre-upgrade copy the migration reads is
+rendered from this one source and cannot drift from the release's own.
+*/}}
+{{- define "switch.secretData" -}}
+{{- if not .Values.postgresql.existingSecret }}
+POSTGRES_PASSWORD: {{ required "secrets.postgresPassword is required (unless postgresql.existingSecret is set)" .Values.secrets.postgresPassword | b64enc | quote }}
+{{- end }}
+AGENT_REGISTRATION_TOKEN: {{ required "secrets.agentRegistrationToken is required" .Values.secrets.agentRegistrationToken | b64enc | quote }}
+JWT_SECRET_KEY: {{ required "secrets.jwtSecretKey is required" .Values.secrets.jwtSecretKey | b64enc | quote }}
+GATEWAY_ADMIN_EMAIL: {{ required "secrets.gatewayAdminEmail is required" .Values.secrets.gatewayAdminEmail | b64enc | quote }}
+GATEWAY_ADMIN_PASSWORD: {{ required "secrets.gatewayAdminPassword is required" .Values.secrets.gatewayAdminPassword | b64enc | quote }}
+{{- if .Values.mattermost.enabled }}
+MATTERMOST_ADMIN_PASSWORD: {{ .Values.secrets.mattermostAdminPassword | default .Values.secrets.postgresPassword | b64enc | quote }}
+MATTERMOST_USER_PASSWORD: {{ .Values.secrets.mattermostUserPassword | default .Values.secrets.postgresPassword | b64enc | quote }}
+{{- end }}
+{{- if .Values.switchCore.oidc.enabled }}
+GATEWAY_OIDC_CLIENT_SECRET: {{ required "secrets.gatewayOidcClientSecret is required when switchCore.oidc.enabled" .Values.secrets.gatewayOidcClientSecret | b64enc | quote }}
+{{- end }}
 {{- end }}
 
 {{/*
@@ -208,11 +231,22 @@ bundle is configured, which is what every caller tests to decide whether to
 mount anything.
 */}}
 {{- define "switch.dbCaBundleConfigMap" -}}
-{{- if .Values.postgresql.caBundle.existingConfigMap -}}
+{{- if .dbCaConfigMapOverride -}}
+{{- .dbCaConfigMapOverride -}}
+{{- else if .Values.postgresql.caBundle.existingConfigMap -}}
 {{- .Values.postgresql.caBundle.existingConfigMap -}}
 {{- else if .Values.postgresql.caBundle.contents -}}
 {{- include "switch.fullname" . }}-db-ca
 {{- end -}}
+{{- end }}
+
+{{/*
+The CA ConfigMap's data block, shared with the pre-upgrade copy for the same
+reason as the Secret's.
+*/}}
+{{- define "switch.dbCaBundleData" -}}
+{{ .Values.postgresql.caBundle.key }}: |
+{{ .Values.postgresql.caBundle.contents | indent 2 }}
 {{- end }}
 
 {{/*
