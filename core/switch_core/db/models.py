@@ -977,10 +977,10 @@ class SessionRequestPost(Base):
     # it builds is one option or one per question, and it is read rather than
     # inferred. `session/form.py` is both ends of the shape.
     form: Mapped[dict] = mapped_column(JSONB, nullable=False)
-    created_at: Mapped[str] = mapped_column(
+    created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
-    updated_at: Mapped[str] = mapped_column(
+    updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),
         onupdate=func.now(),

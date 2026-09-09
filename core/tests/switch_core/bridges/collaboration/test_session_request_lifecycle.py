@@ -15,6 +15,9 @@ import json
 from pathlib import Path
 from typing import Any, cast
 
+import pytest
+from slack_sdk.errors import SlackApiError
+
 from switch_core.bridges.collaboration.session.contract import SnapshotRequest
 from switch_core.bridges.collaboration.session.outbound import SessionRequestCards
 from switch_core.bridges.collaboration.session.projection import SessionProjection
@@ -291,7 +294,9 @@ async def test_the_card_is_edited_in_place_rather_than_reposted() -> None:
     edit = client.updated[0]
     assert edit["channel"] == "C1"
     assert edit["ts"] == "111.0"
-    assert edit["blocks"] == render_approval(request, REFERENCE).blocks
+    expected = render_approval(request, REFERENCE).blocks
+    expected[0]["block_id"] = f"switch-request:{_post().token}"
+    assert edit["blocks"] == expected
     assert edit["text"] == render_approval_text(request, REFERENCE)
     assert client.posted == []
 
@@ -302,7 +307,10 @@ async def test_a_failed_edit_puts_the_outcome_in_the_thread_instead() -> None:
     adapter, client = _adapter()
     client.update_error = "message_not_found"
 
-    await _cards(adapter).refresh(_post(), request)
+    cards = _cards(adapter)
+    for _ in range(2):
+        with pytest.raises(SlackApiError):
+            await cards.refresh(_post(), request)
 
     assert client.updated == []
     assert len(client.posted) == 1

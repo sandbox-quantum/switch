@@ -141,6 +141,7 @@ class SessionRequestCards:
         self._bridge_id = bridge_id
         self._posts = posts
         self._session_factory = session_factory
+        self._reported_edit_failures: dict[str, tuple[int, str]] = {}
 
     async def post(
         self,
@@ -153,21 +154,7 @@ class SessionRequestCards:
         epoch: str,
         agent_name: str,
     ) -> SessionRequestPost:
-        """Draw `request` as a card in a channel, and record what it offers.
-
-        The handle is reserved before the card is drawn, because the card
-        carries it: minting after posting would mean a clash could only be
-        resolved by editing a message someone may already be reading. So the row
-        goes in first, holding its own token where the post ref will go — unique
-        already, so two reservations cannot collide on it either — and the ref
-        is filled in once Slack has one.
-
-        Which leaves one ordering to be deliberate about: a card that posts and
-        then fails to record is a card offering buttons that resolve to nothing,
-        and that cannot happen here, because the recording came first. A
-        reservation that fails to post is the other way round — a handle held
-        for a card nobody can see — so it is released before raising.
-        """
+        """Reserve the card durably before sending it to the platform."""
         form = posted_form(request)
         token = secrets.token_urlsafe(16)
         async with self._session_factory() as session:
@@ -185,6 +172,8 @@ class SessionRequestCards:
             message = render_request(
                 request, RequestReference(token=post.token, handle=post.handle)
             )
+            message.blocks[0]["block_id"] = f"switch-request:{post.token}"
+            await session.commit()
             ref = await self._adapter.post_blocks(
                 channel_id, agent_name, message.text, message.blocks, thread_root_id
             )
@@ -206,6 +195,30 @@ class SessionRequestCards:
                 channel_id,
             )
             return post
+
+    async def recover(self, post: SessionRequestPost) -> SessionRequestPost:
+        """Bind an uncertain delivery to its existing platform message; never repost."""
+        ref = await self._adapter.find_request_card(
+            post.external_channel_id, post.thread_id, post.token, post.created_at
+        )
+        if ref is None:
+            raise CardNotPosted(
+                f"Delivery of card {post.handle} is unconfirmed; retaining its reservation "
+                "and retrying lookup instead of risking a duplicate."
+            )
+        async with self._session_factory() as session:
+            stored = await session.get(
+                SessionRequestPost, post.id, with_for_update=True
+            )
+            if stored is None:
+                raise CardNotPosted("The reserved card no longer exists.")
+            if stored.external_post_id not in (stored.token, ref):
+                raise CardNotPosted(
+                    "The reserved card is bound to a different message."
+                )
+            stored.external_post_id = ref
+            await session.commit()
+            return stored
 
     async def _reserve(
         self,
@@ -323,6 +336,7 @@ class SessionRequestCards:
         message = render_request(
             request, RequestReference(token=post.token, handle=post.handle)
         )
+        message.blocks[0]["block_id"] = f"switch-request:{post.token}"
         try:
             await self._adapter.update_blocks(
                 post.external_channel_id,
@@ -338,10 +352,16 @@ class SessionRequestCards:
                 post.external_channel_id,
                 error,
             )
-            await self._adapter.admin_message(
-                post.external_channel_id,
-                f"The card for request {post.handle} above could not be updated, "
-                f"so it may still be offering buttons that no longer "
-                f"work.\n{message.text}",
-                post.external_post_id,
-            )
+            state = (request.revision, request.state)
+            if self._reported_edit_failures.get(post.token) != state:
+                await self._adapter.admin_message(
+                    post.external_channel_id,
+                    f"The card for request {post.handle} above could not be updated, "
+                    f"so it may still be offering buttons that no longer "
+                    f"work.\n{message.text}",
+                    post.external_post_id,
+                )
+                self._reported_edit_failures[post.token] = state
+            raise
+        else:
+            self._reported_edit_failures.pop(post.token, None)
