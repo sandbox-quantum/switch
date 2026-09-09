@@ -9,6 +9,7 @@ from switch_core.bridges.agent.api_key_cache import ApiKeyCache
 from switch_core.bridges.agent.protocol.connections import ConnectionRegistry
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
 from switch_core.bridges.agent.protocol.service import ProtocolService
+from switch_core.bridges.agent.sessions.lease_service import SessionLeaseService
 from switch_core.bridges.collaboration.lifecycle_service import (
     CollaborationBridgeLifecycleService,
 )
@@ -21,6 +22,8 @@ from switch_core.db.stores.api_key_store import ApiKeyStore
 from switch_core.db.stores.collaboration_bridge_store import CollaborationBridgeStore
 from switch_core.db.stores.external_user_store import ExternalUserStore
 from switch_core.db.stores.room_store import RoomStore
+from switch_core.db.stores.session_lease_store import SessionLeaseStore
+from switch_core.db.stores.session_store import SessionStore
 from switch_core.db.stores.task_store import TaskStore
 from switch_core.room_service import RoomService
 
@@ -62,6 +65,11 @@ def init_dependencies(
     _state["bridge_store"] = bridge_store
     _state["session_factory"] = session_factory
     _state["config"] = config
+
+    # Built here rather than passed in: both stores are stateless query holders
+    # with nothing to share, so threading them through every caller of this
+    # function would buy nobody anything.
+    _state["session_leases"] = SessionLeaseService(SessionStore(), SessionLeaseStore())
 
     _state["protocol"] = ProtocolService(
         agent_store=agent_store,
@@ -134,3 +142,7 @@ def get_config() -> SwitchConfig:
 
 def get_protocol() -> ProtocolService:
     return _state["protocol"]  # type: ignore[no-any-return]
+
+
+def get_session_lease_service() -> SessionLeaseService:
+    return _state["session_leases"]  # type: ignore[no-any-return]

@@ -17,6 +17,11 @@ from switch_core.bridges.agent.mcp import create_mcp_app
 from switch_core.bridges.agent.protocol.connections import ConnectionRegistry
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
 from switch_core.bridges.agent.protocol.service import ProtocolService
+from switch_core.bridges.agent.sessions.errors import (
+    SessionApiError,
+    session_api_error_handler,
+)
+from switch_core.bridges.agent.sessions.routes import router as sessions_router
 from switch_core.bridges.collaboration.lifecycle_service import (
     CollaborationBridgeLifecycleService,
 )
@@ -136,10 +141,16 @@ def create_agent_bridge_app(
         )
         return JSONResponse(status_code=422, content={"detail": exc.errors()})
 
+    # Registered alongside the `HTTPException` handler rather than replacing it:
+    # the session routes answer in the contract's `{code, message, retryable}`
+    # envelope, and every other route keeps answering in `{"detail": ...}`.
+    app.add_exception_handler(SessionApiError, session_api_error_handler)
+
     app.include_router(api_router, prefix="/agents", tags=["api"])
     app.include_router(operations_router)
     app.include_router(deeplink_router, tags=["deeplink"])
     app.include_router(version_router, tags=["version"])
+    app.include_router(sessions_router, tags=["sessions"])
 
     app.state.config = config
 

@@ -1,4 +1,5 @@
 import uuid
+from datetime import datetime
 
 from sqlalchemy import (
     DDL,
@@ -929,6 +930,11 @@ class SessionRequestPost(Base):
 
 
 # ── Sessions ─────────────────────────────────────────────────────────────────
+#
+# Timestamp columns here are `Mapped[datetime]`, unlike the rest of this file,
+# which annotates them `Mapped[str]`. They hold datetimes, and lease liveness is
+# arithmetic on one; typing it as text makes the comparison an error mypy is
+# right about.
 
 
 class HostSession(Base):
@@ -946,6 +952,10 @@ class HostSession(Base):
     — is unknown until its first `session.upsert`, so those columns are empty
     until then rather than guessed at.
 
+    `host_id` is the last host to hold the lease, and it is kept here rather
+    than only on the lease because the lease is deleted when the host lets go.
+    A stopped session still has to say which host ran it.
+
     There is deliberately no `connectivity` column. The server derives that
     from the lease and its heartbeat, and a host's own claim about whether it
     is reachable cannot be the thing that answers it.
@@ -961,13 +971,14 @@ class HostSession(Base):
     agent_id: Mapped[str] = mapped_column(
         Text, ForeignKey("agents.id", ondelete="CASCADE"), nullable=False
     )
+    host_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     provider: Mapped[str | None] = mapped_column(Text, nullable=True)
     capabilities: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     status: Mapped[str] = mapped_column(Text, nullable=False)
-    created_at: Mapped[str] = mapped_column(
+    created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
-    updated_at: Mapped[str] = mapped_column(
+    updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),
         onupdate=func.now(),
@@ -998,10 +1009,10 @@ class SessionLease(Base):
     )
     host_id: Mapped[str] = mapped_column(Text, nullable=False)
     epoch: Mapped[str] = mapped_column(Text, nullable=False)
-    acquired_at: Mapped[str] = mapped_column(
+    acquired_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
-    last_seen_at: Mapped[str] = mapped_column(
+    last_seen_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
 
@@ -1064,8 +1075,10 @@ class SessionEvent(Base):
     event_id: Mapped[str] = mapped_column(Text, nullable=False)
     type: Mapped[str] = mapped_column(Text, nullable=False)
     body: Mapped[dict] = mapped_column(JSONB, nullable=False)
-    occurred_at: Mapped[str] = mapped_column(DateTime(timezone=True), nullable=False)
-    created_at: Mapped[str] = mapped_column(
+    occurred_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
 
@@ -1135,10 +1148,10 @@ class SessionCommand(Base):
     # Why the host rejected it, when it did.
     code: Mapped[str | None] = mapped_column(Text, nullable=True)
     message: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at: Mapped[str] = mapped_column(
+    created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
-    updated_at: Mapped[str] = mapped_column(
+    updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),
         onupdate=func.now(),
@@ -1176,7 +1189,7 @@ class SessionRoomAssociation(Base):
     origin_message_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     granted_by_actor_id: Mapped[str] = mapped_column(Text, nullable=False)
     source: Mapped[str] = mapped_column(Text, nullable=False)
-    created_at: Mapped[str] = mapped_column(
+    created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
 
@@ -1228,10 +1241,10 @@ class SessionPublication(Base):
     # finds. Empty means nobody has seen a card land.
     external_post_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at: Mapped[str] = mapped_column(
+    created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
-    updated_at: Mapped[str] = mapped_column(
+    updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),
         onupdate=func.now(),

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from sqlalchemy import text
@@ -31,12 +31,16 @@ from switch_core.db.stores.session_event_store import (
     HostSequenceTaken,
     SessionEventStore,
 )
-from switch_core.db.stores.session_lease_store import SessionLeaseStore
+from switch_core.db.stores.session_lease_store import (
+    LeaseHeld,
+    LeaseMoved,
+    SessionLeaseStore,
+)
 from switch_core.db.stores.session_publication_store import SessionPublicationStore
 from switch_core.db.stores.session_room_association_store import (
     SessionRoomAssociationStore,
 )
-from switch_core.db.stores.session_store import SessionStore
+from switch_core.db.stores.session_store import SessionAlreadyRegistered, SessionStore
 
 
 async def _make_agent(session: AsyncSession) -> str:
@@ -100,7 +104,7 @@ async def _make_bridge(session: AsyncSession) -> str:
 async def _make_session(session: AsyncSession, session_id: str = "s-1") -> str:
     """A registered session, which everything else in this module hangs off."""
     agent_id = await _make_agent(session)
-    await SessionStore().register(session, session_id, agent_id)
+    await SessionStore().register(session, session_id, agent_id, "host-a")
     return agent_id
 
 
@@ -146,6 +150,7 @@ class TestSessionStore:
 
         assert found is not None
         assert found.agent_id == agent_id
+        assert found.host_id == "host-a"
         assert found.status == "starting"
         assert found.provider is None
 
@@ -160,8 +165,33 @@ class TestSessionStore:
 
         async with session_factory() as session:
             other_agent_id = await _make_agent(session)
-            with pytest.raises(IntegrityError):
-                await store.register(session, "s-1", other_agent_id)
+            with pytest.raises(SessionAlreadyRegistered):
+                await store.register(session, "s-1", other_agent_id, "host-b")
+
+    async def test_the_session_remembers_its_host_after_the_lease_is_gone(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """A stopped session still has to say which host ran it.
+
+        The lease is deleted on release, so it cannot be the only place the
+        host is written down — a snapshot of a session nobody is running would
+        have nothing to show.
+        """
+        store = SessionStore()
+        leases = SessionLeaseStore()
+        async with session_factory() as session:
+            agent_id = await _make_session(session)
+            await leases.acquire(session, "s-1", agent_id, "host-a", "epoch-1")
+            await leases.release(session, "s-1", "host-a", "epoch-1")
+            await session.commit()
+
+        async with session_factory() as session:
+            found = await store.get(session, "s-1")
+            lease = await leases.get(session, "s-1")
+
+        assert lease is None
+        assert found is not None
+        assert found.host_id == "host-a"
 
     async def test_what_the_host_reports_is_kept_at_rest(
         self, session_factory: async_sessionmaker[AsyncSession]
@@ -226,8 +256,75 @@ class TestSessionLeaseStore:
             await session.commit()
 
         async with session_factory() as session:
-            with pytest.raises(IntegrityError):
+            with pytest.raises(LeaseHeld):
                 await store.acquire(session, "s-1", agent_id, "host-b", "epoch-2")
+
+    async def test_a_lease_is_live_until_its_heartbeat_ages_out(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """Liveness is read from the heartbeat, not from the row existing.
+
+        A lease outlives the process that took it, so a host that was killed
+        leaves a row behind that no reaper is going to clear.
+        """
+        store = SessionLeaseStore()
+        async with session_factory() as session:
+            agent_id = await _make_session(session)
+            lease = await store.acquire(session, "s-1", agent_id, "host-a", "epoch-1")
+
+            assert store.is_live(lease)
+
+            lease.last_seen_at = (
+                datetime.now(UTC) - store.LEASE_TTL - timedelta(seconds=1)
+            )
+            assert not store.is_live(lease)
+
+    async def test_a_takeover_displaces_the_holder_under_a_new_epoch(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """The contract's own rule: one owner, and the old one is blocked first.
+
+        The displaced host finds out by being refused, which is why nothing
+        here tries to tell it.
+        """
+        store = SessionLeaseStore()
+        async with session_factory() as session:
+            agent_id = await _make_session(session)
+            await store.acquire(session, "s-1", agent_id, "host-a", "epoch-1")
+            await store.take_over(
+                session, "s-1", "epoch-1", agent_id, "host-b", "epoch-2"
+            )
+            await session.commit()
+
+        async with session_factory() as session:
+            lease = await store.get(session, "s-1")
+            with pytest.raises(LookupError):
+                await store.renew(session, "s-1", "host-a", "epoch-1")
+
+        assert lease is not None
+        assert lease.host_id == "host-b"
+        assert lease.epoch == "epoch-2"
+
+    async def test_a_takeover_of_a_lease_that_already_moved_is_refused(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """Two hosts can decide the same dead holder is displaceable at once.
+
+        Without naming the epoch it read, the second write lands on top of the
+        first and both hosts are told they own the session — one of them then
+        emitting under an epoch the row no longer carries.
+        """
+        store = SessionLeaseStore()
+        async with session_factory() as session:
+            agent_id = await _make_session(session)
+            await store.acquire(session, "s-1", agent_id, "host-a", "epoch-1")
+            await store.take_over(
+                session, "s-1", "epoch-1", agent_id, "host-b", "epoch-2"
+            )
+            with pytest.raises(LeaseMoved):
+                await store.take_over(
+                    session, "s-1", "epoch-1", agent_id, "host-c", "epoch-3"
+                )
 
     async def test_renewal_keeps_the_epoch(
         self, session_factory: async_sessionmaker[AsyncSession]

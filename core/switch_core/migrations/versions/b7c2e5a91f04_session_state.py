@@ -36,6 +36,7 @@ def upgrade() -> None:
         "sessions",
         sa.Column("id", sa.Text(), nullable=False),
         sa.Column("agent_id", sa.Text(), nullable=False),
+        sa.Column("host_id", sa.Text(), nullable=True),
         sa.Column("provider", sa.Text(), nullable=True),
         sa.Column("capabilities", JSONB, nullable=True),
         sa.Column("status", sa.Text(), nullable=False),
