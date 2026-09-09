@@ -19,8 +19,9 @@ import {
   RefreshCw,
   ScanSearch,
   Trash2,
+  X,
 } from 'lucide-react';
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { toast } from '@renderer/lib/hooks/use-toast';
 import { rpc } from '@renderer/lib/ipc';
@@ -29,6 +30,7 @@ import { Button } from '@renderer/lib/ui/button';
 import { Checkbox } from '@renderer/lib/ui/checkbox';
 import { Input } from '@renderer/lib/ui/input';
 import { Label } from '@renderer/lib/ui/label';
+import { Progress } from '@renderer/lib/ui/progress';
 import {
   Select,
   SelectContent,
@@ -37,6 +39,7 @@ import {
   SelectValue,
 } from '@renderer/lib/ui/select';
 import { Spinner } from '@renderer/lib/ui/spinner';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@renderer/lib/ui/tooltip';
 import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
 import { AGENT_PROVIDERS, getProvider } from '@shared/core/providers/agent-provider-registry';
 
@@ -290,6 +293,22 @@ export function LoadExistingAgentsSection({
     },
   });
 
+  const [deepScanProgress, setDeepScanProgress] = useState(0);
+  const deepScanStartRef = useRef(0);
+  useEffect(() => {
+    if (!deepScan.isPending) {
+      setDeepScanProgress(0);
+      return;
+    }
+    deepScanStartRef.current = Date.now();
+    const ESTIMATED_DURATION = 30_000;
+    const id = setInterval(() => {
+      const elapsed = Date.now() - deepScanStartRef.current;
+      setDeepScanProgress(Math.min(100, (elapsed / ESTIMATED_DURATION) * 100));
+    }, 200);
+    return () => clearInterval(id);
+  }, [deepScan.isPending]);
+
   const providerOptions = AGENT_PROVIDERS.filter((p) => p.detectable !== false);
 
   return (
@@ -319,12 +338,19 @@ export function LoadExistingAgentsSection({
                 Check this host for agents to load
               </span>
             </div>
-          ) : discovery.isLoading || deepScan.isPending ? (
+          ) : discovery.isLoading ? (
             <div className="flex items-center gap-2 text-sm text-foreground-muted">
-              <Spinner />{' '}
-              {deepScan.isPending
-                ? `Walking home directory on ${sshHost}… this can take a while`
-                : 'Checking registered agents on this host…'}
+              <Spinner /> Checking registered agents on this host…
+            </div>
+          ) : deepScan.isPending ? (
+            <div className="space-y-2">
+              <div className="flex items-center justify-between text-sm text-foreground-muted">
+                <span>Walking home directory on {sshHost}…</span>
+                <Button size="sm" variant="ghost" onClick={() => deepScan.reset()}>
+                  <X className="size-3" /> Cancel
+                </Button>
+              </div>
+              <Progress value={deepScanProgress} />
             </div>
           ) : discovery.isError ? (
             <p className="text-xs text-destructive">
@@ -336,14 +362,16 @@ export function LoadExistingAgentsSection({
                 No registered agents found in this host's known directories. Scan a specific
                 directory below.
               </p>
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={() => deepScan.mutate()}
-                title="Scans the full filesystem on this host. May take a while on large VMs."
-              >
-                <ScanSearch className="size-4" /> Deep scan
-              </Button>
+              <Tooltip>
+                <TooltipTrigger>
+                  <Button size="sm" variant="outline" onClick={() => deepScan.mutate()}>
+                    <ScanSearch className="size-4" /> Deep scan
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>
+                  Scans the full filesystem on this host. May take a while on large VMs.
+                </TooltipContent>
+              </Tooltip>
             </div>
           ) : (
             <>
@@ -360,14 +388,16 @@ export function LoadExistingAgentsSection({
                   </button>
                 )}
                 <div className="flex items-center gap-1">
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    onClick={() => deepScan.mutate()}
-                    title="Scans the full filesystem on this host. May take a while on large VMs."
-                  >
-                    <ScanSearch className="size-3" /> Deep scan
-                  </Button>
+                  <Tooltip>
+                    <TooltipTrigger>
+                      <Button size="sm" variant="outline" onClick={() => deepScan.mutate()}>
+                        <ScanSearch className="size-3" /> Deep scan
+                      </Button>
+                    </TooltipTrigger>
+                    <TooltipContent>
+                      Scans the full filesystem on this host. May take a while on large VMs.
+                    </TooltipContent>
+                  </Tooltip>
                   <Button
                     size="sm"
                     variant="ghost"
