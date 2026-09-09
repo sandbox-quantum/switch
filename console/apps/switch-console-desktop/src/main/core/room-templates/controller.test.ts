@@ -4,9 +4,22 @@ import { roomTemplatesController } from './controller';
 const parse = (yamlText: string, schema?: Record<string, unknown>) =>
   roomTemplatesController.parse({ yamlText, schema });
 
+/** A permissive schema that accepts both `room:` and `params:` — simulates a
+ *  server that supports template params (PR #402+). */
+const PARAMS_SCHEMA = {
+  type: 'object',
+  required: ['room'],
+  properties: {
+    room: { type: 'object' },
+    params: { type: 'object' },
+  },
+  additionalProperties: false,
+};
+
 describe('roomTemplatesController.parse', () => {
   it('extracts params with types and defaults', () => {
-    const result = parse(`
+    const result = parse(
+      `
 room:
   name: test-room
   agents:
@@ -26,7 +39,9 @@ params:
   env:
     type: enum
     enum: [dev, prod]
-`);
+`,
+      PARAMS_SCHEMA
+    );
     expect(result.roomName).toBe('test-room');
     expect(result.agents).toEqual(['bot-a', '{deploy_agent}']);
     expect(result.params).toHaveLength(4);
@@ -43,7 +58,8 @@ params:
   });
 
   it('agent picker: exactly "agent" or ending in "_agent"', () => {
-    const result = parse(`
+    const result = parse(
+      `
 room:
   name: test
 params:
@@ -57,7 +73,9 @@ params:
     type: string
   my_agent_name:
     type: string
-`);
+`,
+      PARAMS_SCHEMA
+    );
     const byName = Object.fromEntries(result.params.map((p) => [p.name, p.isAgentName]));
     expect(byName).toEqual({
       agent: true,
@@ -69,7 +87,8 @@ params:
   });
 
   it('non-string params never get isAgentName', () => {
-    const result = parse(`
+    const result = parse(
+      `
 room:
   name: test
 params:
@@ -77,7 +96,9 @@ params:
     type: number
   deploy_agent:
     type: boolean
-`);
+`,
+      PARAMS_SCHEMA
+    );
     expect(result.params.every((p) => !p.isAgentName)).toBe(true);
   });
 
@@ -91,9 +112,10 @@ room:
     expect(result.roomName).toBe('simple-room');
   });
 
-  it('warns when room block is missing', () => {
-    const result = parse('params:\n  x:\n    type: string\n');
-    expect(result.warnings).toContain('Template has no "room:" block — the server may reject it.');
+  it('rejects params on a server without schema support', () => {
+    expect(() => parse('room:\n  name: test\nparams:\n  x:\n    type: string\n')).toThrow(
+      /does not support template features: params/
+    );
   });
 
   it('throws on invalid YAML', () => {
@@ -104,14 +126,23 @@ room:
     expect(() => parse('- a\n- b\n')).toThrow('Template must be a YAML mapping');
   });
 
+  it('rejects template without room block on old server', () => {
+    expect(() => parse('something_else:\n  name: test\n')).toThrow(
+      /does not support template features/
+    );
+  });
+
   it('handles bare param names (no spec object)', () => {
-    const result = parse(`
+    const result = parse(
+      `
 room:
   name: test
 params:
   deploy_agent:
   label:
-`);
+`,
+      PARAMS_SCHEMA
+    );
     expect(result.params[0]).toMatchObject({
       name: 'deploy_agent',
       type: 'string',
@@ -148,9 +179,10 @@ params:
     expect(() => parse('room:\n  name: test\n', schema)).toThrow(/description/);
   });
 
-  it('skips schema validation when no schema is provided', () => {
-    // Should not throw even though room has no description
-    const result = parse('room:\n  name: test\n');
-    expect(result.roomName).toBe('test');
+  it('skips fallback validation when schema is provided', () => {
+    // With a permissive schema, params are allowed even though it would
+    // fail the no-schema fallback check
+    const result = parse('room:\n  name: test\nparams:\n  x:\n    type: string\n', PARAMS_SCHEMA);
+    expect(result.params).toHaveLength(1);
   });
 });

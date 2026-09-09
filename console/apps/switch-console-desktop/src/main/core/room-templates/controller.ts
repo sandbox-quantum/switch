@@ -88,6 +88,19 @@ export const roomTemplatesController = createRPCController({
           .slice(0, 5);
         throw new Error(errors.join('\n'));
       }
+    } else {
+      // No schema available (server too old or unreachable) — basic structural check
+      const knownKeys = new Set(['room']);
+      const unknownKeys = Object.keys(doc).filter((k) => !knownKeys.has(k));
+      if (unknownKeys.length > 0) {
+        throw new Error(
+          `This server does not support template features: ${unknownKeys.join(', ')}. ` +
+            'Only a plain "room:" block is accepted.'
+        );
+      }
+      if (!doc.room) {
+        throw new Error('Template must have a "room:" block.');
+      }
     }
 
     const room = doc.room as Record<string, unknown> | undefined;

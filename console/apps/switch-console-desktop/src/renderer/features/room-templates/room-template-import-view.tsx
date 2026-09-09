@@ -29,6 +29,14 @@ function interpolate(template: string, values: Record<string, string | number | 
 
 // ── Source step ─────────────────────────────────────────────────────────────
 
+function readFileAsText(file: File, onText: (text: string) => void): void {
+  const reader = new FileReader();
+  reader.onload = () => {
+    if (typeof reader.result === 'string') onText(reader.result);
+  };
+  reader.readAsText(file);
+}
+
 function SourceStep({
   yamlText,
   onYamlChange,
@@ -43,18 +51,27 @@ function SourceStep({
   onFileSelect: (name: string) => void;
 }) {
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const [dragging, setDragging] = useState(false);
 
   const handleFileChange = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
       const file = e.target.files?.[0];
       if (!file) return;
       onFileSelect(file.name);
-      const reader = new FileReader();
-      reader.onload = () => {
-        if (typeof reader.result === 'string') onYamlChange(reader.result);
-      };
-      reader.readAsText(file);
+      readFileAsText(file, onYamlChange);
       e.target.value = '';
+    },
+    [onYamlChange, onFileSelect]
+  );
+
+  const handleDrop = useCallback(
+    (e: React.DragEvent) => {
+      e.preventDefault();
+      setDragging(false);
+      const file = e.dataTransfer.files[0];
+      if (!file) return;
+      onFileSelect(file.name);
+      readFileAsText(file, onYamlChange);
     },
     [onYamlChange, onFileSelect]
   );
@@ -64,12 +81,22 @@ function SourceStep({
       <FieldGroup>
         <Field>
           <FieldLabel>Paste a room template</FieldLabel>
-          <Textarea
-            placeholder="Paste YAML here…"
-            value={yamlText}
-            onChange={(e) => onYamlChange(e.target.value)}
-            className="min-h-64 resize-y font-mono text-xs"
-          />
+          <div
+            onDragOver={(e) => {
+              e.preventDefault();
+              setDragging(true);
+            }}
+            onDragLeave={() => setDragging(false)}
+            onDrop={handleDrop}
+            className={`rounded-md transition-colors ${dragging ? 'ring-primary ring-2' : ''}`}
+          >
+            <Textarea
+              placeholder="Paste YAML here, or drag and drop a file…"
+              value={yamlText}
+              onChange={(e) => onYamlChange(e.target.value)}
+              className="min-h-64 resize-y font-mono text-xs"
+            />
+          </div>
         </Field>
       </FieldGroup>
 
@@ -85,7 +112,9 @@ function SourceStep({
           <Upload className="mr-1.5 size-3.5" />
           Choose file
         </Button>
-        <span className="text-xs text-foreground-passive">or paste YAML above</span>
+        <span className="text-xs text-foreground-passive">
+          or paste YAML above, or drag and drop
+        </span>
       </div>
 
       {parseError && (
