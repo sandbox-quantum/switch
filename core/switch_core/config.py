@@ -1,4 +1,6 @@
 import re
+import ssl
+from pathlib import Path
 from urllib.parse import urlsplit
 
 from pydantic import model_validator
@@ -78,6 +80,26 @@ class SwitchConfig(BaseSettings):
     # this true so the JWT session cookie is never sent over an insecure channel.
     gateway_cookie_secure: bool = False
 
+    # ── Logging ──────────────────────────────────────────────────────────────
+    # "text" for a terminal, "json" for a log pipeline that parses fields.
+    log_format: str = "text"
+    log_level: str = "INFO"
+    switch_log_level: str = "INFO"
+    # Emitted on every JSON log line as `service` / `env`, matching what a log
+    # pipeline expects to group and filter by. `environment` is the deployment
+    # (pilot, development, demo, public), not the machine.
+    service_name: str = "switch-core"
+    environment: str | None = None
+
+    # The tenant every log line is attributed to. Switch is single-tenant: one
+    # deployment serves one organisation, so the tenant is a deployment-wide
+    # constant and there is nothing per-request to read it from. Setting it per
+    # deployment now means the logs of two deployments can be told apart in one
+    # pipeline today, and that when the tenant model lands the only change is
+    # where the value comes from — the field is already on every line, and on
+    # every log call written between now and then.
+    tenant_id: str = "default"
+
     server_host: str = "0.0.0.0"
     server_port: int = 8000
 
@@ -145,6 +167,13 @@ class SwitchConfig(BaseSettings):
     # certificate, or "verify-ca" / "verify-full" to also validate it.
     db_ssl_mode: str = "disable"
 
+    # PEM bundle of certificate authorities the server certificate is checked
+    # against, for the two verifying modes. Managed Postgres is signed by the
+    # provider's own root rather than a public one — RDS publishes a global
+    # bundle — so without this, "verify-ca" and "verify-full" fall back to the
+    # system trust store and reject a perfectly good RDS instance.
+    db_ssl_root_cert: str | None = None
+
     @model_validator(mode="after")
     def _validate_agent_auth_cache(self) -> "SwitchConfig":
         if self.agent_auth_cache_ttl_seconds < 0:
@@ -157,6 +186,25 @@ class SwitchConfig(BaseSettings):
                 "AGENT_AUTH_CACHE_MAX_ENTRIES must be at least 1, got "
                 f"{self.agent_auth_cache_max_entries!r}."
             )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_logging(self) -> "SwitchConfig":
+        if self.log_format not in ("text", "json"):
+            raise ValueError(
+                f"LOG_FORMAT must be 'text' or 'json', got {self.log_format!r}."
+            )
+        levels = {"CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG", "NOTSET"}
+        for name, value in (
+            ("LOG_LEVEL", self.log_level),
+            ("SWITCH_LOG_LEVEL", self.switch_log_level),
+        ):
+            if value.upper() not in levels:
+                raise ValueError(
+                    f"{name} must be one of {sorted(levels)}, got {value!r}."
+                )
+        if not self.tenant_id.strip():
+            raise ValueError("TENANT_ID must not be empty.")
         return self
 
     @model_validator(mode="after")
@@ -185,6 +233,19 @@ class SwitchConfig(BaseSettings):
                 f"DB_SSL_MODE must be one of {sorted(allowed)}, "
                 f"got {self.db_ssl_mode!r}."
             )
+        if self.db_ssl_root_cert is not None:
+            if self.db_ssl_mode not in ("verify-ca", "verify-full"):
+                raise ValueError(
+                    "DB_SSL_ROOT_CERT is only used by the verifying TLS modes, "
+                    "so setting it with DB_SSL_MODE="
+                    f"{self.db_ssl_mode!r} would silently not verify anything. "
+                    "Set DB_SSL_MODE to 'verify-ca' or 'verify-full'."
+                )
+            if not Path(self.db_ssl_root_cert).is_file():
+                raise ValueError(
+                    f"DB_SSL_ROOT_CERT {self.db_ssl_root_cert!r} is not a file. "
+                    "It must point at a PEM bundle readable by this process."
+                )
         return self
 
     @model_validator(mode="after")
@@ -249,7 +310,18 @@ class SwitchConfig(BaseSettings):
         TLS is passed as asyncpg's ``ssl`` string argument (it accepts the same
         modes as libpq's ``sslmode``). ``disable`` means no argument at all, so
         plain connections behave exactly as before.
+
+        With a CA bundle configured, an :class:`ssl.SSLContext` is passed
+        instead, because the string form gives asyncpg no way to be told which
+        authorities to trust.
         """
         if self.db_ssl_mode == "disable":
             return {}
-        return {"ssl": self.db_ssl_mode}
+        if self.db_ssl_root_cert is None:
+            return {"ssl": self.db_ssl_mode}
+        context = ssl.create_default_context(cafile=self.db_ssl_root_cert)
+        context.verify_mode = ssl.CERT_REQUIRED
+        # verify-ca proves the certificate chains to a trusted CA; verify-full
+        # additionally proves it was issued for the host we asked for.
+        context.check_hostname = self.db_ssl_mode == "verify-full"
+        return {"ssl": context}

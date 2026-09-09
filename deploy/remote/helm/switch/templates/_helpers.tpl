@@ -31,11 +31,34 @@ the External Secrets Operator / sealed-secrets). When set, the chart renders no
 Secret of its own.
 */}}
 {{- define "switch.secretName" -}}
-{{- if .Values.secrets.existingSecret -}}
+{{- if .secretNameOverride -}}
+{{- .secretNameOverride -}}
+{{- else if .Values.secrets.existingSecret -}}
 {{- .Values.secrets.existingSecret -}}
 {{- else -}}
 {{- include "switch.fullname" . }}-secrets
 {{- end -}}
+{{- end }}
+
+{{/*
+The Secret's data block, so the pre-upgrade copy the migration reads is
+rendered from this one source and cannot drift from the release's own.
+*/}}
+{{- define "switch.secretData" -}}
+{{- if not .Values.postgresql.existingSecret }}
+POSTGRES_PASSWORD: {{ required "secrets.postgresPassword is required (unless postgresql.existingSecret is set)" .Values.secrets.postgresPassword | b64enc | quote }}
+{{- end }}
+AGENT_REGISTRATION_TOKEN: {{ required "secrets.agentRegistrationToken is required" .Values.secrets.agentRegistrationToken | b64enc | quote }}
+JWT_SECRET_KEY: {{ required "secrets.jwtSecretKey is required" .Values.secrets.jwtSecretKey | b64enc | quote }}
+GATEWAY_ADMIN_EMAIL: {{ required "secrets.gatewayAdminEmail is required" .Values.secrets.gatewayAdminEmail | b64enc | quote }}
+GATEWAY_ADMIN_PASSWORD: {{ required "secrets.gatewayAdminPassword is required" .Values.secrets.gatewayAdminPassword | b64enc | quote }}
+{{- if .Values.mattermost.enabled }}
+MATTERMOST_ADMIN_PASSWORD: {{ .Values.secrets.mattermostAdminPassword | default .Values.secrets.postgresPassword | b64enc | quote }}
+MATTERMOST_USER_PASSWORD: {{ .Values.secrets.mattermostUserPassword | default .Values.secrets.postgresPassword | b64enc | quote }}
+{{- end }}
+{{- if .Values.switchCore.oidc.enabled }}
+GATEWAY_OIDC_CLIENT_SECRET: {{ required "secrets.gatewayOidcClientSecret is required when switchCore.oidc.enabled" .Values.secrets.gatewayOidcClientSecret | b64enc | quote }}
+{{- end }}
 {{- end }}
 
 {{/*
@@ -202,6 +225,83 @@ imagePullSecrets:
 {{- end }}
 
 {{/*
+Name of the ConfigMap holding the database CA bundle — the user's own, or the
+chart-managed one rendered from postgresql.caBundle.contents. Empty when no
+bundle is configured, which is what every caller tests to decide whether to
+mount anything.
+*/}}
+{{- define "switch.dbCaBundleConfigMap" -}}
+{{- if .dbCaConfigMapOverride -}}
+{{- .dbCaConfigMapOverride -}}
+{{- else if .Values.postgresql.caBundle.existingConfigMap -}}
+{{- .Values.postgresql.caBundle.existingConfigMap -}}
+{{- else if .Values.postgresql.caBundle.contents -}}
+{{- include "switch.fullname" . }}-db-ca
+{{- end -}}
+{{- end }}
+
+{{/*
+The CA ConfigMap's data block, shared with the pre-upgrade copy for the same
+reason as the Secret's.
+*/}}
+{{- define "switch.dbCaBundleData" -}}
+{{ .Values.postgresql.caBundle.key }}: |
+{{ .Values.postgresql.caBundle.contents | indent 2 }}
+{{- end }}
+
+{{/*
+Path the CA bundle is mounted at inside every container that connects to the
+database.
+*/}}
+{{- define "switch.dbCaBundlePath" -}}
+{{- printf "%s/%s" (trimSuffix "/" .Values.postgresql.caBundle.mountPath) .Values.postgresql.caBundle.key -}}
+{{- end }}
+
+{{- define "switch.dbCaBundleVolume" -}}
+- name: db-ca-bundle
+  configMap:
+    name: {{ include "switch.dbCaBundleConfigMap" . }}
+    items:
+      - key: {{ .Values.postgresql.caBundle.key }}
+        path: {{ .Values.postgresql.caBundle.key }}
+{{- end }}
+
+{{- define "switch.dbCaBundleVolumeMount" -}}
+- name: db-ca-bundle
+  mountPath: {{ .Values.postgresql.caBundle.mountPath }}
+  readOnly: true
+{{- end }}
+
+{{/*
+Refuse a TLS configuration that cannot work, at template time rather than on
+the first connection of a rolled-out pod.
+*/}}
+{{- define "switch.validateDbTls" -}}
+{{- $ca := .Values.postgresql.caBundle -}}
+{{- if and $ca.contents $ca.existingConfigMap -}}
+{{- fail "postgresql.caBundle: set contents or existingConfigMap, not both." -}}
+{{- end -}}
+{{- $bundle := include "switch.dbCaBundleConfigMap" . -}}
+{{- $verifying := has .Values.postgresql.sslMode (list "verify-ca" "verify-full") -}}
+{{- if and $verifying (not $bundle) -}}
+{{- fail (printf "postgresql.sslMode=%s checks the server certificate against a CA bundle, but postgresql.caBundle is empty. Supply the provider's root CA (for RDS, https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem) or use sslMode=require." .Values.postgresql.sslMode) -}}
+{{- end -}}
+{{- if and $bundle (not $verifying) -}}
+{{- fail (printf "postgresql.caBundle is set but postgresql.sslMode=%s never checks the server certificate, so the bundle would have no effect. Use verify-ca or verify-full." .Values.postgresql.sslMode) -}}
+{{- end -}}
+{{- end }}
+
+{{/*
+Reject a log format switch-core would refuse at startup, so a typo is a render
+error rather than a crash loop.
+*/}}
+{{- define "switch.validateLogging" -}}
+{{- if not (has .Values.switchCore.logging.format (list "text" "json")) -}}
+{{- fail (printf "switchCore.logging.format must be text or json, not %q." .Values.switchCore.logging.format) -}}
+{{- end -}}
+{{- end }}
+
+{{/*
 switch-core container env. Shared by the switch-core Deployment and the
 pre-upgrade migration Job so they always run against the same configuration
 (env.py builds a full SwitchConfig, so the migration Job needs every var too).
@@ -223,6 +323,10 @@ Include with `nindent 12`.
   value: {{ include "switch.postgresDatabase" . | quote }}
 - name: DB_SSL_MODE
   value: {{ .Values.postgresql.sslMode | quote }}
+{{- if include "switch.dbCaBundleConfigMap" . }}
+- name: DB_SSL_ROOT_CERT
+  value: {{ include "switch.dbCaBundlePath" . | quote }}
+{{- end }}
 - name: DB_POOL_SIZE
   value: {{ .Values.postgresql.pool.size | quote }}
 - name: DB_MAX_OVERFLOW
@@ -288,6 +392,18 @@ Include with `nindent 12`.
   value: {{ .Values.switchCore.cookieSecure | quote }}
 - name: SWITCH_LOG_LEVEL
   value: {{ .Values.switchCore.logLevel | default "INFO" | quote }}
+- name: LOG_FORMAT
+  value: {{ .Values.switchCore.logging.format | quote }}
+- name: LOG_LEVEL
+  value: {{ .Values.switchCore.logging.rootLevel | quote }}
+- name: TENANT_ID
+  value: {{ .Values.switchCore.logging.tenantId | quote }}
+- name: SERVICE_NAME
+  value: {{ .Values.switchCore.logging.serviceName | quote }}
+{{- with .Values.switchCore.logging.environment }}
+- name: ENVIRONMENT
+  value: {{ . | quote }}
+{{- end }}
 # switch-core sits behind the cluster/ALB and enforces its own
 # BearerAuthMiddleware, so fastmcp's browser-oriented DNS-rebinding
 # Host/Origin guard (default-on since mcp 1.28) only rejects the

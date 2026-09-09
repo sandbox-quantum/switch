@@ -90,6 +90,28 @@ switchCore:
   image: switch-core:latest
   imagePullPolicy: Always
   logLevel: INFO
+
+  # Logging. "text" is for reading in a terminal; "json" is what a log pipeline
+  # wants, and the only format that carries the context fields as fields — the
+  # tenant, and the request, agent and user a line belongs to — rather than
+  # inside the message. Set format: json anywhere the logs are collected.
+  #
+  # tenantId is a deployment-wide constant while Switch serves one organisation
+  # per deployment. Setting it per deployment is what lets one pipeline hold
+  # several and still tell them apart, so name the customer or the environment
+  # rather than leaving it at "default".
+  #
+  # environment and serviceName are emitted as `env` and `service`, the names
+  # a collector expects to group and filter on.
+  # rootLevel governs everything, libraries included; logLevel above is
+  # switch-core's own and is usually the one to change.
+  logging:
+    format: text
+    rootLevel: INFO
+    tenantId: default
+    environment: ""
+    serviceName: switch-core
+
   # Public base URL the gateway is served on (used for links / OIDC redirects).
   frontendBaseUrl: ""
   # Public origin (scheme + host, no path) of the gateway HTTP API itself, used
@@ -306,6 +328,27 @@ postgresql:
   # verify-ca | verify-full. Keep "disable" for the in-cluster managed DB;
   # managed cloud databases generally require "require" or stricter.
   sslMode: disable
+
+  # Certificate authorities the server certificate is checked against, as a PEM
+  # bundle. The two verifying sslModes require one and the others ignore one, so
+  # the chart refuses a mismatch rather than rendering a release that fails on
+  # first connect. A managed database is signed by the provider's own root
+  # rather than a publicly trusted one, which is why the system trust store is
+  # not enough; AWS publishes a bundle covering every commercial region at
+  # https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem
+  #
+  # Supply it inline as `contents` (rendered into a chart-managed ConfigMap) or
+  # name a ConfigMap you already have — not both. It is mounted into
+  # switch-core, the migration Job and Mattermost, all of which connect.
+  #
+  # verify-full additionally checks the hostname, so external.host must be the
+  # name the certificate was issued for — for RDS the instance endpoint, not a
+  # CNAME of your own. A CNAME means settling for verify-ca.
+  caBundle:
+    contents: ""
+    existingConfigMap: ""
+    key: ca.pem
+    mountPath: /etc/ssl/switch-db
 
   # switch-core's SQLAlchemy connection pool. Size this against the number of
   # live agent connections, not human traffic: bearer-token auth hits the
