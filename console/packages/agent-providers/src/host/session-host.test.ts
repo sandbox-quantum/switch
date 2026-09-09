@@ -276,3 +276,63 @@ it('rejects host publication claims before dispatching a command', async () => {
   expect(adapter.sendTurn).not.toHaveBeenCalled();
   expect(host.snapshot().commandStatuses).toEqual([]);
 });
+
+it('records uncertain interrupt delivery and never sends it twice', async () => {
+  const { host, adapter } = await start('codex');
+  await host.command(message('turn'));
+  await vi.waitFor(() => expect(adapter.sendTurn).toHaveBeenCalledOnce());
+  vi.mocked(adapter.interruptTurn).mockRejectedValue(new Error('Connection lost after send'));
+  const interrupt: Command = {
+    ...message('interrupt'),
+    body: { type: 'turn.interrupt', turnId: 'turn' },
+  };
+  expect((await host.command(interrupt)).status).toBe('unknown');
+  expect((await host.command(interrupt)).status).toBe('unknown');
+  expect(adapter.interruptTurn).toHaveBeenCalledOnce();
+});
+
+it('rejects a completed turn interrupt without ending the host', async () => {
+  const { host, adapter } = await start('codex');
+  expect(
+    (
+      await host.command({
+        ...message('interrupt'),
+        body: { type: 'turn.interrupt', turnId: 'finished' },
+      })
+    ).status
+  ).toBe('rejected');
+  expect(adapter.interruptTurn).not.toHaveBeenCalled();
+  expect((await host.command(message('next'))).status).toBe('applied');
+});
+
+it('keeps a stop with uncertain cleanup stopped on recovery', async () => {
+  const { host, root, adapter } = await start('codex');
+  vi.mocked(adapter.stopSession).mockRejectedValueOnce(new Error('Cleanup acknowledgement lost'));
+  const stop: Command = { ...message('stop'), body: { type: 'session.stop' } };
+  expect((await host.command(stop)).status).toBe('unknown');
+  expect((await host.command(stop)).status).toBe('unknown');
+  expect(adapter.stopSession).toHaveBeenCalledOnce();
+  await host.shutdown();
+  const recovered = setup('codex');
+  const resumed = await HostedSession.start(root, recovered.config, recovered.adapter);
+  hosts.push(resumed);
+  expect(resumed.snapshot().session.status).toBe('stopped');
+  expect(recovered.adapter.startSession).not.toHaveBeenCalled();
+});
+
+it('stops active and queued turns without dispatching the queue during cleanup', async () => {
+  const { host, adapter, emit } = await start('codex');
+  await host.command(message('active'));
+  await host.command(message('queued'));
+  await vi.waitFor(() => expect(adapter.sendTurn).toHaveBeenCalledOnce());
+  vi.mocked(adapter.stopSession).mockImplementationOnce(async () => {
+    emit({ type: 'turn.completed', turnId: 'active', outcome: 'interrupted' });
+    emit({ type: 'session.exited', reason: 'Stopped' });
+  });
+  expect((await host.command({ ...message('stop'), body: { type: 'session.stop' } })).status).toBe(
+    'applied'
+  );
+  await vi.waitFor(() => expect(host.snapshot().session.status).toBe('stopped'));
+  expect(host.snapshot().turns.map((turn) => turn.status)).toEqual(['interrupted', 'interrupted']);
+  expect(adapter.sendTurn).toHaveBeenCalledOnce();
+});

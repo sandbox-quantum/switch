@@ -7,7 +7,13 @@ import pytest
 
 from switch_core.db.models import SdkSession
 from switch_core.sessions.service import SessionError
-from tests.switch_core.sessions.test_authority import answer, host_event, opened, setup
+from tests.switch_core.sessions.test_authority import (
+    answer,
+    command,
+    host_event,
+    opened,
+    setup,
+)
 
 
 @pytest.mark.asyncio
@@ -112,3 +118,40 @@ async def test_acquisition_ack_retry_is_idempotent_and_competing_claim_is_denied
             session.model_copy(update={"host_id": "another-host"}),
             "operation",
         )
+
+
+@pytest.mark.asyncio
+async def test_lifecycle_commands_are_authorized_durable_and_fenced(session_factory):
+    service, epoch = await setup(session_factory)
+    await opened(service, epoch)
+    for command_id, body in (
+        ("interrupt", {"type": "turn.interrupt", "turnId": "turn-demo"}),
+        ("stop", {"type": "session.stop"}),
+    ):
+        control = command(epoch, command_id, body)
+        with pytest.raises(SessionError, match="owner"):
+            await service.submit(control, user_id="outsider", bridge_id=None)
+        receipt = await service.submit(control, user_id="owner", bridge_id=None)
+        assert receipt.status == "accepted"
+        assert await service.submit(control, user_id="owner", bridge_id=None) == receipt
+        assert control in await service.pending(
+            "agent-demo", "session-demo", "host-demo", epoch
+        )
+    with pytest.raises(SessionError, match="no longer running"):
+        await service.submit(
+            command(epoch, "old-turn", {"type": "turn.interrupt", "turnId": "other"}),
+            user_id="owner",
+            bridge_id=None,
+        )
+    await service.quiesce("agent-demo", "session-demo", "host-demo", epoch)
+    snapshot = await service.recover(
+        "agent-demo", "session-demo", "host-demo", epoch, "recovery", 2
+    )
+    statuses = {entry.command_id: entry.status for entry in snapshot.command_statuses}
+    assert statuses["interrupt"] == statuses["stop"] == "unknown"
+    assert (
+        await service.pending(
+            "agent-demo", "session-demo", "host-demo", snapshot.session.epoch
+        )
+        == []
+    )

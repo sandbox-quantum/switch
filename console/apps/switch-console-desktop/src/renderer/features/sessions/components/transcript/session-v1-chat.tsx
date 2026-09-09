@@ -1,4 +1,4 @@
-import type { SessionChatClient } from '@switch-console/shared/session-v1';
+import type { Command, SessionChatClient } from '@switch-console/shared/session-v1';
 import { Loader2, Wrench } from 'lucide-react';
 import { useEffect, useState, useSyncExternalStore } from 'react';
 import { Button } from '@renderer/lib/ui/button';
@@ -22,6 +22,18 @@ export function SessionV1Chat({ client }: { client: SessionChatClient }) {
     view.connected &&
     session?.connectivity === 'online' &&
     (session.status === 'ready' || session.status === 'running');
+  const runningTurn = view.snapshot?.turns.find((turn) => turn.status === 'running');
+  const control = async (body: Command['body']) => {
+    setSending(true);
+    setSendError(null);
+    try {
+      await client.execute(body, crypto.randomUUID());
+    } catch (error) {
+      setSendError(String(error));
+    } finally {
+      setSending(false);
+    }
+  };
   const send = async () => {
     if (!available || sending || !draft.trim()) return;
     const commandId = pendingId ?? crypto.randomUUID();
@@ -43,7 +55,7 @@ export function SessionV1Chat({ client }: { client: SessionChatClient }) {
     setSending(true);
     try {
       await client.reconcile();
-      setDraft('');
+      if (pendingId) setDraft('');
       setPendingId(null);
       setSendError(null);
     } catch (error) {
@@ -60,11 +72,38 @@ export function SessionV1Chat({ client }: { client: SessionChatClient }) {
         <span>
           {session?.provider ?? 'Session'} · {session?.status ?? 'Loading'}
         </span>
-        <span>
-          {available || (view.connected && session?.connectivity === 'online')
-            ? 'Connected'
-            : 'Offline'}
-        </span>
+        <div className="flex items-center gap-2">
+          {runningTurn && session?.capabilities.interrupt && (
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={!available || sending || client.hasPendingCommand()}
+              onClick={() => void control({ type: 'turn.interrupt', turnId: runningTurn.turnId })}
+            >
+              Interrupt
+            </Button>
+          )}
+          {session && session.status !== 'stopped' && (
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={
+                !view.connected ||
+                session.connectivity !== 'online' ||
+                sending ||
+                client.hasPendingCommand()
+              }
+              onClick={() => void control({ type: 'session.stop' })}
+            >
+              Stop session
+            </Button>
+          )}
+          <span>
+            {available || (view.connected && session?.connectivity === 'online')
+              ? 'Connected'
+              : 'Offline'}
+          </span>
+        </div>
       </div>
       {(view.error || !view.connected) && (
         <div
@@ -150,14 +189,14 @@ export function SessionV1Chat({ client }: { client: SessionChatClient }) {
         {sendError && (
           <div role="alert" className="mb-2 text-sm text-foreground-destructive">
             {sendError}
-            {pendingId && (
+            {client.hasPendingCommand() && (
               <Button
                 size="sm"
                 variant="outline"
                 disabled={sending}
                 onClick={() => void reconcile()}
               >
-                Check message status
+                Check command status
               </Button>
             )}
           </div>

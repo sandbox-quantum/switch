@@ -224,6 +224,7 @@ export class HostedSession {
     if (command.epoch !== session.epoch) throw new Error('STALE_EPOCH');
     const body = command.body;
     if (body.type === 'message.send') {
+      if (this.stopped) throw new Error('Session stop has been requested.');
       if (body.delivery !== 'queue')
         throw new Error('UNSUPPORTED_CAPABILITY: host currently accepts queued messages.');
       if (eventBytes(command) > 60 * 1024)
@@ -232,9 +233,11 @@ export class HostedSession {
         throw new Error('UNSUPPORTED_CAPABILITY: attachment staging is not configured.');
       if (session.status !== 'ready' && session.status !== 'running')
         throw new Error('Session is not ready.');
-    } else if (body.type === 'turn.interrupt') {
-      if (body.turnId !== this.activeTurn) throw new Error('Turn is no longer active.');
-    } else if (body.type !== 'session.stop' && body.type !== 'request.answer')
+    } else if (
+      body.type !== 'turn.interrupt' &&
+      body.type !== 'session.stop' &&
+      body.type !== 'request.answer'
+    )
       throw new Error('UNSUPPORTED_CAPABILITY');
     if (body.type === 'request.answer') this.validateAnswer(command);
     await this.inbox.append({ type: 'accepted', command });
@@ -274,9 +277,14 @@ export class HostedSession {
           },
         });
         this.queue.push(command);
-      } else if (body.type === 'turn.interrupt')
+      } else if (body.type === 'turn.interrupt') {
+        if (body.turnId !== this.activeTurn) throw new Error('Turn is no longer active.');
+        await this.inbox.append({ type: 'dispatched', commandId: command.commandId });
+        this.dispatched.add(command.commandId);
         await this.adapter.interruptTurn(session.sessionId);
-      else if (body.type === 'session.stop') {
+      } else if (body.type === 'session.stop') {
+        await this.inbox.append({ type: 'dispatched', commandId: command.commandId });
+        this.dispatched.add(command.commandId);
         await this.inbox.append({ type: 'stopped' });
         this.stopped = true;
         for (const queued of this.queue)
@@ -329,7 +337,7 @@ export class HostedSession {
   }
 
   private async runNext(): Promise<void> {
-    if (this.activeTurn || this.shuttingDown || this.fault) return;
+    if (this.activeTurn || this.shuttingDown || this.stopped || this.fault) return;
     const command = this.queue.shift();
     if (!command || command.body.type !== 'message.send') return;
     this.activeTurn = command.commandId;
@@ -371,14 +379,11 @@ export class HostedSession {
             commandId: null,
             result: null,
           });
-      for (const queued of this.queue)
-        await this.publish({
-          type: 'turn.upsert',
-          turnId: queued.commandId,
-          commandId: queued.commandId,
-          status: 'interrupted',
-        });
+      for (const turn of this.snapshot().turns)
+        if (turn.status === 'running' || turn.status === 'queued')
+          await this.publish({ ...turn, status: 'interrupted' });
       this.queue.length = 0;
+      this.activeTurn = null;
       this.questions.clear();
     }
     if (event.type === 'session.started') {

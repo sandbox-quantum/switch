@@ -24,8 +24,10 @@ from switch_core.bridges.collaboration.session.contract import (
     ServerEvent,
     Session,
     SessionConnectivity,
+    SessionStop,
     SessionUpsert,
     Snapshot,
+    TurnInterrupt,
     TurnUpsert,
     parse_host_event,
 )
@@ -405,6 +407,23 @@ class SessionAuthority:
                     )
                 if snapshot.session.status not in ("ready", "running"):
                     raise SessionError("HOST_OFFLINE", "The session is not ready.")
+            elif isinstance(body, TurnInterrupt):
+                if not snapshot.session.capabilities.interrupt:
+                    raise SessionError(
+                        "UNSUPPORTED_CAPABILITY", "Interrupt is unavailable."
+                    )
+                if not any(
+                    turn.turn_id == body.turn_id and turn.status == "running"
+                    for turn in snapshot.turns
+                ):
+                    raise SessionError(
+                        "TURN_NOT_ACTIVE", "The turn is no longer running."
+                    )
+            elif isinstance(body, SessionStop):
+                if snapshot.session.status == "stopped":
+                    raise SessionError(
+                        "SESSION_STOPPED", "The session has already stopped."
+                    )
             else:
                 raise SessionError(
                     "UNSUPPORTED_CAPABILITY",
