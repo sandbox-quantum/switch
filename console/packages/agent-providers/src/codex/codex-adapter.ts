@@ -272,7 +272,7 @@ export class CodexAdapter implements ProviderAdapter {
       state.threadId = opened.thread.id;
     } catch (cause) {
       this.sessions.delete(input.sessionId);
-      client.dispose();
+      await client.dispose();
       throw new ProviderSessionError(
         PROVIDER,
         input.sessionId,
@@ -411,7 +411,7 @@ export class CodexAdapter implements ProviderAdapter {
     this.cancelPending(state);
     // Let the cancel answers reach codex before stdin is closed under them.
     await new Promise<void>((resolve) => setTimeout(resolve, 0));
-    state.client.dispose();
+    await state.client.dispose();
     this.finishSession(state, 'stopped by Switch');
   }
 

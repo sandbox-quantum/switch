@@ -13,7 +13,16 @@ export class Journal<T> {
   static async load<T>(path: string, parse: (input: unknown) => T): Promise<Journal<T>> {
     await mkdir(dirname(path), { recursive: true, mode: 0o700 });
     const file = await open(path, 'a', 0o600);
+    await file.sync();
     await file.close();
+    if (process.platform !== 'win32') {
+      const directory = await open(dirname(path), 'r');
+      try {
+        await directory.sync();
+      } finally {
+        await directory.close();
+      }
+    }
     const text = await readFile(path, 'utf8');
     if (text && !text.endsWith('\n'))
       throw new Error('Journal has an incomplete write; explicit recovery is required.');

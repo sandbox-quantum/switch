@@ -1,10 +1,17 @@
-import { mkdir } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
+import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
-import { commandSchema, snapshotSchema } from '@switch-console/shared/session-v1';
+import {
+  commandSchema,
+  serverEventSchema,
+  snapshotSchema,
+} from '@switch-console/shared/session-v1';
 import type { Session } from '@switch-console/shared/session-v1';
 import type { ProviderAdapter, ProviderSessionStartInput } from '../adapter';
+import { Journal } from './journal';
 import { HostedSession } from './session-host';
 import { SharedDelivery } from './shared-delivery';
+import { SharedState } from './shared-state';
 
 export type SharedHostOptions = {
   root: string;
@@ -13,6 +20,14 @@ export type SharedHostOptions = {
   session: Session;
   input: ProviderSessionStartInput;
 };
+
+class TransportError extends Error {}
+export class SharedHostLeaseExpiredError extends Error {
+  constructor() {
+    super('HOST_OFFLINE: lease renewal deadline passed.');
+    this.name = 'SharedHostLeaseExpiredError';
+  }
+}
 
 /** A shared execution process consumes only commands reserved by Switch. */
 export async function runSharedHost(
@@ -30,37 +45,67 @@ export async function runSharedHost(
     throw new Error('Agent API URL must not contain credentials, a query, or a fragment.');
   if (options.session.sessionId !== options.input.sessionId)
     throw new Error('Shared host session identity mismatch.');
-  // An existing journal needs explicit recovery; never start a second execution over it.
-  await mkdir(options.root, { mode: 0o700 });
+  const state = await SharedState.open(options);
   const stopped = new AbortController();
   const executionSignal = AbortSignal.any([signal, stopped.signal]);
   let host: HostedSession | null = null;
-  let heartbeatFailure: unknown = null;
-  const request = async (path: string, body: unknown): Promise<unknown> => {
-    const response = await fetch(`${base.href.replace(/\/$/, '')}/sessions${path}`, {
-      method: 'POST',
-      headers: { authorization: `Bearer ${options.token}`, 'content-type': 'application/json' },
-      body: JSON.stringify(body),
-      signal: AbortSignal.any([executionSignal, AbortSignal.timeout(5000)]),
-      redirect: 'error',
-    });
-    if (!response.ok)
-      throw new Error(
-        `Switch session request failed (${response.status}): ${await response.text()}`
-      );
+  let delivery: SharedDelivery | null = null;
+  let failure: unknown = null;
+  let starting = false;
+  let deadline = Infinity;
+  let lease = state.latest('lease');
+  let heartbeat: Promise<void> = Promise.resolve();
+  let shutdown: Promise<void> | null = null;
+  const sessionPath = `/${encodeURIComponent(options.session.sessionId)}`;
+  const requestOnce = async (path: string, body: unknown, abort: AbortSignal): Promise<unknown> => {
+    let response: Response;
+    try {
+      response = await fetch(`${base.href.replace(/\/$/, '')}/sessions${path}`, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${options.token}`, 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+        signal: AbortSignal.any([abort, AbortSignal.timeout(5000)]),
+        redirect: 'error',
+      });
+    } catch (error) {
+      if (abort.aborted) throw error;
+      throw new TransportError(`Switch session transport unavailable: ${String(error)}`);
+    }
+    if ([429, 500, 502, 503, 504].includes(response.status))
+      throw new TransportError(`Switch session transport unavailable (${response.status}).`);
+    if (!response.ok) {
+      const text = await response.text();
+      if (response.status === 409) {
+        let body: unknown;
+        try {
+          body = JSON.parse(text);
+        } catch {
+          body = null;
+        }
+        if (body && typeof body === 'object' && 'code' in body && body.code === 'HOST_OFFLINE')
+          throw new SharedHostLeaseExpiredError();
+      }
+      throw new Error(`Switch session request failed (${response.status}): ${text}`);
+    }
     return response.json();
   };
-  const acquired = snapshotSchema.parse(await request('/acquire', options.session));
-  if (
-    acquired.session.sessionId !== options.session.sessionId ||
-    acquired.session.agentId !== options.session.agentId ||
-    acquired.session.hostId !== options.session.hostId
-  )
-    throw new Error('Switch returned a different session identity.');
-  const session = acquired.session;
-  const lease = { host_id: session.hostId, epoch: session.epoch };
-  const sessionPath = `/${encodeURIComponent(session.sessionId)}`;
-  let shutdown: Promise<void> | null = null;
+  const request = async (path: string, body: unknown): Promise<unknown> => {
+    let disconnected = false;
+    while (true) {
+      executionSignal.throwIfAborted();
+      if (performance.now() >= deadline) throw new SharedHostLeaseExpiredError();
+      try {
+        const result = await requestOnce(path, body, executionSignal);
+        if (disconnected) console.info('Shared host connection restored.');
+        return result;
+      } catch (error) {
+        if (!(error instanceof TransportError)) throw error;
+        if (!disconnected) console.warn(error.message);
+        disconnected = true;
+        await delay(500, undefined, { signal: executionSignal });
+      }
+    }
+  };
   const stopExecution = async () => {
     if (host) {
       shutdown ??= host.shutdown();
@@ -68,51 +113,158 @@ export async function runSharedHost(
     }
   };
   const onAbort = () => {
-    void stopExecution().catch((error: unknown) => {
-      heartbeatFailure ??= error;
+    void stopExecution().catch((error) => {
+      failure ??= error;
     });
   };
   executionSignal.addEventListener('abort', onAbort, { once: true });
-  const heartbeat = (async () => {
-    try {
-      while (!executionSignal.aborted) {
-        await delay(5000, undefined, { signal: executionSignal });
-        await request(`${sessionPath}/renew`, lease);
-      }
-    } catch (error) {
-      if (!executionSignal.aborted) {
-        heartbeatFailure = error;
-        stopped.abort(error);
-        await stopExecution();
+  const upload = async (reconcile: boolean) => {
+    for (const event of delivery!.pending()) {
+      const receipt = await request(
+        `/${reconcile ? 'reconcile' : 'events'}?host_id=${encodeURIComponent(options.session.hostId)}`,
+        event
+      );
+      if (
+        !receipt ||
+        typeof receipt !== 'object' ||
+        !('throughHostSequence' in receipt) ||
+        typeof receipt.throughHostSequence !== 'number' ||
+        receipt.throughHostSequence < event.hostSequence
+      )
+        throw new Error('Switch returned an invalid host event receipt.');
+      await delivery!.acknowledge(receipt.throughHostSequence);
+    }
+  };
+  const validateSession = (snapshot: unknown) => {
+    const parsed = snapshotSchema.parse(snapshot);
+    const { session } = parsed;
+    if (
+      session.sessionId !== options.session.sessionId ||
+      session.agentId !== options.session.agentId ||
+      session.hostId !== options.session.hostId ||
+      session.provider !== options.session.provider
+    )
+      throw new Error('Switch returned a different session identity.');
+    return parsed;
+  };
+  const finish = async () => {
+    if (starting)
+      throw new Error(
+        'FENCING_REQUIRED: provider startup failed before shutdown could be confirmed.'
+      );
+    await stopExecution();
+    if (host && delivery)
+      for (const event of host.replay(delivery.cursor).events) await delivery.capture(event);
+    await state.journal.append({ type: 'quiesced' });
+    if (lease) {
+      try {
+        await requestOnce(
+          `${sessionPath}/quiesce`,
+          { host_id: lease.snapshot.session.hostId, epoch: lease.snapshot.session.epoch },
+          AbortSignal.timeout(5000)
+        );
+      } catch (error) {
+        console.warn(
+          'Shared host stopped; server quiescence will be retried on recovery:',
+          String(error)
+        );
       }
     }
-  })();
-  const delivery = await SharedDelivery.load(options.root, session);
+    await state.unlock();
+  };
   try {
-    host = await HostedSession.start(options.root, { session, input: options.input }, adapter);
-    const flush = async () => {
-      for (const event of host!.replay(delivery.cursor).events) await delivery.capture(event);
-      for (const event of delivery.pending()) {
-        const receipt = await request(
-          `/events?host_id=${encodeURIComponent(session.hostId)}`,
-          event
-        );
-        if (
-          !receipt ||
-          typeof receipt !== 'object' ||
-          !('throughHostSequence' in receipt) ||
-          receipt.throughHostSequence !== event.hostSequence
-        )
-          throw new Error('Switch returned an invalid host event receipt.');
-        await delivery.acknowledge(receipt.throughHostSequence);
+    // Complete a recovery whose response may have been lost before doing anything else.
+    const recovery = state.latest('recover');
+    if (recovery && (!lease || recovery.epoch === lease.snapshot.session.epoch)) {
+      const snapshot = validateSession(
+        await request(`${sessionPath}/recover`, {
+          host_id: options.session.hostId,
+          epoch: recovery.epoch,
+          operation_id: recovery.operationId,
+          through_host_sequence: recovery.throughHostSequence,
+        })
+      );
+      await state.journal.append({ type: 'lease', snapshot, sourceBase: recovery.sourceBase });
+      lease = state.latest('lease');
+    }
+    if (lease) {
+      const prior = lease.snapshot.session;
+      await request(`${sessionPath}/quiesce`, { host_id: prior.hostId, epoch: prior.epoch });
+      delivery = await SharedDelivery.load(options.root, prior, lease.sourceBase);
+      const events = await Journal.load(join(options.root, 'events.jsonl'), (value) =>
+        serverEventSchema.parse(value)
+      );
+      for (const event of events.records.filter((event) => event.sequence > delivery!.cursor))
+        await delivery.capture(event);
+      await upload(true);
+      const operation = {
+        type: 'recover' as const,
+        operationId: randomUUID(),
+        epoch: prior.epoch,
+        sourceBase: delivery.cursor,
+        throughHostSequence: delivery.throughHostSequence,
+      };
+      await state.journal.append(operation);
+      const snapshot = validateSession(
+        await request(`${sessionPath}/recover`, {
+          host_id: prior.hostId,
+          epoch: prior.epoch,
+          operation_id: operation.operationId,
+          through_host_sequence: operation.throughHostSequence,
+        })
+      );
+      await state.journal.append({ type: 'lease', snapshot, sourceBase: operation.sourceBase });
+    } else {
+      const snapshot = validateSession(
+        await request('/claim', {
+          session: state.identity.session,
+          operation_id: state.identity.operationId,
+        })
+      );
+      await state.journal.append({ type: 'lease', snapshot, sourceBase: 0 });
+    }
+    lease = state.latest('lease')!;
+    const session = lease.snapshot.session;
+    const hostLease = { host_id: session.hostId, epoch: session.epoch };
+    // Renew before opening a provider, including after a lost acquisition response.
+    const renewingAt = performance.now();
+    await request(`${sessionPath}/renew`, hostLease);
+    deadline = renewingAt + 25000;
+    delivery = await SharedDelivery.load(options.root, session, lease.sourceBase);
+    heartbeat = (async () => {
+      try {
+        while (!executionSignal.aborted) {
+          await delay(5000, undefined, { signal: executionSignal });
+          const renewingAt = performance.now();
+          await request(`${sessionPath}/renew`, hostLease);
+          deadline = renewingAt + 25000;
+        }
+      } catch (error) {
+        if (!executionSignal.aborted) {
+          failure = error;
+          stopped.abort(error);
+        }
       }
+    })();
+    await state.journal.append({ type: 'running' });
+    starting = true;
+    host = await HostedSession.start(
+      options.root,
+      { session, input: options.input, epochAuthority: 'server' },
+      adapter
+    );
+    starting = false;
+    const flush = async () => {
+      for (const event of host!.replay(delivery!.cursor).events) await delivery!.capture(event);
+      await upload(false);
     };
     while (!executionSignal.aborted) {
       await flush();
-      const commands = await request(`${sessionPath}/commands`, lease);
+      const commands = await request(`${sessionPath}/commands`, hostLease);
       if (!Array.isArray(commands)) throw new Error('Switch returned an invalid command batch.');
       for (const value of commands) {
         executionSignal.throwIfAborted();
+        if (performance.now() >= deadline) throw new SharedHostLeaseExpiredError();
         const command = commandSchema.parse(value);
         if (command.sessionId !== session.sessionId || command.epoch !== session.epoch)
           throw new Error('Switch returned a command for another session generation.');
@@ -122,12 +274,16 @@ export async function runSharedHost(
       await delay(250, undefined, { signal: executionSignal });
     }
   } catch (error) {
-    if (!signal.aborted) throw heartbeatFailure ?? error;
+    if (!signal.aborted) failure ??= error;
   } finally {
     stopped.abort();
     await heartbeat;
-    await stopExecution();
+    try {
+      await finish();
+    } catch (error) {
+      failure = error;
+    }
     executionSignal.removeEventListener('abort', onAbort);
   }
-  if (heartbeatFailure) throw heartbeatFailure;
+  if (failure) throw failure;
 }

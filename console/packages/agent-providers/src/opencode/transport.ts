@@ -164,12 +164,25 @@ export function createHttpTransport(options: HttpTransportOptions): OpencodeTran
         async dispose() {
           disposed = true;
           abortController.abort();
-          server.process.kill('SIGTERM');
-          if (server.process.exitCode === null && server.process.signalCode === null) {
-            const escalate = setTimeout(() => server.process.kill('SIGKILL'), 2_000);
-            escalate.unref?.();
-            server.process.once('exit', () => clearTimeout(escalate));
-          }
+          if (server.process.exitCode !== null || server.process.signalCode !== null) return;
+          await new Promise<void>((resolve, reject) => {
+            const escalate = setTimeout(() => server.process.kill('SIGKILL'), 2000);
+            const timeout = setTimeout(() => {
+              cleanup();
+              reject(new Error('OpenCode process did not exit after termination.'));
+            }, 5000);
+            const cleanup = () => {
+              clearTimeout(escalate);
+              clearTimeout(timeout);
+              server.process.removeListener('exit', exited);
+            };
+            const exited = () => {
+              cleanup();
+              resolve();
+            };
+            server.process.once('exit', exited);
+            server.process.kill('SIGTERM');
+          });
         },
       };
     },

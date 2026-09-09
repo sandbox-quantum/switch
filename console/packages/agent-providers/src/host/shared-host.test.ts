@@ -110,7 +110,7 @@ it('executes server commands and uploads cancellation without server-owned event
     vi.fn(async (url: string, options: RequestInit) => {
       const path = new URL(url).pathname;
       let result: unknown;
-      if (path.endsWith('/acquire'))
+      if (path.endsWith('/claim'))
         result = {
           contractVersion: 1,
           throughSequence: 1,

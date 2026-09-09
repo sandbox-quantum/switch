@@ -65,14 +65,14 @@ The live test uses scratch directories and consumes provider usage.
 The standalone entry point is `dist/shared-host-daemon.mjs`:
 
 ```sh
-node dist/shared-host-daemon.mjs /path/to/new-state /path/to/session-config.json
+node dist/shared-host-daemon.mjs /path/to/state /path/to/session-config.json
 ```
 
 Supply `SWITCH_API_ENDPOINT` (the agent API base URL) and `SWITCH_API_TOKEN`
 through the process environment. The JSON file contains `session` (the session-v1
 session shape) and `start` (the local host's provider/input shape). Do not put the
 host credential in that file or pass it to the provider environment. The state
-directory must not exist. Switch assigns the session epoch. No local command
+directory is reused on restart. Switch assigns every session epoch. No local command
 endpoint is exposed by this process.
 
 Apply the backend migrations first. Owner-authenticated gateway routes under
@@ -83,8 +83,38 @@ room; the server checks agent membership and chooses the channel. Cards use the
 verified owner's linked platform identity for answers. Ordinary transcript items
 are never sent through the card publisher.
 
-Lease renewal failure stops the provider. Existing shared-session directories and
-expired leases require explicit recovery; this entry point does not take over an
-old execution or silently start a replacement. Local host resume remains separate.
+The host persists acquisition/recovery operations, its command inbox, native
+conversation ID, transcript, upload cursor, exact wire events and acknowledgements.
+It retries transport failures with the same operation and event IDs. A short
+connection loss does not stop the provider. If renewal cannot complete within the
+lease safety window, the host stops execution before releasing its lease. The
+standalone daemon reconnects and recovers from saved state when transport returns.
+
+Recovery follows three steps:
+
+1. Fence the previous execution. On macOS and Linux, the standalone daemon runs
+   in an isolated process group. A live owner is never displaced. After an owner
+   crash, the next daemon kills and verifies the remaining process group before
+   reclaiming the state directory. This requires `ps` and local process control.
+2. Mark the old lease quiescent and upload all saved events under the old epoch.
+   Switch accepts reconciliation without granting execution or command delivery.
+3. Submit a durable recovery operation. Switch serializes it in PostgreSQL,
+   closes outstanding callbacks, interrupts unfinished turns and marks unconfirmed
+   commands unknown. It grants a new epoch only after reconciliation. The host
+   resumes the saved native conversation and never resends an uncertain action.
+
+An applied message command means that its input was durably accepted; its turn
+can still be interrupted. A failed answer callback has an unknown command outcome,
+not a confirmed rejection. Answer reservations and publication remain server-owned.
+
+Recovery fails visibly when the native conversation ID is missing, a journal has
+an incomplete write, or process termination cannot be verified. Windows and
+embedded hosts without an isolated process group support graceful recovery but
+require operator fencing after a crash. Do not copy a live state directory or
+remove owner locks without verifying that all its provider processes have exited.
+Pre-recovery state directories lack the durable lease metadata and require explicit
+migration; they are not silently treated as new conversations. Journals are retained
+without compaction in this experimental implementation.
+
 Shared commands currently support queued text and request answers. SSH deployment
 and production session routing remain outside this experimental path.

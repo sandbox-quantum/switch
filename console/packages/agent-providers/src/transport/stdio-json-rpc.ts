@@ -134,10 +134,27 @@ export class StdioJsonRpcClient {
     this.serverRequestHandlers.set(method, handler);
   }
 
-  dispose(): void {
+  async dispose(): Promise<void> {
     if (this.exited) return;
-    this.child.stdin?.end();
-    this.child.kill('SIGTERM');
+    await new Promise<void>((resolve, reject) => {
+      const kill = setTimeout(() => this.child.kill('SIGKILL'), 2000);
+      const timeout = setTimeout(() => {
+        cleanup();
+        reject(new Error('Provider process did not exit after termination.'));
+      }, 5000);
+      const cleanup = () => {
+        clearTimeout(kill);
+        clearTimeout(timeout);
+        this.child.removeListener('exit', exited);
+      };
+      const exited = () => {
+        cleanup();
+        resolve();
+      };
+      this.child.once('exit', exited);
+      this.child.stdin?.end();
+      this.child.kill('SIGTERM');
+    });
   }
 
   private write(message: Record<string, unknown>): void {

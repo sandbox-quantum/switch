@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 import { hostEventSchema } from '@switch-console/shared/session-v1';
 import type { HostBody, HostEvent, ServerEvent, Session } from '@switch-console/shared/session-v1';
@@ -21,8 +22,10 @@ export class SharedDelivery {
 
   private constructor(
     private readonly journal: Journal<z.infer<typeof recordSchema>>,
-    private readonly session: Session
+    private readonly session: Session,
+    sourceBase: number
   ) {
+    this.sourceSequence = sourceBase;
     for (const record of journal.records) {
       if (record.type === 'event') {
         if (record.sourceSequence !== this.sourceSequence + 1)
@@ -44,11 +47,16 @@ export class SharedDelivery {
     }
   }
 
-  static async load(root: string, session: Session): Promise<SharedDelivery> {
-    const journal = await Journal.load(join(root, 'delivery.jsonl'), (value) =>
-      recordSchema.parse(value)
+  static async load(root: string, session: Session, sourceBase = 0): Promise<SharedDelivery> {
+    const journal = await Journal.load(
+      join(root, `delivery-${createHash('sha256').update(session.epoch).digest('hex')}.jsonl`),
+      (value) => recordSchema.parse(value)
     );
-    return new SharedDelivery(journal, session);
+    return new SharedDelivery(journal, session, sourceBase);
+  }
+
+  get throughHostSequence(): number {
+    return this.events.length;
   }
 
   get cursor(): number {
@@ -66,7 +74,7 @@ export class SharedDelivery {
     if (source.body.type === 'command.status') {
       const { status } = source.body;
       body =
-        status === 'applied' || status === 'rejected'
+        status === 'applied' || status === 'rejected' || status === 'unknown'
           ? { ...source.body, type: 'command.result', status }
           : null;
     } else if (

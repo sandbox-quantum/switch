@@ -332,12 +332,7 @@ export class OpencodeAdapter implements ProviderAdapter {
     if (record.activeTurnId !== undefined) {
       this.completeTurn(record, record.activeTurnId, 'interrupted', 'session stopped');
     }
-    await record.transport.dispose().catch((error: unknown) => {
-      this.logger.warn('opencode: transport dispose failed', {
-        sessionId,
-        error: errorMessage(error),
-      });
-    });
+    await record.transport.dispose();
     this.sessions.delete(sessionId);
     this.finishSession(record, 'session stopped');
   }

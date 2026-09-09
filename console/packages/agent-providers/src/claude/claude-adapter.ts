@@ -163,6 +163,7 @@ interface SessionState {
   sessionId: string;
   nativeSessionId: string;
   query: Query;
+  drained: Promise<void>;
   runtimeMode: ProviderSessionStartInput['runtimeMode'];
   /** `mcp__<server>__` prefixes for the servers the caller registered. */
   registeredMcpPrefixes: string[];
@@ -395,6 +396,7 @@ export class ClaudeAdapter implements ProviderAdapter {
       sessionId: input.sessionId,
       nativeSessionId,
       query: running,
+      drained: Promise.resolve(),
       runtimeMode: input.runtimeMode,
       registeredMcpPrefixes: mcpToolPrefixes(Object.keys(mcpServers)),
       input: prompt,
@@ -510,6 +512,7 @@ export class ClaudeAdapter implements ProviderAdapter {
   async stopSession(sessionId: string): Promise<void> {
     const session = this.requireSession(sessionId);
     this.shutdown(session, 'Session stopped.');
+    await session.drained;
   }
 
   async stopAll(): Promise<void> {
@@ -572,7 +575,7 @@ export class ClaudeAdapter implements ProviderAdapter {
       for await (const message of session.query) this.handleMessage(session, message);
     };
 
-    run().then(
+    session.drained = run().then(
       () => this.shutdown(session, 'Claude Code stream ended.'),
       (cause) => {
         if (!session.stopping) {
@@ -968,14 +971,7 @@ export class ClaudeAdapter implements ProviderAdapter {
     }
 
     session.input.close();
-    try {
-      session.query.close();
-    } catch (cause) {
-      this.logger?.warn('Closing the Claude query threw.', {
-        sessionId: session.sessionId,
-        cause,
-      });
-    }
+    session.query.close();
 
     this.emit(session, { type: 'session.state.changed', status: 'stopped' });
     this.emit(session, { type: 'session.exited', reason });

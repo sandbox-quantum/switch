@@ -30,7 +30,11 @@ const recordSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('stopped') }),
 ]);
 type RecordEntry = z.infer<typeof recordSchema>;
-export type HostSessionStart = { session: Session; input: ProviderSessionStartInput };
+export type HostSessionStart = {
+  session: Session;
+  input: ProviderSessionStartInput;
+  epochAuthority?: 'server';
+};
 type PendingQuestion = { request: Request; options: Map<string, string> };
 
 /** Execution owner for a local-only session. Shared server leases are an external boundary. */
@@ -159,14 +163,18 @@ export class HostedSession {
             });
         }
         if (host.stopped) {
-          host.config.session = snapshot.session;
+          host.config.session = { ...config.session, status: 'stopped' };
+          const stoppedSnapshot = host.replica.snapshot();
+          stoppedSnapshot.session = host.config.session;
+          host.replica = new SessionReplica(stoppedSnapshot);
+          await host.publish({ type: 'session.upsert', session: host.config.session });
           clearInterval(host.timer);
           host.unsubscribe();
           return host;
         }
         if (!host.nativeId)
           throw new Error('Cannot recover a session without its native provider ID.');
-        config.session.epoch = randomUUID();
+        if (config.epochAuthority !== 'server') config.session.epoch = randomUUID();
         const next = host.replica.snapshot();
         next.session = structuredClone(config.session);
         host.replica = new SessionReplica(next);
@@ -205,6 +213,7 @@ export class HostedSession {
 
   private async accept(command: Command): Promise<Snapshot['commandStatuses'][number]> {
     if (this.fault) throw this.fault;
+    if (this.shuttingDown) throw new Error('HOST_STOPPING');
     const { session } = this.snapshot();
     if (command.sessionId !== session.sessionId) throw new Error('NOT_FOUND: session mismatch.');
     const previous = this.commands.get(command.commandId);
@@ -305,8 +314,8 @@ export class HostedSession {
       await this.publish({
         type: 'command.status',
         commandId: command.commandId,
-        status: 'rejected',
-        code: 'PROVIDER_ERROR',
+        status: this.dispatched.has(command.commandId) ? 'unknown' : 'rejected',
+        code: this.dispatched.has(command.commandId) ? 'OUTCOME_UNKNOWN' : 'PROVIDER_ERROR',
         message: String(error),
       });
     }
@@ -510,6 +519,8 @@ export class HostedSession {
       actorId: command.origin.actorId,
       surface: command.origin.surface,
     });
+    await this.inbox.append({ type: 'dispatched', commandId: command.commandId });
+    this.dispatched.add(command.commandId);
     let cancelled = false;
     if (body.answer.kind === 'approval' && pending.request.content.kind === 'approval') {
       const option = pending.request.content.options.find(
@@ -586,6 +597,7 @@ export class HostedSession {
     clearInterval(this.timer);
     if (this.adapter.hasSession(this.config.session.sessionId))
       await this.adapter.stopSession(this.config.session.sessionId);
+    await this.serial;
     await this.eventSerial;
     await this.publishing;
     this.unsubscribe();

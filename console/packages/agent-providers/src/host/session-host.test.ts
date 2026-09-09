@@ -151,7 +151,7 @@ it('keeps an explicitly stopped session stopped across restart', async () => {
   expect(recovered.snapshot().session.status).toBe('stopped');
   expect(fixture.adapter.startSession).not.toHaveBeenCalled();
 });
-it('reserves an approval once and closes it visibly when the provider rejects the answer', async () => {
+it('keeps a failed callback outcome unknown and never retries the answer', async () => {
   const { host, adapter, emit } = await start('claude');
   await host.command(message('turn'));
   emit({
@@ -173,12 +173,12 @@ it('reserves an approval once and closes it visibly when the provider rejects th
       answer: { kind: 'approval', optionId: '0' },
     },
   };
-  expect((await host.command(answer)).status).toBe('rejected');
+  expect((await host.command(answer)).status).toBe('unknown');
   expect(host.snapshot().requests[0]).toMatchObject({
     state: 'closed',
     result: { outcome: 'provider-error' },
   });
-  expect((await host.command(answer)).status).toBe('rejected');
+  expect((await host.command(answer)).status).toBe('unknown');
   expect(adapter.respondToRequest).toHaveBeenCalledTimes(1);
   await expect(host.command({ ...answer, commandId: 'another-answer' })).rejects.toThrow(
     'REQUEST_CLOSED'

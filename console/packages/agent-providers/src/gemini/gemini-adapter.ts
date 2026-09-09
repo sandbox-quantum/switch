@@ -199,7 +199,7 @@ export class GeminiAdapter implements ProviderAdapter {
       this.emit(state, { type: 'session.state.changed', status: 'ready' });
       return { provider: 'gemini', sessionId: state.id, nativeSessionId: state.nativeId };
     } catch (cause) {
-      client.dispose();
+      await client.dispose();
       this.sessions.delete(state.id);
       const details =
         cause instanceof JsonRpcError &&
@@ -513,7 +513,7 @@ export class GeminiAdapter implements ProviderAdapter {
     if (!state) return;
     state.stopping = true;
     if (state.turn) await this.interruptTurn(id);
-    state.client.dispose();
+    await state.client.dispose();
     this.exited(id, 'Session stopped');
   }
   async stopAll(): Promise<void> {

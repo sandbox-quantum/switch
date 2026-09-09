@@ -51,7 +51,8 @@ it('persists filtered source events without allocating upload positions', async 
   expect(delivery.pending()[0].hostSequence).toBe(1);
   await expect(delivery.acknowledge(2)).rejects.toThrow('invalid host event receipt');
   await expect(delivery.capture(event(4))).rejects.toThrow('not contiguous');
-  await expect(SharedDelivery.load(root, { ...session, epoch: 'stale' })).rejects.toThrow(
-    'invalid event identity'
-  );
+  const next = await SharedDelivery.load(root, { ...session, epoch: 'next' }, delivery.cursor);
+  await next.capture(event(3));
+  expect(next.pending()[0]).toMatchObject({ epoch: 'next', hostSequence: 1 });
+  expect((await SharedDelivery.load(root, session)).cursor).toBe(2);
 });
