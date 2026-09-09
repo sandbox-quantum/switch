@@ -1006,3 +1006,50 @@ class PackageMemberRemoveResponse(BaseModel):
     member_id: str
     affected_room_ids: list[str]
     affected_room_names: list[str]
+
+
+# ── Templates ─────────────────────────────────────────────────────────────────
+
+
+class TemplateSummary(BaseModel):
+    """A template as it appears in the catalogue.
+
+    Deliberately without `content`: a listing is a browse, and shipping every
+    stored document to render a list of names would grow with the registry.
+    Fetch one to get its content.
+    """
+
+    id: str
+    owner_id: str
+    owner_name: str | None = None
+    name: str
+    description: str
+    kind: str
+    version: int
+    size_bytes: int
+    created_at: str
+    updated_at: str
+
+
+class TemplateDetail(TemplateSummary):
+    content: str
+
+
+class TemplateCreateRequest(BaseModel):
+    name: str = Field(min_length=1)
+    description: str = ""
+    kind: str = Field(default="room", min_length=1)
+    content: str = Field(min_length=1)
+
+
+class TemplateUpdateRequest(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    name: str | None = Field(default=None, min_length=1)
+    description: str | None = None
+    kind: str | None = Field(default=None, min_length=1)
+    content: str | None = Field(default=None, min_length=1)
+
+
+class TemplateDeleteResponse(BaseModel):
+    deleted_id: str

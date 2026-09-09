@@ -271,6 +271,26 @@ class TestTemplateStoreUpdate:
             with pytest.raises(ValueError, match="already have a template named"):
                 await _STORE.update_fields(session, other.id, name="taken")
 
+    async def test_server_computed_timestamps_are_readable_after_an_update(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """`updated_at` is set by Postgres, so a flush leaves it expired.
+
+        Reading it later would lazy-load, and a lazy load from synchronous code
+        raises MissingGreenlet instead of returning a timestamp — so the store
+        has to hand back a row that is fully loaded.
+        """
+        async with session_factory() as session:
+            owner = await _make_user(session, "alice")
+            created = await _make_template(session, owner_id=owner.id, name="t")
+            await session.commit()
+
+            updated = await _STORE.update_fields(session, created.id, description="x")
+            await session.commit()
+
+            assert updated.updated_at is not None
+            assert updated.created_at is not None
+
     async def test_update_of_a_missing_template_raises(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
