@@ -90,7 +90,7 @@ async def test_the_recorded_turn_folds_to_its_latest_revision_of_each_item() -> 
         ("item-search", "completed"),
         ("item-run", "failed"),
         ("item-said", "completed"),
-        ("item-write", "declined"),
+        ("item-write", "in-progress"),
     ]
     assert items[3].text.endswith("Pinning the fixture to one user per test fixes it.")
 
@@ -144,7 +144,20 @@ async def test_the_tool_log_says_how_each_call_went() -> None:
 
     assert "✓ Searched for the login tests — 4 files" in log
     assert "✗ Ran tests/auth/test_login.py — 1 failed, 41 passed" in log
-    assert "⊘ Editing tests/auth/conftest.py — Waiting for permission" in log
+    assert "▸ Editing tests/auth/conftest.py — Waiting for permission" in log
+
+
+async def test_a_call_still_waiting_does_not_read_as_one_already_refused() -> None:
+    """The edit the card underneath is asking about has not been decided.
+
+    A turn saying `⊘` above a card asking whether to allow the same edit tells
+    the reader the answer before it asks the question — and tells them the wrong
+    one. `declined` is what the answer would make it, not what waiting is.
+    """
+    log = _context(await _items())
+
+    assert "⊘" not in log
+    assert "⊘ Refused it" in _context([_item(status="declined", title="Refused it")])
 
 
 async def test_a_person_speaking_is_quoted_and_attributed() -> None:
@@ -198,9 +211,46 @@ async def test_a_long_message_is_cut_rather_than_taking_the_post_with_it() -> No
 
     text = render_activity(items).blocks[0]["text"]["text"]
 
-    assert len(text) <= 2600
+    assert len(text) <= 2400
     assert text.endswith("…")
     assert "&am" not in text.replace("&amp;", "")
+
+
+async def test_a_quoted_message_is_budgeted_after_it_is_quoted() -> None:
+    """The `> ` costs two characters a line, and lines are not budgeted.
+
+    A message inside its own budget can still overrun the section once quoted,
+    and the shape that does it is a pasted stack trace or file listing — which
+    is precisely what a person types into a channel. Slack refuses the whole
+    post, so the channel gets the card with nothing above it.
+    """
+    lines = "\n".join(f"line {n}" for n in range(300))
+    items = [_item(itemId="i1", kind="user-message", title="", text=lines)]
+
+    text = render_activity(items).blocks[0]["text"]["text"]
+
+    assert len(text) <= 3000
+    assert text.startswith("> line 0")
+    assert text.endswith("more lines._")
+
+
+async def test_the_fallback_stays_inside_what_slack_takes_for_one_string() -> None:
+    """Twenty messages each inside its own budget still clear the cap on `text`.
+
+    Each block is bounded on its own, but `text` is one string with a limit of
+    its own, and a turn that overruns it risks the call taking the whole post
+    with it rather than just the notification.
+    """
+    items = [
+        _item(itemId=f"i{n}", kind="assistant-message", title="", text="x" * 2400)
+        for n in range(20)
+    ]
+
+    text = render_activity_text(items)
+
+    assert len(text) <= 40000
+    assert text.startswith("…")
+    assert text.endswith("x")
 
 
 async def test_a_long_tool_log_keeps_the_recent_end_and_says_what_it_dropped() -> None:

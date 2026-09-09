@@ -87,10 +87,11 @@ _MAX_SECTION = 2800
 # one that was never shown cannot be.
 _MAX_QUESTIONS = 20
 
-# A turn's own budgets. A message is a section of its own, so `_MAX_MESSAGE`
-# plus an actor and the quoting stays short of the 3000 a section takes; the
-# tool log is one context block, which takes the same.
-_MAX_MESSAGE = 2600
+# A turn's own budgets. A message is a section of its own, and the section is
+# what has to fit: quoting costs two characters a line on top of the text, so
+# the quoted form is measured rather than the text it was built from. The tool
+# log is one context block, which takes the same 3000 a section does.
+_MAX_MESSAGE = 2400
 _MAX_ACTIVITY_TITLE = 200
 _MAX_ACTIVITY_DETAIL = 120
 _MAX_ACTIVITY = 2800
@@ -99,6 +100,10 @@ _MAX_ACTIVITY = 2800
 # and unlike a form there is nothing here anyone has to answer.
 _MAX_MESSAGES = 20
 _MAX_ACTIVITY_LINES = 12
+# `chat.postMessage` takes 40,000 characters of `text`, and twenty messages each
+# inside their own budget is more than that, so the fallback is bounded as a
+# whole as well as a message at a time.
+_MAX_TEXT = 39000
 
 _DANGEROUS = {"decline", "cancel"}
 
@@ -731,6 +736,10 @@ def render_activity_text(items: list[Item]) -> str:
     The notification string, and what a reader is left with if blocks do not
     render, so it carries the doing as well as the saying rather than assuming
     the context block arrived.
+
+    Each block has its own budget, but `text` is one string with a cap of its
+    own and twenty of them clear it, so the whole is bounded too — the same end
+    kept, and again saying what it dropped.
     """
     said = [item for item in items if item.kind != "tool-activity"]
     did = [item for item in items if item.kind == "tool-activity"]
@@ -743,7 +752,21 @@ def render_activity_text(items: list[Item]) -> str:
         lines.append(f"…{hidden} earlier in this turn, not shown.")
     lines += [_message_text(item) for item in said[len(said) - _MAX_MESSAGES :]]
     lines += _activity_lines(did)
-    return "\n".join(lines)
+    return "\n".join(_within(lines, _MAX_TEXT))
+
+
+def _within(lines: list[str], limit: int) -> list[str]:
+    """The last of these lines that fit, whole, with a note for the rest."""
+    kept: list[str] = []
+    spent = 0
+    for line in reversed(lines):
+        if spent + len(line) + 1 > limit:
+            kept.append(f"…{len(lines) - len(kept)} earlier lines, not shown.")
+            break
+        kept.append(line)
+        spent += len(line) + 1
+    kept.reverse()
+    return kept
 
 
 def _message_text(item: Item) -> str:
@@ -756,8 +779,28 @@ def _message_text(item: Item) -> str:
     body = _fit(item.text, _MAX_MESSAGE) if item.text else "_(nothing said)_"
     if item.kind != "user-message":
         return body
-    who = _said_by(item.origin)
-    return "\n".join(f"> {line}" for line in f"{who}{body}".split("\n"))
+    return _quote(f"{_said_by(item.origin)}{body}")
+
+
+def _quote(text: str) -> str:
+    """Every line marked as quoted, inside the budget the section has for all.
+
+    The budget is spent here rather than on the text, because the `> ` costs two
+    characters a line and a pasted stack trace is mostly lines. Cut a whole line
+    at a time: the text arrives escaped, and slicing it anywhere else can leave
+    half an entity in front of the reader.
+    """
+    lines = text.split("\n")
+    kept: list[str] = []
+    spent = 0
+    for position, line in enumerate(lines, start=1):
+        quoted = f"> {line}"
+        if spent + len(quoted) + 1 > _MAX_SECTION:
+            kept.append(f"> _…and {len(lines) - position + 1} more lines._")
+            break
+        kept.append(quoted)
+        spent += len(quoted) + 1
+    return "\n".join(kept)
 
 
 def _said_by(origin: Origin | None) -> str:

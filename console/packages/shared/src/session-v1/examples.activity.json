@@ -238,7 +238,7 @@
           "turnId": "turn-activity",
           "revision": 2,
           "kind": "tool-activity",
-          "status": "declined",
+          "status": "in-progress",
           "title": "Editing tests/auth/conftest.py",
           "text": "Waiting for permission",
           "attachments": [],
