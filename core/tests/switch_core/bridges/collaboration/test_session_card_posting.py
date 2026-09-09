@@ -38,6 +38,7 @@ from switch_core.bridges.collaboration.session.outbound import (
     CardAlreadyPosted,
     CardNotPosted,
     SessionRequestCards,
+    SessionTurnActivity,
 )
 from switch_core.bridges.collaboration.session.renderers import ANSWER_ACTION
 from switch_core.bridges.collaboration.session.transport import (
@@ -117,6 +118,22 @@ async def _cards(
         session_factory=session_factory,
     )
     return cards, bridge_id, room_id
+
+
+async def _demo(
+    session_factory: async_sessionmaker[AsyncSession], client: FakeWebClient
+) -> tuple[SessionDemo, str]:
+    """The stand-in session, posting through one adapter for both messages."""
+    async with session_factory() as session:
+        bridge_id, room_id = await _bridge_and_room(session)
+    adapter = _adapter(client)
+    cards = SessionRequestCards(
+        adapter,
+        bridge_id=bridge_id,
+        posts=SessionRequestPostStore(),
+        session_factory=session_factory,
+    )
+    return SessionDemo(cards, SessionTurnActivity(adapter)), room_id
 
 
 async def _post_one(
@@ -461,16 +478,20 @@ async def test_a_row_that_cannot_be_written_at_all_is_not_retried(
 # ── The stand-in session ─────────────────────────────────────────────────────
 
 
-async def test_the_trigger_posts_the_recorded_request_as_a_card(
+async def test_the_trigger_posts_the_recorded_turn_and_then_its_card(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
+    """The work first, then the question, which is the order they happened in."""
     client = FakeWebClient()
-    cards, _, room_id = await _cards(session_factory, client)
+    demo, room_id = await _demo(session_factory, client)
 
-    assert await SessionDemo(cards).handle(TRIGGER, CHANNEL, room_id) is True
+    assert await demo.handle(TRIGGER, CHANNEL, room_id) is True
 
-    assert len(client.posted) == 1
-    assert "Run project tests" in json.dumps(client.posted[0]["blocks"])
+    assert len(client.posted) == 2
+    turn, card = (json.dumps(post["blocks"]) for post in client.posted)
+    assert "same fixture user" in turn
+    assert "Ran tests/auth/test_login.py" in turn
+    assert "Edit tests/auth/conftest.py?" in card
 
 
 async def test_the_trigger_is_the_whole_message_or_it_is_not_the_trigger(
@@ -478,8 +499,7 @@ async def test_the_trigger_is_the_whole_message_or_it_is_not_the_trigger(
 ) -> None:
     """Otherwise talking about the demo in a channel posts one."""
     client = FakeWebClient()
-    cards, _, room_id = await _cards(session_factory, client)
-    demo = SessionDemo(cards)
+    demo, room_id = await _demo(session_factory, client)
 
     for said in [f"about {TRIGGER}", f"{TRIGGER} please", "hello", ""]:
         assert await demo.handle(said, CHANNEL, room_id) is False
@@ -491,11 +511,11 @@ async def test_the_trigger_is_case_insensitive_and_forgives_spacing(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
     client = FakeWebClient()
-    cards, _, room_id = await _cards(session_factory, client)
+    demo, room_id = await _demo(session_factory, client)
 
-    assert await SessionDemo(cards).handle(f"  {TRIGGER.upper()} ", CHANNEL, room_id)
+    assert await demo.handle(f"  {TRIGGER.upper()} ", CHANNEL, room_id)
 
-    assert len(client.posted) == 1
+    assert len(client.posted) == 2
 
 
 async def test_the_demo_can_be_shown_more_than_once(
@@ -509,8 +529,7 @@ async def test_the_demo_can_be_shown_more_than_once(
     exactly once, and only for whoever ran it first, is not a demo.
     """
     client = FakeWebClient()
-    cards, _, room_id = await _cards(session_factory, client)
-    demo = SessionDemo(cards)
+    demo, room_id = await _demo(session_factory, client)
 
     for channel in (CHANNEL, CHANNEL, "C2"):
         assert await demo.handle(TRIGGER, channel, room_id) is True

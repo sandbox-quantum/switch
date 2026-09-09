@@ -1,9 +1,12 @@
-"""Putting a request card in a channel, and keeping it in step afterwards.
+"""Putting a session's state in a channel, and keeping it in step afterwards.
 
-The inbound half turns a press into a command; this is the other side of it. A
-card is posted once and then edited in place as the request moves open →
-submitting → resolved or closed, so the channel carries one message per request
-rather than a running commentary.
+Two things go out. A **request card** is something someone has to answer, so it
+is posted once and then edited in place as the request moves open → submitting
+→ resolved or closed, and the channel carries one message per request rather
+than a running commentary. **Turn activity** is not addressed to anyone: it is
+what the agent said and did, and it is posted for reading.
+
+The inbound half turns a press into a command; this is the other side of it.
 
 Posting is also what makes the inbound half reachable at all: the row written
 here is the only thing a token, a handle or a reply to a card ever resolves to.
@@ -27,10 +30,10 @@ from switch_core.bridges.collaboration.slack.adapter import SlackAdapter
 from switch_core.db.models import SessionRequestPost
 from switch_core.db.stores.session_request_post_store import SessionRequestPostStore
 
-from .contract import SnapshotRequest
+from .contract import Item, SnapshotRequest
 from .form import posted_form
 from .renderers import RequestReference
-from .renderers.slack import render_request
+from .renderers.slack import render_activity, render_request
 
 logger = logging.getLogger(__name__)
 
@@ -78,6 +81,49 @@ class CardAlreadyPosted(CardNotPosted):
     A subclass because a caller that only wants to know nobody was asked is
     right either way, and one that can tell a repeat from a refusal can.
     """
+
+
+class SessionTurnActivity:
+    """A turn's work, shown in a channel.
+
+    Nothing is recorded for it and nothing is edited afterwards, which is the
+    difference between this and a card. A card is a question, so it needs a row
+    to resolve an answer against and has to stop offering buttons once it is
+    settled; a turn is a report, and a report that is out of date is still what
+    happened. Keeping one message per turn in step with a live session needs an
+    anchor to edit, and where that anchor lives is the same open question as
+    which room a session's activity belongs to.
+    """
+
+    def __init__(self, adapter: SlackAdapter) -> None:
+        self._adapter = adapter
+
+    async def post(
+        self,
+        items: list[Item],
+        *,
+        channel_id: str,
+        thread_root_id: str | None,
+        agent_name: str,
+    ) -> None:
+        """Draw the turn in a channel, saying so in the log if Slack refuses.
+
+        Logged rather than raised, unlike a card that cannot be posted: nobody
+        is waiting on this to answer anything, so the session is no worse off
+        than it was before the contract existed and whatever asked for it can
+        get on with the part that someone is waiting for.
+        """
+        message = render_activity(items)
+        ref = await self._adapter.post_blocks(
+            channel_id, agent_name, message.text, message.blocks, thread_root_id
+        )
+        if ref is None:
+            logger.error(
+                "Slack did not accept the activity for turn %s in channel %s, so "
+                "the channel shows what the agent asked without what it did.",
+                items[0].turn_id,
+                channel_id,
+            )
 
 
 class SessionRequestCards:

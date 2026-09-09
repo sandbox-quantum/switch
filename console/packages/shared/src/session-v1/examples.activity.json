@@ -1,0 +1,291 @@
+{
+  "_comment": "A turn with work in it: what the agent did, what it said, and what it stopped to ask. Sits beside examples.json rather than inside it because that file is a byte-identical lift and cannot be edited here. Every item carries an `audience` the readers no longer interpret; it goes when the field does.",
+  "initialSnapshot": {
+    "contractVersion": 1,
+    "throughSequence": 0,
+    "session": {
+      "sessionId": "session-activity",
+      "agentId": "agent-demo",
+      "provider": "claude",
+      "hostId": "host-demo",
+      "epoch": "epoch-activity",
+      "status": "running",
+      "connectivity": "online",
+      "capabilities": {
+        "input": "queue",
+        "approvals": true,
+        "questions": true,
+        "interrupt": true,
+        "reset": false,
+        "compact": false,
+        "modelChange": false,
+        "attachmentMimeTypes": []
+      },
+      "pendingRequestIds": []
+    },
+    "turns": [],
+    "items": [],
+    "requests": [],
+    "commandStatuses": [],
+    "nextPageToken": null
+  },
+  "turnActivity": [
+    {
+      "contractVersion": 1,
+      "eventId": "event-a1",
+      "sessionId": "session-activity",
+      "sequence": 1,
+      "occurredAt": "2026-09-08T09:00:00Z",
+      "body": {
+        "type": "turn.upsert",
+        "turnId": "turn-activity",
+        "status": "running",
+        "commandId": "message-activity"
+      }
+    },
+    {
+      "contractVersion": 1,
+      "eventId": "event-a2",
+      "sessionId": "session-activity",
+      "sequence": 2,
+      "occurredAt": "2026-09-08T09:00:01Z",
+      "body": {
+        "type": "item.upsert",
+        "item": {
+          "itemId": "item-asked",
+          "turnId": "turn-activity",
+          "revision": 1,
+          "kind": "user-message",
+          "status": "completed",
+          "title": "",
+          "text": "The login test has been flaky all week. Can you find out why?",
+          "attachments": [],
+          "origin": {
+            "surface": "slack",
+            "actorId": "operator",
+            "roomId": "room-activity",
+            "threadId": null,
+            "messageId": "message-activity"
+          },
+          "audience": { "kind": "room", "roomId": "room-activity" }
+        }
+      }
+    },
+    {
+      "contractVersion": 1,
+      "eventId": "event-a3",
+      "sessionId": "session-activity",
+      "sequence": 3,
+      "occurredAt": "2026-09-08T09:00:04Z",
+      "body": {
+        "type": "item.upsert",
+        "item": {
+          "itemId": "item-search",
+          "turnId": "turn-activity",
+          "revision": 1,
+          "kind": "tool-activity",
+          "status": "in-progress",
+          "title": "Searching for the login tests",
+          "text": "",
+          "attachments": [],
+          "origin": null,
+          "audience": { "kind": "session-members" }
+        }
+      }
+    },
+    {
+      "contractVersion": 1,
+      "eventId": "event-a4",
+      "sessionId": "session-activity",
+      "sequence": 4,
+      "occurredAt": "2026-09-08T09:00:06Z",
+      "body": {
+        "type": "item.upsert",
+        "item": {
+          "itemId": "item-search",
+          "turnId": "turn-activity",
+          "revision": 2,
+          "kind": "tool-activity",
+          "status": "completed",
+          "title": "Searched for the login tests",
+          "text": "4 files",
+          "attachments": [],
+          "origin": null,
+          "audience": { "kind": "session-members" }
+        }
+      }
+    },
+    {
+      "contractVersion": 1,
+      "eventId": "event-a5",
+      "sessionId": "session-activity",
+      "sequence": 5,
+      "occurredAt": "2026-09-08T09:00:11Z",
+      "body": {
+        "type": "item.upsert",
+        "item": {
+          "itemId": "item-run",
+          "turnId": "turn-activity",
+          "revision": 1,
+          "kind": "tool-activity",
+          "status": "in-progress",
+          "title": "Running tests/auth/test_login.py",
+          "text": "",
+          "attachments": [],
+          "origin": null,
+          "audience": { "kind": "session-members" }
+        }
+      }
+    },
+    {
+      "contractVersion": 1,
+      "eventId": "event-a6",
+      "sessionId": "session-activity",
+      "sequence": 6,
+      "occurredAt": "2026-09-08T09:00:48Z",
+      "body": {
+        "type": "item.upsert",
+        "item": {
+          "itemId": "item-run",
+          "turnId": "turn-activity",
+          "revision": 2,
+          "kind": "tool-activity",
+          "status": "failed",
+          "title": "Ran tests/auth/test_login.py",
+          "text": "1 failed, 41 passed",
+          "attachments": [],
+          "origin": null,
+          "audience": { "kind": "session-members" }
+        }
+      }
+    },
+    {
+      "contractVersion": 1,
+      "eventId": "event-a7",
+      "sessionId": "session-activity",
+      "sequence": 7,
+      "occurredAt": "2026-09-08T09:00:52Z",
+      "body": {
+        "type": "item.upsert",
+        "item": {
+          "itemId": "item-said",
+          "turnId": "turn-activity",
+          "revision": 1,
+          "kind": "assistant-message",
+          "status": "in-progress",
+          "title": "",
+          "text": "It fails whenever it runs after the session test:",
+          "attachments": [],
+          "origin": null,
+          "audience": { "kind": "room", "roomId": "room-activity" }
+        }
+      }
+    },
+    {
+      "contractVersion": 1,
+      "eventId": "event-a8",
+      "sessionId": "session-activity",
+      "sequence": 8,
+      "occurredAt": "2026-09-08T09:00:55Z",
+      "body": {
+        "type": "item.upsert",
+        "item": {
+          "itemId": "item-said",
+          "turnId": "turn-activity",
+          "revision": 2,
+          "kind": "assistant-message",
+          "status": "completed",
+          "title": "",
+          "text": "It fails whenever it runs after the session test: both write to the same fixture user, and only the second one has to notice. Pinning the fixture to one user per test fixes it.",
+          "attachments": [],
+          "origin": null,
+          "audience": { "kind": "room", "roomId": "room-activity" }
+        }
+      }
+    },
+    {
+      "contractVersion": 1,
+      "eventId": "event-a9",
+      "sessionId": "session-activity",
+      "sequence": 9,
+      "occurredAt": "2026-09-08T09:01:02Z",
+      "body": {
+        "type": "item.upsert",
+        "item": {
+          "itemId": "item-write",
+          "turnId": "turn-activity",
+          "revision": 1,
+          "kind": "tool-activity",
+          "status": "in-progress",
+          "title": "Editing tests/auth/conftest.py",
+          "text": "",
+          "attachments": [],
+          "origin": null,
+          "audience": { "kind": "session-members" }
+        }
+      }
+    },
+    {
+      "contractVersion": 1,
+      "eventId": "event-a10",
+      "sessionId": "session-activity",
+      "sequence": 10,
+      "occurredAt": "2026-09-08T09:01:03Z",
+      "body": {
+        "type": "item.upsert",
+        "item": {
+          "itemId": "item-write",
+          "turnId": "turn-activity",
+          "revision": 2,
+          "kind": "tool-activity",
+          "status": "declined",
+          "title": "Editing tests/auth/conftest.py",
+          "text": "Waiting for permission",
+          "attachments": [],
+          "origin": null,
+          "audience": { "kind": "session-members" }
+        }
+      }
+    },
+    {
+      "contractVersion": 1,
+      "eventId": "event-a11",
+      "sessionId": "session-activity",
+      "sequence": 11,
+      "occurredAt": "2026-09-08T09:01:03Z",
+      "body": {
+        "type": "request.opened",
+        "request": {
+          "requestId": "request-activity",
+          "turnId": "turn-activity",
+          "revision": 1,
+          "state": "open",
+          "content": {
+            "kind": "approval",
+            "title": "Edit tests/auth/conftest.py?",
+            "detail": "Pins the fixture user per test, so the two suites stop sharing one.",
+            "options": [
+              {
+                "optionId": "allow",
+                "label": "Edit it",
+                "decision": "accept"
+              },
+              {
+                "optionId": "allow-session",
+                "label": "Edit tests without asking again",
+                "decision": "acceptForSession"
+              },
+              {
+                "optionId": "deny",
+                "label": "Leave it alone",
+                "decision": "decline"
+              }
+            ]
+          },
+          "audience": { "kind": "room", "roomId": "room-activity" },
+          "expiresAt": null
+        }
+      }
+    }
+  ]
+}

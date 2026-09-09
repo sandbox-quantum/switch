@@ -22,6 +22,7 @@ from typing import TypeVar
 from .contract import (
     CommandStatus,
     DecidedBy,
+    Item,
     ItemUpsert,
     Notice,
     RequestOpened,
@@ -162,6 +163,17 @@ class SessionProjection:
             ),
             lambda x: x.request_id,
         )
+
+    # ── What a turn did ──────────────────────────────────────────────────────
+
+    def turn_activity(self, turn_id: str) -> list[Item]:
+        """One turn's items, in the order the session first mentioned them.
+
+        Fold order rather than revision order: an item that is revised in place
+        keeps the position it had when it opened, so a tool that takes a minute
+        does not jump to the end of the list when it finishes.
+        """
+        return [item for item in self._value.items if item.turn_id == turn_id]
 
     # ── What is waiting on someone ───────────────────────────────────────────
 

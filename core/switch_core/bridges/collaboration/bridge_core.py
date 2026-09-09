@@ -32,7 +32,10 @@ from switch_core.bridges.collaboration.session.inbound import (
     InboundActor,
     SessionInteractions,
 )
-from switch_core.bridges.collaboration.session.outbound import SessionRequestCards
+from switch_core.bridges.collaboration.session.outbound import (
+    SessionRequestCards,
+    SessionTurnActivity,
+)
 from switch_core.bridges.collaboration.slack.adapter import SlackAdapter
 from switch_core.clients.admin_messages import ADMIN_MARKER, AdminMessageType
 from switch_core.clients.client_base import ClientBase, ClientConfig
@@ -224,7 +227,8 @@ class BridgeCore:
                 bridge_id=self._bridge_id,
                 posts=posts,
                 session_factory=self._session_factory,
-            )
+            ),
+            SessionTurnActivity(self._adapter),
         )
 
     def _build_session_interactions(

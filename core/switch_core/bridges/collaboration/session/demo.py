@@ -1,13 +1,18 @@
-"""A stand-in session, so a real channel has a real card to answer.
+"""A stand-in session, so a real channel has real work to read and answer.
 
 Nothing produces `HostEvent`s. Not core, not the agent runtime, not any of the
 three connectors — the contract exists on both sides as types with no producer
 at either end, so until a host learns to speak it there is no session to show.
 This replays the bundled fixture in place of one.
 
-The card goes to the channel the trigger was typed in. Nothing in the contract
-says where a request should be shown, by design — that is Switch's decision —
-and here the person asking for it has made it.
+What it replays is a whole turn: the agent reads some files, runs the tests,
+says what it found, and stops to ask permission for the edit that would fix it.
+So the channel gets the work and then the question, which is the order they
+happened in and the order they make sense in.
+
+Both go to the channel the trigger was typed in. Nothing in the contract says
+where a session's activity should be shown, by design — that is Switch's
+decision — and here the person asking for it has made it.
 
 What it stands in for is the *session*, not the bridge. Rendering the card,
 minting its handle, writing its row, and everything an answer to it then goes
@@ -28,35 +33,39 @@ from pathlib import Path
 
 from switch_core.db.models import SessionRequestPost
 
-from .outbound import SessionRequestCards
+from .outbound import SessionRequestCards, SessionTurnActivity
 from .transport import FixtureEventSource, project
 
 logger = logging.getLogger(__name__)
 
 TRIGGER = "!session-demo"
 
-# The fixtures the parity suites already read, so the card in the channel is
-# drawn from the same recorded session the tests assert against.
-_EXAMPLES = (
+# The fixture the parity suite already reads, so what lands in the channel is
+# the same recorded session the tests assert against.
+_RECORDING = (
     Path(__file__).resolve().parents[5]
-    / "console/packages/shared/src/session-v1/examples.json"
+    / "console/packages/shared/src/session-v1/examples.activity.json"
 )
+_STREAM = "turnActivity"
 
 
 class SessionDemo:
-    """Posts the recorded session's open request into the channel asked."""
+    """Posts the recorded session's turn, and then its open request."""
 
-    def __init__(self, cards: SessionRequestCards) -> None:
+    def __init__(
+        self, cards: SessionRequestCards, activity: SessionTurnActivity
+    ) -> None:
         self._cards = cards
+        self._activity = activity
 
     async def handle(self, content: str, channel_id: str, room_id: str) -> bool:
         """Whether this message was the trigger, having acted on it if so."""
         if content.strip().lower() != TRIGGER:
             return False
         logger.warning(
-            "Posting a demo request card in channel %s. There is no session "
-            "behind it: it is the recorded fixture, replayed because "
-            "SESSION_DEMO_ENABLED is set. An answer to it will be built and "
+            "Posting a demo turn and request card in channel %s. There is no "
+            "session behind either: it is the recorded fixture, replayed "
+            "because SESSION_DEMO_ENABLED is set. An answer will be built and "
             "dropped like any other.",
             channel_id,
         )
@@ -70,7 +79,7 @@ class SessionDemo:
         return True
 
     async def _post(self, channel_id: str, room_id: str) -> SessionRequestPost:
-        """Post the recording's open request, under a session id of its own.
+        """Post the recording's turn and then its request, under a fresh id.
 
         A request gets one card, which is right for a real session and would
         give this one card ever: the recording holds a single request under a
@@ -78,13 +87,18 @@ class SessionDemo:
         repeat of it — in another channel, on another day, to another person.
         Each replay is therefore its own session, which is also what it is.
         Nothing reads the id back: the command an answer builds is dropped.
+
+        The turn shown is the one the request belongs to, rather than whatever
+        the recording last touched. It is the same turn either way here, and
+        picking it from the request is the part that stays true of a session
+        doing more than one thing.
         """
-        if not _EXAMPLES.exists():
+        if not _RECORDING.exists():
             raise FileNotFoundError(
-                f"The session fixtures are not at {_EXAMPLES}. SESSION_DEMO_ENABLED "
+                f"The session fixtures are not at {_RECORDING}. SESSION_DEMO_ENABLED "
                 f"needs the repository checkout, not just the installed package."
             )
-        source = FixtureEventSource.from_examples(_EXAMPLES, events=[])
+        source = FixtureEventSource.from_examples(_RECORDING, events=[_STREAM])
         projection = await project(source, source.session_id)
         requests = projection.open_requests()
         if not requests:
@@ -92,9 +106,16 @@ class SessionDemo:
                 f"The recorded session {source.session_id} has no open request, "
                 f"so there is no card to post."
             )
+        request = requests[0]
         session = projection.snapshot.session
+        await self._activity.post(
+            projection.turn_activity(request.turn_id),
+            channel_id=channel_id,
+            thread_root_id=None,
+            agent_name=session.agent_id,
+        )
         return await self._cards.post(
-            requests[0],
+            request,
             channel_id=channel_id,
             thread_root_id=None,
             room_id=room_id,

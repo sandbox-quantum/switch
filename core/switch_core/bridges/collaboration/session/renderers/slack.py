@@ -36,6 +36,8 @@ from ..contract import (
     ApprovalOption,
     ApprovalResult,
     DecidedBy,
+    Item,
+    Origin,
     Question,
     QuestionOption,
     QuestionsContent,
@@ -85,7 +87,29 @@ _MAX_SECTION = 2800
 # one that was never shown cannot be.
 _MAX_QUESTIONS = 20
 
+# A turn's own budgets. A message is a section of its own, so `_MAX_MESSAGE`
+# plus an actor and the quoting stays short of the 3000 a section takes; the
+# tool log is one context block, which takes the same.
+_MAX_MESSAGE = 2600
+_MAX_ACTIVITY_TITLE = 200
+_MAX_ACTIVITY_DETAIL = 120
+_MAX_ACTIVITY = 2800
+# Blocks per message are capped at 50, and a long turn is cut rather than
+# refused: unlike a form, a turn showing some of itself is still worth reading,
+# and unlike a form there is nothing here anyone has to answer.
+_MAX_MESSAGES = 20
+_MAX_ACTIVITY_LINES = 12
+
 _DANGEROUS = {"decline", "cancel"}
+
+# How a tool call went, in one character, because it is read at a glance and
+# down the left edge of a list rather than as a sentence.
+_ACTIVITY = {
+    "in-progress": "▸",
+    "completed": "✓",
+    "failed": "✗",
+    "declined": "⊘",
+}
 
 _HEADINGS = {
     "open": "Permission needed",
@@ -657,6 +681,112 @@ def _answered_questions(request: SnapshotRequest, content: QuestionsContent) -> 
         spent += len(part) + 2
     answered = "; ".join(said)
     return f"{answered} — answered{by}." if by else f"{answered}."
+
+
+# ── Activity ─────────────────────────────────────────────────────────────────
+
+
+def render_activity(items: list[Item]) -> SlackMessage:
+    """One turn, as the channel sees it: what was said, over what was done.
+
+    The two are drawn differently because they are read differently. What the
+    agent and the person said is the conversation, so it goes in the body at
+    full size. What the agent *did* is a hundred lines of tool calls nobody
+    reads unless something looks wrong, so it goes in a context block under
+    them — Slack's small grey text, the nearest thing it has to a disclosure.
+    That is a placement decision, not an access one: both are visible to
+    everyone in the channel, and nothing here decides who those people are.
+
+    Tool activity is gathered into that one block rather than interleaved. A
+    turn alternates between saying and doing, so keeping the order would put a
+    paragraph, six tool lines, another paragraph — and the thing a reader came
+    for is the paragraphs.
+
+    Long turns are cut from the front, keeping what happened most recently,
+    because that is the end a reader is looking at. Both cuts say how much they
+    took: a turn that quietly showed half of itself would read as a turn that
+    only did half.
+    """
+    said = [item for item in items if item.kind != "tool-activity"]
+    did = [item for item in items if item.kind == "tool-activity"]
+    if not said and not did:
+        raise ValueError("This turn has no items, so there is nothing to show.")
+
+    blocks: list[dict[str, Any]] = []
+    hidden = max(len(said) - _MAX_MESSAGES, 0)
+    if hidden:
+        blocks.append(_context(f"_…{hidden} earlier in this turn, not shown._"))
+    blocks += [
+        {"type": "section", "text": {"type": "mrkdwn", "text": _message_text(item)}}
+        for item in said[len(said) - _MAX_MESSAGES :]
+    ]
+    if did:
+        blocks.append(_context("\n".join(_activity_lines(did))))
+    return SlackMessage(text=render_activity_text(items), blocks=blocks)
+
+
+def render_activity_text(items: list[Item]) -> str:
+    """The same turn with no card at all.
+
+    The notification string, and what a reader is left with if blocks do not
+    render, so it carries the doing as well as the saying rather than assuming
+    the context block arrived.
+    """
+    said = [item for item in items if item.kind != "tool-activity"]
+    did = [item for item in items if item.kind == "tool-activity"]
+    if not said and not did:
+        raise ValueError("This turn has no items, so there is nothing to show.")
+
+    lines: list[str] = []
+    hidden = max(len(said) - _MAX_MESSAGES, 0)
+    if hidden:
+        lines.append(f"…{hidden} earlier in this turn, not shown.")
+    lines += [_message_text(item) for item in said[len(said) - _MAX_MESSAGES :]]
+    lines += _activity_lines(did)
+    return "\n".join(lines)
+
+
+def _message_text(item: Item) -> str:
+    """One thing that was said, marked as the agent's words or somebody else's.
+
+    A person's message is quoted and attributed, because in a room it may be
+    the first anyone there has heard of it: the contract carries messages typed
+    into the console the same way it carries the ones typed here.
+    """
+    body = _fit(item.text, _MAX_MESSAGE) if item.text else "_(nothing said)_"
+    if item.kind != "user-message":
+        return body
+    who = _said_by(item.origin)
+    return "\n".join(f"> {line}" for line in f"{who}{body}".split("\n"))
+
+
+def _said_by(origin: Origin | None) -> str:
+    """Who typed it and where, when the host said. Empty when it did not."""
+    if origin is None:
+        return ""
+    return f"*{_fit(origin.actor_id, _MAX_ACTOR)}* in {_SURFACES[origin.surface]}: "
+
+
+def _activity_lines(items: list[Item]) -> list[str]:
+    """The tool log, newest end kept, each line marked with how it went."""
+    lines: list[str] = []
+    spent = 0
+    for position, item in enumerate(reversed(items), start=1):
+        title = _fit(item.title, _MAX_ACTIVITY_TITLE) if item.title else "_(untitled)_"
+        line = f"{_ACTIVITY[item.status]} {title}"
+        if item.text:
+            line += f" — {_fit(item.text, _MAX_ACTIVITY_DETAIL)}"
+        if position > _MAX_ACTIVITY_LINES or spent + len(line) + 1 > _MAX_ACTIVITY:
+            lines.append(f"_…and {len(items) - position + 1} more before these._")
+            break
+        lines.append(line)
+        spent += len(line) + 1
+    lines.reverse()
+    return lines
+
+
+def _context(text: str) -> dict[str, Any]:
+    return {"type": "context", "elements": [{"type": "mrkdwn", "text": text}]}
 
 
 def _truncate(text: str, limit: int) -> str:

@@ -12,6 +12,13 @@ contract, so Python accepts it and models nothing about it — see
 `session/contract.py`. Until the removal lands in `session-v1/`, the fixtures
 still carry it and both sides still have to parse it.
 
+Two recordings sit beside `examples.json` and are read only from Python:
+`examples.questions.json`, exercised below, and `examples.activity.json`, in
+`test_session_activity.py`. They are there because the lift is byte-identical
+and cannot be edited here, and they are weaker evidence than the rest of this
+file for the same reason — they say the Python reader accepts these shapes, not
+that both readers agree on them.
+
 The TypeScript half of these cases lives in
 `console/packages/shared/src/session-v1/session-v1.test.ts`; the assertions
 here are chosen to match it. Its client-side cases (`SessionChatClient`,
