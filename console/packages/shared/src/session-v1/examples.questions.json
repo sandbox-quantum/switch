@@ -21,10 +21,7 @@
         "modelChange": false,
         "attachmentMimeTypes": []
       },
-      "pendingRequestIds": [
-        "request-form",
-        "request-one"
-      ]
+      "pendingRequestIds": ["request-form", "request-one"]
     },
     "turns": [
       {
@@ -204,17 +201,12 @@
         "answers": [
           {
             "questionId": "q-scope",
-            "selectedOptionIds": [
-              "all"
-            ],
+            "selectedOptionIds": ["all"],
             "customText": null
           },
           {
             "questionId": "q-checks",
-            "selectedOptionIds": [
-              "unit",
-              "lint"
-            ],
+            "selectedOptionIds": ["unit", "lint"],
             "customText": null
           },
           {
@@ -273,17 +265,12 @@
           "answers": [
             {
               "questionId": "q-scope",
-              "selectedOptionIds": [
-                "all"
-              ],
+              "selectedOptionIds": ["all"],
               "customText": null
             },
             {
               "questionId": "q-checks",
-              "selectedOptionIds": [
-                "unit",
-                "lint"
-              ],
+              "selectedOptionIds": ["unit", "lint"],
               "customText": null
             },
             {
