@@ -1,4 +1,5 @@
 import uuid
+from datetime import datetime
 
 from sqlalchemy import (
     DDL,
@@ -902,6 +903,91 @@ class BridgeMessageMap(Base):
     )
 
 
+# ── Session requests on an external surface ─────────────────────────────────
+
+
+class SessionRequestPost(Base):
+    """A session's request for a decision, as it was posted onto a platform.
+
+    One row per request per bridge. It is what a pressed button resolves
+    against: the callback a platform sends back carries the opaque token and
+    nothing else worth having, so which session, which epoch and which revision
+    the answer stands against are read from here rather than from anything the
+    platform returned. `bridge_id` is the workspace fence — a token is only ever
+    looked up within the bridge it was minted for.
+
+    Distinct from `bridge_message_map`, which correlates one bridged message
+    with one external post. This is per *request*, it outlives any single post,
+    and it carries state that changes as the request does.
+    """
+
+    __tablename__ = "session_request_posts"
+    __table_args__ = (
+        UniqueConstraint("token", name="uq_session_request_posts_token"),
+        UniqueConstraint(
+            "bridge_id",
+            "session_id",
+            "request_id",
+            name="uq_session_request_posts_request",
+        ),
+        # A handle is matched without regard to case, so it has to be unique
+        # without regard to case: the lookup reads one row or none, and "R42"
+        # beside "r42" in one channel would make it raise instead — into the
+        # relay, where the cost is the message never reaching the room.
+        Index(
+            "uq_session_request_posts_handle",
+            "bridge_id",
+            "external_channel_id",
+            text("lower(handle)"),
+            unique=True,
+        ),
+        # One posted card stands for one request, and the bare form reads a
+        # request back off the card it replies to. Same lookup, same reason.
+        UniqueConstraint(
+            "bridge_id",
+            "external_post_id",
+            name="uq_session_request_posts_post",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
+    bridge_id: Mapped[str] = mapped_column(
+        Text, ForeignKey("collaboration_bridges.id", ondelete="CASCADE"), nullable=False
+    )
+    # What a control's callback payload carries, and what a person types
+    # instead. Both name the row and neither names the session.
+    token: Mapped[str] = mapped_column(Text, nullable=False)
+    handle: Mapped[str] = mapped_column(Text, nullable=False)
+    external_channel_id: Mapped[str] = mapped_column(Text, nullable=False)
+    external_post_id: Mapped[str] = mapped_column(Text, nullable=False)
+    room_id: Mapped[str] = mapped_column(
+        Text, ForeignKey("rooms.id", ondelete="CASCADE"), nullable=False
+    )
+    thread_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    session_id: Mapped[str] = mapped_column(Text, nullable=False)
+    epoch: Mapped[str] = mapped_column(Text, nullable=False)
+    request_id: Mapped[str] = mapped_column(Text, nullable=False)
+    # The revision an answer is submitted against. The session rejects an answer
+    # that names a revision it has moved past.
+    revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    # What the card offered, in the order it offered it, and which sort of
+    # answer it takes: an approval's options, or a question's options per
+    # question. A typed "1" names a position on the card the person can see and
+    # this is what that resolves against; `kind` is what says whether the answer
+    # it builds is one option or one per question, and it is read rather than
+    # inferred. `session/form.py` is both ends of the shape.
+    form: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    created_at: Mapped[str] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[str] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+
 # ── Feature flags ────────────────────────────────────────────────────────────
 
 
@@ -1103,3 +1189,47 @@ event.listen(
     "before_drop",
     DDL(DROP_NOTIFY_TRIGGER).execute_if(dialect="postgresql"),
 )
+
+
+class SdkSession(Base):
+    __tablename__ = "sdk_sessions"
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True)
+    agent_id: Mapped[str] = mapped_column(Text, ForeignKey("agents.id"), nullable=False)
+    host_id: Mapped[str] = mapped_column(Text, nullable=False)
+    epoch: Mapped[str] = mapped_column(Text, nullable=False)
+    lease_expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    snapshot: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    host_sequence: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+
+
+class SdkSessionEvent(Base):
+    __tablename__ = "sdk_session_events"
+    __table_args__ = (
+        UniqueConstraint("session_id", "epoch", "host_sequence"),
+        UniqueConstraint("session_id", "event_id"),
+    )
+
+    session_id: Mapped[str] = mapped_column(
+        Text, ForeignKey("sdk_sessions.id", ondelete="CASCADE"), primary_key=True
+    )
+    sequence: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    epoch: Mapped[str] = mapped_column(Text, nullable=False)
+    event_id: Mapped[str] = mapped_column(Text, nullable=False)
+    host_sequence: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    host_event: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    event: Mapped[dict] = mapped_column(JSONB, nullable=False)
+
+
+class SdkSessionCommand(Base):
+    __tablename__ = "sdk_session_commands"
+
+    session_id: Mapped[str] = mapped_column(
+        Text, ForeignKey("sdk_sessions.id", ondelete="CASCADE"), primary_key=True
+    )
+    command_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    accepted_sequence: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    command: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    status: Mapped[dict] = mapped_column(JSONB, nullable=False)

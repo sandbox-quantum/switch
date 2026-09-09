@@ -1,0 +1,512 @@
+import { randomUUID } from 'node:crypto';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
+import { prepareGeminiHome } from '@switch-console/agent-providers';
+import type {
+  ApprovalDecision,
+  McpServerSpec,
+  ModelSelection,
+  ProviderRuntimeEvent,
+  RuntimeMode,
+  UserInputAnswers,
+} from '@switch-console/agent-providers';
+import type { PluginFs } from '@switch-console/core/agents/plugins';
+import { CODEX_SKILL_CONTENT } from '@switch-console/plugins/agents/codex/skill';
+import { CURSOR_SKILL_CONTENT } from '@switch-console/plugins/agents/cursor/skill';
+import { GEMINI_SKILL_CONTENT } from '@switch-console/plugins/agents/gemini/skill';
+import { SWITCH_AGENT_RUNTIME_PIN } from '@switch-console/plugins/distribution';
+import { agentHookService } from '@main/core/agent-hooks/agent-hook-service';
+import { isAppFocused, maybeShowNotification } from '@main/core/agent-hooks/notification';
+import { providerAdapterRegistry } from '@main/core/agent-runtime/impl/provider-adapter-registry';
+import { toAgentEvent } from '@main/core/agent-runtime/impl/provider-agent-status';
+import { ProviderTranscript } from '@main/core/agent-runtime/impl/provider-transcript';
+import type { AgentRuntimeProvider, ProviderSessionRuntime } from '@main/core/agent-runtime/types';
+import { agentCredsSlug } from '@main/core/agents/agent-creds-slug';
+import { agentLaunchSpecialization } from '@main/core/agents/agent-launch-config';
+import { getAgentById } from '@main/core/agents/getAgentById';
+import { createPluginFs } from '@main/core/providers/plugin-fs';
+import { getPlugin } from '@main/core/providers/plugin-registry';
+import { buildAgentEnv } from '@main/core/pty/pty-env';
+import { saveNativeSessionId } from '@main/core/sessions/operations/save-provider-session-id';
+import { sessionHooks } from '@main/core/sessions/session-hooks';
+import { providerRoomRelay } from '@main/core/switch-rooms/provider-room-relay';
+import { readAgentSwitchEnvFromFs } from '@main/core/switch-rooms/switch-credentials';
+import { switchNotificationPoller } from '@main/core/switch-rooms/switch-notification-poller';
+import { switchRoomService } from '@main/core/switch-rooms/switch-room-service';
+import { resolveDatabasePath } from '@main/db/path';
+import { events } from '@main/lib/events';
+import { runWithLogContext } from '@main/lib/log-context';
+import { log } from '@main/lib/logger';
+import { agentSessionExitedChannel } from '@shared/core/providers/agentEvents';
+import { makePtyId } from '@shared/core/pty/ptyId';
+import {
+  sessionTranscriptChannel,
+  type SessionTranscript,
+  type TranscriptDecidedBy,
+  type TranscriptRoomOrigin,
+  type TranscriptUpdate,
+  type TranscriptUserSource,
+} from '@shared/core/sessions/session-transcript';
+import type { Session } from '@shared/core/sessions/sessions';
+import { prepareCodexSessionHome } from './codex-session-home';
+
+/**
+ * A session driven through a `@switch-console/agent-providers` adapter instead
+ * of a TUI in a PTY.
+ *
+ * **Local only for now.** The sidecar is a second implementation of session
+ * spawning and injection for a remote host, and it does not host an adapter —
+ * so `buildAgentRuntime` only reaches this on a local transport, and an agent
+ * on an SSH host keeps its tmux pane whatever its toggle says. Giving the
+ * sidecar the adapter is its own change; see "The Sidecar Mirrors Switch
+ * Console" in `console/AGENTS.md`.
+ *
+ * What it owns, and why each is here rather than where a PTY session's
+ * equivalent lives:
+ *
+ * - **The transcript.** There is no terminal to scrape, so the session's own
+ *   record of itself is built from the provider's events and pushed to the
+ *   renderer over `sessionTranscriptChannel`.
+ * - **Status.** There are no hooks either: the provider's turn and request
+ *   events are translated into the same `AgentEvent`s the hook server would
+ *   have produced, so the sidebar badge, the attention sound and the room's
+ *   "working on it…" are downstream of exactly what they were before.
+ * - **The Switch connection.** Opened before the session starts, for the same
+ *   reason a PTY session opens one: the id has to exist in the environment the
+ *   MCP server is spawned with, and the server refuses a tool call naming a
+ *   connection that is not open.
+ *
+ * **The Switch tools are registered here, once, for every provider.** For
+ * Claude Code that is a decision worth stating, because the user's own install
+ * already has the connector plugin and the plugin registers a `switch` MCP
+ * server of its own. Measured against Claude Code 2.1.260: passing `mcpServers`
+ * to the SDK puts the CLI in strict MCP config, and the session's `init` then
+ * lists only the server passed here — `switch`, one set of `switch_*` tools —
+ * while the plugin's *skills* still load, so the agent gets the room-workflow
+ * instructions that make those tools usable. Suppressing our own server instead
+ * and leaning on the plugin's was the alternative; it registers the same
+ * runtime and would have worked, but it makes the tools an agent has depend on
+ * a plugin version the user updates by hand.
+ *
+ * The plugin's shell hooks still run, and mostly say nothing: the channel
+ * notifications resolve a port file this runtime never writes and return
+ * without a word, and no `SWITCHDASH_HOOK_*` is in the environment for the
+ * status hooks to report to. Nothing is installed into
+ * `.claude/settings.local.json` on this path either — `ensureHooksInstalled` is
+ * a PTY-launch step and is deliberately not called here. The one that is not
+ * harmless is the plugin's pre-tool mediation hook, which answers `allow` for
+ * every call Switch lets proceed and so settles the permission before this
+ * runtime is asked; the adapter takes that decision back (see
+ * `reclaimPermission` in `claude-adapter.ts`).
+ */
+export class ProviderAgentRuntime implements AgentRuntimeProvider, ProviderSessionRuntime {
+  private readonly transcript: ProviderTranscript;
+  private readonly listeners = new Set<(update: TranscriptUpdate) => void>();
+  private unsubscribeAdapter: (() => void) | null = null;
+  private started = false;
+  private starting: Promise<void> | null = null;
+  /** True across a deliberate `stop`, so its exit is not reported as a death. */
+  private stopping = false;
+  private providerId = '';
+  /** Set once the provider reports its own session id, for `resume` and the row. */
+  private nativeSessionId: string | null = null;
+
+  constructor(
+    private readonly params: {
+      locationId: string;
+      sessionId: string;
+      sessionPath: string;
+      sessionEnvVars: Record<string, string>;
+    }
+  ) {
+    this.transcript = new ProviderTranscript(params.sessionId);
+  }
+
+  async start(
+    session: Session,
+    _initialSize?: { cols: number; rows: number },
+    _isResuming?: boolean,
+    initialPrompt?: string
+  ): Promise<void> {
+    if (this.starting) return this.starting;
+    this.starting = runWithLogContext(
+      {
+        component: 'provider-agent-runtime',
+        sessionId: this.params.sessionId,
+        agentId: session.agentId,
+        agentName: session.agentName ?? undefined,
+      },
+      () => this.startInternal(session, initialPrompt)
+    );
+    try {
+      await this.starting;
+    } finally {
+      this.starting = null;
+    }
+  }
+
+  private async startInternal(session: Session, initialPrompt?: string): Promise<void> {
+    if (this.started) return;
+    this.providerId = session.providerId;
+    const adapter = providerAdapterRegistry.get(session.providerId);
+
+    const agentRecord = await getAgentById(session.agentId);
+    const autoApprove = agentRecord?.autoApprove ?? session.autoApprove ?? false;
+    const runtimeMode: RuntimeMode = autoApprove ? 'full-access' : 'approval-required';
+
+    // The identity the session speaks to Switch as. Same file, same precedence
+    // as a PTY session: the agent's own `.switch/agents/<slug>.json`.
+    const workspaceFs = createPluginFs(this.params.sessionPath);
+    const identityVars = await readAgentSwitchEnvFromFs(workspaceFs, agentCredsSlug(session), log);
+
+    // Before `startSession`, exactly as a PTY launch does it: the MCP server is
+    // spawned by the provider as part of starting the session and stamps this
+    // id on every tool call it makes.
+    const connectionId = await switchNotificationPoller.ensureForSession({
+      sessionId: this.params.sessionId,
+      providerId: session.providerId,
+      ptyId: makePtyId(session.providerId, this.params.sessionId),
+    });
+
+    const switchVars: Record<string, string> = {
+      ...identityVars,
+      ...(connectionId ? { SWITCH_CONNECTION_ID: connectionId } : {}),
+      // Switch Console reads this session's room itself, over the connection it
+      // just opened. The runtime's own poll loop would be a second reader of
+      // the same queue, racing this one for every event.
+      SWITCH_CHANNEL_DISABLE_POLL: '1',
+    };
+
+    const env: Record<string, string> = {
+      // No hook: a provider session reports through its event stream, and a
+      // `SWITCHDASH_HOOK_*` in its environment would invite the connector's
+      // hooks to report a second, contradictory status for the same turn.
+      ...buildAgentEnv({}),
+      ...this.params.sessionEnvVars,
+      ...switchVars,
+    };
+
+    const mcpServers: Record<string, McpServerSpec> = {
+      switch: {
+        transport: 'stdio',
+        command: 'npx',
+        args: ['-y', SWITCH_AGENT_RUNTIME_PIN],
+        env: switchVars,
+      },
+    };
+
+    this.unsubscribeAdapter = adapter.subscribe((event) => {
+      if (event.sessionId !== this.params.sessionId) return;
+      this.handleProviderEvent(event);
+    });
+
+    try {
+      if (session.providerId === 'gemini') {
+        const values = (await agentLaunchSpecialization(session.agentId)) ?? {};
+        env.GEMINI_CLI_HOME = await prepareGeminiHome({
+          root: `${resolveDatabasePath()}.gemini-homes`,
+          sessionId: this.params.sessionId,
+          sourceHome: join(env.GEMINI_CLI_HOME || homedir(), '.gemini'),
+          context: [GEMINI_SKILL_CONTENT, values.instructions].filter(Boolean).join('\n\n'),
+          mcpServerNames: Object.keys(mcpServers),
+        });
+      }
+      if (session.providerId === 'codex') {
+        const values = (await agentLaunchSpecialization(session.agentId)) ?? {};
+        const profile = getPlugin('codex').behavior.mcp?.launchProfile?.({
+          slug: agentCredsSlug(session),
+          workingDir: this.params.sessionPath,
+          values,
+        });
+        env.CODEX_HOME = await prepareCodexSessionHome({
+          root: `${resolveDatabasePath()}.provider-homes`,
+          sessionId: this.params.sessionId,
+          sourceHome: env.CODEX_HOME || join(homedir(), '.codex'),
+          config: profile?.files.map((file) => file.content).join('\n') ?? '',
+          skill: CODEX_SKILL_CONTENT,
+        });
+      }
+      const cursorContext =
+        session.providerId === 'cursor'
+          ? [CURSOR_SKILL_CONTENT, (await agentLaunchSpecialization(session.agentId))?.instructions]
+              .filter(Boolean)
+              .join('\n\n')
+          : undefined;
+      const model = await this.resolveModel(session);
+      const agentName = await this.resolveAgentDefinition(session, workspaceFs);
+      await adapter.startSession({
+        sessionId: this.params.sessionId,
+        cwd: this.params.sessionPath,
+        runtimeMode,
+        env,
+        mcpServers,
+        ...(cursorContext ? { systemContext: cursorContext } : {}),
+        ...(session.providerSessionId
+          ? { resume: { nativeSessionId: session.providerSessionId } }
+          : {}),
+        ...(model ? { model } : {}),
+        ...(agentName ? { agentName } : {}),
+      });
+    } catch (error) {
+      this.unsubscribeAdapter?.();
+      this.unsubscribeAdapter = null;
+      this.publish(this.transcript.recordNotice('error', String(error)));
+      throw error;
+    }
+    this.started = true;
+
+    log.info('ProviderAgentRuntime: session started', {
+      event: 'provider_session_started',
+      sessionId: this.params.sessionId,
+      providerId: session.providerId,
+      runtimeMode,
+      resumed: session.providerSessionId !== undefined,
+    });
+
+    // The opening prompt is a turn like any other here — there is no TUI to
+    // pass it to on argv, and nothing to wait for before it can be typed.
+    if (initialPrompt?.trim()) {
+      await this.sendTurn(initialPrompt.trim(), 'system');
+    }
+  }
+
+  /**
+   * The per-agent model, as the adapter names one.
+   *
+   * Every provider's launch profile calls the model `model`; what it calls the
+   * reasoning control is its own vocabulary, which is why this reads a
+   * per-provider key rather than one shared name. OpenCode has a model-specific
+   * `variant`, Claude Code a reasoning `effort`. Anything else the profile
+   * carries is a config-file concern the adapter has no use for.
+   */
+  private async resolveModel(session: Session): Promise<ModelSelection | undefined> {
+    const specialization = await agentLaunchSpecialization(session.agentId);
+    const id = specialization?.model?.trim();
+    if (!id) return undefined;
+    const key = session.providerId === 'opencode' ? 'variant' : 'effort';
+    const value = specialization?.[key]?.trim();
+    return { id, ...(value ? { options: { [key]: value } } : {}) };
+  }
+
+  /**
+   * The named agent definition this session should run *as*, when its provider
+   * launches one and the definition is actually on disk.
+   *
+   * A PTY launch passes `--agent <name>` from the provider's own `launchArgs`;
+   * the adapter takes the same name and the SDK applies the same definition. It
+   * is checked for rather than assumed because Claude Code fails a session that
+   * names an agent it cannot find, and an agent added to Switch Console without
+   * a `.claude/agents/<name>.md` — every OpenCode agent, and a Claude one whose
+   * definition was never written — has none.
+   */
+  private async resolveAgentDefinition(
+    session: Session,
+    workspaceFs: PluginFs
+  ): Promise<string | undefined> {
+    const name = session.agentName;
+    if (!name) return undefined;
+    const repoAgents = getPlugin(session.providerId).behavior.repoAgents;
+    if (!repoAgents) return undefined;
+    const relativePath = repoAgents.definitionPath(name);
+    return (await workspaceFs.exists(relativePath)) ? name : undefined;
+  }
+
+  private handleProviderEvent(event: ProviderRuntimeEvent): void {
+    this.publish(this.transcript.apply(event));
+
+    if (event.type === 'session.started') {
+      this.nativeSessionId = event.nativeSessionId;
+      void saveNativeSessionId(this.params.sessionId, event.nativeSessionId).catch((error) => {
+        log.warn('ProviderAgentRuntime: failed to persist the native session id', {
+          sessionId: this.params.sessionId,
+          error: String(error),
+        });
+      });
+    }
+
+    if (event.type === 'request.opened' || event.type === 'user-input.requested') {
+      providerRoomRelay.onRequestOpened(this.params.sessionId, event);
+    }
+    if (event.type === 'request.resolved' || event.type === 'user-input.resolved') {
+      providerRoomRelay.onRequestResolved(this.params.sessionId, event.requestId);
+    }
+
+    const agentEvent = toAgentEvent(event, {
+      sessionId: this.params.sessionId,
+      providerId: this.providerId,
+    });
+    if (agentEvent) {
+      const appFocused = isAppFocused();
+      void maybeShowNotification(agentEvent, appFocused);
+      agentHookService.emitAgentEvent(agentEvent, appFocused);
+    }
+
+    if (event.type === 'session.exited') {
+      this.started = false;
+      // A stop we asked for is not an exit anyone needs telling about: the
+      // consumers of these two exist to notice a session dying under them, and
+      // firing them here would report every deliberate teardown as a failure.
+      if (this.stopping) {
+        log.info('ProviderAgentRuntime: the provider session stopped', {
+          event: 'provider_session_stopped',
+          sessionId: this.params.sessionId,
+          reason: event.reason,
+        });
+        return;
+      }
+      log.warn('ProviderAgentRuntime: the provider session ended', {
+        event: 'provider_session_exited',
+        sessionId: this.params.sessionId,
+        reason: event.reason,
+      });
+      events.emit(agentSessionExitedChannel, { sessionId: this.params.sessionId });
+      // In-process counterpart for main-process consumers — `events` only
+      // reaches the renderer (see session-hooks).
+      sessionHooks._emit('session:agent-exited', {
+        sessionId: this.params.sessionId,
+        decision: 'failed',
+      });
+    }
+  }
+
+  async sendTurn(
+    text: string,
+    source: TranscriptUserSource,
+    room?: TranscriptRoomOrigin & { body: string }
+  ): Promise<{ turnId: string }> {
+    const adapter = providerAdapterRegistry.get(this.providerId);
+    const turnId = randomUUID();
+    const result = await adapter.sendTurn({ sessionId: this.params.sessionId, turnId, text });
+    // A steered message joins the turn already running, so the transcript has
+    // to file it under that turn rather than the id we minted for it.
+    const effectiveTurnId = result.steeredInto ?? result.turnId;
+    this.publish(
+      this.transcript.recordUserTurn({
+        turnId: effectiveTurnId,
+        text,
+        source,
+        ...(room
+          ? {
+              room: {
+                sender: room.sender,
+                roomId: room.roomId,
+                roomName: room.roomName,
+                messageId: room.messageId,
+              },
+              displayText: room.body,
+            }
+          : {}),
+      })
+    );
+    return { turnId: effectiveTurnId };
+  }
+
+  isTurnRunning(): boolean {
+    return this.transcript.hasRunningTurn();
+  }
+
+  async interrupt(): Promise<void> {
+    await providerAdapterRegistry.get(this.providerId).interruptTurn(this.params.sessionId);
+  }
+
+  async respondToRequest(
+    requestId: string,
+    decision: ApprovalDecision,
+    decidedBy: TranscriptDecidedBy
+  ): Promise<void> {
+    // Recorded before the send: the provider's `request.resolved` rebuilds the
+    // entry from the one held here, so noting it afterwards would race that
+    // echo — and the card would show a resolved request with nobody behind it.
+    this.publish(this.transcript.noteDecidedBy(requestId, decidedBy));
+    await providerAdapterRegistry
+      .get(this.providerId)
+      .respondToRequest(this.params.sessionId, requestId, decision);
+  }
+
+  async respondToUserInput(requestId: string, answers: UserInputAnswers): Promise<void> {
+    await providerAdapterRegistry
+      .get(this.providerId)
+      .respondToUserInput(this.params.sessionId, requestId, answers);
+    this.publish(this.transcript.noteAnswers(requestId, answers));
+  }
+
+  /** Say something in the transcript that the provider did not say. */
+  notice(level: 'info' | 'warning' | 'error', text: string): void {
+    this.publish(this.transcript.recordNotice(level, text));
+  }
+
+  getTranscript(): SessionTranscript {
+    return this.transcript.snapshot();
+  }
+
+  subscribe(listener: (update: TranscriptUpdate) => void): () => void {
+    this.listeners.add(listener);
+    return () => {
+      this.listeners.delete(listener);
+    };
+  }
+
+  private publish(updates: TranscriptUpdate[]): void {
+    for (const update of updates) {
+      // Topic'd on the session: the renderer's store subscribes per session, so
+      // an untopic'd emit lands on a channel nobody is listening to and the
+      // panel shows the snapshot it opened with, for ever.
+      events.emit(
+        sessionTranscriptChannel,
+        { sessionId: this.params.sessionId, update },
+        this.params.sessionId
+      );
+      for (const listener of [...this.listeners]) {
+        try {
+          listener(update);
+        } catch (error) {
+          log.warn('ProviderAgentRuntime: a transcript listener threw', {
+            sessionId: this.params.sessionId,
+            error: String(error),
+          });
+        }
+      }
+    }
+  }
+
+  /** The provider's own id for this session, once it has reported one. */
+  get nativeSession(): string | null {
+    return this.nativeSessionId;
+  }
+
+  /**
+   * Both no-ops: there is no terminal to close and nothing to re-attach to. The
+   * provider session keeps running, which is what a user closing a session view
+   * expects.
+   */
+  async dehydrate(): Promise<void> {}
+
+  async detach(): Promise<void> {}
+
+  async stop(): Promise<void> {
+    switchNotificationPoller.disconnect(this.params.sessionId);
+    switchRoomService.clearSession(this.params.sessionId);
+    providerRoomRelay.unbind(this.params.sessionId);
+    // The subscription outlives the stop deliberately: `stopSession` is what
+    // emits the session's own `stopped` state and its exit, and dropping the
+    // listener first would leave the transcript claiming the session is still
+    // ready long after it is gone.
+    try {
+      const adapter = this.providerId ? providerAdapterRegistry.get(this.providerId) : null;
+      if (this.started && adapter?.hasSession(this.params.sessionId)) {
+        this.stopping = true;
+        await adapter.stopSession(this.params.sessionId);
+      }
+    } finally {
+      this.stopping = false;
+      this.started = false;
+      this.unsubscribeAdapter?.();
+      this.unsubscribeAdapter = null;
+    }
+  }
+
+  async destroy(): Promise<void> {
+    await this.stop();
+    this.listeners.clear();
+  }
+}

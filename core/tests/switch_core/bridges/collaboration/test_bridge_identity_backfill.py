@@ -40,6 +40,7 @@ def _core(provision: Any) -> tuple[BridgeCore, _FakeAdapter]:
     core._bridge_type = "slack"  # type: ignore[attr-defined]
     core._adapter = adapter  # type: ignore[attr-defined]
     core._identity_task = None  # type: ignore[attr-defined]
+    core._session_interactions = None  # type: ignore[attr-defined]
 
     async def _noop() -> None:
         return None

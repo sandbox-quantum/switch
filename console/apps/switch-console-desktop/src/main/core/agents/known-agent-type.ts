@@ -6,12 +6,14 @@ import type { AgentProviderId } from '@shared/core/providers/agent-provider-regi
  * in `switch_core/gateway/known_agents.py` — a value outside it is rejected at
  * registration, so it is worth catching at the call site instead.
  */
-export type KnownAgentType = 'claude-code' | 'codex' | 'opencode';
+export type KnownAgentType = 'claude-code' | 'codex' | 'opencode' | 'gemini' | 'cursor';
 
 const KNOWN_AGENT_TYPE_BY_PROVIDER: Partial<Record<AgentProviderId, KnownAgentType>> = {
   claude: 'claude-code',
   codex: 'codex',
   opencode: 'opencode',
+  gemini: 'gemini',
+  cursor: 'cursor',
 };
 
 const FALLBACK_KNOWN_AGENT_TYPE: KnownAgentType = 'claude-code';
@@ -23,7 +25,7 @@ const FALLBACK_KNOWN_AGENT_TYPE: KnownAgentType = 'claude-code';
  * It still registers as `claude-code` — the generic Switch Console-managed shape —
  * because Switch Console drives the session itself and the type mainly determines
  * the connector label and the hand-onboarding command an operator is shown. That
- * mismatch is real (an operator onboarding a Gemini agent by hand is told to run
+ * mismatch is real (an operator onboarding an unsupported agent by hand is told to run
  * `claude`), so it is warned about rather than passed over silently.
  */
 export function knownAgentTypeForProvider(providerId: AgentProviderId): KnownAgentType {

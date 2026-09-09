@@ -37,6 +37,7 @@ const OPTS = {
   tmuxEnabled: false, // location setting is off; remote must still force tmux on
   sessionEnvVars: {},
   credsRelPaths: ['.switch/agents/agent-1.json', '.claude/settings.local.json'],
+  runtime: 'pty' as const,
 };
 
 describe('buildAgentRuntime (ssh)', () => {

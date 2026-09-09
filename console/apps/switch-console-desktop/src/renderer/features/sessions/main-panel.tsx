@@ -6,8 +6,10 @@ import {
   getSessionManagerStore,
   getSessionStore,
   sessionErrorMessage,
+  sessionRuntimeKind,
   sessionViewKind,
 } from '@renderer/features/sessions/stores/session-selectors';
+import { SessionTranscript } from './components/transcript/session-transcript';
 import { SessionTerminal } from './session-terminal';
 
 export const SessionMainPanel = observer(function SessionMainPanel() {
@@ -107,6 +109,10 @@ export const SessionMainPanel = observer(function SessionMainPanel() {
 
   if (kind === 'missing') {
     return null;
+  }
+
+  if (sessionRuntimeKind(sessionStore) === 'provider') {
+    return <SessionTranscript />;
   }
 
   return <SessionTerminal />;

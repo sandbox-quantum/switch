@@ -17,6 +17,7 @@ from switch_core.bridges.collaboration.models import (
     InboundAgentJoin,
     InboundAppJoin,
     InboundCommand,
+    InboundInteraction,
     InboundMessage,
     InboundUserJoin,
     OutboundAttachment,
@@ -155,6 +156,12 @@ class CollaborationAdapter(ABC):
         )
         self._on_user_joined: Callable[[InboundUserJoin], Awaitable[None]] | None = None
         self._on_app_joined: Callable[[InboundAppJoin], Awaitable[None]] | None = None
+        # Set by set_interaction_handler. Called when someone operates a control
+        # on a message this bridge posted. Left unset on a platform with no such
+        # controls, and on an adapter running without a bridge core behind it.
+        self._on_interaction: Callable[[InboundInteraction], Awaitable[None]] | None = (
+            None
+        )
         # Set by set_channel_migration_handler. Called with (old_id, new_id)
         # when the platform reissues a channel's id.
         self._on_channel_migrated: Callable[[str, str], Awaitable[None]] | None = None
@@ -860,6 +867,49 @@ class CollaborationAdapter(ABC):
         The symptom without it is one-way traffic — sends still arrive, because
         the platform forwards them, while nothing inbound matches a room again."""
         self._on_channel_migrated = handler
+
+    def set_interaction_handler(
+        self, handler: Callable[[InboundInteraction], Awaitable[None]]
+    ) -> None:
+        """Install the callback for a control on a posted message being operated.
+
+        A setter rather than another argument to `start` because only the
+        platforms with interactive message controls ever call it, and an adapter
+        that never does needs no change to go on working."""
+        self._on_interaction = handler
+
+    async def is_first_reply(
+        self, channel_id: str, root_ref: str, message_ref: str
+    ) -> bool:
+        """Whether `message_ref` is the first thing said under `root_ref`.
+
+        Asked when someone answers a request card with a word that names no
+        request — a bare "yes". That only counts as an answer while nothing
+        else has been said under the card, because once a thread has a
+        conversation in it a "yes" is as likely to be about the conversation.
+
+        Read from the platform each time rather than tracked here: two replies
+        arriving at once would both look like the first to anything counting
+        locally, and each would decide the request.
+
+        False is the answer whenever a platform cannot tell, and this base is a
+        platform that cannot. Refusing costs someone the retype of a handle;
+        accepting decides a permission from a word that was about something
+        else. Only reachable on a platform that posts request cards.
+
+        An implementation must not raise. This is asked on the inbound path of
+        every message, ahead of the relay, so an exception out of it is not a
+        refused answer but a message the room never sees."""
+        logger.warning(
+            "Cannot tell whether %s is the first reply under %s in %s, so it "
+            "does not answer the card there. %s posts request cards without a "
+            "way to read a thread back.",
+            message_ref,
+            root_ref,
+            channel_id,
+            self.platform_name,
+        )
+        return False
 
     def set_agent_presentation_resolver(
         self, resolver: Callable[[str], Awaitable[AgentPresentation | None]]

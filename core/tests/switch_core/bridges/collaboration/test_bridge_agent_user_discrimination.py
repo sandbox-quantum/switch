@@ -21,6 +21,16 @@ async def _noop_repair(*_args: object, **_kwargs: object) -> None:
     return None
 
 
+async def _no_text_answer(_msg: object) -> None:
+    """These tests exercise the relay, not the session half of a message."""
+    return None
+
+
+async def _no_session_demo(_msg: object, _room_id: str) -> None:
+    """The demo harness is off in production and off here."""
+    return None
+
+
 def _msg(sender_name: str) -> InboundMessage:
     return InboundMessage(
         channel_id="chan-1",
@@ -60,6 +70,8 @@ def _fake_bridge(*, agents: set[str]) -> SimpleNamespace:
         return None
 
     return SimpleNamespace(
+        _handle_text_answer=_no_text_answer,
+        _handle_session_demo=_no_session_demo,
         _repair_placeholder_username=_noop_repair,
         _is_registered_agent=_is_registered_agent,
         _ensure_user_in_matrix_room=_ensure_user_in_matrix_room,

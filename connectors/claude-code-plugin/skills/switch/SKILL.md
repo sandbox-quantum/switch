@@ -220,6 +220,21 @@ you get back from `send_targeted_message` is `not_permitted` in that agent's
 than sending again. Commands are covered too, so `!reset` on a restricted
 agent is declined the same way.
 
+## Questions in provider sessions
+
+When Switch Console runs a provider session, native question forms can be
+answered in the Console or from the room. The room presents one question at
+a time; each addressed reply answers that question. A form with several
+questions stays open until all questions have answers. Wait for the tool to
+return before acting on the answers.
+
+Shared SDK session request cards use server authorization. Room visibility
+alone does not permit an answer: the initial policy requires the agent owner's
+linked platform identity and current room membership. A pending answer is not
+an approval; wait for the confirmed result. Cancellation remains cancellation.
+The server chooses request-card destinations. Ordinary SDK output stays in
+session details; use the Switch messaging tools for explicit room replies.
+
 ## Threads
 
 `post_message` and `send_targeted_message` both take an optional `thread_id`:
