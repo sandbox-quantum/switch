@@ -5,12 +5,15 @@ Everything the server has to answer after a restart — who owns a session, what
 happened in it, which commands it accepted, where it may publish — is derived
 state that died with that process.
 
-These six tables are that state at rest. Three of the constraints carry rules
+These six tables are that state at rest. Four of the constraints carry rules
 rather than tidiness: the partial unique index on `session_commands` *is* the
-reservation that stops two people answering one request, the partial unique
-index on `session_events` refuses a host's retry rather than logging it twice,
-and the primary keys on `session_leases` and `session_room_associations` mean a
-second owner and a second publication room are refused by the table.
+reservation that stops two people answering one request, the check constraint
+beside it stops an answer naming a request and no revision — which under
+Postgres NULL semantics would reserve nothing while looking as though it had —
+the partial unique index on `session_events` refuses a host's retry rather than
+logging it twice, and the primary keys on `session_leases` and
+`session_room_associations` mean a second owner and a second publication room
+are refused by the table.
 
 Revision ID: b7c2e5a91f04
 Revises: a1d6f4b73c90
@@ -51,6 +54,7 @@ def upgrade() -> None:
         sa.ForeignKeyConstraint(["agent_id"], ["agents.id"], ondelete="CASCADE"),
         sa.PrimaryKeyConstraint("id"),
     )
+    op.create_index("ix_sessions_agent", "sessions", ["agent_id"])
 
     op.create_table(
         "session_leases",
@@ -80,7 +84,7 @@ def upgrade() -> None:
         sa.Column("id", sa.Text(), nullable=False),
         sa.Column("session_id", sa.Text(), nullable=False),
         sa.Column("sequence", sa.BigInteger(), nullable=False),
-        sa.Column("epoch", sa.Text(), nullable=False),
+        sa.Column("epoch", sa.Text(), nullable=True),
         sa.Column("host_sequence", sa.BigInteger(), nullable=True),
         sa.Column("event_id", sa.Text(), nullable=False),
         sa.Column("type", sa.Text(), nullable=False),
@@ -139,6 +143,10 @@ def upgrade() -> None:
         sa.UniqueConstraint("session_id", "command_id", name="uq_session_commands_id"),
         sa.UniqueConstraint(
             "session_id", "delivery_position", name="uq_session_commands_position"
+        ),
+        sa.CheckConstraint(
+            "(request_id IS NULL) = (expected_revision IS NULL)",
+            name="ck_session_commands_answer_is_whole",
         ),
     )
     op.create_index(
@@ -223,4 +231,5 @@ def downgrade() -> None:
     op.drop_index("uq_session_events_host_sequence", table_name="session_events")
     op.drop_table("session_events")
     op.drop_table("session_leases")
+    op.drop_index("ix_sessions_agent", table_name="sessions")
     op.drop_table("sessions")

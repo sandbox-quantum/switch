@@ -45,25 +45,54 @@ class SessionLeaseStore:
         )
         return result.scalar_one_or_none()
 
-    async def renew(self, session: AsyncSession, session_id: str) -> None:
+    async def renew(
+        self, session: AsyncSession, session_id: str, host_id: str, epoch: str
+    ) -> None:
         """Mark the holder as still alive, keeping its epoch.
 
         Renewal is not re-acquisition. A host that renews carries on emitting
         under the epoch it already has, so nothing downstream is invalidated by
-        a heartbeat. Renewing a lease nobody holds is an error and not a
-        no-op — the caller believes it owns a session it does not.
+        a heartbeat.
+
+        The holder has to name itself, because a displaced host does not know
+        it has been displaced: keyed on the session alone, its last heartbeat
+        would keep its successor's lease looking alive under the wrong host.
+        Renewing a lease this host does not hold is an error, not a no-op.
         """
         result = await session.execute(
             update(SessionLease)
-            .where(SessionLease.session_id == session_id)
+            .where(
+                SessionLease.session_id == session_id,
+                SessionLease.host_id == host_id,
+                SessionLease.epoch == epoch,
+            )
             .values(last_seen_at=datetime.now(UTC))
         )
         if result.rowcount == 0:  # type: ignore[attr-defined]
-            raise LookupError(f"No lease held on session {session_id!r}.")
+            raise LookupError(
+                f"Host {host_id!r} holds no lease on session {session_id!r} "
+                f"under epoch {epoch!r}."
+            )
 
-    async def release(self, session: AsyncSession, session_id: str) -> None:
-        """Give up the lease, leaving the session free for the next holder."""
-        await session.execute(
-            delete(SessionLease).where(SessionLease.session_id == session_id)
+    async def release(
+        self, session: AsyncSession, session_id: str, host_id: str, epoch: str
+    ) -> None:
+        """Give up the lease, leaving the session free for the next holder.
+
+        Named for the same reason as `renew`: a displaced host shutting down
+        must not delete the lease its successor now holds, which would strand a
+        live session by refusing every event it sends.
+        """
+        result = await session.execute(
+            delete(SessionLease).where(
+                SessionLease.session_id == session_id,
+                SessionLease.host_id == host_id,
+                SessionLease.epoch == epoch,
+            )
         )
+        if result.rowcount == 0:  # type: ignore[attr-defined]
+            raise LookupError(
+                f"Host {host_id!r} holds no lease on session {session_id!r} "
+                f"under epoch {epoch!r}."
+            )
         await session.flush()

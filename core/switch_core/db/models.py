@@ -952,6 +952,9 @@ class HostSession(Base):
     """
 
     __tablename__ = "sessions"
+    # An agent's sessions is a read the Console and the gateway both make, and
+    # deleting an agent cascades here.
+    __table_args__ = (Index("ix_sessions_agent", "agent_id"),)
 
     # The host generates this. Opaque to us, and never parsed.
     id: Mapped[str] = mapped_column(Text, primary_key=True)
@@ -1020,6 +1023,11 @@ class SessionEvent(Base):
     `(epoch, host_sequence)` names one position in one generation of the
     host's log. A retry from an outbox therefore lands as a conflict rather
     than as a second copy.
+
+    `epoch` is the host's generation and is empty on a server event, which has
+    none. The one that most needs writing is connectivity going offline, and
+    that is emitted exactly when the lease — the only place an epoch is
+    stored — has just gone.
     """
 
     __tablename__ = "session_events"
@@ -1045,7 +1053,7 @@ class SessionEvent(Base):
     # numbers rows when the INSERT runs and a reader paging on `sequence > n`
     # can step over one that commits late.
     sequence: Mapped[int] = mapped_column(BigInteger, nullable=False)
-    epoch: Mapped[str] = mapped_column(Text, nullable=False)
+    epoch: Mapped[str | None] = mapped_column(Text, nullable=True)
     host_sequence: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     event_id: Mapped[str] = mapped_column(Text, nullable=False)
     type: Mapped[str] = mapped_column(Text, nullable=False)
@@ -1092,6 +1100,13 @@ class SessionCommand(Base):
             "expected_revision",
             unique=True,
             postgresql_where=text("request_id IS NOT NULL"),
+        ),
+        # Postgres treats NULLs as distinct, so an answer that named a request
+        # and no revision would reserve nothing while looking like it had. The
+        # two are one fact and the table holds them to it.
+        CheckConstraint(
+            "(request_id IS NULL) = (expected_revision IS NULL)",
+            name="ck_session_commands_answer_is_whole",
         ),
     )
 

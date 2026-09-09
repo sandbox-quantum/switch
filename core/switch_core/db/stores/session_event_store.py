@@ -5,22 +5,52 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from sqlalchemy import func, select, text
+from sqlalchemy.exc import IntegrityError
 
 from switch_core.db.models import SessionEvent
+from switch_core.db.stores.constraint_violations import violated_constraint
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
+
+
+class DuplicateEventId(Exception):
+    """This event has already been accepted for this session."""
+
+
+class HostSequenceTaken(Exception):
+    """A different event already holds this position in the host's log."""
 
 
 class SessionEventStore:
     async def append(self, session: AsyncSession, event: SessionEvent) -> SessionEvent:
         """Add an event to the log, numbering it.
 
+        A host retrying from its outbox and a host that has miscounted are
+        different problems — the first is already accepted and the second is a
+        conflict — so the two refusals are raised apart, in a savepoint that
+        leaves the caller able to say which. Everything else propagates.
+
         The caller must not have set `sequence`; this assigns it.
         """
         event.sequence = await self._next_sequence(session, event.session_id)
-        session.add(event)
-        await session.flush()
+        try:
+            async with session.begin_nested():
+                session.add(event)
+                await session.flush()
+        except IntegrityError as error:
+            constraint = violated_constraint(error)
+            if constraint == "uq_session_events_event":
+                raise DuplicateEventId(
+                    f"Event {event.event_id!r} is already in the log for "
+                    f"session {event.session_id!r}."
+                ) from error
+            if constraint == "uq_session_events_host_sequence":
+                raise HostSequenceTaken(
+                    f"Position {event.host_sequence!r} of epoch {event.epoch!r} "
+                    f"is already taken for session {event.session_id!r}."
+                ) from error
+            raise
         return event
 
     async def read_after(
