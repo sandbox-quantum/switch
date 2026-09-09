@@ -874,6 +874,45 @@ class Document(TenantScoped, Base):
     )
 
 
+# ── Templates ─────────────────────────────────────────────────────────────────
+
+
+class Template(Base):
+    """A template document held on this server, plus the metadata to find it.
+
+    ``content`` is stored verbatim and never parsed, so a document in a format
+    this server does not yet understand still round-trips byte for byte.
+    ``kind`` is free text for the same reason: room, group and agent templates
+    differ only in a string, not in the schema.
+
+    ``version`` counts revisions of the stored row, incrementing whenever the
+    content is replaced. It is not the author's name for a release, and not the
+    inert ``version:`` key inside the document — those belong to the format.
+    """
+
+    __tablename__ = "templates"
+    __table_args__ = (
+        UniqueConstraint("owner_id", "name", name="uq_templates_owner_name"),
+    )
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
+    owner_id: Mapped[str] = mapped_column(Text, ForeignKey("users.id"), nullable=False)
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    description: Mapped[str] = mapped_column(Text, nullable=False)
+    kind: Mapped[str] = mapped_column(Text, nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    version: Mapped[int] = mapped_column(Integer, nullable=False, server_default="1")
+    created_at: Mapped[str] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[str] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+
 # ── Packages ──────────────────────────────────────────────────────────────────
 
 
