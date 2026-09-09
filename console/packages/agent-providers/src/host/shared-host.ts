@@ -1,9 +1,10 @@
 import { mkdir } from 'node:fs/promises';
 import { setTimeout as delay } from 'node:timers/promises';
-import { commandSchema, hostEventSchema, snapshotSchema } from '@switch-console/shared/session-v1';
-import type { HostBody, HostEvent, Session } from '@switch-console/shared/session-v1';
+import { commandSchema, snapshotSchema } from '@switch-console/shared/session-v1';
+import type { Session } from '@switch-console/shared/session-v1';
 import type { ProviderAdapter, ProviderSessionStartInput } from '../adapter';
 import { HostedSession } from './session-host';
+import { SharedDelivery } from './shared-delivery';
 
 export type SharedHostOptions = {
   root: string;
@@ -86,42 +87,12 @@ export async function runSharedHost(
       }
     }
   })();
-  let hostSequence = 0;
-  let journalSequence = 0;
-  const pending: HostEvent[] = [];
+  const delivery = await SharedDelivery.load(options.root, session);
   try {
     host = await HostedSession.start(options.root, { session, input: options.input }, adapter);
     const flush = async () => {
-      for (const event of host!.replay(journalSequence).events) {
-        let body: HostBody | null;
-        if (event.body.type === 'command.status') {
-          const status = event.body.status;
-          body =
-            status === 'applied' || status === 'rejected'
-              ? { ...event.body, type: 'command.result', status }
-              : null;
-        } else if (
-          event.body.type === 'request.submitting' ||
-          event.body.type === 'session.connectivity'
-        )
-          body = null;
-        else body = event.body;
-        if (body)
-          pending.push(
-            hostEventSchema.parse({
-              contractVersion: 1,
-              eventId: event.eventId,
-              sessionId: session.sessionId,
-              epoch: session.epoch,
-              hostSequence: ++hostSequence,
-              occurredAt: event.occurredAt,
-              body,
-            })
-          );
-        journalSequence = event.sequence;
-      }
-      while (pending.length) {
-        const event = pending[0];
+      for (const event of host!.replay(delivery.cursor).events) await delivery.capture(event);
+      for (const event of delivery.pending()) {
         const receipt = await request(
           `/events?host_id=${encodeURIComponent(session.hostId)}`,
           event
@@ -133,7 +104,7 @@ export async function runSharedHost(
           receipt.throughHostSequence !== event.hostSequence
         )
           throw new Error('Switch returned an invalid host event receipt.');
-        pending.shift();
+        await delivery.acknowledge(receipt.throughHostSequence);
       }
     };
     while (!executionSignal.aborted) {
