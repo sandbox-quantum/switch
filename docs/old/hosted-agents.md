@@ -266,14 +266,13 @@ trade rather than a closed door:
   being a storage-layer impossibility and becomes something the runtime has to
   get right.
 
-**And this changes the price argument below, so read the two together.** The $86
-figure is one agent kept warm around the clock, which nobody would do. A shared
-pool is the actual proposal: on the same rates, five warm tasks serving a hundred
-mostly-idle agents is roughly `5 × $0.12 × 720 / 100 ≈ $4` per agent-month —
-competitive with the specialists' sleeping cost, and with none of their wake
-penalty. That defence was unavailable while a pool looked impossible. With the
-shared filesystem it is available again, at the cost of one isolation layer, and
-it is the strongest remaining argument for the recommendation.
+**And this bears on the price argument below, so read the two together.** The $86
+figure is one agent kept warm around the clock, which nobody would do; a shared
+pool is the actual proposal, and it is much cheaper than that. It is still not
+cheaper than the specialists — the numbers are below — because the pool is spare
+capacity we pay for and they charge nothing to sleep. What the pool buys is the
+wake penalty, and it is available only if the shared filesystem above is
+acceptable.
 
 ### The honest trade against the specialists
 
@@ -322,7 +321,14 @@ state for an individual agent. Take the same agent worked one hour a day:
 | E2B, asleep the rest of the time | ~$5 |
 | Fly Sprites, asleep the rest of the time | ~$9 |
 | Fargate, one agent kept warm to hide the cold start | ~$86 |
-| Fargate, a shared warm pool (see cold start, above) | ~$4 |
+| Fargate, a shared warm pool (see cold start, above) | ~$7.90 |
+
+The pool row is two terms, and both belong in it. The work itself still costs
+what the destroy-when-idle row costs — a hundred agents worked an hour a day is
+`100 × 1 × 30 × $0.12 ≈ $360` a month, or **$3.60** an agent. The pool sits on
+top of that: five spare tasks held ready is `5 × $0.12 × 720 ≈ $432`, or
+**$4.32** an agent. It is genuinely additive, because a spare task handed to an
+agent stops being spare and has to be replaced.
 
 **Keeping one agent warm is the most expensive option on the table by an order of
 magnitude.** E2B beats it below roughly seventy per cent duty cycle and Sprites
@@ -332,20 +338,28 @@ on price either by destroying when idle, which is exactly the regime that pays
 the cold start this section calls the central risk, or by pooling, which is only
 available at the isolation cost set out above.
 
-**Whether the recommendation is competitive on price comes down to one storage
-decision.** With a per-agent volume there is no pool, warm means $86 an agent,
-and the specialists win outright. With the shared filesystem from the cold-start
-section a pooled warm task is roughly $4 an agent-month at the ratio assumed
-there — competitive with the specialists' sleeping cost and with no wake penalty
-— bought by giving up a storage-layer isolation boundary for path scoping inside
-the VM.
+**Pooling helps, and it is still not a price win.** With a per-agent volume
+there is no pool at all, warm means $86 an agent, and the specialists win
+outright. With the shared filesystem from the cold-start section, a pool puts us
+at roughly $7.90 an agent-month — between the two specialists, meaningfully
+cheaper than Sprites and about sixty per cent more than E2B — bought by giving up
+a storage-layer isolation boundary for path scoping inside the VM. What the pool
+buys is the wake penalty, not the bill.
 
-So the price case is real but conditional, and it should be argued that way
-rather than asserted. What is *not* conditional is the pair of reasons the
-recommendation actually rests on: no new subprocessor holding customer code, and
-infrastructure we control in a region we choose. If phase 0 shows the shared
-filesystem is unacceptable and a warm pool is nonetheless mandatory, price
-inverts completely and this decision should be reopened rather than defended.
+Treat the pool size as illustrative rather than derived. Five is defensible only
+as a buffer absorbing arrivals while a replacement task starts, not as coverage
+of peak concurrency, and this document has neither an arrival rate nor a
+replenishment time to size it from. Both belong in the phase 0 measurement
+alongside the cold-start number.
+
+So the recommendation should not be defended on price at all. On the workload we
+expect, the cheaper specialist beats every Fargate configuration, and the best
+Fargate can do is sit between the two. **The reasons it rests on are the ones
+that do not move with a spreadsheet: no new subprocessor holding customer code,
+and infrastructure we control in a region we choose.** Price is a thing it
+survives, not a thing it wins. If phase 0 shows the shared filesystem is
+unacceptable and a warm pool is nonetheless mandatory, the gap widens to an order
+of magnitude and this decision should be reopened rather than defended.
 
 And the latency gap is wider than the boot numbers suggest, not narrower. A
 paused machine keeps its processes: memory survives, connections do not, so a
@@ -1029,7 +1043,7 @@ grows past that, the positioning objection was right.
 | Decision | Chosen | Alternative and why not |
 |---|---|---|
 | Isolation boundary | microVM with its own kernel | Rootless containers — a shared kernel is a defensible boundary when you have recourse against whoever is inside it, and we would not. Redundant anyway once the task is already a microVM. |
-| Where sessions run | ECS Fargate, in our own account and region | Specialist sandbox vendors — sub-second restore and free sleep, and cheaper than Fargate for a mostly-idle agent **unless a shared warm pool is acceptable**, which trades a storage isolation boundary for path scoping. Chosen against them on subprocessor and account-control grounds; the price case is conditional. Northflank was not evaluated. |
+| Where sessions run | ECS Fargate, in our own account and region | Specialist sandbox vendors — sub-second restore, free sleep, and cheaper than every Fargate configuration for a mostly-idle agent. A shared warm pool closes the wake gap, not the price gap, and trades a storage isolation boundary for path scoping. Chosen against them on subprocessor and account-control grounds, not on price. Northflank was not evaluated. |
 | Which Fargate | ECS | EKS on Fargate has neither ARM nor spot pricing and puts back the cluster we are avoiding. |
 | Not our existing cluster | Explicitly excluded | It is not hardened for untrusted workloads and shares a namespace with the message database. Putting a stranger's shell there is a decision about the database. |
 | Idle handling | Destroy and rebuild, with cold start attacked directly | Modelling a sleep state — Fargate has no pause, and a state the platform cannot provide is a fiction that becomes a support ticket. The cost is that a destroyed task loses the agent's in-memory context, which a paused machine would have kept. |
