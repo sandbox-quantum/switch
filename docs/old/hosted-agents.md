@@ -243,19 +243,37 @@ Three mitigations, in ascending order of effort:
   workloads, not ours.
 - **A small pre-warmed pool** rather than scaling to zero.
 
-**The pool buys less than it looks like, and permanently.** A Fargate task takes
-its volume configuration at launch and cannot attach an existing volume
-afterwards. So a pooled task can be waiting, but it cannot then adopt a specific
-agent's disk — which means a pool removes the infrastructure half of wake latency
-and nothing else, by construction rather than pending a workaround.
+**A pool cannot adopt an agent's disk.** A Fargate task takes its volume
+configuration at launch and cannot attach an existing volume afterwards, so a
+task's storage identity is fixed the moment it starts. That is a property of the
+platform, not a gap pending a workaround.
 
-That has a consequence the rest of this design has to carry: **durable per-agent
-state cannot live in the task.** It is either a filesystem mounted at launch — so
-the task is created for one agent and the pool is a pool of *unassigned* tasks
-that can never be reassigned — or a restore from object storage after the task
-starts. Neither is free and neither is currently anywhere in the design. The
-honest remaining question is not whether a pool can adopt state, which is settled
-and negative, but **how long a restore takes**, which nobody has measured.
+Which leaves three ways to carry durable per-agent state, and they are a priced
+trade rather than a closed door:
+
+- **A per-agent volume mounted at launch.** Strongest isolation, and it kills the
+  pool: the task is created for one agent, so a pool is a pool of *unassigned*
+  tasks that can never be assigned.
+- **A restore from object storage after the task starts.** Keeps the pool and
+  keeps the per-agent boundary, at the price of a restore on the critical path.
+  How long that takes is unmeasured and is the open question here.
+- **A shared elastic filesystem mounted at launch, with a directory per agent.**
+  Fargate supports this, and it is what makes a warm pool actually viable: a
+  pooled task mounts the shared filesystem at launch and is pointed at an agent's
+  directory when it is assigned. The price is real and should be stated —
+  **it trades the per-agent volume boundary that §8's third threat leans on for
+  path scoping inside the VM.** One agent's escape from its own directory stops
+  being a storage-layer impossibility and becomes something the runtime has to
+  get right.
+
+**And this changes the price argument below, so read the two together.** The $86
+figure is one agent kept warm around the clock, which nobody would do. A shared
+pool is the actual proposal: on the same rates, five warm tasks serving a hundred
+mostly-idle agents is roughly `5 × $0.12 × 720 / 100 ≈ $4` per agent-month —
+competitive with the specialists' sleeping cost, and with none of their wake
+penalty. That defence was unavailable while a pool looked impossible. With the
+shared filesystem it is available again, at the cost of one isolation layer, and
+it is the strongest remaining argument for the recommendation.
 
 ### The honest trade against the specialists
 
@@ -295,39 +313,49 @@ per cent is a working assumption here rather than a quoted rate, so call it
 | Fly Sprites | $0.32 |
 
 That is the flattering denominator, and it is not the one the workload lives in.
-A hosted agent is expected to be **mostly idle**, and Fargate cannot be idle
-cheaply. Take the same agent worked one hour a day:
+A hosted agent is expected to be **mostly idle**, and Fargate has no cheap idle
+state for an individual agent. Take the same agent worked one hour a day:
 
 | One hour a day, per month | |
 |---|---|
 | Fargate, destroyed when idle | ~$3.60, plus a cold start on every wake |
 | E2B, asleep the rest of the time | ~$5 |
 | Fly Sprites, asleep the rest of the time | ~$9 |
-| Fargate, kept warm to hide the cold start | ~$86 |
+| Fargate, one agent kept warm to hide the cold start | ~$86 |
+| Fargate, a shared warm pool (see cold start, above) | ~$4 |
 
-**Warm Fargate is the most expensive option on the table by an order of
+**Keeping one agent warm is the most expensive option on the table by an order of
 magnitude.** E2B beats it below roughly seventy per cent duty cycle and Sprites
-below roughly forty — and a mostly-idle agent is nowhere near either. So the
-specialists dominate warm Fargate on price *and* on wake latency simultaneously.
-Fargate wins on price only in the destroy-when-idle regime, which is exactly the
-regime that pays the cold start this section calls the central risk.
+below roughly forty — and a mostly-idle agent is nowhere near either — so on that
+row the specialists dominate on price *and* on wake latency at once. Fargate wins
+on price either by destroying when idle, which is exactly the regime that pays
+the cold start this section calls the central risk, or by pooling, which is only
+available at the isolation cost set out above.
 
-**The recommendation therefore does not rest on price, and should not be
-defended on it.** It rests on two things that are real and independent of cost:
-no new subprocessor holding customer code, and infrastructure we control in a
-region we choose. Those are strong arguments. If the phase 0 cold-start
-measurement comes back badly enough that a warm pool is mandatory, the price
-argument inverts completely and this decision should be reopened rather than
-defended.
+**Whether the recommendation is competitive on price comes down to one storage
+decision.** With a per-agent volume there is no pool, warm means $86 an agent,
+and the specialists win outright. With the shared filesystem from the cold-start
+section a pooled warm task is roughly $4 an agent-month at the ratio assumed
+there — competitive with the specialists' sleeping cost and with no wake penalty
+— bought by giving up a storage-layer isolation boundary for path scoping inside
+the VM.
+
+So the price case is real but conditional, and it should be argued that way
+rather than asserted. What is *not* conditional is the pair of reasons the
+recommendation actually rests on: no new subprocessor holding customer code, and
+infrastructure we control in a region we choose. If phase 0 shows the shared
+filesystem is unacceptable and a warm pool is nonetheless mandatory, price
+inverts completely and this decision should be reopened rather than defended.
 
 And the latency gap is wider than the boot numbers suggest, not narrower. A
-paused machine keeps its processes, so a specialist's sub-second restore really
-does return a session that carries on. **A destroyed task does not**: the agent
-CLI's in-memory context goes with it, and what comes back is a terminal with a
-dead socket in it. So Fargate's wake is not thirty to forty-five seconds, it is
-thirty to forty-five seconds *plus* a state restore *plus* whatever reloading the
-agent's context costs — against something close to zero. Session resumption is a
-design question in its own right (see the open questions), and it is one the
+paused machine keeps its processes: memory survives, connections do not, so a
+specialist's sub-second restore returns a live session that needs a
+**reconnect**. **A destroyed task returns nothing to reconnect** — it comes back
+as a fresh container with no `tmux` server and no agent process in it, and the
+CLI's in-memory context went with the old one. So Fargate's wake is not thirty to
+forty-five seconds, it is that *plus* a state restore *plus* whatever reloading
+the agent's context costs, against a reconnect. Session resumption is a design
+question in its own right (see the open questions), and it is one the
 recommendation creates and the alternative largely avoids.
 
 On residency: **Fly places a sprite near the caller and does not currently let
@@ -345,17 +373,15 @@ about the layer that remains.
 
 ### Rejected: rootless containers
 
-Podman was raised as a cheaper boundary, and it deserves a fair hearing rather
-than a reflex. A shared kernel is a reasonable posture when you have contractual
-recourse against whoever runs the code — most CI systems work exactly this way
-and run arbitrary build scripts all day. The question is not whether a shared
-kernel is secure but how strong the boundary needs to be given who is on the
-other side of it, and for anonymous free-tier users running whatever a model
-decides to type there is no contract and no recourse.
+Podman was raised as a cheaper boundary, and it deserves a fair hearing: a shared
+kernel is a reasonable posture when you have contractual recourse against whoever
+runs the code, which is how most CI systems run arbitrary build scripts all day.
+For anonymous free-tier users running whatever a model decides to type there is
+no contract and no recourse, so the answer would be no on those grounds alone.
 
-A practical point settles it anyway: if the task is already a microVM, the task
-*is* the boundary. Podman inside it is a second boundary inside the first, for no
-gain, and Fargate blocks the privileges nested containers usually want.
+But the question is moot once the task is already a microVM — the task *is* the
+boundary, Podman inside it adds a second one inside the first for no gain, and
+Fargate blocks the privileges nested containers usually want.
 
 ### What is decided and what is not
 
@@ -363,10 +389,14 @@ Decided: ECS Fargate, in our own account and region, one task per agent, with a
 small image and lazy image loading from the start rather than retrofitted — on
 the subprocessor and control arguments, not on price.
 
-Not decided: whether a warm pool is needed at launch; how durable per-agent state
-is carried, given a pooled task cannot adopt a volume; and what wake latency is
-actually acceptable, which is a product judgement nobody has made. Phase 0 exists
-to answer the first two with measurements.
+Not decided: which of the three storage shapes carries durable per-agent state,
+which is the same decision as whether a warm pool is possible and at what
+isolation cost; and what wake latency is actually acceptable, which is a product
+judgement nobody has made. Phase 0 exists to answer the first with measurements;
+the second needs somebody to decide it.
+
+---
+
 ## 4. What is reused and what is discarded
 
 | Reused as-is | Discarded |
@@ -393,9 +423,14 @@ implementations already have.
 
 What remains of `exec` is served by ECS Exec, and that is not free: it requires
 `ssmmessages` permissions on the task role, it is incompatible with a read-only
-root filesystem, and its sessions run as root. So it is **enabled per task, for
-the tasks that need it** — principally the interactive sign-in in §6 — rather
-than switched on across the fleet. §8 states the resulting default.
+root filesystem, and its sessions run as root. It also **cannot be toggled on a
+running task** — it is fixed at launch and can only be turned on for new ones.
+
+So it is separated by *task*, not by phase: the interactive sign-in of §6 runs in
+its own short-lived task with exec enabled, and the working session runs in a
+task launched without it. That is a task replacement between enrollment and
+steady state, and therefore a second lifecycle for the supervisor in §5 to manage
+rather than a flag it can flip. §8 states the resulting default.
 
 The one genuinely new piece inside the sandbox is credential delivery, and it is
 new because today there is nothing there at all.
@@ -527,9 +562,11 @@ Three consequences that are not obvious from the headline:
 ### The model
 
 **The customer brings their own credential, per end user, billed to them.** An
-API key pasted at enrollment is the clean path and is the case the terms address
-in as many words: provisioning your own key into a machine image for your own
-authorized users, billed to the key owner.
+API key pasted at enrollment is the clean path, and the first bullet above
+supports it directly: the binary's built-in authentication methods must not be
+removed, disabled or restricted, expressly including the one that signs in with
+"the user's own API key". A hosted session in which the customer supplies their
+own key is that method working as the terms require.
 
 Subscription sign-in is harder, and the adverse text belongs in front of the
 reader in full rather than in the convenient half. The same page says:
@@ -719,9 +756,14 @@ requires the agent's cooperation.
 One of them cannot be had as stated. A **read-only root filesystem is
 incompatible with ECS Exec**, and ECS Exec sessions run as root — so the sign-in
 flow of §6 and the strongest filesystem posture are mutually exclusive on the
-same task. Keep them apart in time: exec enabled for enrollment, disabled for the
-working life of the session, and any task still carrying it treated and displayed
-as one with a weaker posture.
+same task, and exec is fixed at launch so no task can move between them. They are
+kept apart in *tasks*: a short-lived enrollment task with exec on, then a
+replacement task without it for the working session (§4). Any task still carrying
+exec is treated and displayed as one with a weaker posture.
+
+The shared-filesystem option in §3, if taken, weakens the third threat above in
+the same way: one agent's separation from another's files stops being a
+storage-layer impossibility and becomes path scoping the runtime has to enforce.
 
 One thing to fix regardless of hosting: the generic registration endpoint accepts
 a caller-supplied tool list with no validation, so an agent registering outside
@@ -781,12 +823,13 @@ the per-tenant cap is the product.
 
 ### The candidate
 
-**Qwen's 30B coder model**, served on Bedrock on demand. It is available in
-Ireland, Frankfurt, Milan and Stockholm — all inside the European footprint the
-rest of this design assumes, so it does not reopen the residency question. And it
-is genuinely capable at agentic work rather than only at chat, which is the
-distinction that matters for a harness that expects tool calls rather than
-prose.
+**Qwen's 30B coder model**, served on Bedrock on demand. On-demand availability
+was reported in Ireland, Frankfurt, Milan and Stockholm — inside the European
+footprint the rest of this design assumes, so on that reading it does not reopen
+the residency question, but regional model availability changes often enough that
+it should be confirmed rather than inherited from this page. It is genuinely
+capable at agentic work rather than only at chat, which is the distinction that
+matters for a harness that expects tool calls rather than prose.
 
 On cost: roughly **$0.13 per active session-hour**, against about **$3.90** for a
 mid-tier commercial model on the same assumptions. State the assumptions, because
@@ -796,7 +839,7 @@ model, since caching is exactly what a real deployment would use. It is the righ
 comparison for a free tier all the same: a free tier is where caching is least
 likely to be working, because sessions are short, cold and unrelated.
 
-The absolute figures matter less than the ratio: **thirty to one**, on
+The absolute figures matter less than the ratio: **twenty to thirty to one**, on
 assumptions chosen to flatter the expensive option.
 
 ### Self-hosting: ruled out, with numbers
@@ -822,13 +865,14 @@ stated one, not better.
 This is the part that a leaderboard will not tell you, and it is the reason the
 recommendation is a process rather than a name.
 
-Every cheap model surveyed has a dated, concrete failure mode in exactly this
-class of harness. One has a reproduced infinite-loop bug in OpenCode's own issue
-tracker. Another has a structural tool-calling protocol mismatch despite strong
-benchmark scores — it scores well and then cannot drive the harness. And the
-choice of inference backend alone has been observed to swing a single model's
-measured score by forty points, which means "which model" is not even a
-well-formed question without "served by what".
+Every cheap model surveyed had a dated, concrete failure mode in this class of
+harness — reproduced loop bugs in a harness's own issue tracker, tool-calling
+protocol mismatches behind strong benchmark scores, and a single model's measured
+score moving substantially with nothing changed but the inference backend. Those
+findings come from the same market review as §10's and are reproduced here
+without their sources, so treat them as a reason to test rather than as evidence
+about any named model. The general point stands on its own: "which model" is not
+a well-formed question without "served by what".
 
 **So the recommendation is to validate a model-and-backend pairing against the
 harness's own issue history before shipping it, not to pick from a leaderboard.**
@@ -985,7 +1029,7 @@ grows past that, the positioning objection was right.
 | Decision | Chosen | Alternative and why not |
 |---|---|---|
 | Isolation boundary | microVM with its own kernel | Rootless containers — a shared kernel is a defensible boundary when you have recourse against whoever is inside it, and we would not. Redundant anyway once the task is already a microVM. |
-| Where sessions run | ECS Fargate, in our own account and region | Specialist sandbox vendors — sub-second restore and free sleep, and **cheaper than warm Fargate for a mostly-idle agent**. Chosen against them on subprocessor and account-control grounds, not on price. Northflank was not evaluated. |
+| Where sessions run | ECS Fargate, in our own account and region | Specialist sandbox vendors — sub-second restore and free sleep, and cheaper than Fargate for a mostly-idle agent **unless a shared warm pool is acceptable**, which trades a storage isolation boundary for path scoping. Chosen against them on subprocessor and account-control grounds; the price case is conditional. Northflank was not evaluated. |
 | Which Fargate | ECS | EKS on Fargate has neither ARM nor spot pricing and puts back the cluster we are avoiding. |
 | Not our existing cluster | Explicitly excluded | It is not hardened for untrusted workloads and shares a namespace with the message database. Putting a stranger's shell there is a decision about the database. |
 | Idle handling | Destroy and rebuild, with cold start attacked directly | Modelling a sleep state — Fargate has no pause, and a state the platform cannot provide is a fiction that becomes a support ticket. The cost is that a destroyed task loses the agent's in-memory context, which a paused machine would have kept. |
@@ -1000,7 +1044,7 @@ grows past that, the positioning objection was right.
 | Client-reported usage | Telemetry, labelled as such | Enforcement or billing — the process reporting the number belongs to the tenant. |
 | Permission model for a hosted session | VM boundary, default-deny egress, scoped filesystem, compute cap | Today's defaults — checks disabled off-laptop, name-based matching, shell allowed, one host of three. The mediation hook is not an enforcement plane. |
 | First chat surface | A message list and composer in the gateway, scoped to first-run and support | Slack first — depends on an app install review a stranger cannot complete during signup. |
-| Free tier | OpenCode on a cheap open model through our own account | A free tier on our Claude credentials — prohibited by the terms in §6. AWS's terms for third-party models permit serving end users, which is the door §6 leaves open. |
+| Free tier | OpenCode on a cheap open model through our own account | A free tier on our Claude credentials — prohibited by the terms in §6. A third-party model *may* permit serving end users, which would be the door §6 leaves open, but **that reading is unverified** and rests on a per-model licence nobody has read. See the open questions. |
 | Free-tier model | **A validation process**: drive a model-and-backend pairing through the real harness and check it against that harness's issue history. Qwen's 30B coder is the leading candidate to test first | Picking a model from a leaderboard — the surveyed cheap models each have a dated failure mode in this class of harness, and the inference backend alone can move a score by forty points. |
 | Serving the free-tier model | Per-token through our own account | Self-hosting on GPUs — twenty to a hundred and sixty times the price at a free tier's duty cycle, and the European regions we would use have no current-generation datacentre GPUs on demand anyway. |
 | Relationship to multi-tenancy | Downstream of it for self-serve; the existing-deployment case ships first | Building hosting first — signup, tenant isolation and the Slack app are all prerequisites for a stranger. |
@@ -1111,11 +1155,11 @@ conversation with an agent, and a runaway one stops at a cap we set.
   sandbox? A browser terminal is the obvious answer and is also a remote shell we
   are handing to a stranger.
 - **What does session resumption mean?** Destroying a task loses the agent CLI's
-  in-memory context, and no hosting choice fixes that — a restored machine gives
-  back a terminal with a dead socket in it, not a conversation that carries on.
-  Whether a resumed session reloads context from the room, from the CLI's own
-  transcript, or starts clean is a product decision that nobody has taken and
-  that hosting forces.
+  in-memory context, and a rebuilt task starts clean. Whether a resumed session
+  reloads from the room, from the CLI's own transcript, or simply starts fresh is
+  a product decision nobody has taken — and it is one **destroy-and-rebuild
+  forces on us that a pausing platform would not**, which is a cost of the
+  recommendation in §3 rather than a fact of hosting.
 - §5 guesses that one supervising process is fine at ten sandboxes and not at a
   thousand. Nobody has established where between those the `replicaCount must be
   1` constraint actually breaks, or what breaks first — the reconciliation loop,
@@ -1124,10 +1168,6 @@ conversation with an agent, and a runaway one stops at a cap we set.
   a global cap. Whether per-tenant numbers come from provider-side request tagging
   or from a thin gateway of our own is unresolved, and the second answer puts a
   system holding every tenant's prompts into the request path.
-- Our production cluster is in a region with no on-demand models available at
-  all, so any model call from our own infrastructure would be cross-region today.
-  That is outside this document's scope but it lands squarely on whoever builds
-  the free tier.
 - Should hosted customers be a separate deployment from self-hosted ones, the way
   the multi-tenancy spike keeps the demo environment separate?
 - Who is on call, and what is the promise? Neither has an answer today, and
