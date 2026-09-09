@@ -928,6 +928,296 @@ class SessionRequestPost(Base):
     )
 
 
+# ── Sessions ─────────────────────────────────────────────────────────────────
+
+
+class HostSession(Base):
+    """A provider session run by an SDK host, as Switch knows it.
+
+    Not `agent_sessions`, which is an agent's transport slot in one room. This
+    is the session itself — one row per session id, and the anchor every other
+    `session_*` table hangs off. The class is named for the host to keep those
+    two apart in code; the table is `sessions` because that is what the routes
+    and the contract call it.
+
+    The row is written when the session first takes a lease, because that is
+    the first moment the server has an authenticated agent to register it
+    against. Everything the host reports about itself — provider, capabilities
+    — is unknown until its first `session.upsert`, so those columns are empty
+    until then rather than guessed at.
+
+    There is deliberately no `connectivity` column. The server derives that
+    from the lease and its heartbeat, and a host's own claim about whether it
+    is reachable cannot be the thing that answers it.
+    """
+
+    __tablename__ = "sessions"
+
+    # The host generates this. Opaque to us, and never parsed.
+    id: Mapped[str] = mapped_column(Text, primary_key=True)
+    agent_id: Mapped[str] = mapped_column(
+        Text, ForeignKey("agents.id", ondelete="CASCADE"), nullable=False
+    )
+    provider: Mapped[str | None] = mapped_column(Text, nullable=True)
+    capabilities: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    status: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[str] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[str] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+
+class SessionLease(Base):
+    """The one host permitted to emit for a session, and the epoch it emits under.
+
+    One row per session — the primary key is the session — so a second holder
+    is refused by the table rather than by a check some caller might skip. The
+    epoch is the server's to assign: it is handed back on acquisition and every
+    event carrying a different one is stale.
+
+    `last_seen_at` is renewal. Liveness is read from it against a TTL, the way
+    `role_leases` already does it, so a host that dies frees its session
+    without a reaper having to run.
+    """
+
+    __tablename__ = "session_leases"
+
+    session_id: Mapped[str] = mapped_column(
+        Text, ForeignKey("sessions.id", ondelete="CASCADE"), primary_key=True
+    )
+    agent_id: Mapped[str] = mapped_column(
+        Text, ForeignKey("agents.id", ondelete="CASCADE"), nullable=False
+    )
+    host_id: Mapped[str] = mapped_column(Text, nullable=False)
+    epoch: Mapped[str] = mapped_column(Text, nullable=False)
+    acquired_at: Mapped[str] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    last_seen_at: Mapped[str] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class SessionEvent(Base):
+    """One event in a session's log, host-sent or server-sent.
+
+    The log is the record. A snapshot is a fold of it, and the gateway read
+    stream is a page of it, so anything that has to survive a restart is here
+    rather than in a projection someone is holding.
+
+    `sequence` is the server's own position, from 1, and it numbers server
+    events alongside host ones — command status and connectivity are things
+    the host cannot see and must still be ordered against what it sent.
+    `host_sequence` is the host's, and it is empty on an event the host did
+    not send.
+
+    Three ways a repeat is refused: `event_id` names one event, and
+    `(epoch, host_sequence)` names one position in one generation of the
+    host's log. A retry from an outbox therefore lands as a conflict rather
+    than as a second copy.
+    """
+
+    __tablename__ = "session_events"
+    __table_args__ = (
+        UniqueConstraint("session_id", "sequence", name="uq_session_events_sequence"),
+        UniqueConstraint("session_id", "event_id", name="uq_session_events_event"),
+        Index(
+            "uq_session_events_host_sequence",
+            "session_id",
+            "epoch",
+            "host_sequence",
+            unique=True,
+            postgresql_where=text("host_sequence IS NOT NULL"),
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
+    session_id: Mapped[str] = mapped_column(
+        Text, ForeignKey("sessions.id", ondelete="CASCADE"), nullable=False
+    )
+    # Assigned by SessionEventStore.append under a per-session lock, for the
+    # reason MessageStore._next_seq sets out at length: a database sequence
+    # numbers rows when the INSERT runs and a reader paging on `sequence > n`
+    # can step over one that commits late.
+    sequence: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    epoch: Mapped[str] = mapped_column(Text, nullable=False)
+    host_sequence: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    event_id: Mapped[str] = mapped_column(Text, nullable=False)
+    type: Mapped[str] = mapped_column(Text, nullable=False)
+    body: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    occurred_at: Mapped[str] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[str] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class SessionCommand(Base):
+    """A command the server accepted, and how far it got.
+
+    The row is the record of acceptance. Delivery reads from it, replay reads
+    from it, and "did this actually happen" is answered from it — nothing about
+    correctness depends on a process staying up between accepting a command and
+    dispatching it.
+
+    **The reservation is this row.** An answer carries the request and the
+    revision it answers, and the partial unique index over
+    `(session, epoch, request, expected_revision)` is what the contract asks be
+    taken atomically: the insert either reserves and saves, or it fails and the
+    answer is refused with `REQUEST_BUSY` having reached nothing. Two people
+    pressing at once cannot both proceed, and there is no window in which a
+    reservation exists without the command that holds it. The index is partial
+    because a command that is not an answer reserves nothing.
+
+    `actor_id` and `body` are what a repeated `command_id` is compared against:
+    same actor and same body is the saved command handed back, anything else is
+    `IDEMPOTENCY_CONFLICT`.
+    """
+
+    __tablename__ = "session_commands"
+    __table_args__ = (
+        UniqueConstraint("session_id", "command_id", name="uq_session_commands_id"),
+        UniqueConstraint(
+            "session_id", "delivery_position", name="uq_session_commands_position"
+        ),
+        Index(
+            "uq_session_commands_reservation",
+            "session_id",
+            "epoch",
+            "request_id",
+            "expected_revision",
+            unique=True,
+            postgresql_where=text("request_id IS NOT NULL"),
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
+    session_id: Mapped[str] = mapped_column(
+        Text, ForeignKey("sessions.id", ondelete="CASCADE"), nullable=False
+    )
+    command_id: Mapped[str] = mapped_column(Text, nullable=False)
+    epoch: Mapped[str] = mapped_column(Text, nullable=False)
+    actor_id: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False)
+    # Server-minted from a verified identity, never taken from a client.
+    origin: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    body: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    request_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    expected_revision: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # What `commands?after=` pages on. Allocated the same way and for the same
+    # reason as a message's `seq`: in commit order, under a per-session lock.
+    delivery_position: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    # Why the host rejected it, when it did.
+    code: Mapped[str | None] = mapped_column(Text, nullable=True)
+    message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[str] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[str] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+
+class SessionRoomAssociation(Base):
+    """The room a session may publish into, and who said so.
+
+    Publication authority, and nothing else. It is kept apart from the lease on
+    purpose: the lease is execution ownership and is written by the host with
+    its own token, so a host that could write this could publish itself into a
+    room. It cannot — every writer here is an actor the server authorised in
+    that room, or the server itself acting on a room command it verified.
+
+    One room per session in v1, which the primary key enforces. `source` says
+    which of the two ways it came about, because "derived from a verified room
+    command" and "someone granted it" are different facts about how much anyone
+    checked.
+    """
+
+    __tablename__ = "session_room_associations"
+
+    session_id: Mapped[str] = mapped_column(
+        Text, ForeignKey("sessions.id", ondelete="CASCADE"), primary_key=True
+    )
+    room_id: Mapped[str] = mapped_column(
+        Text, ForeignKey("rooms.id", ondelete="CASCADE"), nullable=False
+    )
+    thread_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # The room message that started the session, when one did. What a turn is
+    # threaded under, and what stops an item being republished into the room it
+    # came from.
+    origin_message_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    granted_by_actor_id: Mapped[str] = mapped_column(Text, nullable=False)
+    source: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[str] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class SessionPublication(Base):
+    """The intent to put a request in front of a channel, written before the call.
+
+    A card that Slack accepted and we failed to record is indistinguishable
+    from one that was never posted, and posting again gives one decision two
+    sets of buttons for two people to press. The uniqueness constraint cannot
+    help: it keys on the external post id, which is exactly what is missing in
+    that case.
+
+    So the row is committed as `in-flight` before the platform is called, and a
+    retry that finds one reconciles against the platform — reading recent
+    history for the card's own token — before it considers posting anything.
+    The state is what a sweep looks for; `attempts` and `last_error` are what
+    it backs off on and what says why when it gives up.
+    """
+
+    __tablename__ = "session_publications"
+    __table_args__ = (
+        UniqueConstraint(
+            "bridge_id",
+            "session_id",
+            "request_id",
+            name="uq_session_publications_request",
+        ),
+        Index(
+            "ix_session_publications_unresolved",
+            "updated_at",
+            postgresql_where=text("state IN ('intended', 'in-flight')"),
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
+    bridge_id: Mapped[str] = mapped_column(
+        Text, ForeignKey("collaboration_bridges.id", ondelete="CASCADE"), nullable=False
+    )
+    session_id: Mapped[str] = mapped_column(
+        Text, ForeignKey("sessions.id", ondelete="CASCADE"), nullable=False
+    )
+    request_id: Mapped[str] = mapped_column(Text, nullable=False)
+    state: Mapped[str] = mapped_column(Text, nullable=False)
+    attempts: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default=text("0")
+    )
+    # Known once the platform answers, or once reconciliation adopts a post it
+    # finds. Empty means nobody has seen a card land.
+    external_post_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[str] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[str] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+
 # ── Feature flags ────────────────────────────────────────────────────────────
 
 
