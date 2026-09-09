@@ -1079,6 +1079,25 @@ export async function createRoomFromTemplate(
   };
 }
 
+/**
+ * Fetch the JSON Schema describing a valid room template. Returns null when
+ * the server does not support the endpoint (404) — older servers that lack
+ * `params:` support.
+ */
+export async function fetchTemplateSchema(
+  server: SwitchServer
+): Promise<Record<string, unknown> | null> {
+  try {
+    const res = await gatewayFetch(server, '/rooms/template-schema', {
+      authenticated: true,
+    });
+    return (await res.json()) as Record<string, unknown>;
+  } catch (e) {
+    if (e instanceof GatewayError && e.status === 404) return null;
+    throw e;
+  }
+}
+
 export async function fetchRoomRoles(
   server: SwitchServer,
   roomId: string

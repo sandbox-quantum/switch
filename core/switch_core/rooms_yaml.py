@@ -223,6 +223,13 @@ class RoomSpec(BaseModel):
     docs: list[DocSpec] = []
 
 
+class TemplateDocument(BaseModel):
+    """Top-level shape of a room template file (for JSON Schema generation)."""
+
+    room: RoomSpec
+    params: dict[str, ParamSpec] | None = None
+
+
 class ProvisionResult(BaseModel):
     room_id: str
     room_name: str

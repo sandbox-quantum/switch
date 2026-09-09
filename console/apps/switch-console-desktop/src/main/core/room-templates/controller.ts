@@ -1,3 +1,4 @@
+import Ajv from 'ajv';
 import { load } from 'js-yaml';
 import { createRPCController } from '@shared/lib/ipc/rpc';
 
@@ -54,18 +55,39 @@ function extractParams(raw: unknown): ParamSpec[] {
   });
 }
 
+function parseYaml(yamlText: string): Record<string, unknown> {
+  let doc: Record<string, unknown>;
+  try {
+    const parsed = load(yamlText);
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      throw new Error('Template must be a YAML mapping');
+    }
+    doc = parsed as Record<string, unknown>;
+  } catch (e) {
+    throw new Error(`Invalid YAML: ${e instanceof Error ? e.message : String(e)}`);
+  }
+  return doc;
+}
+
+const ajv = new Ajv({ allErrors: true, strict: false });
+
 export const roomTemplatesController = createRPCController({
-  parse: (params: { yamlText: string }): ParsedTemplate => {
+  parse: (params: { yamlText: string; schema?: Record<string, unknown> }): ParsedTemplate => {
     const warnings: string[] = [];
-    let doc: Record<string, unknown>;
-    try {
-      const parsed = load(params.yamlText);
-      if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
-        throw new Error('Template must be a YAML mapping');
+    const doc = parseYaml(params.yamlText);
+
+    // Validate against server schema if provided
+    if (params.schema) {
+      const validate = ajv.compile(params.schema);
+      if (!validate(doc)) {
+        const errors = (validate.errors ?? [])
+          .map((err) => {
+            const path = err.instancePath || '/';
+            return `${path}: ${err.message}`;
+          })
+          .slice(0, 5);
+        throw new Error(errors.join('\n'));
       }
-      doc = parsed as Record<string, unknown>;
-    } catch (e) {
-      throw new Error(`Invalid YAML: ${e instanceof Error ? e.message : String(e)}`);
     }
 
     const room = doc.room as Record<string, unknown> | undefined;

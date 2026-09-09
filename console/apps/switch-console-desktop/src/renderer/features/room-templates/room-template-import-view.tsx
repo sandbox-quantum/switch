@@ -1,6 +1,6 @@
 import { ArrowRight, Check, FileText, Loader2, Upload } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
-import { useCallback, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ParamSpec, ParsedTemplate } from '@main/core/room-templates/controller';
 import type { GuardResult, ViewDefinition } from '@renderer/app/view-registry';
 import { ServerPage } from '@renderer/features/switch-servers/server-page';
@@ -422,6 +422,14 @@ const TemplateImportPanel = observer(function TemplateImportPanel() {
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
   const [createError, setCreateError] = useState<string | null>(null);
   const [sourceName, setSourceName] = useState<string | null>(null);
+  const [templateSchema, setTemplateSchema] = useState<Record<string, unknown> | null>(null);
+
+  useEffect(() => {
+    rpc.switchServers
+      .fetchTemplateSchema(serverId)
+      .then(setTemplateSchema)
+      .catch(() => {});
+  }, [serverId]);
 
   const validateInputs = useCallback((): boolean => {
     if (!parsed) return false;
@@ -489,7 +497,10 @@ const TemplateImportPanel = observer(function TemplateImportPanel() {
   const handleParseAndAdvance = useCallback(async () => {
     setParseError(null);
     try {
-      const result = await rpc.roomTemplates.parse({ yamlText });
+      const result = await rpc.roomTemplates.parse({
+        yamlText,
+        schema: templateSchema ?? undefined,
+      });
       setParsed(result);
 
       const defaults: Record<string, string | number | boolean> = {};
@@ -514,7 +525,7 @@ const TemplateImportPanel = observer(function TemplateImportPanel() {
     } catch (e) {
       setParseError(failureText(e, 'Could not parse this template.'));
     }
-  }, [yamlText, handleCreate]);
+  }, [yamlText, handleCreate, templateSchema]);
 
   const stepNumber = step === 'source' ? 1 : 2;
   const totalSteps = 2;

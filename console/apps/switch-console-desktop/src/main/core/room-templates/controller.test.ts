@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { roomTemplatesController } from './controller';
 
-const parse = (yamlText: string) => roomTemplatesController.parse({ yamlText });
+const parse = (yamlText: string, schema?: Record<string, unknown>) =>
+  roomTemplatesController.parse({ yamlText, schema });
 
 describe('roomTemplatesController.parse', () => {
   it('extracts params with types and defaults', () => {
@@ -122,5 +123,34 @@ params:
       type: 'string',
       isAgentName: false,
     });
+  });
+
+  it('validates YAML against a JSON Schema when provided', () => {
+    const schema = {
+      type: 'object',
+      required: ['room'],
+      properties: {
+        room: {
+          type: 'object',
+          required: ['name', 'description'],
+          properties: {
+            name: { type: 'string' },
+            description: { type: 'string' },
+          },
+        },
+      },
+    };
+    // Valid template passes
+    const result = parse('room:\n  name: test\n  description: hello\n', schema);
+    expect(result.roomName).toBe('test');
+
+    // Missing required field fails
+    expect(() => parse('room:\n  name: test\n', schema)).toThrow(/description/);
+  });
+
+  it('skips schema validation when no schema is provided', () => {
+    // Should not throw even though room has no description
+    const result = parse('room:\n  name: test\n');
+    expect(result.roomName).toBe('test');
   });
 });
