@@ -6,7 +6,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 from sqlalchemy import text
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.db.models import (
@@ -413,6 +413,44 @@ class TestSessionLeaseStore:
         assert lease is not None
         assert lease.host_id == "host-b"
 
+    async def test_a_held_lease_blocks_a_takeover_until_the_reader_commits(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """`get_held` is a fence, so the test is that a writer waits behind it.
+
+        A reader that checks the epoch and then writes under it needs the
+        generation to still be the one it checked when it commits. An ordinary
+        `get` leaves a gap that a single-statement `take_over` lands in.
+        """
+        leases = SessionLeaseStore()
+        async with session_factory() as session:
+            agent_id = await _make_session(session)
+            await leases.acquire(session, "s-1", agent_id, "host-a", "epoch-1")
+            await session.commit()
+
+        async with session_factory() as holding:
+            assert await leases.get_held(holding, "s-1") is not None
+
+            async with session_factory() as displacing:
+                await displacing.execute(text("SET LOCAL lock_timeout = '250ms'"))
+                with pytest.raises(DBAPIError):
+                    await leases.take_over(
+                        displacing, "s-1", "epoch-1", agent_id, "host-b", "epoch-2"
+                    )
+
+            await holding.commit()
+
+        async with session_factory() as displacing:
+            await leases.take_over(
+                displacing, "s-1", "epoch-1", agent_id, "host-b", "epoch-2"
+            )
+            await displacing.commit()
+
+        async with session_factory() as session:
+            lease = await leases.get(session, "s-1")
+            assert lease is not None
+            assert lease.host_id == "host-b"
+
 
 class TestSessionEventStore:
     async def test_appends_are_numbered_from_one_without_gaps(
@@ -629,10 +667,14 @@ class TestSessionEventStore:
             assert await store.head_host_sequence(session, "s-1", "epoch-1") == 2
             assert await store.head_host_sequence(session, "s-1", "epoch-2") == 1
 
-    async def test_a_host_range_reads_back_only_what_is_in_it(
+    async def test_host_positions_read_back_only_the_ones_asked_for(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
-        """Inclusive at both ends, keyed by position, and scoped to one epoch."""
+        """Named positions, not a span between them, and scoped to one epoch.
+
+        A host resending from a cursor far behind asks about two positions with
+        thousands between; a span would read all of them, bodies and all.
+        """
         store = SessionEventStore()
         async with session_factory() as session:
             await _make_session(session)
@@ -647,10 +689,10 @@ class TestSessionEventStore:
             )
             await session.commit()
 
-            found = await store.read_host_range(session, "s-1", "epoch-1", 2, 3)
+            found = await store.read_host_positions(session, "s-1", "epoch-1", {1, 3})
 
-        assert sorted(found) == [2, 3]
-        assert found[2].event_id == "ev-2"
+        assert sorted(found) == [1, 3]
+        assert found[3].event_id == "ev-3"
 
     async def test_a_server_event_needs_no_epoch(
         self, session_factory: async_sessionmaker[AsyncSession]

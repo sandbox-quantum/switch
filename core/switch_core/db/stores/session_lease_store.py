@@ -77,6 +77,28 @@ class SessionLeaseStore:
         )
         return result.scalar_one_or_none()
 
+    async def get_held(
+        self, session: AsyncSession, session_id: str
+    ) -> SessionLease | None:
+        """The lease, held against change until this transaction ends.
+
+        A caller that reads the lease and then acts on what it found needs the
+        generation to still be the one it read when it commits. An ordinary
+        `get` cannot promise that: `take_over` and `renew` are single UPDATEs
+        that will happily land in the gap, and the reader would commit work
+        under an epoch the row no longer carries.
+
+        This is a fence rather than an optimisation, so it belongs in the
+        reader that depends on it rather than in `get`. Nothing that only wants
+        to look at the lease should be made to queue behind a writer.
+        """
+        result = await session.execute(
+            select(SessionLease)
+            .where(SessionLease.session_id == session_id)
+            .with_for_update()
+        )
+        return result.scalar_one_or_none()
+
     def is_live(self, lease: SessionLease) -> bool:
         """Whether this lease's holder has heartbeated recently enough to count.
 

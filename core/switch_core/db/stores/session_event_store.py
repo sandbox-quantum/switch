@@ -11,6 +11,8 @@ from switch_core.db.models import SessionEvent
 from switch_core.db.stores.constraint_violations import violated_constraint
 
 if TYPE_CHECKING:
+    from collections.abc import Collection
+
     from sqlalchemy.ext.asyncio import AsyncSession
 
 
@@ -73,27 +75,28 @@ class SessionEventStore:
         )
         return list(result.scalars())
 
-    async def read_host_range(
+    async def read_host_positions(
         self,
         session: AsyncSession,
         session_id: str,
         epoch: str,
-        first: int,
-        last: int,
+        positions: Collection[int],
     ) -> dict[int, SessionEvent]:
         """What is already logged at these positions of one host generation.
 
-        Keyed by `host_sequence`, because the caller is comparing a batch it was
-        just sent against what it already holds and only cares about the
-        positions that overlap. A position with nothing at it is absent rather
+        Named positions rather than a span, because the caller is comparing a
+        batch it was just sent against what it already holds and the batch can
+        be sparse: a host that has lost its place resends from a cursor far
+        behind, and a span between its ends would be most of the log.
+
+        Keyed by `host_sequence`. A position with nothing at it is absent rather
         than `None`.
         """
         result = await session.execute(
             select(SessionEvent).where(
                 SessionEvent.session_id == session_id,
                 SessionEvent.epoch == epoch,
-                SessionEvent.host_sequence >= first,
-                SessionEvent.host_sequence <= last,
+                SessionEvent.host_sequence.in_(positions),
             )
         )
         return {

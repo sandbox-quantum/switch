@@ -20,9 +20,14 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import select
+import pytest
+from sqlalchemy import select, text
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from switch_core.bridges.agent.sessions.errors import SessionApiError
+from switch_core.bridges.agent.sessions.ingest_service import SessionIngestService
+from switch_core.bridges.agent.sessions.schemas import EventsRequest
 from switch_core.bridges.collaboration.session.contract import (
     ServerEvent,
     parse_snapshot,
@@ -34,6 +39,8 @@ from switch_core.bridges.collaboration.session.transport import (
 )
 from switch_core.db.models import HostSession, SessionEvent, SessionLease
 from switch_core.db.stores.session_event_store import SessionEventStore
+from switch_core.db.stores.session_lease_store import SessionLeaseStore
+from switch_core.db.stores.session_store import SessionStore
 
 from .conftest import Caller
 
@@ -124,6 +131,24 @@ class TestTheDoor:
         """The only party who knows who authenticated is the server."""
         epoch = await _leased(caller)
         body = _session_upsert("s1", caller.other.id, epoch)
+
+        resp = await caller.send("s1", [_event(epoch, 1, body=body)])
+
+        assert resp.status_code == 422
+        assert resp.json()["code"] == "INVALID_REQUEST"
+        assert await _logged(session_factory) == []
+
+    async def test_a_session_upsert_may_not_name_another_host(
+        self, caller: Caller, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """The lease says which machine is running this session.
+
+        Nothing downstream re-derives it, so a body naming a host that does not
+        hold the lease would be read as fact by the snapshot fold and the
+        console while the lease and the session row both said otherwise.
+        """
+        epoch = await _leased(caller)
+        body = _session_upsert("s1", caller.agent.id, epoch, host_id="host-b")
 
         resp = await caller.send("s1", [_event(epoch, 1, body=body)])
 
@@ -358,6 +383,37 @@ class TestRepeats:
         assert resp.status_code == 409
         assert resp.json()["code"] == "IDEMPOTENCY_CONFLICT"
 
+    async def test_one_batch_repeating_a_position_is_compared_against_itself(
+        self, caller: Caller, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """A repeat inside a batch is a repeat of what the batch just wrote.
+
+        The overlap is read once, before anything is appended, so a position
+        that only becomes taken part way through the loop is not in it. Left
+        alone, the second copy would be refused as conflicting with an event
+        the server would report as missing.
+        """
+        epoch = await _leased(caller)
+        twice = _event(epoch, 1)
+
+        resp = await caller.send("s1", [twice, twice])
+
+        assert resp.status_code == 200
+        assert resp.json()["acceptedThrough"] == 1
+        assert len(await _logged(session_factory)) == 1
+
+    async def test_one_batch_contradicting_itself_says_what_is_wrong(
+        self, caller: Caller
+    ) -> None:
+        epoch = await _leased(caller)
+
+        resp = await caller.send(
+            "s1", [_event(epoch, 1), _event(epoch, 1, event_id="event-other")]
+        )
+
+        assert resp.status_code == 409
+        assert resp.json()["code"] == "IDEMPOTENCY_CONFLICT"
+
     async def test_the_same_id_at_a_new_position_is_a_conflict(
         self, caller: Caller
     ) -> None:
@@ -373,6 +429,62 @@ class TestRepeats:
 
         assert resp.status_code == 409
         assert resp.json()["code"] == "IDEMPOTENCY_CONFLICT"
+
+
+class TestTheFenceHoldsUntilTheBatchLands:
+    """The epoch is checked against a lease held for the rest of the batch.
+
+    Otherwise the check is a read of a row anyone may change a moment later,
+    and events emitted under a generation that has already been taken away
+    commit anyway. That the following `renew` would then fail is not a fence:
+    it is a side effect of the heartbeat, and a later slice that moves the
+    renew or makes it tolerant would open the gap with nothing to notice.
+    """
+
+    async def test_the_generation_is_held_from_the_moment_it_is_checked(
+        self, caller: Caller, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """Not from the moment the batch happens to renew the lease.
+
+        The renew at the end of an accepted batch locks the same row, so a
+        fence that only began there would look identical from outside — right
+        up until a batch that never reaches it. This one is refused for a gap,
+        after the epoch has been checked and before anything is written, and
+        the generation still may not move underneath it.
+        """
+        epoch = await _leased(caller)
+        ingest = SessionIngestService(
+            SessionStore(), SessionLeaseStore(), SessionEventStore()
+        )
+
+        async with session_factory() as sending:
+            with pytest.raises(SessionApiError):
+                await ingest.ingest(
+                    sending,
+                    "s1",
+                    caller.agent.id,
+                    EventsRequest(events=[_event(epoch, 7)]),
+                )
+
+            async with session_factory() as displacing:
+                await displacing.execute(text("SET LOCAL lock_timeout = '250ms'"))
+                with pytest.raises(DBAPIError):
+                    await SessionLeaseStore().take_over(
+                        displacing, "s1", epoch, caller.agent.id, "host-b", "epoch-b"
+                    )
+
+    async def test_a_takeover_that_lands_first_refuses_the_batch(
+        self, caller: Caller, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """The other side of the same fence, and the answer the host needs."""
+        epoch = await _leased(caller)
+        await caller.lease("s1", hostId="host-b", takeover=True)
+
+        resp = await caller.send("s1", [_event(epoch, 1)])
+
+        assert resp.status_code == 409
+        assert resp.json()["code"] == "STALE_EPOCH"
+        assert await _logged(session_factory) == []
 
 
 class TestWhatTheServerAddsOfItsOwn:
@@ -571,14 +683,16 @@ def _as_server_event(row: SessionEvent) -> ServerEvent:
     )
 
 
-def _session_upsert(session_id: str, agent_id: str, epoch: str) -> dict[str, Any]:
+def _session_upsert(
+    session_id: str, agent_id: str, epoch: str, host_id: str = "host-a"
+) -> dict[str, Any]:
     return {
         "type": "session.upsert",
         "session": {
             "sessionId": session_id,
             "agentId": agent_id,
             "provider": "claude",
-            "hostId": "host-a",
+            "hostId": host_id,
             "epoch": epoch,
             "status": "running",
             "connectivity": "online",

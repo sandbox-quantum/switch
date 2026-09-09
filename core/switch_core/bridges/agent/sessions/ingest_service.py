@@ -25,7 +25,6 @@ Four rules, in the order they are checked:
 
 from __future__ import annotations
 
-import logging
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
@@ -33,6 +32,7 @@ from switch_core.bridges.agent.sessions.errors import SessionApiError
 from switch_core.bridges.agent.sessions.ownership import require_session
 from switch_core.bridges.agent.sessions.schemas import EventsRequest, EventsResponse
 from switch_core.bridges.collaboration.session.contract import (
+    MAX_EVENT_BYTES,
     HostEvent,
     SessionUpsert,
     event_bytes,
@@ -51,8 +51,6 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
     from switch_core.db.models import SessionLease
-
-logger = logging.getLogger(__name__)
 
 # The contract's batch cap. It is not in `contract.py` with the 64 KiB event cap
 # because only a server receives a batch: the host's own parser has no batch to
@@ -86,16 +84,22 @@ class SessionIngestService:
         """
         await require_session(self.sessions, db, session_id, agent_id)
         self._check_batch_size(request.events)
-        parsed = [self._parse(raw, session_id, agent_id) for raw in request.events]
+        parsed = [self._parse(raw, session_id) for raw in request.events]
 
-        lease = await self._require_lease(db, session_id, parsed)
-
-        # Read the log's head inside the lock that `append` will take, so
-        # deciding "already have it" or "next one" cannot race a second batch
-        # reading the same position as free.
+        # Everything from here happens under two locks held to commit: the
+        # log's, so deciding "already have it" or "next one" cannot race a
+        # second batch reading the same position as free, and the lease row's,
+        # so the generation this batch is checked against is still the current
+        # one when it lands. Taken in that order because a lease claim takes
+        # only the second, so the two can never wait on each other.
         await self.events.lock(db, session_id)
+        lease = await self._require_lease(db, session_id)
+        self._check_identity(parsed, lease, agent_id)
+
         accepted = await self._store(db, session_id, lease.epoch, parsed)
 
+        # Cannot fail: the row is held, and the host and epoch come from the
+        # read that holds it.
         await self.leases.renew(db, session_id, lease.host_id, lease.epoch)
         return EventsResponse(
             session_id=session_id,
@@ -114,27 +118,30 @@ class SessionIngestService:
                 retryable=False,
             )
 
-    def _parse(self, raw: dict[str, Any], session_id: str, agent_id: str) -> HostEvent:
+    def _parse(self, raw: dict[str, Any], session_id: str) -> HostEvent:
         """One event, validated by the host's own rules.
 
-        `parse_host_event` signals the oversized case through the message it
-        raises, because it is shared with a caller that has no HTTP status to
-        return. Reading the code back out of the text is ugly; declaring a
-        second exception type on the contract mirror to carry it would be worse,
-        since the mirror exists to match the host's parser and the host's
-        parser throws a plain error too.
+        The size is measured here as well as inside `parse_host_event`, from the
+        same function and the same constant. Not a second answer to "is this
+        event too big" — the same answer, one frame earlier, where the caller
+        has a status code to attach to it. `parse_host_event` is shared with
+        readers that have no status to return, so it can only raise a plain
+        error, and reading its code back out of the message text would make an
+        HTTP response depend on a string.
         """
+        if event_bytes(raw) > MAX_EVENT_BYTES:
+            raise SessionApiError(
+                "PAYLOAD_TOO_LARGE",
+                f"This event is {event_bytes(raw)} bytes and the limit is "
+                f"{MAX_EVENT_BYTES}. Split it before sending.",
+                retryable=False,
+            )
         try:
             event = parse_host_event(raw)
         except ValueError as error:
-            message = str(error)
-            if message.startswith("PAYLOAD_TOO_LARGE"):
-                raise SessionApiError(
-                    "PAYLOAD_TOO_LARGE", message, retryable=False
-                ) from error
             raise SessionApiError(
                 "INVALID_REQUEST",
-                f"This is not a valid host event: {message}",
+                f"This is not a valid host event: {error}",
                 retryable=False,
             ) from error
         if event.session_id != session_id:
@@ -144,25 +151,10 @@ class SessionIngestService:
                 f"but was sent to {session_id!r}.",
                 retryable=False,
             )
-        # `parse_host_event` checks the session id and epoch a `session.upsert`
-        # restates, because those are in the envelope beside it. The agent id is
-        # not: only the server knows who authenticated. A body naming someone
-        # else would be published as fact by every reader of the log.
-        if isinstance(event.body, SessionUpsert) and (
-            event.body.session.agent_id != agent_id
-        ):
-            raise SessionApiError(
-                "INVALID_REQUEST",
-                f"Event {event.event_id!r} reports session state for agent "
-                f"{event.body.session.agent_id!r} and was sent by {agent_id!r}.",
-                retryable=False,
-            )
         return event
 
-    async def _require_lease(
-        self, db: AsyncSession, session_id: str, parsed: list[HostEvent]
-    ) -> SessionLease:
-        """The lease every event in the batch must be emitting under.
+    async def _require_lease(self, db: AsyncSession, session_id: str) -> SessionLease:
+        """The generation this batch has to be emitting under, held to commit.
 
         Liveness is not consulted. A host whose lease has aged out still holds
         it until someone else takes it, and refusing its events would throw away
@@ -170,28 +162,64 @@ class SessionIngestService:
         generation is current, and a lease that is still there is still the
         current generation.
         """
-        lease = await self.leases.get(db, session_id)
+        lease = await self.leases.get_held(db, session_id)
         if lease is None:
             raise SessionApiError(
                 "STALE_EPOCH",
                 f"Session {session_id!r} has no lease. Acquire one before emitting.",
                 retryable=False,
             )
+        return lease
+
+    def _check_identity(
+        self, parsed: list[HostEvent], lease: SessionLease, agent_id: str
+    ) -> None:
+        """Every event agrees with the lease about who is running this session.
+
+        The epoch is the fence and is refused as a stale generation. The agent
+        and host a `session.upsert` restates are a different failure: the host
+        is emitting under the right generation and describing itself wrongly.
+        `parse_host_event` already checks the session id and epoch the body
+        repeats, because those sit in the envelope beside it — these two do not,
+        and nothing downstream re-derives them. A body naming another host would
+        be read as fact by every later reader of the log while the lease and the
+        session row both said otherwise.
+        """
         for event in parsed:
             if event.epoch != lease.epoch:
                 raise SessionApiError(
                     "STALE_EPOCH",
                     f"Event {event.event_id!r} was emitted under epoch "
-                    f"{event.epoch!r} and session {session_id!r} is now on "
+                    f"{event.epoch!r} and session {lease.session_id!r} is now on "
                     f"{lease.epoch!r}. Acquire a lease before emitting.",
                     retryable=False,
                 )
-        return lease
+            if not isinstance(event.body, SessionUpsert):
+                continue
+            reported = event.body.session
+            if reported.agent_id != agent_id:
+                raise SessionApiError(
+                    "INVALID_REQUEST",
+                    f"Event {event.event_id!r} reports session state for agent "
+                    f"{reported.agent_id!r} and was sent by {agent_id!r}.",
+                    retryable=False,
+                )
+            if reported.host_id != lease.host_id:
+                raise SessionApiError(
+                    "INVALID_REQUEST",
+                    f"Event {event.event_id!r} reports session state for host "
+                    f"{reported.host_id!r} and the lease is held by "
+                    f"{lease.host_id!r}.",
+                    retryable=False,
+                )
 
     async def _store(
         self, db: AsyncSession, session_id: str, epoch: str, parsed: list[HostEvent]
     ) -> int:
         accepted = await self.events.head_host_sequence(db, session_id, epoch)
+        # Rows this batch appends are added as they go, so a position repeated
+        # inside one batch is compared against what this batch just wrote rather
+        # than reported as a conflict with something that is not there.
         already = await self._overlap(db, session_id, epoch, accepted, parsed)
         for event in parsed:
             if event.host_sequence <= accepted:
@@ -205,7 +233,7 @@ class SessionIngestService:
                     f"{event.host_sequence}. Resend from {accepted + 1}.",
                     retryable=True,
                 )
-            await self._append(db, event)
+            already[event.host_sequence] = await self._append(db, event)
             accepted = event.host_sequence
         return accepted
 
@@ -217,13 +245,17 @@ class SessionIngestService:
         accepted: int,
         parsed: list[HostEvent],
     ) -> dict[int, SessionEvent]:
-        """What is already logged at the positions this batch repeats."""
-        repeats = [e.host_sequence for e in parsed if e.host_sequence <= accepted]
+        """What is already logged at the positions this batch repeats.
+
+        Only those positions. A host that has lost its place resends from a
+        cursor that can be a long way behind, and reading everything between
+        the ends of that span would pull the whole intervening log, bodies and
+        all, to compare two events.
+        """
+        repeats = {e.host_sequence for e in parsed if e.host_sequence <= accepted}
         if not repeats:
             return {}
-        return await self.events.read_host_range(
-            db, session_id, epoch, min(repeats), max(repeats)
-        )
+        return await self.events.read_host_positions(db, session_id, epoch, repeats)
 
     def _confirm_repeat(self, event: HostEvent, stored: SessionEvent | None) -> None:
         """Accept a position the host is sending again, if it is the same event.
@@ -251,9 +283,10 @@ class SessionIngestService:
             retryable=False,
         )
 
-    async def _append(self, db: AsyncSession, event: HostEvent) -> None:
+    async def _append(self, db: AsyncSession, event: HostEvent) -> SessionEvent:
+        row = _row(event)
         try:
-            await self.events.append(db, _row(event))
+            await self.events.append(db, row)
         except DuplicateEventId as error:
             # Not the position check failing: this is the same event id arriving
             # at a *different* position, which the position check cannot see.
@@ -271,6 +304,7 @@ class SessionIngestService:
             ) from error
         if isinstance(event.body, SessionUpsert):
             await self._record_reported_state(db, event.body)
+        return row
 
     async def _record_reported_state(
         self, db: AsyncSession, body: SessionUpsert
