@@ -237,43 +237,47 @@ create policy tenant_isolation on <t>
 - `tenants` uses `id = (select require_tenant_id())`; every other table uses
   `tenant_id`.
 
-## One new database role
+## The runtime role, and why it is not in this phase
 
 Today the application connects to Postgres as the superuser in local Compose,
 in the chart and in the test containers. **A superuser ignores row-level
-security unconditionally** — not "unless forced", unconditionally. Shipping
-policies without changing this produces a schema full of decoration and an
-isolation test that passes for the wrong reason. This is the largest piece of
-work in Phase 1 and the only part that touches deployment.
+security unconditionally** — not "unless forced", unconditionally. Until the
+runtime connects as a role that policies apply to, everything in the section
+above is inert in a deployed environment.
 
-The change is deliberately small: **add one role, transfer nothing.**
+That work — creating a `switch_app` role in Compose, the chart and the RDS
+runbook, granting it, pointing the service at it, and a startup self-check that
+refuses to boot if the connection is a superuser or the table owner — **is
+tracked separately and is not part of Phase 1.** The shape it should take, so
+that whoever picks it up does not have to rediscover it:
 
-- **The existing role keeps owning the schema** and keeps running Alembic.
-  Because it owns the tables it bypasses their policies, and we deliberately do
-  **not** set `force row level security`, so that stays true. No `ALTER TABLE
-  … OWNER TO`, no `REASSIGN OWNED`, nothing to go wrong during a cutover.
-- **`switch_app` is new**: the runtime role, not the owner, not a superuser, no
-  `BYPASSRLS`. Policies apply to it and it is the only role the request path
-  ever uses.
+- **Add one role, transfer nothing.** The existing role keeps owning the schema
+  and keeps running Alembic. Because it owns the tables it bypasses their
+  policies, and we deliberately do **not** set `force row level security`, so
+  that stays true. No `ALTER TABLE … OWNER TO`, no `REASSIGN OWNED`, nothing to
+  go wrong during a cutover.
+- **`switch_app` is the runtime role**: not the owner, not a superuser, no
+  `BYPASSRLS`, with `alter default privileges` so a later migration cannot ship
+  a table it cannot read.
+- **The check that matters runs at startup, not in CI.** CI asserts nothing
+  about production and this failure mode is silent. A Switch that believes it
+  is isolating tenants and is not is worse than one that is down.
+- **Cheapest during the RDS cutover** (CHOO-2622), which already creates an
+  application role by hand and restores with `--no-owner --no-privileges` — so
+  who owns the restored tables is a decision made there either way.
 
-Roles are cluster-level, so the migration does not create them — it grants to a
-role that must already exist and fails loudly if it does not. Creating the role
-belongs to Compose, to the chart, and to the RDS runbook, which already
-recreates roles by hand. `alter default privileges` covers tables added later,
-so a future migration cannot ship a table the runtime cannot read.
+Splitting it is a reasonable call while the deployment has one tenant, because
+there is nothing to leak. It is not a follow-up nicety: **it is a prerequisite
+for onboarding a second tenant**, and Phase 1 shipping without it means the
+policies exist and do not yet bite.
 
-**The check that matters runs at startup, not in CI.** CI asserts nothing about
-production, and the failure mode here is silent. On boot the service verifies
-its own connection: not a superuser, no `BYPASSRLS`, not the owner of
-`messages`, and a probe query against a scoped table with no tenant set must
-raise. If any of those is wrong the service refuses to start, because a Switch
-that thinks it is isolating tenants and is not is worse than one that is down.
+Phase 1 does keep a restricted role **inside the test fixtures**, which is
+contained to the test harness and touches no environment. Without it nothing
+verifies a single policy, and 38 of them would ship unexercised.
 
-**Sequencing.** The role is cheapest to add during the RDS cutover
-(CHOO-2622), which already creates an application role by hand, and that
-restore uses `--no-owner --no-privileges` — so who ends up owning the restored
-tables is a decision that has to be made deliberately there, not discovered
-afterwards. Coordinate, do not race.
+Consequently this design's migration creates no roles and issues no grants.
+Both belong to the role work, in one place, rather than half here behind a
+conditional that silently does nothing.
 
 ## Setting the tenant
 
@@ -334,7 +338,7 @@ Authentication happens before a tenant is known — resolving an API key by hash
 or a JWT subject to its memberships, is unscoped by definition. So:
 
 > **Authentication and tenant resolution run in a system session. Everything
-> downstream runs in a tenant session as `switch_app`.**
+> downstream runs in a tenant session, as the restricted runtime role.**
 
 The same escape hatch covers work that is legitimately cross-tenant: Alembic,
 admin and bootstrap seeding at startup, the bridge and connector lifecycle
@@ -405,7 +409,8 @@ One revision:
    and `validate constraint` after, so the validation scan does not hold an
    exclusive lock.
 8. Enable row-level security and create the policy on each table.
-9. Grant to `switch_app` and set default privileges.
+
+No roles are created and no grants issued — see the role section above.
 
 Only tenant zero exists when this runs, so the usual expand-then-contract
 caution does not apply yet. From the next customer onward it does, and that
@@ -414,11 +419,15 @@ note belongs in the migration's docstring.
 ## Done when
 
 An integration test proves tenant A cannot read tenant B's rows through the
-ordinary application paths — connected as the runtime role, through the store
+ordinary application paths — connected as a restricted role, through the store
 layer, not by hand-written SQL. That needs test infrastructure that does not
-exist yet: the fixtures create `switch_app`, grant to it, connect as it, and
-seed tenant zero, because the truncation between tests now empties `tenants`
-too.
+exist yet: the fixtures create the role, grant to it, connect as it, and seed
+tenant zero, because the truncation between tests now empties `tenants` too.
+
+Note what this does and does not prove. It proves the **policies** are correct,
+which is the part Phase 1 owns. It does not prove the **deployment** is subject
+to them — that is the role work, and until it lands the same test against a
+real environment would pass for the wrong reason.
 
 Alongside it, three cheap tests that catch the regressions this design exists
 to prevent:
@@ -434,6 +443,10 @@ to prevent:
 
 Named so they are decisions rather than omissions.
 
+- **The policies do not bite in a deployed environment.** The runtime still
+  connects as a superuser, so every policy here is inert outside the test
+  suite until the runtime-role work lands. Deliberate, and safe while one
+  tenant exists — and the hard prerequisite for the second.
 - **Cross-tenant user enumeration.** `users` and `oidc_identities` have no
   policy, so any tenant session can read every account. There is no exposure
   while one tenant exists, and the correct fix needs invitations and a
