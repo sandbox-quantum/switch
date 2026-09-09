@@ -86,7 +86,6 @@ it
           text: 'Remember the word pelican. Use a tool to write the text pelican into marker.txt in the current directory. Then reply with pelican.',
           delivery: 'queue' as const,
           attachments: [],
-          audience: { kind: 'session-members' as const },
         },
       };
       expect((await client.submit(command)).status).toBe('applied');

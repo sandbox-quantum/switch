@@ -36,7 +36,6 @@ const context = {
     threadId: 'thread',
     messageId: 'message',
   },
-  audience: { kind: 'room' as const, roomId: 'room', threadId: 'thread' },
 };
 
 describe('chat projection', () => {
@@ -79,7 +78,6 @@ describe('chat projection', () => {
         item: {
           text: 'Hello world',
           revision: 2,
-          audience: { kind: 'session-members' },
           origin: null,
         },
       });
@@ -153,7 +151,7 @@ describe('chat projection', () => {
         },
         0
       )[0]
-    ).toMatchObject({ item: { origin: context.origin, audience: context.audience } });
+    ).toMatchObject({ item: { origin: context.origin } });
     expect(() =>
       projector.ingest(
         { ...base, sessionId: 'wrong', type: 'turn.started' } as ProviderRuntimeEvent,

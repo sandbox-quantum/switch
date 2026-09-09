@@ -188,11 +188,6 @@ export async function startHostServer(
           });
           if (command.sessionId !== session.config.session.sessionId)
             throw new Error('Session identity mismatch.');
-          if (
-            command.body.type === 'message.send' &&
-            command.body.audience.kind !== 'session-members'
-          )
-            throw new Error('Local-only session cannot publish to rooms.');
           result = await session.command(command as Command);
         } else {
           response.writeHead(404).end();

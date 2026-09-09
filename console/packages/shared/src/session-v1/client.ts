@@ -129,7 +129,6 @@ export class SessionChatClient {
         text,
         attachments: [],
         delivery: 'queue',
-        audience: { kind: 'session-members' },
       },
     };
     if (command.epoch !== snapshot.session.epoch)

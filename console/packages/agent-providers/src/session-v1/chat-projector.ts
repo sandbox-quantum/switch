@@ -1,7 +1,7 @@
-import type { Audience, HostBody, Item, Origin, Session } from '@switch-console/shared/session-v1';
+import type { HostBody, Item, Origin, Session } from '@switch-console/shared/session-v1';
 import type { ProviderRuntimeEvent } from '../events';
 
-type TurnContext = { commandId: string | null; origin: Origin | null; audience: Audience };
+type TurnContext = { commandId: string | null; origin: Origin | null };
 type BufferedItem = { item: Item; emittedAt: number; dirty: boolean };
 
 /** Projects chat and tool summaries only. The host owns sequencing and durable publication. */
@@ -76,7 +76,6 @@ export class ChatProjector {
           text: kind === 'tool-activity' ? '' : (event.item.text ?? previous?.item.text ?? ''),
           attachments: [],
           origin: kind === 'user-message' ? context.origin : null,
-          audience: kind === 'user-message' ? context.audience : { kind: 'session-members' },
         };
         const buffered = { item, emittedAt: previous?.emittedAt ?? -Infinity, dirty: true };
         this.items.set(key, buffered);

@@ -102,7 +102,6 @@ function message(commandId: string): Command {
       delivery: 'queue',
       text: 'Hello',
       attachments: [],
-      audience: { kind: 'session-members' },
     },
   };
 }
@@ -216,4 +215,64 @@ it('rejects oversized input before persisting or dispatching a turn', async () =
   expect(host.snapshot().turns).toEqual([]);
   expect(host.snapshot().commandStatuses).toEqual([]);
   expect(adapter.sendTurn).not.toHaveBeenCalled();
+});
+
+it.each(['accept', 'decline', 'cancel'] as const)(
+  'settles %s once and retains the deciding actor',
+  async (decision) => {
+    const { host, adapter, emit } = await start('claude');
+    await host.command(message('turn'));
+    emit({
+      type: 'request.opened',
+      turnId: 'turn',
+      requestId: 'permission',
+      requestType: 'tool_approval',
+      title: 'Write file',
+      options: [{ decision, label: decision }],
+    });
+    await vi.waitFor(() => expect(host.snapshot().requests[0]?.state).toBe('open'));
+    const answer: Command = {
+      ...message('answer'),
+      body: {
+        type: 'request.answer',
+        requestId: 'permission',
+        expectedRevision: 1,
+        answer: { kind: 'approval', optionId: '0' },
+      },
+    };
+    const results = await Promise.allSettled([
+      host.command(answer),
+      host.command(structuredClone(answer)),
+      host.command({ ...answer, commandId: 'competing-answer' }),
+    ]);
+    expect(results.map((r) => r.status)).toEqual(['fulfilled', 'fulfilled', 'rejected']);
+    expect(adapter.respondToRequest).toHaveBeenCalledExactlyOnceWith(
+      'session',
+      'permission',
+      decision
+    );
+    expect(host.snapshot().requests[0]).toMatchObject({
+      state: decision === 'cancel' ? 'closed' : 'resolved',
+      result: {
+        outcome: decision === 'cancel' ? 'cancelled' : 'answered',
+        result: decision === 'cancel' ? null : { kind: 'approval', optionId: '0' },
+      },
+      decidedBy: { actorId: 'user', surface: 'console', commandId: 'answer' },
+    });
+    expect(host.snapshot().requests[0]).not.toHaveProperty('audience');
+    expect(host.snapshot().items[0]).not.toHaveProperty('audience');
+  }
+);
+
+it('rejects host publication claims before dispatching a command', async () => {
+  const { host, adapter } = await start('claude');
+  const command = message('turn');
+  expect(() =>
+    host.command({
+      ...command,
+      body: { ...command.body, audience: { kind: 'room', roomId: 'room', threadId: null } },
+    } as unknown as Command)
+  ).toThrow();
+  expect(adapter.sendTurn).not.toHaveBeenCalled();
+  expect(host.snapshot().commandStatuses).toEqual([]);
 });

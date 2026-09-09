@@ -34,6 +34,14 @@ shared commands require the Switch server's lease, authorization and reservation
 path. SSH deployment, the shared server transport and production session routing
 are not implemented here yet. No tmux fallback is used by this host.
 
+Host events and client commands contain no publication authority. Verified command
+origin is context only. The shared server must select any request card destination
+and permitted content. Ordinary assistant output stays in session details; explicit
+MCP room replies use their existing path. The local host publishes nothing to rooms.
+
+The wire validators reject the former audience field. Journals written with that
+field require explicit conversion before this development host can reopen them.
+
 Attachments, steering, reset, compact and model changes are unavailable. A partial
 journal write fails visibly and requires explicit repair. Journals currently have
 no retention or compaction policy. This is not a release-ready tmux replacement.

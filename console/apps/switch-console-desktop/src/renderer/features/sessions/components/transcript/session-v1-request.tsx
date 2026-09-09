@@ -84,6 +84,11 @@ export function SessionV1Request({
               : 'Request closed'}
         </p>
       )}
+      {request.result && request.decidedBy && (
+        <p className="mt-1 text-sm text-foreground-muted">
+          By {request.decidedBy.actorId} via {request.decidedBy.surface}
+        </p>
+      )}
       {request.content.kind === 'approval' ? (
         <>
           {request.content.detail && (

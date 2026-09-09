@@ -243,7 +243,6 @@ export class HostedSession {
         this.projector.bindTurn(turnId, {
           commandId: command.commandId,
           origin: command.origin,
-          audience: body.audience,
         });
         await this.publish({
           type: 'turn.upsert',
@@ -263,7 +262,6 @@ export class HostedSession {
             text: body.text,
             attachments: [],
             origin: command.origin,
-            audience: body.audience,
           },
         });
         this.queue.push(command);
@@ -392,7 +390,6 @@ export class HostedSession {
         turnId: event.turnId,
         revision: 1,
         state: 'open',
-        audience: { kind: 'session-members' },
         expiresAt: null,
         content:
           event.type === 'request.opened'
@@ -513,10 +510,12 @@ export class HostedSession {
       actorId: command.origin.actorId,
       surface: command.origin.surface,
     });
+    let cancelled = false;
     if (body.answer.kind === 'approval' && pending.request.content.kind === 'approval') {
       const option = pending.request.content.options.find(
         (x) => x.optionId === (body.answer as { optionId: string }).optionId
       )!;
+      cancelled = option.decision === 'cancel';
       await this.adapter.respondToRequest(command.sessionId, body.requestId, option.decision);
     } else if (body.answer.kind === 'questions') {
       const answers: UserInputAnswers = {};
@@ -535,9 +534,9 @@ export class HostedSession {
       type: 'request.settled',
       requestId: body.requestId,
       revision: body.expectedRevision + 1,
-      outcome: 'answered',
+      outcome: cancelled ? 'cancelled' : 'answered',
       commandId: command.commandId,
-      result: body.answer,
+      result: cancelled ? null : body.answer,
     });
     this.questions.delete(body.requestId);
   }

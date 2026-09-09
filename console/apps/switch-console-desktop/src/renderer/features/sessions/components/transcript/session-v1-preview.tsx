@@ -95,7 +95,6 @@ class PreviewTransport implements SessionTransport {
       revision: 1,
       attachments: [],
       origin: null,
-      audience: { kind: 'session-members' as const },
     };
     this.emit({
       type: 'item.upsert',

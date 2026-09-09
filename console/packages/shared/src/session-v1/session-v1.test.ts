@@ -17,7 +17,6 @@ const item = (revision: number, text: string): Item => ({
   text,
   attachments: [],
   origin: null,
-  audience: { kind: 'session-members' },
 });
 const event = (sequence: number, body: ServerEvent['body']): ServerEvent => ({
   contractVersion: 1,
@@ -230,4 +229,56 @@ describe('session-v1 client transport', () => {
     await connecting;
     expect(wire.api.subscribe).not.toHaveBeenCalled();
   });
+});
+
+it('rejects publication authority on host items and requests', () => {
+  const audience = { kind: 'room', roomId: 'room', threadId: null };
+  expect(() =>
+    parseHostEvent({
+      ...examples.hostRequest,
+      body: {
+        type: 'request.opened',
+        request: { ...examples.hostRequest.body.request, audience },
+      },
+    })
+  ).toThrow();
+  expect(() =>
+    parseHostEvent({
+      ...examples.hostRequest,
+      body: {
+        type: 'item.upsert',
+        item: { ...item(1, 'Hello'), audience },
+      },
+    })
+  ).toThrow();
+});
+
+it('retains the verified actor for cancellation and clears an unrelated reservation', () => {
+  for (const commandId of ['answer-demo', null]) {
+    const replica = new SessionReplica(initial());
+    replica.apply(examples.answerLifecycle[1]);
+    replica.apply(
+      event(13, {
+        type: 'request.settled',
+        requestId: 'request-demo',
+        revision: 2,
+        outcome: 'cancelled',
+        commandId,
+        result: null,
+      })
+    );
+    const request = replica.snapshot().requests[0];
+    expect(request.state).toBe('closed');
+    expect(request.result?.result).toBeNull();
+    expect(request.decidedBy).toEqual(
+      commandId
+        ? {
+            actorId: 'actor-demo',
+            surface: 'mattermost',
+            commandId,
+          }
+        : null
+    );
+    expect(new SessionReplica(replica.snapshot()).snapshot().requests[0]).toEqual(request);
+  }
 });

@@ -54,11 +54,6 @@
             }
           ]
         },
-        "audience": {
-          "kind": "room",
-          "roomId": "room-demo",
-          "threadId": "thread-demo"
-        },
         "expiresAt": null,
         "result": null,
         "decidedBy": null
@@ -97,11 +92,6 @@
               "decision": "decline"
             }
           ]
-        },
-        "audience": {
-          "kind": "room",
-          "roomId": "room-demo",
-          "threadId": "thread-demo"
         },
         "expiresAt": null
       }
