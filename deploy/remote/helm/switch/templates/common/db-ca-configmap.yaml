@@ -1,11 +1,23 @@
 {{- if and .Values.postgresql.caBundle.contents (not .Values.postgresql.caBundle.existingConfigMap) }}
 # Certificate authorities, not a secret: a CA bundle is public by construction.
+#
+# A hook, because the pre-upgrade migration Job mounts it, and an ordinary
+# resource is not created until after the pre-upgrade hooks have run — the Job
+# would wait for a ConfigMap that only appears once the Job it is blocking has
+# finished. A negative weight puts it before the migration; before-hook-creation
+# without hook-succeeded leaves it in place afterwards, which it has to be,
+# since switch-core, Mattermost and the backup release mount it for the life of
+# the release.
 apiVersion: v1
 kind: ConfigMap
 metadata:
   name: {{ include "switch.fullname" . }}-db-ca
   labels:
     {{- include "switch.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-weight": "-5"
+    "helm.sh/hook-delete-policy": before-hook-creation
 data:
   {{ .Values.postgresql.caBundle.key }}: |
 {{ .Values.postgresql.caBundle.contents | indent 4 }}
