@@ -5,7 +5,7 @@ import type { ParamSpec, ParsedTemplate } from '@main/core/room-templates/contro
 import type { GuardResult, ViewDefinition } from '@renderer/app/view-registry';
 import { ServerPage } from '@renderer/features/switch-servers/server-page';
 import { ServerSectionTitlebar } from '@renderer/features/switch-servers/server-section-titlebar';
-import { describeFailure, failureText } from '@renderer/lib/errors/describe-failure';
+import { failureText } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
 import { useParams } from '@renderer/lib/layout/navigation-provider';
 import { appState } from '@renderer/lib/stores/app-state';
@@ -15,6 +15,7 @@ import { Button } from '@renderer/lib/ui/button';
 import { Field, FieldGroup, FieldLabel } from '@renderer/lib/ui/field';
 import { Input } from '@renderer/lib/ui/input';
 import { Textarea } from '@renderer/lib/ui/textarea';
+import { RpcError } from '@shared/lib/ipc/rpc-error';
 
 type Step = 'source' | 'inputs' | 'creating';
 
@@ -468,12 +469,10 @@ const TemplateImportPanel = observer(function TemplateImportPanel() {
         const result = await rpc.switchServers.createRoomFromTemplate(serverId, yamlText, inputs);
         appState.navigation.navigate('room', { roomId: result.roomId });
       } catch (e) {
-        // Prefer the server's detail (human-readable) over the HTTP-noisy message
-        const { headline, detail } = describeFailure(
-          e,
-          'Could not create the room from this template.'
-        );
-        const message = detail ?? headline;
+        const serverDetail =
+          e instanceof RpcError && e.code === 'GatewayError' ? e.stringField('detail') : undefined;
+        const message =
+          serverDetail ?? failureText(e, 'Could not create the room from this template.');
         const paramMatch = message.match(/param(?:\(s\))?:?\s*['"]?(\w+)/i);
         if (paramMatch && t.params.some((p) => p.name === paramMatch[1])) {
           setFieldErrors({ [paramMatch[1]]: message });
