@@ -260,7 +260,18 @@ def test_an_app_cannot_answer_a_request() -> None:
     )
 
 
-def test_ordinary_talk_never_reaches_the_store() -> None:
+@pytest.mark.parametrize(
+    "body",
+    [
+        "R42 is the one I meant",
+        "sounds good to me",
+        "@test-agent 1",
+        "@test-agent allow",
+        "<@U123> allow",
+        "<!subteam^S123|test-agent> 1",
+    ],
+)
+def test_ordinary_talk_never_reaches_the_store(body: str) -> None:
     """The grammar runs before the query, so a channel pays nothing for this."""
 
     class _Explodes:
@@ -273,8 +284,7 @@ def test_ordinary_talk_never_reaches_the_store() -> None:
     interactions = _interactions(_post())
     interactions._posts = _Explodes()  # type: ignore[assignment]
 
-    assert _run(interactions.command_for_text(_typed("R42 is the one I meant"))) is None
-    assert _run(interactions.command_for_text(_typed("sounds good to me"))) is None
+    assert _run(interactions.command_for_text(_typed(body))) is None
 
 
 # ── Where the bridge picks it up ─────────────────────────────────────────────
