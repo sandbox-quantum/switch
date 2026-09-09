@@ -241,5 +241,8 @@ class SessionLeaseService:
             session_id=session_id,
             epoch=epoch,
             host_id=request.host_id,
-            displaced=previous_host,
+            # A host reclaiming its own session displaced nothing it did not
+            # already own. Reporting itself here would make every restart inside
+            # the TTL look like a takeover to anything branching on the field.
+            displaced=None if reclaiming else previous_host,
         )

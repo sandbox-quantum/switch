@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from starlette.exceptions import HTTPException
 
 from switch_core.bridges.agent.api.handlers import router as api_router
 from switch_core.bridges.agent.api.operations import router as operations_router
@@ -19,6 +20,7 @@ from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
 from switch_core.bridges.agent.protocol.service import ProtocolService
 from switch_core.bridges.agent.sessions.errors import (
     SessionApiError,
+    code_for_status,
     is_session_path,
     session_api_error_handler,
     session_error_response,
@@ -54,7 +56,7 @@ async def log_http_exceptions(request: Request, exc: Exception) -> JSONResponse:
         )
     if is_session_path(request.url.path):
         return session_error_response(
-            "NOT_AUTHORIZED" if exc.status_code in (401, 403) else "INVALID_REQUEST",
+            code_for_status(exc.status_code),
             str(exc.detail),
             retryable=False,
             status_code=exc.status_code,
@@ -88,6 +90,10 @@ def install_exception_handlers(app: FastAPI) -> None:
     router-sized app. The envelope a session path gets is decided here, and a
     test that registered its own approximation of these would pin nothing.
     """
+    # Starlette's `HTTPException`, not FastAPI's subclass. Starlette dispatches
+    # on the exact class, walking the raised type's MRO, so a handler registered
+    # against the subclass never sees the router's own 404 and 405 — the parent
+    # is what the router raises. Registering the parent catches both.
     app.add_exception_handler(HTTPException, log_http_exceptions)
     app.add_exception_handler(RequestValidationError, log_validation_errors)
     app.add_exception_handler(SessionApiError, session_api_error_handler)

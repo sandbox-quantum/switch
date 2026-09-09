@@ -365,7 +365,10 @@ class TestReclaimingAfterARestart:
         assert resp.status_code == 200
         body = resp.json()
         assert body["epoch"] != first
-        assert body["displaced"] == "host-a"
+        assert body["displaced"] is None, (
+            "a host reclaiming its own session took it from nobody; reporting "
+            "itself would make every restart look like a takeover"
+        )
 
     async def test_the_epoch_the_dead_process_held_is_dead_with_it(
         self, caller: _Caller
@@ -523,3 +526,34 @@ class TestEveryFailureWearsTheEnvelope:
         body = resp.json()
         assert body["code"] == "INVALID_REQUEST"
         assert body["retryable"] is False
+
+    async def test_a_route_this_server_does_not_have_answers_in_the_envelope(
+        self, caller: _Caller
+    ) -> None:
+        """Version skew is the case this one is for.
+
+        A host built against a later slice posts to a route this Switch has not
+        grown yet. It authenticates, so the middleware passes it through, and
+        the router raises. Answering `{"detail": "Not Found"}` there sends the
+        host to unknown-error at the moment the cause is most diagnosable.
+        """
+        resp = await caller.client.post(
+            "/agent/v1/sessions/s1/events", json={"events": []}
+        )
+
+        assert resp.status_code == 404
+        assert resp.json()["code"] == "NOT_FOUND"
+
+    async def test_the_wrong_method_answers_in_the_envelope(
+        self, caller: _Caller
+    ) -> None:
+        """405 has no contract code, so it gets the least specific honest one.
+
+        What matters is that there is a `code` at all: the router raises
+        Starlette's `HTTPException`, not FastAPI's subclass, and a handler
+        registered against the subclass never sees it.
+        """
+        resp = await caller.client.get("/agent/v1/sessions/s1/lease")
+
+        assert resp.status_code == 405
+        assert resp.json()["code"] == "INVALID_REQUEST"

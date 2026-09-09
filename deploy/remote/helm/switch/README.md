@@ -47,6 +47,15 @@ routed there.
 Note it is Bearer-token authenticated, not unauthenticated, but it is still the
 control plane: agents post messages and read room context through it.
 
+**Upgrading: `/agent` is a new prefix, and `ingress.mode: existing` will not add
+it for you.** The session routes live under `/agent/v1/...`, which is a separate
+path segment from `/agents` — Ingress `Prefix` matching is per segment, so an
+existing rule for `/agents` does not cover it. Under `mode: managed` the chart
+renders it. Under `mode: existing` (the default) the chart renders no Ingress at
+all, so add the rule to your own manifest, or the sessions API falls through to
+the gateway and answers 404 to a host that reached the cluster fine.
+[`samples/ingress.example.yaml`](samples/ingress.example.yaml) has the entry.
+
 ### The Teams bridge listener
 
 Unlike every other bridge, Teams pushes to you. Microsoft calls two paths —

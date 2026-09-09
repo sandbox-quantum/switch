@@ -14,12 +14,15 @@ will take; a lease held by a live incumbent is, because the incumbent may let go
 or time out.
 
 **Every failure on a session path wears this envelope, not just the ones a
-handler raises.** A host has one decoder per route family, and a rejected token
-or a malformed body reaching it as `{"detail": ...}` has no `code` to read — it
-falls through to unknown-error at exactly the two moments the cause is most
-obvious. So `SESSION_PATH_PREFIX` is checked by the bearer middleware and by the
-app's own `HTTPException` and validation handlers, which is why this module
-exposes a renderer that takes a status rather than only deriving one.
+handler raises.** A host has one decoder per route family, and a rejected token,
+a malformed body or a route this server does not have yet reaching it as
+`{"detail": ...}` has no `code` to read — it falls through to unknown-error at
+exactly the moments the cause is most diagnosable. So `SESSION_PATH_PREFIX` is
+checked by the bearer middleware and by the app's `HTTPException` and validation
+handlers, and the `HTTPException` one is registered against Starlette's class so
+the router's own 404 and 405 reach it too. That is why this module exposes a
+renderer taking a status, and a `code_for_status` for failures that arrive with
+a status and no code.
 """
 
 from __future__ import annotations
@@ -97,6 +100,33 @@ def session_error_response(
         status_code=status_code,
         content={"code": code, "message": message, "retryable": retryable},
     )
+
+
+# The code for a failure nobody chose a code for: a 404 from the router, a 405
+# from it, a 401 from the door. These arrive with a status already decided and no
+# contract meaning attached, so the code is derived from the status rather than
+# the other way round.
+#
+# `STATUS_BY_CODE` is not the inverse of this and cannot be. It answers "what
+# status does the server return when it raises this code", which is a different
+# question from "what code names this status" — several codes share 409 and 422,
+# and 405 has no contract outcome at all.
+_CODE_BY_STATUS: dict[int, str] = {
+    401: "NOT_AUTHORIZED",
+    403: "NOT_AUTHORIZED",
+    404: "NOT_FOUND",
+    413: "PAYLOAD_TOO_LARGE",
+}
+
+
+def code_for_status(status_code: int) -> str:
+    """The contract code that best names an HTTP failure the server did not raise.
+
+    `INVALID_REQUEST` is the fallback because everything reaching here that is
+    not one of the mapped statuses is the server refusing to act on the request
+    as sent. It is the least specific honest answer, not a good one.
+    """
+    return _CODE_BY_STATUS.get(status_code, "INVALID_REQUEST")
 
 
 async def session_api_error_handler(request: Request, exc: Exception) -> JSONResponse:
