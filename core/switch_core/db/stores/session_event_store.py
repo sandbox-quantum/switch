@@ -73,6 +73,53 @@ class SessionEventStore:
         )
         return list(result.scalars())
 
+    async def read_host_range(
+        self,
+        session: AsyncSession,
+        session_id: str,
+        epoch: str,
+        first: int,
+        last: int,
+    ) -> dict[int, SessionEvent]:
+        """What is already logged at these positions of one host generation.
+
+        Keyed by `host_sequence`, because the caller is comparing a batch it was
+        just sent against what it already holds and only cares about the
+        positions that overlap. A position with nothing at it is absent rather
+        than `None`.
+        """
+        result = await session.execute(
+            select(SessionEvent).where(
+                SessionEvent.session_id == session_id,
+                SessionEvent.epoch == epoch,
+                SessionEvent.host_sequence >= first,
+                SessionEvent.host_sequence <= last,
+            )
+        )
+        return {
+            row.host_sequence: row
+            for row in result.scalars()
+            if row.host_sequence is not None
+        }
+
+    async def head_host_sequence(
+        self, session: AsyncSession, session_id: str, epoch: str
+    ) -> int:
+        """How far this generation of the host's log has been accepted, or 0.
+
+        The maximum is the contiguous maximum: a gap is refused on the way in,
+        so the log cannot hold position 7 without holding 6. Scoped to one
+        epoch because host numbering restarts with each generation.
+        """
+        result = await session.execute(
+            select(func.max(SessionEvent.host_sequence)).where(
+                SessionEvent.session_id == session_id,
+                SessionEvent.epoch == epoch,
+            )
+        )
+        head: int | None = result.scalar_one()
+        return 0 if head is None else head
+
     async def head_sequence(self, session: AsyncSession, session_id: str) -> int:
         """The session's current position, or 0 when nothing has been logged.
 
@@ -86,15 +133,22 @@ class SessionEventStore:
         )
         return int(result.scalar_one())
 
-    async def _next_sequence(self, session: AsyncSession, session_id: str) -> int:
-        """The next position in this session's log, allocated in commit order.
+    async def lock(self, session: AsyncSession, session_id: str) -> None:
+        """Serialise writers to this session's log for the rest of the transaction.
 
-        Under an advisory lock held to commit, not from a database sequence,
-        for the reason `MessageStore._next_seq` sets out in full: a sequence
-        numbers a row when its INSERT runs rather than when it commits, so a
-        reader paging on `sequence > n` can advance past a number that is still
-        in flight and never come back for it. A session's log has exactly that
-        reader — the gateway stream — so it needs exactly that guarantee.
+        Held to commit, not from a database sequence, for the reason
+        `MessageStore._next_seq` sets out in full: a sequence numbers a row when
+        its INSERT runs rather than when it commits, so a reader paging on
+        `sequence > n` can advance past a number that is still in flight and
+        never come back for it. A session's log has exactly that reader — the
+        gateway stream — so it needs exactly that guarantee.
+
+        Public because a caller that reads the log and then appends to it needs
+        the read inside the same lock. Deciding whether a host event is a repeat
+        or the next one is exactly that, and doing it outside the lock leaves a
+        window where two batches both read the same position as free. Advisory
+        locks are re-entrant within a transaction, so `append` taking it again
+        costs nothing.
 
         Writers to one session serialise. Sessions do not contend with each
         other, beyond two whose ids collide in the hash.
@@ -103,4 +157,8 @@ class SessionEventStore:
             text("SELECT pg_advisory_xact_lock(hashtext(:session_id))"),
             {"session_id": session_id},
         )
+
+    async def _next_sequence(self, session: AsyncSession, session_id: str) -> int:
+        """The next position in this session's log, allocated in commit order."""
+        await self.lock(session, session_id)
         return await self.head_sequence(session, session_id) + 1

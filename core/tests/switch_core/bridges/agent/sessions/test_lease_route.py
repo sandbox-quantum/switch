@@ -9,143 +9,28 @@ tested elsewhere.
 
 from __future__ import annotations
 
-import uuid
-from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
 
 import httpx
 import pytest
-import pytest_asyncio
 from fastapi import FastAPI
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.bridges.agent.api_key_cache import ApiKeyCache
 from switch_core.bridges.agent.app import install_exception_handlers
-from switch_core.bridges.agent.auth import (
-    BearerAuthMiddleware,
-    _is_public_path,
-    get_agent_from_scope,
-)
-from switch_core.bridges.agent.dependencies import (
-    get_session,
-    get_session_lease_service,
-)
+from switch_core.bridges.agent.auth import BearerAuthMiddleware, _is_public_path
 from switch_core.bridges.agent.sessions.errors import STATUS_BY_CODE, SessionApiError
-from switch_core.bridges.agent.sessions.lease_service import SessionLeaseService
 from switch_core.bridges.agent.sessions.routes import router
-from switch_core.db.models import (
-    Agent,
-    ApiKey,
-    Client,
-    HostSession,
-    SessionLease,
-    SessionRoomAssociation,
-    User,
-)
+from switch_core.db.models import HostSession, SessionLease, SessionRoomAssociation
 from switch_core.db.stores.session_lease_store import SessionLeaseStore
-from switch_core.db.stores.session_store import SessionStore
 
-
-async def _make_agent(session: AsyncSession) -> Agent:
-    """Minimal User → ApiKey → Client → Agent chain (sessions.agent_id FK)."""
-    name = f"agent-{uuid.uuid4().hex[:8]}"
-    user = User(name=name, email=f"{name}@test", role="user", password_hash="x")
-    session.add(user)
-    await session.flush()
-    api_key = ApiKey(
-        user_id=user.id,
-        key_hash=f"hash-{name}",
-        encrypted_key="enc",
-        label=name,
-        type="agent",
-    )
-    client = Client(matrix_user_id=f"@{name}:test", display_name=name, type="agent")
-    session.add_all([api_key, client])
-    await session.flush()
-    agent = Agent(
-        name=name,
-        description=f"{name} desc",
-        agent_type="always_on",
-        connector_type="claude_code",
-        integration_profile={"connection_model": "always_on"},
-        client_id=client.id,
-        api_key_id=api_key.id,
-    )
-    session.add(agent)
-    await session.flush()
-    return agent
-
-
-class _Caller:
-    """The app under test, plus the agent its requests arrive as.
-
-    `as_agent` swaps the caller without rebuilding anything, which is how the
-    foreign-agent case is written: the same session id, a different token.
-    """
-
-    def __init__(
-        self, client: httpx.AsyncClient, app: FastAPI, agent: Agent, other: Agent
-    ) -> None:
-        self.client = client
-        self.app = app
-        self.agent = agent
-        self.other = other
-
-    def as_agent(self, agent: Agent) -> None:
-        self.app.dependency_overrides[get_agent_from_scope] = lambda: agent
-
-    async def lease(self, session_id: str, **body: object) -> httpx.Response:
-        return await self.client.post(
-            f"/agent/v1/sessions/{session_id}/lease", json=body
-        )
-
-
-@pytest_asyncio.fixture
-async def agents(
-    session_factory: async_sessionmaker[AsyncSession],
-) -> AsyncIterator[tuple[Agent, Agent]]:
-    async with session_factory() as session:
-        first = await _make_agent(session)
-        second = await _make_agent(session)
-        await session.commit()
-        yield first, second
-
-
-@pytest_asyncio.fixture
-async def caller(
-    session_factory: async_sessionmaker[AsyncSession],
-    agents: tuple[Agent, Agent],
-) -> AsyncIterator[_Caller]:
-    """The app driven in-process on the test's own event loop.
-
-    Not `TestClient`: it runs the app in a second loop, and the engine these
-    tests read the database with is bound to this one.
-    """
-    agent, other = agents
-    app = FastAPI()
-    install_exception_handlers(app)
-    app.include_router(router)
-
-    async def _db() -> AsyncIterator[AsyncSession]:
-        async with session_factory() as session:
-            yield session
-
-    app.dependency_overrides[get_session] = _db
-    app.dependency_overrides[get_agent_from_scope] = lambda: agent
-    app.dependency_overrides[get_session_lease_service] = lambda: SessionLeaseService(
-        SessionStore(), SessionLeaseStore()
-    )
-    transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(
-        transport=transport, base_url="http://agent-bridge"
-    ) as client:
-        yield _Caller(client, app, agent, other)
+from .conftest import Caller
 
 
 class TestAcquiring:
     async def test_a_first_claim_registers_the_session_and_mints_an_epoch(
-        self, caller: _Caller
+        self, caller: Caller
     ) -> None:
         resp = await caller.lease("s1", hostId="host-a")
 
@@ -157,7 +42,7 @@ class TestAcquiring:
         assert body["displaced"] is None
 
     async def test_the_session_row_is_written_by_the_lease_and_nothing_else(
-        self, caller: _Caller, session_factory: async_sessionmaker[AsyncSession]
+        self, caller: Caller, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
         """The contract has no "create session" call. This is it."""
         await caller.lease("s1", hostId="host-a")
@@ -169,7 +54,7 @@ class TestAcquiring:
             assert record.host_id == "host-a"
 
     async def test_the_host_does_not_get_to_choose_its_own_epoch(
-        self, caller: _Caller
+        self, caller: Caller
     ) -> None:
         """An epoch in the body is a renewal claim, never an assignment.
 
@@ -183,7 +68,7 @@ class TestAcquiring:
         assert resp.json()["code"] == "STALE_EPOCH"
 
     async def test_two_sessions_of_one_agent_get_different_epochs(
-        self, caller: _Caller
+        self, caller: Caller
     ) -> None:
         first = (await caller.lease("s1", hostId="host-a")).json()["epoch"]
         second = (await caller.lease("s2", hostId="host-a")).json()["epoch"]
@@ -192,7 +77,7 @@ class TestAcquiring:
 
 
 class TestRenewing:
-    async def test_a_renewal_keeps_the_epoch(self, caller: _Caller) -> None:
+    async def test_a_renewal_keeps_the_epoch(self, caller: Caller) -> None:
         epoch = (await caller.lease("s1", hostId="host-a")).json()["epoch"]
 
         resp = await caller.lease("s1", hostId="host-a", epoch=epoch)
@@ -201,7 +86,7 @@ class TestRenewing:
         assert resp.json()["epoch"] == epoch
 
     async def test_a_renewal_moves_the_heartbeat_forward(
-        self, caller: _Caller, session_factory: async_sessionmaker[AsyncSession]
+        self, caller: Caller, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
         epoch = (await caller.lease("s1", hostId="host-a")).json()["epoch"]
         async with session_factory() as session:
@@ -214,7 +99,7 @@ class TestRenewing:
         assert after > before
 
     async def test_a_renewal_under_a_displaced_epoch_is_refused(
-        self, caller: _Caller
+        self, caller: Caller
     ) -> None:
         """What a displaced host finds out with.
 
@@ -232,7 +117,7 @@ class TestRenewing:
         assert body["retryable"] is False
 
     async def test_a_renewal_by_a_host_that_never_held_it_is_refused(
-        self, caller: _Caller
+        self, caller: Caller
     ) -> None:
         epoch = (await caller.lease("s1", hostId="host-a")).json()["epoch"]
 
@@ -243,7 +128,7 @@ class TestRenewing:
 
 
 class TestOneHolder:
-    async def test_a_second_live_host_is_refused(self, caller: _Caller) -> None:
+    async def test_a_second_live_host_is_refused(self, caller: Caller) -> None:
         await caller.lease("s1", hostId="host-a")
 
         resp = await caller.lease("s1", hostId="host-b")
@@ -255,7 +140,7 @@ class TestOneHolder:
         assert "host-a" in body["message"]
 
     async def test_the_refused_claim_leaves_the_incumbent_untouched(
-        self, caller: _Caller, session_factory: async_sessionmaker[AsyncSession]
+        self, caller: Caller, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
         epoch = (await caller.lease("s1", hostId="host-a")).json()["epoch"]
 
@@ -267,7 +152,7 @@ class TestOneHolder:
             assert lease.epoch == epoch
 
     async def test_takeover_displaces_the_holder_under_a_new_epoch(
-        self, caller: _Caller, session_factory: async_sessionmaker[AsyncSession]
+        self, caller: Caller, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
         first = (await caller.lease("s1", hostId="host-a")).json()["epoch"]
 
@@ -284,7 +169,7 @@ class TestOneHolder:
             assert (await session.get(HostSession, "s1")).host_id == "host-b"
 
     async def test_a_lease_whose_holder_stopped_beating_is_free(
-        self, caller: _Caller, session_factory: async_sessionmaker[AsyncSession]
+        self, caller: Caller, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
         """No takeover flag, and no reaper either.
 
@@ -307,9 +192,7 @@ class TestOneHolder:
 
 
 class TestOwnership:
-    async def test_another_agents_session_is_not_leasable(
-        self, caller: _Caller
-    ) -> None:
+    async def test_another_agents_session_is_not_leasable(self, caller: Caller) -> None:
         """A session id is host-generated and not a secret.
 
         The binding to an agent is the only thing between a session and whoever
@@ -326,7 +209,7 @@ class TestOwnership:
         assert body["retryable"] is False
 
     async def test_takeover_does_not_cross_the_agent_boundary(
-        self, caller: _Caller
+        self, caller: Caller
     ) -> None:
         """`takeover` says "displace a peer of mine", not "displace anyone"."""
         await caller.lease("s1", hostId="host-a")
@@ -338,7 +221,7 @@ class TestOwnership:
         assert resp.json()["code"] == "NOT_AUTHORIZED"
 
     async def test_two_agents_may_hold_leases_on_their_own_sessions(
-        self, caller: _Caller
+        self, caller: Caller
     ) -> None:
         assert (await caller.lease("s1", hostId="host-a")).status_code == 200
 
@@ -356,7 +239,7 @@ class TestReclaimingAfterARestart:
     """
 
     async def test_the_same_host_reacquires_without_asking_for_a_takeover(
-        self, caller: _Caller
+        self, caller: Caller
     ) -> None:
         first = (await caller.lease("s1", hostId="host-a")).json()["epoch"]
 
@@ -371,7 +254,7 @@ class TestReclaimingAfterARestart:
         )
 
     async def test_the_epoch_the_dead_process_held_is_dead_with_it(
-        self, caller: _Caller
+        self, caller: Caller
     ) -> None:
         """Reacquiring is not renewing: whatever the old process still had in
         flight is fenced out, which is the whole reason to mint a new epoch."""
@@ -383,7 +266,7 @@ class TestReclaimingAfterARestart:
         assert resp.status_code == 409
         assert resp.json()["code"] == "STALE_EPOCH"
 
-    async def test_a_different_host_still_has_to_ask(self, caller: _Caller) -> None:
+    async def test_a_different_host_still_has_to_ask(self, caller: Caller) -> None:
         await caller.lease("s1", hostId="host-a")
 
         assert (await caller.lease("s1", hostId="host-b")).status_code == 409
@@ -399,7 +282,7 @@ class TestALeaseReachesNoRoom:
     """
 
     async def test_no_lease_path_creates_a_room_association(
-        self, caller: _Caller, session_factory: async_sessionmaker[AsyncSession]
+        self, caller: Caller, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
         await caller.lease("s1", hostId="host-a")
         await caller.lease("s1", hostId="host-b", takeover=True)
@@ -418,7 +301,7 @@ class TestTheDoor:
         assert _is_public_path("/agent/v1/sessions/s1/lease") is False
 
     async def test_an_unknown_field_is_refused_rather_than_ignored(
-        self, caller: _Caller
+        self, caller: Caller
     ) -> None:
         """`extra="forbid"`, so a host that misspells `takeover` is told.
 
@@ -430,7 +313,7 @@ class TestTheDoor:
         assert resp.status_code == 422
 
     async def test_renew_and_takeover_together_are_refused(
-        self, caller: _Caller
+        self, caller: Caller
     ) -> None:
         """ "Renew, or take it back if I lost it" is two requests, not one.
 
@@ -516,7 +399,7 @@ class TestEveryFailureWearsTheEnvelope:
         assert "code" not in resp.text
 
     async def test_a_malformed_body_answers_in_the_envelope(
-        self, caller: _Caller
+        self, caller: Caller
     ) -> None:
         resp = await caller.client.post(
             "/agent/v1/sessions/s1/lease", json={"epoch": 4}
@@ -528,7 +411,7 @@ class TestEveryFailureWearsTheEnvelope:
         assert body["retryable"] is False
 
     async def test_a_route_this_server_does_not_have_answers_in_the_envelope(
-        self, caller: _Caller
+        self, caller: Caller
     ) -> None:
         """Version skew is the case this one is for.
 
@@ -537,15 +420,13 @@ class TestEveryFailureWearsTheEnvelope:
         the router raises. Answering `{"detail": "Not Found"}` there sends the
         host to unknown-error at the moment the cause is most diagnosable.
         """
-        resp = await caller.client.post(
-            "/agent/v1/sessions/s1/events", json={"events": []}
-        )
+        resp = await caller.client.post("/agent/v1/sessions/s1/commands/next", json={})
 
         assert resp.status_code == 404
         assert resp.json()["code"] == "NOT_FOUND"
 
     async def test_the_wrong_method_answers_in_the_envelope(
-        self, caller: _Caller
+        self, caller: Caller
     ) -> None:
         """405 has no contract code, so it gets the least specific honest one.
 

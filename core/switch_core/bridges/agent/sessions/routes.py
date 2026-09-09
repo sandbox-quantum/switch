@@ -18,10 +18,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from switch_core.bridges.agent.auth import get_agent_from_scope
 from switch_core.bridges.agent.dependencies import (
     get_session,
+    get_session_ingest_service,
     get_session_lease_service,
 )
+from switch_core.bridges.agent.sessions.ingest_service import SessionIngestService
 from switch_core.bridges.agent.sessions.lease_service import SessionLeaseService
-from switch_core.bridges.agent.sessions.schemas import LeaseRequest, LeaseResponse
+from switch_core.bridges.agent.sessions.schemas import (
+    EventsRequest,
+    EventsResponse,
+    LeaseRequest,
+    LeaseResponse,
+)
 from switch_core.db.models import Agent
 
 # Every name a signature mentions is imported at runtime, deliberately: FastAPI
@@ -49,5 +56,25 @@ async def claim_lease(
     it is why the route does not 404 on an id the server has never seen.
     """
     response = await leases.claim(db, session_id, agent.id, req)
+    await db.commit()
+    return response
+
+
+@router.post("/{session_id}/events", response_model=EventsResponse)
+async def receive_events(
+    session_id: str,
+    req: EventsRequest,
+    agent: Annotated[Agent, Depends(get_agent_from_scope)],
+    ingest: Annotated[SessionIngestService, Depends(get_session_ingest_service)],
+    db: Annotated[AsyncSession, Depends(get_session)],
+) -> EventsResponse:
+    """Take a batch of host events into the session log.
+
+    The batch is all-or-nothing: the commit is here, so a refusal part way
+    through the batch leaves nothing written and the host's outbox untouched.
+    The response says how far the outbox may be truncated, which is what is
+    durable rather than what was sent.
+    """
+    response = await ingest.ingest(db, session_id, agent.id, req)
     await db.commit()
     return response

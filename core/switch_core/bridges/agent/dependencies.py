@@ -9,6 +9,7 @@ from switch_core.bridges.agent.api_key_cache import ApiKeyCache
 from switch_core.bridges.agent.protocol.connections import ConnectionRegistry
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
 from switch_core.bridges.agent.protocol.service import ProtocolService
+from switch_core.bridges.agent.sessions.ingest_service import SessionIngestService
 from switch_core.bridges.agent.sessions.lease_service import SessionLeaseService
 from switch_core.bridges.collaboration.lifecycle_service import (
     CollaborationBridgeLifecycleService,
@@ -22,6 +23,7 @@ from switch_core.db.stores.api_key_store import ApiKeyStore
 from switch_core.db.stores.collaboration_bridge_store import CollaborationBridgeStore
 from switch_core.db.stores.external_user_store import ExternalUserStore
 from switch_core.db.stores.room_store import RoomStore
+from switch_core.db.stores.session_event_store import SessionEventStore
 from switch_core.db.stores.session_lease_store import SessionLeaseStore
 from switch_core.db.stores.session_store import SessionStore
 from switch_core.db.stores.task_store import TaskStore
@@ -70,6 +72,9 @@ def init_dependencies(
     # with nothing to share, so threading them through every caller of this
     # function would buy nobody anything.
     _state["session_leases"] = SessionLeaseService(SessionStore(), SessionLeaseStore())
+    _state["session_ingest"] = SessionIngestService(
+        SessionStore(), SessionLeaseStore(), SessionEventStore()
+    )
 
     _state["protocol"] = ProtocolService(
         agent_store=agent_store,
@@ -146,3 +151,7 @@ def get_protocol() -> ProtocolService:
 
 def get_session_lease_service() -> SessionLeaseService:
     return _state["session_leases"]  # type: ignore[no-any-return]
+
+
+def get_session_ingest_service() -> SessionIngestService:
+    return _state["session_ingest"]  # type: ignore[no-any-return]

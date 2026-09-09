@@ -15,7 +15,9 @@ does not have.
 
 from __future__ import annotations
 
-from pydantic import BaseModel, ConfigDict, model_validator
+from typing import Any
+
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from pydantic.alias_generators import to_camel
 
 
@@ -61,6 +63,42 @@ class LeaseRequest(_Model):
                 "renew the lease you hold, takeover means acquire one you do not."
             )
         return self
+
+
+class EventsRequest(_Model):
+    """A batch of host events, exactly as the host serialised them.
+
+    The events stay `dict` here rather than becoming `HostEvent`. Validating
+    them is `parse_host_event`'s job — it is the parity-tested mirror of the
+    host's own parser, it enforces the 64 KiB event cap, and it checks the two
+    identity rules Pydantic cannot express. Declaring a second Pydantic mirror
+    on this route would be a second answer to "is this a valid host event",
+    and the two would drift.
+
+    A batch cannot be empty. A host with nothing to send does not send.
+    """
+
+    events: list[dict[str, Any]] = Field(min_length=1)
+
+
+class EventsResponse(_Model):
+    """How far the host's outbox may now be truncated.
+
+    `acceptedThrough` is the contract's "highest saved contiguous
+    `hostSequence`", under the epoch named here. It is what makes deleting from
+    the outbox safe, so it counts what is durable rather than what was sent —
+    a batch that repeats what the server already had moves it no further than
+    the batch before did.
+
+    `sequence` is the server's own log position afterwards, from a different
+    counter that also numbers events the host never sent. The two are reported
+    together and must never be compared.
+    """
+
+    session_id: str
+    epoch: str
+    accepted_through: int
+    sequence: int
 
 
 class LeaseResponse(_Model):

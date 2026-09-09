@@ -598,6 +598,60 @@ class TestSessionEventStore:
         async with session_factory() as session:
             assert await store.head_sequence(session, "s-1") == 2
 
+    async def test_the_host_head_is_zero_before_the_host_has_sent_anything(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """Host positions start at 1, so 0 is "nothing accepted" and not a position."""
+        store = SessionEventStore()
+        async with session_factory() as session:
+            await _make_session(session)
+            await store.append(session, _event("s-1", host_sequence=None))
+            await session.commit()
+
+            assert await store.head_host_sequence(session, "s-1", "epoch-1") == 0
+
+    async def test_the_host_head_is_read_per_generation(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """A generation's progress is its own.
+
+        Reading across epochs would tell a freshly restarted host that the
+        server already holds positions it has not sent, and it would skip them.
+        """
+        store = SessionEventStore()
+        async with session_factory() as session:
+            await _make_session(session)
+            await store.append(session, _event("s-1", host_sequence=1))
+            await store.append(session, _event("s-1", host_sequence=2))
+            await store.append(session, _event("s-1", epoch="epoch-2", host_sequence=1))
+            await session.commit()
+
+            assert await store.head_host_sequence(session, "s-1", "epoch-1") == 2
+            assert await store.head_host_sequence(session, "s-1", "epoch-2") == 1
+
+    async def test_a_host_range_reads_back_only_what_is_in_it(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """Inclusive at both ends, keyed by position, and scoped to one epoch."""
+        store = SessionEventStore()
+        async with session_factory() as session:
+            await _make_session(session)
+            for position in (1, 2, 3):
+                await store.append(
+                    session,
+                    _event("s-1", host_sequence=position, event_id=f"ev-{position}"),
+                )
+            await store.append(
+                session,
+                _event("s-1", epoch="epoch-2", host_sequence=2, event_id="ev-other"),
+            )
+            await session.commit()
+
+            found = await store.read_host_range(session, "s-1", "epoch-1", 2, 3)
+
+        assert sorted(found) == [2, 3]
+        assert found[2].event_id == "ev-2"
+
     async def test_a_server_event_needs_no_epoch(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
