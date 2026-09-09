@@ -115,6 +115,10 @@ class TemplateStore:
             template.kind = kind
 
         await session.flush()
+        # `updated_at` is computed by Postgres, so the flush leaves it expired.
+        # Reload here, where there is a running event loop, rather than leaving
+        # the caller to trip a lazy load from synchronous code.
+        await session.refresh(template)
         return template
 
     async def delete(self, session: AsyncSession, template_id: str) -> None:

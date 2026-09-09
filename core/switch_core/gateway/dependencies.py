@@ -23,6 +23,7 @@ from switch_core.db.stores.external_user_store import ExternalUserStore
 from switch_core.db.stores.room_group_store import RoomGroupStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.server_connector_store import ServerConnectorStore
+from switch_core.db.stores.template_store import TemplateStore
 from switch_core.db.stores.user_store import UserStore
 from switch_core.room_service import RoomService
 from switch_core.rooms_yaml import RoomYamlService
@@ -46,6 +47,7 @@ def init_dependencies(
     user_store: UserStore,
     external_user_store: ExternalUserStore,
     api_key_store: ApiKeyStore,
+    template_store: TemplateStore,
     resource_service: ResourceService,
     protocol: ProtocolService,
     config: SwitchConfig,
@@ -64,6 +66,7 @@ def init_dependencies(
     _state["user_store"] = user_store
     _state["external_user_store"] = external_user_store
     _state["api_key_store"] = api_key_store
+    _state["template_store"] = template_store
     _state["resource_service"] = resource_service
     _state["protocol"] = protocol
     _state["config"] = config
@@ -142,6 +145,10 @@ def get_connector_lifecycle() -> ServerSideConnectorLifecycleService:
 
 def get_connector_store() -> ServerConnectorStore:
     return _state["connector_store"]  # type: ignore[no-any-return]
+
+
+def get_template_store() -> TemplateStore:
+    return _state["template_store"]  # type: ignore[no-any-return]
 
 
 def get_config() -> SwitchConfig:
