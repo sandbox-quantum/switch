@@ -5,7 +5,7 @@ import type { ParamSpec, ParsedTemplate } from '@main/core/room-templates/contro
 import type { GuardResult, ViewDefinition } from '@renderer/app/view-registry';
 import { ServerPage } from '@renderer/features/switch-servers/server-page';
 import { ServerSectionTitlebar } from '@renderer/features/switch-servers/server-section-titlebar';
-import { failureText } from '@renderer/lib/errors/describe-failure';
+import { describeFailure, failureText } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
 import { useParams } from '@renderer/lib/layout/navigation-provider';
 import { appState } from '@renderer/lib/stores/app-state';
@@ -67,7 +67,7 @@ function SourceStep({
             placeholder="Paste YAML here…"
             value={yamlText}
             onChange={(e) => onYamlChange(e.target.value)}
-            className="min-h-40 font-mono text-xs"
+            className="min-h-64 resize-y font-mono text-xs"
           />
         </Field>
       </FieldGroup>
@@ -468,7 +468,12 @@ const TemplateImportPanel = observer(function TemplateImportPanel() {
         const result = await rpc.switchServers.createRoomFromTemplate(serverId, yamlText, inputs);
         appState.navigation.navigate('room', { roomId: result.roomId });
       } catch (e) {
-        const message = failureText(e, 'Could not create the room from this template.');
+        // Prefer the server's detail (human-readable) over the HTTP-noisy message
+        const { headline, detail } = describeFailure(
+          e,
+          'Could not create the room from this template.'
+        );
+        const message = detail ?? headline;
         const paramMatch = message.match(/param(?:\(s\))?:?\s*['"]?(\w+)/i);
         if (paramMatch && t.params.some((p) => p.name === paramMatch[1])) {
           setFieldErrors({ [paramMatch[1]]: message });
