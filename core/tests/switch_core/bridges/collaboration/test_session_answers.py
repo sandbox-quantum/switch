@@ -17,6 +17,7 @@ from typing import Any
 from switch_core.bridges.collaboration.models import InboundInteraction
 from switch_core.bridges.collaboration.session.inbound import (
     InboundActor,
+    Refused,
     SessionInteractions,
 )
 from switch_core.bridges.collaboration.session.renderers import ANSWER_ACTION
@@ -243,18 +244,18 @@ def test_a_token_naming_no_request_answers_nothing() -> None:
     """A card that outlived its record, or a payload that was never ours."""
     interactions = _interactions(_post())
 
-    assert _run(interactions.command_for(_press(value="made-up"))) is None
+    assert isinstance(_run(interactions.command_for(_press(value="made-up"))), Refused)
 
 
 def test_a_token_from_another_bridge_answers_nothing() -> None:
     """The row is there; it belongs to a different workspace's connection."""
     interactions = _interactions(_post(bridge_id="bridge-2"))
 
-    assert _run(interactions.command_for(_press())) is None
+    assert isinstance(_run(interactions.command_for(_press())), Refused)
 
 
 def test_an_actor_with_no_switch_identity_answers_nothing() -> None:
     """An answer records who gave it. There is no default actor."""
     interactions = _interactions(_post(), actor=None)
 
-    assert _run(interactions.command_for(_press())) is None
+    assert isinstance(_run(interactions.command_for(_press())), Refused)

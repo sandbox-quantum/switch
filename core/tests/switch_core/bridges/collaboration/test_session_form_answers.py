@@ -27,6 +27,7 @@ from switch_core.bridges.collaboration.session.form import (
     resolve_pressed_option,
     resolve_text_answer,
 )
+from switch_core.bridges.collaboration.session.inbound import Refused
 from switch_core.bridges.collaboration.session.renderers import ANSWER_ACTION
 from switch_core.bridges.collaboration.session.text import parse_text_answer
 
@@ -251,7 +252,7 @@ def test_a_press_that_reaches_a_longer_form_answers_nothing(
             interactions.command_for(_press(action_id=f"{ANSWER_ACTION}:all"))
         )
 
-    assert command is None
+    assert isinstance(command, Refused)
     assert "a press answers one question and that card asks 3" in caplog.text
 
 
@@ -320,15 +321,17 @@ def test_a_form_answer_that_does_not_fit_is_refused_out_loud(
 ) -> None:
     """A message that named a card and then did not fit it is not chatter.
 
-    Nobody is told in the channel yet — that is its own slice — so the log line
-    is the only account of why nothing happened, and it has to say which
-    request and why.
+    Two accounts of it, and they say the same thing: the log names the request
+    so it can be traced, and the refusal carries the reason back to whoever
+    typed it. `test_session_refusals.py` is where the second half is checked.
     """
     interactions = _interactions(_post(form=FORM))
 
     with caplog.at_level(logging.WARNING):
-        assert _run(interactions.command_for_text(_typed("R42 q1=1"))) is None
+        outcome = _run(interactions.command_for_text(_typed("R42 q1=1")))
 
+    assert isinstance(outcome, Refused)
+    assert "q2, q3 went unanswered" in outcome.reason
     assert "request-demo" in caplog.text
     assert "q2, q3 went unanswered" in caplog.text
 
