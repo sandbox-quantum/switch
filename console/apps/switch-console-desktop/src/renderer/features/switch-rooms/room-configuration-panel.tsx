@@ -1,5 +1,5 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { ExternalLink, Loader2, Plus, RefreshCw, Search, X } from 'lucide-react';
+import { ExternalLink, FileText, Loader2, Plus, RefreshCw, Search, X } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useState } from 'react';
 import { agentsStore } from '@renderer/features/locations/stores/agents-store';
@@ -91,7 +91,7 @@ export const RoomConfigurationPanel = observer(function RoomConfigurationPanel({
   return (
     <div className="h-full overflow-y-auto">
       <div className="mx-auto flex w-full max-w-4xl flex-col gap-8 px-10 py-8">
-        <RoomHeading room={room} />
+        <RoomHeading serverId={serverId} room={room} />
         {/* Keyed on the room so the drafts below belong to the room on screen:
             switching rooms starts a fresh form rather than carrying half-typed
             text across. */}
@@ -154,8 +154,9 @@ const DeleteRoomSection = observer(function DeleteRoomSection({
   );
 });
 
-function RoomHeading({ room }: { room: RemoteRoomDetail }) {
+function RoomHeading({ serverId, room }: { serverId: string; room: RemoteRoomDetail }) {
   const platform = bridgePlatformLabel(room.bridgeType);
+  const { navigate } = useNavigate();
   return (
     <div className="flex items-start justify-between gap-4">
       <div className="flex min-w-0 flex-col gap-1">
@@ -166,19 +167,29 @@ function RoomHeading({ room }: { room: RemoteRoomDetail }) {
             : 'Room with no messaging app'}
         </p>
       </div>
-      {room.externalChannelUrl && (
-        <div className="flex shrink-0 items-center gap-2">
-          {room.bridgeDisplayName && (
-            <span className="rounded-md bg-[var(--fill)] px-2.5 py-1.5 text-xs text-foreground-muted">
-              {room.bridgeDisplayName}
-            </span>
-          )}
-          <Button variant="outline" size="sm" onClick={() => openRoomChannel(room.id)}>
-            <ExternalLink className="size-3.5" />
-            Open in {platform}
-          </Button>
-        </div>
-      )}
+      <div className="flex shrink-0 items-center gap-2">
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => navigate('roomTemplateCapture', { serverId, roomId: room.id })}
+        >
+          <FileText className="size-3.5" />
+          Capture as template
+        </Button>
+        {room.externalChannelUrl && (
+          <>
+            {room.bridgeDisplayName && (
+              <span className="rounded-md bg-[var(--fill)] px-2.5 py-1.5 text-xs text-foreground-muted">
+                {room.bridgeDisplayName}
+              </span>
+            )}
+            <Button variant="outline" size="sm" onClick={() => openRoomChannel(room.id)}>
+              <ExternalLink className="size-3.5" />
+              Open in {platform}
+            </Button>
+          </>
+        )}
+      </div>
     </div>
   );
 }

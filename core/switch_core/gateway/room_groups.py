@@ -13,6 +13,7 @@ from switch_core.gateway.auth import get_current_user
 from switch_core.gateway.dependencies import (
     get_room_group_store,
     get_room_store,
+    get_room_yaml_service,
     get_session,
 )
 from switch_core.gateway.schemas import (
@@ -22,6 +23,7 @@ from switch_core.gateway.schemas import (
     RoomGroupDetail,
     RoomGroupUpdateRequest,
 )
+from switch_core.rooms_yaml import RoomYamlService
 
 router = APIRouter()
 
@@ -138,6 +140,21 @@ async def assign_rooms_to_group(
     assigned = await room_store.set_group_bulk(session, allowed, group_id)
     await session.commit()
     return RoomGroupAssignResponse(assigned=assigned)
+
+
+@router.get("/{group_id}/yaml")
+async def export_group_yaml(
+    group_id: str,
+    rooms_yaml: Annotated[RoomYamlService, Depends(get_room_yaml_service)],
+    _user: Annotated[User, Depends(get_current_user)],
+) -> Response:
+    """Export all rooms in a group to YAML in the group document shape
+    (``group:`` + ``rooms:`` + ``links:``)."""
+    try:
+        yaml_text = await rooms_yaml.export_group(group_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    return Response(content=yaml_text, media_type="application/x-yaml")
 
 
 @router.delete("/{group_id}", status_code=204)
