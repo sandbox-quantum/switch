@@ -44,6 +44,19 @@ def test_a_turn_with_only_tool_calls_so_far_is_just_its_state() -> None:
     assert summary == "Working…"
 
 
+def test_the_placeholder_for_an_empty_message_is_bound_by_the_budget_too() -> None:
+    """An assistant item can have empty text; the placeholder still has to fit."""
+    items = [_item(kind="assistant-message", title="", text="")]
+    state = "Turn complete."
+
+    summary = turn_summary(
+        items, _turn("completed"), escape=_identity, limit=len(state) + 1 + 5
+    )
+
+    assert len(summary) <= len(state) + 1 + 5
+    assert summary.splitlines()[0] == "(not…"
+
+
 def test_what_was_said_goes_through_the_platforms_escape() -> None:
     """The last thing said is host text, same as everywhere else it is shown."""
     items = [_item(kind="assistant-message", title="", text="<script>")]

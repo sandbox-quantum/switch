@@ -51,7 +51,11 @@ def turn_summary(
         return _truncate(state, limit)
 
     text = said[-1].text
-    body = _fit(text, remaining, escape=escape) if text else "(nothing said)"
+    body = (
+        _fit(text, remaining, escape=escape)
+        if text
+        else _truncate("(nothing said)", remaining)
+    )
     return f"{body}\n{state}"
 
 
