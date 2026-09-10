@@ -1,4 +1,4 @@
-import { ArrowRight, Check, FileText, Loader2, Upload } from 'lucide-react';
+import { ArrowRight, Check, FileText, Loader2, Upload, X } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { toast } from 'sonner';
@@ -359,6 +359,65 @@ function SummaryPanel({
   );
 }
 
+// ── Editable name list ─────────────────────────────────────────────────────
+
+function EditableNameList({
+  label,
+  helperText,
+  items,
+  onChange,
+  knownNames,
+  nameKind,
+}: {
+  label: string;
+  helperText: string;
+  items: string[];
+  onChange: (items: string[]) => void;
+  knownNames: string[];
+  nameKind: string;
+}) {
+  if (items.length === 0) return null;
+  return (
+    <Field>
+      <FieldLabel>{label}</FieldLabel>
+      <div className="space-y-1.5">
+        {items.map((item, i) => {
+          const exists = knownNames.includes(item);
+          return (
+            <div key={i} className="flex items-center gap-2">
+              <div className="relative flex-1">
+                <Input value={item} readOnly className="pr-24" />
+                <span
+                  className={`absolute top-1/2 right-2.5 -translate-y-1/2 text-xs ${
+                    exists ? 'text-foreground-muted' : 'text-amber-500'
+                  }`}
+                >
+                  {exists ? (
+                    <>
+                      exists <Check className="inline size-3" />
+                    </>
+                  ) : (
+                    'not found'
+                  )}
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={() => onChange(items.filter((_, j) => j !== i))}
+                className="flex size-8 shrink-0 items-center justify-center rounded text-foreground-muted hover:text-destructive"
+                title={`Remove ${nameKind}`}
+              >
+                <X className="size-3.5" />
+              </button>
+            </div>
+          );
+        })}
+      </div>
+      <p className="mt-1 text-xs text-foreground-muted">{helperText}</p>
+    </Field>
+  );
+}
+
 // ── Inputs step ────────────────────────────────────────────────────────────
 
 function InputsStep({
@@ -371,6 +430,10 @@ function InputsStep({
   onSubmit,
   sourceName,
   createError,
+  editedAgents,
+  onEditedAgentsChange,
+  editedUsers,
+  onEditedUsersChange,
 }: {
   parsed: ParsedTemplate;
   values: Record<string, string | number | boolean>;
@@ -381,6 +444,10 @@ function InputsStep({
   onSubmit: () => void;
   sourceName: string | null;
   createError: string | null;
+  editedAgents: string[];
+  onEditedAgentsChange: (agents: string[]) => void;
+  editedUsers: string[];
+  onEditedUsersChange: (users: string[]) => void;
 }) {
   const handleChange = useCallback(
     (name: string, value: string | number | boolean) => {
@@ -409,6 +476,22 @@ function InputsStep({
               agentNames={agentNames}
             />
           ))}
+          <EditableNameList
+            label="Agents"
+            helperText="Pre-configured agents from the template. Remove any that don't exist on this server."
+            items={editedAgents}
+            onChange={onEditedAgentsChange}
+            knownNames={agentNames}
+            nameKind="agent"
+          />
+          <EditableNameList
+            label="Users"
+            helperText="Pre-configured users from the template."
+            items={editedUsers}
+            onChange={onEditedUsersChange}
+            knownNames={[]}
+            nameKind="user"
+          />
         </FieldGroup>
         <div className="flex flex-col gap-2 pt-2">
           <Button variant="outline" className="w-full" onClick={onBack}>
@@ -454,6 +537,8 @@ const TemplateImportPanel = observer(function TemplateImportPanel() {
   const [createError, setCreateError] = useState<string | null>(null);
   const [sourceName, setSourceName] = useState<string | null>(null);
   const [templateSchema, setTemplateSchema] = useState<Record<string, unknown> | null>(null);
+  const [editedAgents, setEditedAgents] = useState<string[]>([]);
+  const [editedUsers, setEditedUsers] = useState<string[]>([]);
 
   useEffect(() => {
     rpc.switchServers
@@ -505,7 +590,18 @@ const TemplateImportPanel = observer(function TemplateImportPanel() {
           }
         }
 
-        const result = await rpc.switchServers.createRoomFromTemplate(serverId, yamlText, inputs);
+        // Rewrite YAML with the user's edited agents/users lists
+        const interpolatedAgents = t.agents.filter((a) => /\{[^}]+\}/.test(a));
+        const finalAgents = [...interpolatedAgents, ...editedAgents];
+        const interpolatedUsers =
+          (t as ParsedTemplate).hardcodedUsers.length > 0 ? editedUsers : [];
+        const finalYaml = await rpc.roomTemplates.rewriteYaml({
+          yamlText,
+          agents: finalAgents,
+          users: interpolatedUsers,
+        });
+
+        const result = await rpc.switchServers.createRoomFromTemplate(serverId, finalYaml, inputs);
         await refreshSidebarRoomState(true);
         if (result.failedAttachments.length > 0) {
           const names = result.failedAttachments.map((f) => `${f.id} (${f.error})`).join(', ');
@@ -530,7 +626,7 @@ const TemplateImportPanel = observer(function TemplateImportPanel() {
         }
       }
     },
-    [parsed, values, serverId, yamlText, validateInputs]
+    [parsed, values, serverId, yamlText, validateInputs, editedAgents, editedUsers]
   );
 
   const handleParseAndAdvance = useCallback(async () => {
@@ -553,10 +649,16 @@ const TemplateImportPanel = observer(function TemplateImportPanel() {
         }
       }
       setValues((prev) => ({ ...defaults, ...prev }));
+      setEditedAgents(result.hardcodedAgents);
+      setEditedUsers(result.hardcodedUsers);
       setFieldErrors({});
       setCreateError(null);
 
-      if (result.params.length === 0) {
+      const hasForm =
+        result.params.length > 0 ||
+        result.hardcodedAgents.length > 0 ||
+        result.hardcodedUsers.length > 0;
+      if (!hasForm) {
         await handleCreate(result);
       } else {
         setStep('inputs');
@@ -611,6 +713,10 @@ const TemplateImportPanel = observer(function TemplateImportPanel() {
             onSubmit={() => handleCreate()}
             sourceName={sourceName}
             createError={createError}
+            editedAgents={editedAgents}
+            onEditedAgentsChange={setEditedAgents}
+            editedUsers={editedUsers}
+            onEditedUsersChange={setEditedUsers}
           />
         </>
       )}

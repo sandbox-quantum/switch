@@ -1,5 +1,5 @@
 import Ajv from 'ajv';
-import { load } from 'js-yaml';
+import { dump, load } from 'js-yaml';
 import { createRPCController } from '@shared/lib/ipc/rpc';
 
 export type ParamSpec = {
@@ -14,7 +14,12 @@ export type ParamSpec = {
 export type ParsedTemplate = {
   params: ParamSpec[];
   roomName: string | null;
+  /** All agents from the template (both interpolated and hardcoded). */
   agents: string[];
+  /** Hardcoded agents (no `{param}` interpolation) — editable in the form. */
+  hardcodedAgents: string[];
+  /** Hardcoded users — editable in the form. */
+  hardcodedUsers: string[];
   warnings: string[];
 };
 
@@ -69,6 +74,13 @@ function parseYaml(yamlText: string): Record<string, unknown> {
   return doc;
 }
 
+const hasInterpolation = (s: string) => /\{[^}]+\}/.test(s);
+
+function extractStringList(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.filter((a): a is string => typeof a === 'string');
+}
+
 const ajv = new Ajv({ allErrors: true, strict: false });
 
 export const roomTemplatesController = createRPCController({
@@ -94,16 +106,35 @@ export const roomTemplatesController = createRPCController({
 
     const room = doc.room as Record<string, unknown> | undefined;
     const roomName = room && typeof room.name === 'string' ? room.name : null;
-    const agents =
-      room && Array.isArray(room.agents)
-        ? (room.agents as unknown[]).filter((a): a is string => typeof a === 'string')
-        : [];
+    const allAgents = extractStringList(room?.agents);
+    const allUsers = extractStringList(room?.users);
     const paramSpecs = extractParams(doc.params);
 
     if (!room) {
       warnings.push('Template has no "room:" block — the server may reject it.');
     }
 
-    return { params: paramSpecs, roomName, agents, warnings };
+    return {
+      params: paramSpecs,
+      roomName,
+      agents: allAgents,
+      hardcodedAgents: allAgents.filter((a) => !hasInterpolation(a)),
+      hardcodedUsers: allUsers.filter((u) => !hasInterpolation(u)),
+      warnings,
+    };
+  },
+
+  /** Rewrite the template YAML, replacing room.agents and room.users with edited lists. */
+  rewriteYaml: (params: { yamlText: string; agents: string[]; users: string[] }): string => {
+    const doc = parseYaml(params.yamlText);
+    const room = doc.room as Record<string, unknown> | undefined;
+    if (!room) return params.yamlText;
+    room.agents = params.agents;
+    if (params.users.length > 0) {
+      room.users = params.users;
+    } else {
+      delete room.users;
+    }
+    return dump(doc, { lineWidth: -1 });
   },
 });
