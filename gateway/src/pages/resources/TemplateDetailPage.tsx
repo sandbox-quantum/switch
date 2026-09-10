@@ -267,6 +267,17 @@ function DocumentSection({
       </Stack>
       {exportError && <Alert severity="error">{exportError}</Alert>}
       {copied && <Alert severity="success">Document copied to the clipboard.</Alert>}
+      {!canMutate && (
+        // Said outright rather than left to the greyed-out fields. Every
+        // template on the server is visible to everyone, so reading someone
+        // else's is the ordinary case here, not the exception it is for the
+        // resources next door — and a disabled field on its own only tells you
+        // something is wrong once you have already tried to type in it.
+        <Alert severity="info">
+          This template belongs to {template.owner_name ?? "another user"}. You
+          can copy or download it; only its owner or an admin can change it.
+        </Alert>
+      )}
       <TextField
         label="Name"
         value={name}
