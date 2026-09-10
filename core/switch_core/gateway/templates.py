@@ -181,8 +181,6 @@ async def create_template(
         )
     except TemplateNameTaken as e:
         raise HTTPException(status_code=409, detail=str(e)) from e
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
     await session.commit()
     return _detail(template, await _owner_name(session, user_store, user.id))
 
@@ -250,8 +248,12 @@ async def patch_template(
             kind=req.kind,
             content=req.content,
         )
-    except ValueError as e:
+    except TemplateNameTaken as e:
         raise HTTPException(status_code=409, detail=str(e)) from e
+    except ValueError as e:
+        # The row was there for the ownership check a moment ago, so this is a
+        # delete that landed in between — gone, not in conflict.
+        raise HTTPException(status_code=404, detail=str(e)) from e
     await session.commit()
     return _detail(template, await _owner_name(session, user_store, template.owner_id))
 
