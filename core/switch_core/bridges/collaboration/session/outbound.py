@@ -189,26 +189,34 @@ class SessionTurnActivity:
         channel_id: str,
         thread_root_id: str | None,
         agent_name: str,
-    ) -> None:
+    ) -> bool:
         """Draw the turn where it already is, or where it is not yet.
 
         Logged rather than raised, unlike a card that cannot be posted: nobody
         is waiting on this to answer anything, so the session is no worse off
         than it was before the contract existed and whatever asked for it can
-        get on with the part that someone is waiting for.
+        get on with the part that someone is waiting for. The return value is
+        for a caller that retries on its own schedule and needs to know
+        whether *this* call actually landed rather than just not raising —
+        `False` on any refusal along the way, so it knows not to treat a
+        refusal as the turn's current state having been shown.
 
         The anchor is dropped once the turn has ended, because nothing more is
         coming for it — including when the last edit is the one that failed,
         which is the one case worth a different sentence in the log: what is
         left in the channel then says the turn is still running, and no later
-        call will correct it.
+        call from this process will correct it. A caller that retries on a
+        `False` return will still try again, and finding no anchor left will
+        post the turn's final state as a new message rather than editing the
+        old one — one visible duplicate, the same trade this class already
+        makes for a process restart.
         """
         key = (session_id, turn.turn_id)
         anchor = self._anchors.pop(key, None)
         ended = turn.status in TURN_ENDED
 
         if anchor is None:
-            anchor = await self._begin(
+            begun = await self._begin(
                 items,
                 turn,
                 session_id=session_id,
@@ -216,12 +224,15 @@ class SessionTurnActivity:
                 thread_root_id=thread_root_id,
                 agent_name=agent_name,
             )
-            if anchor is None:
-                return
+            if begun is None:
+                return False
+            anchor, drawn = begun
         elif anchor.sent is None:
-            await self._edit(anchor, items, turn, session_id=session_id, ended=ended)
+            drawn = await self._edit(
+                anchor, items, turn, session_id=session_id, ended=ended
+            )
         else:
-            await self._extend(
+            drawn = await self._extend(
                 anchor,
                 items,
                 turn,
@@ -231,9 +242,10 @@ class SessionTurnActivity:
             )
 
         if ended:
-            return
+            return drawn
         self._anchors[key] = anchor
         self._forget_the_oldest()
+        return drawn
 
     async def _begin(
         self,
@@ -244,7 +256,7 @@ class SessionTurnActivity:
         channel_id: str,
         thread_root_id: str | None,
         agent_name: str,
-    ) -> _Anchor | None:
+    ) -> tuple[_Anchor, bool] | None:
         """Start the turn where the caller put it, drawn how that place allows.
 
         A stream is attempted only in a thread, and only on Slack — the one
@@ -254,7 +266,10 @@ class SessionTurnActivity:
         one, the turn is posted through `post_rich` instead, threaded or not.
 
         Either way the platform can refuse it, and then the channel is told
-        rather than left with a turn that silently never appeared.
+        rather than left with a turn that silently never appeared. `None`
+        means there is no anchor at all yet; a returned anchor paired with
+        `False` means there is one, but it does not yet show what was asked —
+        opening a stream can succeed while its first content is refused.
         """
         if thread_root_id is not None and isinstance(self._adapter, SlackAdapter):
             ref = await self._adapter.open_activity_stream(
@@ -262,7 +277,7 @@ class SessionTurnActivity:
             )
             if ref is not None:
                 anchor = _Anchor(channel_id=channel_id, message_ref=ref, sent={})
-                await self._extend(
+                drawn = await self._extend(
                     anchor,
                     items,
                     turn,
@@ -270,7 +285,7 @@ class SessionTurnActivity:
                     agent_name=agent_name,
                     ended=turn.status in TURN_ENDED,
                 )
-                return anchor
+                return anchor, drawn
 
         try:
             posted = await self._adapter.post_rich(
@@ -287,7 +302,7 @@ class SessionTurnActivity:
                 error,
             )
             return None
-        return _Anchor(channel_id=channel_id, message_ref=posted, sent=None)
+        return _Anchor(channel_id=channel_id, message_ref=posted, sent=None), True
 
     async def _edit(
         self,
@@ -297,7 +312,7 @@ class SessionTurnActivity:
         *,
         session_id: str,
         ended: bool,
-    ) -> None:
+    ) -> bool:
         """Rewrite the posted message with the turn as it now stands."""
         try:
             await self._adapter.update_rich(
@@ -316,6 +331,8 @@ class SessionTurnActivity:
                 if ended
                 else "The next change to the turn will try the same message.",
             )
+            return False
+        return True
 
     async def _extend(
         self,
@@ -326,7 +343,7 @@ class SessionTurnActivity:
         session_id: str,
         agent_name: str,
         ended: bool,
-    ) -> None:
+    ) -> bool:
         """Send the stream whatever has changed since the last time.
 
         Nothing is recorded as sent until Slack has taken it, so an append it
@@ -348,6 +365,7 @@ class SessionTurnActivity:
         chunks, pending = self._difference(sent, items, turn, session_id=session_id)
         if ended:
             chunks.append(stream_state_chunk(items, turn))
+        drawn = True
         if chunks:
             pushed = await self._adapter.append_activity_stream(
                 anchor.channel_id, anchor.message_ref, chunks, agent_name=agent_name
@@ -355,6 +373,7 @@ class SessionTurnActivity:
             if pushed:
                 sent.update(pending)
             else:
+                drawn = False
                 logger.error(
                     "Slack would not take %s change(s) to turn %s of session %s "
                     "in channel %s. %s",
@@ -370,6 +389,7 @@ class SessionTurnActivity:
             await self._adapter.close_activity_stream(
                 anchor.channel_id, anchor.message_ref, agent_name=agent_name
             )
+        return drawn
 
     def _difference(
         self,

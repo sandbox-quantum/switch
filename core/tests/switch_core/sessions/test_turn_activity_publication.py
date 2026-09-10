@@ -1,3 +1,4 @@
+from switch_core.bridges.collaboration.adapter import RichContentFailed
 from switch_core.bridges.collaboration.session.outbound import SessionTurnActivity
 from switch_core.sessions.publication import SessionPublisher
 
@@ -80,6 +81,42 @@ async def test_an_unchanged_turn_is_not_redrawn_on_the_next_cycle(session_factor
 
     assert len(activity_platform.posts) == 1
     assert activity_platform.edits == []
+
+
+class FlakyActivityPlatform(ActivityPlatform):
+    """Refuses the first post, then behaves like `ActivityPlatform`."""
+
+    def __init__(self):
+        super().__init__()
+        self._refused = False
+
+    async def post_rich(self, channel, agent, content, thread):
+        if not self._refused:
+            self._refused = True
+            raise RichContentFailed("nope", text="nope")
+        return await super().post_rich(channel, agent, content, thread)
+
+
+async def test_a_refused_post_is_retried_rather_than_marked_drawn(session_factory):
+    service, epoch = await setup(session_factory)
+    await opened(service, epoch)
+    activity_platform = FlakyActivityPlatform()
+    publisher = SessionPublisher(
+        session_factory,
+        "bridge",
+        cards_for(session_factory, Platform()),
+        SessionTurnActivity(activity_platform),
+    )
+
+    await publisher.publish_pending()
+    assert activity_platform.posts == []
+
+    # Nothing about the turn changed since the refusal — a guard keyed only
+    # on the turn's own state would see this as already drawn and skip it.
+    await publisher.publish_pending()
+
+    assert len(activity_platform.posts) == 1
+    assert activity_platform.posts[0][1].turn.turn_id == "turn-demo"
 
 
 async def test_a_bridge_with_no_turn_activity_adapter_still_publishes_cards(

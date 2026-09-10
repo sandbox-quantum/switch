@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import time
+from collections import OrderedDict
 from collections.abc import Callable
 
 from sqlalchemy import select
@@ -183,6 +184,24 @@ async def refresh_cards(
         raise PublicationIncomplete(session_id, errors, backed_off)
 
 
+class TurnActivityIncomplete(Exception):
+    """Some of a session's turns did not fully draw this pass.
+
+    `SessionTurnActivity.publish` already logs why a given turn did not land;
+    this exists only so `SessionPublisher` knows not to mark the session's
+    sequence done — a turn whose draw was refused must be tried again next
+    cycle rather than treated, by the guard or by the sequence dedupe, as
+    already showing what was asked.
+    """
+
+    def __init__(self, session_id: str, turn_ids: list[str]) -> None:
+        self.session_id = session_id
+        self.turn_ids = turn_ids
+        super().__init__(
+            f"Session {session_id}: {len(turn_ids)} turn(s) did not fully publish."
+        )
+
+
 async def refresh_activity(
     session_factory: async_sessionmaker[AsyncSession],
     bridge_id: str,
@@ -199,12 +218,12 @@ async def refresh_activity(
     origin, no membership, no channel — is skipped rather than treated as a
     broken invariant the way a request's missing origin is.
 
-    `SessionTurnActivity.publish` never raises: a failed post or edit is
-    logged and retried on the next call, not surfaced, so there is nothing
-    here to aggregate the way `refresh_cards` aggregates card failures.
     `redraw_needed` exists only to stop a running turn's channel-root message
     being rewritten every cycle when nothing about it changed — a stream
-    already skips sending a chunk it has already sent.
+    already skips sending a chunk it has already sent. `redrawn` is told only
+    when `publish` reports it actually landed: a turn it refused is left out
+    of the guard so the next cycle tries it again instead of reading "already
+    drawn" for a state that was never shown.
     """
     async with session_factory() as db:
         row = await db.get(SdkSession, session_id)
@@ -240,8 +259,9 @@ async def refresh_activity(
             )
         agent_name = agent.name
         db.expunge_all()
+    failed: list[str] = []
     for turn, items, channel_id, thread_id, state in publications:
-        await activity.publish(
+        drawn = await activity.publish(
             items,
             turn,
             session_id=session_id,
@@ -249,7 +269,12 @@ async def refresh_activity(
             thread_root_id=thread_id,
             agent_name=agent_name,
         )
-        redrawn(session_id, turn.turn_id, state)
+        if drawn:
+            redrawn(session_id, turn.turn_id, state)
+        else:
+            failed.append(turn.turn_id)
+    if failed:
+        raise TurnActivityIncomplete(session_id, failed)
 
 
 class _RecoveryBackoff:
@@ -319,6 +344,15 @@ class _RedrawGuard:
         self._drawn[token] = state
 
 
+# How many turns' redraw state one publisher keeps. Turns far outnumber the
+# request cards _RedrawGuard tracks — every command opens one — so unlike
+# that guard this one bounds itself the same way SessionTurnActivity bounds
+# its own anchors: dropping the least recently drawn costs one needless
+# redraw if that turn ever changes again, not a leak for the life of the
+# process.
+_MAX_TRACKED_TURNS = 4096
+
+
 class _TurnRedrawGuard:
     """The `_RedrawGuard` above, for a turn rather than a card.
 
@@ -332,7 +366,9 @@ class _TurnRedrawGuard:
     """
 
     def __init__(self) -> None:
-        self._drawn: dict[tuple[str, str], tuple[str, tuple[int, ...]]] = {}
+        self._drawn: OrderedDict[tuple[str, str], tuple[str, tuple[int, ...]]] = (
+            OrderedDict()
+        )
 
     def needed(
         self, session_id: str, turn_id: str, state: tuple[str, tuple[int, ...]]
@@ -343,6 +379,9 @@ class _TurnRedrawGuard:
         self, session_id: str, turn_id: str, state: tuple[str, tuple[int, ...]]
     ) -> None:
         self._drawn[(session_id, turn_id)] = state
+        self._drawn.move_to_end((session_id, turn_id))
+        while len(self._drawn) > _MAX_TRACKED_TURNS:
+            self._drawn.popitem(last=False)
 
 
 class SessionPublisher:
