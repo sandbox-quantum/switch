@@ -59,6 +59,7 @@
     "@switch-console/plugins": "workspace:*",
     "@switch-console/shared": "workspace:*",
     "@typescript/native-preview": "7.0.0-dev.20260609.1",
+    "ajv": "^8.17.1",
     "better-sqlite3": "^12.6.0",
     "croner": "^10.0.1",
     "cronstrue": "^3.14.0",
