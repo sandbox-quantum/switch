@@ -4,7 +4,9 @@ from collections.abc import AsyncIterator, Iterator
 
 import pytest
 import pytest_asyncio
+from sqlalchemy import insert
 from sqlalchemy.ext.asyncio import (
+    AsyncConnection,
     AsyncSession,
     async_sessionmaker,
     create_async_engine,
@@ -15,6 +17,20 @@ from testcontainers.postgres import PostgresContainer
 # create_all provisions the full schema (rooms, room_groups, FKs, …).
 import switch_core.db.models  # noqa: F401
 from switch_core.db.base import Base
+from switch_core.db.models import TENANT_ZERO_ID, Tenant
+
+
+async def _seed_tenant_zero(conn: AsyncConnection) -> None:
+    """Insert the one tenant every scoped row's `tenant_id` default points at.
+
+    Every scoped table's `tenant_id` FK requires a matching `tenants` row, so
+    this must run right after the schema exists.
+    """
+    await conn.execute(
+        insert(Tenant.__table__).values(
+            id=TENANT_ZERO_ID, slug="default", name="Tenant Zero"
+        )
+    )
 
 
 @pytest.fixture(scope="session")
@@ -41,6 +57,7 @@ async def session_factory(
     engine = create_async_engine(postgres_url)
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        await _seed_tenant_zero(conn)
     try:
         yield async_sessionmaker(bind=engine, expire_on_commit=False)
     finally:

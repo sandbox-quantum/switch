@@ -8,6 +8,7 @@ from sqlalchemy import (
     Column,
     DateTime,
     ForeignKey,
+    ForeignKeyConstraint,
     Index,
     Integer,
     LargeBinary,
@@ -31,6 +32,73 @@ from switch_core.db.notify_ddl import (
 
 def _uuid() -> str:
     return str(uuid.uuid4())
+
+
+# ── Tenants ─────────────────────────────────────────────────────────────────
+
+
+class Tenant(Base):
+    """The top-level customer boundary every scoped table hangs off.
+
+    Deliberately minimal: no `plan`, `status` or `deleted_at`. A later phase
+    adds plans and deletion; a `deleted_at` that nothing honours yet would
+    read as a guarantee the code does not make.
+    """
+
+    __tablename__ = "tenants"
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
+    slug: Mapped[str] = mapped_column(Text, unique=True, nullable=False)
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[str] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class TenantMember(Base):
+    """A user's membership in a tenant, and their role within it.
+
+    Membership is a row, not a column on the user: one login may belong to
+    several tenants. `role` is a checked string rather than an enum type,
+    matching how `users.role` is already stored — a later phase gives these
+    roles meaning; this one only records them.
+    """
+
+    __tablename__ = "tenant_members"
+    __table_args__ = (
+        CheckConstraint(
+            "role IN ('owner', 'admin', 'member')", name="ck_tenant_members_role"
+        ),
+    )
+
+    tenant_id: Mapped[str] = mapped_column(
+        Text, ForeignKey("tenants.id"), primary_key=True
+    )
+    user_id: Mapped[str] = mapped_column(Text, ForeignKey("users.id"), primary_key=True)
+    role: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[str] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+# The fixed id of the one tenant that exists before a second is ever onboarded.
+# Written into the migration verbatim rather than read from config, so a later
+# edit to `SwitchConfig.tenant_id` can never desync from the row it names.
+TENANT_ZERO_ID = "00000000-0000-0000-0000-000000000000"
+
+
+class TenantScoped:
+    """Mixin carrying the tenant column shared by every per-tenant table.
+
+    The Python-side default returns tenant zero — the only tenant that exists
+    today — so an ordinary ORM insert needs no change to land in the right
+    place. A later PR replaces this default with a value read from the
+    request/session context; nothing here reads from a contextvar yet.
+    """
+
+    tenant_id: Mapped[str] = mapped_column(
+        Text, ForeignKey("tenants.id"), nullable=False, default=TENANT_ZERO_ID
+    )
 
 
 # ── Users ──────────────────────────────────────────────────────────────────────
@@ -113,11 +181,16 @@ class OidcIdentity(Base):
 # ── API Keys ─────────────────────────────────────────────────────────────────
 
 
-class ApiKey(Base):
+class ApiKey(TenantScoped, Base):
     __tablename__ = "api_keys"
+    __table_args__ = (
+        UniqueConstraint("id", "tenant_id", name="uq_api_keys_id_tenant"),
+    )
 
     id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
     user_id: Mapped[str] = mapped_column(Text, ForeignKey("users.id"), nullable=False)
+    # Global on purpose: bearer auth resolves the hash before a tenant is
+    # known, so it cannot be scoped by one.
     key_hash: Mapped[str] = mapped_column(Text, unique=True, nullable=False)
     encrypted_key: Mapped[str] = mapped_column(Text, nullable=False)
     label: Mapped[str] = mapped_column(Text, nullable=False)
@@ -130,11 +203,17 @@ class ApiKey(Base):
 # ── Clients ────────────────────────────────────────────────────────────────────
 
 
-class Client(Base):
+class Client(TenantScoped, Base):
     __tablename__ = "clients"
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id", "matrix_user_id", name="uq_clients_tenant_matrix_user_id"
+        ),
+        UniqueConstraint("id", "tenant_id", name="uq_clients_id_tenant"),
+    )
 
     id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
-    matrix_user_id: Mapped[str] = mapped_column(Text, unique=True, nullable=False)
+    matrix_user_id: Mapped[str] = mapped_column(Text, nullable=False)
     display_name: Mapped[str] = mapped_column(Text, nullable=False)
     type: Mapped[str] = mapped_column(Text, nullable=False)
     config: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
@@ -143,13 +222,23 @@ class Client(Base):
     )
 
 
-class ClientRoom(Base):
+class ClientRoom(TenantScoped, Base):
     __tablename__ = "client_rooms"
-
-    client_id: Mapped[str] = mapped_column(
-        Text, ForeignKey("clients.id"), primary_key=True
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["tenant_id", "client_id"],
+            ["clients.tenant_id", "clients.id"],
+            name="fk_client_rooms_client",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "room_id"],
+            ["rooms.tenant_id", "rooms.id"],
+            name="fk_client_rooms_room",
+        ),
     )
-    room_id: Mapped[str] = mapped_column(Text, ForeignKey("rooms.id"), primary_key=True)
+
+    client_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    room_id: Mapped[str] = mapped_column(Text, primary_key=True)
     joined_at: Mapped[str] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -158,12 +247,32 @@ class ClientRoom(Base):
 # ── Agents ─────────────────────────────────────────────────────────────────────
 
 
-class Agent(Base):
+class Agent(TenantScoped, Base):
     __tablename__ = "agents"
-    __table_args__ = (Index("ix_agents_parent_agent_id", "parent_agent_id"),)
+    __table_args__ = (
+        Index("ix_agents_parent_agent_id", "parent_agent_id"),
+        UniqueConstraint("tenant_id", "name", name="uq_agents_tenant_name"),
+        UniqueConstraint("id", "tenant_id", name="uq_agents_id_tenant"),
+        ForeignKeyConstraint(
+            ["tenant_id", "client_id"],
+            ["clients.tenant_id", "clients.id"],
+            name="fk_agents_client",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "api_key_id"],
+            ["api_keys.tenant_id", "api_keys.id"],
+            name="fk_agents_api_key",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "parent_agent_id"],
+            ["agents.tenant_id", "agents.id"],
+            name="fk_agents_parent_agent",
+            ondelete="SET NULL (parent_agent_id)",
+        ),
+    )
 
     id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
-    name: Mapped[str] = mapped_column(Text, unique=True, nullable=False)
+    name: Mapped[str] = mapped_column(Text, nullable=False)
     description: Mapped[str] = mapped_column(Text, nullable=False)
     # Absolute https URL of the agent's icon (CHOO-2171). Switch stores the
     # link, never image bytes: whatever produces the picture — a generated-
@@ -180,15 +289,11 @@ class Agent(Base):
     agent_type: Mapped[str] = mapped_column(Text, nullable=False)
     connector_type: Mapped[str] = mapped_column(Text, nullable=False)
     integration_profile: Mapped[dict] = mapped_column(JSONB, nullable=False)
-    client_id: Mapped[str] = mapped_column(
-        Text, ForeignKey("clients.id"), unique=True, nullable=False
-    )
+    client_id: Mapped[str] = mapped_column(Text, unique=True, nullable=False)
     # Indexed because bearer-token auth resolves the key row and then looks the
     # agent up by this column on every authenticated request, heartbeats
     # included — without it that is a sequential scan per beat.
-    api_key_id: Mapped[str] = mapped_column(
-        Text, ForeignKey("api_keys.id"), nullable=False, index=True
-    )
+    api_key_id: Mapped[str] = mapped_column(Text, nullable=False, index=True)
     owner_id: Mapped[str | None] = mapped_column(
         Text, ForeignKey("users.id"), nullable=True
     )
@@ -197,9 +302,7 @@ class Agent(Base):
     # main Claude Code agent. NULL for ordinary top-level agents. ON DELETE
     # SET NULL so deleting a parent orphans its children rather than removing
     # them (they keep their own identity, rooms, and history).
-    parent_agent_id: Mapped[str | None] = mapped_column(
-        Text, ForeignKey("agents.id", ondelete="SET NULL"), nullable=True
-    )
+    parent_agent_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     oauth_client_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     # Scoped agent-addressing permissions (CHOO-1585). NULL preserves today's
     # open behaviour (anyone may address the agent); a stored policy is a
@@ -215,13 +318,20 @@ class Agent(Base):
 # ── Tools ──────────────────────────────────────────────────────────────────────
 
 
-class Tool(Base):
+class Tool(TenantScoped, Base):
     __tablename__ = "tools"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["tenant_id", "agent_id"],
+            ["agents.tenant_id", "agents.id"],
+            name="fk_tools_agent",
+        ),
+    )
 
     id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
     name: Mapped[str] = mapped_column(Text, nullable=False)
     description: Mapped[str] = mapped_column(Text, nullable=False)
-    agent_id: Mapped[str] = mapped_column(Text, ForeignKey("agents.id"), nullable=False)
+    agent_id: Mapped[str] = mapped_column(Text, nullable=False)
     args_schema: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     metadata_: Mapped[dict | None] = mapped_column("metadata", JSONB, nullable=True)
     created_at: Mapped[str] = mapped_column(
@@ -232,13 +342,20 @@ class Tool(Base):
 # ── Models ─────────────────────────────────────────────────────────────────────
 
 
-class Model(Base):
+class Model(TenantScoped, Base):
     __tablename__ = "models"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["tenant_id", "agent_id"],
+            ["agents.tenant_id", "agents.id"],
+            name="fk_models_agent",
+        ),
+    )
 
     id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
     name: Mapped[str] = mapped_column(Text, nullable=False)
     description: Mapped[str] = mapped_column(Text, nullable=False)
-    agent_id: Mapped[str] = mapped_column(Text, ForeignKey("agents.id"), nullable=False)
+    agent_id: Mapped[str] = mapped_column(Text, nullable=False)
     metadata_: Mapped[dict | None] = mapped_column("metadata", JSONB, nullable=True)
     created_at: Mapped[str] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
@@ -251,22 +368,45 @@ class Model(Base):
 agent_skills = Table(
     "agent_skills",
     Base.metadata,
-    Column("agent_id", Text, ForeignKey("agents.id"), primary_key=True),
-    Column("skill_id", Text, ForeignKey("skills.id"), primary_key=True),
+    Column(
+        "tenant_id",
+        Text,
+        ForeignKey("tenants.id"),
+        nullable=False,
+        default=TENANT_ZERO_ID,
+    ),
+    Column("agent_id", Text, primary_key=True),
+    Column("skill_id", Text, primary_key=True),
+    ForeignKeyConstraint(
+        ["tenant_id", "agent_id"],
+        ["agents.tenant_id", "agents.id"],
+        name="fk_agent_skills_agent",
+    ),
+    ForeignKeyConstraint(
+        ["tenant_id", "skill_id"],
+        ["skills.tenant_id", "skills.id"],
+        name="fk_agent_skills_skill",
+    ),
 )
 
 
-class Skill(Base):
+class Skill(TenantScoped, Base):
     __tablename__ = "skills"
+    __table_args__ = (
+        UniqueConstraint("id", "tenant_id", name="uq_skills_id_tenant"),
+        ForeignKeyConstraint(
+            ["tenant_id", "owner_agent_id"],
+            ["agents.tenant_id", "agents.id"],
+            name="fk_skills_owner_agent",
+        ),
+    )
 
     id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
     name: Mapped[str] = mapped_column(Text, nullable=False)
     version: Mapped[str] = mapped_column(Text, nullable=False)
     description: Mapped[str] = mapped_column(Text, nullable=False)
     visibility: Mapped[str] = mapped_column(Text, nullable=False)
-    owner_agent_id: Mapped[str | None] = mapped_column(
-        Text, ForeignKey("agents.id"), nullable=True
-    )
+    owner_agent_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_by: Mapped[str | None] = mapped_column(
         Text, ForeignKey("users.id"), nullable=True
     )
@@ -283,8 +423,15 @@ class Skill(Base):
 room_agents = Table(
     "room_agents",
     Base.metadata,
-    Column("room_id", Text, ForeignKey("rooms.id"), primary_key=True),
-    Column("agent_id", Text, ForeignKey("agents.id"), primary_key=True),
+    Column(
+        "tenant_id",
+        Text,
+        ForeignKey("tenants.id"),
+        nullable=False,
+        default=TENANT_ZERO_ID,
+    ),
+    Column("room_id", Text, primary_key=True),
+    Column("agent_id", Text, primary_key=True),
     Column("last_connected_at", DateTime(timezone=True), nullable=True),
     Column(
         "receives_join_events",
@@ -295,17 +442,44 @@ room_agents = Table(
     # Room-scoped alias: `@<alias>` addresses this agent in this room exactly
     # like its real name. Null when the agent has no alias here.
     Column("alias", Text, nullable=True),
+    ForeignKeyConstraint(
+        ["tenant_id", "room_id"],
+        ["rooms.tenant_id", "rooms.id"],
+        name="fk_room_agents_room",
+    ),
+    ForeignKeyConstraint(
+        ["tenant_id", "agent_id"],
+        ["agents.tenant_id", "agents.id"],
+        name="fk_room_agents_agent",
+    ),
 )
 
 room_skills = Table(
     "room_skills",
     Base.metadata,
-    Column("room_id", Text, ForeignKey("rooms.id"), primary_key=True),
-    Column("skill_id", Text, ForeignKey("skills.id"), primary_key=True),
+    Column(
+        "tenant_id",
+        Text,
+        ForeignKey("tenants.id"),
+        nullable=False,
+        default=TENANT_ZERO_ID,
+    ),
+    Column("room_id", Text, primary_key=True),
+    Column("skill_id", Text, primary_key=True),
+    ForeignKeyConstraint(
+        ["tenant_id", "room_id"],
+        ["rooms.tenant_id", "rooms.id"],
+        name="fk_room_skills_room",
+    ),
+    ForeignKeyConstraint(
+        ["tenant_id", "skill_id"],
+        ["skills.tenant_id", "skills.id"],
+        name="fk_room_skills_skill",
+    ),
 )
 
 
-class Room(Base):
+class Room(TenantScoped, Base):
     __tablename__ = "rooms"
     __table_args__ = (
         # A bridged channel maps to at most one Switch room. Partial so that
@@ -321,15 +495,28 @@ class Room(Base):
         # and the ON DELETE SET NULL when a group is removed both scan the
         # table. Mirrors ix_agents_parent_agent_id.
         Index("ix_rooms_group_id", "group_id"),
+        UniqueConstraint(
+            "tenant_id", "matrix_room_id", name="uq_rooms_tenant_matrix_room_id"
+        ),
+        UniqueConstraint("id", "tenant_id", name="uq_rooms_id_tenant"),
+        ForeignKeyConstraint(
+            ["tenant_id", "bridge_id"],
+            ["collaboration_bridges.tenant_id", "collaboration_bridges.id"],
+            name="fk_rooms_bridge",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "group_id"],
+            ["room_groups.tenant_id", "room_groups.id"],
+            name="fk_rooms_group",
+            ondelete="SET NULL (group_id)",
+        ),
     )
 
     id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
-    matrix_room_id: Mapped[str] = mapped_column(Text, unique=True, nullable=False)
+    matrix_room_id: Mapped[str] = mapped_column(Text, nullable=False)
     name: Mapped[str] = mapped_column(Text, nullable=False)
     description: Mapped[str] = mapped_column(Text, nullable=False)
-    bridge_id: Mapped[str | None] = mapped_column(
-        Text, ForeignKey("collaboration_bridges.id"), nullable=True
-    )
+    bridge_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     external_channel_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     channel_type: Mapped[str | None] = mapped_column(Text, nullable=True)
     admin_mode: Mapped[bool] = mapped_column(
@@ -341,9 +528,7 @@ class Room(Base):
     created_by: Mapped[str | None] = mapped_column(
         Text, ForeignKey("users.id"), nullable=True
     )
-    group_id: Mapped[str | None] = mapped_column(
-        Text, ForeignKey("room_groups.id", ondelete="SET NULL"), nullable=True
-    )
+    group_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     owner_id: Mapped[str | None] = mapped_column(
         Text, ForeignKey("users.id"), nullable=True
     )
@@ -369,7 +554,7 @@ class Room(Base):
 # ── Room Groups ─────────────────────────────────────────────────────────────────
 
 
-class RoomGroup(Base):
+class RoomGroup(TenantScoped, Base):
     """A named, optionally-nested organizational group for rooms.
 
     Groups form a tree via the nullable `parent_group_id` self-reference;
@@ -386,15 +571,20 @@ class RoomGroup(Base):
     __tablename__ = "room_groups"
     __table_args__ = (
         CheckConstraint("parent_group_id <> id", name="room_groups_no_self_parent"),
+        UniqueConstraint("id", "tenant_id", name="uq_room_groups_id_tenant"),
+        ForeignKeyConstraint(
+            ["tenant_id", "parent_group_id"],
+            ["room_groups.tenant_id", "room_groups.id"],
+            name="fk_room_groups_parent_group",
+            ondelete="SET NULL (parent_group_id)",
+        ),
     )
 
     id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
     name: Mapped[str] = mapped_column(Text, nullable=False)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     color: Mapped[str | None] = mapped_column(Text, nullable=True)
-    parent_group_id: Mapped[str | None] = mapped_column(
-        Text, ForeignKey("room_groups.id", ondelete="SET NULL"), nullable=True
-    )
+    parent_group_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[str] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -403,7 +593,7 @@ class RoomGroup(Base):
 # ── Room Links ────────────────────────────────────────────────────────────────
 
 
-class RoomLink(Base):
+class RoomLink(TenantScoped, Base):
     """Directed pointer from one room to another, with a free-text label.
 
     A row represents a one-way link `source_room_id → target_room_id`. The pair
@@ -414,14 +604,22 @@ class RoomLink(Base):
     __tablename__ = "room_links"
     __table_args__ = (
         CheckConstraint("source_room_id <> target_room_id", name="room_links_no_self"),
+        ForeignKeyConstraint(
+            ["tenant_id", "source_room_id"],
+            ["rooms.tenant_id", "rooms.id"],
+            name="fk_room_links_source_room",
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "target_room_id"],
+            ["rooms.tenant_id", "rooms.id"],
+            name="fk_room_links_target_room",
+            ondelete="CASCADE",
+        ),
     )
 
-    source_room_id: Mapped[str] = mapped_column(
-        Text, ForeignKey("rooms.id", ondelete="CASCADE"), primary_key=True
-    )
-    target_room_id: Mapped[str] = mapped_column(
-        Text, ForeignKey("rooms.id", ondelete="CASCADE"), primary_key=True
-    )
+    source_room_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    target_room_id: Mapped[str] = mapped_column(Text, primary_key=True)
     label: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[str] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
@@ -431,17 +629,32 @@ class RoomLink(Base):
 # ── Tasks ──────────────────────────────────────────────────────────────────────
 
 
-class Task(Base):
+class Task(TenantScoped, Base):
     __tablename__ = "tasks"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["tenant_id", "room_id"],
+            ["rooms.tenant_id", "rooms.id"],
+            name="fk_tasks_room",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "requester_agent_id"],
+            ["agents.tenant_id", "agents.id"],
+            name="fk_tasks_requester_agent",
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "performer_agent_id"],
+            ["agents.tenant_id", "agents.id"],
+            name="fk_tasks_performer_agent",
+            ondelete="CASCADE",
+        ),
+    )
 
     id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
-    room_id: Mapped[str] = mapped_column(Text, ForeignKey("rooms.id"), nullable=False)
-    requester_agent_id: Mapped[str] = mapped_column(
-        Text, ForeignKey("agents.id", ondelete="CASCADE"), nullable=False
-    )
-    performer_agent_id: Mapped[str] = mapped_column(
-        Text, ForeignKey("agents.id", ondelete="CASCADE"), nullable=False
-    )
+    room_id: Mapped[str] = mapped_column(Text, nullable=False)
+    requester_agent_id: Mapped[str] = mapped_column(Text, nullable=False)
+    performer_agent_id: Mapped[str] = mapped_column(Text, nullable=False)
     summary: Mapped[str] = mapped_column(Text, nullable=False)
     description: Mapped[str] = mapped_column(Text, nullable=False)
     status: Mapped[str] = mapped_column(Text, nullable=False)
@@ -464,20 +677,57 @@ class Task(Base):
 room_references = Table(
     "room_references",
     Base.metadata,
-    Column("room_id", Text, ForeignKey("rooms.id"), primary_key=True),
-    Column("reference_id", Text, ForeignKey("references.id"), primary_key=True),
+    Column(
+        "tenant_id",
+        Text,
+        ForeignKey("tenants.id"),
+        nullable=False,
+        default=TENANT_ZERO_ID,
+    ),
+    Column("room_id", Text, primary_key=True),
+    Column("reference_id", Text, primary_key=True),
+    ForeignKeyConstraint(
+        ["tenant_id", "room_id"],
+        ["rooms.tenant_id", "rooms.id"],
+        name="fk_room_references_room",
+    ),
+    ForeignKeyConstraint(
+        ["tenant_id", "reference_id"],
+        ["references.tenant_id", "references.id"],
+        name="fk_room_references_reference",
+    ),
 )
 
 room_documents = Table(
     "room_documents",
     Base.metadata,
-    Column("room_id", Text, ForeignKey("rooms.id"), primary_key=True),
-    Column("document_id", Text, ForeignKey("documents.id"), primary_key=True),
+    Column(
+        "tenant_id",
+        Text,
+        ForeignKey("tenants.id"),
+        nullable=False,
+        default=TENANT_ZERO_ID,
+    ),
+    Column("room_id", Text, primary_key=True),
+    Column("document_id", Text, primary_key=True),
+    ForeignKeyConstraint(
+        ["tenant_id", "room_id"],
+        ["rooms.tenant_id", "rooms.id"],
+        name="fk_room_documents_room",
+    ),
+    ForeignKeyConstraint(
+        ["tenant_id", "document_id"],
+        ["documents.tenant_id", "documents.id"],
+        name="fk_room_documents_document",
+    ),
 )
 
 
-class Reference(Base):
+class Reference(TenantScoped, Base):
     __tablename__ = "references"
+    __table_args__ = (
+        UniqueConstraint("id", "tenant_id", name="uq_references_id_tenant"),
+    )
 
     id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
     owner_id: Mapped[str] = mapped_column(Text, ForeignKey("users.id"), nullable=False)
@@ -493,9 +743,21 @@ class Reference(Base):
     )
 
 
-class ReferenceType(Base):
+class ReferenceType(TenantScoped, Base):
+    """A customer-defined reference type slug.
+
+    No surrogate `id`: the natural key is `(tenant_id, type)`, so `tenant_id`
+    joins the primary key directly here rather than through the `TenantScoped`
+    default alone — a type slug may collide across tenants the way `agents.name`
+    does. Nothing references this table by foreign key, so it is also the one
+    scoped table with no `unique (id, tenant_id)`.
+    """
+
     __tablename__ = "reference_types"
 
+    tenant_id: Mapped[str] = mapped_column(
+        Text, ForeignKey("tenants.id"), primary_key=True, default=TENANT_ZERO_ID
+    )
     type: Mapped[str] = mapped_column(Text, primary_key=True)
     owner_id: Mapped[str] = mapped_column(Text, ForeignKey("users.id"), nullable=False)
     read_visibility: Mapped[str] = mapped_column(Text, nullable=False)
@@ -508,7 +770,7 @@ class ReferenceType(Base):
     )
 
 
-class Document(Base):
+class Document(TenantScoped, Base):
     __tablename__ = "documents"
     __table_args__ = (
         Index(
@@ -518,18 +780,27 @@ class Document(Base):
             unique=True,
             postgresql_where=text("room_id IS NOT NULL"),
         ),
+        UniqueConstraint("id", "tenant_id", name="uq_documents_id_tenant"),
+        ForeignKeyConstraint(
+            ["tenant_id", "room_id"],
+            ["rooms.tenant_id", "rooms.id"],
+            name="fk_documents_room",
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "created_by_agent_id"],
+            ["agents.tenant_id", "agents.id"],
+            name="fk_documents_created_by_agent",
+            ondelete="SET NULL (created_by_agent_id)",
+        ),
     )
 
     id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
     owner_id: Mapped[str | None] = mapped_column(
         Text, ForeignKey("users.id"), nullable=True
     )
-    room_id: Mapped[str | None] = mapped_column(
-        Text, ForeignKey("rooms.id", ondelete="CASCADE"), nullable=True
-    )
-    created_by_agent_id: Mapped[str | None] = mapped_column(
-        Text, ForeignKey("agents.id", ondelete="SET NULL"), nullable=True
-    )
+    room_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_by_agent_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     read_visibility: Mapped[str] = mapped_column(Text, nullable=False)
     write_visibility: Mapped[str] = mapped_column(Text, nullable=False)
     name: Mapped[str] = mapped_column(Text, nullable=False)
@@ -547,27 +818,81 @@ class Document(Base):
 room_packages = Table(
     "room_packages",
     Base.metadata,
-    Column("room_id", Text, ForeignKey("rooms.id"), primary_key=True),
-    Column("package_id", Text, ForeignKey("packages.id"), primary_key=True),
+    Column(
+        "tenant_id",
+        Text,
+        ForeignKey("tenants.id"),
+        nullable=False,
+        default=TENANT_ZERO_ID,
+    ),
+    Column("room_id", Text, primary_key=True),
+    Column("package_id", Text, primary_key=True),
+    ForeignKeyConstraint(
+        ["tenant_id", "room_id"],
+        ["rooms.tenant_id", "rooms.id"],
+        name="fk_room_packages_room",
+    ),
+    ForeignKeyConstraint(
+        ["tenant_id", "package_id"],
+        ["packages.tenant_id", "packages.id"],
+        name="fk_room_packages_package",
+    ),
 )
 
 package_references = Table(
     "package_references",
     Base.metadata,
-    Column("package_id", Text, ForeignKey("packages.id"), primary_key=True),
-    Column("reference_id", Text, ForeignKey("references.id"), primary_key=True),
+    Column(
+        "tenant_id",
+        Text,
+        ForeignKey("tenants.id"),
+        nullable=False,
+        default=TENANT_ZERO_ID,
+    ),
+    Column("package_id", Text, primary_key=True),
+    Column("reference_id", Text, primary_key=True),
+    ForeignKeyConstraint(
+        ["tenant_id", "package_id"],
+        ["packages.tenant_id", "packages.id"],
+        name="fk_package_references_package",
+    ),
+    ForeignKeyConstraint(
+        ["tenant_id", "reference_id"],
+        ["references.tenant_id", "references.id"],
+        name="fk_package_references_reference",
+    ),
 )
 
 package_documents = Table(
     "package_documents",
     Base.metadata,
-    Column("package_id", Text, ForeignKey("packages.id"), primary_key=True),
-    Column("document_id", Text, ForeignKey("documents.id"), primary_key=True),
+    Column(
+        "tenant_id",
+        Text,
+        ForeignKey("tenants.id"),
+        nullable=False,
+        default=TENANT_ZERO_ID,
+    ),
+    Column("package_id", Text, primary_key=True),
+    Column("document_id", Text, primary_key=True),
+    ForeignKeyConstraint(
+        ["tenant_id", "package_id"],
+        ["packages.tenant_id", "packages.id"],
+        name="fk_package_documents_package",
+    ),
+    ForeignKeyConstraint(
+        ["tenant_id", "document_id"],
+        ["documents.tenant_id", "documents.id"],
+        name="fk_package_documents_document",
+    ),
 )
 
 
-class Package(Base):
+class Package(TenantScoped, Base):
     __tablename__ = "packages"
+    __table_args__ = (
+        UniqueConstraint("id", "tenant_id", name="uq_packages_id_tenant"),
+    )
 
     id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
     owner_id: Mapped[str] = mapped_column(Text, ForeignKey("users.id"), nullable=False)
@@ -584,16 +909,31 @@ class Package(Base):
 # ── Collaboration Bridges ──────────────────────────────────────────────────────
 
 
-class CollaborationBridge(Base):
+class CollaborationBridge(TenantScoped, Base):
     __tablename__ = "collaboration_bridges"
+    __table_args__ = (
+        # The bridge new rooms land on when no bridge is named. At most one row
+        # per tenant may be true; this partial unique index is what actually
+        # enforces that, so concurrent writers cannot produce two defaults.
+        Index(
+            "ix_collaboration_bridges_single_default",
+            "tenant_id",
+            unique=True,
+            postgresql_where=text("is_default"),
+        ),
+        UniqueConstraint("id", "tenant_id", name="uq_collaboration_bridges_id_tenant"),
+        ForeignKeyConstraint(
+            ["tenant_id", "client_id"],
+            ["clients.tenant_id", "clients.id"],
+            name="fk_collaboration_bridges_client",
+        ),
+    )
 
     id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
     type: Mapped[str] = mapped_column(Text, nullable=False)
     display_name: Mapped[str] = mapped_column(Text, nullable=False)
     connection_config: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
-    client_id: Mapped[str] = mapped_column(
-        Text, ForeignKey("clients.id"), nullable=False
-    )
+    client_id: Mapped[str] = mapped_column(Text, nullable=False)
     status: Mapped[str] = mapped_column(Text, nullable=False)
     agent_greetings_enabled: Mapped[bool] = mapped_column(
         Boolean, server_default="true", nullable=False
@@ -608,9 +948,6 @@ class CollaborationBridge(Base):
     channel_creation_enabled: Mapped[bool] = mapped_column(
         Boolean, server_default="true", nullable=False
     )
-    # The bridge new rooms land on when no bridge is named. At most one row may
-    # be true; the partial unique index below is what actually enforces that,
-    # so concurrent writers cannot produce two defaults.
     is_default: Mapped[bool] = mapped_column(
         Boolean, server_default="false", nullable=False
     )
@@ -618,29 +955,25 @@ class CollaborationBridge(Base):
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
 
-    __table_args__ = (
-        Index(
-            "ix_collaboration_bridges_single_default",
-            "is_default",
-            unique=True,
-            postgresql_where=text("is_default"),
-        ),
-    )
-
 
 # ── Server-Side Connectors ────────────────────────────────────────────────────
 
 
-class ServerConnector(Base):
+class ServerConnector(TenantScoped, Base):
     __tablename__ = "server_connectors"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["tenant_id", "api_key_id"],
+            ["api_keys.tenant_id", "api_keys.id"],
+            name="fk_server_connectors_api_key",
+        ),
+    )
 
     id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
     type: Mapped[str] = mapped_column(Text, nullable=False)
     display_name: Mapped[str] = mapped_column(Text, nullable=False)
     connection_config: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
-    api_key_id: Mapped[str] = mapped_column(
-        Text, ForeignKey("api_keys.id"), nullable=False
-    )
+    api_key_id: Mapped[str] = mapped_column(Text, nullable=False)
     status: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[str] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
@@ -650,25 +983,34 @@ class ServerConnector(Base):
 # ── External Users ─────────────────────────────────────────────────────────────
 
 
-class ExternalUser(Base):
+class ExternalUser(TenantScoped, Base):
     __tablename__ = "external_users"
-    __table_args__ = (UniqueConstraint("bridge_id", "external_user_id"),)
+    __table_args__ = (
+        UniqueConstraint("bridge_id", "external_user_id"),
+        UniqueConstraint("id", "tenant_id", name="uq_external_users_id_tenant"),
+        ForeignKeyConstraint(
+            ["tenant_id", "bridge_id"],
+            ["collaboration_bridges.tenant_id", "collaboration_bridges.id"],
+            name="fk_external_users_bridge",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "client_id"],
+            ["clients.tenant_id", "clients.id"],
+            name="fk_external_users_client",
+        ),
+    )
 
     id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
-    bridge_id: Mapped[str] = mapped_column(
-        Text, ForeignKey("collaboration_bridges.id"), nullable=False
-    )
+    bridge_id: Mapped[str] = mapped_column(Text, nullable=False)
     external_user_id: Mapped[str] = mapped_column(Text, nullable=False)
     external_username: Mapped[str] = mapped_column(Text, nullable=False)
-    client_id: Mapped[str] = mapped_column(
-        Text, ForeignKey("clients.id"), nullable=False
-    )
+    client_id: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[str] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
 
 
-class ExternalUserClaim(Base):
+class ExternalUserClaim(TenantScoped, Base):
     """A Switch user's claim that a platform account is theirs (CHOO-2137).
 
     Deliberately many-to-many rather than a single owner per account: an
@@ -682,13 +1024,17 @@ class ExternalUserClaim(Base):
     """
 
     __tablename__ = "external_user_claims"
-    __table_args__ = (Index("ix_external_user_claims_user_id", "user_id"),)
-
-    external_user_id: Mapped[str] = mapped_column(
-        Text,
-        ForeignKey("external_users.id", ondelete="CASCADE"),
-        primary_key=True,
+    __table_args__ = (
+        Index("ix_external_user_claims_user_id", "user_id"),
+        ForeignKeyConstraint(
+            ["tenant_id", "external_user_id"],
+            ["external_users.tenant_id", "external_users.id"],
+            name="fk_external_user_claims_external_user",
+            ondelete="CASCADE",
+        ),
     )
+
+    external_user_id: Mapped[str] = mapped_column(Text, primary_key=True)
     user_id: Mapped[str] = mapped_column(
         Text,
         ForeignKey("users.id", ondelete="CASCADE"),
@@ -702,7 +1048,7 @@ class ExternalUserClaim(Base):
 # ── Agent Sessions ────────────────────────────────────────────────────────────
 
 
-class AgentSession(Base):
+class AgentSession(TenantScoped, Base):
     """Tracks agent reachability and MCP-session room bindings.
 
     Each row carries two independent pieces of state:
@@ -730,15 +1076,23 @@ class AgentSession(Base):
         ),
         Index("ix_agent_sessions_agent_room", "agent_id", "room_id"),
         Index("ix_agent_sessions_transport_session_id", "transport_session_id"),
+        ForeignKeyConstraint(
+            ["tenant_id", "agent_id"],
+            ["agents.tenant_id", "agents.id"],
+            name="fk_agent_sessions_agent",
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "room_id"],
+            ["rooms.tenant_id", "rooms.id"],
+            name="fk_agent_sessions_room",
+            ondelete="CASCADE",
+        ),
     )
 
     id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
-    agent_id: Mapped[str] = mapped_column(
-        Text, ForeignKey("agents.id", ondelete="CASCADE"), nullable=False
-    )
-    room_id: Mapped[str | None] = mapped_column(
-        Text, ForeignKey("rooms.id", ondelete="CASCADE"), nullable=True
-    )
+    agent_id: Mapped[str] = mapped_column(Text, nullable=False)
+    room_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     transport_session_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     lifecycle: Mapped[str] = mapped_column(Text, nullable=False)
     last_seen_at: Mapped[str] = mapped_column(
@@ -749,7 +1103,7 @@ class AgentSession(Base):
     )
 
 
-class AgentRuntimeState(Base):
+class AgentRuntimeState(TenantScoped, Base):
     """The runtime/liveness state of an agent's session as seen in one room.
 
     Distinct from `AgentSession` (which tracks *reachability*): this captures
@@ -766,15 +1120,23 @@ class AgentRuntimeState(Base):
         UniqueConstraint(
             "agent_id", "room_id", name="uq_agent_runtime_states_agent_room"
         ),
+        ForeignKeyConstraint(
+            ["tenant_id", "agent_id"],
+            ["agents.tenant_id", "agents.id"],
+            name="fk_agent_runtime_states_agent",
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "room_id"],
+            ["rooms.tenant_id", "rooms.id"],
+            name="fk_agent_runtime_states_room",
+            ondelete="CASCADE",
+        ),
     )
 
     id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
-    agent_id: Mapped[str] = mapped_column(
-        Text, ForeignKey("agents.id", ondelete="CASCADE"), nullable=False
-    )
-    room_id: Mapped[str] = mapped_column(
-        Text, ForeignKey("rooms.id", ondelete="CASCADE"), nullable=False
-    )
+    agent_id: Mapped[str] = mapped_column(Text, nullable=False)
+    room_id: Mapped[str] = mapped_column(Text, nullable=False)
     state: Mapped[str] = mapped_column(Text, nullable=False)
     # The switchdash://session deeplink the reporting client (Switch Console) last
     # sent for this (agent, room), so `!status` can surface an on-demand link to
@@ -797,7 +1159,7 @@ class AgentRuntimeState(Base):
 # ── Room Roles ────────────────────────────────────────────────────────────────
 
 
-class RoomRole(Base):
+class RoomRole(TenantScoped, Base):
     """A first-class, per-room, assumable instruction bundle.
 
     A role is a named bundle of instructions scoped to a single room, decoupled
@@ -817,12 +1179,17 @@ class RoomRole(Base):
     __tablename__ = "room_roles"
     __table_args__ = (
         UniqueConstraint("room_id", "name", name="uq_room_roles_room_name"),
+        UniqueConstraint("id", "tenant_id", name="uq_room_roles_id_tenant"),
+        ForeignKeyConstraint(
+            ["tenant_id", "room_id"],
+            ["rooms.tenant_id", "rooms.id"],
+            name="fk_room_roles_room",
+            ondelete="CASCADE",
+        ),
     )
 
     id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
-    room_id: Mapped[str] = mapped_column(
-        Text, ForeignKey("rooms.id", ondelete="CASCADE"), nullable=False
-    )
+    room_id: Mapped[str] = mapped_column(Text, nullable=False)
     name: Mapped[str] = mapped_column(Text, nullable=False)
     instructions: Mapped[str] = mapped_column(Text, nullable=False)
     exclusive: Mapped[bool] = mapped_column(
@@ -834,7 +1201,7 @@ class RoomRole(Base):
     )
 
 
-class RoleLease(Base):
+class RoleLease(TenantScoped, Base):
     """The current holder of a room-role, with heartbeat-based auto-release.
 
     A lease records that `agent_id` currently holds `role_id` in `room_id`. A
@@ -854,18 +1221,30 @@ class RoleLease(Base):
     __table_args__ = (
         UniqueConstraint("agent_id", name="uq_role_leases_agent"),
         Index("ix_role_leases_role_id", "role_id"),
+        ForeignKeyConstraint(
+            ["tenant_id", "role_id"],
+            ["room_roles.tenant_id", "room_roles.id"],
+            name="fk_role_leases_role",
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "room_id"],
+            ["rooms.tenant_id", "rooms.id"],
+            name="fk_role_leases_room",
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "agent_id"],
+            ["agents.tenant_id", "agents.id"],
+            name="fk_role_leases_agent",
+            ondelete="CASCADE",
+        ),
     )
 
     id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
-    role_id: Mapped[str] = mapped_column(
-        Text, ForeignKey("room_roles.id", ondelete="CASCADE"), nullable=False
-    )
-    room_id: Mapped[str] = mapped_column(
-        Text, ForeignKey("rooms.id", ondelete="CASCADE"), nullable=False
-    )
-    agent_id: Mapped[str] = mapped_column(
-        Text, ForeignKey("agents.id", ondelete="CASCADE"), nullable=False
-    )
+    role_id: Mapped[str] = mapped_column(Text, nullable=False)
+    room_id: Mapped[str] = mapped_column(Text, nullable=False)
+    agent_id: Mapped[str] = mapped_column(Text, nullable=False)
     transport_session_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     acquired_at: Mapped[str] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
@@ -878,7 +1257,7 @@ class RoleLease(Base):
 # ── Bridge message map ──────────────────────────────────────────────────────────
 
 
-class BridgeMessageMap(Base):
+class BridgeMessageMap(TenantScoped, Base):
     """Durable correlation between a Switch event and its external counterpart.
 
     One row per bridged message, written in both directions. Powers thread
@@ -892,12 +1271,16 @@ class BridgeMessageMap(Base):
     __table_args__ = (
         UniqueConstraint("bridge_id", "transport_event_id"),
         UniqueConstraint("bridge_id", "external_post_id"),
+        ForeignKeyConstraint(
+            ["tenant_id", "bridge_id"],
+            ["collaboration_bridges.tenant_id", "collaboration_bridges.id"],
+            name="fk_bridge_message_map_bridge",
+            ondelete="CASCADE",
+        ),
     )
 
     id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
-    bridge_id: Mapped[str] = mapped_column(
-        Text, ForeignKey("collaboration_bridges.id", ondelete="CASCADE"), nullable=False
-    )
+    bridge_id: Mapped[str] = mapped_column(Text, nullable=False)
     external_channel_id: Mapped[str] = mapped_column(Text, nullable=False)
     transport_event_id: Mapped[str] = mapped_column(Text, nullable=False)
     external_post_id: Mapped[str] = mapped_column(Text, nullable=False)
@@ -932,7 +1315,7 @@ class FeatureFlag(Base):
 # ── Messages ─────────────────────────────────────────────────────────────────
 
 
-class Message(Base):
+class Message(TenantScoped, Base):
     """A message as it was sent into a room.
 
     Written alongside the send to the message bus, which remains the source of
@@ -963,6 +1346,19 @@ class Message(Base):
             "thread_root_event_id",
             postgresql_where=text("thread_root_event_id IS NOT NULL"),
         ),
+        UniqueConstraint("id", "tenant_id", name="uq_messages_id_tenant"),
+        ForeignKeyConstraint(
+            ["tenant_id", "room_id"],
+            ["rooms.tenant_id", "rooms.id"],
+            name="fk_messages_room",
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "sender_client_id"],
+            ["clients.tenant_id", "clients.id"],
+            name="fk_messages_sender_client",
+            ondelete="SET NULL (sender_client_id)",
+        ),
     )
 
     id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
@@ -973,14 +1369,12 @@ class Message(Base):
     # paging on `seq > n` would step straight over it. See the store for the
     # argument in full.
     seq: Mapped[int] = mapped_column(BigInteger, nullable=False)
-    room_id: Mapped[str] = mapped_column(
-        Text, ForeignKey("rooms.id", ondelete="CASCADE"), nullable=False
-    )
+    room_id: Mapped[str] = mapped_column(Text, nullable=False)
+    # Global on purpose: a random, globally-unique identifier — scoping it
+    # buys nothing.
     transport_event_id: Mapped[str] = mapped_column(Text, unique=True, nullable=False)
     sender_id: Mapped[str] = mapped_column(Text, nullable=False)
-    sender_client_id: Mapped[str | None] = mapped_column(
-        Text, ForeignKey("clients.id", ondelete="SET NULL"), nullable=True
-    )
+    sender_client_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     sender_name: Mapped[str | None] = mapped_column(Text, nullable=True)
     event_type: Mapped[str] = mapped_column(Text, nullable=False)
     msgtype: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -993,7 +1387,7 @@ class Message(Base):
     )
 
 
-class MessageAttachment(Base):
+class MessageAttachment(TenantScoped, Base):
     """A file carried by a message.
 
     One row per file, so a multi-file send is several rows against one message
@@ -1001,12 +1395,18 @@ class MessageAttachment(Base):
     """
 
     __tablename__ = "message_attachments"
-    __table_args__ = (Index("ix_message_attachments_message", "message_id"),)
+    __table_args__ = (
+        Index("ix_message_attachments_message", "message_id"),
+        ForeignKeyConstraint(
+            ["tenant_id", "message_id"],
+            ["messages.tenant_id", "messages.id"],
+            name="fk_message_attachments_message",
+            ondelete="CASCADE",
+        ),
+    )
 
     id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
-    message_id: Mapped[str] = mapped_column(
-        Text, ForeignKey("messages.id", ondelete="CASCADE"), nullable=False
-    )
+    message_id: Mapped[str] = mapped_column(Text, nullable=False)
     position: Mapped[int] = mapped_column(Integer, nullable=False)
     uri: Mapped[str] = mapped_column(Text, nullable=False)
     filename: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -1017,7 +1417,7 @@ class MessageAttachment(Base):
     )
 
 
-class DeliveryCursor(Base):
+class DeliveryCursor(TenantScoped, Base):
     """How far one agent has been delivered in one room.
 
     The cursor it replaces lived in memory in the event buffer, so a restart
@@ -1036,15 +1436,23 @@ class DeliveryCursor(Base):
     __tablename__ = "delivery_cursors"
     __table_args__ = (
         UniqueConstraint("agent_id", "room_id", name="uq_delivery_cursors_agent_room"),
+        ForeignKeyConstraint(
+            ["tenant_id", "agent_id"],
+            ["agents.tenant_id", "agents.id"],
+            name="fk_delivery_cursors_agent",
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "room_id"],
+            ["rooms.tenant_id", "rooms.id"],
+            name="fk_delivery_cursors_room",
+            ondelete="CASCADE",
+        ),
     )
 
     id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
-    agent_id: Mapped[str] = mapped_column(
-        Text, ForeignKey("agents.id", ondelete="CASCADE"), nullable=False
-    )
-    room_id: Mapped[str] = mapped_column(
-        Text, ForeignKey("rooms.id", ondelete="CASCADE"), nullable=False
-    )
+    agent_id: Mapped[str] = mapped_column(Text, nullable=False)
+    room_id: Mapped[str] = mapped_column(Text, nullable=False)
     last_seq: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
     updated_at: Mapped[str] = mapped_column(
         DateTime(timezone=True),
@@ -1054,7 +1462,7 @@ class DeliveryCursor(Base):
     )
 
 
-class MediaBlob(Base):
+class MediaBlob(TenantScoped, Base):
     """The bytes behind an attachment.
 
     Media used to live in the homeserver's own store, reached by an opaque
@@ -1074,6 +1482,10 @@ class MediaBlob(Base):
     unreferenced and a later sweep can find them by that. Cascading from the
     attachment instead would delete the bytes of a file that two messages
     quote.
+
+    Scoped although nothing references it by foreign key: it holds attachment
+    bytes reached by an opaque URI, and an unguessable identifier is not an
+    isolation boundary.
     """
 
     __tablename__ = "media_blobs"

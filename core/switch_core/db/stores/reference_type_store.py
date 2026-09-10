@@ -2,7 +2,7 @@ from sqlalchemy import ColumnElement, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from switch_core.db.models import Reference, ReferenceType
+from switch_core.db.models import TENANT_ZERO_ID, Reference, ReferenceType
 
 
 class ReferenceTypeStore:
@@ -28,7 +28,8 @@ class ReferenceTypeStore:
         return reference_type
 
     async def get(self, session: AsyncSession, type_: str) -> ReferenceType | None:
-        return await session.get(ReferenceType, type_)
+        # TODO(next PR): use the request's tenant instead of TENANT_ZERO_ID.
+        return await session.get(ReferenceType, (TENANT_ZERO_ID, type_))
 
     async def get_many(
         self, session: AsyncSession, types: list[str]
@@ -75,7 +76,8 @@ class ReferenceTypeStore:
         read_visibility: str | None = None,
         write_visibility: str | None = None,
     ) -> ReferenceType:
-        rt = await session.get(ReferenceType, type_)
+        # TODO(next PR): use the request's tenant instead of TENANT_ZERO_ID.
+        rt = await session.get(ReferenceType, (TENANT_ZERO_ID, type_))
         if rt is None:
             raise ValueError(f"Reference type not found: {type_}")
         if display_name is not None:
@@ -92,7 +94,8 @@ class ReferenceTypeStore:
         return rt
 
     async def delete(self, session: AsyncSession, type_: str) -> None:
-        rt = await session.get(ReferenceType, type_)
+        # TODO(next PR): use the request's tenant instead of TENANT_ZERO_ID.
+        rt = await session.get(ReferenceType, (TENANT_ZERO_ID, type_))
         if rt is None:
             raise ValueError(f"Reference type not found: {type_}")
         await session.delete(rt)
