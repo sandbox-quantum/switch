@@ -1045,6 +1045,11 @@ TEMPLATE_KIND_MAX = 64
 
 
 class TemplateCreateRequest(BaseModel):
+    # Same stance as the update request: a body naming a field this does not
+    # have is a caller expecting something, and ignoring it silently answers
+    # 201 to a request that did not do what was asked.
+    model_config = {"extra": "forbid"}
+
     name: str = Field(min_length=1, max_length=TEMPLATE_NAME_MAX)
     description: str = Field(default="", max_length=TEMPLATE_DESCRIPTION_MAX)
     kind: str = Field(default="room", min_length=1, max_length=TEMPLATE_KIND_MAX)

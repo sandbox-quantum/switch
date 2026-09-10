@@ -187,6 +187,28 @@ class TestOverTheWire:
         assert raw.headers["x-content-type-options"] == "nosniff"
         assert raw.headers["content-type"].startswith("application/x-yaml")
 
+    async def test_the_two_endpoints_agree_on_a_document_s_size(
+        self, session_factory: async_sessionmaker[AsyncSession], users: dict[str, User]
+    ) -> None:
+        """Listing measures in Postgres, detail measures in Python.
+
+        Two ways of counting the same bytes, so a template that reported one
+        size in the catalogue and another on its own page would be the visible
+        symptom of them having drifted apart.
+        """
+        client = _client(session_factory, users["alice"])
+        created = await _upload(client, name="sized", content=_AWKWARD_DOCUMENT)
+        expected = len(_AWKWARD_DOCUMENT.encode("utf-8"))
+
+        listing = await client.get("/templates", params={"q": "sized"})
+        (row,) = listing.json()
+        detail = await client.get(f"/templates/{created['id']}")
+
+        assert row["size_bytes"] == expected
+        assert detail.json()["size_bytes"] == expected
+        # And it is bytes, not characters — the document has multibyte text in it.
+        assert expected > len(_AWKWARD_DOCUMENT)
+
     async def test_the_catalogue_shows_every_owners_templates(
         self, session_factory: async_sessionmaker[AsyncSession], users: dict[str, User]
     ) -> None:
@@ -350,6 +372,26 @@ class TestOverTheWire:
             f"/templates/{created['id']}", json={field: "x" * size}
         )
         assert patched.status_code == 422
+
+    async def test_an_upload_naming_the_owner_is_refused_outright(
+        self, session_factory: async_sessionmaker[AsyncSession], users: dict[str, User]
+    ) -> None:
+        """A 201 to a request that quietly did something else is worse than a 422."""
+        client = _client(session_factory, users["alice"])
+        response = await client.post(
+            "/templates",
+            json={
+                "name": "smuggled",
+                "description": "d",
+                "kind": "room",
+                "content": "room:\n  name: r\n",
+                "owner_id": users["bob"].id,
+            },
+        )
+        assert response.status_code == 422
+
+        listing = await client.get("/templates", params={"q": "smuggled"})
+        assert listing.json() == []
 
     async def test_a_body_naming_the_owner_is_refused_outright(
         self, session_factory: async_sessionmaker[AsyncSession], users: dict[str, User]

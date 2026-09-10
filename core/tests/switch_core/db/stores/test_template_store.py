@@ -7,6 +7,8 @@ the bytes on the way in or out is a bug.
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -313,6 +315,87 @@ class TestTemplateStoreUpdate:
 
             assert updated.updated_at is not None
             assert updated.created_at is not None
+
+    async def test_two_concurrent_edits_do_not_lose_one(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """The revision counts edits, so both of two racing edits must land.
+
+        Bumping a revision means reading the old one first. Without the row
+        lock both readers see version 1, both write 2, and the later write
+        silently replaces the earlier one while both callers are told they
+        succeeded — data loss with no error anywhere.
+        """
+        async with session_factory() as setup:
+            owner = await _make_user(setup, "alice")
+            created = await _make_template(setup, owner_id=owner.id, name="t")
+            await setup.commit()
+            template_id, owner_id = created.id, owner.id
+
+        async def edit(content: str) -> None:
+            async with session_factory() as session:
+                await _STORE.update_fields(session, template_id, content=content)
+                await session.commit()
+
+        # Genuinely concurrent: two sessions, two connections, one row.
+        await asyncio.gather(edit("room:\n  name: one\n"), edit("room:\n  name: two\n"))
+
+        async with session_factory() as session:
+            final = await _STORE.get(session, template_id)
+            assert final is not None
+            # Three, not two: each edit counted, neither overwrote the other's
+            # bump. Which of the two documents won is up to the scheduler.
+            assert final.version == 3
+            assert final.content in (
+                "room:\n  name: one\n",
+                "room:\n  name: two\n",
+            )
+            assert final.owner_id == owner_id
+
+    async def test_no_lost_update_when_the_row_was_already_read_unlocked(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """The router's real order: read to check ownership, then edit.
+
+        That first read seeds the session's identity map, so the locked read
+        inside `update_fields` has a stale copy sitting in front of it. If the
+        lock does not displace that copy, the edit is computed from the value
+        the loser read and the winner's write disappears — with the lock in
+        place and both callers told they succeeded.
+        """
+        async with session_factory() as setup:
+            owner = await _make_user(setup, "alice")
+            created = await _make_template(setup, owner_id=owner.id, name="t")
+            await setup.commit()
+            template_id = created.id
+
+        loser_has_read = asyncio.Event()
+        winner_committed = asyncio.Event()
+
+        async def winner() -> None:
+            await loser_has_read.wait()
+            async with session_factory() as session:
+                await _STORE.get(session, template_id)
+                await _STORE.update_fields(session, template_id, content="from-winner")
+                await session.commit()
+            winner_committed.set()
+
+        async def loser() -> None:
+            async with session_factory() as session:
+                # Ownership check, unlocked — this is what seeds the stale copy.
+                await _STORE.get(session, template_id)
+                loser_has_read.set()
+                await winner_committed.wait()
+                await _STORE.update_fields(session, template_id, content="from-loser")
+                await session.commit()
+
+        await asyncio.gather(winner(), loser())
+
+        async with session_factory() as session:
+            final = await _STORE.get(session, template_id)
+            assert final is not None
+            assert final.version == 3, "an edit was computed from a stale read"
+            assert final.content == "from-loser"
 
     async def test_update_of_a_missing_template_raises(
         self, session_factory: async_sessionmaker[AsyncSession]

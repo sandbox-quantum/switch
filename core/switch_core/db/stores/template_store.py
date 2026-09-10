@@ -118,7 +118,10 @@ class TemplateStore:
             .order_by(Template.created_at.desc(), Template.id.asc())
         )
         result = await session.execute(stmt)
-        return [TemplateListing(*row) for row in result.all()]
+        # By name, not by position: bound positionally, reordering either the
+        # select or the dataclass would land a timestamp in `size_bytes` and
+        # say nothing about it.
+        return [TemplateListing(**row) for row in result.mappings()]
 
     async def update_fields(
         self,
@@ -139,13 +142,35 @@ class TemplateStore:
         reading the old one first, so two edits racing on an unlocked row would
         both compute the same next number and the later write would drop the
         earlier one silently — the one failure mode worse than an error.
+
+        ``populate_existing`` is what makes the lock worth taking: the caller
+        has usually loaded this row already to check ownership, and without it
+        the refreshed values are free to lose to the copy sitting in the
+        identity map. Locking a row and then computing from a stale read of it
+        would be the same lost update, behind a lock that looks like it stopped
+        one.
         """
-        template = await session.get(Template, template_id, with_for_update=True)
+        template = await session.get(
+            Template, template_id, with_for_update=True, populate_existing=True
+        )
         if template is None:
             raise ValueError(f"Template not found: {template_id}")
 
         if name is not None and name != template.name:
+            # Asked before anything is mutated: a flush that fails the unique
+            # constraint deactivates the caller's transaction, and a session in
+            # that state cannot even be asked what went wrong.
+            clash = await session.execute(
+                select(Template.id).where(
+                    Template.owner_id == template.owner_id,
+                    Template.name == name,
+                    Template.id != template_id,
+                )
+            )
+            if clash.scalar_one_or_none() is not None:
+                raise TemplateNameTaken(f"You already have a template named '{name}'")
             template.name = name
+
         if content is not None and content != template.content:
             template.content = content
             template.version += 1
@@ -154,6 +179,10 @@ class TemplateStore:
         if kind is not None:
             template.kind = kind
 
+        # Read off the object now: after a failed flush, touching it again can
+        # lazy-load against a session that is no longer in a state to answer.
+        owner_id, final_name = template.owner_id, template.name
+
         try:
             # The lock serialises edits to this row, but says nothing about a
             # *different* row claiming the name first, so the constraint is
@@ -161,9 +190,21 @@ class TemplateStore:
             async with session.begin_nested():
                 await session.flush()
         except IntegrityError as exc:
-            raise TemplateNameTaken(
-                f"You already have a template named '{name}'"
-            ) from exc
+            # Confirm it really is the name before saying so, the same way
+            # `create` does. Reporting every constraint this row could ever
+            # violate as a name clash would be a confident wrong answer.
+            clash = await session.execute(
+                select(Template.id).where(
+                    Template.owner_id == owner_id,
+                    Template.name == final_name,
+                    Template.id != template_id,
+                )
+            )
+            if clash.scalar_one_or_none() is not None:
+                raise TemplateNameTaken(
+                    f"You already have a template named '{final_name}'"
+                ) from exc
+            raise
 
         # `updated_at` is computed by Postgres, so the flush leaves it expired.
         # Reload here, where there is a running event loop, rather than leaving
