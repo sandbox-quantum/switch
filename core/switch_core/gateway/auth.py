@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import datetime
+from collections.abc import AsyncIterator
 from typing import Annotated
 
 import bcrypt
@@ -12,9 +13,16 @@ from switch_core.authz import Action, Principal, require
 from switch_core.config import SwitchConfig
 from switch_core.db.models import Room, User
 from switch_core.db.stores.room_store import RoomStore
+from switch_core.db.stores.tenant_member_store import TenantMemberStore
 from switch_core.db.stores.user_store import UserStore
-from switch_core.gateway.dependencies import get_config, get_session, get_user_store
-from switch_core.logging_context import bind_log_context
+from switch_core.gateway.dependencies import (
+    get_config,
+    get_system_session,
+    get_tenant_member_store,
+    get_user_store,
+)
+from switch_core.logging_context import bind_log_context, unbind_log_context
+from switch_core.tenant_context import bind_tenant_id, unbind_tenant_id
 
 JWT_ALGORITHM = "HS256"
 JWT_EXPIRY_HOURS = 24
@@ -80,10 +88,26 @@ def decode_jwt(token: str, secret_key: str) -> dict:
 
 async def get_current_user(
     request: Request,
-    session: Annotated[AsyncSession, Depends(get_session)],
+    session: Annotated[AsyncSession, Depends(get_system_session)],
     user_store: Annotated[UserStore, Depends(get_user_store)],
+    tenant_member_store: Annotated[TenantMemberStore, Depends(get_tenant_member_store)],
     config: Annotated[SwitchConfig, Depends(get_config)],
-) -> User:
+) -> AsyncIterator[User]:
+    """Authenticate the caller and bind their tenant for the rest of the request.
+
+    Runs on `get_system_session`, not `get_session`: resolving who is asking
+    — decoding the cookie, loading the user, finding their membership — has
+    to happen before a tenant is known, so it cannot run on the session an
+    endpoint later scopes by one. Every gateway endpoint that uses
+    `get_session` also depends on this (directly, or via `require_admin`), so
+    by the time an endpoint issues its first query the tenant this function
+    binds is already in place — see `get_session`'s docstring for why
+    declaration order doesn't matter here.
+
+    Phase 1 has exactly one tenant, so `get_sole_tenant_id` returning more
+    or fewer than one membership is a bug, not a 401 — it is allowed to raise
+    past this function rather than being turned into a guess.
+    """
     token = request.cookies.get("switch_auth")
     if token is None:
         raise HTTPException(status_code=401, detail="Not authenticated")
@@ -91,10 +115,15 @@ async def get_current_user(
     user = await user_store.get(session, payload["sub"])
     if user is None:
         raise HTTPException(status_code=401, detail="User not found")
-    # Unbound by RequestContextMiddleware when the request ends: its reset
-    # restores the context to what it was before the request, discarding this.
-    bind_log_context(user_id=user.id)
-    return user
+    tenant_id = await tenant_member_store.get_sole_tenant_id(session, user.id)
+
+    log_token = bind_log_context(user_id=user.id, tenant_id=tenant_id)
+    tenant_token = bind_tenant_id(tenant_id)
+    try:
+        yield user
+    finally:
+        unbind_tenant_id(tenant_token)
+        unbind_log_context(log_token)
 
 
 async def require_admin(

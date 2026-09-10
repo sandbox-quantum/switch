@@ -25,6 +25,8 @@ from switch_core.gateway.dependencies import (
     get_config,
     get_resource_service,
     get_session,
+    get_system_session,
+    get_tenant_member_store,
     get_user_store,
 )
 from switch_core.gateway.references import (
@@ -135,6 +137,12 @@ def _app() -> FastAPI:
     app = FastAPI()
     app.include_router(router)
     app.dependency_overrides[get_session] = _stub_session
+    # get_current_user resolves on its own system session, not get_session —
+    # see gateway/dependencies.py — so the anonymous-client test below reaches
+    # it too and needs it (and the membership store it also depends on)
+    # stubbed the same way.
+    app.dependency_overrides[get_system_session] = _stub_session
+    app.dependency_overrides[get_tenant_member_store] = lambda: None
     app.dependency_overrides[get_user_store] = lambda: None
     app.dependency_overrides[get_config] = lambda: None
     app.dependency_overrides[get_resource_service] = lambda: None

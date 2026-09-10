@@ -7,9 +7,11 @@ record and the formatters in :mod:`switch_core.logging_config` render it.
 
 ``tenant_id`` is the point of the exercise: multi-tenancy needs "is this one
 customer or everyone?" to be answerable from the logs alone, and that is far
-cheaper to build before tenants exist than after. Until the tenant model lands
-nothing binds it per request, and the filter stamps the deployment's configured
-tenant instead — see ``SwitchConfig.tenant_id``.
+cheaper to build before tenants exist than after. It was built before tenants
+existed, and now that they do, ``gateway/auth.py`` and ``bridges/agent/auth.py``
+bind the real one for every authenticated request. Outside a request — a
+background task, a startup script, anything that never binds one — the filter
+falls back to the deployment's configured tenant; see ``SwitchConfig.tenant_id``.
 """
 
 from __future__ import annotations

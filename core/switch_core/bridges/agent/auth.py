@@ -16,6 +16,7 @@ from switch_core.db.models import Agent, ApiKey
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.api_key_store import ApiKeyStore
 from switch_core.logging_context import bind_log_context, unbind_log_context
+from switch_core.tenant_context import bind_tenant_id, unbind_tenant_id
 
 logger = logging.getLogger(__name__)
 
@@ -82,6 +83,17 @@ class BearerAuthMiddleware:
     Public paths (see ``PUBLIC_PATH_PREFIXES``) bypass authentication
     entirely. The MCP path also requires an agent — registration tokens
     are not enough to open an MCP session.
+
+    This is where an authenticated request's tenant gets bound (see
+    ``switch_core.tenant_context``), not a FastAPI dependency: this class runs
+    as ASGI middleware, ahead of routing and dependency injection entirely,
+    so there is no ordering question about whether a downstream ``get_session``
+    might query before the tenant is known — it cannot, since it does not run
+    until after ``self.app(...)`` is called below. The lookups that resolve
+    the credential itself (``_resolve_api_key``, ``_try_oidc``) run on their
+    own session, opened directly from ``session_factory`` rather than through
+    that downstream seam, because they are what determines the tenant and so
+    must run before one is bound.
     """
 
     def __init__(
@@ -134,11 +146,18 @@ class BearerAuthMiddleware:
         if agent is not None:
             scope["agent"] = agent
             scope["agent_id"] = agent.id
-            token = bind_log_context(agent_id=agent.id)
+            # api_key.tenant_id is the source of truth (docs/old/
+            # multi-tenancy-phase1-db.md, "Setting the tenant"); the OIDC
+            # path resolves straight to an Agent with no ApiKey row, so it
+            # falls back to the agent's own tenant.
+            tenant_id = api_key.tenant_id if api_key is not None else agent.tenant_id
+            log_token = bind_log_context(agent_id=agent.id, tenant_id=tenant_id)
+            tenant_token = bind_tenant_id(tenant_id)
             try:
                 await self.app(scope, receive, send)
             finally:
-                unbind_log_context(token)
+                unbind_tenant_id(tenant_token)
+                unbind_log_context(log_token)
             return
 
         # Registration token: pass through (handler validates again). MCP rejects.
@@ -172,6 +191,8 @@ class BearerAuthMiddleware:
         if cached is not None:
             return cached
 
+        # A system session: no tenant is bound yet, because this lookup is
+        # what determines one.
         async with self._session_factory() as session:
             found = await self._api_key_store.get_with_agent_by_hash(
                 session, token_hash
@@ -200,6 +221,8 @@ class BearerAuthMiddleware:
             logger.warning("OIDC token has no azp or client_id claim")
             return None
 
+        # A system session, same reason as _resolve_api_key: this is what
+        # decides which agent (and so which tenant) is asking.
         async with self._session_factory() as session:
             return await self._agent_store.get_by_oauth_client_id(session, client_id)
 

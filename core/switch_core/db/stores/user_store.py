@@ -6,7 +6,8 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from switch_core.db.models import OidcIdentity, User
+from switch_core.db.models import TENANT_ZERO_ID, OidcIdentity, TenantMember, User
+from switch_core.tenant_context import current_tenant_id
 
 logger = logging.getLogger(__name__)
 
@@ -43,7 +44,30 @@ class OidcIdentityRaceError(Exception):
 
 class UserStore:
     async def create(self, session: AsyncSession, user: User) -> None:
+        """Create the user, and the membership that lets them ever sign in.
+
+        Tenant resolution (`gateway/auth.py`) raises rather than guessing when
+        a user has no membership, so every path that creates a user — this
+        one, reached by the admin "create user" endpoint, JIT OIDC
+        provisioning, and startup admin seeding — must leave exactly one
+        `tenant_members` row behind, or that user's first login raises.
+
+        Joins the tenant bound to the caller's context, so an admin creating
+        a user joins them to their own tenant; falls back to tenant zero for
+        the callers with no tenant bound (JIT OIDC provisioning at login, and
+        startup/bootstrap seeding) — the only tenant Phase 1 has anyway. The
+        role mirrors the migration's own mapping for pre-existing users:
+        `owner` for the global admin role, `member` otherwise.
+        """
         session.add(user)
+        await session.flush()
+        session.add(
+            TenantMember(
+                tenant_id=current_tenant_id() or TENANT_ZERO_ID,
+                user_id=user.id,
+                role="owner" if user.role == "admin" else "member",
+            )
+        )
         await session.flush()
 
     async def get(self, session: AsyncSession, user_id: str) -> User | None:
