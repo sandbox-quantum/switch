@@ -1,5 +1,6 @@
-import { createHash, randomUUID } from 'node:crypto';
-import { readFile } from 'node:fs/promises';
+import { deploySharedHost } from './shared-host-deployment';
+export { deploySharedHost } from './shared-host-deployment';
+import { randomUUID } from 'node:crypto';
 import { join, posix } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { sharedConfigSchema, type SharedHostConfig } from '@switch-console/agent-providers';
@@ -9,21 +10,15 @@ import { GEMINI_SKILL_CONTENT } from '@switch-console/plugins/agents/gemini/skil
 import { SWITCH_AGENT_RUNTIME_PIN } from '@switch-console/plugins/distribution';
 import { commandStatusSchema, snapshotSchema } from '@switch-console/shared/session-v1';
 import { providerAdapterRegistry } from '@main/core/agent-runtime/impl/provider-adapter-registry';
-import { resolveSharedHostBundlePath } from '@main/core/agent-runtime/impl/resolve-sidecar-bundle';
 import type { AgentRuntimeProvider } from '@main/core/agent-runtime/types';
 import { agentLaunchSpecialization } from '@main/core/agents/agent-launch-config';
 import { getAgentById } from '@main/core/agents/getAgentById';
 import { agentSettingsRelativePath } from '@main/core/agents/switch-settings-paths';
 import { hostDependencyStore } from '@main/core/dependencies/host-dependency-store';
-import { LocalExecutionContext } from '@main/core/execution-context/local-execution-context';
-import { SshExecutionContext } from '@main/core/execution-context/ssh-execution-context';
-import type { IExecutionContext } from '@main/core/execution-context/types';
-import { SshFileSystem } from '@main/core/fs/impl/ssh-fs';
 import type { LocationTransport } from '@main/core/locations/location-transport';
 import { getPlugin } from '@main/core/providers/plugin-registry';
 import { AGENT_ENV_VARS } from '@main/core/pty/pty-env';
 import { loadSessionWithAgent } from '@main/core/sessions/session-join';
-import { ensureSshConnected } from '@main/core/ssh/connect/connect-agent-ssh';
 import { switchNotificationPoller } from '@main/core/switch-rooms/switch-notification-poller';
 import {
   fetchSdkCommandStatus,
@@ -288,54 +283,6 @@ export async function buildSharedHostConfig(
     },
   };
   return config;
-}
-
-export async function deploySharedHost(
-  transport: LocationTransport,
-  sessionPath: string,
-  identity: string,
-  watcher: boolean
-) {
-  let ctx: IExecutionContext;
-  const bundle = resolveSharedHostBundlePath();
-  const hash = createHash('sha256')
-    .update(await readFile(bundle))
-    .digest('hex');
-  const key = createHash('sha256').update(identity).digest('hex');
-  let entrypoint = bundle;
-  if (transport.kind === 'ssh') {
-    const proxy = await ensureSshConnected(transport.connectionId, transport.host);
-    ctx = new SshExecutionContext(proxy, { root: sessionPath });
-    const { stdout } = await ctx.exec('node', [
-      '-e',
-      "console.log(require('node:path').join(require('node:os').homedir(),'.local','state','switch','sdk-host'))",
-    ]);
-    const directory = stdout.trim();
-    await ctx.exec('node', [
-      '-e',
-      "require('node:fs').mkdirSync(process.argv[1],{recursive:true,mode:0o700})",
-      directory,
-    ]);
-    const fs = new SshFileSystem(proxy, directory);
-    entrypoint = `${directory}/shared-host-${hash}.mjs`;
-    const temporary = `shared-host-${hash}.${randomUUID()}.tmp`;
-    await fs.copyLocalFile(bundle, temporary);
-    await ctx.exec('node', [
-      '-e',
-      "require('node:fs').renameSync(process.argv[1],process.argv[2])",
-      `${directory}/${temporary}`,
-      entrypoint,
-    ]);
-  } else ctx = new LocalExecutionContext();
-  const { stdout } = await ctx.exec('node', [
-    '-e',
-    "const fs=require('node:fs'),path=require('node:path');const base=path.join(require('node:os').homedir(),'.local','state','switch',process.argv[2]);let root=path.join(base,process.argv[1]);if(process.argv[2]==='sdk-watchers'&&fs.existsSync(base)){const matches=fs.readdirSync(base).filter(name=>{try{return JSON.parse(fs.readFileSync(path.join(base,name,'config.json'),'utf8')).session.agentId===process.argv[3]}catch(e){if(e.code==='ENOENT')return false;throw e}});if(matches.length>1)throw new Error('Competing saved watchers require explicit cleanup.');if(matches.length)root=path.join(base,matches[0]);} console.log(root)",
-    key,
-    watcher ? 'sdk-watchers' : 'sdk-sessions',
-    identity,
-  ]);
-  const root = stdout.trim();
-  return { ctx, root, entrypoint };
 }
 
 export async function stopSharedSession(server: SwitchServer, sessionId: string): Promise<void> {
