@@ -6,7 +6,7 @@ import re
 import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, TypeVar
+from typing import TYPE_CHECKING, Any, TypeVar, cast, get_args
 
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -22,10 +22,22 @@ from switch_core.bridges.collaboration.models import (
     InboundAgentJoin,
     InboundAppJoin,
     InboundCommand,
+    InboundInteraction,
     InboundMessage,
     InboundUserJoin,
     OutboundAttachment,
 )
+from switch_core.bridges.collaboration.session.contract import Command, Surface
+from switch_core.bridges.collaboration.session.demo import SessionDemo
+from switch_core.bridges.collaboration.session.inbound import (
+    InboundActor,
+    SessionInteractions,
+)
+from switch_core.bridges.collaboration.session.outbound import (
+    SessionRequestCards,
+    SessionTurnActivity,
+)
+from switch_core.bridges.collaboration.slack.adapter import SlackAdapter
 from switch_core.clients.admin_messages import ADMIN_MARKER, AdminMessageType
 from switch_core.clients.client_base import ClientBase, ClientConfig
 from switch_core.clients.mentions import mention_regex, strip_emphasis
@@ -35,6 +47,7 @@ from switch_core.db.stores.bridge_message_map_store import BridgeMessageMapStore
 from switch_core.db.stores.client_store import ClientStore
 from switch_core.db.stores.external_user_store import ExternalUserStore
 from switch_core.db.stores.room_store import RoomStore
+from switch_core.db.stores.session_request_post_store import SessionRequestPostStore
 from switch_core.events import AgentRuntimeStateEvent
 from switch_core.logging_context import log_context
 from switch_core.provisioning import Provisioning
@@ -53,6 +66,9 @@ from switch_core.transport import (
 if TYPE_CHECKING:
     from switch_core.clients.client_lifecycle_service import ClientLifecycleService
     from switch_core.room_service import RoomService
+
+from switch_core.sessions.publication import SessionPublisher
+from switch_core.sessions.service import SessionAuthority, SessionError
 
 logger = logging.getLogger(__name__)
 
@@ -126,6 +142,7 @@ class BridgeCore:
         room_store: RoomStore,
         external_user_store: ExternalUserStore,
         bridge_message_map_store: BridgeMessageMapStore,
+        session_request_post_store: SessionRequestPostStore,
         agent_store: AgentStore,
         client_store: ClientStore,
         room_service: RoomService,
@@ -135,6 +152,7 @@ class BridgeCore:
         matrix_server_name: str,
         bridge_client_matrix_user_id: str,
         max_attachment_bytes: int,
+        session_demo_enabled: bool,
     ) -> None:
         self._bridge_id = bridge_id
         self._bridge_type = bridge_type
@@ -192,6 +210,76 @@ class BridgeCore:
         self._pending_message_maps: dict[str, str] = {}
         # Identity provisioning runs in the background — see _create_agent_identities.
         self._identity_task: asyncio.Task[None] | None = None
+        # Answers to a session's requests, coming back off the platform's own
+        # controls. Absent on a platform the session contract has no surface
+        # name for, because an answer must record where it was given.
+        self._session_authority = SessionAuthority(session_factory)
+        self._session_publication_task: asyncio.Task[None] | None = None
+        self._session_cards = (
+            SessionRequestCards(
+                adapter,
+                bridge_id=bridge_id,
+                posts=session_request_post_store,
+                session_factory=session_factory,
+            )
+            if isinstance(adapter, SlackAdapter)
+            else None
+        )
+        self._session_publisher = (
+            SessionPublisher(session_factory, bridge_id, self._session_cards)
+            if self._session_cards is not None
+            else None
+        )
+        self._session_interactions = self._build_session_interactions(
+            session_request_post_store
+        )
+        # A recorded session, posting a real card into a real channel, so the
+        # answer path above has something to resolve against before any host
+        # can speak the contract. Absent unless asked for. See session/demo.py.
+        self._session_demo = self._build_session_demo(
+            session_request_post_store, enabled=session_demo_enabled
+        )
+
+    def _build_session_demo(
+        self, posts: SessionRequestPostStore, *, enabled: bool
+    ) -> SessionDemo | None:
+        if not enabled:
+            return None
+        if not isinstance(self._adapter, SlackAdapter):
+            logger.warning(
+                "SESSION_DEMO_ENABLED is set, but %s posts no request cards, so "
+                "the demo trigger does nothing on this bridge",
+                self._bridge_type,
+            )
+            return None
+        return SessionDemo(
+            SessionRequestCards(
+                self._adapter,
+                bridge_id=self._bridge_id,
+                posts=posts,
+                session_factory=self._session_factory,
+            ),
+            SessionTurnActivity(self._adapter),
+        )
+
+    def _build_session_interactions(
+        self, posts: SessionRequestPostStore
+    ) -> SessionInteractions | None:
+        if self._bridge_type not in get_args(Surface):
+            logger.warning(
+                "Bridge type %s is not a session contract surface, so answers "
+                "given on it cannot be attributed and its controls stay inert",
+                self._bridge_type,
+            )
+            return None
+        return SessionInteractions(
+            bridge_id=self._bridge_id,
+            surface=cast(Surface, self._bridge_type),
+            posts=posts,
+            session_factory=self._session_factory,
+            identify=self._identify_actor,
+            is_first_reply=self._adapter.is_first_reply,
+        )
 
     @property
     def adapter(self) -> CollaborationAdapter:
@@ -220,6 +308,8 @@ class BridgeCore:
         await self._load_existing_puppets()
         self._adapter.set_channel_migration_handler(self._handle_channel_migrated)
         self._adapter.set_agent_presentation_resolver(self._agent_presentation)
+        if self._session_interactions is not None:
+            self._adapter.set_interaction_handler(self._handle_inbound_interaction)
         await self._adapter.start(
             on_message=self._traced(self._handle_inbound_message),
             on_command=self._traced(self._handle_inbound_command),
@@ -228,6 +318,10 @@ class BridgeCore:
             on_app_joined=self._traced(self._handle_app_joined_channel),
         )
         await self._ensure_channel_captures()
+        if self._session_publisher is not None:
+            self._session_publication_task = asyncio.create_task(
+                self._session_publisher.run()
+            )
         # Deliberately not awaited. Provisioning is one call per agent against
         # the platform, and a rate-limited platform makes that minutes of
         # mostly waiting — which would hold up the bridge coming online, and
@@ -237,6 +331,13 @@ class BridgeCore:
         self._identity_task = asyncio.create_task(self._run_agent_identities())
 
     async def stop(self) -> None:
+        if self._session_publication_task is not None:
+            self._session_publication_task.cancel()
+            try:
+                await self._session_publication_task
+            except asyncio.CancelledError:
+                pass
+            self._session_publication_task = None
         if self._identity_task and not self._identity_task.done():
             self._identity_task.cancel()
         self._identity_task = None
@@ -488,6 +589,10 @@ class BridgeCore:
             # and routing the message. Only Slack im/mpim map to "lobby".
             await self._handle_lobby_message(msg)
             return
+        # An answer typed in words. Almost no message is one, and the check is a
+        # parse before it is a query, so this costs a channel nothing. It does
+        # not consume the message: the room still sees what was said.
+        await self._handle_text_answer(msg)
         room_ids = self._channel_to_room.get(msg.channel_id)
         if room_ids is None:
             lock = self._channel_locks.setdefault(msg.channel_id, asyncio.Lock())
@@ -505,6 +610,8 @@ class BridgeCore:
                 return
 
         room_id, matrix_room_id = room_ids
+
+        await self._handle_session_demo(msg, room_id)
 
         # A bot @mention carries no agent name in its text (the platform tags the
         # bot, not the agent). Resolve which agent it addresses so we can inject
@@ -1064,6 +1171,107 @@ class BridgeCore:
             )
             return None
         return puppet
+
+    async def _handle_inbound_interaction(
+        self, interaction: InboundInteraction
+    ) -> None:
+        """Someone operated a control on a message this bridge posted."""
+        interactions = self._session_interactions
+        if interactions is None:
+            return
+        command = await interactions.command_for(interaction)
+        await self._submit_session_command(
+            command, interaction.channel_id, interaction.message_ref
+        )
+
+    async def _handle_text_answer(self, msg: InboundMessage) -> None:
+        """The same answer, typed rather than pressed.
+
+        Runs alongside the relay rather than instead of it: an answer is also
+        something the person said in the channel, and the room sees it either
+        way.
+        """
+        interactions = self._session_interactions
+        if interactions is None:
+            return
+        command = await interactions.command_for_text(msg)
+        await self._submit_session_command(
+            command, msg.channel_id, msg.root_id or msg.message_ref
+        )
+
+    async def _handle_session_demo(self, msg: InboundMessage, room_id: str) -> None:
+        """The trigger that stands in for a session, where one is asked for.
+
+        Takes the room rather than looking it up, because it runs after the
+        channel has one: a channel is mapped lazily on its first message, and a
+        channel nobody has spoken in yet is exactly the one somebody makes to
+        show this off.
+
+        A failure is reported into the channel rather than raised: this runs on
+        the inbound path ahead of the relay, and a demo that cannot post a card
+        must not also cost the room the message.
+        """
+        demo = self._session_demo
+        if demo is None:
+            return
+        try:
+            await demo.handle(msg.content, msg.channel_id, room_id)
+        except Exception as error:
+            logger.error(
+                "The demo card for channel %s could not be posted: %s",
+                msg.channel_id,
+                error,
+            )
+            await self._adapter.admin_message(
+                msg.channel_id,
+                f"The demo request card could not be posted: {error}",
+                msg.root_id or msg.message_ref,
+            )
+
+    async def refresh_sdk_session(self, session_id: str) -> None:
+        if self._session_publisher is not None:
+            self._session_publisher.wake()
+
+    async def _submit_session_command(
+        self, command: Command | None, channel_id: str, message_ref: str | None
+    ) -> None:
+        if command is None:
+            return
+        try:
+            await self._session_authority.submit(
+                command, user_id=None, bridge_id=self._bridge_id
+            )
+        except SessionError as error:
+            await self._adapter.admin_message(
+                channel_id,
+                f"Answer was not accepted ({error.code}): {error}",
+                message_ref,
+            )
+            return
+        await self.refresh_sdk_session(command.session_id)
+
+    async def _identify_actor(self, actor: InboundActor) -> str | None:
+        """The Switch identity behind the platform account that acted.
+
+        None where the channel maps to no room, or the puppet cannot be brought
+        into it. Both are refusals: an answer carries who gave it, and there is
+        no default actor to fall back on.
+        """
+        room_ids = self._channel_to_room.get(actor.channel_id)
+        if room_ids is None:
+            logger.warning(
+                "Ignoring an answer in %s: the channel maps to no room",
+                actor.channel_id,
+            )
+            return None
+        room_id, matrix_room_id = room_ids
+        puppet = await self._ensure_user_in_matrix_room(
+            external_user_id=actor.sender_id,
+            external_username=actor.sender_name,
+            room_id=room_id,
+            matrix_room_id=matrix_room_id,
+        )
+        return puppet.matrix_user_id if puppet is not None else None
 
     async def _handle_user_joined_channel(self, join: InboundUserJoin) -> None:
         """Called by the adapter when an external user joins a bridged

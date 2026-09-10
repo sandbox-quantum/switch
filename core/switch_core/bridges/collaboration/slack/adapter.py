@@ -8,6 +8,7 @@ import uuid
 from collections import OrderedDict
 from collections.abc import Awaitable, Callable
 from dataclasses import replace
+from datetime import datetime
 from typing import Any, ClassVar
 
 import httpx
@@ -31,6 +32,7 @@ from switch_core.bridges.collaboration.models import (
     InboundAgentJoin,
     InboundAppJoin,
     InboundCommand,
+    InboundInteraction,
     InboundMessage,
     InboundUserJoin,
     OutboundAttachment,
@@ -39,6 +41,7 @@ from switch_core.bridges.collaboration.slack.agent_groups import (
     SlackAgentGroupDirectory,
 )
 from switch_core.bridges.collaboration.slack.avatar import on_slack_background
+from switch_core.bridges.collaboration.slack.mrkdwn import escape_mrkdwn
 
 logger = logging.getLogger(__name__)
 
@@ -430,6 +433,176 @@ class SlackAdapter(CollaborationAdapter):
                 "Failed to send message to Slack channel %s: %s", channel_id, e
             )
             return None
+
+    async def post_blocks(
+        self,
+        channel_id: str,
+        sender_name: str,
+        text: str,
+        blocks: list[dict[str, Any]],
+        thread_root_id: str | None,
+    ) -> str | None:
+        """Post a Block Kit message, for what plain text cannot carry.
+
+        Slack-only and deliberately not on `CollaborationAdapter`: blocks are
+        Slack's own shape, and the platforms that need something like them need
+        something different. `text` is what a notification and a client that
+        will not render the blocks are left with, so it has to stand alone.
+        """
+        if not self._web_client:
+            logger.error("Cannot post blocks: Slack client not connected")
+            return None
+
+        thread_ts = (
+            self._parse_message_ref(thread_root_id)[1]
+            if thread_root_id and ":" in thread_root_id
+            else thread_root_id
+        )
+        agent = await self.agent_rendering(sender_name)
+        try:
+            result = await self._web_client.chat_postMessage(
+                channel=channel_id,
+                text=text,
+                blocks=blocks,
+                username=agent.field_label,
+                icon_url=agent.icon_url,
+                thread_ts=thread_ts,
+                unfurl_links=False,
+                unfurl_media=False,
+            )
+            ts = result.get("ts", "")
+            if not ts:
+                raise RuntimeError(
+                    "Slack accepted a card without returning its message reference."
+                )
+            return f"{channel_id}:{ts}"
+        except SlackApiError as e:
+            logger.error("Failed to post blocks to Slack channel %s: %s", channel_id, e)
+            if e.response.get("error") in {
+                "internal_error",
+                "fatal_error",
+                "request_timeout",
+                "service_unavailable",
+            }:
+                raise
+            return None
+
+    async def find_request_card(
+        self,
+        channel_id: str,
+        thread_root_id: str | None,
+        token: str,
+        created_at: datetime,
+    ) -> str | None:
+        if self._web_client is None:
+            raise RuntimeError(
+                "Cannot recover a request card: Slack client not connected."
+            )
+        cursor = ""
+        while True:
+            arguments: dict[str, Any] = dict(
+                channel=channel_id,
+                oldest=str(created_at.timestamp()),
+                inclusive=True,
+                limit=100,
+                cursor=cursor,
+            )
+            if thread_root_id:
+                thread_ts = (
+                    self._parse_message_ref(thread_root_id)[1]
+                    if ":" in thread_root_id
+                    else thread_root_id
+                )
+                result = await self._web_client.conversations_replies(
+                    ts=thread_ts, **arguments
+                )
+            else:
+                result = await self._web_client.conversations_history(**arguments)
+            messages: list[dict[str, Any]] = result.get("messages") or []
+            for message in messages:
+                if not (
+                    (self._bot_user_id and message.get("user") == self._bot_user_id)
+                    or (self._bot_id and message.get("bot_id") == self._bot_id)
+                ):
+                    continue
+                if any(
+                    block.get("block_id") == f"switch-request:{token}"
+                    for block in message.get("blocks", [])
+                ):
+                    return f"{channel_id}:{message['ts']}"
+            metadata: dict[str, Any] = result.get("response_metadata") or {}
+            cursor = metadata.get("next_cursor", "")
+            if not cursor:
+                return None
+
+    async def update_blocks(
+        self,
+        channel_id: str,
+        message_ref: str,
+        text: str,
+        blocks: list[dict[str, Any]],
+    ) -> None:
+        """Replace an already posted Block Kit message in place.
+
+        Failure is raised rather than logged, unlike `update_message`. A caller
+        editing a card is replacing something a reader is acting on — a request
+        card left showing buttons for a request that has already settled invites
+        a press that cannot land — so it has to be able to say so instead.
+        """
+        if not self._web_client:
+            raise RuntimeError("Cannot update blocks: Slack client not connected.")
+        _, ts = self._parse_message_ref(message_ref)
+        if not ts:
+            raise ValueError(
+                f"Cannot update blocks: invalid message ref {message_ref}."
+            )
+        await self._web_client.chat_update(
+            channel=channel_id, ts=ts, text=text, blocks=blocks
+        )
+
+    async def is_first_reply(
+        self, channel_id: str, root_ref: str, message_ref: str
+    ) -> bool:
+        """Whether this message is the first reply under a thread root.
+
+        Slack's message event names the thread but not the position in it, so
+        the thread itself is the only place the answer exists. `messages[0]` is
+        always the root, which makes `messages[1]` the first reply and two the
+        whole page worth fetching.
+        """
+        if not self._web_client:
+            logger.warning(
+                "Cannot read the thread under %s in %s: Slack client not "
+                "connected. Treating %s as not the first reply.",
+                root_ref,
+                channel_id,
+                message_ref,
+            )
+            return False
+        _, root_ts = self._parse_message_ref(root_ref)
+        _, ts = self._parse_message_ref(message_ref)
+        if not root_ts or not ts:
+            return False
+        try:
+            result = await self._web_client.conversations_replies(
+                channel=channel_id, ts=root_ts, limit=2
+            )
+        except Exception as e:
+            # Broad because this is on the inbound path of every message: a
+            # reset connection or a timed-out read comes out of the client as
+            # neither a SlackApiError nor anything else caught above here, and
+            # raising here loses the message rather than the answer.
+            logger.warning(
+                "Could not read the thread under %s in %s: %s. Treating %s as "
+                "not the first reply.",
+                root_ts,
+                channel_id,
+                e,
+                ts,
+            )
+            return False
+        messages = result.get("messages") or []
+        return len(messages) > 1 and messages[1].get("ts") == ts
 
     def adapt_icon_url(self, raw: str | None, agent_name: str) -> str:
         # Overridden for Slack alone: it flattens a transparent avatar onto
@@ -1841,17 +2014,9 @@ class SlackAdapter(CollaborationAdapter):
         from text these three replacements do not touch. The `@` the base class
         defuses is what closes that.
 
-        mrkdwn's emphasis characters (`*`, `_`, `~`, backtick) have no escape
-        sequence — Slack documents none — so a label containing them can still
-        unbalance the bold run it sits in. That is cosmetic; the markup a label
-        could forge is not, and this closes it."""
-        return (
-            super()
-            .escape_label_for_body(label)
-            .replace("&", "&amp;")
-            .replace("<", "&lt;")
-            .replace(">", "&gt;")
-        )
+        The three replacements themselves are `escape_mrkdwn`, shared with
+        anything else that writes mrkdwn for this workspace."""
+        return escape_mrkdwn(super().escape_label_for_body(label))
 
     def translate_inbound(self, raw_message: str) -> str:
         return self._translate_links_to_markdown(
@@ -1933,6 +2098,10 @@ class SlackAdapter(CollaborationAdapter):
             await self._handle_slash_command(req.payload)
             return
 
+        if req.type == "interactive":
+            await self._handle_interactive(req.payload)
+            return
+
         if req.type != "events_api":
             return
 
@@ -1949,6 +2118,50 @@ class SlackAdapter(CollaborationAdapter):
             await self._handle_member_joined_channel(event)
         elif event_type == "agent_session_stopped":
             await self._handle_session_stopped(event)
+
+    async def _handle_interactive(self, payload: dict[str, Any]) -> None:
+        """Someone operated a Block Kit control on one of our messages.
+
+        Only two things are read out of the payload: who Slack says acted, and
+        which control they operated. A button's `value` is the opaque token this
+        bridge minted when it posted the message, so a payload that was replayed
+        or hand-built names nothing its sender was not already looking at.
+
+        Slack sends one `block_actions` envelope per press, but the field is a
+        list, and a press this bridge did not put there is somebody else's.
+        """
+        if payload.get("type") != "block_actions":
+            return
+        if self._on_interaction is None:
+            return
+
+        user_id = str((payload.get("user") or {}).get("id", ""))
+        container = payload.get("container") or {}
+        channel_id = str(
+            (payload.get("channel") or {}).get("id", "")
+            or container.get("channel_id", "")
+        )
+        message_ts = str(container.get("message_ts", ""))
+        if not user_id or not channel_id:
+            logger.warning("Slack block_actions missing user or channel, skipping")
+            return
+
+        user = await self._resolve_user_name(user_id)
+        for action in payload.get("actions") or []:
+            action_id = str(action.get("action_id", ""))
+            value = str(action.get("value") or "")
+            if not action_id or not value:
+                continue
+            await self._on_interaction(
+                InboundInteraction(
+                    channel_id=channel_id,
+                    sender_id=user_id,
+                    sender_name=user.name,
+                    action_id=action_id,
+                    value=value,
+                    message_ref=f"{channel_id}:{message_ts}" if message_ts else None,
+                )
+            )
 
     async def _handle_member_joined_channel(self, event: dict[str, object]) -> None:
         user_id = str(event.get("user", ""))
@@ -2121,6 +2334,7 @@ class SlackAdapter(CollaborationAdapter):
                     attachments=attachments,
                     attachment_failures=attachment_failures,
                     self_mention_token=self._bot_user_id if self_mention else None,
+                    sender_is_app=bool(bot_id),
                 )
             )
 

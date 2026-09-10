@@ -6,23 +6,30 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.bridges.agent.auth import get_agent_from_scope
 from switch_core.bridges.agent.dependencies import (
+    get_collab_lifecycle,
     get_event_buffer,
     get_session_factory,
 )
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
-from switch_core.db.models import Agent
-from switch_core.sessions.contract import (
+from switch_core.bridges.collaboration.lifecycle_service import (
+    CollaborationBridgeLifecycleService,
+)
+from switch_core.bridges.collaboration.session.contract import (
     Command,
     CommandStatus,
     HostEvent,
     Session,
     Snapshot,
 )
+from switch_core.db.models import Agent
 from switch_core.sessions.service import SessionAuthority
 
 router = APIRouter(prefix="/sessions")
 Factory = Annotated[async_sessionmaker[AsyncSession], Depends(get_session_factory)]
 AuthenticatedAgent = Annotated[Agent, Depends(get_agent_from_scope)]
+Lifecycle = Annotated[
+    CollaborationBridgeLifecycleService, Depends(get_collab_lifecycle)
+]
 
 
 class HostLease(BaseModel):
@@ -53,9 +60,11 @@ async def ingest(
     body: HostEvent,
     agent: AuthenticatedAgent,
     factory: Factory,
+    lifecycle: Lifecycle,
     host_id: str,
 ) -> dict[str, int]:
     through = await SessionAuthority(factory).ingest(agent.id, host_id, body)
+    await lifecycle.refresh_sdk_session(body.session_id)
     return {"throughHostSequence": through}
 
 
@@ -103,11 +112,13 @@ async def reconcile(
     body: HostEvent,
     agent: AuthenticatedAgent,
     factory: Factory,
+    lifecycle: Lifecycle,
     host_id: str,
 ) -> dict[str, int]:
     through = await SessionAuthority(factory).ingest(
         agent.id, host_id, body, reconcile=True
     )
+    await lifecycle.refresh_sdk_session(body.session_id)
     return {"throughHostSequence": through}
 
 
@@ -117,6 +128,7 @@ async def recover(
     body: Recovery,
     agent: AuthenticatedAgent,
     factory: Factory,
+    lifecycle: Lifecycle,
 ) -> Snapshot:
     snapshot = await SessionAuthority(factory).recover(
         agent.id,
@@ -126,6 +138,7 @@ async def recover(
         body.operation_id,
         body.through_host_sequence,
     )
+    await lifecycle.refresh_sdk_session(session_id)
     return snapshot
 
 

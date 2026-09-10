@@ -1,4 +1,4 @@
-from switch_core.sessions.contract import (
+from switch_core.bridges.collaboration.session.contract import (
     ApprovalContent,
     ApprovalResult,
     QuestionsContent,

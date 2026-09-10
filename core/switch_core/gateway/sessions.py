@@ -4,10 +4,10 @@ from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from switch_core.db.models import User
-from switch_core.gateway.auth import get_current_user
-from switch_core.gateway.dependencies import get_session_factory
-from switch_core.sessions.contract import (
+from switch_core.bridges.collaboration.lifecycle_service import (
+    CollaborationBridgeLifecycleService,
+)
+from switch_core.bridges.collaboration.session.contract import (
     Command,
     CommandBody,
     CommandStatus,
@@ -16,11 +16,17 @@ from switch_core.sessions.contract import (
     Session,
     Snapshot,
 )
+from switch_core.db.models import User
+from switch_core.gateway.auth import get_current_user
+from switch_core.gateway.dependencies import get_collab_lifecycle, get_session_factory
 from switch_core.sessions.service import SessionAuthority
 
 router = APIRouter()
 Factory = Annotated[async_sessionmaker[AsyncSession], Depends(get_session_factory)]
 CurrentUser = Annotated[User, Depends(get_current_user)]
+Lifecycle = Annotated[
+    CollaborationBridgeLifecycleService, Depends(get_collab_lifecycle)
+]
 
 
 class SubmitCommand(BaseModel):
@@ -67,6 +73,7 @@ async def submit(
     body: SubmitCommand,
     user: CurrentUser,
     factory: Factory,
+    lifecycle: Lifecycle,
 ) -> CommandStatus:
     command = Command(
         contract_version=1,
@@ -85,4 +92,5 @@ async def submit(
     status = await SessionAuthority(factory).submit(
         command, user_id=user.id, bridge_id=None
     )
+    await lifecycle.refresh_sdk_session(session_id)
     return status

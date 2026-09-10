@@ -66,6 +66,9 @@ def _make_bridge(rooms: dict[str, SimpleNamespace]) -> BridgeCore:
     bridge._adapter = _Adapter()  # type: ignore[assignment]
     bridge._room_store = _RoomStore(rooms)  # type: ignore[assignment]
     bridge._session_factory = _Session  # type: ignore[assignment]
+    bridge._session_publisher = None
+    bridge._session_publication_task = None
+    bridge._session_interactions = None
     return bridge
 
 

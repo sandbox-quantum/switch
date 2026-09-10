@@ -12,19 +12,7 @@ from switch_core.bridges.agent.protocol.event_buffer import (
     EventBuffer,
 )
 from switch_core.bridges.agent.protocol.types import MessagePayload
-from switch_core.db.models import (
-    Agent,
-    Client,
-    ClientRoom,
-    CollaborationBridge,
-    ExternalUser,
-    ExternalUserClaim,
-    Room,
-    SdkSession,
-    SdkSessionCommand,
-    SdkSessionEvent,
-)
-from switch_core.sessions.contract import (
+from switch_core.bridges.collaboration.session.contract import (
     ApprovalContent,
     ApprovalResult,
     Command,
@@ -50,7 +38,19 @@ from switch_core.sessions.contract import (
     TurnUpsert,
     parse_host_event,
 )
-from switch_core.sessions.projection import SessionProjection
+from switch_core.bridges.collaboration.session.projection import SessionProjection
+from switch_core.db.models import (
+    Agent,
+    Client,
+    ClientRoom,
+    CollaborationBridge,
+    ExternalUser,
+    ExternalUserClaim,
+    Room,
+    SdkSession,
+    SdkSessionCommand,
+    SdkSessionEvent,
+)
 from switch_core.sessions.validation import validate_answer
 
 LEASE_SECONDS = 30
