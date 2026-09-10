@@ -7,6 +7,17 @@ from switch_core.db.models import Tenant
 
 
 class TenantStore:
+    async def create(self, session: AsyncSession, tenant: Tenant) -> Tenant:
+        """Insert a tenant row.
+
+        Called from `ClientLifecycleService.create_tenant`, the one path that
+        creates a tenant in the running application and provisions what it
+        needs in the same call, rather than a row appearing — today, only by
+        direct SQL — with nothing to notice it until the next restart."""
+        session.add(tenant)
+        await session.flush()
+        return tenant
+
     async def get_all_ids(self, session: AsyncSession) -> list[str]:
         """Every tenant in the deployment, oldest first.
 

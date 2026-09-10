@@ -10,7 +10,7 @@ from switch_core.clients.agent_client import AgentClient
 from switch_core.clients.client_base import ClientBase, ClientConfig
 from switch_core.clients.client_factory import ClientFactory
 from switch_core.config import SwitchConfig
-from switch_core.db.models import Client
+from switch_core.db.models import Client, Tenant
 from switch_core.db.session_scope import unscoped_session
 from switch_core.db.stores.client_store import ClientStore
 from switch_core.db.stores.tenant_store import TenantStore
@@ -85,6 +85,32 @@ class ClientLifecycleService:
                     display_name=client_type.replace("_", "-"),
                     localpart=localpart,
                 )
+
+    async def create_tenant(self, name: str, slug: str) -> Tenant:
+        """Create a tenant with everything it needs to function, in one call.
+
+        Nothing in the running application ever created a `tenants` row
+        before this: only the migration that seeds tenant zero does, so a
+        second tenant onboarded so far meant inserting the row directly and
+        restarting — the only thing that ever ran `ensure_system_client`'s
+        enumeration. Between that insert and the restart the tenant existed
+        with no admin client, so its rooms had no admin participant, with
+        nothing to repair that short of the next boot.
+
+        This is now the one seam a tenant comes into existence through, so
+        that whatever eventually offers tenant creation (there is no such
+        endpoint yet — Phase 2's scope) has a single place to call rather
+        than a row to insert and a checklist to remember. It reuses
+        `ensure_system_client` rather than duplicating its per-type,
+        per-tenant provisioning logic: the new tenant is simply the one gap
+        that enumeration has not filled yet.
+        """
+        tenant = Tenant(name=name, slug=slug)
+        async with unscoped_session(self._session_factory) as session:
+            await self._tenant_store.create(session, tenant)
+            await session.commit()
+        await self.ensure_system_client("admin")
+        return tenant
 
     async def start_all(self) -> None:
         # Every tenant's clients in one pass at boot, so this read is

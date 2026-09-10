@@ -120,3 +120,30 @@ async def test_nothing_stays_bound_afterwards(
     await _make_tenant(session_factory, f"tenant-{uuid.uuid4().hex[:8]}")
     await _service(session_factory).ensure_system_client("admin")
     assert current_tenant_id() is None
+
+
+@pytest.mark.no_ambient_tenant
+async def test_a_tenant_created_after_startup_gets_a_working_admin_client(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """Bug 2, arranged the way it happened live: boot runs once, against
+    whatever tenants exist then, and a second tenant onboards while the
+    process keeps running — no second boot in between.
+
+    Before `create_tenant`, the only way a tenant came into existence was a
+    row inserted directly (`_make_tenant`, above, is exactly that), and
+    nothing woke `ensure_system_client` up to notice it short of the next
+    restart. Routing creation through the service instead means the tenant
+    has a working admin client — a real row, addressed by the tenant id this
+    call itself minted, not "some client exists somewhere" — by the time this
+    returns.
+    """
+    service = _service(session_factory)
+    await service.ensure_system_client("admin")  # the boot-time call
+
+    tenant = await service.create_tenant(name="Acme", slug="acme")
+
+    clients = await _admin_clients(session_factory)
+    assert sorted(c.tenant_id for c in clients) == sorted([TENANT_ZERO_ID, tenant.id])
+    acme_client = next(c for c in clients if c.tenant_id == tenant.id)
+    assert acme_client.matrix_user_id == "@switch-admin:test"
