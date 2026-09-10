@@ -34,7 +34,6 @@ from typing import Any
 from switch_core.bridges.collaboration.slack.mrkdwn import escape_mrkdwn, plain_text
 
 from ..contract import (
-    TURN_ENDED,
     ApprovalContent,
     ApprovalOption,
     ApprovalResult,
@@ -49,7 +48,7 @@ from ..contract import (
     Surface,
     TurnUpsert,
 )
-from . import ANSWER_ACTION, RequestReference
+from . import ANSWER_ACTION, RequestReference, turn_state
 
 # Slack's own limits. Exceeding one is rejected at the API, so it is caught here
 # where the offending value can still be named.
@@ -157,18 +156,6 @@ _ACTIVITY = {
     "completed": "✓",
     "failed": "✗",
     "declined": "⊘",
-}
-
-# Where the turn itself has got to. One message per turn is edited in place, so
-# without this a turn that finished and a turn that stalled read identically:
-# the same tool log, the last line still marked in progress, and nothing to say
-# which of the two a reader is looking at.
-_TURN_STATE = {
-    "queued": "Queued.",
-    "running": "Working…",
-    "completed": "Turn complete.",
-    "interrupted": "Turn interrupted.",
-    "error": "Turn ended with an error.",
 }
 
 _HEADINGS = {
@@ -792,26 +779,8 @@ def render_activity(items: list[Item], turn: TurnUpsert) -> SlackMessage:
     if did:
         blocks.append(_plan(items, did, turn))
     else:
-        blocks.append(_context(f"_{_turn_state(items, turn)}_"))
+        blocks.append(_context(f"_{turn_state(items, turn)}_"))
     return SlackMessage(text=render_activity_text(items, turn), blocks=blocks)
-
-
-def _turn_state(items: list[Item], turn: TurnUpsert) -> str:
-    """Where the turn got to, and what it left behind if it stopped.
-
-    A turn that ends while a tool call is still open leaves that call marked
-    `▸` for good. The glyph is what the host last said and is not rewritten
-    here — the host is the only thing that knows how the call actually ended —
-    so the count is what tells the reader those lines are not still moving.
-    """
-    state = _TURN_STATE[turn.status]
-    if turn.status not in TURN_ENDED:
-        return state
-    unfinished = sum(1 for item in items if item.status == "in-progress")
-    if not unfinished:
-        return state
-    step = "step" if unfinished == 1 else "steps"
-    return f"{state} {unfinished} {step} left unfinished."
 
 
 def render_activity_text(items: list[Item], turn: TurnUpsert) -> str:
@@ -836,7 +805,7 @@ def render_activity_text(items: list[Item], turn: TurnUpsert) -> str:
         lines.append(f"…{hidden} earlier in this turn, not shown.")
     lines += [_message_text(item) for item in said[len(said) - _MAX_MESSAGES :]]
     lines += _activity_lines(did)
-    lines.append(_turn_state(items, turn))
+    lines.append(turn_state(items, turn))
     return "\n".join(_within(lines, _MAX_TEXT))
 
 
@@ -934,7 +903,7 @@ def _plan(items: list[Item], did: list[Item], turn: TurnUpsert) -> dict[str, Any
     """
     kept = did[len(did) - _MAX_PLAN_TASKS :]
     dropped = len(did) - len(kept)
-    title = _turn_state(items, turn)
+    title = turn_state(items, turn)
     if dropped:
         step = "step" if dropped == 1 else "steps"
         title = f"{title} …{dropped} earlier {step}, not shown."
@@ -1065,7 +1034,7 @@ def stream_state_chunk(items: list[Item], turn: TurnUpsert) -> dict[str, Any]:
     vanish, and this one is not going to — so the count is what tells a reader
     those lines have stopped moving.
     """
-    return {"type": "markdown_text", "text": f"_{_turn_state(items, turn)}_"}
+    return {"type": "markdown_text", "text": f"_{turn_state(items, turn)}_"}
 
 
 def _task_id(item_id: str) -> str:
