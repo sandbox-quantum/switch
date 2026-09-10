@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { roomTemplatesController } from './controller';
+import { roomTemplatesController, EXAMPLE_TEMPLATE_YAML } from './controller';
 
 const parse = (yamlText: string, schema?: Record<string, unknown>) =>
   roomTemplatesController.parse({ yamlText, schema });
@@ -127,6 +127,17 @@ room:
 
   it('rejects template without room block', () => {
     expect(() => parse('something_else:\n  name: test\n')).toThrow(/must have a "room:" block/);
+  });
+
+  it('returns the example template YAML', () => {
+    const yaml = roomTemplatesController.getExampleTemplate();
+    expect(yaml).toBe(EXAMPLE_TEMPLATE_YAML);
+    // The example template should parse cleanly
+    const result = parse(yaml);
+    expect(result.roomName).toBe('{room_name}');
+    expect(result.agents).toEqual(['{red_agent}', '{blue_agent}']);
+    expect(result.params).toHaveLength(3);
+    expect(result.params.map((p) => p.name)).toEqual(['room_name', 'red_agent', 'blue_agent']);
   });
 
   it('handles bare param names (no spec object)', () => {

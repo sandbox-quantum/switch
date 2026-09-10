@@ -1,8 +1,12 @@
-import { ArrowRight, Check, FileText, Loader2, Upload, X } from 'lucide-react';
+import { ArrowRight, Check, Clock, FileText, Loader2, Upload, X } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { toast } from 'sonner';
-import type { ParamSpec, ParsedTemplate } from '@main/core/room-templates/controller';
+import type {
+  ParamSpec,
+  ParsedTemplate,
+  RecentTemplate,
+} from '@main/core/room-templates/controller';
 import type { GuardResult, ViewDefinition } from '@renderer/app/view-registry';
 import { refreshSidebarRoomState } from '@renderer/features/sidebar/sidebar-tree-data';
 import { ServerPage } from '@renderer/features/switch-servers/server-page';
@@ -40,18 +44,104 @@ function readFileAsText(file: File, onText: (text: string) => void): void {
   reader.readAsText(file);
 }
 
+// ── Recents / FTUE section ─────────────────────────────────────────────────
+
+function formatTimeAgo(ms: number): string {
+  const seconds = Math.floor((Date.now() - ms) / 1000);
+  if (seconds < 60) return 'just now';
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  return `${days}d ago`;
+}
+
+function RecentsSection({
+  serverId,
+  onSelect,
+}: {
+  serverId: string;
+  onSelect: (yamlText: string, name: string) => void;
+}) {
+  const [recents, setRecents] = useState<RecentTemplate[] | null>(null);
+
+  useEffect(() => {
+    rpc.roomTemplates
+      .getRecents(serverId)
+      .then(setRecents)
+      .catch(() => setRecents([]));
+  }, [serverId]);
+
+  const handleLoadExample = useCallback(async () => {
+    const yaml = await rpc.roomTemplates.getExampleTemplate();
+    onSelect(yaml, 'red-blue-workroom.template.yaml');
+  }, [onSelect]);
+
+  if (recents === null) return null;
+
+  return (
+    <>
+      <div className="border-t border-border pt-4">
+        <h3 className="mb-3 flex items-center gap-1.5 text-sm font-medium">
+          <Clock className="size-3.5 text-foreground-muted" />
+          Recently used templates
+        </h3>
+
+        {recents.length === 0 ? (
+          <div className="rounded-lg border border-dashed border-border p-4 text-center">
+            <p className="text-sm text-foreground-muted">No templates used yet.</p>
+            <p className="mt-1 text-sm text-foreground-muted">
+              Try the{' '}
+              <button
+                type="button"
+                onClick={handleLoadExample}
+                className="text-primary hover:text-primary/80 underline underline-offset-2"
+              >
+                example template
+              </button>{' '}
+              to get started.
+            </p>
+          </div>
+        ) : (
+          <div className="flex flex-col gap-1">
+            {recents.map((r, i) => (
+              <button
+                key={i}
+                type="button"
+                onClick={() => onSelect(r.yamlText, r.name)}
+                className="hover:bg-accent flex items-center justify-between rounded-md border border-border px-3 py-2 text-left text-sm transition-colors"
+              >
+                <span className="flex items-center gap-2 truncate">
+                  <FileText className="size-3.5 shrink-0 text-foreground-muted" />
+                  {r.name}
+                </span>
+                <span className="shrink-0 text-xs text-foreground-passive">
+                  {formatTimeAgo(r.usedAt)}
+                </span>
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+    </>
+  );
+}
+
 function SourceStep({
   yamlText,
   onYamlChange,
   parseError,
   onNext,
   onFileSelect,
+  serverId,
 }: {
   yamlText: string;
   onYamlChange: (text: string) => void;
   parseError: string | null;
   onNext: () => void;
   onFileSelect: (name: string) => void;
+  serverId: string;
 }) {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [dragging, setDragging] = useState(false);
@@ -75,6 +165,14 @@ function SourceStep({
       if (!file) return;
       onFileSelect(file.name);
       readFileAsText(file, onYamlChange);
+    },
+    [onYamlChange, onFileSelect]
+  );
+
+  const handleRecentSelect = useCallback(
+    (yaml: string, name: string) => {
+      onFileSelect(name);
+      onYamlChange(yaml);
     },
     [onYamlChange, onFileSelect]
   );
@@ -125,6 +223,8 @@ function SourceStep({
           <AlertDescription>{parseError}</AlertDescription>
         </Alert>
       )}
+
+      <RecentsSection serverId={serverId} onSelect={handleRecentSelect} />
 
       <div className="flex justify-end pt-2">
         <Button disabled={!yamlText.trim()} onClick={onNext}>
@@ -737,6 +837,11 @@ const TemplateImportPanel = observer(function TemplateImportPanel() {
         });
 
         const result = await rpc.switchServers.createRoomFromTemplate(serverId, finalYaml, inputs);
+
+        // Save to recents on success
+        const recentName = sourceName ?? t.roomName ?? 'Untitled template';
+        rpc.roomTemplates.saveRecent({ serverId, name: recentName, yamlText }).catch(() => {});
+
         await refreshSidebarRoomState(true);
         if (result.failedAttachments.length > 0) {
           const names = result.failedAttachments.map((f) => `${f.id} (${f.error})`).join(', ');
@@ -761,7 +866,7 @@ const TemplateImportPanel = observer(function TemplateImportPanel() {
         }
       }
     },
-    [parsed, values, serverId, yamlText, validateInputs, editedAgents, editedUsers]
+    [parsed, values, serverId, yamlText, validateInputs, editedAgents, editedUsers, sourceName]
   );
 
   const handleParseAndAdvance = useCallback(async () => {
@@ -828,6 +933,7 @@ const TemplateImportPanel = observer(function TemplateImportPanel() {
           parseError={parseError}
           onNext={handleParseAndAdvance}
           onFileSelect={setSourceName}
+          serverId={serverId}
         />
       )}
 

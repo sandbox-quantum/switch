@@ -34,6 +34,67 @@ export type ParsedTemplate = {
   warnings: string[];
 };
 
+// ── Recents ───────────────────────────────────────────────────────────────
+
+export type RecentTemplate = {
+  name: string;
+  yamlText: string;
+  usedAt: number;
+};
+
+type RecentsKV = Record<string, RecentTemplate[]>;
+
+const MAX_RECENTS = 10;
+
+// Lazy-initialized to avoid pulling in the Electron `app` module at import
+// time, which breaks tests running in a plain Node environment.
+let _recentsKV: import('@main/db/kv').KV<RecentsKV> | null = null;
+async function recentsKV(): Promise<import('@main/db/kv').KV<RecentsKV>> {
+  if (!_recentsKV) {
+    const { KV } = await import('@main/db/kv');
+    _recentsKV = new KV<RecentsKV>('template-recents');
+  }
+  return _recentsKV;
+}
+
+export const EXAMPLE_TEMPLATE_YAML = `\
+room:
+  name: "{room_name}"
+  description: "A workroom for two agents with distinct red/blue roles."
+  instructions: |
+    This room pairs two agents. The red agent proposes ideas and drives
+    forward; the blue agent stress-tests proposals and finds gaps.
+    Take turns — red opens, blue responds, iterate until converged.
+  agents:
+    - "{red_agent}"
+    - "{blue_agent}"
+  roles:
+    - name: red
+      instructions: |
+        You are the Red agent. Propose solutions, drive momentum, and
+        make concrete suggestions. When Blue raises a concern, address
+        it directly — do not hedge.
+      exclusive: true
+    - name: blue
+      instructions: |
+        You are the Blue agent. Stress-test every proposal — find gaps,
+        edge cases, and unstated assumptions. Be specific: name the
+        scenario that breaks it, not just "this might fail."
+      exclusive: true
+
+params:
+  room_name:
+    type: string
+    description: Name for the workroom
+    default: red-blue-workroom
+  red_agent:
+    type: string
+    description: Agent to play the Red (proposer) role
+  blue_agent:
+    type: string
+    description: Agent to play the Blue (challenger) role
+`;
+
 /** Convention: trigger the agent picker when the param is named exactly "agent" or ends in "_agent". */
 function isAgentParam(name: string): boolean {
   return name === 'agent' || name.endsWith('_agent');
@@ -165,5 +226,34 @@ export const roomTemplatesController = createRPCController({
       delete room.users;
     }
     return dump(doc, { lineWidth: -1 });
+  },
+
+  getRecents: async (serverId: string): Promise<RecentTemplate[]> => {
+    const kv = await recentsKV();
+    return (await kv.get(serverId)) ?? [];
+  },
+
+  saveRecent: async (params: {
+    serverId: string;
+    name: string;
+    yamlText: string;
+  }): Promise<void> => {
+    const { serverId, name, yamlText } = params;
+    const kv = await recentsKV();
+    const existing = (await kv.get(serverId)) ?? [];
+    // Deduplicate by YAML content — same template used again just moves to top
+    const filtered = existing.filter((r) => r.yamlText !== yamlText);
+    const entry: RecentTemplate = { name, yamlText, usedAt: Date.now() };
+    const updated = [entry, ...filtered].slice(0, MAX_RECENTS);
+    await kv.set(serverId, updated);
+  },
+
+  clearRecents: async (serverId: string): Promise<void> => {
+    const kv = await recentsKV();
+    await kv.del(serverId);
+  },
+
+  getExampleTemplate: (): string => {
+    return EXAMPLE_TEMPLATE_YAML;
   },
 });
