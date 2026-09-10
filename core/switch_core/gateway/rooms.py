@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import logging
+import time
+from datetime import date
 from typing import Annotated, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
@@ -401,7 +403,11 @@ async def create_room_from_yaml(
         spec = rooms_yaml.parse(
             text,
             inputs=inputs,
-            builtins={"creator": user.name},
+            builtins={
+                "$creator": user.name,
+                "$date": str(date.today()),
+                "$timestamp": str(int(time.time())),
+            },
         )
         return await rooms_yaml.provision(
             spec,

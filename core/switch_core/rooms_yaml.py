@@ -48,7 +48,7 @@ logger = logging.getLogger(__name__)
 
 # ── Template parameters (v0) ─────────────────────────────────────────────
 
-PLACEHOLDER_RE = re.compile(r"\{([A-Za-z_][A-Za-z0-9_]*)\}")
+PLACEHOLDER_RE = re.compile(r"\{(\$?[A-Za-z_][A-Za-z0-9_]*)\}")
 
 
 class ParamSpec(BaseModel):
