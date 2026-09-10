@@ -78,6 +78,7 @@ interface SessionRecord {
   runtimeMode: RuntimeMode;
   model?: { providerID: string; modelID: string };
   systemContext?: string;
+  variant?: string;
   mcpNames: string[];
   transport: OpencodeSessionTransport;
   stopping: boolean;
@@ -167,6 +168,7 @@ export class OpencodeAdapter implements ProviderAdapter {
       runtimeMode: input.runtimeMode,
       ...(model ? { model } : {}),
       ...(input.systemContext ? { systemContext: input.systemContext } : {}),
+      ...(input.model?.options?.variant ? { variant: input.model.options.variant } : {}),
       mcpNames: Object.keys(input.mcpServers),
       transport,
       stopping: false,
@@ -213,6 +215,7 @@ export class OpencodeAdapter implements ProviderAdapter {
   async sendTurn(input: ProviderSendTurnInput): Promise<ProviderTurnStartResult> {
     const record = this.require(input.sessionId);
     const model = input.model ? parseModelId(input.model.id) : record.model;
+    const variant = input.model ? input.model.options?.variant : record.variant;
     const steeredInto = record.activeTurnId;
     const turnId = steeredInto ?? input.turnId;
     const previousAwaitingBusy = record.awaitingBusy;
@@ -227,6 +230,7 @@ export class OpencodeAdapter implements ProviderAdapter {
       await record.transport.prompt({
         text: input.text,
         ...(record.systemContext ? { system: record.systemContext } : {}),
+        ...(variant ? { variant } : {}),
         ...(model ? { model } : {}),
         ...(input.attachments && input.attachments.length > 0
           ? {
@@ -344,6 +348,7 @@ export class OpencodeAdapter implements ProviderAdapter {
   async setModel(sessionId: string, model: ModelSelection): Promise<void> {
     const record = this.require(sessionId);
     record.model = parseModelId(model.id);
+    record.variant = model.options?.variant;
   }
 
   async stopSession(sessionId: string): Promise<void> {

@@ -10,6 +10,7 @@ export type OpencodePermissionReply = 'once' | 'always' | 'reject';
 
 export interface OpencodePromptInput {
   text: string;
+  variant?: string;
   system?: string;
   model?: { providerID: string; modelID: string };
   files?: Array<{ url: string; mime: string; filename: string }>;
@@ -139,12 +140,16 @@ export function createHttpTransport(options: HttpTransportOptions): OpencodeTran
           return data.all
             .filter((provider) => data.connected.includes(provider.id))
             .flatMap((provider) =>
-              Object.values(provider.models).map((model) => ({
-                id: `${provider.id}/${model.id}`,
-                label: `${provider.name}: ${model.name}`,
-                imageInput: model.capabilities.input.image,
-                options: {},
-              }))
+              Object.values(provider.models).map(
+                (model): ModelChoice => ({
+                  id: `${provider.id}/${model.id}`,
+                  label: `${provider.name}: ${model.name}`,
+                  imageInput: model.capabilities.input.image,
+                  options: Object.keys(model.variants ?? {}).length
+                    ? { variant: Object.keys(model.variants!) }
+                    : {},
+                })
+              )
             );
         },
         async prompt(promptInput) {
@@ -152,6 +157,7 @@ export function createHttpTransport(options: HttpTransportOptions): OpencodeTran
             sessionID: nativeSessionId,
             directory: input.cwd,
             ...(promptInput.model ? { model: promptInput.model } : {}),
+            ...(promptInput.variant ? { variant: promptInput.variant } : {}),
             ...(promptInput.system ? { system: promptInput.system } : {}),
             parts: [
               { type: 'text', text: promptInput.text },

@@ -59,14 +59,13 @@ Compaction uses a native operation: Claude's `/compact` with a completed compact
 boundary, Codex's `thread/compact/start` with turn completion, or OpenCode's
 `session.summarize` with native busy/idle completion. Console shows progress and the
 outcome. A timeout or interrupted completion remains unknown. Gemini CLI's current
-ACP command registry has no compaction operation. Cursor compaction is not exposed
-by this adapter. Neither receives a substitute summarization prompt.
+ACP command registry has no compaction operation. The installed Cursor ACP command catalog also advertises no compaction operation. Neither receives a substitute summarization prompt.
 
 | Provider | Reset | Model selection | Native compaction | Attachments |
 | --- | --- | --- | --- | --- |
 | Claude Code | Yes | Native catalog and effort | When `/compact` is advertised | Images as bytes; other files staged |
 | Codex | Yes | Native catalog and reasoning effort | App-server compaction | Local images and staged file mentions |
-| OpenCode | Yes | Connected providers' models | Native session compaction | Staged file URLs |
+| OpenCode | Yes | Connected models and native variants | Native session compaction | Staged file URLs |
 | Gemini CLI | Yes | ACP model catalog | Unavailable | Images/resources as bytes |
 | Cursor | Yes | ACP model catalog | Unavailable | Images as bytes; staged file references |
 

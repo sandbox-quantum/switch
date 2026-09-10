@@ -596,7 +596,7 @@ export class ClaudeAdapter implements ProviderAdapter {
     try {
       await session.query.setModel(model.id);
       const effort = effortFrom(model);
-      if (effort) await session.query.applyFlagSettings({ effortLevel: effort });
+      await session.query.applyFlagSettings({ effortLevel: effort ?? null });
     } catch (cause) {
       throw new ProviderSessionError(PROVIDER, session.sessionId, 'Failed to set the model.', {
         cause,

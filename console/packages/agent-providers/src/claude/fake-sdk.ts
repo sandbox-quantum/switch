@@ -20,6 +20,7 @@ export function asSdkMessage(value: Record<string, unknown>): SDKMessage {
 
 export class FakeQuery {
   readonly sent: SDKUserMessage[] = [];
+  readonly flagSettingsCalls: unknown[] = [];
   readonly setModelCalls: Array<string | undefined> = [];
   interruptCount = 0;
   closed = false;
@@ -66,7 +67,8 @@ export class FakeQuery {
     return Promise.resolve();
   }
 
-  applyFlagSettings(): Promise<void> {
+  applyFlagSettings(settings: unknown): Promise<void> {
+    this.flagSettingsCalls.push(settings);
     return Promise.resolve();
   }
 

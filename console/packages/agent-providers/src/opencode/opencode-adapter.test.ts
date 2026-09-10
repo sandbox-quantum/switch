@@ -624,3 +624,19 @@ describe('OpenCode native compaction', () => {
     await outcome;
   });
 });
+
+it('sends the native model variant and clears it when returning to defaults', async () => {
+  const { adapter, session } = await setup();
+  await adapter.setModel('switch-session', { id: 'example/model', options: { variant: 'high' } });
+  await adapter.sendTurn({ sessionId: 'switch-session', turnId: 'first', text: 'first' });
+  expect(session.calls.find((call) => call.method === 'prompt')?.args[0]).toMatchObject({
+    model: { providerID: 'example', modelID: 'model' },
+    variant: 'high',
+  });
+  await adapter.setModel('switch-session', { id: 'example/model', options: {} });
+  await adapter.sendTurn({ sessionId: 'switch-session', turnId: 'second', text: 'second' });
+  expect(
+    session.calls.filter((call) => call.method === 'prompt').at(-1)?.args[0]
+  ).not.toHaveProperty('variant');
+  await adapter.stopAll();
+});
