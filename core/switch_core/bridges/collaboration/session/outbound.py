@@ -20,10 +20,20 @@ The inbound half turns a press into a command; this is the other side of it.
 Posting is also what makes the inbound half reachable at all: the row written
 here is the only thing a token, a handle or a reply to a card ever resolves to.
 
-Slack-shaped, for the same reason `post_blocks` is: Block Kit is Slack's own
-form and the platforms that need something like a card need something
-different. The neutral seam belongs here when a second platform wants one, not
-before.
+Typed on `CollaborationAdapter`'s `post_rich` / `update_rich` rather than on
+Block Kit: which renderer draws a turn or a card is the adapter's own choice,
+and this module never asks. `RichContentFailed` is the one error either can
+raise, on any platform, so the edit-failure fallback below is not Slack-shaped
+either.
+
+Streaming is the one thing here that still is. It has no equivalent on any
+other platform (`SlackAdapter.open_activity_stream` and its two companions
+are not on the port at all), so `SessionTurnActivity` keeps one deliberate,
+permanent `isinstance(self._adapter, SlackAdapter)` gate around attempting
+it — not a temporary seam waiting for a second platform, unlike the demo's
+own gate in `bridge_core.py`. Off Slack, or wherever Slack cannot open a
+stream, a threaded turn is a threaded post instead, edited the same way an
+unthreaded one is.
 """
 
 from __future__ import annotations
@@ -34,10 +44,15 @@ import secrets
 from collections import OrderedDict
 from dataclasses import dataclass
 
-from slack_sdk.errors import SlackApiError
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from switch_core.bridges.collaboration.adapter import (
+    CollaborationAdapter,
+    RequestCard,
+    RichContentFailed,
+    TurnActivity,
+)
 from switch_core.bridges.collaboration.slack.adapter import SlackAdapter
 from switch_core.db.models import SessionRequestPost
 from switch_core.db.stores.session_request_post_store import SessionRequestPostStore
@@ -46,8 +61,6 @@ from .contract import TURN_ENDED, Item, SnapshotRequest, TurnUpsert
 from .form import posted_form
 from .renderers import RequestReference
 from .renderers.slack import (
-    render_activity,
-    render_request,
     stream_message_chunk,
     stream_state_chunk,
     stream_task_chunk,
@@ -137,16 +150,18 @@ class SessionTurnActivity:
     There are two ways to draw it, and which one a turn gets follows from where
     the caller put it. **Streamed**, in a thread: the tool calls become task
     cards in a timeline Slack collapses until a reader wants it. **Posted**, at
-    the channel root: one Block Kit message, rewritten whole on every change,
-    with the tool calls as the cards of a `plan` block — the same disclosure,
-    in a block that needs no thread.
+    the channel root or in a thread Slack could not stream to: one message via
+    `post_rich` / `update_rich`, rewritten whole on every change — a Block Kit
+    message with the tool calls as the cards of a `plan` block on Slack, the
+    neutral turn summary anywhere else.
 
-    That is Slack's constraint, not a preference. A stream is a reply addressed
-    to somebody, so it exists in a thread and nowhere else; a turn wanted
-    beside the message that prompted it cannot be one. A stream also needs the
-    person recorded on that thread and an app declared as an Agent, and where
-    either is missing a threaded turn is posted instead — that one *is* a
-    fallback, and it says so in the log.
+    That streaming exists at all is Slack's constraint, not a preference, and
+    it is Slack's alone: it needs the person recorded on the thread and an app
+    declared as an Agent, and it is not on the port `post_rich` sits on, so no
+    other adapter has one to offer. Where a thread is asked for but streaming
+    is unavailable — the adapter is not Slack, or Slack could not open one —
+    the turn is posted there and edited in place instead, the same as at the
+    channel root. That one *is* a fallback, and it says so in the log.
 
     Still not a card, which is the difference in how failure is handled here. A
     card has buttons, so one left showing a stale state invites a press that
@@ -161,7 +176,7 @@ class SessionTurnActivity:
     for it to migrate, only a store to hand in.
     """
 
-    def __init__(self, adapter: SlackAdapter) -> None:
+    def __init__(self, adapter: CollaborationAdapter) -> None:
         self._adapter = adapter
         self._anchors: OrderedDict[tuple[str, str], _Anchor] = OrderedDict()
 
@@ -232,17 +247,16 @@ class SessionTurnActivity:
     ) -> _Anchor | None:
         """Start the turn where the caller put it, drawn how that place allows.
 
-        Where the turn goes decides how it is drawn, because Slack ties the two
-        together: a stream exists only as a reply to somebody, so it can be had
-        in a thread and nowhere else. A turn asked for at the channel root —
-        beside the message that prompted it, which is where a reader is looking
-        — is a posted message, and its tool calls are a `plan` block: the same
-        collapsed cards, in a block that needs no thread to live in.
+        A stream is attempted only in a thread, and only on Slack — the one
+        adapter that has one to offer; see the module docstring for why that
+        gate is deliberate and permanent rather than a seam waiting for a
+        second platform. Everywhere else, and wherever Slack could not open
+        one, the turn is posted through `post_rich` instead, threaded or not.
 
-        Either way Slack can refuse it, and then the channel is told rather
-        than left with a turn that silently never appeared.
+        Either way the platform can refuse it, and then the channel is told
+        rather than left with a turn that silently never appeared.
         """
-        if thread_root_id is not None:
+        if thread_root_id is not None and isinstance(self._adapter, SlackAdapter):
             ref = await self._adapter.open_activity_stream(
                 channel_id, thread_root_id, agent_name
             )
@@ -258,18 +272,19 @@ class SessionTurnActivity:
                 )
                 return anchor
 
-        message = render_activity(items, turn)
-        posted = await self._adapter.post_blocks(
-            channel_id, agent_name, message.text, message.blocks, thread_root_id
-        )
-        if posted is None:
+        try:
+            posted = await self._adapter.post_rich(
+                channel_id, agent_name, TurnActivity(items, turn), thread_root_id
+            )
+        except RichContentFailed as error:
             logger.error(
-                "Slack did not accept the activity for turn %s of session %s "
-                "in channel %s, so the channel shows what the agent asked "
+                "Could not post the activity for turn %s of session %s in "
+                "channel %s: %s. The channel shows what the agent asked "
                 "without what it did.",
                 turn.turn_id,
                 session_id,
                 channel_id,
+                error,
             )
             return None
         return _Anchor(channel_id=channel_id, message_ref=posted, sent=None)
@@ -284,12 +299,11 @@ class SessionTurnActivity:
         ended: bool,
     ) -> None:
         """Rewrite the posted message with the turn as it now stands."""
-        message = render_activity(items, turn)
         try:
-            await self._adapter.update_blocks(
-                anchor.channel_id, anchor.message_ref, message.text, message.blocks
+            await self._adapter.update_rich(
+                anchor.channel_id, anchor.message_ref, TurnActivity(items, turn)
             )
-        except SlackApiError as error:
+        except RichContentFailed as error:
             logger.error(
                 "Could not update the activity for turn %s of session %s in "
                 "channel %s: %s. %s",
@@ -327,6 +341,10 @@ class SessionTurnActivity:
         sent = anchor.sent
         if sent is None:
             raise ValueError("This turn is not being streamed.")
+        if not isinstance(self._adapter, SlackAdapter):
+            # Unreachable: a streaming anchor (`sent` is a dict, not None) is
+            # only ever created in `_begin`, behind the same isinstance check.
+            raise TypeError("A streaming anchor can only come from a Slack adapter.")
         chunks, pending = self._difference(sent, items, turn, session_id=session_id)
         if ended:
             chunks.append(stream_state_chunk(items, turn))
@@ -422,7 +440,7 @@ class SessionRequestCards:
 
     def __init__(
         self,
-        adapter: SlackAdapter,
+        adapter: CollaborationAdapter,
         *,
         bridge_id: str,
         posts: SessionRequestPostStore,
@@ -473,20 +491,22 @@ class SessionRequestCards:
                 epoch=epoch,
                 request=request,
             )
-            message = render_request(
-                request, RequestReference(token=post.token, handle=post.handle)
-            )
-            ref = await self._adapter.post_blocks(
-                channel_id, agent_name, message.text, message.blocks, thread_root_id
-            )
-            if ref is None:
+            reference = RequestReference(token=post.token, handle=post.handle)
+            try:
+                ref = await self._adapter.post_rich(
+                    channel_id,
+                    agent_name,
+                    RequestCard(request, reference),
+                    thread_root_id,
+                )
+            except RichContentFailed as error:
                 await session.delete(post)
                 await session.commit()
                 raise CardNotPosted(
-                    f"Slack did not accept the card for request "
-                    f"{request.request_id} in channel {channel_id}, so nobody "
-                    f"has been asked and the handle {post.handle} was released."
-                )
+                    f"Could not post the card for request {request.request_id} "
+                    f"in channel {channel_id}: {error}. Nobody has been asked, "
+                    f"and the handle {post.handle} was released."
+                ) from error
             post.external_post_id = ref
             await session.commit()
             logger.info(
@@ -623,17 +643,14 @@ class SessionRequestCards:
         has changed epoch has invalidated every card it posted rather than moved
         them on — which is the publisher's to notice, not a redraw's.
         """
-        message = render_request(
-            request, RequestReference(token=post.token, handle=post.handle)
-        )
+        reference = RequestReference(token=post.token, handle=post.handle)
         try:
-            await self._adapter.update_blocks(
+            await self._adapter.update_rich(
                 post.external_channel_id,
                 post.external_post_id,
-                message.text,
-                message.blocks,
+                RequestCard(request, reference),
             )
-        except SlackApiError as error:
+        except RichContentFailed as error:
             logger.error(
                 "Could not update the card for request %s in channel %s: %s. "
                 "Posting the outcome as a reply instead.",
@@ -645,7 +662,7 @@ class SessionRequestCards:
                 post.external_channel_id,
                 f"The card for request {post.handle} above could not be updated, "
                 f"so it may still be offering buttons that no longer "
-                f"work.\n{message.text}",
+                f"work.\n{error.text}",
                 post.external_post_id,
             )
             return

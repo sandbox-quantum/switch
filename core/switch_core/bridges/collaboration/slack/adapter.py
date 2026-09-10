@@ -21,6 +21,10 @@ from slack_sdk.web.async_client import AsyncWebClient
 from switch_core.bridges.collaboration.adapter import (
     CollaborationAdapter,
     LiveRuntimeIndicator,
+    RequestCard,
+    RichContent,
+    RichContentFailed,
+    TurnActivity,
 )
 from switch_core.bridges.collaboration.models import (
     Attachment,
@@ -35,6 +39,11 @@ from switch_core.bridges.collaboration.models import (
     InboundMessage,
     InboundUserJoin,
     OutboundAttachment,
+)
+from switch_core.bridges.collaboration.session.renderers.slack import (
+    SlackMessage,
+    render_activity,
+    render_request,
 )
 from switch_core.bridges.collaboration.slack.agent_groups import (
     SlackAgentGroupDirectory,
@@ -496,6 +505,52 @@ class SlackAdapter(CollaborationAdapter):
         await self._web_client.chat_update(
             channel=channel_id, ts=ts, text=text, blocks=blocks
         )
+
+    async def post_rich(
+        self,
+        channel_id: str,
+        agent_name: str,
+        content: RichContent,
+        thread_root_id: str | None = None,
+    ) -> str:
+        """Post `content` as a Block Kit message: the activity block for a
+        turn, or the request card, whichever `content` is."""
+        message = self._render_rich(content)
+        ref = await self.post_blocks(
+            channel_id, agent_name, message.text, message.blocks, thread_root_id
+        )
+        if ref is None:
+            raise RichContentFailed(
+                f"Slack did not accept the message in channel {channel_id}.",
+                text=message.text,
+            )
+        return ref
+
+    async def update_rich(
+        self, channel_id: str, message_ref: str, content: RichContent
+    ) -> None:
+        """Redraw what `post_rich` posted, in place.
+
+        Chains `SlackApiError` as `RichContentFailed` rather than letting it
+        through raw, so a caller that no longer imports this module still
+        has one thing to catch.
+        """
+        message = self._render_rich(content)
+        try:
+            await self.update_blocks(
+                channel_id, message_ref, message.text, message.blocks
+            )
+        except SlackApiError as error:
+            raise RichContentFailed(
+                f"Slack could not update the message in channel {channel_id}: {error}",
+                text=message.text,
+            ) from error
+
+    def _render_rich(self, content: RichContent) -> SlackMessage:
+        if isinstance(content, TurnActivity):
+            return render_activity(content.items, content.turn)
+        assert isinstance(content, RequestCard)
+        return render_request(content.request, content.reference)
 
     async def is_first_reply(
         self, channel_id: str, root_ref: str, message_ref: str

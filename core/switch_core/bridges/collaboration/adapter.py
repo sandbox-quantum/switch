@@ -22,6 +22,16 @@ from switch_core.bridges.collaboration.models import (
     InboundUserJoin,
     OutboundAttachment,
 )
+from switch_core.bridges.collaboration.session.contract import (
+    Item,
+    SnapshotRequest,
+    TurnUpsert,
+)
+from switch_core.bridges.collaboration.session.renderers import RequestReference
+from switch_core.bridges.collaboration.session.renderers.neutral import (
+    request_summary,
+    turn_summary,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -97,6 +107,56 @@ class LiveRuntimeIndicator:
     body: str
     thread_root_id: str | None
     started_at: float
+
+
+@dataclass(frozen=True)
+class TurnActivity:
+    """A turn's items and its own status, as `post_rich` / `update_rich` draw it.
+
+    Carries the contract types directly rather than a pre-rendered payload —
+    an adapter with a card of its own reads them to build one; the base,
+    which has none, reads them to build `turn_summary` instead. Neither has to
+    agree on a shape neither of them owns.
+    """
+
+    items: list[Item]
+    turn: TurnUpsert
+
+
+@dataclass(frozen=True)
+class RequestCard:
+    """A request and how a platform refers back to it, as `post_rich` /
+    `update_rich` draw it. See `TurnActivity` for why the contract type
+    travels rather than a rendering of it."""
+
+    request: SnapshotRequest
+    reference: RequestReference
+
+
+RichContent = TurnActivity | RequestCard
+
+
+class RichContentFailed(Exception):
+    """`post_rich` or `update_rich` could not draw its content on this platform.
+
+    Every implementation raises this — chaining the platform's own error as
+    `__cause__` where there is one, the way `SlackAdapter`'s does with
+    `SlackApiError` — so a caller has one thing to catch regardless of which
+    platform posted the content. Unlike `send_message` and `update_message`,
+    which report failure by return value or not at all, this seam raises on
+    both ends: a caller cannot forget to check what it did not ask to be told.
+
+    `text` is what the platform was attempting to show — the same string a
+    reader would have seen, whichever renderer produced it. A caller updating
+    a card, in particular, needs it: the existing "could not be updated, here
+    is the outcome" fallback reply is only honest if it names what the card
+    now can't, and it must do that without knowing how any given platform
+    drew it.
+    """
+
+    def __init__(self, message: str, *, text: str) -> None:
+        super().__init__(message)
+        self.text = text
 
 
 class CollaborationAdapter(ABC):
@@ -413,6 +473,90 @@ class CollaborationAdapter(ABC):
     async def update_message(
         self, channel_id: str, message_ref: str, new_content: str
     ) -> None: ...
+
+    async def post_rich(
+        self,
+        channel_id: str,
+        agent_name: str,
+        content: RichContent,
+        thread_root_id: str | None = None,
+    ) -> str:
+        """Post a turn's activity or a request's card, in whatever form this
+        platform draws it.
+
+        This base has no card or activity renderer of its own, so it falls
+        back to `rich_fallback_text`. Override to draw a real one — the way
+        `SlackAdapter` does, choosing its own renderer by `content`'s type —
+        and this is never called.
+
+        Raises `RichContentFailed` if the platform refused the message.
+        Unlike `send_message`, whose callers already handle a `None` ref, this
+        is a new seam and raises on failure instead: a caller here cannot
+        forget to check what it did not ask to be told.
+        """
+        text = self.rich_fallback_text(content)
+        ref = await self.send_message(
+            channel_id, agent_name, self.translate_outbound(text), thread_root_id
+        )
+        if ref is None:
+            raise RichContentFailed(
+                f"{self.platform_name} did not accept the message in channel "
+                f"{channel_id}.",
+                text=text,
+            )
+        return ref
+
+    async def update_rich(
+        self, channel_id: str, message_ref: str, content: RichContent
+    ) -> None:
+        """Redraw what `post_rich` posted, in place.
+
+        Falls back the same way `post_rich` does. This base cannot detect
+        failure: `update_message` swallows its own errors by design, for the
+        runtime-status paths that depend on that, so this never raises here —
+        only an override with a real failure to report does.
+        """
+        await self.update_message(
+            channel_id,
+            message_ref,
+            self.translate_outbound(self.rich_fallback_text(content)),
+        )
+
+    def rich_fallback_text(self, content: RichContent) -> str:
+        """The neutral text form of `content`, for `post_rich` / `update_rich`'s
+        base and for any adapter that wants the same fallback rather than its
+        own.
+
+        A turn falls back to `turn_summary` — the last thing the agent said,
+        and the turn's own state. A request card has no neutral form yet:
+        there is no off-Slack request renderer to write one against, so
+        `request_summary` raises rather than guess at a shape (title, detail,
+        per-option or per-question lines, a footer) nobody has needed yet.
+        Implement that alongside the first one.
+        """
+        if isinstance(content, TurnActivity):
+            return turn_summary(
+                content.items,
+                content.turn,
+                escape=self.escape_label_for_body,
+                limit=self.rich_fallback_limit(),
+            )
+        return request_summary(
+            content.request,
+            content.reference,
+            escape=self.escape_label_for_body,
+            limit=self.rich_fallback_limit(),
+        )
+
+    def rich_fallback_limit(self) -> int:
+        """How many characters `rich_fallback_text` may spend on one message.
+
+        2000 by default — Discord's own limit, the tightest of the platforms
+        without a card renderer of their own today. A conservative
+        placeholder rather than a value read from each platform's real API
+        contract; override once a platform's actual limit is known.
+        """
+        return 2000
 
     @abstractmethod
     async def delete_message(self, channel_id: str, message_ref: str) -> None: ...

@@ -18,8 +18,8 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-from ..contract import Item, TurnUpsert
-from . import turn_state
+from ..contract import Item, SnapshotRequest, TurnUpsert
+from . import RequestReference, turn_state
 
 
 def turn_summary(
@@ -57,6 +57,31 @@ def turn_summary(
         else _truncate("(nothing said)", remaining)
     )
     return f"{body}\n{state}"
+
+
+def request_summary(
+    request: SnapshotRequest,
+    reference: RequestReference,
+    *,
+    escape: Callable[[str], str],
+    limit: int,
+) -> str:
+    """The text form of a request, for a platform with no card renderer of its own.
+
+    Not implemented. There is no off-Slack request renderer yet to write this
+    against, and building it now — title, detail, per-option or per-question
+    lines, a footer, each bounded to fit inside `limit` after `escape` — would
+    be the speculative renderer this plan already decided not to build (see
+    "Session activity in Slack — open questions", §6). Implement this
+    alongside the first one, using the cut-then-escape, raise-rather-than-cut
+    rules `turn_summary` and `_fit` already follow. Until then, `post_rich`'s
+    base raises through this rather than guessing at a shape.
+    """
+    raise NotImplementedError(
+        "No neutral request card form yet — implement alongside the first "
+        "off-Slack request renderer, using the escape+budget pattern "
+        "turn_summary already uses."
+    )
 
 
 def _truncate(text: str, limit: int) -> str:
