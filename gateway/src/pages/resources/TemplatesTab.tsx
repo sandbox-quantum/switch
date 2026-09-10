@@ -109,6 +109,7 @@ export default function TemplatesTab({ refreshKey }: Props) {
         typeFilter={kind}
         onTypeChange={setKind}
         types={kinds}
+        typeLabel="Kind"
       />
 
       {error && (
