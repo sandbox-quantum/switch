@@ -88,7 +88,7 @@ export class SharedAgentRuntime implements AgentRuntimeProvider {
     ]);
     const created = JSON.parse(launched.stdout).created === true;
     let snapshot;
-    const deadline = Date.now() + 30000;
+    const deadline = Date.now() + 120000;
     while (Date.now() < deadline) {
       try {
         snapshot = snapshotSchema.parse(await fetchSdkSnapshot(this.server, session.id));

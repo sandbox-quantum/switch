@@ -74,8 +74,6 @@ export function createLocationRuntimeFactory(
       rootPath: workDir,
       portSeed: workDir,
     });
-    // Remote sessions require tmux — it is the persistence substrate the sidecar
-    // injects into and reattaches to across UI disconnects.
     const tmuxEnabled = locationSettings.tmux ?? false;
     const sessionLevelSettings = await getEffectiveSessionSettings({
       locationSettings: context.settings,
