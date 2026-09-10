@@ -105,12 +105,13 @@ def test_a_mid_turn_interjection_does_not_displace_what_the_agent_said() -> None
     assert summary.splitlines()[0] == "Looking now."
 
 
-def test_the_cut_lands_on_the_raw_text_not_on_what_the_escape_produced() -> None:
-    """An escape that expands a character must not have its output cut mid-entity.
+def test_an_escape_that_expands_the_text_still_lands_inside_the_budget() -> None:
+    """The escaped form must fit `limit`, not just the raw text before it.
 
-    Cutting the escaped form first could stop between `&` and `lt;`, leaving a
-    bare `&lt` with nothing to close it — exactly the partial markup escaping
-    exists to prevent.
+    A naive cut on the raw text and an escape afterwards can overshoot: five
+    characters cut to two and then each expanded to four is longer than the
+    budget that produced the cut. The result has to be found on the source
+    escaped whole, the way `slack.py`'s own `_fit` does it.
     """
     items = [_item(kind="assistant-message", title="", text="<" * 5)]
     state = "Turn complete."
@@ -118,12 +119,14 @@ def test_the_cut_lands_on_the_raw_text_not_on_what_the_escape_produced() -> None
     def _entity_escape(text: str) -> str:
         return text.replace("<", "&lt;")
 
+    limit = len(state) + 1 + 5  # 5 characters of budget for what was said
     summary = turn_summary(
-        items, _turn("completed"), escape=_entity_escape, limit=len(state) + 4
+        items, _turn("completed"), escape=_entity_escape, limit=limit
     )
 
+    assert len(summary) <= limit
     said = summary.splitlines()[0]
-    assert said == "&lt;&lt;…"
+    assert said == "&lt;…"
     assert "&lt" not in said.replace("&lt;", "")
 
 

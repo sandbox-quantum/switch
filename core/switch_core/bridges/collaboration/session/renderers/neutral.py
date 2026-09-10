@@ -44,24 +44,48 @@ def turn_summary(
     state = turn_state(items, turn)
     said = [item for item in items if item.kind == "assistant-message"]
     if not said:
-        return _fit(state, limit)
+        return _truncate(state, limit)
 
     remaining = limit - len(state) - 1  # 1 for the newline between them
     if remaining <= 0:
-        return _fit(state, limit)
+        return _truncate(state, limit)
 
-    # Cut the raw text and escape what survives, not the other way round: an
-    # escape that expands a character (`escape_mrkdwn`'s `&`, `<`, `>`) would
-    # otherwise have the cut land inside the entity it produced.
     text = said[-1].text
-    body = escape(_fit(text, remaining)) if text else "(nothing said)"
+    body = _fit(text, remaining, escape=escape) if text else "(nothing said)"
     return f"{body}\n{state}"
 
 
-def _fit(text: str, limit: int) -> str:
-    """The start of `text` that fits `limit`, saying so if it had to cut."""
+def _truncate(text: str, limit: int) -> str:
+    """The start of `text` that fits `limit`, saying so if it had to cut.
+
+    For text that needs no escaping — the state line is ours, never host
+    text, so there is nothing here an escape could expand past `limit`.
+    """
     if len(text) <= limit:
         return text
     if limit <= 1:
         return text[:limit]
     return text[: limit - 1].rstrip() + "…"
+
+
+def _fit(text: str, limit: int, *, escape: Callable[[str], str]) -> str:
+    """Escape `text` and keep the result inside `limit`.
+
+    The cut is made on the source, never on the escaped form: slicing after
+    escaping can leave half of whatever the escape produced behind — an
+    entity, a zero-width space with nothing either side of it to protect.
+    Escaping is assumed only to lengthen a string, the same assumption
+    `slack.py`'s own `_fit` makes, so the longest prefix that still fits after
+    escaping can be found on the source and escaped whole.
+    """
+    escaped = escape(text)
+    if len(escaped) <= limit:
+        return escaped
+    low, high = 0, len(text)
+    while low < high:
+        middle = (low + high + 1) // 2
+        if len(escape(text[:middle])) + 1 <= limit:
+            low = middle
+        else:
+            high = middle - 1
+    return escape(text[:low]) + "…"
