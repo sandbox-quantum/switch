@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import uuid
 from collections.abc import AsyncIterator, Iterator
 from dataclasses import dataclass
@@ -24,7 +25,7 @@ from switch_core.db.base import Base
 from switch_core.db.engine import create_session_factory
 from switch_core.db.models import TENANT_ZERO_ID, Tenant
 from switch_core.db.runtime_role import grant_runtime_role
-from switch_core.tenant_context import bind_tenant_id, unbind_tenant_id
+from switch_core.tenant_context import tenant_scope
 
 
 async def _seed_tenant_zero(conn: AsyncConnection) -> None:
@@ -85,19 +86,18 @@ async def session_factory(
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
         await _seed_tenant_zero(conn)
-    token = (
-        None
+    ambient_tenant = (
+        contextlib.nullcontext()
         if request.node.get_closest_marker("no_ambient_tenant")
-        else bind_tenant_id(TENANT_ZERO_ID)
+        else tenant_scope(TENANT_ZERO_ID)
     )
     try:
-        # Goes through the same factory constructor production wiring uses,
-        # so this fixture — which backs most of the store test suite — differs
-        # from production in as little as possible.
-        yield create_session_factory(engine)
+        with ambient_tenant:
+            # Goes through the same factory constructor production wiring
+            # uses, so this fixture — which backs most of the store test
+            # suite — differs from production in as little as possible.
+            yield create_session_factory(engine)
     finally:
-        if token is not None:
-            unbind_tenant_id(token)
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.drop_all)
         await engine.dispose()
