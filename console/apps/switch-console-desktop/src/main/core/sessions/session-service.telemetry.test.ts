@@ -50,7 +50,6 @@ vi.mock('./session-runtime-manager', () => ({
 vi.mock('./utils/utils', () => ({ mapSessionRowToSession: hoisted.mapSessionRow }));
 vi.mock('./operations/archiveSession', () => ({ archiveSession: vi.fn() }));
 vi.mock('./operations/deleteSession', () => ({ deleteSession: vi.fn() }));
-vi.mock('./operations/ensureSessionAttachable', () => ({ ensureSessionAttachable: vi.fn() }));
 vi.mock('./operations/getSessions', () => ({ getSessions: vi.fn() }));
 vi.mock('./operations/getSession', () => ({ getSession: hoisted.getSession }));
 vi.mock('./operations/renameSession', () => ({ renameSession: vi.fn() }));

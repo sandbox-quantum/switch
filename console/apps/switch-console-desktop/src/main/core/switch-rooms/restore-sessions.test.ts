@@ -17,9 +17,6 @@ const provisionSession = vi.hoisted(() =>
   )
 );
 const hydrateSession = vi.hoisted(() => vi.fn<(id: string) => Promise<void>>(async () => {}));
-const ensureSessionAttachable = vi.hoisted(() =>
-  vi.fn<(id: string) => Promise<boolean>>(async () => false)
-);
 
 // Naming the provision failure pulls in the error module, which reaches the
 // database through the runtime manager at import time.
@@ -36,9 +33,6 @@ vi.mock('@main/core/sessions/session-service', () => ({
   sessionService: { provisionSession },
 }));
 vi.mock('@main/core/sessions/operations/hydrateSession', () => ({ hydrateSession }));
-vi.mock('@main/core/sessions/operations/ensureSessionAttachable', () => ({
-  ensureSessionAttachable,
-}));
 vi.mock('@main/lib/logger', () => ({
   log: { info() {}, warn() {}, error() {} },
 }));
@@ -55,23 +49,19 @@ describe('restoreSwitchRoomSessions', () => {
       serverId: 'server-1',
       name: 'agent',
     });
-    ensureSessionAttachable.mockResolvedValue(false);
   });
 
   it('rehydrates a remote shared session without opening a terminal', async () => {
     listPersistedSessionIds.mockResolvedValue(['session-1']);
-    ensureSessionAttachable.mockResolvedValue(true);
 
     await restoreSwitchRoomSessions();
 
     expect(provisionSession).toHaveBeenCalledWith('session-1');
-    expect(ensureSessionAttachable).not.toHaveBeenCalled();
     expect(hydrateSession).toHaveBeenCalledWith('session-1');
   });
 
   it('rehydrates a local shared session', async () => {
     listPersistedSessionIds.mockResolvedValue(['session-1']);
-    ensureSessionAttachable.mockResolvedValue(false);
 
     await restoreSwitchRoomSessions();
 
@@ -80,13 +70,11 @@ describe('restoreSwitchRoomSessions', () => {
 
   it('handles a mix of local and remote sessions', async () => {
     listPersistedSessionIds.mockResolvedValue(['remote-1', 'local-1']);
-    ensureSessionAttachable.mockImplementation(async (id: string) => id === 'remote-1');
 
     await restoreSwitchRoomSessions();
 
     expect(hydrateSession).toHaveBeenCalledTimes(2);
     expect(hydrateSession).toHaveBeenCalledWith('local-1');
-    expect(ensureSessionAttachable).not.toHaveBeenCalled();
   });
 
   it('prunes sessions whose row has gone', async () => {
@@ -110,7 +98,6 @@ describe('restoreSwitchRoomSessions', () => {
     await restoreSwitchRoomSessions();
 
     expect(provisionSession).not.toHaveBeenCalled();
-    expect(ensureSessionAttachable).not.toHaveBeenCalled();
   });
 
   it('keeps going when one session fails to restore', async () => {
@@ -120,7 +107,6 @@ describe('restoreSwitchRoomSessions', () => {
         ? { success: false, error: { type: 'error', message: 'provision blew up' } }
         : { success: true, data: { path: '/repo', locationId: 'loc-1' } }
     );
-    ensureSessionAttachable.mockResolvedValue(true);
 
     await restoreSwitchRoomSessions();
 

@@ -29,6 +29,12 @@ export function SessionV1Chat({
     session?.connectivity === 'online' &&
     (session.status === 'ready' || session.status === 'running');
   const runningTurn = view.snapshot?.turns.find((turn) => turn.status === 'running');
+  const lastItems = new Map(view.snapshot?.items.map((item) => [item.turnId, item.itemId]));
+  const stoppedTurns = new Map(
+    view.snapshot?.turns
+      .filter((turn) => turn.status === 'interrupted' || turn.status === 'error')
+      .map((turn) => [turn.turnId, turn.status])
+  );
   const control = async (body: Command['body']) => {
     setSending(true);
     setSendError(null);
@@ -179,6 +185,11 @@ export function SessionV1Chat({
                   </summary>
                   {item.text && <p className="mt-2 whitespace-pre-wrap">{item.text}</p>}
                 </details>
+              )}
+              {lastItems.get(item.turnId) === item.itemId && stoppedTurns.has(item.turnId) && (
+                <p role="status" className="mt-2 text-sm text-foreground-destructive">
+                  Turn {stoppedTurns.get(item.turnId)}.
+                </p>
               )}
               {item.attachments.length > 0 && (
                 <p className="mt-1 text-xs text-foreground-muted">
