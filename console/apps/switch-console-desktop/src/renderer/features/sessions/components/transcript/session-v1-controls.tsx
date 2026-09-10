@@ -57,7 +57,11 @@ export function SessionV1Controls({
                   })
                 }
               >
-                <option value="">Provider default</option>
+                <option value="">
+                  {session.provider === 'codex' && key === 'effort'
+                    ? 'Keep current effort'
+                    : 'Provider default'}
+                </option>
                 {values.map((value) => (
                   <option key={value} value={value}>
                     {value}

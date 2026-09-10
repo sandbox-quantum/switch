@@ -54,6 +54,9 @@ The model selector shows the native provider's model catalog and available optio
 The server and host reject unsupported selections and changes while work is pending.
 The host persists a selection only after the native operation succeeds. An uncertain
 model change stops further execution until recovery, without repeating the change.
+Codex offers **Keep current effort** because omitting its turn override preserves
+the native thread setting. Choose an explicit effort to replace it. Claude
+**Provider default** clears the previous session effort override.
 
 Compaction uses a native operation: Claude's `/compact` with a completed compaction
 boundary, Codex's `thread/compact/start` with turn completion, or OpenCode's
