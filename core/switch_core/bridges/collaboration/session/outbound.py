@@ -422,10 +422,16 @@ class SessionTurnActivity:
         unsay a sentence, so appending a revision would leave both on screen.
         Which is why an unfinished message waits — a half-written paragraph
         appended now is one that can never be corrected.
+
+        A person's message is never sent at all — only the agent's own words
+        are the conversation here, the same choice `render_activity` makes
+        for the posted form of a turn.
         """
         chunks: list[dict[str, object]] = []
         pending: dict[str, str] = {}
         for item in items:
+            if item.kind == "user-message":
+                continue
             if item.kind == "tool-activity":
                 chunk = stream_task_chunk(item)
             elif item.status == "in-progress":

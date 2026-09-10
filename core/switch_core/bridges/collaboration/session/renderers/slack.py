@@ -39,7 +39,6 @@ from ..contract import (
     ApprovalResult,
     DecidedBy,
     Item,
-    Origin,
     Question,
     QuestionOption,
     QuestionsContent,
@@ -779,10 +778,16 @@ def render_activity(items: list[Item], turn: TurnUpsert) -> SlackMessage:
     Somewhere in it is the turn's own state, because this message is edited in
     place as the turn runs and a reader has to be able to tell a turn that
     finished from one that stopped.
+
+    Only the agent's own words are the conversation here. A person's message
+    is skipped rather than shown quoted back: the turn always opens with one
+    — the command that started it, echoed as its first item — and showing it
+    back to the room it was typed in is only ever telling someone what they
+    just said.
     """
-    said = [item for item in items if item.kind != "tool-activity"]
+    said = [item for item in items if item.kind == "assistant-message"]
     did = [item for item in items if item.kind == "tool-activity"]
-    if not said and not did:
+    if not items:
         raise ValueError("This turn has no items, so there is nothing to show.")
 
     blocks: list[dict[str, Any]] = []
@@ -840,10 +845,13 @@ def render_activity_text(items: list[Item], turn: TurnUpsert) -> str:
     Each block has its own budget, but `text` is one string with a cap of its
     own and twenty of them clear it, so the whole is bounded too — the same end
     kept, and again saying what it dropped.
+
+    Only the agent's own words, same as `render_activity`: a person's message
+    is skipped rather than shown quoted back.
     """
-    said = [item for item in items if item.kind != "tool-activity"]
+    said = [item for item in items if item.kind == "assistant-message"]
     did = [item for item in items if item.kind == "tool-activity"]
-    if not said and not did:
+    if not items:
         raise ValueError("This turn has no items, so there is nothing to show.")
 
     lines: list[str] = []
@@ -877,44 +885,8 @@ def _within(entries: list[str], limit: int) -> list[str]:
 
 
 def _message_text(item: Item) -> str:
-    """One thing that was said, marked as the agent's words or somebody else's.
-
-    A person's message is quoted and attributed, because in a room it may be
-    the first anyone there has heard of it: the contract carries messages typed
-    into the console the same way it carries the ones typed here.
-    """
-    body = _fit(item.text, _MAX_MESSAGE) if item.text else "_(nothing said)_"
-    if item.kind != "user-message":
-        return body
-    return _quote(f"{_said_by(item.origin)}{body}")
-
-
-def _quote(text: str) -> str:
-    """Every line marked as quoted, inside the budget the section has for all.
-
-    The budget is spent here rather than on the text, because the `> ` costs two
-    characters a line and a pasted stack trace is mostly lines. Cut a whole line
-    at a time: the text arrives escaped, and slicing it anywhere else can leave
-    half an entity in front of the reader.
-    """
-    lines = text.split("\n")
-    kept: list[str] = []
-    spent = 0
-    for position, line in enumerate(lines, start=1):
-        quoted = f"> {line}"
-        if spent + len(quoted) + 1 > _MAX_SECTION:
-            kept.append(f"> _…and {len(lines) - position + 1} more lines._")
-            break
-        kept.append(quoted)
-        spent += len(quoted) + 1
-    return "\n".join(kept)
-
-
-def _said_by(origin: Origin | None) -> str:
-    """Who typed it and where, when the host said. Empty when it did not."""
-    if origin is None:
-        return ""
-    return f"*{_fit(origin.actor_id, _MAX_ACTOR)}* in {_SURFACES[origin.surface]}: "
+    """One thing the agent said, fit to a section's budget."""
+    return _fit(item.text, _MAX_MESSAGE) if item.text else "_(nothing said)_"
 
 
 def _activity_lines(items: list[Item]) -> list[str]:
@@ -1053,7 +1025,7 @@ def stream_task_chunk(item: Item) -> dict[str, Any]:
 
 
 def stream_message_chunk(item: Item) -> dict[str, Any]:
-    """One thing that was said, as markdown in the stream.
+    """One thing the agent said, as markdown in the stream.
 
     Markdown rather than mrkdwn, so the emphasis is `**` and nothing is escaped
     the way a section's text is: a `markdown_text` chunk is a message body and
@@ -1062,14 +1034,7 @@ def stream_message_chunk(item: Item) -> dict[str, Any]:
     body = (
         _truncate(item.text, _MAX_STREAM_MESSAGE) if item.text else "_(nothing said)_"
     )
-    if item.kind != "user-message":
-        return {"type": "markdown_text", "text": f"{body}\n\n"}
-    who = ""
-    if item.origin is not None:
-        actor = _truncate(item.origin.actor_id, _MAX_ACTOR)
-        who = f"**{actor}** in {_SURFACES[item.origin.surface]}: "
-    quoted = "\n".join(f"> {line}" for line in f"{who}{body}".split("\n"))
-    return {"type": "markdown_text", "text": f"{quoted}\n\n"}
+    return {"type": "markdown_text", "text": f"{body}\n\n"}
 
 
 def stream_state_chunk(items: list[Item], turn: TurnUpsert) -> dict[str, Any]:

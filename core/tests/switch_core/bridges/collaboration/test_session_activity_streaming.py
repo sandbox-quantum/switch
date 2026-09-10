@@ -375,6 +375,28 @@ async def test_a_message_is_held_back_until_it_has_finished() -> None:
     assert texts == ["Half a thought.\n\n"]
 
 
+async def test_a_persons_message_is_never_streamed() -> None:
+    """Only the agent's own words are the conversation here.
+
+    A turn always opens with one — the command that started it, echoed back
+    as its first item — and streaming it into the thread it was typed in
+    would only be telling someone what they just said.
+    """
+    client = FakeWebClient()
+    activity = SessionTurnActivity(_adapter(client))
+    asked = _item(
+        "ask-1", kind="user-message", status="completed", title="", text="Do the thing"
+    )
+    said = _item(
+        "say-1", kind="assistant-message", status="completed", title="", text="On it."
+    )
+
+    await _publish(activity, [asked, said], _turn("running"))
+
+    texts = [c["text"] for c in _appended(client) if c["type"] == "markdown_text"]
+    assert texts == ["On it.\n\n"]
+
+
 async def test_a_message_revised_after_it_was_streamed_says_so_and_stands(
     caplog: Any,
 ) -> None:

@@ -200,10 +200,9 @@ async def test_what_was_said_is_the_body_and_what_was_done_is_the_disclosure() -
     items = await _items()
     blocks = render_activity(items, _turn()).blocks
 
-    assert [block["type"] for block in blocks] == ["section", "section", "plan"]
-    assert "flaky all week" in blocks[0]["text"]["text"]
-    assert "same fixture user" in blocks[1]["text"]["text"]
-    assert "Ran tests/auth/test_login.py" in json.dumps(blocks[2], ensure_ascii=False)
+    assert [block["type"] for block in blocks] == ["section", "plan"]
+    assert "same fixture user" in blocks[0]["text"]["text"]
+    assert "Ran tests/auth/test_login.py" in json.dumps(blocks[1], ensure_ascii=False)
 
 
 async def test_the_tool_log_says_how_each_call_went() -> None:
@@ -237,17 +236,20 @@ async def test_a_call_still_waiting_does_not_read_as_one_already_refused() -> No
     assert refused["status"] == "error"
 
 
-async def test_a_person_speaking_is_quoted_and_attributed() -> None:
-    """In a room this may be the first anyone there has heard of it.
-
-    The contract carries a message typed into the console exactly as it carries
-    one typed in the channel, so an unattributed body would read as the agent
-    talking to itself.
+async def test_a_persons_message_is_not_shown_in_the_turn_at_all() -> None:
+    """A turn always opens with one: the command that started it, echoed back
+    as its first item. Showing it in the room it was typed in is only ever
+    telling someone what they just said, so it is skipped rather than quoted.
     """
-    blocks = render_activity(await _items(), _turn()).blocks
+    items = await _items()
+    said = [item for item in items if item.kind == "user-message"]
+    assert said, "the fixture must still carry one for this to test anything"
 
-    assert blocks[0]["text"]["text"].startswith("> *operator* in Slack: ")
-    assert not blocks[1]["text"]["text"].startswith(">")
+    blocks = render_activity(items, _turn()).blocks
+
+    text = json.dumps(blocks, ensure_ascii=False)
+    assert said[0].text not in text
+    assert not blocks[0]["text"]["text"].startswith(">")
 
 
 async def test_the_tool_log_reads_in_the_order_the_work_happened() -> None:
@@ -365,22 +367,20 @@ async def test_a_long_message_is_cut_rather_than_taking_the_post_with_it() -> No
     assert "&am" not in text.replace("&amp;", "")
 
 
-async def test_a_quoted_message_is_budgeted_after_it_is_quoted() -> None:
-    """The `> ` costs two characters a line, and lines are not budgeted.
-
-    A message inside its own budget can still overrun the section once quoted,
-    and the shape that does it is a pasted stack trace or file listing — which
-    is precisely what a person types into a channel. Slack refuses the whole
-    post, so the channel gets the card with nothing above it.
+async def test_a_turn_with_only_a_persons_message_shows_its_state_not_the_message() -> (
+    None
+):
+    """Every turn opens this way: the command that started it, and nothing
+    from the agent yet. Filtering the person's message out of `said` must not
+    make this look like a turn with nothing in it at all — it still has a
+    state to show, the same as a turn with no tool calls does.
     """
-    lines = "\n".join(f"line {n}" for n in range(300))
-    items = [_item(itemId="i1", kind="user-message", title="", text=lines)]
+    items = [_item(itemId="i1", kind="user-message", title="", text="do it")]
 
-    text = render_activity(items, _turn()).blocks[0]["text"]["text"]
+    blocks = render_activity(items, _turn()).blocks
 
-    assert len(text) <= 3000
-    assert text.startswith("> line 0")
-    assert text.endswith("more lines._")
+    assert len(blocks) == 1
+    assert blocks[0]["type"] == "context"
 
 
 async def test_the_fallback_stays_inside_what_slack_takes_for_one_string() -> None:
@@ -486,12 +486,6 @@ async def test_a_message_with_no_text_says_so() -> None:
     )
 
 
-async def test_a_person_the_host_did_not_place_is_quoted_without_a_name() -> None:
-    items = [_item(itemId="i1", kind="user-message", title="", text="do it")]
-
-    assert render_activity(items, _turn()).blocks[0]["text"]["text"] == "> do it"
-
-
 # ── The notification string ──────────────────────────────────────────────────
 
 
@@ -501,9 +495,11 @@ async def test_the_text_fallback_carries_the_doing_as_well_as_the_saying() -> No
     A fallback holding only the conversation would drop the whole disclosure
     rather than shrink it, which is the one thing this file is here to prevent.
     """
-    text = render_activity_text(await _items(), _turn())
+    items = await _items()
+    asked = next(item for item in items if item.kind == "user-message")
+    text = render_activity_text(items, _turn())
 
-    assert "flaky all week" in text
+    assert asked.text not in text
     assert "same fixture user" in text
     assert "✗ Ran tests/auth/test_login.py — 1 failed, 41 passed" in text
 
