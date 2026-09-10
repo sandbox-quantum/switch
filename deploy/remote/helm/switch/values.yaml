@@ -417,37 +417,62 @@ postgresql:
   # runtime role's grants immediately afterwards, so a table a migration just
   # added is usable by the role that is about to need it.
   #
-  # Leave owner.username empty to opt this deployment out of both — boot then
-  # applies no migrations and expects the schema to already be at head (see
-  # config.py's owner_database_url / runs_migrations_at_boot).
+  # mode: managed defaults this to the bootstrapped "postgres" superuser (the
+  # same account POSTGRES_USER creates on the StatefulSet below) whenever
+  # owner.username is left empty, because that account already exists in
+  # every managed install and its password is already the one this chart
+  # tracks as secrets.postgresPassword — there is nothing new to configure.
+  # Set owner.username only to point a managed deployment's migrations at some
+  # other DDL-capable role instead.
   #
-  # This chart does NOT create the runtime role, and does not grant it
-  # anything — that is application code, run once by switch-core at boot from
-  # this connection, and it only works once the role already exists. Create it
-  # out of band before pointing a deployment at it: docs/old/rds-migration.md
-  # has the exact SQL for an RDS master user; for mode: managed the equivalent
-  # is execing into the postgresql-0 pod as the "postgres" superuser the
-  # StatefulSet below already bootstraps.
+  # mode: existing has no such account to default to — the chart has no
+  # visibility into what the external database's superuser is called — so
+  # owner.username stays genuinely empty there until you set it. That does NOT
+  # mean boot skips migrations: alembic upgrade head still runs, over whatever
+  # DB_USER resolves to (see migrations/env.py's fallback), and for a
+  # restricted runtime role that fails loudly with a permissions error rather
+  # than quietly doing nothing. That failure is deliberate — it is boot
+  # telling you this deployment moved to a restricted role without saying who
+  # owns the schema, rather than starting up unable to apply its own
+  # migrations and only finding out later.
+  #
+  # mode: managed can create the runtime role itself (see
+  # postgresql.managed.runtimeUsername, templates/postgresql/configmap-init.yaml
+  # for fresh installs and templates/switch-core/create-runtime-role-job.yaml
+  # for an upgrade of a deployment that predates it) precisely because it owns
+  # the Postgres it points at. mode: existing does not, and cannot: the chart
+  # has no way to run CREATE ROLE against a database it does not manage, so
+  # create the role out of band before pointing a deployment at it —
+  # docs/old/rds-migration.md has the exact SQL for an RDS master user.
   owner:
     username: ""
     # Password source, mirroring existingSecret/existingSecretKey above. Only
-    # consulted when owner.username is set.
+    # consulted when owner.username is set; the managed default above reads
+    # its password from wherever secrets.postgresPassword does instead.
     existingSecret: ""
     existingSecretKey: DB_OWNER_PASSWORD
 
   # Refuse to serve when the runtime connection (DB_USER) is not actually
   # subject to row-level security — a superuser, a BYPASSRLS role, or the
-  # owner of the policied tables. Matches switch-core's own default (on),
-  # because the failure it guards against is silent: a deployment that
-  # believes it is isolating tenants and is not looks identical to one that
-  # is, right up until a second tenant reads the first's rooms.
+  # owner of the policied tables. On by default in both modes, matching
+  # switch-core's own default, because the failure it guards against is
+  # silent: a deployment that believes it is isolating tenants and is not
+  # looks identical to one that is, right up until a second tenant reads the
+  # first's rooms.
   #
-  # mode: managed ships DB_USER as the bootstrapped "postgres" superuser (see
-  # POSTGRES_USER on the StatefulSet below) and this chart does not yet offer
-  # a way to point it at a separately created role, so a managed-mode
-  # deployment left at the default here will refuse to start. Set this false
-  # until that role exists; switch-core then logs an error on every boot as
-  # the visible reminder that tenant isolation is not active.
+  # mode: managed creates DB_USER's role itself — see
+  # postgresql.managed.runtimeUsername above and the owner comment's
+  # explanation of why managed mode can do this and existing mode cannot — so
+  # the default install already has a restricted role for this check to pass
+  # against, and there is no reason to relax it there.
+  #
+  # mode: existing is the case this flag exists for. The chart cannot run
+  # CREATE ROLE against a database it does not manage, so a fresh
+  # existing-mode deployment, or one upgrading before its operator has run the
+  # CREATE ROLE in docs/old/rds-migration.md, has no restricted role yet. Set
+  # this false until that role exists; switch-core then logs an error on every
+  # boot instead of refusing to serve, as the visible reminder that tenant
+  # isolation is not active yet.
   requireRestrictedRole: true
 
   # ── mode: existing ──────────────────────────────────────────────────────────
@@ -472,6 +497,27 @@ postgresql:
       memory: 256Mi
     limits:
       memory: 512Mi
+
+  managed:
+    # DB_USER for mode: managed — the restricted role this chart creates for
+    # switch-core to serve requests as, so the row-level-security policies
+    # apply to the connection actually handling traffic rather than to the
+    # bootstrapped superuser (see the postgresql.owner and requireRestrictedRole
+    # comments above for the full picture). Created on a fresh install by
+    # templates/postgresql/configmap-init.yaml and, for an upgrade of a
+    # deployment that predates it, by the create-runtime-role pre-upgrade hook.
+    #
+    # Its password is deliberately the bootstrapped superuser's own —
+    # secrets.postgresPassword, or whatever postgresql.existingSecret resolves
+    # to — rather than a password of its own. That adds no new required value,
+    # keeps working unmodified with postgresql.existingSecret, and exposes
+    # nothing new: this pod already holds that password as DB_OWNER_PASSWORD.
+    # The point of splitting DB_USER from the superuser is that the
+    # row-level-security policies apply to the connection serving requests,
+    # not to compartmentalise passwords between two accounts that already
+    # trust each other — so change the username here if you want, but there is
+    # no separate password field to set alongside it.
+    runtimeUsername: switch_app
 
   # Postgres server parameters, passed as `-c name=value`. Each client
   # connection is a backend process costing several MB of non-reclaimable

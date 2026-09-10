@@ -91,11 +91,48 @@ two modes stay in lockstep.
 {{- end -}}
 {{- end }}
 
-{{- define "switch.postgresUser" -}}
+{{/*
+The bootstrapped Postgres superuser: "postgres" in managed mode (the account
+POSTGRES_USER creates on the StatefulSet below), or postgresql.external.username
+in existing mode. This is the identity Mattermost connects as — it owns its
+own "mattermost" database and runs no row-level security, so it has nothing to
+be restricted from there — and the identity the managed StatefulSet and its
+initdb scripts bootstrap and administer with. Distinct from switch.postgresUser
+below, which is DB_USER: the restricted role the RLS policies apply to.
+*/}}
+{{- define "switch.postgresSuperUser" -}}
 {{- if eq .Values.postgresql.mode "existing" -}}
 {{- .Values.postgresql.external.username | default "postgres" -}}
 {{- else -}}
 postgres
+{{- end -}}
+{{- end }}
+
+{{/*
+DB_USER: the runtime role every request is actually served over, and the one
+the row-level-security policies apply to.
+
+  mode: existing -> postgresql.external.username, unchanged from what this
+                    chart has always sent. The chart does not manage that
+                    database, so it cannot create a role in it — DB_USER keeps
+                    pointing at whatever account you configure until you
+                    create a restricted one yourself and repoint this at it.
+  mode: managed  -> postgresql.managed.runtimeUsername, a role this chart
+                    creates itself (fresh installs: templates/postgresql/
+                    configmap-init.yaml; upgrades of a deployment that
+                    predates it: the create-runtime-role pre-upgrade hook Job).
+                    Managed mode is the one mode where the chart owns the
+                    Postgres it points at, so it is the only mode where it
+                    *can* create the role — leaving this at the superuser by
+                    default there would make the chart's own default install
+                    the one deployment shape with no tenant isolation in it,
+                    which is the opposite of what this change is for.
+*/}}
+{{- define "switch.postgresUser" -}}
+{{- if eq .Values.postgresql.mode "existing" -}}
+{{- .Values.postgresql.external.username | default "postgres" -}}
+{{- else -}}
+{{- .Values.postgresql.managed.runtimeUsername -}}
 {{- end -}}
 {{- end }}
 
@@ -125,9 +162,41 @@ external secret (e.g. one synced by external-secrets / sealed-secrets).
 {{- end }}
 
 {{/*
+DB_OWNER_USER: the schema owner switch-core migrates and grants as.
+
+  owner.username set       -> exactly that value, in either postgresql mode.
+  owner.username unset,
+    mode: managed           -> "postgres", the bootstrapped superuser: it
+                                already exists, already owns the schema, and
+                                its password is already tracked as
+                                secrets.postgresPassword, so a managed install
+                                needs no separate owner credential configured
+                                at all.
+  owner.username unset,
+    mode: existing          -> empty. The chart has no external database
+                                superuser to default to, so an unconfigured
+                                owner there really does mean "no owner
+                                configured" — see the values.yaml comment on
+                                postgresql.owner for what that implies at boot.
+*/}}
+{{- define "switch.postgresOwnerUser" -}}
+{{- if .Values.postgresql.owner.username -}}
+{{- .Values.postgresql.owner.username -}}
+{{- else if eq .Values.postgresql.mode "managed" -}}
+postgres
+{{- end -}}
+{{- end }}
+
+{{/*
 Name/key of the Secret holding the schema owner's password, mirroring
-switch.postgresSecretName/Key above for the runtime role. Only referenced when
-postgresql.owner.username is set.
+switch.postgresSecretName/Key above for the runtime role.
+
+Only consulted when postgresql.owner.username is explicitly set — that is the
+only case with a DB_OWNER_PASSWORD key of its own (see switch.secretData). The
+managed default owner (switch.postgresOwnerUser resolving to "postgres" with
+no owner.username set) has no such key: it is the bootstrapped superuser, so
+its password is whatever switch.postgresSecretName/Key already resolve to, and
+callers must fall back to those directly rather than through this helper.
 */}}
 {{- define "switch.postgresOwnerSecretName" -}}
 {{- if .Values.postgresql.owner.existingSecret -}}
@@ -341,14 +410,20 @@ Include with `nindent 12`.
       key: {{ include "switch.postgresSecretKey" . }}
 - name: DB_NAME
   value: {{ include "switch.postgresDatabase" . | quote }}
-{{- if .Values.postgresql.owner.username }}
+{{- $ownerUser := include "switch.postgresOwnerUser" . }}
+{{- if $ownerUser }}
 - name: DB_OWNER_USER
-  value: {{ .Values.postgresql.owner.username | quote }}
+  value: {{ $ownerUser | quote }}
 - name: DB_OWNER_PASSWORD
   valueFrom:
     secretKeyRef:
+      {{- if .Values.postgresql.owner.username }}
       name: {{ include "switch.postgresOwnerSecretName" . }}
       key: {{ include "switch.postgresOwnerSecretKey" . }}
+      {{- else }}
+      name: {{ include "switch.postgresSecretName" . }}
+      key: {{ include "switch.postgresSecretKey" . }}
+      {{- end }}
 {{- end }}
 {{- if not .Values.postgresql.requireRestrictedRole }}
 - name: DB_REQUIRE_RESTRICTED_ROLE
