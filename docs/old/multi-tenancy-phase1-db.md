@@ -481,7 +481,7 @@ table, and Alembic's bare connection, which is deliberately global.
 **Resolution runs before the tenant exists, and so cannot run on a session.**
 Answering "which tenant does this caller belong to" is by definition the
 question a scoped session cannot ask, and `tenant_members` is scoped like
-everything else — so it goes through `tenants_of_user`, one of the eight
+everything else — so it goes through `tenants_of_user`, one of the seven
 exempt lookups, which opens a short session of its own with nothing bound.
 The `users` existence check beside it is an ordinary unbound read, because
 `users` carries no tenant and no policy.
@@ -567,7 +567,7 @@ So what is built now is:
   transport id? Which rooms is this client in? Which agent is this client?
   Which tenant is this bridge in? Each is asked before the answer is known, so
   binding one first is either a tautology or, under policies, a false "not
-  found". Each is now one of the eight exempt lookups in `db/tenant_lookup.py`
+  found". Each is now one of the seven exempt lookups in `db/tenant_lookup.py`
   — see the bootstrap section, which is where that whole model is argued.
 
 **One named helper carries this**: `tenant_session` (`db/session_scope.py`)
@@ -740,7 +740,7 @@ rather than reasoned:
 
 ### What replaced it
 
-> **The whole exemption is eight `SECURITY DEFINER` functions that answer
+> **The whole exemption is seven `SECURITY DEFINER` functions that answer
 > *which tenant*, and never return a row.**
 
 They live in `db/tenant_lookup.py`, are owned by the schema owner (so they run
@@ -752,17 +752,67 @@ outside the policies), and each returns `setof text`:
 | `tenants_of_user(user_id)` | a login's memberships |
 | `tenant_of_api_key(key_hash)` | a bearer credential's tenant |
 | `tenant_of_agent_oauth_client(id)` | an OIDC agent's tenant |
-| `tenant_of_client(client_id)` | a room client's tenant |
 | `tenant_of_room(room_id)` | a room's tenant |
 | `tenant_of_collaboration_bridge(id)` | a bridge's tenant |
 | `tenant_of_server_connector(id)` | a connector's tenant |
 
-Two properties make that worth having. **The most a caller can extract is the
-tenant an identifier it already holds belongs to** — nothing crosses a tenant
-boundary except the boundary's own name. And **it is a closed list**:
-`TENANT_LOOKUPS` is compared against the functions actually installed, against
-the migration's frozen copy (statement text, not just the inputs to it), and
-against what each answers when called as the restricted role.
+There were eight. `tenant_of_client(client_id)` is gone, and how it went is
+the standard to hold a new one to: both of its callers — a client's transport
+and an agent client's startup — already held the `clients` row the answer was
+on, and were asking the database to tell them something they could have been
+handed. `ClientBase` and `PostgresTransport` now take a required `tenant_id`,
+`ClientFactory` reads it off the record, and revision `b1d7c4f0a92e` drops the
+function so it is not merely unused but uninstallable-by-accident. It was also
+the lookup called most — once per transport — so the round trip goes too.
+
+**It is a closed list**: `TENANT_LOOKUPS` is compared against the functions
+actually installed, against the migration's frozen copy (statement text, not
+just the inputs to it), and against what each answers when called as the
+restricted role. `EXECUTE` on all seven is revoked from `PUBLIC` and granted
+to the runtime role by name at every boot (`db/runtime_role.py`), and the boot
+self-check refuses to serve if `PUBLIC` ever has it back — so "who may call
+them" is the runtime role rather than anyone holding a connection.
+
+### What the exemption actually discloses
+
+The earlier version of this section claimed that **the most a caller can
+extract is the tenant of an identifier it already holds**. That is false three
+ways, it was repeated in four other places in the tree, and it is worth
+replacing with something narrower and true rather than softening.
+
+What holds: every lookup returns `setof text` — tenant ids, never a row of a
+scoped table. **No customer data crosses a tenant boundary through this
+module, on any function, for any argument.** That is the property worth
+having and it is intact.
+
+What the old claim got wrong, all of it about *metadata* rather than rows:
+
+1. **`all_tenant_ids()` takes no identifier.** It enumerates the deployment:
+   how many tenants there are and what their ids are. Nothing narrows it to
+   what the caller already holds, and nothing can — the boot fan-outs and the
+   runtime-state sweep exist precisely to visit tenants the caller has never
+   heard of.
+2. **`EXECUTE` was left at the `PUBLIC` default** a new function gets, so any
+   role with `CONNECT` on the database could call every one of them. Closed,
+   as above.
+3. **`users` and `oidc_identities` carry no tenant and so no policy** (see
+   `GLOBAL_TABLES`) — a person is global, and the per-tenant object is the
+   `tenant_members` row. A session with nothing bound may therefore read every
+   user id, and feeding those one at a time to `tenants_of_user` reconstructs
+   the whole user-to-tenant membership graph. That follows from the schema,
+   not from this module, and it is **not** closed — it is the same gap as
+   "Cross-tenant user enumeration" under "What Phase 1 does not close", and it
+   needs invitations and a per-tenant user list to shut.
+
+So the property this design holds is: **the exemption discloses the shape of
+the deployment — which tenants exist, and which tenant a given user,
+credential, room, bridge or connector belongs to — and no row of any
+tenant-scoped table.** It is a boundary on data, not on metadata. Narrowing
+the second is a question about who may hold the runtime role's credentials at
+all, since everything above is reachable by anyone who has them.
+`test_tenant_lookup.py` pins both halves: the membership graph really is
+reconstructible, and the `tenant_members` rows themselves really are refused
+to the same session.
 
 The nineteen sites became one of three shapes, and the shape is the
 interesting part:
@@ -818,7 +868,7 @@ them.
   exact property being removed — and settable by the very role it is meant to
   constrain.
 - **`force row level security`.** Sounds like more isolation and is less: it
-  takes the ownership exemption away from the owner, which is what the eight
+  takes the ownership exemption away from the owner, which is what the seven
   functions run as, so nothing in the process could resolve a credential and
   no request would authenticate. Boot refuses to start if it is ever set, and
   a test asserts no table has it.
@@ -855,6 +905,43 @@ tenant's rows on a session already stamped with the first's.
 The fix is never to move the `tenant_scope` up a line or two. It is to open
 the session inside the binding, which is what `tenant_session` does and the
 only reason it exists.
+
+**One read reaches neither the guard nor the policy, and it needed a check of
+its own.** Everything above fires on a round trip: the policy is the server's,
+`do_orm_execute` fires on a statement and `before_flush` on a unit of work.
+`Session.get` answered from the identity map is none of those — it matches the
+primary key against objects the session has already loaded and returns one
+with no statement, no transaction and no flush. So a session reused across two
+tenants could be handed the first tenant's row back while the second was
+bound, silently, on a connection the policies *do* apply to. Measured, not
+inferred: on SQLAlchemy 2.0 a second `get` for a key already in the identity
+map fires no ORM execute event at all. `db/tenant_session.TenantCheckedSession`
+closes it, wired under every session by `db/engine.create_session_factory`,
+and it checks the *row* rather than the transaction — the object in hand
+carries its own `tenant_id`, which survives a commit clearing the stamp, and
+it compares on the same column the policy does (`id` for `tenants`, since a
+tenant is the boundary rather than something inside one).
+
+Two things bound the check, and both are load-bearing. It is silent when
+nothing is bound, because then there is no tenant to say the row is *not* in.
+And it fires **only when the `get` issued no statement**: one that reached
+Postgres was filtered by the policy on the way, so refusing it as well would
+impose the policy's semantics on the owner connection — which nothing else in
+this design does, deliberately, and which is why every fan-out filters its own
+results instead. The first version of this check did not make that
+distinction and failed four tests that legitimately arrange a second tenant's
+fixture rows over an owner connection; that is the false positive the
+distinction exists to avoid.
+
+The exposure was narrow, and narrower still than it looks: SQLAlchemy's
+identity map holds *weak* references, so the stale object is only reachable
+while something else keeps a strong one. That cuts both ways — it makes the
+leak rare and it makes it intermittent, dependent on whether a local variable
+happens to still be in scope, which is the worst shape for something nobody
+would think to test. `tenant_session` opening the session inside the binding
+is what keeps any ordinary path from reusing one, but this was the single
+place where both mechanisms this design rests on were absent at once, and that
+is worth a check rather than an argument.
 
 The delivery listener needs no exception: it holds one unpooled connection that
 relays NOTIFY payloads and never reads a scoped table. Its consumer
@@ -909,7 +996,7 @@ Two exceptions to the uniform rule remain, in full:
 1. **`api_keys.key_hash` stays globally unique**, because authentication
    resolves it before a tenant exists. It is the column
    `tenant_of_api_key` reads.
-2. **The eight lookups bypass the policies by ownership**, which is what
+2. **The seven lookups bypass the policies by ownership**, which is what
    `SECURITY DEFINER` buys them. That is a fail-open hatch inside a
    fail-closed design and is named as such — but it is a hatch the width of a
    tenant id, granted to a fixed list of functions, rather than the width of
@@ -967,7 +1054,7 @@ is safe to run and roll back on its own, with every policy still inert against
 the owner connection either way; the second revision is a short, mechanical
 follow-on with nothing but `require_tenant_id()` and 38 near-identical `enable
 row level security` / `create policy` pairs to review; and the third is eight
-`SECURITY DEFINER` functions, which is the only part of the schema a reviewer
+`SECURITY DEFINER` functions (a fourth revision later drops one of them), which is the only part of the schema a reviewer
 has to think about the privileges of.
 
 None of the three creates a role or issues a grant. The runtime role is
@@ -1001,10 +1088,17 @@ The schema revision:
 Row-level security is not part of the schema revision: it is the second one,
 `265ed188ad6f`, which creates `require_tenant_id()` and every table's policy
 and nothing else. The exemption is the third, `9c41a7b0e5d8`, which creates
-the eight lookups and nothing else. `EXECUTE` on a new function defaults to
-`PUBLIC`, which is what makes them callable by the runtime role without the
-migration having to know its name — and the most any caller can learn from one
-is the tenant an identifier it already holds belongs to.
+the eight lookups and nothing else — `b1d7c4f0a92e` is a fourth revision, and
+drops `tenant_of_client` once its callers stopped needing it.
+
+`EXECUTE` on a new function defaults to `PUBLIC`, which is what let the third
+revision install them without knowing the runtime role's name. That default is
+not left in place: it means any role with `CONNECT` on the database can call
+them, so `grant_runtime_role` revokes `EXECUTE` from `PUBLIC` and grants it to
+the runtime role by name on every boot, and the self-check refuses to serve if
+`PUBLIC` gets it back. What a caller who can reach them learns is stated
+exactly under "What the exemption actually discloses" above — it is more than
+this document used to claim.
 
 **On locking.** Alembic wraps a whole revision in one transaction
 (`migrations/env.py`, `context.begin_transaction()`), and this migration does
@@ -1180,14 +1274,17 @@ security because it needed no policy to be meaningful.
 
 Named so they are decisions rather than omissions.
 
-- **The chart's managed Postgres mode still runs as the superuser.** With
-  `postgresql.mode: managed` the chart brings up its own StatefulSet and
-  hardcodes `DB_USER` to `postgres`, so such a deployment would fail the boot
-  self-check. `mode: existing` — which is what the managed-database
-  deployments use — takes the runtime role from its own values and is
-  unaffected. Giving the in-cluster StatefulSet a second role is a change to
-  the chart's own provisioning rather than to this design, so it is recorded
-  here and in `values.yaml` rather than fixed in passing.
+- **`mode: existing` expects its runtime role to be created out of band.** The
+  chart cannot create a role in a database it does not own, so an RDS or other
+  managed-database deployment runs the SQL in `docs/old/rds-migration.md`
+  itself, once, and `requireRestrictedRole: false` is the escape hatch for the
+  window before it has. `mode: managed` is deliberately *not* in this list any
+  more: the chart owns that Postgres, so it creates the runtime role itself —
+  from an initdb script on a fresh volume, and from a pre-upgrade hook Job on
+  a deployment that predates the role, since initdb never runs twice — and
+  points `DB_USER` at it. That was the one mode where the chart could fix it,
+  and leaving it unfixed would have made the chart's default install the only
+  deployment shape with no isolation in it.
 - **`unscoped_session`'s allowlist was load-bearing and is now only an
   audit.** While that helper existed, the list of its callers *was* the
   isolation boundary and a missing entry was a leak. Nothing is enforced by a
