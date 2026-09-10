@@ -308,6 +308,8 @@ async def refresh_activity(
     retry_succeeded: Callable[[str], None] = _ignore_recovery,
     redraw_needed: Callable[[str, str, tuple[str, tuple[int, ...]]], bool],
     redrawn: Callable[[str, str, tuple[str, tuple[int, ...]]], None],
+    already_held_back: Callable[[str, str], bool],
+    hold_back: Callable[[str, str], None],
     first_sweep: bool,
 ) -> None:
     """Bring a session's turn activity up to date with its persisted state.
@@ -345,16 +347,22 @@ async def refresh_activity(
     previous process and since forgotten" — that needs a durable anchor
     turn activity does not have — so this narrows only the one sweep where
     every turn looks equally undrawn and the ambiguity is total. A turn this
-    skips is told to the guard exactly as if it had been drawn at its
-    current state, not merely passed over: `redrawn` is the only thing that
-    teaches `redraw_needed` a turn exists, and every sweep after this one is
-    unrestricted, so a skip that left no trace would be new again on the
-    very next sweep — replaying the same history this parameter exists to
-    hold back, just one sweep later rather than never. Recording it instead
-    means an old, already-ended turn stays held back for good, and a turn
-    still running behind the latest — or one recovery is about to end —
-    only draws again once its own state actually changes from here, the
-    same as any turn this process already knows about.
+    skips has to be remembered, not merely passed over, or it is new again
+    on the very next sweep — every sweep after the first is unrestricted, so
+    a skip that left no trace would replay the same history this parameter
+    exists to hold back, just one sweep later rather than never.
+
+    An already-ended turn is remembered through `already_held_back` /
+    `hold_back` rather than `redraw_needed` / `redrawn`: its state can never
+    change again, so unlike a turn still running behind the latest — which
+    does still need `redraw_needed` watching it, since it draws once more
+    the moment it actually ends — it needs nothing watched, only never
+    revisited. That distinction is what the eviction bound underneath
+    `redraw_needed` requires: every sweep after the first re-examines a
+    session's *entire* turn history, not just what changed, so a hold-back
+    record has to outlive whatever else is going on for as long as the
+    session does, rather than compete with unrelated sessions for space in
+    a fixed-size cache sized for turns actually being watched.
     """
     async with session_factory() as db:
         row = await db.get(SdkSession, session_id)
@@ -367,21 +375,17 @@ async def refresh_activity(
         publications = []
         latest_turn_id = snapshot.turns[-1].turn_id if snapshot.turns else None
         for turn in snapshot.turns:
+            if already_held_back(session_id, turn.turn_id):
+                continue
             items = [item for item in snapshot.items if item.turn_id == turn.turn_id]
             state = (turn.status, tuple(item.revision for item in items))
             if first_sweep and turn.turn_id != latest_turn_id:
-                # Recorded as already at its current state, not just passed
-                # over: `redrawn` is the only thing that teaches the guard a
-                # turn exists at all, and every sweep after this one is
-                # unrestricted. Skip without it and the whole history this
-                # sweep held back is new to the guard again on the very next
-                # sweep — whatever wakes it, a user's next message or a
-                # session re-checked for an unrelated reason — so it floods
-                # in one sweep later instead of never. A turn this process
-                # never actually posted is a turn nobody here can show; that
-                # is the same trade this restriction already makes for an
-                # old, already-ended turn, just kept rather than undone.
-                redrawn(session_id, turn.turn_id, state)
+                if turn.status in TURN_ENDED:
+                    hold_back(session_id, turn.turn_id)
+                else:
+                    # Still worth watching: this one draws once more the
+                    # moment it actually ends, which is not yet.
+                    redrawn(session_id, turn.turn_id, state)
                 continue
             if turn.command_id is None:
                 continue
@@ -549,6 +553,35 @@ class _TurnRedrawGuard:
             self._drawn.popitem(last=False)
 
 
+class _PermanentlyHeldBack:
+    """Ended turns a first sweep decided never to draw, kept per session.
+
+    Not `_TurnRedrawGuard`: that one is bounded and shared across every
+    session on the bridge, evicting whichever entry was least recently
+    drawn, which is the right trade for turns actually being watched — an
+    eviction there costs one needless redraw if the turn ever changes again.
+    An already-ended turn recorded here never changes again, so an eviction
+    would not cost a redraw, it would cost a fresh, wrong repost of history:
+    every sweep after the first re-examines a session's entire turn list,
+    not just what changed, so a record has to survive for as long as the
+    session does, regardless of how much unrelated activity other sessions
+    produce in the meantime. Scoped to one session's own turns rather than
+    shared, so a deployment with a long history in one session cannot evict
+    another session's hold-back — only that session's own turn count grows
+    this, and closing over it there is deliberately not a `_MAX_*` bound to
+    trade away.
+    """
+
+    def __init__(self) -> None:
+        self._turns: dict[str, set[str]] = {}
+
+    def contains(self, session_id: str, turn_id: str) -> bool:
+        return turn_id in self._turns.get(session_id, ())
+
+    def add(self, session_id: str, turn_id: str) -> None:
+        self._turns.setdefault(session_id, set()).add(turn_id)
+
+
 class SessionPublisher:
     """Reconcile persisted snapshots independently of host acknowledgements."""
 
@@ -569,6 +602,7 @@ class SessionPublisher:
         self._turn_redraw = _TurnRedrawGuard()
         self._activity_retry = _RecoveryBackoff()
         self._activity_seen: set[str] = set()
+        self._activity_held_back = _PermanentlyHeldBack()
         self._wake = asyncio.Event()
 
     def wake(self) -> None:
@@ -643,6 +677,8 @@ class SessionPublisher:
                         retry_succeeded=self._activity_retry.succeeded,
                         redraw_needed=self._turn_redraw.needed,
                         redrawn=self._turn_redraw.drawn,
+                        already_held_back=self._activity_held_back.contains,
+                        hold_back=self._activity_held_back.add,
                         first_sweep=first_sweep,
                     )
                     swept = True

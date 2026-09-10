@@ -206,6 +206,116 @@ async def test_a_turn_skipped_on_the_first_sweep_stays_held_back_on_the_next(
     assert "turn-demo" not in [c.turn.turn_id for _, c, _ in activity_platform.posts]
 
 
+async def test_a_hold_back_survives_a_redraw_guard_far_smaller_than_the_history(
+    session_factory, monkeypatch
+):
+    """`_TurnRedrawGuard` is bounded and shared across every session on the
+    bridge, evicting whichever entry was least recently drawn — the right
+    trade for turns actually being watched, where an eviction costs one
+    needless redraw. A hold-back record for an old, ended turn is not that:
+    evicting it costs a fresh repost of history. This drives three turns
+    through a guard bounded at two to prove the hold-back does not share
+    that bound at all.
+    """
+    monkeypatch.setattr(publication, "_MAX_TRACKED_TURNS", 2)
+    service, epoch = await setup(session_factory)
+    await opened(service, epoch)
+    await service.ingest(
+        "agent-demo",
+        "host-demo",
+        host_event(
+            epoch,
+            3,
+            {
+                "type": "turn.upsert",
+                "turnId": "turn-demo",
+                "status": "completed",
+                "commandId": "message-demo",
+            },
+        ),
+    )
+    second_message = command(
+        epoch,
+        "message-2",
+        {
+            "type": "message.send",
+            "text": "Run them again",
+            "attachments": [],
+            "delivery": "queue",
+        },
+    )
+    await service.submit(second_message, user_id="owner", bridge_id=None)
+    await service.ingest(
+        "agent-demo",
+        "host-demo",
+        host_event(
+            epoch,
+            4,
+            {
+                "type": "turn.upsert",
+                "turnId": "turn-2",
+                "status": "completed",
+                "commandId": "message-2",
+            },
+        ),
+    )
+    third_message = command(
+        epoch,
+        "message-3",
+        {
+            "type": "message.send",
+            "text": "Run them a third time",
+            "attachments": [],
+            "delivery": "queue",
+        },
+    )
+    await service.submit(third_message, user_id="owner", bridge_id=None)
+    await service.ingest(
+        "agent-demo",
+        "host-demo",
+        host_event(
+            epoch,
+            5,
+            {
+                "type": "turn.upsert",
+                "turnId": "turn-3",
+                "status": "running",
+                "commandId": "message-3",
+            },
+        ),
+    )
+    activity_platform = ActivityPlatform()
+    publisher = SessionPublisher(
+        session_factory,
+        "bridge",
+        cards_for(session_factory, Platform()),
+        SessionTurnActivity(activity_platform),
+    )
+
+    await publisher.publish_pending()
+    assert [c.turn.turn_id for _, c, _ in activity_platform.posts] == ["turn-3"]
+
+    await service.ingest(
+        "agent-demo",
+        "host-demo",
+        host_event(
+            epoch,
+            6,
+            {
+                "type": "notice",
+                "level": "info",
+                "code": "TEST",
+                "message": "still running",
+            },
+        ),
+    )
+    await publisher.publish_pending()
+
+    posted_turns = [c.turn.turn_id for _, c, _ in activity_platform.posts]
+    assert "turn-demo" not in posted_turns
+    assert "turn-2" not in posted_turns
+
+
 async def test_an_older_turn_queued_behind_the_latest_still_gets_its_final_draw(
     session_factory,
 ):
