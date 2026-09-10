@@ -1,17 +1,14 @@
 # Multi-tenancy Phase 1: the database design
 
-Status: partially built. Implements §2 of `multi-tenancy.md` (spike CHOO-2603)
-for CHOO-2623.
+Status: built. Implements §2 of `multi-tenancy.md` (spike CHOO-2603) for
+CHOO-2623.
 
 This document was written as one design covering the whole schema half of
 Phase 1 — new tables, per-tenant uniqueness, composite foreign keys, the
 row-level-security policies, and the session plumbing that sets the tenant —
-and its reasoning below still describes that whole shape. What actually
-shipped is narrower: **the tenant model, per-tenant uniqueness and the
-composite foreign keys are built**, in the one migration this document
-describes. **Row-level security is not**: `require_tenant_id()`, the policy
-attached to each table, `db/rls_ddl.py` and the isolation test under "Done
-when" were all split out into a later change.
+and its reasoning below still describes that whole shape, in four changes
+rather than one. **The tenant model, per-tenant uniqueness and the composite
+foreign keys** landed first, in the migration `8b276792ee30`.
 **"Setting the tenant" has since been built** and that section now describes
 what was actually implemented, which differs from what it originally proposed —
 an event hook rather than a dependency at every call site, for reasons given
@@ -21,11 +18,13 @@ work, described where "Setting the tenant" talks about background work below.
 That section also records the model that was tried first, of binding once per
 long-lived task, and the four ways it leaked; it is written up rather than
 deleted because the reasoning that made it look right is easy to arrive at
-twice. Read the remaining
-sections as the design those later changes implement rather than as a
-description of what is running today; "What Phase 1 does not close" says which
-gaps are this migration's and which belong to the deferred work — row-level
-security is still the biggest of them.
+twice. **Row-level security has since been built too**: `require_tenant_id()`,
+the policy attached to each table, `db/rls_ddl.py` and the isolation test
+under "Done when" are all in place, in the migration `265ed188ad6f`. Read the
+remaining sections as a description of what is running today, except where a
+section says otherwise; "What Phase 1 does not close" says which gaps remain
+deliberately open — the runtime role that would make these policies bite in a
+deployed environment is the biggest of them, tracked separately as CHOO-2685.
 
 Postgres 16 everywhere — local Compose, the chart, and the test containers —
 and two things below need at least 15, so that is a floor, not an incidental
@@ -566,9 +565,19 @@ things remembered; with it, two, and both are checked by tests.
 
 ## The migration
 
-One revision:
+What shipped as one design landed as two revisions: the schema
+(`8b276792ee30`) below, and row-level security (`265ed188ad6f`, "Where the
+SQL lives" above) after it. Splitting them was not the original plan — it
+fell out of building this in stages — but it turned out to be the right
+shape anyway: the schema migration is safe to run and roll back on its own,
+with every policy still inert against the owner connection either way, and
+the second revision is a short, mechanical follow-on with nothing but
+`require_tenant_id()` and 38 near-identical `enable row level security` /
+`create policy` pairs to review.
 
-1. Create `tenants` and `tenant_members`; create `require_tenant_id()`.
+The schema revision:
+
+1. Create `tenants` and `tenant_members`.
 2. Insert tenant zero, slug `default`, with a fixed id constant written into
    the migration. Not read from the environment: `TENANT_ID` is config today
    and a later edit to it must not silently desync from the row.
@@ -586,11 +595,11 @@ One revision:
 7. Rewrite each scoped-to-scoped foreign key as composite, `not valid` first
    and `validate constraint` after.
 
-No roles are created and no grants issued — see the role section above.
-Row-level security is not part of this migration either: `require_tenant_id()`,
-the policies and the isolation test described elsewhere in this document are
-deferred to a later change, tracked separately from the schema landed here
-(see "Status" at the top of this document).
+No roles are created and no grants issued, in either revision — see the role
+section above. Row-level security is not part of the schema revision: it is
+the second one, `265ed188ad6f`, which creates `require_tenant_id()` and every
+table's policy and nothing else — no roles or grants there either, for the
+same reason.
 
 **On locking.** Alembic wraps a whole revision in one transaction
 (`migrations/env.py`, `context.begin_transaction()`), and this migration does
@@ -624,37 +633,55 @@ note belongs in the migration's docstring.
 
 ## Done when
 
-An integration test proves tenant A cannot read tenant B's rows through the
-ordinary application paths — connected as a restricted role, through the store
-layer, not by hand-written SQL. That needs test infrastructure that does not
-exist yet: the fixtures create the role, grant to it, connect as it, and seed
-tenant zero, because the truncation between tests now empties `tenants` too.
+Built, in `tests/switch_core/db/test_row_level_security.py`. An integration
+test proves tenant A cannot read tenant B's rows through the ordinary
+application paths — connected as a restricted role, through the store layer
+(`RoomGroupStore`), not by hand-written SQL. That needed test infrastructure
+which did not exist before this change: `rls_harness`
+(`tests/conftest.py`, alongside `session_factory`) creates the role, grants to
+it, connects as it, and seeds tenant zero against a schema built the same way
+`session_factory` builds one — because the rest of the suite still runs
+against the owner connection, and always will until the role in the section
+above exists somewhere real.
 
 Note what this does and does not prove. It proves the **policies** are correct,
 which is the part Phase 1 owns. It does not prove the **deployment** is subject
 to them — that is the role work, and until it lands the same test against a
 real environment would pass for the wrong reason.
 
-Alongside it, three cheap tests that catch the regressions this design exists
-to prevent:
+Alongside it, the cheap tests that catch the regressions this design exists
+to prevent, also in that file:
 
 - Every scoped table has row-level security enabled and a policy, asserted by
-  querying `pg_policies` and `pg_tables` rather than by reading the code.
-- Every foreign key between two scoped tables includes `tenant_id`, asserted
-  the same way from the catalogue. Without this a new table passes every other
-  check while quietly falling back to a single-column key.
+  querying `pg_policies` and `pg_tables` rather than by reading the code, with
+  the table list itself derived from `rls_ddl.scoped_tables` rather than
+  copied.
+- A write-side pair — an `INSERT` addressed to another tenant, and an
+  `UPDATE` moving an own row into one — for what `with check` catches that
+  `using` alone would not. (The `UPDATE` case turns out to be defended either
+  way, because Postgres re-checks a row's new state against `using` on
+  `UPDATE` regardless of `with check`; it stays as the write-side test the
+  design calls for, and as a pin against the day the two predicates diverge.)
 - A query issued with no tenant set raises rather than returning nothing.
+
+The foreign-key-carries-`tenant_id` catalogue check this section originally
+asked for shipped earlier, with the schema migration — see
+`tests/switch_core/db/test_tenant_schema_catalogue.py`, predating row-level
+security because it needed no policy to be meaningful.
 
 ## What Phase 1 does not close
 
 Named so they are decisions rather than omissions.
 
-- **No row-level security yet.** The migration that landed adds the tenant
-  model, per-tenant uniqueness and the composite foreign keys, and stops
-  there — `require_tenant_id()`, the policy, and the runtime-role work that
-  would make a policy bite are a later change, not merely inert code sitting
-  next to this one. Deliberate, and safe while one tenant exists — and the
-  hard prerequisite for the second.
+- **The policies exist and do not yet bite.** `require_tenant_id()` and every
+  table's policy are built and tested (`265ed188ad6f`,
+  `tests/switch_core/db/test_row_level_security.py`), but local Compose, the
+  chart and production all still connect as the table owner, which bypasses
+  row-level security by ownership regardless of what the policies say. The
+  runtime role that would make a policy bite in a deployed environment —
+  `switch_app`, described above — is CHOO-2685, not this phase. Deliberate,
+  and safe while one tenant exists — and the hard prerequisite for the
+  second.
 - **Cross-tenant user enumeration.** `users` and `oidc_identities` have no
   policy, so any tenant session can read every account. There is no exposure
   while one tenant exists, and the correct fix needs invitations and a

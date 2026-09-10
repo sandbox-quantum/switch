@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import hashlib
 
+import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -84,6 +85,7 @@ class TestRegistrationTokenDecidesTheTenant:
             assert client is not None
             assert client.tenant_id == TENANT_B
 
+    @pytest.mark.no_ambient_tenant
     async def test_nothing_stays_bound_after_registration_returns(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:

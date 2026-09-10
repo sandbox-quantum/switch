@@ -21,6 +21,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.db.models import Client, ClientRoom, Message, Room, Tenant
+from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.media_store import MediaStore
 from switch_core.db.stores.message_store import MessageStore
 from switch_core.db.stores.room_store import RoomStore
@@ -37,6 +38,7 @@ from switch_core.transport import (
 from switch_core.transport.ephemeral import EphemeralBus
 from switch_core.transport.invites import InviteBus
 from switch_core.transport.postgres import PostgresTransport
+from tests.conftest import RLSHarness
 
 
 async def _make_room(session: AsyncSession) -> tuple[str, str, str, str]:
@@ -875,6 +877,7 @@ class TestDeliveryBindsTheRoomsTenant:
         for task in self._tasks:
             task.cancel()
 
+    @pytest.mark.no_ambient_tenant
     async def test_a_delivery_binds_the_room_s_own_tenant(
         self,
         session_factory: async_sessionmaker[AsyncSession],
@@ -962,7 +965,13 @@ class TestATransportOwnsNoTenantOfItsOwn:
         """`joined_rooms` decides, once, what this client will ever hear. A
         tenant bound over that read narrows it to a subset with no error to
         say so — the client is simply deaf everywhere else, forever. So it
-        must run unscoped even when reached from a bound context."""
+        must run unscoped even when reached from a bound context.
+
+        `test_a_tenant_scoped_read_would_have_returned_no_rooms_at_all` below
+        proves the "narrows it to a subset" half directly, through the row-
+        level-security policies rather than by inferring it from the tenant
+        this test's own spy observed.
+        """
         tenant_id = f"tenant-{uuid.uuid4().hex[:8]}"
         async with session_factory() as session:
             session.add(Tenant(id=tenant_id, slug=tenant_id, name=tenant_id))
@@ -1012,6 +1021,53 @@ class TestATransportOwnsNoTenantOfItsOwn:
             "silent in the rest"
         )
 
+    async def test_a_tenant_scoped_read_would_have_returned_no_rooms_at_all(
+        self, rls_harness: RLSHarness
+    ) -> None:
+        """The same client and its one room, read through
+        `RoomStore.get_for_client` — the exact method `joined_rooms` calls —
+        but scoped to a tenant the client does not belong to, instead of left
+        unscoped. It comes back empty: not a subset, since this client has
+        only the one room, but the same silent-and-wrong shape `joined_rooms`
+        avoids by never binding a tenant over this read at all.
+        """
+        tenant_id = f"tenant-{uuid.uuid4().hex[:8]}"
+        other_tenant = f"tenant-{uuid.uuid4().hex[:8]}"
+        async with rls_harness.owner() as session:
+            for t in (tenant_id, other_tenant):
+                session.add(Tenant(id=t, slug=t, name=t))
+            await session.flush()
+            suffix = uuid.uuid4().hex[:8]
+            client = Client(
+                tenant_id=tenant_id,
+                matrix_user_id=f"@sys-{suffix}:test",
+                display_name="admin",
+                type="admin",
+            )
+            session.add(client)
+            room = Room(
+                tenant_id=tenant_id,
+                matrix_room_id=f"!room-{suffix}:test",
+                name="a room",
+                description="",
+            )
+            session.add(room)
+            await session.flush()
+            session.add(
+                ClientRoom(tenant_id=tenant_id, client_id=client.id, room_id=room.id)
+            )
+            await session.commit()
+            client_id = client.id
+
+        async with tenant_session(rls_harness.restricted, other_tenant) as session:
+            rooms = await RoomStore().get_for_client(session, client_id)
+
+        assert rooms == [], (
+            "a read scoped to a tenant this client does not belong to still "
+            "returned its room — row-level security should have hidden it"
+        )
+
+    @pytest.mark.no_ambient_tenant
     async def test_each_room_is_delivered_under_its_own_tenant(
         self,
         session_factory: async_sessionmaker[AsyncSession],

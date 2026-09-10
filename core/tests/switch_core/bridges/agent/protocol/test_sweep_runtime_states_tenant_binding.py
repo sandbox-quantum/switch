@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import uuid
 
+import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.bridges.agent.protocol.connections import ConnectionRegistry
@@ -121,6 +122,7 @@ async def _make_stale_runtime_state(
     return agent.id, room.id
 
 
+@pytest.mark.no_ambient_tenant
 async def test_sweep_binds_each_row_s_own_tenant_and_does_not_leak(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
@@ -161,6 +163,7 @@ async def test_sweep_binds_each_row_s_own_tenant_and_does_not_leak(
     assert row_b is not None and row_b.state == "idle"
 
 
+@pytest.mark.no_ambient_tenant
 async def test_the_tail_of_a_row_s_work_is_still_inside_its_binding(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:

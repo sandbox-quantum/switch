@@ -44,6 +44,7 @@ class TestTenantSession:
             assert await _current_setting(session) == TENANT_A
             await session.commit()
 
+    @pytest.mark.no_ambient_tenant
     async def test_the_tenant_is_unbound_once_the_block_exits(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
@@ -52,6 +53,7 @@ class TestTenantSession:
             pass
         assert current_tenant_id() is None
 
+    @pytest.mark.no_ambient_tenant
     async def test_an_exception_still_unbinds(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
@@ -60,6 +62,7 @@ class TestTenantSession:
                 raise RuntimeError("boom")
         assert current_tenant_id() is None
 
+    @pytest.mark.no_ambient_tenant
     async def test_it_restores_an_outer_binding_rather_than_clearing_it(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
@@ -91,6 +94,7 @@ class TestUnscopedSession:
             assert current_tenant_id() is None
             assert await _current_setting(session) is None
 
+    @pytest.mark.no_ambient_tenant
     async def test_it_unbinds_an_outer_tenant_for_the_duration(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
@@ -116,6 +120,7 @@ class TestUnscopedSession:
                     raise RuntimeError("boom")
             assert current_tenant_id() == TENANT_A
 
+    @pytest.mark.no_ambient_tenant
     async def test_current_tenant_id_is_unchanged_after_the_block(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
