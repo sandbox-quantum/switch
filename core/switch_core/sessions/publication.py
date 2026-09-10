@@ -23,6 +23,37 @@ def _ignore_recovery(_token: str) -> None:
     return None
 
 
+def _always_refresh(_token: str, _revision: int) -> bool:
+    return True
+
+
+def _ignore_refresh(_token: str, _revision: int) -> None:
+    return None
+
+
+class PublicationIncomplete(Exception):
+    """A session's requests were not all published this pass, and why.
+
+    Distinct from `SessionError`, which names a request-level failure a
+    caller over HTTP acts on: this is an internal signal `publish_pending`
+    reads to decide how loudly to say so. `errors` is what actually broke —
+    still worth an error-level log with a traceback; `backed_off` is requests
+    still waiting out a recovery search's own backoff, which is working as
+    designed and must not read as a fresh failure on every retry.
+    """
+
+    def __init__(
+        self, session_id: str, errors: list[BaseException], backed_off: int
+    ) -> None:
+        self.session_id = session_id
+        self.errors = errors
+        self.backed_off = backed_off
+        super().__init__(
+            f"Session {session_id}: {len(errors)} request(s) failed to "
+            f"publish and {backed_off} are waiting out a recovery backoff."
+        )
+
+
 async def refresh_cards(
     session_factory: async_sessionmaker[AsyncSession],
     bridge_id: str,
@@ -31,16 +62,25 @@ async def refresh_cards(
     *,
     recovery_allowed: Callable[[str], bool] = _always_recover,
     recovery_succeeded: Callable[[str], None] = _ignore_recovery,
+    refresh_needed: Callable[[str, int], bool] = _always_refresh,
+    refreshed: Callable[[str, int], None] = _ignore_refresh,
 ) -> None:
     """Bring a session's cards up to date with its persisted requests.
 
     `recovery_allowed` gates `recover` — the search for a card whose post is
     unconfirmed — per token, and `recovery_succeeded` is told when one lands.
-    `SessionPublisher` passes a pair backed by a backoff, so a card that
-    genuinely never landed does not have this re-scan a channel's growing
-    history every cycle, forever; direct callers (tests, and anything that
-    wants recovery attempted unconditionally) get the defaults, which always
-    allow it and track nothing.
+    `refresh_needed` gates redrawing an already-confirmed card, per token and
+    revision, and `refreshed` is told once one lands. `SessionPublisher`
+    passes backoff-backed versions of both pairs, so a card that genuinely
+    never lands does not have this re-scan a channel's growing history every
+    cycle forever, and a session stuck on one broken request does not have
+    this redraw its unrelated, unchanged siblings on every retry either.
+
+    Direct callers (tests, and anything that wants every card actually
+    confirmed rather than trusted from memory — including a freshly started
+    process, which has no memory to trust yet) get the defaults for both,
+    which always act and track nothing: every confirmed card is compared
+    against what is actually recorded for it, every time.
     """
     posts = SessionRequestPostStore()
     async with session_factory() as db:
@@ -87,7 +127,7 @@ async def refresh_cards(
             if post is None:
                 if request.state != "open":
                     continue
-                await cards.post(
+                new_post = await cards.post(
                     request,
                     channel_id=channel_id,
                     thread_root_id=thread_id,
@@ -96,6 +136,7 @@ async def refresh_cards(
                     epoch=epoch,
                     agent_name=agent_name,
                 )
+                refreshed(new_post.token, request.revision)
             elif post.external_post_id == post.token:
                 if not recovery_allowed(post.token):
                     backed_off += 1
@@ -103,8 +144,10 @@ async def refresh_cards(
                 post = await cards.recover(post)
                 recovery_succeeded(post.token)
                 await cards.refresh(post, request)
-            else:
+                refreshed(post.token, request.revision)
+            elif refresh_needed(post.token, request.revision):
                 await cards.refresh(post, request)
+                refreshed(post.token, request.revision)
         except Exception as error:
             # One request's card failing must not stop its siblings from
             # being tried: a session can have several open requests, and a
@@ -128,11 +171,7 @@ async def refresh_cards(
         # can.
         raise errors[0]
     if errors or backed_off:
-        raise SessionError(
-            "PUBLICATION_INCOMPLETE",
-            f"Session {session_id}: {len(errors)} request(s) failed to "
-            f"publish and {backed_off} are waiting out a recovery backoff.",
-        )
+        raise PublicationIncomplete(session_id, errors, backed_off)
 
 
 class _RecoveryBackoff:
@@ -168,6 +207,30 @@ class _RecoveryBackoff:
         self._interval.pop(token, None)
 
 
+class _RedrawGuard:
+    """Remembers, for one publisher's own lifetime, which revision of each
+    confirmed card it last drew.
+
+    A session retried because a *different* request in it is stuck must not
+    redraw this one again on every retry — nothing about it changed since
+    last time this same process drew it. A freshly started publisher
+    remembers nothing, so its first pass over an existing card still confirms
+    it against what is actually recorded, the way `test_host_ack_and_retry_
+    survive_publication_failure` relies on: a restart cannot trust that the
+    platform still shows what the last process last drew, only that the
+    database says what it should show.
+    """
+
+    def __init__(self) -> None:
+        self._drawn: dict[str, int] = {}
+
+    def needed(self, token: str, revision: int) -> bool:
+        return self._drawn.get(token) != revision
+
+    def drawn(self, token: str, revision: int) -> None:
+        self._drawn[token] = revision
+
+
 class SessionPublisher:
     """Reconcile persisted snapshots independently of host acknowledgements."""
 
@@ -182,6 +245,7 @@ class SessionPublisher:
         self._cards = cards
         self._published: dict[str, int] = {}
         self._recovery = _RecoveryBackoff()
+        self._redraw = _RedrawGuard()
         self._wake = asyncio.Event()
 
     def wake(self) -> None:
@@ -208,7 +272,32 @@ class SessionPublisher:
                     self._cards,
                     recovery_allowed=self._recovery.allowed,
                     recovery_succeeded=self._recovery.succeeded,
+                    refresh_needed=self._redraw.needed,
+                    refreshed=self._redraw.drawn,
                 )
+            except PublicationIncomplete as incomplete:
+                if incomplete.errors:
+                    logger.exception(
+                        "Session %s card publication failed on bridge %s "
+                        "(%d failed, %d waiting on a recovery backoff); "
+                        "will retry.",
+                        session_id,
+                        self._bridge_id,
+                        len(incomplete.errors),
+                        incomplete.backed_off,
+                    )
+                else:
+                    # Every one of these is a request deliberately not
+                    # searched for again yet, not a new failure — logging it
+                    # as one would put a real broken-and-continuing signal in
+                    # the same stream as a wait that is working as designed.
+                    logger.warning(
+                        "Session %s has %d request(s) waiting out a recovery "
+                        "backoff on bridge %s.",
+                        session_id,
+                        incomplete.backed_off,
+                        self._bridge_id,
+                    )
             except Exception:
                 logger.exception(
                     "Session %s card publication failed on bridge %s; will retry.",

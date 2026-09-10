@@ -1,3 +1,4 @@
+import logging
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -28,11 +29,11 @@ from switch_core.db.models import ClientRoom, Room, SessionRequestPost
 from switch_core.db.stores.session_request_post_store import SessionRequestPostStore
 from switch_core.sessions import publication
 from switch_core.sessions.publication import (
+    PublicationIncomplete,
     SessionPublisher,
     _RecoveryBackoff,
     refresh_cards,
 )
-from switch_core.sessions.service import SessionError
 
 from .test_authority import EXAMPLES, command, host_event, opened, setup
 from .test_publication import Platform
@@ -421,7 +422,7 @@ async def test_two_failed_requests_in_one_session_raise_one_aggregate_error(
     platform.post_rich = AsyncMock(side_effect=RichContentFailed("nope", text="nope"))
     cards = cards_for(session_factory, platform)
 
-    with pytest.raises(SessionError, match="2 request.s. failed to publish"):
+    with pytest.raises(PublicationIncomplete, match="2 request.s. failed to publish"):
         await refresh_cards(session_factory, "bridge", "session-demo", cards)
     assert platform.posts == []
 
@@ -497,3 +498,151 @@ async def test_the_publisher_does_not_re_search_every_cycle_for_a_card_that_neve
 
     await publisher.publish_pending()
     assert find.await_count == 1  # backing off; not attempted again immediately
+
+
+# ── A confirmed card is only redrawn when something about it changed ────────
+
+
+async def test_a_confirmed_card_is_not_redrawn_when_nothing_about_it_changed(
+    session_factory,
+):
+    """A session publishing again — because something else about it changed,
+    a new host event bumping its sequence — must not redraw a card whose own
+    request is untouched by that change.
+
+    Through the same `SessionPublisher`, which is what actually retries on a
+    fixed cycle and is what the redraw guard is scoped to — a bare
+    `refresh_cards` call always confirms what it is given, on the assumption
+    that a caller reaching for it directly wants exactly that.
+    """
+    service, epoch = await setup(session_factory)
+    await opened(service, epoch)
+    platform = RecoverablePlatform()
+    publisher = SessionPublisher(
+        session_factory, "bridge", cards_for(session_factory, platform)
+    )
+
+    await publisher.publish_pending()
+    assert len(platform.posts) == 1
+    assert platform.edits == []
+
+    # Something else in the session changes — nothing to do with the request
+    # already drawn — so the publisher revisits it.
+    await service.ingest(
+        "agent-demo",
+        "host-demo",
+        host_event(
+            epoch,
+            3,
+            {
+                "type": "notice",
+                "level": "info",
+                "code": "TEST",
+                "message": "still running",
+            },
+        ),
+    )
+    await publisher.publish_pending()
+    assert platform.edits == []
+
+
+async def test_a_stuck_siblings_backoff_does_not_redraw_a_confirmed_card_either(
+    session_factory, monkeypatch
+):
+    """The exact shape review found: a session with one good card and one
+    that never confirms must not keep re-sending the good one every cycle
+    while the publisher waits out the bad one's recovery backoff."""
+    service, epoch = await setup(session_factory)
+    await opened(service, epoch)  # request-demo, posts fine
+
+    request = {
+        **EXAMPLES["hostRequest"]["body"]["request"],
+        "requestId": "other-request",
+        "turnId": "other-turn",
+    }
+    message = command(
+        epoch,
+        "other-message",
+        {
+            "type": "message.send",
+            "text": "Continue",
+            "attachments": [],
+            "delivery": "queue",
+        },
+    )
+    await service.submit(message, user_id="owner", bridge_id=None)
+    await service.ingest(
+        "agent-demo",
+        "host-demo",
+        host_event(
+            epoch,
+            3,
+            {
+                "type": "turn.upsert",
+                "turnId": "other-turn",
+                "commandId": "other-message",
+                "status": "running",
+            },
+        ),
+    )
+    await service.ingest(
+        "agent-demo",
+        "host-demo",
+        host_event(epoch, 4, {"type": "request.opened", "request": request}),
+    )
+
+    platform = RecoverablePlatform()
+    real_post_rich = platform.post_rich
+
+    async def flaky_post_rich(channel, agent, content, thread):
+        if content.request.request_id == "other-request":
+            raise TimeoutError("lost")
+        return await real_post_rich(channel, agent, content, thread)
+
+    platform.post_rich = flaky_post_rich
+    cards = cards_for(session_factory, platform)
+    publisher = SessionPublisher(session_factory, "bridge", cards)
+
+    await (
+        publisher.publish_pending()
+    )  # request-demo posts; other-request left unconfirmed
+    assert len(platform.posts) == 1
+
+    monkeypatch.setattr(platform, "find_request_card", AsyncMock(return_value=None))
+    await publisher.publish_pending()  # a real recovery attempt for other-request
+    await publisher.publish_pending()  # now backing off
+
+    # request-demo's revision never changed, so it is never touched again —
+    # only other-request's own recovery is retried.
+    assert platform.edits == []
+
+
+async def test_a_pure_backoff_wait_logs_a_warning_not_an_exception(
+    session_factory, monkeypatch, caplog
+):
+    """A card waiting out its own recovery backoff is working as designed,
+    not a fresh failure — it must not read as one on every retry."""
+    service, epoch = await setup(session_factory)
+    await opened(service, epoch)
+    platform = RecoverablePlatform()
+    cards = cards_for(session_factory, platform)
+    publisher = SessionPublisher(session_factory, "bridge", cards)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            platform, "post_rich", AsyncMock(side_effect=TimeoutError("lost"))
+        )
+        await publisher.publish_pending()
+
+    monkeypatch.setattr(platform, "find_request_card", AsyncMock(return_value=None))
+    with caplog.at_level(logging.WARNING):
+        await publisher.publish_pending()  # a real recovery attempt: a genuine failure
+        caplog.clear()
+        await publisher.publish_pending()  # backed off: nothing new went wrong
+
+    assert not any(record.levelname == "ERROR" for record in caplog.records)
+    assert any(
+        record.levelname == "WARNING"
+        and "waiting out a recovery backoff" in record.message
+        for record in caplog.records
+    )
