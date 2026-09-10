@@ -10,10 +10,23 @@
 #   docker compose -f standalone-docker-compose.yml -f standalone-docker-compose.build.yml up
 #
 # Profiles keep optional services opt-in:
-#   (core, no profile) postgres, switch  — always started
-#   collab            init-db, mattermost, setup  — Mattermost bridge + seeder
+#   (core, no profile) postgres, init-db, switch  — always started
+#   collab            mattermost, setup            — Mattermost bridge + seeder
 #   gateway           gateway                      — operator dashboard
 # Select them with `--profile collab --profile gateway` or COMPOSE_PROFILES.
+#
+# init-db is core, not collab, even though the database it seeds
+# (`mattermost`) is only ever read by a collab service. What init-db also
+# does — create the DB_USER runtime role — has nothing to do with the
+# collaboration bridge: switch-core authenticates as that role on every boot,
+# profile or no profile, so the role has to exist before switch does its own
+# grant-and-verify step. Gating that behind `collab` meant a default,
+# Mattermost-less stack pointed switch at a role nobody had created. Creating
+# the unused `mattermost` database on a core-only stack is harmless and
+# idempotent, and keeping one service rather than splitting role creation out
+# of it is simpler than a second init container for one CREATE ROLE. This
+# widens what a default `up` starts, but the contract's service names are
+# unchanged — init-db already existed under `collab`, it just moves to core.
 #
 # Image coordinates are env-interpolated so the same file retargets registries
 # and pins versions without edits:
@@ -73,7 +86,9 @@ services:
 
   init-db:
     image: postgres:16-alpine
-    profiles: ["collab"]
+    # No profile here on purpose — see the note above the profile table. This
+    # runs on every `up`, collab or not, because switch alone needs the
+    # runtime role it creates.
     environment:
       PGPASSWORD: ${DB_OWNER_PASSWORD}
     # Runs as the owner: creating a database and a role both need privileges
@@ -195,6 +210,13 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      # Without this, switch-core can start migrating (as the owner) and try
+      # its own grant-and-verify of DB_USER (see db/runtime_role.py) before
+      # init-db has created that role at all — a race, not just a missing
+      # role, since init-db polls postgres rather than blocking on its
+      # healthcheck.
+      init-db:
+        condition: service_completed_successfully
 
   gateway:
     image: ${SWITCH_REGISTRY:-ghcr.io}/${SWITCH_IMAGE_NAMESPACE:-sandbox-quantum}/gateway:${SWITCH_VERSION:?required, set it in .env, there is no default}
