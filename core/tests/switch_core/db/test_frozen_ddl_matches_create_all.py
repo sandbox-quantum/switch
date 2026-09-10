@@ -53,6 +53,7 @@ import switch_core.db.models  # noqa: F401 — registers every table, and the RL
 from switch_core.db.base import Base
 from switch_core.db.notify_ddl import NOTIFY_FUNCTION_NAME, NOTIFY_TRIGGER_NAME
 from switch_core.db.rls_ddl import POLICY_NAME, REQUIRE_TENANT_FUNCTION_NAME
+from switch_core.db.tenant_lookup import TENANT_LOOKUPS
 
 _CORE = Path(__file__).resolve().parents[3]
 _MIGRATED_DB = "frozen_ddl_parity_migrated"
@@ -149,6 +150,41 @@ def _without_comments(body: str) -> str:
     ).strip()
 
 
+def _tenant_lookups(connection: Connection) -> dict[str, tuple[Any, ...]]:
+    """Everything about the exempt lookups that decides what they can do.
+
+    Not just the body: `prosecdef` is what makes them run as the owner and so
+    outside the policies, `provolatile` is what keeps the planner from
+    re-evaluating them per row, `proconfig` carries the `search_path` that
+    stops a temporary table shadowing what they read, and
+    `pg_get_function_arguments` catches an argument list that drifted. A
+    migration whose frozen copy said `SECURITY INVOKER` would install eight
+    functions unable to resolve a tenant, and every other test in the suite
+    would stay green because none of them runs that SQL.
+    """
+    rows = connection.execute(
+        text(
+            "SELECT p.proname, p.prosecdef, p.provolatile::text AS volatility, "
+            "p.proconfig, pg_get_function_arguments(p.oid) AS arguments, "
+            "pg_get_function_result(p.oid) AS result, p.prosrc "
+            "FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace "
+            "WHERE n.nspname = 'public' AND p.proname = ANY(:names)"
+        ),
+        {"names": sorted(lookup.name for lookup in TENANT_LOOKUPS)},
+    )
+    return {
+        row.proname: (
+            row.prosecdef,
+            row.volatility,
+            tuple(row.proconfig or ()),
+            row.arguments,
+            row.result,
+            row.prosrc.strip(),
+        )
+        for row in rows
+    }
+
+
 def _trigger_def(connection: Connection, table: str, trigger: str) -> str:
     row = connection.execute(
         text(
@@ -166,6 +202,7 @@ class _DDLSnapshot:
     policies: dict[str, tuple[str | None, str | None]]
     rls_enabled: dict[str, bool]
     require_tenant_id_body: str
+    tenant_lookups: dict[str, tuple[Any, ...]]
     notify_function_body: str
     notify_trigger_def: str
 
@@ -175,6 +212,7 @@ def _snapshot(connection: Connection) -> _DDLSnapshot:
         policies=_policies(connection),
         rls_enabled=_rls_enabled(connection),
         require_tenant_id_body=_function_body(connection, REQUIRE_TENANT_FUNCTION_NAME),
+        tenant_lookups=_tenant_lookups(connection),
         notify_function_body=_function_body(connection, NOTIFY_FUNCTION_NAME),
         notify_trigger_def=_trigger_def(connection, "messages", NOTIFY_TRIGGER_NAME),
     )
@@ -236,6 +274,11 @@ async def test_migration_ddl_matches_the_live_copy(ddl_parity_urls: Any) -> None
         "create_all did not attach any tenant_isolation policies — "
         "db/rls_ddl.py is not wired into Base.metadata"
     )
+    assert set(live.tenant_lookups) == {lookup.name for lookup in TENANT_LOOKUPS}, (
+        "create_all did not build every tenant lookup — db/tenant_lookup.py "
+        "is not wired into Base.metadata, and the comparison below would "
+        "pass vacuously"
+    )
 
     assert migrated.policies == live.policies, (
         "the migration's frozen tenant_isolation policies (USING / WITH CHECK) "
@@ -254,6 +297,13 @@ async def test_migration_ddl_matches_the_live_copy(ddl_parity_urls: Any) -> None
         "db/rls_ddl.py's live copy:\n"
         f"  migration:  {migrated.require_tenant_id_body!r}\n"
         f"  create_all: {live.require_tenant_id_body!r}"
+    )
+    assert migrated.tenant_lookups == live.tenant_lookups, (
+        "the migration's frozen tenant lookups no longer match "
+        "db/tenant_lookup.py's live copy. These are the whole exemption from "
+        "row-level security, so a divergence here is a deployment whose "
+        "credential resolution behaves differently from every test:\n"
+        + _diff(migrated.tenant_lookups, live.tenant_lookups)
     )
     assert _without_comments(migrated.notify_function_body) == _without_comments(
         live.notify_function_body
