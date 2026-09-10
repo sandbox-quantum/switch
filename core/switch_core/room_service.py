@@ -782,15 +782,21 @@ class RoomService:
         logger.info("Removed %d agents from room %s", len(agent_ids), room_id)
 
     async def _load_room(self, room_id: str) -> Room:
-        """A room row, read with no tenant bound.
+        """A room row, read on the caller's session.
 
-        The bootstrap read: every caller below is about to bind the tenant
-        this returns, so scoping the read to a tenant would be circular — and
-        worse than circular under policies, where the wrong guess turns into
-        `Room not found` for a room that exists. Nothing is cached: no caller
-        here holds a room for longer than the call.
+        Deliberately *not* unscoped, even though its callers go on to bind the
+        tenant it returns. Every entry point here is a request or an inbound
+        event that already has a tenant bound and has already authorised the
+        caller against this room, so an unscoped read followed by
+        `tenant_session(room.tenant_id)` would be a confused deputy: read a
+        row from any tenant, then act as that tenant. Reading it scoped keeps
+        the elevation impossible rather than merely unreachable — under
+        policies a room the caller may not see is `Room not found`, which is
+        the correct answer.
+
+        Nothing is cached: no caller here holds a room for longer than a call.
         """
-        async with unscoped_session(self._session_factory) as session:
+        async with self._session_factory() as session:
             room = await self._room_store.get(session, room_id)
         if room is None:
             raise ValueError(f"Room not found: {room_id}")

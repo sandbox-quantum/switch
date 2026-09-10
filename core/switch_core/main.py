@@ -105,6 +105,7 @@ from switch_core.messages.notify import MessageListener
 from switch_core.provisioning import Provisioning
 from switch_core.provisioning.postgres import PostgresProvisioning
 from switch_core.room_service import RoomService
+from switch_core.tenant_context import no_tenant
 from switch_core.transport.ephemeral import EphemeralBus
 from switch_core.transport.invites import InviteBus
 from switch_core.version import switch_core_version
@@ -123,12 +124,17 @@ _CONNECTION_SWEEP_INTERVAL = 2.0
 
 
 async def _runtime_state_sweep_loop(protocol: ProtocolService) -> None:
-    while True:
-        await asyncio.sleep(_RUNTIME_STATE_SWEEP_INTERVAL)
-        try:
-            await protocol.sweep_runtime_states()
-        except Exception:
-            logger.exception("Runtime-state sweep failed")
+    # `no_tenant` for the reason every other long-lived task does it: a task
+    # keeps the context of whoever created it, and nothing in here may depend
+    # on that. Boot binds nothing today, so this changes no behaviour — it
+    # removes the dependency on boot continuing not to.
+    with no_tenant():
+        while True:
+            await asyncio.sleep(_RUNTIME_STATE_SWEEP_INTERVAL)
+            try:
+                await protocol.sweep_runtime_states()
+            except Exception:
+                logger.exception("Runtime-state sweep failed")
 
 
 async def _connection_sweep_loop(protocol: ProtocolService) -> None:

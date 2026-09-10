@@ -23,6 +23,8 @@ message arrived on can no longer decide where its room goes.
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
+import threading
 import uuid
 from types import SimpleNamespace
 from typing import Any
@@ -127,14 +129,23 @@ async def test_removing_a_mapping_forgets_the_tenant_with_it() -> None:
     assert bridge._room_tenants == {}
 
 
-async def test_a_thread_dispatched_event_lands_in_the_same_tenant() -> None:
-    """Mattermost, in miniature.
+async def test_the_dispatch_style_cannot_change_the_tenant() -> None:
+    """Mattermost, in miniature, and the reason platform stopped mattering.
 
-    `asyncio.run_coroutine_threadsafe` starts the coroutine in an empty
-    context — nothing the bridge's task had bound reaches it. Under the model
-    this replaces, that made auto-created rooms land in tenant zero on
-    Mattermost and in the bridge's tenant everywhere else: a per-platform
-    lottery. Both dispatch styles now agree.
+    The two arms differ in the context the handler is reached under, which is
+    the whole variable:
+
+    - the *threaded* arm is what Mattermost does — its websocket runs on an OS
+      thread and hands the coroutine over with `run_coroutine_threadsafe`,
+      which copies the calling thread's context. That thread has never bound
+      anything, so the handler starts empty;
+    - the *inline* arm is what every other adapter does, from a task that
+      inherited whatever created it — here, a third tenant that is neither the
+      room's nor the bridge's, standing in for the operator who restarted the
+      bridge.
+
+    Under the model this replaces, the first landed in tenant zero and the
+    second in whatever it inherited. Both now land on the room's.
     """
     bridge = _bridge()
     bridge.add_room_mapping("room-1", "!one:test", "C1", ROOM_TENANT)
@@ -145,13 +156,22 @@ async def test_a_thread_dispatched_event_lands_in_the_same_tenant() -> None:
 
     traced = bridge._traced(_handler)
     loop = asyncio.get_running_loop()
+    from_thread: list[concurrent.futures.Future[None]] = []
 
-    # Dispatched the way the Mattermost adapter does it, from a thread with no
-    # context of its own, and the way every other adapter does it, inline.
-    await asyncio.wrap_future(
-        asyncio.run_coroutine_threadsafe(traced(_event("C1")), loop)
-    )
-    await traced(_event("C1"))
+    def _dispatch_from_a_thread() -> None:
+        # A real OS thread, so the context it copies is genuinely empty rather
+        # than this test's own.
+        from_thread.append(asyncio.run_coroutine_threadsafe(traced(_event("C1")), loop))
+
+    thread = threading.Thread(target=_dispatch_from_a_thread)
+    thread.start()
+    while not from_thread:
+        await asyncio.sleep(0)
+    await asyncio.wrap_future(from_thread[0])
+    thread.join()
+
+    with tenant_scope("tenant-whoever-restarted-the-bridge"):
+        await traced(_event("C1"))
 
     assert seen == [ROOM_TENANT, ROOM_TENANT]
 
@@ -210,3 +230,74 @@ async def test_the_mapping_records_whatever_tenant_it_is_given(tenant: str) -> N
     bridge.add_room_mapping(room_id, f"!{room_id}:test", "C1", tenant)
 
     assert await bridge._room_tenant(room_id) == tenant
+
+
+class TestBridgeLevelWorkBindsTheBridgesTenant:
+    """Everything a bridge does that is not for one room in particular. All of
+    it is reached with nothing bound — from `BridgeCore.start`, which the
+    bridge's task calls after unbinding, or from a callback the adapter holds
+    and invokes on its own task."""
+
+    def _bridge_with_store(self, seen: list[str | None]) -> BridgeCore:
+        class _Session:
+            async def __aenter__(self) -> Any:
+                seen.append(current_tenant_id())
+                return self
+
+            async def __aexit__(self, *exc: object) -> None:
+                return None
+
+        class _AgentStore:
+            async def get_by_name(self, session: Any, name: str) -> Any:
+                return None
+
+            async def get_all(self, session: Any) -> list[Any]:
+                return []
+
+        bridge = BridgeCore.__new__(BridgeCore)
+        bridge._bridge_id = "bridge-1"
+        bridge._bridge_tenant_id = BRIDGE_TENANT
+        bridge._bridge_type = "mattermost"
+        bridge._agent_store = _AgentStore()  # type: ignore[assignment]
+        bridge._session_factory = _Session  # type: ignore[assignment]
+        return bridge
+
+    async def test_the_presentation_resolver_binds_it(self) -> None:
+        """Installed on the adapter, so it is called from the adapter's own
+        task with nothing bound. Agent names are unique *per tenant*, so an
+        unscoped read here raises `MultipleResultsFound` the day two tenants
+        both have a `reviewer`."""
+        seen: list[str | None] = []
+        bridge = self._bridge_with_store(seen)
+
+        assert await bridge._agent_presentation("worker") is None
+
+        assert seen == [BRIDGE_TENANT]
+
+    async def test_the_identity_task_unbinds_and_then_binds_it(self) -> None:
+        """The provisioning task is spawned from `BridgeCore.start`; it must
+        not keep whatever created it, and the read it does must still be the
+        bridge's."""
+        seen: list[str | None] = []
+        bridge = self._bridge_with_store(seen)
+        inside: list[str | None] = []
+
+        class _Adapter:
+            async def create_agent_identity(self, *_: object) -> None:
+                return None
+
+        bridge._adapter = _Adapter()  # type: ignore[assignment]
+
+        original = bridge._create_agent_identities
+
+        async def _watched() -> None:
+            inside.append(current_tenant_id())
+            await original()
+
+        bridge._create_agent_identities = _watched  # type: ignore[method-assign]
+
+        with tenant_scope("tenant-whoever-started-the-bridge"):
+            await bridge._run_agent_identities()
+
+        assert inside == [None], "the identity task kept its creator's tenant"
+        assert seen == [BRIDGE_TENANT]

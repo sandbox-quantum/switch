@@ -11,9 +11,9 @@ is ambient — the request's tenant on the request path, and *nothing at all* in
 background code, since the long-lived tasks deliberately unbind (see
 `tenant_context.no_tenant`). So a raw call in background code is unscoped in
 fact while saying nothing about it, which is strictly worse than the hatch
-that announces itself. There are ~197 of them across the modules below; that
-is the number this design has to work down, and pinning the module list is how
-a new one becomes a decision rather than a default.
+that announces itself. There are 176 of them across the twenty modules below;
+that is the number this design has to work down, and pinning the module list
+is how a new one becomes a decision rather than a default.
 
 A module failing either check is not a bug in the test. It means someone
 opened a session without saying which tenant it is for, and either that is
@@ -36,8 +36,8 @@ _ALLOWED_MODULES = {
     # owner/key are created before any tenant can be said to exist.
     "switch_core.main",
     # Reconciling every room's client membership at startup fans out across
-    # every tenant's rooms; and `_load_room` is the bootstrap read that says
-    # which tenant a room is in before that tenant is bound.
+    # every tenant's rooms, before binding each room's own tenant for its own
+    # work.
     "switch_core.room_service",
     # The runtime-state sweep reads every tenant's stale rows in one pass, and
     # `register_agent_with_token` resolves a credential by its globally unique
@@ -99,6 +99,10 @@ _RAW_SESSION_FACTORY_MODULES = {
     "switch_core.main",
     "switch_core.rooms_yaml",
 }
+
+# Calls that end in `session_factory` but hand one back rather than open a
+# session with it.
+_FACTORY_ACCESSORS = {"create_session_factory", "get_session_factory"}
 
 _PACKAGE_ROOT = Path(switch_core.__file__).resolve().parent
 
@@ -166,12 +170,17 @@ def _calls_session_factory(path: Path) -> bool:
 
     Matches any call whose name ends in `session_factory`, which is how every
     such call in this tree is spelled — `session_factory()`,
-    `self._session_factory()`, `self.session_factory()`. `create_session_
-    factory` is excluded: it builds a factory rather than opening a session.
+    `self._session_factory()`, `self.session_factory()`.
+
+    A name match, not a resolved reference, unlike `_calls_unscoped_session`:
+    there is no single definition to alias, since every service is handed its
+    own factory. That makes it over-eager rather than under-eager, which is
+    the safe direction for an audit — except for the two accessors that hand a
+    factory back instead of opening a session with it, which are named.
     """
     tree = ast.parse(path.read_text(), filename=str(path))
     return any(
-        name.endswith("session_factory") and name != "create_session_factory"
+        name.endswith("session_factory") and name not in _FACTORY_ACCESSORS
         for name in _called_names(tree)
     )
 
@@ -302,10 +311,15 @@ class TestTheDetectorsCatchANewCaller:
         )
         assert _calls_session_factory(new_caller)
 
-    def test_building_a_factory_is_not_opening_a_session(self, tmp_path: Path) -> None:
+    def test_handing_a_factory_back_is_not_opening_a_session(
+        self, tmp_path: Path
+    ) -> None:
         clean = tmp_path / "wiring.py"
         clean.write_text(
-            "def wire(engine):\n    return create_session_factory(engine)\n"
+            "def wire(engine):\n"
+            "    return create_session_factory(engine)\n"
+            "def fetch():\n"
+            "    return get_session_factory()\n"
         )
         assert not _calls_session_factory(clean)
 

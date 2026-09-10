@@ -45,7 +45,7 @@ from switch_core.db.models import ClientRoom, MediaBlob, Message, MessageAttachm
 from switch_core.db.session_scope import tenant_session, unscoped_session
 from switch_core.messages.recorded_types import EPHEMERAL
 from switch_core.messages.row import attachments_in, text_field, thread_root_of
-from switch_core.tenant_context import tenant_scope
+from switch_core.tenant_context import no_tenant, tenant_scope
 from switch_core.transport.content import media_content, message_content
 from switch_core.transport.ephemeral import EphemeralBus
 from switch_core.transport.invites import InviteBus
@@ -207,7 +207,16 @@ class PostgresTransport:
         and a redelivered message is indistinguishable to a reader from a new
         one. Overlapping wake-ups collapse into one more pass instead, which
         also bounds this client to one outstanding read.
+
+        `no_tenant` because this is a task and a task keeps its creator's
+        context. `receive_forever` is itself reached from a task that unbound
+        already, so this changes nothing today — it means the loop stays
+        ambient-free if it is ever created from somewhere else.
         """
+        with no_tenant():
+            await self._deliver_forever_unbound()
+
+    async def _deliver_forever_unbound(self) -> None:
         while True:
             await self._wake.wait()
             self._wake.clear()

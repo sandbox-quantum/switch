@@ -16,7 +16,7 @@ when" were all split out into a later change.
 what was actually implemented, which differs from what it originally proposed —
 an event hook rather than a dependency at every call site, for reasons given
 there. **The background half of it has since been built too** — the roughly
-197 session sites outside the request path now bind a tenant at each unit of
+164 session sites outside the request path now bind a tenant at each unit of
 work, described where "Setting the tenant" talks about background work below.
 That section also records the model that was tried first, of binding once per
 long-lived task, and the four ways it leaked; it is written up rather than
@@ -360,8 +360,9 @@ silently discarded a password change. Resolution needs the subject id, not a
 the session the endpoint actually commits.
 
 **Background work is not a short list, and it has since been closed.** There
-are roughly 197 places that open a session from the factory directly, with no
-request behind them. One rule covers all of them:
+are 164 places that open a session from the factory directly, with no request
+behind them (176 in all, across twenty modules, once the request path's own
+twelve are counted). One rule covers all of them:
 
 > **Nothing is ambient. Every unit of background work binds the tenant of the
 > row it is acting on, at the point it acts. Long-lived tasks bind nothing for
@@ -399,12 +400,20 @@ of whoever created it. Four things went wrong, and they are one thing:
 
 So what is built now is:
 
-- **Long-lived tasks unbind first.** `CollaborationBridgeLifecycleService._run_bridge`,
-  `ClientLifecycleService._run_client`, `BridgeCore._run_agent_identities` and
-  the connectors' per-agent poll loop each enter `tenant_context.no_tenant()`
-  as their first act. Nothing inside them can read a tenant it did not derive,
-  and once the policies land, a unit of work that forgot to bind reads nothing
-  rather than reading someone else's rows.
+- **Long-lived tasks unbind first.** Every task in the process that outlives
+  the call that created it enters `tenant_context.no_tenant()` as its first
+  act: `CollaborationBridgeLifecycleService._run_bridge`,
+  `ClientLifecycleService._run_client`, `BridgeCore._run_agent_identities`,
+  `ConnectorCore._poll_loop`, `PostgresTransport._deliver_forever` and
+  `main._runtime_state_sweep_loop`. Nothing inside them can read a tenant it
+  did not derive, and once the policies land, a unit of work that forgot to
+  bind reads nothing rather than reading someone else's rows. Three of those
+  six are created from a context that binds nothing anyway, so entering it
+  changes no behaviour there — that is the point. Being correct because of
+  where you were created is the dependency this rule exists to remove, so it
+  is not left standing where it happens to be harmless. (`main.
+  _connection_sweep_loop` is the one long-lived task that does not, because it
+  expires in-memory `Connection` objects and opens no session at all.)
 - **Each unit of work binds the row it is acting on.** A delivery binds the
   room's tenant (`transport/postgres.py`); an inbound platform event binds the
   room's, or — when the handler is about to auto-create the room — the
@@ -438,13 +447,18 @@ the transaction, so the cross-tenant read the call site asked for is silently
 a single-tenant one — and the allowlist pinning it certifies a lie.
 
 `tests/switch_core/db/test_unscoped_session_allowlist.py` pins two lists,
-derived from the source tree rather than from imports and resolving aliased
-imports rather than matching a spelling. The first is who may call
-`unscoped_session`. The second is the one that matters more: **which modules
+both derived from the source tree rather than from imports. The first is who
+may call `unscoped_session`, and it resolves the local name the helper was
+bound to rather than matching the spelling, so `import … as` does not walk
+past it. (The second cannot do the same: every service is handed its own
+factory, so there is no single definition to resolve. It matches on the name
+ending in `session_factory`, which is over-eager rather than under-eager —
+the safe direction for an audit — with the two accessors that hand a factory
+back rather than open a session named as exceptions.) The second is the one that matters more: **which modules
 may open a session straight from the factory at all.** A raw call inherits
 whatever is ambient, which in background code is now nothing — so it is
 unscoped in fact while declaring nothing, strictly worse than the hatch that
-announces itself. Those ~197 call sites across nineteen modules are the
+announces itself. Those 176 call sites across twenty modules are the
 inventory this design has to work down; pinning the module list makes a new
 one a decision rather than a default.
 
