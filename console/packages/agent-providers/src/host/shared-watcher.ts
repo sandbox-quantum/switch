@@ -73,6 +73,8 @@ export class SharedWatchAssignments {
       const sessionId = sessionIdFor(template.session.agentId, event.roomId, event.messageId);
       config.session = { ...config.session, sessionId, hostId: randomUUID(), epoch: randomUUID() };
       config.start.input.sessionId = sessionId;
+      if (config.start.input.env.SWITCHDASH_SESSION_ID !== undefined)
+        config.start.input.env.SWITCHDASH_SESSION_ID = sessionId;
       delete config.start.input.resume;
       config.roomConnection = {
         connectionId: randomUUID(),
@@ -125,16 +127,22 @@ export async function runSharedWatcher(
   try {
     if (!template.execution || !template.roomConnection)
       throw new Error('Shared watcher requires execution credentials and a connection identity.');
+    const enabled = async () =>
+      z
+        .object({ enabled: z.boolean() })
+        .parse(JSON.parse(await readFile(join(root, 'watch.json'), 'utf8'))).enabled;
+    if (!(await enabled())) return;
     const credentials = await readSharedCredentials(template);
     const assignments = await SharedWatchAssignments.open(root);
     const launch = async (config: SharedHostConfig) => {
-      if (await stopped(config.session.sessionId)) return;
+      if (!(await enabled()) || (await stopped(config.session.sessionId))) return;
       await ensureSharedProcess({
         root: sharedSessionRoot(config.session.sessionId),
         entrypoint,
         config,
         resuming: false,
         watcher: false,
+        restart: false,
       });
     };
     for (const config of assignments.sessions()) await launch(config);
@@ -161,11 +169,14 @@ export async function runSharedWatcher(
           const payload = z
             .object({ message_id: z.string().min(1), addressed: z.literal(true) })
             .parse(event.payload);
-          const config = await assignments.assign(template, {
-            sequence: z.number().int().positive().parse(event.sequence),
-            roomId: event.room_id,
-            messageId: payload.message_id,
-          });
+          const config = await assignments.assign(
+            sharedConfigSchema.parse(JSON.parse(await readFile(join(root, 'config.json'), 'utf8'))),
+            {
+              sequence: z.number().int().positive().parse(event.sequence),
+              roomId: event.room_id,
+              messageId: payload.message_id,
+            }
+          );
           await launch(config);
         });
         return pending.catch((error: Error) => {
@@ -179,7 +190,11 @@ export async function runSharedWatcher(
             `Shared SDK watcher delivery gap: ${gap.reason}. Read room context before restarting.`
           )
         ),
-      onEvicted: (reason) => fail(new Error(`Shared SDK watcher was evicted: ${reason}`)),
+      onEvicted: (reason) => {
+        if (reason === 'heartbeat lapsed')
+          console.warn('Watcher heartbeat lapsed; reconnecting from the saved cursor.');
+        else fail(new Error(`Shared SDK watcher was evicted: ${reason}`));
+      },
     });
     stream.start();
     while (!stop.signal.aborted) {

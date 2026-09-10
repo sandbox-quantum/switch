@@ -7,7 +7,6 @@ import {
   locationRuntimeRegistry,
   type TeardownMode,
 } from '@main/core/locations/location-runtime-registry';
-import { killTmuxSession, makeAgentTmuxSessionName } from '@main/core/pty/tmux-session-name';
 import type { SessionRuntimeResult } from '@main/core/sessions/session-builder';
 import { LifecycleMap } from '@main/lib/lifecycle-map';
 import { log } from '@main/lib/logger';
@@ -39,12 +38,6 @@ async function executeTeardown(
     await agent.destroy();
   }
   await locationRuntimeRegistry.release(locationId, mode);
-}
-
-async function cleanupDetachedSessions(sessionId: string, ctx: IExecutionContext): Promise<void> {
-  // The agent pane is keyed on the shared session id, so all clients converge
-  // on one tmux session.
-  await killTmuxSession(ctx, makeAgentTmuxSessionName(sessionId));
 }
 
 class SessionRuntimeManager {
@@ -91,18 +84,12 @@ class SessionRuntimeManager {
     sessionId: string,
     mode: TeardownMode = 'terminate'
   ): Promise<Result<void, TeardownSessionError>> {
-    const result = this._lifecycle.teardown(sessionId, async ({ agent, locationId, ctx }) => {
+    const result = this._lifecycle.teardown(sessionId, async ({ agent, locationId }) => {
       try {
         await withTimeout(executeTeardown(agent, locationId, mode), SESSION_TIMEOUT_MS);
         return ok();
       } catch (e) {
         log.error('SessionManager: failed to teardown session', { sessionId, error: String(e) });
-        await cleanupDetachedSessions(sessionId, ctx).catch((cleanupError) => {
-          log.warn('SessionManager: fallback cleanup failed', {
-            sessionId,
-            error: String(cleanupError),
-          });
-        });
         return { success: false as const, error: toTeardownError(e) };
       }
     });

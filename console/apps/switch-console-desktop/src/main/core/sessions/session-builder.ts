@@ -1,8 +1,3 @@
-import { agentCredsSlug } from '@main/core/agents/agent-creds-slug';
-import {
-  agentSettingsRelativePath,
-  SWITCH_SETTINGS_RELATIVE_PATH,
-} from '@main/core/agents/switch-settings-paths';
 import type { LocationProvider } from '@main/core/locations/location-provider';
 import type { LocationRuntime } from '@main/core/locations/location-runtime';
 import { locationRuntimeRegistry } from '@main/core/locations/location-runtime-registry';
@@ -103,32 +98,13 @@ export async function buildSessionFromRuntime(
   transport: LocationTransport,
   settings: LocationSettingsProvider
 ): Promise<AgentRuntimeProvider> {
-  const { sessionEnvVars, tmuxEnabled, shellSetup } = await resolveSessionEnv(
-    session,
-    runtime,
-    settings
-  );
-
-  // The remote preflight verifies the session's own creds file, keyed by the
-  // agent's NAME (`.switch/agents/<name>.json`). The agent-id path and the legacy
-  // shared `.claude/settings.local.json` are last-resort fallbacks for agents not
-  // yet migrated (CHOO-1440).
-  const credsRelPaths = [
-    ...new Set([
-      agentSettingsRelativePath(agentCredsSlug(session)),
-      agentSettingsRelativePath(session.agentId),
-    ]),
-    SWITCH_SETTINGS_RELATIVE_PATH,
-  ];
+  const { sessionEnvVars, shellSetup } = await resolveSessionEnv(session, runtime, settings);
 
   return buildAgentRuntime(transport, {
     locationId: runtime.id,
     sessionId: session.id,
     sessionPath: runtime.path,
-    tmuxEnabled,
     shellSetup,
     sessionEnvVars,
-    credsRelPaths,
-    runtime: session.runtime ?? 'pty',
   });
 }

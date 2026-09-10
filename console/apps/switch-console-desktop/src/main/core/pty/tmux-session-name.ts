@@ -63,20 +63,6 @@ export function makeTmuxSessionName(sessionId: string): string {
   return `${TMUX_SESSION_PREFIX}${encoded}`;
 }
 
-/**
- * tmux session name for an AGENT's pane, derived from the session id alone.
- * The session id is minted once (by whichever client or the VM sidecar starts
- * the session) and is shared verbatim across every Switch Console client and the
- * sidecar, so all of them compute the identical tmux name and attach to the
- * SAME pane — enabling concurrent multi-client access (CHOO-1181). It must NOT
- * fold in locationId: that is a Switch Console-instance-local id that differs per
- * client, which would give each client a different pane name and silently
- * spawn a fresh blank session on attach.
- */
-export function makeAgentTmuxSessionName(sessionId: string): string {
-  return makeTmuxSessionName(`session-${sessionId}`);
-}
-
 export async function killTmuxSession(ctx: IExecutionContext, sessionName: string): Promise<void> {
   // Windows never starts a tmux session (resolveLocalPtySpawn warns and ignores
   // the request), so the teardown would only ever produce a phantom ENOENT.

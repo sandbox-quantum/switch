@@ -337,6 +337,20 @@
       "when": 1786983032561,
       "tag": "0047_materialise_telemetry_consent",
       "breakpoints": true
+    },
+    {
+      "idx": 48,
+      "version": "6",
+      "when": 1788633600000,
+      "tag": "0048_agent_owner_name",
+      "breakpoints": true
+    },
+    {
+      "idx": 49,
+      "version": "6",
+      "when": 1789049588650,
+      "tag": "0049_shared_sdk_host",
+      "breakpoints": true
     }
   ]
 }

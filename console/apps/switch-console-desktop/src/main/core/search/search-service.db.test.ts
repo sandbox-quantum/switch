@@ -20,6 +20,8 @@ vi.mock('@main/db/client', () => ({
   },
 }));
 
+vi.mock('../sessions/session-service', () => ({ sessionService: { on: vi.fn() } }));
+
 const { searchService } = await import('./search-service');
 const { agentEvents } = await import('../agents/agent-events');
 

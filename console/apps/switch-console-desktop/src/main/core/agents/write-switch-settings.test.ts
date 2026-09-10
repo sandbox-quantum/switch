@@ -10,6 +10,7 @@ import {
   SWITCH_SETTINGS_RELATIVE_PATH,
 } from './switch-settings-paths';
 import {
+  ExistingAgentCredentialsError,
   ForeignAgentCredentialsError,
   foreignCredentialsEndpoint,
   foreignCredentialsOwnerFs,
@@ -219,11 +220,14 @@ describe('writeNeutralAgentSettingsFs, against another install of Switch Console
       },
     });
 
+    // The caller passes expectedAgentId to confirm it owns the slot — without
+    // this, the same-endpoint guard refuses the write (CHOO-2560).
     await writeNeutralAgentSettingsFs(createPluginFs(dir), {
       slug: 'ours',
       apiEndpoint: 'https://switch.example.com',
       apiToken: 'new-token',
       agentId: 'new-agent',
+      expectedAgentId: 'old-agent',
     });
 
     const raw = await fs.readFile(path.join(dir, agentSettingsRelativePath('ours')), 'utf8');
@@ -232,6 +236,25 @@ describe('writeNeutralAgentSettingsFs, against another install of Switch Console
       SWITCH_API_TOKEN: 'new-token',
       SWITCH_AGENT_ID: 'new-agent',
     });
+  });
+
+  it('refuses when same-endpoint slot holds a different agent and no expectedAgentId is given (CHOO-2560)', async () => {
+    await seed('colleague', {
+      env: {
+        SWITCH_API_ENDPOINT: 'https://switch.example.com',
+        SWITCH_API_TOKEN: 'their-token',
+        SWITCH_AGENT_ID: 'their-agent',
+      },
+    });
+
+    await expect(
+      writeNeutralAgentSettingsFs(createPluginFs(dir), {
+        slug: 'colleague',
+        apiEndpoint: 'https://switch.example.com',
+        apiToken: 'our-token',
+        agentId: 'our-agent',
+      })
+    ).rejects.toBeInstanceOf(ExistingAgentCredentialsError);
   });
 
   it('reports the owning server through foreignCredentialsOwnerFs, for a caller checking before it registers', async () => {

@@ -25,11 +25,6 @@ function resolveBundlePath(bundleName: string): string {
   );
 }
 
-/** The one agent-scoped remote runtime sidecar bundle. */
-export function resolveSidecarBundlePath(): string {
-  return resolveBundlePath('sidecar.mjs');
-}
-
 export function resolveSharedHostBundlePath(): string {
   return resolveBundlePath('shared-host.mjs');
 }

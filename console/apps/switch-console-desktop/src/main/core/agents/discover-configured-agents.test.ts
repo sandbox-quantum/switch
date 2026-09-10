@@ -116,8 +116,8 @@ describe('discoverConfiguredAgents', () => {
         name: 'codex-hoot',
         switchAgentId: 'sw-codex',
         apiEndpoint: 'https://switch.example.com',
-        providerId: 'codex',
-        providerSource: 'launch-spec',
+        providerId: null,
+        providerSource: 'unknown',
         alreadyAgent: false,
       },
     ]);
@@ -150,14 +150,14 @@ describe('discoverConfiguredAgents', () => {
     });
   });
 
-  it('prefers the launch spec over a definition, since it is what actually spawns', async () => {
+  it('uses the provider definition and ignores obsolete sidecar launch specs', async () => {
     h.state.claudeDefinitions = [{ name: 'hoot', description: null }];
     h.state.workspace = fakeFs({
       '.switch/agents/hoot.json': creds('sw-1'),
       '.switchdash/agents/hoot/agent-launch-spec.json': launchSpec('codex'),
     });
 
-    expect((await scan())[0]).toMatchObject({ providerId: 'codex', providerSource: 'launch-spec' });
+    expect((await scan())[0]).toMatchObject({ providerId: 'claude', providerSource: 'definition' });
   });
 
   it('marks agents this Switch Console already has a row for', async () => {

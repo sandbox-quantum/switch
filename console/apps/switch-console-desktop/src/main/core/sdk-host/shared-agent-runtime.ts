@@ -1,5 +1,6 @@
-import { createHash, randomUUID } from 'node:crypto';
-import { readFile } from 'node:fs/promises';
+import { deploySharedHost } from './shared-host-deployment';
+export { deploySharedHost } from './shared-host-deployment';
+import { randomUUID } from 'node:crypto';
 import { join, posix } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { sharedConfigSchema, type SharedHostConfig } from '@switch-console/agent-providers';
@@ -9,19 +10,15 @@ import { GEMINI_SKILL_CONTENT } from '@switch-console/plugins/agents/gemini/skil
 import { SWITCH_AGENT_RUNTIME_PIN } from '@switch-console/plugins/distribution';
 import { commandStatusSchema, snapshotSchema } from '@switch-console/shared/session-v1';
 import { providerAdapterRegistry } from '@main/core/agent-runtime/impl/provider-adapter-registry';
-import { resolveSharedHostBundlePath } from '@main/core/agent-runtime/impl/resolve-sidecar-bundle';
 import type { AgentRuntimeProvider } from '@main/core/agent-runtime/types';
 import { agentLaunchSpecialization } from '@main/core/agents/agent-launch-config';
 import { getAgentById } from '@main/core/agents/getAgentById';
 import { agentSettingsRelativePath } from '@main/core/agents/switch-settings-paths';
-import { LocalExecutionContext } from '@main/core/execution-context/local-execution-context';
-import { SshExecutionContext } from '@main/core/execution-context/ssh-execution-context';
-import type { IExecutionContext } from '@main/core/execution-context/types';
-import { SshFileSystem } from '@main/core/fs/impl/ssh-fs';
+import { hostDependencyStore } from '@main/core/dependencies/host-dependency-store';
 import type { LocationTransport } from '@main/core/locations/location-transport';
 import { getPlugin } from '@main/core/providers/plugin-registry';
 import { AGENT_ENV_VARS } from '@main/core/pty/pty-env';
-import { ensureSshConnected } from '@main/core/ssh/connect/connect-agent-ssh';
+import { loadSessionWithAgent } from '@main/core/sessions/session-join';
 import { switchNotificationPoller } from '@main/core/switch-rooms/switch-notification-poller';
 import {
   fetchSdkCommandStatus,
@@ -41,6 +38,7 @@ export class SharedAgentRuntime implements AgentRuntimeProvider {
       sessionId: string;
       sessionPath: string;
       sessionEnvVars: Record<string, string>;
+      shellSetup?: string;
     }
   ) {}
 
@@ -51,7 +49,7 @@ export class SharedAgentRuntime implements AgentRuntimeProvider {
     initialPrompt?: string
   ): Promise<void> {
     if (this.starting) return this.starting;
-    this.starting = this.open(session, initialPrompt, isResuming ?? false);
+    this.starting = this.open(session, initialPrompt, isResuming ?? false, false);
     try {
       await this.starting;
     } finally {
@@ -62,7 +60,8 @@ export class SharedAgentRuntime implements AgentRuntimeProvider {
   private async open(
     session: Session,
     initialPrompt: string | undefined,
-    isResuming: boolean
+    isResuming: boolean,
+    restart: boolean
   ): Promise<void> {
     const agent = await getAgentById(session.agentId);
     if (!agent?.switchAgentId || !agent.serverId)
@@ -71,6 +70,9 @@ export class SharedAgentRuntime implements AgentRuntimeProvider {
     if (!this.server) throw new Error('The agent’s Switch server is missing.');
     const intended = switchNotificationPoller.takeSharedIntent(session.id, agent.switchAgentId);
     const config = await buildSharedHostConfig(session, this.params, this.transport, intended);
+    const previousEpoch = restart
+      ? snapshotSchema.parse(await fetchSdkSnapshot(this.server, session.id)).session.epoch
+      : null;
     const { ctx, root, entrypoint } = await deploySharedHost(
       this.transport,
       this.params.sessionPath,
@@ -81,16 +83,17 @@ export class SharedAgentRuntime implements AgentRuntimeProvider {
       entrypoint,
       root,
       Buffer.from(JSON.stringify(config)).toString('base64'),
-      '--ensure',
+      restart ? '--restart' : '--ensure',
       String(isResuming),
     ]);
     const created = JSON.parse(launched.stdout).created === true;
     let snapshot;
-    const deadline = Date.now() + 30000;
+    const deadline = Date.now() + 120000;
     while (Date.now() < deadline) {
       try {
         snapshot = snapshotSchema.parse(await fetchSdkSnapshot(this.server, session.id));
         if (
+          snapshot.session.epoch !== previousEpoch &&
           snapshot.session.connectivity === 'online' &&
           ['ready', 'running', 'stopped'].includes(snapshot.session.status)
         )
@@ -102,6 +105,7 @@ export class SharedAgentRuntime implements AgentRuntimeProvider {
     }
     if (
       !snapshot ||
+      snapshot.session.epoch === previousEpoch ||
       snapshot.session.connectivity !== 'online' ||
       !['ready', 'running', 'stopped'].includes(snapshot.session.status)
     )
@@ -123,41 +127,40 @@ export class SharedAgentRuntime implements AgentRuntimeProvider {
       });
   }
 
+  async restart(session: Session): Promise<void> {
+    await this.resolveServer();
+    const snapshot = snapshotSchema.parse(await fetchSdkSnapshot(this.server!, session.id));
+    if (snapshot.session.status === 'stopped')
+      throw new Error(
+        'This session was stopped. Create a new session to start another conversation.'
+      );
+    await this.open(session, undefined, true, true);
+  }
+
   async dehydrate(): Promise<void> {}
   async detach(): Promise<void> {}
   async destroy(): Promise<void> {
     await this.stop();
   }
   async stop(): Promise<void> {
-    if (!this.server) throw new Error('Reconnect the shared session before stopping it.');
-    const snapshot = snapshotSchema.parse(
-      await fetchSdkSnapshot(this.server, this.params.sessionId)
-    );
-    if (snapshot.session.status === 'stopped') return;
-    const commandId = `stop-${snapshot.session.epoch}`;
-    await submitSdkCommand(this.server, {
-      contractVersion: 1,
-      sessionId: this.params.sessionId,
-      epoch: snapshot.session.epoch,
-      commandId,
-      body: { type: 'session.stop' },
-    });
-    for (let attempt = 0; attempt < 60; attempt++) {
-      const receipt = commandStatusSchema.parse(
-        await fetchSdkCommandStatus(this.server, this.params.sessionId, commandId)
-      );
-      if (receipt.status === 'applied') return;
-      if (receipt.status === 'unknown' || receipt.status === 'rejected')
-        throw new Error(receipt.message ?? `Stop ${receipt.status}.`);
-      await delay(500);
-    }
-    throw new Error('Stop delivery has not been confirmed. Check the session before retrying.');
+    if (this.starting) await this.starting;
+    await this.resolveServer();
+    await stopSharedSession(this.server!, this.params.sessionId);
+  }
+  private async resolveServer(): Promise<void> {
+    if (this.server) return;
+    const session = await loadSessionWithAgent(this.params.sessionId);
+    this.server = session?.serverId ? await getServer(session.serverId) : null;
+    if (!this.server) throw new Error('The session’s Switch server is missing.');
   }
 }
 
 export async function buildSharedHostConfig(
-  session: Pick<Session, 'id' | 'agentId' | 'providerId' | 'agentName' | 'providerSessionId'>,
-  params: { sessionPath: string; sessionEnvVars: Record<string, string> },
+  session: Pick<
+    Session,
+    'id' | 'agentId' | 'providerId' | 'agentName' | 'providerSessionId' | 'autoApprove'
+  >,
+  params: { sessionPath: string; sessionEnvVars: Record<string, string>; shellSetup?: string },
   transport: LocationTransport,
   intended: { rooms: string[]; startCursor: number }
 ): Promise<SharedHostConfig> {
@@ -165,6 +168,18 @@ export async function buildSharedHostConfig(
   if (!agent?.switchAgentId) throw new Error('Link the agent to Switch before launching its host.');
   const specialization = (await agentLaunchSpecialization(session.agentId)) ?? {};
   const provider = sharedConfigSchema.shape.start.shape.provider.parse(session.providerId);
+  const selection = await hostDependencyStore.getSelection(
+    transport.kind === 'ssh' ? transport.connectionId : 'local',
+    provider
+  );
+  const binaryPath =
+    selection?.kind === 'pinned'
+      ? selection.realpath
+      : selection?.kind === 'path'
+        ? selection.path
+        : selection?.kind === 'cli'
+          ? selection.command
+          : undefined;
   const capabilities = providerAdapterRegistry.get(provider).capabilities;
   const slug = session.agentName ?? agent.name ?? agent.id;
   const profile =
@@ -203,7 +218,8 @@ export async function buildSharedHostConfig(
       input: {
         sessionId: session.id,
         cwd: params.sessionPath,
-        runtimeMode: agent.autoApprove ? 'full-access' : 'approval-required',
+        runtimeMode:
+          (session.autoApprove ?? agent.autoApprove) ? 'full-access' : 'approval-required',
         env: params.sessionEnvVars,
         mcpServers: {},
         ...(session.providerSessionId
@@ -242,6 +258,8 @@ export async function buildSharedHostConfig(
         'GEMINI_CLI_HOME',
       ],
       mcpRuntime: SWITCH_AGENT_RUNTIME_PIN,
+      ...(binaryPath ? { binaryPath } : {}),
+      ...(params.shellSetup ? { shellSetup: params.shellSetup } : {}),
       ...(getPlugin(provider).behavior.repoAgents
         ? {
             agentDefinition: {
@@ -267,49 +285,25 @@ export async function buildSharedHostConfig(
   return config;
 }
 
-export async function deploySharedHost(
-  transport: LocationTransport,
-  sessionPath: string,
-  identity: string,
-  watcher: boolean
-) {
-  let ctx: IExecutionContext;
-  const bundle = resolveSharedHostBundlePath();
-  const hash = createHash('sha256')
-    .update(await readFile(bundle))
-    .digest('hex');
-  const key = createHash('sha256').update(identity).digest('hex');
-  let entrypoint = bundle;
-  if (transport.kind === 'ssh') {
-    const proxy = await ensureSshConnected(transport.connectionId, transport.host);
-    ctx = new SshExecutionContext(proxy, { root: sessionPath });
-    const { stdout } = await ctx.exec('node', [
-      '-e',
-      "console.log(require('node:path').join(require('node:os').homedir(),'.local','state','switch','sdk-host'))",
-    ]);
-    const directory = stdout.trim();
-    await ctx.exec('node', [
-      '-e',
-      "require('node:fs').mkdirSync(process.argv[1],{recursive:true,mode:0o700})",
-      directory,
-    ]);
-    const fs = new SshFileSystem(proxy, directory);
-    entrypoint = `${directory}/shared-host-${hash}.mjs`;
-    const temporary = `shared-host-${hash}.${randomUUID()}.tmp`;
-    await fs.copyLocalFile(bundle, temporary);
-    await ctx.exec('node', [
-      '-e',
-      "require('node:fs').renameSync(process.argv[1],process.argv[2])",
-      `${directory}/${temporary}`,
-      entrypoint,
-    ]);
-  } else ctx = new LocalExecutionContext();
-  const { stdout } = await ctx.exec('node', [
-    '-e',
-    "console.log(require('node:path').join(require('node:os').homedir(),'.local','state','switch',process.argv[2],process.argv[1]))",
-    key,
-    watcher ? 'sdk-watchers' : 'sdk-sessions',
-  ]);
-  const root = stdout.trim();
-  return { ctx, root, entrypoint };
+export async function stopSharedSession(server: SwitchServer, sessionId: string): Promise<void> {
+  const snapshot = snapshotSchema.parse(await fetchSdkSnapshot(server, sessionId));
+  if (snapshot.session.status === 'stopped') return;
+  const commandId = `stop-${snapshot.session.epoch}`;
+  await submitSdkCommand(server, {
+    contractVersion: 1,
+    sessionId: sessionId,
+    epoch: snapshot.session.epoch,
+    commandId,
+    body: { type: 'session.stop' },
+  });
+  for (let attempt = 0; attempt < 60; attempt++) {
+    const receipt = commandStatusSchema.parse(
+      await fetchSdkCommandStatus(server, sessionId, commandId)
+    );
+    if (receipt.status === 'applied') return;
+    if (receipt.status === 'unknown' || receipt.status === 'rejected')
+      throw new Error(receipt.message ?? `Stop ${receipt.status}.`);
+    await delay(500);
+  }
+  throw new Error('Stop delivery has not been confirmed. Check the session before retrying.');
 }

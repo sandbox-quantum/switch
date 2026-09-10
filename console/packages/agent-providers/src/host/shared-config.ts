@@ -1,6 +1,9 @@
+import { execFile } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { readFile, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { promisify } from 'node:util';
 import { sessionSchema } from '@switch-console/shared/session-v1';
 import { z } from 'zod';
 import { prepareCodexSessionHome } from '../codex/home';
@@ -16,6 +19,8 @@ export const sharedConfigSchema = z.strictObject({
     .strictObject({
       credentialsPath: z.string().min(1),
       inheritEnv: z.array(z.string()),
+      shellSetup: z.string().optional(),
+      binaryPath: z.string().min(1).optional(),
       mcpRuntime: z.string().min(1),
       codexConfig: z.string(),
       skill: z.string(),
@@ -48,9 +53,7 @@ export async function prepareSharedConfig(root: string, config: SharedHostConfig
     const credentials = await readSharedCredentials(config);
     agentApiUrl = credentials.SWITCH_API_ENDPOINT;
     token = credentials.SWITCH_API_TOKEN;
-    const inherited: Record<string, string> = {};
-    for (const key of execution.inheritEnv)
-      if (process.env[key] !== undefined) inherited[key] = process.env[key]!;
+    const inherited = await executionEnvironment(input.cwd, input.env, execution.shellSetup);
     const switchEnv = {
       ...credentials,
       SWITCH_CONNECTION_ID: config.roomConnection?.connectionId ?? '',
@@ -102,4 +105,35 @@ export async function readSharedCredentials(config: SharedHostConfig) {
   if (credentials.SWITCH_AGENT_ID !== config.session.agentId)
     throw new Error('The execution host credentials belong to a different agent.');
   return credentials;
+}
+
+export async function executionEnvironment(
+  cwd: string,
+  configured: Record<string, string>,
+  setup: string | undefined
+): Promise<Record<string, string>> {
+  const env: Record<string, string> = {};
+  for (const [key, value] of Object.entries(process.env))
+    if (value !== undefined && !key.startsWith('SWITCH_') && !key.startsWith('ELECTRON_'))
+      env[key] = value;
+  Object.assign(env, configured);
+  if (!setup) return env;
+  if (process.platform === 'win32')
+    throw new Error('SDK shell setup requires a POSIX execution host.');
+  const marker = randomUUID();
+  const { stdout } = await promisify(execFile)(
+    env.SHELL || '/bin/sh',
+    [
+      '-lc',
+      `set -e\n${setup}\nexec "$@"`,
+      'sdk-environment',
+      process.execPath,
+      '-e',
+      `process.stdout.write(${JSON.stringify(marker)} + JSON.stringify(process.env))`,
+    ],
+    { cwd, env, timeout: 30000, maxBuffer: 1024 * 1024 }
+  );
+  const offset = stdout.lastIndexOf(marker);
+  if (offset < 0) throw new Error('Shell setup did not return the execution environment.');
+  return z.record(z.string(), z.string()).parse(JSON.parse(stdout.slice(offset + marker.length)));
 }

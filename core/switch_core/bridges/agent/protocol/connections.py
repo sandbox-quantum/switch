@@ -330,20 +330,19 @@ class ConnectionRegistry:
         )
         return conn
 
-    def detach_stream(self, connection_id: str, generation: int) -> None:
+    def detach_stream(self, conn: Connection, generation: int) -> None:
         """Mark the stream gone while leaving the connection alive.
 
         Only the generation that is currently attached may detach: a superseded
         stream unwinding must not clear the flag its replacement just set.
         """
-        conn = self._by_id.get(connection_id)
-        if conn is not None and conn.stream_generation == generation:
+        if self._by_id.get(conn.id) is conn and conn.stream_generation == generation:
             conn.stream_attached = False
             logger.info(
                 "[CONN] stream detached agent=%s connection=%s (connection still "
                 "alive until heartbeat lapses)",
                 conn.agent_id,
-                connection_id,
+                conn.id,
             )
 
     def close(self, connection_id: str, reason: str) -> Connection | None:

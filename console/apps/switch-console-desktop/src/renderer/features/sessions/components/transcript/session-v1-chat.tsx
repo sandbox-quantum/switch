@@ -7,7 +7,13 @@ import { Textarea } from '@renderer/lib/ui/textarea';
 import { SessionV1Request } from './session-v1-request';
 
 /** Both remote and local-only transports feed the same contract-shaped view. */
-export function SessionV1Chat({ client }: { client: SessionChatClient }) {
+export function SessionV1Chat({
+  client,
+  restartHost,
+}: {
+  client: SessionChatClient;
+  restartHost?: () => Promise<void>;
+}) {
   const view = useSyncExternalStore(client.subscribe, client.getSnapshot);
   const [draft, setDraft] = useState('');
   const [pendingId, setPendingId] = useState<string | null>(null);
@@ -73,6 +79,23 @@ export function SessionV1Chat({ client }: { client: SessionChatClient }) {
           {session?.provider ?? 'Session'} · {session?.status ?? 'Loading'}
         </span>
         <div className="flex items-center gap-2">
+          {restartHost && session?.status !== 'stopped' && (
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={sending}
+              onClick={() => {
+                setSending(true);
+                setSendError(null);
+                void restartHost()
+                  .then(() => client.connect())
+                  .catch((error: unknown) => setSendError(String(error)))
+                  .finally(() => setSending(false));
+              }}
+            >
+              Restart host
+            </Button>
+          )}
           {runningTurn && session?.capabilities.interrupt && (
             <Button
               size="sm"
@@ -105,6 +128,12 @@ export function SessionV1Chat({ client }: { client: SessionChatClient }) {
           </span>
         </div>
       </div>
+      {session && !session.capabilities.questions && (
+        <div className="px-5 py-2 text-xs text-foreground-muted">
+          This provider does not support interactive questions. Supply additional instructions in
+          chat.
+        </div>
+      )}
       {(view.error || !view.connected) && (
         <div
           role="status"
