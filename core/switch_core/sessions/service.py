@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import uuid
 from datetime import UTC, datetime, timedelta
 from typing import get_args
@@ -53,6 +54,8 @@ from switch_core.db.models import (
     SdkSessionEvent,
 )
 from switch_core.sessions.validation import validate_answer
+
+logger = logging.getLogger(__name__)
 
 LEASE_SECONDS = 30
 
@@ -770,6 +773,13 @@ class SessionAuthority:
                 )
             )
             if external_user_id is None:
+                logger.warning(
+                    "Answer rejected for session %s: %s in room %s is not a "
+                    "Switch-tracked member of this bridge.",
+                    row.id,
+                    origin.actor_id,
+                    origin.room_id,
+                )
                 raise SessionError(
                     "NOT_AUTHORIZED",
                     "Room visibility does not grant permission to answer.",
@@ -792,6 +802,14 @@ class SessionAuthority:
                 owner_user_id=agent.owner_id,
             )
             if not allowed:
+                logger.warning(
+                    "Answer rejected for session %s: %s in room %s is not "
+                    "admitted by agent %s's addressing policy.",
+                    row.id,
+                    origin.actor_id,
+                    origin.room_id,
+                    agent.name,
+                )
                 raise SessionError(
                     "NOT_AUTHORIZED",
                     "Room visibility does not grant permission to answer.",
