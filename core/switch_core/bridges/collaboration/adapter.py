@@ -134,10 +134,19 @@ class TurnActivity:
 class RequestCard:
     """A request and how a platform refers back to it, as `post_rich` /
     `update_rich` draw it. See `TurnActivity` for why the contract type
-    travels rather than a rendering of it."""
+    travels rather than a rendering of it.
+
+    `turn`/`items`/`elapsed_seconds` are set only once the request's own
+    turn is drawn with it rather than apart from it — a card whose turn has
+    not been folded in yet, or never will be, carries `turn=None` and draws
+    exactly as it always has.
+    """
 
     request: SnapshotRequest
     reference: RequestReference
+    turn: TurnUpsert | None = None
+    items: list[Item] | None = None
+    elapsed_seconds: float | None = None
 
 
 RichContent = TurnActivity | RequestCard

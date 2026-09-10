@@ -45,6 +45,7 @@ from switch_core.bridges.collaboration.session.renderers.slack import (
     SlackMessage,
     render_activity,
     render_request,
+    render_turn_with_request,
 )
 from switch_core.bridges.collaboration.slack.agent_groups import (
     SlackAgentGroupDirectory,
@@ -612,6 +613,14 @@ class SlackAdapter(CollaborationAdapter):
                 content.items, content.turn, elapsed_seconds=content.elapsed_seconds
             )
         assert isinstance(content, RequestCard)
+        if content.turn is not None and content.items is not None:
+            return render_turn_with_request(
+                content.items,
+                content.turn,
+                content.request,
+                content.reference,
+                elapsed_seconds=content.elapsed_seconds,
+            )
         return render_request(content.request, content.reference)
 
     async def is_first_reply(

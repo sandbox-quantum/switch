@@ -17,6 +17,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from switch_core.bridges.collaboration.adapter import RequestCard, TurnActivity
 from switch_core.bridges.collaboration.session.contract import (
     ApprovalContent,
     ApprovalOption,
@@ -38,6 +39,10 @@ from switch_core.bridges.collaboration.session.renderers.slack import (
 from switch_core.bridges.collaboration.session.transport import (
     FixtureEventSource,
     project,
+)
+from switch_core.bridges.collaboration.slack.adapter import (
+    SlackAdapter,
+    SlackConnectionConfig,
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[5]
@@ -661,3 +666,47 @@ async def test_a_combined_message_still_carries_the_request_s_buttons() -> None:
     actions = [b for b in combined.blocks if b["type"] == "actions"]
     assert actions, "the request's buttons must survive being embedded"
     assert actions[0]["elements"]
+
+
+# ── The port: a request card that knows its own turn ──────────────────────────
+
+
+def _slack_adapter() -> SlackAdapter:
+    return SlackAdapter(
+        config=SlackConnectionConfig(
+            bot_token="unused", app_token="unused", workspace_id="T123"
+        )
+    )
+
+
+async def test_a_request_card_with_no_turn_draws_exactly_as_it_always_has() -> None:
+    request = await _request()
+    card = RequestCard(request, REFERENCE)
+
+    rendered = _slack_adapter()._render_rich(card)
+
+    assert rendered == render_request(request, REFERENCE)
+
+
+async def test_a_request_card_with_its_turn_draws_the_combined_message() -> None:
+    items = await _items()
+    turn = _turn()
+    request = await _request()
+    card = RequestCard(request, REFERENCE, turn, items, elapsed_seconds=80)
+
+    combined = _slack_adapter()._render_rich(card)
+
+    assert combined == render_turn_with_request(
+        items, turn, request, REFERENCE, elapsed_seconds=80
+    )
+
+
+async def test_a_turn_activity_card_is_unaffected_by_the_request_card_change() -> None:
+    """Same dispatch function, two content types — confirms the new branch
+    for `RequestCard` did not disturb the existing one for `TurnActivity`."""
+    items = await _items()
+    turn = _turn()
+
+    rendered = _slack_adapter()._render_rich(TurnActivity(items, turn))
+
+    assert rendered == render_activity(items, turn)
