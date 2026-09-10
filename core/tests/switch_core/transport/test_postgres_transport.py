@@ -19,10 +19,11 @@ from collections.abc import Iterator
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from switch_core.db.models import Client, Room
+from switch_core.db.models import Client, Room, Tenant
 from switch_core.db.stores.media_store import MediaStore
 from switch_core.db.stores.message_store import MessageStore
 from switch_core.db.stores.room_store import RoomStore
+from switch_core.tenant_context import current_tenant_id
 from switch_core.transport import (
     InboundCustomEvent,
     InboundMedia,
@@ -858,3 +859,75 @@ class TestHearingYourOwnArrival:
 
         kinds = [type(event) for event in received.events]
         assert kinds == [InboundMembership]
+
+
+class TestDeliveryBindsTheRoomsTenant:
+    """One delivery pass (`_drain_room`) is the transport's own unit of work
+    for one room, and CHOO-2623 makes it bind that room's tenant — not
+    something cached once on the transport or the client, since either can
+    act for rooms in different tenants over its life."""
+
+    @pytest.fixture(autouse=True)
+    def _cleanup(self) -> Iterator[None]:
+        self._tasks: list[asyncio.Task] = []
+        yield
+        for task in self._tasks:
+            task.cancel()
+
+    async def test_a_delivery_binds_the_room_s_own_tenant(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        tenant_id = f"tenant-{uuid.uuid4().hex[:8]}"
+        async with session_factory() as session:
+            session.add(Tenant(id=tenant_id, slug=tenant_id, name=tenant_id))
+            await session.flush()
+            suffix = uuid.uuid4().hex[:8]
+            client = Client(
+                tenant_id=tenant_id,
+                matrix_user_id=f"@agent-{suffix}:test",
+                display_name="agent one",
+                type="agent",
+            )
+            session.add(client)
+            room = Room(
+                tenant_id=tenant_id,
+                matrix_room_id=f"!room-{suffix}:test",
+                name="a room",
+                description="",
+            )
+            session.add(room)
+            await session.commit()
+            transport_room_id = room.matrix_room_id
+            client_id, user_id = client.id, client.matrix_user_id
+
+        seen: list[str | None] = []
+        original = MessageStore.list_for_room
+
+        async def _spy(self, session, room_id, **kwargs):
+            seen.append(current_tenant_id())
+            return await original(self, session, room_id, **kwargs)
+
+        monkeypatch.setattr(MessageStore, "list_for_room", _spy)
+
+        listener = _FakeListener()
+        received = _Received()
+        transport = _transport(
+            session_factory, client_id=client_id, user_id=user_id, listener=listener
+        )
+        transport.register_handlers(received.handlers())
+        await transport.join_room(transport_room_id)
+        self._tasks.append(asyncio.create_task(transport.receive_forever()))
+        switch_room_id = await _watched_room(transport)
+
+        await transport.send_message(
+            transport_room_id, "hello", sender_name="agent one"
+        )
+        await listener.announce(switch_room_id)
+
+        assert [type(e) for e in received.events] == [InboundMessage]
+        assert seen, "the delivery loop never read the room"
+        assert all(tenant == tenant_id for tenant in seen)
+        # Bound only for the read itself, not left dangling on the process.
+        assert current_tenant_id() is None

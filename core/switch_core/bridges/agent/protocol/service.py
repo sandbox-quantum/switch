@@ -72,6 +72,7 @@ from switch_core.db.models import (
     Tool,
     User,
 )
+from switch_core.db.session_scope import tenant_session, unscoped_session
 from switch_core.db.stores.agent_runtime_state_store import (
     IDLE as RUNTIME_STATE_IDLE,
 )
@@ -1561,18 +1562,24 @@ class ProtocolService:
         one on the next update, the visible effect was the status message being
         deleted and recreated on every refresh rather than edited in place.
         """
-        async with self.session_factory() as session:
+        # This sweep spans every tenant by nature — it is the one place that
+        # decides whether *any* stale row anywhere needs resetting — so the
+        # initial read is unscoped. Each row is itself tenant-scoped
+        # (agent_runtime_states carries tenant_id), so the rest of the work
+        # for that row binds its own tenant rather than the whole sweep, and
+        # a row from one tenant can never leak its binding into the next.
+        async with unscoped_session(self.session_factory) as session:
             rows = await self.agent_runtime_state_store.get_active(session)
         for row in rows:
             if self.connections.has_session_in(row.agent_id, row.room_id):
                 continue
-            async with self.session_factory() as session:
+            async with tenant_session(self.session_factory, row.tenant_id) as session:
                 live = await self.agent_session_store.get_live_agent_ids(
                     session, [row.agent_id], row.room_id
                 )
             if row.agent_id in live:
                 continue
-            async with self.session_factory() as session:
+            async with tenant_session(self.session_factory, row.tenant_id) as session:
                 agent = await self.agent_store.get(session, row.agent_id)
                 room = await self.room_store.get(session, row.room_id)
                 if agent is None or room is None:

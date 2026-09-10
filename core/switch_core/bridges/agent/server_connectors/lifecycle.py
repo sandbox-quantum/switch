@@ -14,8 +14,10 @@ from switch_core.bridges.agent.server_connectors.base import (
 from switch_core.bridges.agent.server_connectors.core import ConnectorCore
 from switch_core.crypto import decrypt_token, encrypt_token
 from switch_core.db.models import ApiKey, ServerConnector
+from switch_core.db.session_scope import unscoped_session
 from switch_core.db.stores.api_key_store import ApiKeyStore
 from switch_core.db.stores.server_connector_store import ServerConnectorStore
+from switch_core.tenant_context import tenant_scope
 
 logger = logging.getLogger(__name__)
 
@@ -50,13 +52,19 @@ class ServerSideConnectorLifecycleService:
         self._config_registry[type_name] = config_cls
 
     async def start_all(self) -> None:
-        async with self._session_factory() as session:
+        # Every tenant's active connectors in one pass — unscoped by nature,
+        # same reasoning as CollaborationBridgeLifecycleService.start_all.
+        # Each row carries its own tenant; bind it only around starting that
+        # one connector, and the poll loop `start` spawns keeps it for that
+        # task's own life via the context asyncio.create_task snapshots.
+        async with unscoped_session(self._session_factory) as session:
             connectors = await self._connector_store.get_active(session)
 
         logger.info("Starting %d server-side connectors", len(connectors))
         for record in connectors:
             try:
-                await self.start(record.id)
+                with tenant_scope(record.tenant_id):
+                    await self.start(record.id)
             except Exception:
                 logger.exception("Failed to start connector %s", record.id)
 

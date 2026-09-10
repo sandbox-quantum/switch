@@ -15,11 +15,13 @@ when" were all split out into a later change.
 **"Setting the tenant" has since been built** and that section now describes
 what was actually implemented, which differs from what it originally proposed —
 an event hook rather than a dependency at every call site, for reasons given
-there. The background half of it, the roughly 206 session sites outside the
-request path, is still outstanding. Read the remaining sections as the design
-those later changes implement rather than as a description of what is running
-today; "What Phase 1 does not close" says which gaps are this migration's and
-which belong to the deferred work.
+there. **The background half of it has since been built too** — the roughly
+206 session sites outside the request path now bind a tenant, described where
+"Setting the tenant" talks about background work below. Read the remaining
+sections as the design those later changes implement rather than as a
+description of what is running today; "What Phase 1 does not close" says which
+gaps are this migration's and which belong to the deferred work — row-level
+security is still the biggest of them.
 
 Postgres 16 everywhere — local Compose, the chart, and the test containers —
 and two things below need at least 15, so that is a floor, not an incidental
@@ -353,12 +355,42 @@ silently discarded a password change. Resolution needs the subject id, not a
 `User` row — so it looks up only the membership, and the user is loaded from
 the session the endpoint actually commits.
 
-**Background work is not a short list.** There are roughly 206 places that open
-a session from the factory directly. They fall into three shapes — acting for a
-room, acting for a bridge, acting for the deployment — so they get a named
-helper for each, and a test that the raw factory is not called anywhere else.
-Not yet done: those paths currently bind no tenant, which is harmless only
-while nothing enforces.
+**Background work is not a short list, and it has since been closed.** There
+were roughly 206 places that opened a session from the factory directly, with
+no request behind them. They fall into three shapes, each handled differently
+rather than by one helper covering all of them:
+
+- **Acting for a room** — the delivery loop (`transport/postgres.py`), most of
+  `room_service.py`, the collaboration bridges' inbound and outbound handling
+  (`bridges/collaboration/bridge_core.py`). Each derives the tenant from the
+  room the unit of work is actually for — one delivery, one inbound event, one
+  membership change — rather than caching it, because a client or a bridge is
+  not guaranteed to act for only one tenant over its life. Resolving which
+  room (and so which tenant) a unit of work is for is itself unscoped by
+  necessity, the same bootstrap as resolving a principal below; each of these
+  files caches the answer per room id once resolved, since a room's tenant
+  cannot change, the same way each already cached the room's own id.
+- **Acting for a bridge or connector** — `bridges/collaboration/lifecycle_service.py`
+  and `bridges/agent/server_connectors/lifecycle.py` bind the bridge's or
+  connector's own tenant once, around starting its long-lived task; the task
+  keeps it for its life because an `asyncio.Task` snapshots the contextvar
+  state it was created under.
+- **Acting for the deployment** — startup seeding (`main.py`), the
+  runtime-state sweep (`ProtocolService.sweep_runtime_states`), and the
+  lifecycle enumerations that read every row before fanning out
+  (`start_all` on both lifecycle services above, and on
+  `ClientLifecycleService`). These read cross-tenant by nature; where they
+  then act per row, they bind that row's own tenant rather than the tenant of
+  the whole pass.
+
+Two named helpers carry this: `tenant_session` (`db/session_scope.py`) binds a
+given tenant and opens a session; `unscoped_session` opens one with nothing
+bound at all — the fail-open hatch, named so a reader can tell at the call site
+which one is meant, and used only by the "acting for the deployment" sites
+above. `tests/switch_core/db/test_unscoped_session_allowlist.py` pins the
+modules allowed to call it, deriving the list from the source tree rather than
+from imports, so a new caller is a deliberate, reviewed act rather than an
+accident.
 
 **Writes fill the column automatically.** `tenant_id` gets a Python-side
 default reading the request's tenant, so ordinary ORM inserts need no change
@@ -379,17 +411,29 @@ or a JWT subject to its memberships, is unscoped by definition. So:
 > **Authentication and tenant resolution run in a system session. Everything
 > downstream runs in a tenant session, as the restricted runtime role.**
 
-The same escape hatch covers work that is legitimately cross-tenant: Alembic,
-admin and bootstrap seeding at startup, the bridge and connector lifecycle
-loops that start every row at boot, and the runtime-state and connection
-sweeps. A test pins the set of modules allowed to open one, so a new one is a
-deliberate act.
+The same escape hatch — `unscoped_session`, see above — covers work that is
+legitimately cross-tenant: Alembic (a bare `Connection`, not a session at all,
+so it never touches the helper either way), admin and bootstrap seeding at
+startup, the bridge and connector lifecycle loops that start every row at
+boot, and the runtime-state sweep. (The connection sweep touches no scoped
+table — it expires in-memory `Connection` objects on a heartbeat timeout —
+so it needed no exception in the first place.)
+`tests/switch_core/db/test_unscoped_session_allowlist.py` pins the set of
+modules allowed to call it, so a new one is a deliberate act rather than an
+accident.
 
 The delivery listener needs no exception: it holds one unpooled connection that
-relays NOTIFY payloads and never reads a scoped table. Its consumers do read
-per room — so **the notify payload gains `tenant_id`** alongside the room, seq
-and id it already carries. Without it a consumer has to make an unscoped read
-just to learn which tenant to scope by, which is a circle.
+relays NOTIFY payloads and never reads a scoped table. Its consumer
+(`PostgresTransport`) does read per room, but it turned out not to need the
+notify payload to carry the tenant: the same lookup that already resolves and
+caches a room's internal id from its transport-side id
+(`PostgresTransport._resolve_room`) resolves and caches the room's tenant from
+the very same row, so there is no *second* unscoped read to avoid — the first
+one was already there, for the id. Consumers bind that cached tenant for the
+delivery itself and for a send, not only for the row read that first
+discovered it, so a handler's own downstream session opens (posting to a
+bridge, gating a command) are covered too — they run in the same task, and the
+binding is a contextvar, not something tied to one session object.
 
 Two exceptions to the uniform rule, in full:
 

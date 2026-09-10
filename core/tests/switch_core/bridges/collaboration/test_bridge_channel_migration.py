@@ -70,7 +70,9 @@ def _make_bridge(rooms: dict[str, SimpleNamespace]) -> BridgeCore:
 
 
 def _room(room_id: str = "room-uuid") -> SimpleNamespace:
-    return SimpleNamespace(id=room_id, matrix_room_id=f"!{room_id}:switch.local")
+    return SimpleNamespace(
+        id=room_id, tenant_id="tenant-1", matrix_room_id=f"!{room_id}:switch.local"
+    )
 
 
 def test_the_handler_is_installed_before_the_adapter_starts() -> None:

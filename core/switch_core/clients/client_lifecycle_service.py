@@ -11,8 +11,10 @@ from switch_core.clients.client_base import ClientBase, ClientConfig
 from switch_core.clients.client_factory import ClientFactory
 from switch_core.config import SwitchConfig
 from switch_core.db.models import Client
+from switch_core.db.session_scope import unscoped_session
 from switch_core.db.stores.client_store import ClientStore
 from switch_core.provisioning import Provisioning
+from switch_core.tenant_context import tenant_scope
 
 logger = logging.getLogger(__name__)
 
@@ -54,7 +56,16 @@ class ClientLifecycleService:
         )
 
     async def start_all(self) -> None:
-        async with self._session_factory() as session:
+        # Every tenant's clients in one pass at boot, so this read is
+        # unscoped by nature. Each row carries its own tenant; bind it only
+        # around starting that one client. `_start_task` spawns the client's
+        # own long-lived task from inside this binding, and an asyncio task
+        # snapshots the context it was created under, so the task keeps this
+        # tenant as its default for its own life — a bootstrap fallback for
+        # a read like AgentClient.start() resolving its own row, not a cache
+        # any room-scoped work relies on: PostgresTransport binds the tenant
+        # of the room it is actually acting on for each of those.
+        async with unscoped_session(self._session_factory) as session:
             records = await self._client_store.get_all(session)
 
         records = [r for r in records if r.type not in self.COLLAB_CLIENT_TYPES]
@@ -64,7 +75,8 @@ class ClientLifecycleService:
             client = self._client_factory.create(record)
             self._clients[record.id] = client
             self._client_types[record.id] = record.type
-            self._start_task(record.id, client)
+            with tenant_scope(record.tenant_id):
+                self._start_task(record.id, client)
 
     async def create_client(
         self,

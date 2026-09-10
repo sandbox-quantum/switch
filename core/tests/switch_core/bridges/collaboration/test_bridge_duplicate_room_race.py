@@ -19,7 +19,9 @@ def _make_bridge(**overrides: Any) -> BridgeCore:
     """A BridgeCore with only the attributes the auto-room-creation path
     touches, so the real methods run without the full dependency graph."""
     created_configs: list[Any] = []
-    room = SimpleNamespace(id="room-uuid", matrix_room_id="!m:switch.local")
+    room = SimpleNamespace(
+        id="room-uuid", tenant_id="tenant-1", matrix_room_id="!m:switch.local"
+    )
 
     async def create_room(config: Any) -> SimpleNamespace:
         created_configs.append(config)
@@ -41,6 +43,7 @@ def _make_bridge(**overrides: Any) -> BridgeCore:
     bridge._provisioning_channels = set()
     bridge._channel_to_room = {}
     bridge._room_to_channel = {}
+    bridge._room_tenants = {}
     bridge._channel_locks = {}
     bridge._bridge_id = "bridge-1"
     bridge._bridge_display_name = "Switch"
@@ -163,7 +166,9 @@ async def test_app_join_during_provisioning_creates_no_room() -> None:
 async def test_adopt_existing_room_registers_mapping() -> None:
     # The real _adopt_existing_room: a DB hit registers the in-memory mapping
     # and returns the room, so subsequent lookups short-circuit.
-    room = SimpleNamespace(id="db-room", matrix_room_id="!db:switch.local")
+    room = SimpleNamespace(
+        id="db-room", tenant_id="tenant-1", matrix_room_id="!db:switch.local"
+    )
 
     class _Session:
         async def __aenter__(self) -> _Session:
@@ -181,6 +186,7 @@ async def test_adopt_existing_room_registers_mapping() -> None:
     bridge = BridgeCore.__new__(BridgeCore)
     bridge._channel_to_room = {}
     bridge._room_to_channel = {}
+    bridge._room_tenants = {}
     bridge._bridge_id = "bridge-1"
     bridge._session_factory = _Session  # type: ignore[assignment]
     bridge._room_store = _RoomStore()  # type: ignore[assignment]

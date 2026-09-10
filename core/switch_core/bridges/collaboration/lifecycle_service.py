@@ -15,6 +15,7 @@ from switch_core.clients.bridge_client import BridgeClient, BridgeClientConfig
 from switch_core.clients.client_factory import ClientFactory
 from switch_core.config import SwitchConfig
 from switch_core.db.models import CollaborationBridge
+from switch_core.db.session_scope import unscoped_session
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.bridge_message_map_store import BridgeMessageMapStore
 from switch_core.db.stores.client_store import ClientStore
@@ -22,6 +23,7 @@ from switch_core.db.stores.collaboration_bridge_store import CollaborationBridge
 from switch_core.db.stores.external_user_store import ExternalUserStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.provisioning import Provisioning
+from switch_core.tenant_context import tenant_scope
 
 if TYPE_CHECKING:
     from switch_core.clients.client_lifecycle_service import ClientLifecycleService
@@ -188,13 +190,21 @@ class CollaborationBridgeLifecycleService:
         config_cls.model_validate(connection_config)
 
     async def start_all(self) -> None:
-        async with self._session_factory() as session:
+        # Every tenant's active bridges in one pass, so the read is unscoped
+        # by nature. Each row already carries its own tenant; bind that one
+        # only around starting it, not the whole fan-out. `start` spawns the
+        # bridge's long-lived task from inside this binding, and an asyncio
+        # task snapshots the context it was created under, so the task keeps
+        # this tenant for its own life without the loop needing to hold it
+        # open past the moment the task exists.
+        async with unscoped_session(self._session_factory) as session:
             bridges = await self._bridge_store.get_active(session)
 
         logger.info("Starting %d collaboration bridges", len(bridges))
         for bridge in bridges:
             try:
-                await self.start(bridge.id)
+                with tenant_scope(bridge.tenant_id):
+                    await self.start(bridge.id)
             except Exception:
                 logger.exception("Failed to start bridge %s", bridge.id)
 

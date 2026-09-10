@@ -113,7 +113,9 @@ def _connected(room: str | None) -> ConnectionRegistry:
 
 
 def _row() -> Any:
-    return SimpleNamespace(agent_id=AGENT, room_id=ROOM, state="working")
+    return SimpleNamespace(
+        agent_id=AGENT, room_id=ROOM, state="working", tenant_id="tenant-1"
+    )
 
 
 async def test_a_live_connection_in_the_room_is_left_alone() -> None:

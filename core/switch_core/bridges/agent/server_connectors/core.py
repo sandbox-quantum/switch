@@ -133,10 +133,12 @@ class ConnectorCore:
     # ── internal ─────────────────────────────────────────────────────────
 
     async def _register_agent(self, agent: DiscoveredAgent) -> None:
-        # Runs from `start()`, i.e. a startup task with no request and so no
-        # tenant bound. `register_agent_with_token` binds the registration
-        # token's own tenant for the write, which is why nothing is bound
-        # here — see its docstring.
+        # Runs from `start()`, which the caller wraps in the connector's own
+        # tenant (ServerSideConnectorLifecycleService.start_all binds it
+        # before starting each connector's task; an admin registering one
+        # over HTTP already has it bound). register_agent_with_token
+        # additionally binds the registration token's own tenant for the
+        # write itself — the same tenant either way — see its docstring.
         try:
             result = await self._protocol.register_agent_with_token(
                 registration_token=self._registration_token,
