@@ -177,6 +177,42 @@ class TestMembership:
             )
         assert membership is None
 
+    async def test_removing_a_running_member_tells_it_to_stop_reading(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """Deleting the row is only half of a removal.
+
+        A running client holds its own subscription to the room, so the row
+        going away leaves it reading a room it is no longer in. The homeserver
+        used to end the delivery itself; here it has to be rung.
+        """
+        async with session_factory() as session:
+            room = await _room(session)
+            client = await _client(session)
+            await session.commit()
+            transport_room_id, user_id = room.matrix_room_id, client.matrix_user_id
+            room_id, client_id = room.id, client.id
+
+        told: list[str] = []
+
+        async def _handler(removed_from: str) -> None:
+            told.append(removed_from)
+
+        invites = InviteBus()
+        provisioning = _provisioning(session_factory, invites)
+        await provisioning.invite_to_room(transport_room_id, user_id)
+        invites.register_removal(user_id, _handler)
+        await provisioning.kick_user(transport_room_id, user_id)
+
+        assert told == [transport_room_id]
+        # Rung after the row is gone, so a client that responds by re-reading
+        # its rooms cannot see the membership it was just removed from.
+        async with session_factory() as session:
+            membership = await session.get(
+                ClientRoom, {"client_id": client_id, "room_id": room_id}
+            )
+        assert membership is None
+
     async def test_removing_a_member_who_is_already_out_is_success(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:

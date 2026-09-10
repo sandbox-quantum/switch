@@ -8,9 +8,10 @@
   itself, which is what keeps its transport watching the room. When nobody is
   live the membership is written directly, because a client that is not
   running has nothing to wake and will find the room when it starts.
-- **Removal** deletes the membership. No leave event is written: a departure
-  is not something a reader of the room needs explained, and the timeline the
-  log serves is what was said.
+- **Removal** deletes the membership and wakes a live client so it drops the
+  room, mirroring the invitation. No leave event is written: a departure is
+  not something a reader of the room needs explained, and the timeline the log
+  serves is what was said.
 - **Discarding a room** is left to the caller's own delete, which cascades.
   Nothing here has a second copy to clean up.
 """
@@ -122,13 +123,23 @@ class PostgresProvisioning:
             await session.commit()
 
     async def kick_user(self, room_id: str, user_id: str) -> None:
-        """Remove a membership. Already out is success, per the port."""
+        """Remove a membership, stopping a live client's delivery with it.
+
+        Already out is success, per the port.
+
+        The wake-up is the other half of the removal, not a nicety. A running
+        client holds its own subscription to the room, so deleting the row on
+        its own leaves it reading a room it is no longer in. It is rung after
+        the commit so a client that reacts by re-reading its rooms cannot see
+        the membership it was just removed from.
+        """
         async with self._session_factory() as session:
             switch_room_id, client_id, _ = await self._resolve(
                 session, room_id, user_id
             )
             await self._room_store.remove_client(session, client_id, switch_room_id)
             await session.commit()
+        await self._invites.remove(user_id, room_id)
 
     async def delete_room(self, room_id: str) -> None:
         """Nothing of its own to discard.

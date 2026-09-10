@@ -1779,11 +1779,26 @@ class ProtocolService:
     # ── Events ───────────────────────────────────────────────────────────────
 
     async def poll_events(self, agent_id: str, timeout: float = 10) -> list[AgentEvent]:
-        """Poll for events across all rooms the agent is in."""
+        """Poll for events across all rooms the agent is in.
+
+        Membership is applied here rather than trusted from the buffer, which
+        is keyed by agent and knows nothing about who is in what. Its
+        room-scoped sibling `poll_room_events` calls `require_room_member`;
+        without the same check this call would hand over events from a room
+        the agent has since been removed from.
+        """
         async with self.session_factory() as session:
             await self.agent_session_store.touch_heartbeat(session, agent_id, None)
             await session.commit()
-        return await self.event_buffer.poll(agent_id, timeout=timeout)
+            # Archived rooms included: what is being applied here is
+            # membership, and an agent still in an archived room was not
+            # removed from it.
+            rooms = await self.room_store.get_rooms_for_agent(
+                session, agent_id, include_archived=True
+            )
+        return await self.event_buffer.poll(
+            agent_id, timeout=timeout, rooms={room.id for room in rooms}
+        )
 
     async def poll_notifications(
         self, agent_id: str, timeout: float = 10

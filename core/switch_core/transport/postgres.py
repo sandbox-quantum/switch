@@ -175,11 +175,13 @@ class PostgresTransport:
             await self._watch(transport_room_id)
         self._receiving = True
         self._invites.register(self.user_id, self._on_invited)
+        self._invites.register_removal(self.user_id, self._on_removed)
         try:
             await self._closed.wait()
         finally:
             self._receiving = False
             self._invites.unregister(self.user_id)
+            self._invites.unregister_removal(self.user_id)
             self._unwatch_all()
             delivery.cancel()
 
@@ -206,6 +208,11 @@ class PostgresTransport:
             self._delivering = True
             try:
                 for room_id in rooms:
+                    # Re-checked per room, not once up front: a removal that
+                    # lands while this batch is draining must stop the room it
+                    # has not reached yet.
+                    if room_id not in self._watching:
+                        continue
                     try:
                         await self._drain_room(room_id)
                     except asyncio.CancelledError:
@@ -245,6 +252,17 @@ class PostgresTransport:
             ),
         )
 
+    async def _on_removed(self, transport_room_id: str) -> None:
+        """This client was taken out of a room while it was running.
+
+        The subscription is dropped here rather than left to the next restart.
+        Under Matrix a kick ended the room's delivery at the homeserver, so
+        nothing downstream had to check membership again; here the
+        subscription is this client's own and outlives the row unless it is
+        taken back.
+        """
+        self._unwatch(transport_room_id)
+
     async def _watch(
         self, transport_room_id: str, *, from_seq: int | None = None
     ) -> None:
@@ -279,6 +297,25 @@ class PostgresTransport:
             # this subscription existed, so nothing will wake the loop for it.
             self._pending.add(room_id)
             self._wake.set()
+
+    def _unwatch(self, transport_room_id: str) -> None:
+        """Stop delivering one room. Not watching it is success.
+
+        The cursor goes with the subscription. Keeping it would mean a client
+        added back to the room resumed from where it left off and was handed
+        everything said while it was out, which is the leak this closes said a
+        different way.
+        """
+        room_id = self._room_ids.get(transport_room_id)
+        if room_id is None or room_id not in self._watching:
+            return
+        self._listener.unsubscribe(room_id, self._on_room_advanced)
+        self._ephemeral.unsubscribe(transport_room_id, self._on_ephemeral)
+        del self._watching[room_id]
+        self._cursors.pop(room_id, None)
+        # A wake-up already queued for this room would otherwise be drained
+        # after the subscription was dropped.
+        self._pending.discard(room_id)
 
     def _unwatch_all(self) -> None:
         for room_id, transport_room_id in self._watching.items():

@@ -1,4 +1,4 @@
-"""How a client is told it has been added to a room.
+"""How a client is told its membership of a room changed.
 
 Over Matrix this was an event: the admin invited a user, the user's sync loop
 saw the invitation and `ClientBase.on_invite` joined. Nothing else had to know
@@ -11,6 +11,12 @@ sitting in a room in silence, which is precisely the failure this stack keeps
 refusing to ship. This is the missing signal, in the shape the clients already
 handle: an invitation, delivered to a live client, auto-accepted by the same
 code path as before.
+
+Removal is the same signal in reverse, and it is not optional. The homeserver
+used to enforce a kick: a removed client's sync simply stopped returning the
+room. Here the subscription is the client's own, so deleting the membership row
+leaves it reading a room it is no longer in. A removal must therefore be rung
+as well as written.
 
 **It is in-process, and that is a real limitation.** A client running in
 another replica of switch-core would not hear it. That is the same constraint
@@ -32,16 +38,28 @@ InviteHandler = Callable[[str], Awaitable[None]]
 
 
 class InviteBus:
-    """Routes an invitation to the live transport for a user, if there is one."""
+    """Routes a membership change to the live transport for a user, if any.
+
+    Named for the signal it carried first. It now carries removals too, since
+    both are the same thing: telling a running client that the set of rooms it
+    should be reading has changed underneath it.
+    """
 
     def __init__(self) -> None:
         self._handlers: dict[str, InviteHandler] = {}
+        self._removal_handlers: dict[str, InviteHandler] = {}
 
     def register(self, user_id: str, handler: InviteHandler) -> None:
         self._handlers[user_id] = handler
 
     def unregister(self, user_id: str) -> None:
         self._handlers.pop(user_id, None)
+
+    def register_removal(self, user_id: str, handler: InviteHandler) -> None:
+        self._removal_handlers[user_id] = handler
+
+    def unregister_removal(self, user_id: str) -> None:
+        self._removal_handlers.pop(user_id, None)
 
     async def invite(self, user_id: str, transport_room_id: str) -> bool:
         """Tell `user_id` it is in `transport_room_id`.
@@ -51,6 +69,20 @@ class InviteBus:
         writing the membership, so the answer must not be ignored.
         """
         handler = self._handlers.get(user_id)
+        if handler is None:
+            return False
+        await handler(transport_room_id)
+        return True
+
+    async def remove(self, user_id: str, transport_room_id: str) -> bool:
+        """Tell `user_id` it is no longer in `transport_room_id`.
+
+        Returns whether anyone was listening, for symmetry with `invite`, but
+        the caller has nothing to fall back to: a client that is not running
+        holds no subscription to drop, and one that starts later reads its
+        rooms from the table the removal already updated.
+        """
+        handler = self._removal_handlers.get(user_id)
         if handler is None:
             return False
         await handler(transport_room_id)

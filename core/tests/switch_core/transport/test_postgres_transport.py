@@ -20,9 +20,11 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.db.models import Client, Room
+from switch_core.db.stores.client_store import ClientStore
 from switch_core.db.stores.media_store import MediaStore
 from switch_core.db.stores.message_store import MessageStore
 from switch_core.db.stores.room_store import RoomStore
+from switch_core.provisioning.postgres import PostgresProvisioning
 from switch_core.transport import (
     InboundCustomEvent,
     InboundMedia,
@@ -54,6 +56,18 @@ async def _make_room(session: AsyncSession) -> tuple[str, str, str, str]:
     session.add(room)
     await session.flush()
     return room.id, room.matrix_room_id, client.id, client.matrix_user_id
+
+
+async def _make_client(session: AsyncSession, label: str) -> tuple[str, str]:
+    """Insert one more Client. Returns (client id, client mxid)."""
+    client = Client(
+        matrix_user_id=f"@{label}-{uuid.uuid4().hex[:8]}:test",
+        display_name=label,
+        type="agent",
+    )
+    session.add(client)
+    await session.flush()
+    return client.id, client.matrix_user_id
 
 
 async def _watched_room(transport: PostgresTransport) -> str:
@@ -118,12 +132,13 @@ class _Received:
     def __init__(self) -> None:
         self.events: list[object] = []
 
-    def handlers(self) -> TransportHandlers:
+    def handlers(self, *, on_invite: object | None = None) -> TransportHandlers:
         return TransportHandlers(
             on_message=self._take,
             on_media=self._take,
             on_member_event=self._take,
             on_custom_event=self._take,
+            on_invite=on_invite,  # type: ignore[arg-type]
         )
 
     async def _take(self, _room, event) -> None:
@@ -137,6 +152,7 @@ def _transport(
     user_id: str,
     listener: _FakeListener | None = None,
     ephemeral: EphemeralBus | None = None,
+    invites: InviteBus | None = None,
 ) -> PostgresTransport:
     return PostgresTransport(
         user_id=user_id,
@@ -147,7 +163,7 @@ def _transport(
         message_store=MessageStore(),
         media_store=MediaStore(),
         listener=listener or _FakeListener(),
-        invites=InviteBus(),
+        invites=invites or InviteBus(),
         ephemeral=ephemeral or EphemeralBus(),
     )
 
@@ -858,3 +874,155 @@ class TestHearingYourOwnArrival:
 
         kinds = [type(event) for event in received.events]
         assert kinds == [InboundMembership]
+
+
+class TestBeingRemovedFromARoom:
+    """A removal has to reach the client, not only the table.
+
+    The homeserver enforced a kick: a removed client's sync stopped returning
+    the room, so nothing downstream had to check membership a second time.
+    Here the subscription is the client's own and outlives the row it was
+    resolved from, so a removal is rung over the same bus an invitation is and
+    the transport drops the room.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _cleanup(self) -> Iterator[None]:
+        self._tasks: list[asyncio.Task] = []
+        yield
+        for task in self._tasks:
+            task.cancel()
+
+    def _provisioning(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        invites: InviteBus,
+    ) -> PostgresProvisioning:
+        return PostgresProvisioning(
+            session_factory=session_factory,
+            room_store=RoomStore(),
+            client_store=ClientStore(),
+            message_store=MessageStore(),
+            invites=invites,
+        )
+
+    async def _two_in_a_room(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> tuple[str, str, tuple[str, str], tuple[str, str]]:
+        """A room with two members already recorded.
+
+        Written directly rather than joined so that no arrival event is in the
+        way of what the test is reading.
+        """
+        async with session_factory() as session:
+            room_id, room, leaving_id, leaving_user = await _make_room(session)
+            staying_id, staying_user = await _make_client(session, "staying")
+            await RoomStore().add_client(session, leaving_id, room_id)
+            await RoomStore().add_client(session, staying_id, room_id)
+            await session.commit()
+        return room_id, room, (leaving_id, leaving_user), (staying_id, staying_user)
+
+    async def test_it_stops_being_delivered_the_rooms_messages(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        room_id, room, leaving, staying = await self._two_in_a_room(session_factory)
+        listener = _FakeListener()
+        invites = InviteBus()
+        received = _Received()
+
+        removed = _transport(
+            session_factory,
+            client_id=leaving[0],
+            user_id=leaving[1],
+            listener=listener,
+            invites=invites,
+        )
+        removed.register_handlers(received.handlers())
+        member = _transport(
+            session_factory,
+            client_id=staying[0],
+            user_id=staying[1],
+            listener=listener,
+            invites=invites,
+        )
+        member.register_handlers(_Received().handlers())
+        self._tasks.append(asyncio.create_task(removed.receive_forever()))
+        self._tasks.append(asyncio.create_task(member.receive_forever()))
+        await _watched_room(removed)
+        await _watched_room(member)
+
+        # While a member, it hears the room.
+        await member.send_message(room, "while a member", sender_name="agent one")
+        await listener.announce(room_id)
+        assert [event.body for event in received.events] == ["while a member"]
+
+        await self._provisioning(session_factory, invites).kick_user(room, leaving[1])
+
+        async with session_factory() as session:
+            members = await RoomStore().get_client_ids(session, room_id)
+        assert leaving[0] not in members
+        assert staying[0] in members
+
+        await member.send_message(room, "after removal", sender_name="agent one")
+        await listener.announce(room_id)
+
+        assert [event.body for event in received.events] == ["while a member"]
+        assert room_id not in removed._watching
+
+    async def test_being_put_back_does_not_hand_over_what_was_said_while_out(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """The cursor goes with the subscription.
+
+        Keeping it would mean a client added back resumed from where it left
+        off and was handed everything said while it was out, which is the same
+        leak one restart later.
+        """
+        room_id, room, leaving, staying = await self._two_in_a_room(session_factory)
+        listener = _FakeListener()
+        invites = InviteBus()
+        received = _Received()
+
+        removed = _transport(
+            session_factory,
+            client_id=leaving[0],
+            user_id=leaving[1],
+            listener=listener,
+            invites=invites,
+        )
+
+        async def _accept(room_ref, _event) -> None:
+            """What the client does with an invitation, so a put-back is one."""
+            await removed.join_room(room_ref.room_id)
+
+        removed.register_handlers(received.handlers(on_invite=_accept))
+        member = _transport(
+            session_factory,
+            client_id=staying[0],
+            user_id=staying[1],
+            listener=listener,
+            invites=invites,
+        )
+        member.register_handlers(_Received().handlers())
+        self._tasks.append(asyncio.create_task(removed.receive_forever()))
+        self._tasks.append(asyncio.create_task(member.receive_forever()))
+        await _watched_room(removed)
+        await _watched_room(member)
+
+        provisioning = self._provisioning(session_factory, invites)
+        await provisioning.kick_user(room, leaving[1])
+        await member.send_message(
+            room, "said while it was out", sender_name="agent one"
+        )
+        await listener.announce(room_id)
+
+        await provisioning.invite_to_room(room, leaving[1])
+        await _settled(removed)
+
+        bodies = [
+            event.body for event in received.events if isinstance(event, InboundMessage)
+        ]
+        assert bodies == []
+        # It is back in, and told so, which is how it was told the first time.
+        assert room_id in removed._watching
+        assert [type(event) for event in received.events] == [InboundMembership]

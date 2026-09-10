@@ -255,8 +255,19 @@ class EventBuffer:
     # Confirming clients get at-least-once instead.
     # ------------------------------------------------------------------
 
-    async def poll(self, agent_id: str, timeout: float = 30) -> list[AgentEvent]:
-        return await self._legacy_poll(agent_id, "legacy:all", timeout=timeout)
+    async def poll(
+        self, agent_id: str, timeout: float = 30, rooms: set[str] | None = None
+    ) -> list[AgentEvent]:
+        """Everything queued for this agent, optionally limited to `rooms`.
+
+        `rooms` is how the caller applies membership. The buffer is keyed by
+        agent and knows nothing about who is in what, so an event queued while
+        the agent was a member stays queued after it is removed; passing the
+        rooms it is in now is what keeps that event from being handed over.
+        """
+        return await self._legacy_poll(
+            agent_id, "legacy:all", timeout=timeout, rooms=rooms
+        )
 
     async def poll_room(
         self, agent_id: str, room_id: str, timeout: float = 30
