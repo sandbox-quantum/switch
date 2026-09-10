@@ -59,17 +59,27 @@ class UserStore:
         """
         session.add(user)
         await session.flush()
-        await self._ensure_membership(session, user)
+        await self.ensure_membership(session, user)
 
-    async def _ensure_membership(self, session: AsyncSession, user: User) -> None:
+    async def ensure_membership(self, session: AsyncSession, user: User) -> bool:
         """Give `user` a membership if they have none; leave any they have.
 
-        Called from every path that can produce a user who would otherwise
-        have zero: creation, and linking an identity to an account that
-        predates memberships existing. Idempotent because the link path runs
-        against accounts that usually already have one, and adding a second
-        would be worse than adding none — resolution refuses to pick between
-        two.
+        Returns whether one was written, so a repair path can say it repaired
+        something instead of logging on every boot.
+
+        Called from every path that can produce, or inherit, a user who would
+        otherwise have zero: creation, linking an identity to an account that
+        predates memberships existing, and the startup admin seeding
+        (`main.py`), which reaches accounts none of the others do. Idempotent
+        because most of those run against accounts that already have one, and
+        adding a second would be worse than adding none — resolution refuses
+        to pick between two.
+
+        Public for the sake of that last caller. An account with no membership
+        cannot sign in at all (`gateway/auth.py` answers 403), and until this
+        was reachable from seeding, the only thing that ever repaired one was
+        an OIDC login — so a password-only account in that state had no remedy
+        inside the product and needed direct SQL.
 
         Joins the tenant bound to the caller's context, so an admin creating a
         user joins them to their own tenant. There is no fallback: `tenant_id`
@@ -89,7 +99,7 @@ class UserStore:
             select(TenantMember.tenant_id).where(TenantMember.user_id == user.id)
         )
         if existing.first() is not None:
-            return
+            return False
         session.add(
             TenantMember(
                 tenant_id=require_tenant_id(),
@@ -98,6 +108,7 @@ class UserStore:
             )
         )
         await session.flush()
+        return True
 
     async def get(self, session: AsyncSession, user_id: str) -> User | None:
         return await session.get(User, user_id)
@@ -278,9 +289,10 @@ class UserStore:
             "Linking OIDC identity (iss=%r, sub=%r) to user %s", iss, sub, user.id
         )
         # Linking reaches accounts this store did not create, including any
-        # that predate memberships. Nothing else repairs an account with none,
-        # and the symptom would be that the person can never sign in again.
-        await self._ensure_membership(session, user)
+        # that predate memberships — and an account with none can never sign
+        # in again. The startup admin seeding repairs the deployment's own
+        # admin; this repairs anyone else who signs in through an IdP.
+        await self.ensure_membership(session, user)
 
     async def get_all(self, session: AsyncSession) -> list[User]:
         result = await session.execute(select(User))

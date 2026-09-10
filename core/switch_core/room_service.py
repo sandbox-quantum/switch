@@ -584,12 +584,12 @@ class RoomService:
             )
 
         agent_clients = self._resolve_agent_clients(agent_ids)
-        system_clients = self._resolve_system_clients()
+        system_clients = self._resolve_system_clients(room.tenant_id)
         all_clients = {**agent_clients, **system_clients}
 
         await self._invite_clients(matrix_room_id, all_clients)
 
-        async with self._session_factory() as session:
+        async with tenant_session(self._session_factory, room.tenant_id) as session:
             for client_id in all_clients:
                 await self._room_store.add_client(session, client_id, room.id)
             await session.commit()
@@ -1131,11 +1131,19 @@ class RoomService:
             result[client.client_id] = client.matrix_user_id
         return result
 
-    def _resolve_system_clients(self) -> dict[str, str]:
-        """Returns {client_id: matrix_user_id} for all system clients."""
+    def _resolve_system_clients(self, tenant_id: str) -> dict[str, str]:
+        """`{client_id: matrix_user_id}` for `tenant_id`'s system clients.
+
+        Per tenant, not per deployment. `clients` is scoped, so there is an
+        admin client per tenant rather than one for everyone, and the running
+        registry this reads holds all of them at once. Handing another
+        tenant's to a room is caught by `client_rooms`' composite foreign key
+        on `(tenant_id, client_id)` — as an exception, not as a wrong row —
+        so it is the room's own tenant that has to be asked for here.
+        """
         result: dict[str, str] = {}
         for client_type in SYSTEM_CLIENT_TYPES:
-            for client in self._client_lifecycle.get_by_type(client_type):
+            for client in self._client_lifecycle.get_by_type(client_type, tenant_id):
                 result[client.client_id] = client.matrix_user_id
         return result
 
@@ -1161,36 +1169,57 @@ class RoomService:
         registry; a pending invite is accepted on the client's first sync.
         Idempotent: `invite_to_room` is a no-op for an already-joined user, and
         DB membership is only recorded where it is missing.
+
+        Every tenant's rooms in one pass, and one room's failure is contained
+        to that room. This runs inline in `main.run()` before the server is
+        listening, so an exception escaping here is not a failed
+        reconciliation — it is a deployment that does not start, for every
+        tenant, because of one room belonging to one of them. The failures are
+        counted and reported at `error`, so a contained one is still an
+        operator's problem rather than a silent one.
         """
-        system_clients = self._resolve_system_clients()
-        # Every tenant's rooms in one pass at startup, so this read is
-        # unscoped by nature; each room's own tenant is bound only around
-        # reconciling that one room, not the whole fan-out.
+        # Which rooms exist is the read that spans tenants; each room's own
+        # tenant is bound only around reconciling that one room.
         async with unscoped_session(self._session_factory) as session:
             rooms = await self._room_store.get_all(session, include_archived=True)
+
+        failures: list[str] = []
         for room in rooms:
-            with tenant_scope(room.tenant_id):
-                async with self._session_factory() as session:
-                    existing = set(
-                        await self._room_store.get_client_ids(session, room.id)
-                    )
-                    expected = await self._room_store.get_member_agent_clients(
-                        session, room.id
-                    )
-                expected.update(system_clients)
-                missing = {
-                    cid: uid for cid, uid in expected.items() if cid not in existing
-                }
-                if not missing:
-                    continue
-                await self._invite_clients(room.matrix_room_id, missing)
-                async with self._session_factory() as session:
-                    for client_id in missing:
-                        await self._room_store.add_client(session, client_id, room.id)
-                    await session.commit()
-                logger.info(
-                    "Reconciled %d client(s) into room %s", len(missing), room.id
+            try:
+                await self._reconcile_one_room(room)
+            except Exception:
+                logger.exception("Failed to reconcile clients into room %s", room.id)
+                failures.append(room.id)
+        if failures:
+            logger.error(
+                "Could not reconcile clients into %d of %d room(s): %s. Those "
+                "rooms are missing system or agent clients until this is fixed "
+                "and the service restarted.",
+                len(failures),
+                len(rooms),
+                ", ".join(failures),
+            )
+
+    async def _reconcile_one_room(self, room: Room) -> None:
+        with tenant_scope(room.tenant_id):
+            async with self._session_factory() as session:
+                existing = set(await self._room_store.get_client_ids(session, room.id))
+                expected = await self._room_store.get_member_agent_clients(
+                    session, room.id
                 )
+            # Resolved per room rather than once for the fan-out: the system
+            # clients belong to a tenant, and which ones are this room's
+            # depends on the room.
+            expected.update(self._resolve_system_clients(room.tenant_id))
+            missing = {cid: uid for cid, uid in expected.items() if cid not in existing}
+            if not missing:
+                return
+            await self._invite_clients(room.matrix_room_id, missing)
+            async with self._session_factory() as session:
+                for client_id in missing:
+                    await self._room_store.add_client(session, client_id, room.id)
+                await session.commit()
+            logger.info("Reconciled %d client(s) into room %s", len(missing), room.id)
 
     async def ensure_client_in_room(self, room_id: str, client_id: str) -> None:
         """Invite a single running client to the room (it auto-joins) and record

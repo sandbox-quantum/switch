@@ -22,11 +22,18 @@ class TenantMembershipError(Exception):
 
 
 class TenantMemberStore:
-    async def create(
-        self, session: AsyncSession, *, tenant_id: str, user_id: str, role: str
-    ) -> None:
-        session.add(TenantMember(tenant_id=tenant_id, user_id=user_id, role=role))
-        await session.flush()
+    """Reads memberships. Deliberately does not write them.
+
+    There was a `create` here and nothing ever called it. Membership is not a
+    thing code decides to write on its own: it is written by, and only by, the
+    paths that produce or repair an account, so that "every account has exactly
+    one" holds by construction rather than by everyone remembering. That write
+    is `UserStore.ensure_membership`, which is idempotent and derives the role
+    from the user. A second, unguarded way in — taking `tenant_id`, `user_id`
+    and `role` from whatever the caller felt like — is how an account ends up
+    with two, and `get_sole_tenant_id` below refuses to pick between two just
+    as firmly as it refuses to invent one out of zero.
+    """
 
     async def get_sole_tenant_id(self, session: AsyncSession, user_id: str) -> str:
         """The one tenant this user belongs to, raising if that isn't true.

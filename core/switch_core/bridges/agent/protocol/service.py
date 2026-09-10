@@ -467,12 +467,17 @@ class ProtocolService:
         The token also decides the *tenant* the new agent and its API key land
         in, and that is bound here rather than left to the caller. The HTTP
         registration endpoint has ``BearerAuthMiddleware`` in front of it doing
-        the same thing; this path has nothing in front of it at all — a
-        server-side connector registers its agents from a startup task
-        (``server_connectors/core.py``), where no request and so no tenant
-        exists. Without this the rows would fall back to tenant zero, and
-        because bearer authentication then reads ``api_keys.tenant_id`` back as
-        the source of truth, that guess would confirm itself forever.
+        the same thing. This path does not: a server-side connector calls it
+        in-process from ``server_connectors/core.py``, which binds its own
+        row's tenant around the call (``_register_agent``) — from boot, and
+        from ``POST /connectors``, where the tenant already bound is the
+        *requesting operator's*, which is not necessarily the connector's.
+
+        So the binding here is not filling a vacuum; it is overriding whatever
+        the caller had, with the one thing that is authoritative for these
+        rows. Bearer authentication later reads ``api_keys.tenant_id`` back as
+        the source of truth, so a key filed under the wrong tenant would keep
+        confirming itself on every subsequent call.
         """
         token_hash = hashlib.sha256(registration_token.encode()).hexdigest()
         # Resolving a credential is unscoped by definition — `key_hash` is one

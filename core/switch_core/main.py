@@ -508,7 +508,25 @@ async def _seed_admin_user(
     async with tenant_session(session_factory, TENANT_ZERO_ID) as session:
         existing = await user_store.get_by_email(session, config.gateway_admin_email)
         if existing is not None:
-            logger.info("Admin user already exists: %s", config.gateway_admin_email)
+            # Existing, but not necessarily whole. An account with no
+            # `tenant_members` row cannot sign in at all — `gateway/auth.py`
+            # refuses to guess a tenant and answers 403 — and until this ran,
+            # the only thing in the product that ever wrote a missing
+            # membership was an OIDC login, so a password account in that
+            # state was locked out with no way back in short of SQL. The
+            # migration backfilled every account that existed when it ran;
+            # this covers the ones that did not, and any whose membership is
+            # lost later.
+            if await user_store.ensure_membership(session, existing):
+                await session.commit()
+                logger.warning(
+                    "Admin user %s had no tenant membership and could not have "
+                    "signed in; joined it to tenant %s.",
+                    config.gateway_admin_email,
+                    TENANT_ZERO_ID,
+                )
+            else:
+                logger.info("Admin user already exists: %s", config.gateway_admin_email)
             return
 
         admin = User(

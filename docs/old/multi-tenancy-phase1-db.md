@@ -119,6 +119,15 @@ Three entries are worth justifying:
   anywhere. The distinction has teeth: "one exists" is true for a deployment
   whose second tenant has no admin client in any of its rooms.
 
+  One row per tenant means the *running* registry holds one per tenant too,
+  so `ClientLifecycleService.get_by_type` takes a tenant and there is no way
+  left to ask it for "the admin client". Every caller has a room in hand and
+  so has a tenant to ask with. Not tidiness: `client_rooms` carries a
+  composite foreign key on `(tenant_id, client_id)`, so offering one tenant's
+  admin client to another's room raises `ForeignKeyViolationError` — and the
+  caller that did it, `reconcile_room_clients`, runs inline at startup, where
+  an exception is a deployment that does not boot, for anyone.
+
 **Global — no `tenant_id`, no policy:** `users`, `oidc_identities`,
 `feature_flags`, `alembic_version`.
 
@@ -558,9 +567,54 @@ it:
   Applying that marker suite-wide turns 354 tests red, which is the expected
   shape rather than a finding.
 
-The same context value feeds the logging filter, which has had a `tenant_id`
-field since before tenants existed and which nothing has ever bound
-per-request. That closes half of Phase 0's logging item as a side effect.
+### An account with no membership, and how it gets one back
+
+Resolution refuses to guess (above), so an account with no `tenant_members`
+row cannot sign in on any route — 403, permanently, not degraded. The
+migration gave one to every account that existed when it ran, and
+`UserStore.create` has written one on every path that makes a user since. But
+a deployment tracking this work applied the migration several commits before
+`create` learned to, so anything created in that window has none; so does an
+account whose membership is later removed.
+
+Nothing repaired that except an OIDC login (`UserStore._link_identity`, now
+`ensure_membership`). A password account had no remedy inside the product at
+all — no endpoint writes a membership, and every endpoint that could is behind
+the 403 — which left `INSERT INTO tenant_members` on the box.
+
+Startup seeding is the repair: `_seed_admin_user` already looks the configured
+admin up by email on every boot, so it calls `ensure_membership` on the
+existing-admin branch instead of returning. Idempotent, and it logs at
+`warning` only when it actually wrote one, because an account that could not
+sign in until this boot is not routine news. That fixes the deployment's own
+admin, which is enough to get an operator back in; anyone else they can then
+repair from the UI.
+
+`TenantMemberStore` grew no `create` to go with it — it had one, unused, and
+it is gone. "Exactly one membership per account" holds because a single
+idempotent function writes them all, and a second unguarded way in, taking
+`tenant_id`, `user_id` and `role` from whatever the caller felt like, is how
+an account ends up with two. Resolution rejects two as firmly as none.
+
+### The log has to name the tenant the transaction writes
+
+The logging filter has carried a `tenant_id` field since before tenants
+existed. It read the *log* context, which `gateway/auth.py` and
+`bridges/agent/auth.py` bind per request — and nothing else. Background work
+binds its tenant through `tenant_context`, which is the binding
+`db/tenant_session.py` turns into `set_config('app.tenant_id')`, so the
+startup seeding wrote rows into `00000000-…` while logging
+`tenant_id=default`. Not a longer spelling of the same thing: a different
+tenant, and one that appears in no table.
+
+`LogContextFilter` now reads three sources in order — the request's binding,
+then `current_tenant_id()`, then the configured placeholder. `TENANT_ID` stays
+what it was and is documented as a placeholder rather than a tenant id: it
+only applies where neither binding exists, which is also where nothing scoped
+can be written, so it contradicts no row. Setting it to a real tenant's id
+would be worse than leaving it — every unattributed line in the deployment
+would then be indistinguishable from that tenant's own under a `tenant_id`
+filter.
 
 ## The bootstrap problem, and the two exceptions
 
@@ -789,6 +843,42 @@ to prevent — in that file unless another is named:
   database and on a deployment that gained a tenant between two boots
   (`tests/switch_core/clients/test_ensure_system_client.py`). It had no test
   at all until it stopped booting.
+- **`room_service.py`'s bindings, asked of Postgres**
+  (`tests/switch_core/test_room_service_tenant_bindings.py`). Worth its own
+  entry because of how it came about: `tenant_scope`, `tenant_session` and
+  `unscoped_session` could be shadowed with no-ops inside that one module and
+  the suite still passed, 2833 to 2833 — the largest file in the rework, and
+  nothing depended on a single binding it made. Two things had to change for
+  a test to be able to tell. It reads
+  `current_setting('app.tenant_id')` on the session the service handed the
+  store, rather than asserting on rows: while Switch connects as the tables'
+  owner no policy bites, so a session that forgot its tenant writes exactly
+  as much as one that remembered, and the setting is the only remaining
+  difference. And it arranges two tenants, which nothing else in the suite
+  does, because half of what these bindings are for is only observable once a
+  second tenant owns something. Shadowing the three helpers now fails five of
+  its eight tests; that experiment is the file's acceptance criterion and is
+  written down in its module docstring.
+- **`get_by_type` is per tenant, and boot records the tenant off each row**
+  (`tests/switch_core/clients/test_client_registry_tenants.py`). Reverting the
+  filter reproduces `ForeignKeyViolationError` on `fk_client_rooms_client`
+  through the room-service tests above, which is the shape the bug took at
+  startup.
+- **The startup admin seeding rejoins a stranded admin**
+  (`tests/switch_core/test_seed_admin_membership.py`), and the same file pins
+  what being stranded costs — `get_sole_tenant_id` raising — so the repair is
+  measured against the failure it prevents rather than against itself.
+- **The log line names the tenant the transaction writes**
+  (`tests/switch_core/test_logging_config.py`), reading the value from
+  `require_tenant_id()` rather than restating a constant, so the two cannot
+  drift apart again.
+- **Removing a server-side connector is scoped and fails loudly**
+  (`tests/switch_core/bridges/agent/server_connectors/test_lifecycle_remove_tenant.py`),
+  against `rls_harness.restricted` — the plain fixture is the owner and would
+  pass with no policies at all. It covers both halves: the delete refuses to
+  report a removal it did not make, and it refuses *before* tearing the
+  connector down, since `_cores` spans tenants and the teardown would
+  otherwise be a cross-tenant outage discovered one statement too late.
 - A reference type whose slug clashes *while another tenant holds the same
   slug* still reports "already exists" rather than a 500
   (`tests/switch_core/db/stores/test_reference_type_store.py`).
@@ -829,18 +919,6 @@ Named so they are decisions rather than omissions.
   exists in another tenant fails on the index rather than being handled — an
   existence oracle and a bad error. Phase 2.
 - **System sessions can read across tenants** by design, as above.
-- **`RoomService._resolve_system_clients` is tenant-blind**, and now that
-  `ensure_system_client` makes one admin client per tenant there is more than
-  one for it to be blind about. It returns every running system client, and
-  both callers — creating a room, and `reconcile_room_clients` at startup —
-  put all of them in the room. With two tenants that means offering tenant
-  B's admin client to tenant A's room, which `client_rooms`' composite
-  foreign key refuses, so the failure is loud rather than a leak. It was
-  equally broken before, in the other direction: one admin client in tenant
-  zero, offered to every tenant's rooms, refused the same way. The fix is a
-  filter on the room's tenant at both call sites, and it belongs with
-  whatever onboards the second tenant rather than in the change that made
-  the row exist.
 - **No indexes on `tenant_id`.** With one tenant the column has no selectivity
   and an index is pure write cost. Add them when the second tenant lands, in
   one migration, `concurrently`, with data to measure against.

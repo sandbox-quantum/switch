@@ -47,13 +47,24 @@ class _FakeRoomStore:
 
 
 class _FakeClientLifecycle:
-    """Resolves system clients by type, mirroring the real lookup."""
+    """Resolves system clients by type *and tenant*, mirroring the real lookup.
+
+    The tenant is not decoration. The real registry is process-wide and holds
+    one system client per tenant, so a lookup by type alone hands another
+    tenant's client to this room — which `client_rooms`' composite foreign key
+    rejects outright. `test_room_service_tenant_bindings.py` is where that is
+    proven against Postgres; here the signature is simply kept honest.
+    """
 
     def __init__(self, by_type: dict[str, list[Any]]) -> None:
         self._by_type = by_type
 
-    def get_by_type(self, client_type: str) -> list[Any]:
-        return list(self._by_type.get(client_type, []))
+    def get_by_type(self, client_type: str, tenant_id: str) -> list[Any]:
+        return [
+            client
+            for client in self._by_type.get(client_type, [])
+            if client.tenant_id == tenant_id
+        ]
 
 
 class _FakeMatrix:
@@ -64,9 +75,11 @@ class _FakeMatrix:
         self.invited.append((matrix_room_id, matrix_user_id))
 
 
-def _admin() -> SimpleNamespace:
+def _admin(tenant_id: str = "tenant-1") -> SimpleNamespace:
     return SimpleNamespace(
-        client_id="admin-client", matrix_user_id="@switch-admin:switch.local"
+        client_id="admin-client",
+        matrix_user_id="@switch-admin:switch.local",
+        tenant_id=tenant_id,
     )
 
 
@@ -104,6 +117,21 @@ class TestReconcileRoomClients:
 
         assert matrix.invited == [("!mx:switch.local", "@switch-admin:switch.local")]
         assert room_store.added == [("admin-client", "room-1")]
+
+    async def test_another_tenants_admin_client_is_not_offered(self) -> None:
+        room = SimpleNamespace(
+            id="room-1", tenant_id="tenant-1", matrix_room_id="!mx:switch.local"
+        )
+        svc, room_store, matrix = _build_service(
+            rooms=[room],
+            client_ids_by_room={"room-1": []},
+            by_type={"admin": [_admin(tenant_id="tenant-2")]},
+        )
+
+        await svc.reconcile_room_clients()
+
+        assert matrix.invited == []
+        assert room_store.added == []
 
     async def test_skips_room_that_already_has_the_admin(self) -> None:
         room = SimpleNamespace(

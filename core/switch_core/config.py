@@ -91,11 +91,17 @@ class SwitchConfig(BaseSettings):
     service_name: str = "switch-core"
     environment: str | None = None
 
-    # The tenant a log line is attributed to when nothing bound a real one.
-    # An authenticated request binds the caller's actual tenant
-    # (`gateway/auth.py`, `bridges/agent/auth.py`); this is only what a
-    # background task, a startup script, or anything else with no request
-    # in flight falls back to.
+    # The placeholder a log line carries when no tenant is bound at all —
+    # deliberately not a tenant id, and it must not be set to one. An
+    # authenticated request binds the caller's tenant (`gateway/auth.py`,
+    # `bridges/agent/auth.py`); background work binds the tenant of the row it
+    # is acting on (`tenant_context.py`); `LogContextFilter` prefers either
+    # over this. What is left is code that has bound neither, which cannot
+    # write a scoped row at all — `db/models.require_tenant_id` raises — so
+    # this value never names where anything landed. Set it to a real tenant's
+    # id and it starts to: every unattributed line in the deployment would be
+    # indistinguishable from that tenant's own when an operator filters on
+    # `tenant_id`.
     tenant_id: str = "default"
 
     server_host: str = "0.0.0.0"

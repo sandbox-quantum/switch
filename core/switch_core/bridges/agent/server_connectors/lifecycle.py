@@ -91,6 +91,11 @@ class ServerSideConnectorLifecycleService:
             type="registration",
         )
 
+        # Reached only from `POST /connectors`, so the session inherits the
+        # tenant the auth dependency bound and both rows below land in the
+        # operator's own — which is the answer, since it is their connector.
+        # `start` then re-reads the row unscoped to learn that tenant back,
+        # rather than assuming this one is still bound by then.
         async with self._session_factory() as session:
             await self._api_key_store.create(session, reg_key)
 
@@ -162,6 +167,25 @@ class ServerSideConnectorLifecycleService:
             await self.stop(connector_id)
 
     async def remove(self, connector_id: str) -> None:
+        """Delete a connector: its agents, its running core, and its row.
+
+        Scoped to the caller, and checked before anything is torn down. The
+        session inherits the tenant the request bound (`gateway/auth.py`), so
+        a connector belonging to another tenant is simply not there — but
+        `_cores` is a process-wide registry with every tenant's connectors in
+        it, so tearing down first and deleting second let a caller from the
+        wrong tenant stop another tenant's connector and delete its agents,
+        then match zero rows and report success. The read below is what makes
+        the tenant check happen before the damage rather than after it.
+
+        `ServerConnectorStore.delete` raises when it matches nothing, so the
+        window between the two — the row deleted underneath us — surfaces as
+        an error rather than as a second false success.
+        """
+        async with self._session_factory() as session:
+            if await self._connector_store.get(session, connector_id) is None:
+                raise ValueError(f"Connector not found: {connector_id}")
+
         core = self._cores.get(connector_id)
         if core is not None:
             await core.delete_agents()
