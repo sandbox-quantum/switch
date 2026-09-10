@@ -29,7 +29,14 @@ from switch_core.bridges.collaboration.lifecycle_service import (
     CollaborationBridgeLifecycleService,
 )
 from switch_core.bridges.collaboration.models import BridgeConnectionConfig
-from switch_core.db.models import Client, ClientRoom, CollaborationBridge, Room, Tenant
+from switch_core.db.models import (
+    TENANT_ZERO_ID,
+    Client,
+    ClientRoom,
+    CollaborationBridge,
+    Room,
+    Tenant,
+)
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.client_store import ClientStore
 from switch_core.db.stores.collaboration_bridge_store import CollaborationBridgeStore
@@ -294,20 +301,25 @@ async def test_a_host_resource_conflict_is_looked_for_across_every_tenant(
     belongs to someone else — narrowing it to the caller's tenant would make
     it miss precisely the case it exists for.
 
-    The conflict itself is asserted, and so is the tenant bound over the read
-    that finds it: `_reject_resource_conflict` must reach `get_all` with
-    nothing bound, or a policy-bearing connection would silently narrow the
-    read to the caller's own tenant and this exact conflict — two tenants
-    claiming the same host resource — would go undetected.
+    Under row-level security an unscoped read is not available — it is
+    exactly the state `require_tenant_id()` raises on — so seeing every
+    tenant's bridges takes `all_tenant_ids()` (the exemption in
+    `db/tenant_lookup.py`) plus one ordinary *scoped* `get_all` per tenant.
+    The conflict itself is asserted, and so is what each of those reads was
+    bound to: one call per tenant that exists — tenant zero seeded by the
+    test schema, plus the incumbent and the newcomer created here — each
+    bound to that tenant rather than to the caller's. The incumbent and the
+    newcomer are both inserted inside one transaction, so `now()` — and so
+    `all_tenant_ids`' `ORDER BY created_at` — ties between them; which of the
+    two is visited first is not the property under test, only that every
+    tenant is visited exactly once, each under its own binding, and never
+    under the caller's tenant alone or left unbound.
 
-    That claim used to rest on the binding alone, because nothing yet made a
-    *scoped* read behave any differently. It does now:
     `test_a_tenant_scoped_read_of_the_same_data_would_have_missed_the_conflict`
     below runs the identical two-bridge fixture through the row-level-security
     policies (`rls_harness`, a role they actually apply to) and shows a read
-    scoped to the newcomer's tenant does not see the incumbent's row — the
-    failure this test's unscoped read exists to avoid, made real rather than
-    inferred from where `current_tenant_id()` was `None`.
+    scoped to only the newcomer's tenant does not see the incumbent's row —
+    the failure this loop over every tenant exists to avoid.
     """
     incumbent_tenant = f"tenant-{uuid.uuid4().hex[:8]}"
     newcomer_tenant = f"tenant-{uuid.uuid4().hex[:8]}"
@@ -356,10 +368,13 @@ async def test_a_host_resource_conflict_is_looked_for_across_every_tenant(
         with pytest.raises(ValueError, match="already uses port:3979"):
             await service._reject_resource_conflict("teams", {"listen_port": 3979})
 
-    assert seen == [None], (
-        "the conflict check read the stored bridges under the caller's "
-        "tenant; under row-level security it would not have seen the "
-        "incumbent and would have let both claim the port"
+    assert sorted(seen) == sorted(
+        [TENANT_ZERO_ID, incumbent_tenant, newcomer_tenant]
+    ), (
+        "the conflict check must read the stored bridges tenant by tenant, "
+        "each scoped to the tenant being read rather than to the caller's — "
+        "a read scoped only to the newcomer's tenant would not have seen "
+        "the incumbent and would have let both claim the port"
     )
 
 

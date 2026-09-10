@@ -30,12 +30,13 @@ from switch_core.clients.admin_messages import ADMIN_MARKER, AdminMessageType
 from switch_core.clients.client_base import ClientBase, ClientConfig
 from switch_core.clients.mentions import mention_regex, strip_emphasis
 from switch_core.db.models import BridgeMessageMap, ExternalUser
-from switch_core.db.session_scope import tenant_session, unscoped_session
+from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.bridge_message_map_store import BridgeMessageMapStore
 from switch_core.db.stores.client_store import ClientStore
 from switch_core.db.stores.external_user_store import ExternalUserStore
 from switch_core.db.stores.room_store import RoomStore
+from switch_core.db.tenant_lookup import tenant_of_room
 from switch_core.events import AgentRuntimeStateEvent
 from switch_core.logging_context import log_context
 from switch_core.provisioning import Provisioning
@@ -310,21 +311,24 @@ class BridgeCore:
 
         A miss should not happen — `add_room_mapping` fills the tenant along
         with the channel mapping, and this is only ever asked about a room
-        that has one — but if it does, the read is deliberately **unscoped**.
-        Asking "which tenant is this room in" while a tenant is bound would
-        either confirm the guess or return nothing, and the second reads as
-        "no such room" for a room that exists in another tenant. The whole
-        point of resolving is that the answer is not known yet.
+        that has one — but if it does, the answer comes from the exemption
+        (`db/tenant_lookup.py`) rather than from a read of the row. Asking
+        "which tenant is this room in" while a tenant is bound would either
+        confirm the guess or return nothing, and the second reads as "no such
+        room" for a room that exists in another tenant. The whole point of
+        resolving is that the answer is not known yet.
+
+        This is the shape the exemption is for. The fallback needed one field
+        of one row, and the field was the tenant; it now reads no row at all.
         """
         cached = self._room_tenants.get(room_id)
         if cached is not None:
             return cached
-        async with unscoped_session(self._session_factory) as session:
-            room = await self._room_store.get(session, room_id)
-        if room is None:
+        tenant_id = await tenant_of_room(self._session_factory, room_id)
+        if tenant_id is None:
             raise ValueError(f"Room not found: {room_id}")
-        self._room_tenants[room_id] = room.tenant_id
-        return room.tenant_id
+        self._room_tenants[room_id] = tenant_id
+        return tenant_id
 
     async def _load_existing_puppets(self) -> None:
         async with tenant_session(

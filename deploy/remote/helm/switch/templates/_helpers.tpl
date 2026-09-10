@@ -48,6 +48,9 @@ rendered from this one source and cannot drift from the release's own.
 {{- if not .Values.postgresql.existingSecret }}
 POSTGRES_PASSWORD: {{ required "secrets.postgresPassword is required (unless postgresql.existingSecret is set)" .Values.secrets.postgresPassword | b64enc | quote }}
 {{- end }}
+{{- if and .Values.postgresql.owner.username (not .Values.postgresql.owner.existingSecret) }}
+DB_OWNER_PASSWORD: {{ required "secrets.dbOwnerPassword is required when postgresql.owner.username is set (unless postgresql.owner.existingSecret is set)" .Values.secrets.dbOwnerPassword | b64enc | quote }}
+{{- end }}
 AGENT_REGISTRATION_TOKEN: {{ required "secrets.agentRegistrationToken is required" .Values.secrets.agentRegistrationToken | b64enc | quote }}
 JWT_SECRET_KEY: {{ required "secrets.jwtSecretKey is required" .Values.secrets.jwtSecretKey | b64enc | quote }}
 GATEWAY_ADMIN_EMAIL: {{ required "secrets.gatewayAdminEmail is required" .Values.secrets.gatewayAdminEmail | b64enc | quote }}
@@ -119,6 +122,23 @@ external secret (e.g. one synced by external-secrets / sealed-secrets).
 
 {{- define "switch.postgresSecretKey" -}}
 {{- .Values.postgresql.existingSecretKey | default "POSTGRES_PASSWORD" -}}
+{{- end }}
+
+{{/*
+Name/key of the Secret holding the schema owner's password, mirroring
+switch.postgresSecretName/Key above for the runtime role. Only referenced when
+postgresql.owner.username is set.
+*/}}
+{{- define "switch.postgresOwnerSecretName" -}}
+{{- if .Values.postgresql.owner.existingSecret -}}
+{{- .Values.postgresql.owner.existingSecret -}}
+{{- else -}}
+{{- include "switch.secretName" . -}}
+{{- end -}}
+{{- end }}
+
+{{- define "switch.postgresOwnerSecretKey" -}}
+{{- .Values.postgresql.owner.existingSecretKey | default "DB_OWNER_PASSWORD" -}}
 {{- end }}
 
 {{/*
@@ -321,6 +341,19 @@ Include with `nindent 12`.
       key: {{ include "switch.postgresSecretKey" . }}
 - name: DB_NAME
   value: {{ include "switch.postgresDatabase" . | quote }}
+{{- if .Values.postgresql.owner.username }}
+- name: DB_OWNER_USER
+  value: {{ .Values.postgresql.owner.username | quote }}
+- name: DB_OWNER_PASSWORD
+  valueFrom:
+    secretKeyRef:
+      name: {{ include "switch.postgresOwnerSecretName" . }}
+      key: {{ include "switch.postgresOwnerSecretKey" . }}
+{{- end }}
+{{- if not .Values.postgresql.requireRestrictedRole }}
+- name: DB_REQUIRE_RESTRICTED_ROLE
+  value: "false"
+{{- end }}
 - name: DB_SSL_MODE
   value: {{ .Values.postgresql.sslMode | quote }}
 {{- if include "switch.dbCaBundleConfigMap" . }}

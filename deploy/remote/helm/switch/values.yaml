@@ -67,6 +67,8 @@ ingress:
 #    chart then renders no Secret and the values below are ignored. That Secret
 #    must contain these keys:
 #      POSTGRES_PASSWORD (unless postgresql.existingSecret is set),
+#      DB_OWNER_PASSWORD (only if postgresql.owner.username is set, and unless
+#        postgresql.owner.existingSecret is set),
 #      AGENT_REGISTRATION_TOKEN, JWT_SECRET_KEY, GATEWAY_ADMIN_EMAIL,
 #      GATEWAY_ADMIN_PASSWORD,
 #      MATTERMOST_ADMIN_PASSWORD + MATTERMOST_USER_PASSWORD (if mattermost.enabled),
@@ -76,6 +78,9 @@ secrets:
   # chart manages its own Secret from the values below.
   existingSecret: ""
   postgresPassword: ""
+  # Password for postgresql.owner.username. Required when that is set, unless
+  # postgresql.owner.existingSecret names a Secret that already carries it.
+  dbOwnerPassword: ""
   agentRegistrationToken: ""
   jwtSecretKey: ""
   gatewayAdminEmail: ""
@@ -402,6 +407,48 @@ postgresql:
   # required and no POSTGRES_PASSWORD is written into the chart Secret.
   existingSecret: ""
   existingSecretKey: POSTGRES_PASSWORD
+
+  # Schema owner credentials — the account with DDL and grant privileges, as
+  # distinct from DB_USER above (or postgresql.external.username for
+  # mode: existing), which name the RUNTIME role every request actually
+  # authenticates as and which the row-level-security policies apply to.
+  # switch-core uses the owner connection for exactly two things at boot, and
+  # never to serve a request: applying Alembic migrations, and re-issuing the
+  # runtime role's grants immediately afterwards, so a table a migration just
+  # added is usable by the role that is about to need it.
+  #
+  # Leave owner.username empty to opt this deployment out of both — boot then
+  # applies no migrations and expects the schema to already be at head (see
+  # config.py's owner_database_url / runs_migrations_at_boot).
+  #
+  # This chart does NOT create the runtime role, and does not grant it
+  # anything — that is application code, run once by switch-core at boot from
+  # this connection, and it only works once the role already exists. Create it
+  # out of band before pointing a deployment at it: docs/old/rds-migration.md
+  # has the exact SQL for an RDS master user; for mode: managed the equivalent
+  # is execing into the postgresql-0 pod as the "postgres" superuser the
+  # StatefulSet below already bootstraps.
+  owner:
+    username: ""
+    # Password source, mirroring existingSecret/existingSecretKey above. Only
+    # consulted when owner.username is set.
+    existingSecret: ""
+    existingSecretKey: DB_OWNER_PASSWORD
+
+  # Refuse to serve when the runtime connection (DB_USER) is not actually
+  # subject to row-level security — a superuser, a BYPASSRLS role, or the
+  # owner of the policied tables. Matches switch-core's own default (on),
+  # because the failure it guards against is silent: a deployment that
+  # believes it is isolating tenants and is not looks identical to one that
+  # is, right up until a second tenant reads the first's rooms.
+  #
+  # mode: managed ships DB_USER as the bootstrapped "postgres" superuser (see
+  # POSTGRES_USER on the StatefulSet below) and this chart does not yet offer
+  # a way to point it at a separately created role, so a managed-mode
+  # deployment left at the default here will refuse to start. Set this false
+  # until that role exists; switch-core then logs an error on every boot as
+  # the visible reminder that tenant isolation is not active.
+  requireRestrictedRole: true
 
   # ── mode: existing ──────────────────────────────────────────────────────────
   # Only used when mode=existing. The `switch` and `mattermost` databases and

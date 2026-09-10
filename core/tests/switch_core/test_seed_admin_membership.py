@@ -179,9 +179,8 @@ class TestWhatBeingStrandedCosts:
             await session.commit()
         await _strand_the_admin(session_factory, user_id)
 
-        async with session_factory() as session:
-            with pytest.raises(TenantMembershipError):
-                await TenantMemberStore().get_sole_tenant_id(session, user_id)
+        with pytest.raises(TenantMembershipError):
+            await TenantMemberStore().get_sole_tenant_id(session_factory, user_id)
 
     async def test_creating_a_user_still_writes_one(
         self, session_factory: async_sessionmaker[AsyncSession]

@@ -20,7 +20,7 @@ import pytest
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from switch_core.db.models import Client, ClientRoom, Message, Room, Tenant
+from switch_core.db.models import Client, ClientRoom, Room, Tenant
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.media_store import MediaStore
 from switch_core.db.stores.message_store import MessageStore
@@ -132,6 +132,31 @@ class _Received:
 
     async def _take(self, _room, event) -> None:
         self.events.append(event)
+
+
+async def _seed_client(
+    session_factory: async_sessionmaker[AsyncSession], client_id: str
+) -> None:
+    """Give a transport's client a row, so it has a tenant to act in.
+
+    A `PostgresTransport` resolves its own tenant from `clients` (see
+    `PostgresTransport._tenant`), because its task binds nothing and
+    everything it writes is scoped. A transport built for a client id with no
+    row behind it is a transport for a client that does not exist, and it says
+    so rather than falling back to whatever tenant happens to be ambient —
+    which for `upload_media` would mean putting a blob in a tenant nobody
+    chose. Tests that need only *a* client take one from here.
+    """
+    async with session_factory() as session:
+        session.add(
+            Client(
+                id=client_id,
+                matrix_user_id=f"@{client_id}-{uuid.uuid4().hex[:8]}:test",
+                display_name="a client",
+                type="agent",
+            )
+        )
+        await session.commit()
 
 
 def _transport(
@@ -355,9 +380,15 @@ class TestRooms:
 
 
 class TestMedia:
+    """`media_blobs` is scoped, so a blob is written into the uploading
+    client's tenant — which means every test here needs a client row for the
+    transport to read that tenant off. Without one the transport refuses,
+    which is the right answer and not the one these tests are about."""
+
     async def test_bytes_go_in_and_come_back(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
+        await _seed_client(session_factory, "c")
         transport = _transport(session_factory, client_id="c", user_id="@a:test")
 
         uploaded = await transport.upload_media(b"file contents", "text/plain", "a.txt")
@@ -371,6 +402,7 @@ class TestMedia:
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
         """Deduplicating would make one sender's delete another's data loss."""
+        await _seed_client(session_factory, "c")
         transport = _transport(session_factory, client_id="c", user_id="@a:test")
 
         first = await transport.upload_media(b"same", "text/plain", "a.txt")
@@ -382,11 +414,30 @@ class TestMedia:
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
         """An empty file is a worse answer than an error: the reader cannot
-        tell it apart from a file that was genuinely empty."""
+        tell it apart from a file that was genuinely empty.
+
+        The client row matters here more than it looks: without it the
+        transport raises `TransportError` for having no tenant, and this test
+        would pass for entirely the wrong reason.
+        """
+        await _seed_client(session_factory, "c")
         transport = _transport(session_factory, client_id="c", user_id="@a:test")
 
-        with pytest.raises(TransportError):
+        with pytest.raises(TransportError, match="No media stored under"):
             await transport.download_media("switch-media://nothing")
+
+    async def test_a_transport_whose_client_has_no_row_refuses_to_upload(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """The fail-loud half of the same rule. A blob has to name a tenant,
+        and the only honest source for one is the uploading client's own row;
+        with no row there is no tenant, and the alternatives — whatever is
+        ambient, or tenant zero — are both a write into a real customer's
+        data that nobody chose."""
+        transport = _transport(session_factory, client_id="ghost", user_id="@a:test")
+
+        with pytest.raises(TransportError, match="no tenant to act in"):
+            await transport.upload_media(b"bytes", "text/plain", "a.txt")
 
 
 class TestWhatIsNotBuiltYet:
@@ -937,17 +988,28 @@ class TestDeliveryBindsTheRoomsTenant:
         assert current_tenant_id() is None
 
 
-class TestATransportOwnsNoTenantOfItsOwn:
-    """A transport is not a single-tenant actor, and CHOO-2623 stops it
-    behaving like one.
+class TestATransportActsInItsClientsTenant:
+    """A transport's tenant is its client's, derived and never inherited.
 
     Its task binds nothing: `ClientLifecycleService` unbinds before running a
-    client, so anything the transport does under an inherited tenant would be
-    doing it under the tenant of whoever happened to create the task — boot,
-    a gateway request, or the inbound bridge message that minted a puppet
-    mid-conversation. Two consequences are pinned here: the lookup that says
-    which rooms this client is in runs with nothing bound, and each delivery
-    binds the tenant of the room it is for.
+    client, so anything the transport did under an *inherited* tenant would be
+    doing it under the tenant of whoever happened to create the task — boot, a
+    gateway request, or the inbound bridge message that minted a puppet
+    mid-conversation. That is still the failure this class exists to prevent.
+    What changed with the restricted runtime role is where the right answer
+    comes from.
+
+    It used to come from nowhere: `joined_rooms` and the room resolution ran
+    with nothing bound, on the reasoning that a tenant over those reads could
+    only be a guess and a guess returns a silent subset. Under a role the
+    policies apply to, nothing bound returns a silent *empty* — so "unscoped"
+    stopped being the safe answer and became the worst one. The tenant now
+    comes from the client's own row, through the exemption
+    (`db/tenant_lookup.py`), which is exact rather than a guess: `client_rooms`
+    and `messages` both carry composite foreign keys through `tenant_id`, so a
+    client cannot be a member of, or a sender in, a room outside its own
+    tenant. `test_the_schema_forbids_a_client_row_in_another_tenants_room`
+    below is what that rests on.
     """
 
     @pytest.fixture(autouse=True)
@@ -957,20 +1019,24 @@ class TestATransportOwnsNoTenantOfItsOwn:
         for task in self._tasks:
             task.cancel()
 
-    async def test_the_room_list_is_read_with_no_tenant_bound(
+    async def test_the_room_list_is_read_under_the_clients_own_tenant(
         self,
         session_factory: async_sessionmaker[AsyncSession],
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """`joined_rooms` decides, once, what this client will ever hear. A
-        tenant bound over that read narrows it to a subset with no error to
-        say so — the client is simply deaf everywhere else, forever. So it
-        must run unscoped even when reached from a bound context.
+        """`joined_rooms` decides, once, what this client will ever hear, so
+        the tenant over that read has to be the right one — a wrong one
+        returns fewer rooms with no error to say so, and the client is deaf in
+        the rest forever.
 
-        `test_a_tenant_scoped_read_would_have_returned_no_rooms_at_all` below
-        proves the "narrows it to a subset" half directly, through the row-
-        level-security policies rather than by inferring it from the tenant
-        this test's own spy observed.
+        What this pins is that it is the *client's* tenant and not the
+        caller's. The call is made from inside a `tenant_scope` for an
+        unrelated tenant, standing in for a task that inherited one it has no
+        business acting under, and the spy still sees the client's own.
+
+        `test_a_read_under_the_wrong_tenant_would_have_returned_no_rooms_at_all`
+        below is the other half: what the wrong answer costs, through the
+        policies rather than inferred from the tenant this spy observed.
         """
         tenant_id = f"tenant-{uuid.uuid4().hex[:8]}"
         async with session_factory() as session:
@@ -1015,21 +1081,21 @@ class TestATransportOwnsNoTenantOfItsOwn:
             rooms = await transport.joined_rooms()
 
         assert rooms == [transport_room_id]
-        assert seen == [None], (
-            "joined_rooms inherited a tenant; under row-level security it "
-            "would have returned a subset of this client's rooms and gone "
-            "silent in the rest"
+        assert seen == [tenant_id], (
+            "joined_rooms read under the caller's tenant rather than the "
+            "client's; under row-level security it would have returned none "
+            "of this client's rooms and gone silent in all of them"
         )
 
-    async def test_a_tenant_scoped_read_would_have_returned_no_rooms_at_all(
+    async def test_a_read_under_the_wrong_tenant_would_have_returned_no_rooms_at_all(
         self, rls_harness: RLSHarness
     ) -> None:
         """The same client and its one room, read through
         `RoomStore.get_for_client` — the exact method `joined_rooms` calls —
-        but scoped to a tenant the client does not belong to, instead of left
-        unscoped. It comes back empty: not a subset, since this client has
-        only the one room, but the same silent-and-wrong shape `joined_rooms`
-        avoids by never binding a tenant over this read at all.
+        but scoped to a tenant the client does not belong to. It comes back
+        empty, through the policies, as the restricted role: that is what an
+        inherited tenant costs, and why the transport derives its own from the
+        client row rather than taking whatever the caller had.
         """
         tenant_id = f"tenant-{uuid.uuid4().hex[:8]}"
         other_tenant = f"tenant-{uuid.uuid4().hex[:8]}"
@@ -1068,64 +1134,53 @@ class TestATransportOwnsNoTenantOfItsOwn:
         )
 
     @pytest.mark.no_ambient_tenant
-    async def test_each_room_is_delivered_under_its_own_tenant(
+    async def test_each_room_is_delivered_under_the_clients_tenant(
         self,
         session_factory: async_sessionmaker[AsyncSession],
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """One transport, two rooms, two tenants — the shape a reused puppet
-        takes. The client whose transport this is belongs to one of the two
-        tenants, and that must not decide how the other room is read.
+        """Two rooms, one transport, and every read of either under the
+        client's tenant — with nothing bound around the loop that drives them.
 
-        Membership is only recorded for the room in the transport's own
-        tenant, because `client_rooms` carries composite foreign keys to both
-        `clients` and `rooms` and so cannot join a client to a room in another
-        tenant at all — see
-        `test_the_schema_forbids_a_client_row_in_another_tenants_room`. The
-        watch and the delivery do not go through membership, which is what
-        makes the two-tenant case reachable here.
+        This test used to arrange the two rooms in *different* tenants, on the
+        reading that a reused puppet could speak in both and that the
+        transport's own tenant must therefore never decide how a room is read.
+        That shape is not reachable: `client_rooms` and `messages` both key to
+        `rooms` and to `clients` through `tenant_id`, so a client can be
+        neither a member of nor a sender in a room outside its own tenant, and
+        the old arrangement only stood up because it wrote the second room's
+        message by hand and called the private `_watch` directly. What is left
+        is the part that is real — the delivery loop binds a tenant per room
+        rather than running on whatever the task inherited, which is nothing.
         """
-        tenant_a = f"tenant-{uuid.uuid4().hex[:8]}"
-        tenant_b = f"tenant-{uuid.uuid4().hex[:8]}"
+        tenant_id = f"tenant-{uuid.uuid4().hex[:8]}"
         suffix = uuid.uuid4().hex[:8]
         async with session_factory() as session:
-            for tenant_id in (tenant_a, tenant_b):
-                session.add(Tenant(id=tenant_id, slug=tenant_id, name=tenant_id))
+            session.add(Tenant(id=tenant_id, slug=tenant_id, name=tenant_id))
             await session.flush()
             puppet = Client(
-                tenant_id=tenant_a,
+                tenant_id=tenant_id,
                 matrix_user_id=f"@puppet-{suffix}:test",
                 display_name="puppet",
                 type="user",
             )
-            speaker_b = Client(
-                tenant_id=tenant_b,
-                matrix_user_id=f"@speaker-{suffix}:test",
-                display_name="someone",
-                type="agent",
-            )
-            session.add_all([puppet, speaker_b])
-            room_a = Room(
-                tenant_id=tenant_a,
+            session.add(puppet)
+            first = Room(
+                tenant_id=tenant_id,
                 matrix_room_id=f"!a-{suffix}:test",
                 name="room a",
                 description="",
             )
-            room_b = Room(
-                tenant_id=tenant_b,
+            second = Room(
+                tenant_id=tenant_id,
                 matrix_room_id=f"!b-{suffix}:test",
                 name="room b",
                 description="",
             )
-            session.add_all([room_a, room_b])
+            session.add_all([first, second])
             await session.commit()
-            ids = {
-                room_a.id: tenant_a,
-                room_b.id: tenant_b,
-            }
-            mxid_a, mxid_b = room_a.matrix_room_id, room_b.matrix_room_id
-            room_b_id = room_b.id
-            speaker_b_id, speaker_b_mxid = speaker_b.id, speaker_b.matrix_user_id
+            room_ids = {first.id: tenant_id, second.id: tenant_id}
+            mxid_a, mxid_b = first.matrix_room_id, second.matrix_room_id
             client_id, user_id = puppet.id, puppet.matrix_user_id
 
         seen: dict[str, list[str | None]] = {}
@@ -1144,45 +1199,66 @@ class TestATransportOwnsNoTenantOfItsOwn:
         )
         transport.register_handlers(received.handlers())
         await transport.join_room(mxid_a)
+        await transport.join_room(mxid_b)
         self._tasks.append(asyncio.create_task(transport.receive_forever()))
         await _watched_room(transport)
-        await transport._watch(mxid_b)
 
         await transport.send_message(mxid_a, "in a", sender_name="puppet")
-        # Written as a client of tenant B: a message in room B carries room
-        # B's tenant, and the composite key to `clients` will not let a
-        # tenant-A client be its sender.
-        async with session_factory() as session:
-            await MessageStore().create(
-                session,
-                Message(
-                    tenant_id=tenant_b,
-                    room_id=room_b_id,
-                    transport_event_id=f"sw_{uuid.uuid4().hex}",
-                    sender_id=speaker_b_mxid,
-                    sender_client_id=speaker_b_id,
-                    sender_name="someone",
-                    event_type="m.room.message",
-                    msgtype="m.text",
-                    body="in b",
-                    formatted_body=None,
-                    thread_root_event_id=None,
-                    content={"body": "in b", "msgtype": "m.text"},
-                ),
-                [],
-            )
-            await session.commit()
+        await transport.send_message(mxid_b, "in b", sender_name="puppet")
 
-        for room_id in ids:
+        for room_id in room_ids:
             await listener.announce(room_id)
 
-        assert {getattr(e, "body", None) for e in received.events} == {"in a", "in b"}
-        assert set(seen) == set(ids), "a room was never read"
+        assert {"in a", "in b"} <= {getattr(e, "body", None) for e in received.events}
+        assert set(seen) == set(room_ids), "a room was never read"
         for room_id, tenants in seen.items():
-            assert tenants and all(t == ids[room_id] for t in tenants), (
-                f"room {room_id} was read under {tenants}, not {ids[room_id]}"
+            assert tenants and all(t == room_ids[room_id] for t in tenants), (
+                f"room {room_id} was read under {tenants}, not {room_ids[room_id]}"
             )
         assert current_tenant_id() is None
+
+    async def test_a_room_in_another_tenant_is_not_a_switch_room_here(
+        self, rls_harness: RLSHarness
+    ) -> None:
+        """What the transport does when handed a room id it has no business
+        with, asked of the restricted role so the policies are what answer.
+
+        It is the same "not a Switch room" a genuinely unknown id gets, and
+        deliberately so: telling the caller that the room exists but belongs
+        to somebody else is an existence oracle, and there is no legitimate
+        caller here to tell — a client is only ever handed room ids from its
+        own rooms.
+        """
+        tenant_id = f"tenant-{uuid.uuid4().hex[:8]}"
+        other_tenant = f"tenant-{uuid.uuid4().hex[:8]}"
+        suffix = uuid.uuid4().hex[:8]
+        async with rls_harness.owner() as session:
+            for t in (tenant_id, other_tenant):
+                session.add(Tenant(id=t, slug=t, name=t))
+            await session.flush()
+            client = Client(
+                tenant_id=tenant_id,
+                matrix_user_id=f"@sys-{suffix}:test",
+                display_name="admin",
+                type="admin",
+            )
+            session.add(client)
+            elsewhere = Room(
+                tenant_id=other_tenant,
+                matrix_room_id=f"!elsewhere-{suffix}:test",
+                name="somebody else's room",
+                description="",
+            )
+            session.add(elsewhere)
+            await session.commit()
+            client_id, user_id = client.id, client.matrix_user_id
+            elsewhere_mxid = elsewhere.matrix_room_id
+
+        transport = _transport(
+            rls_harness.restricted, client_id=client_id, user_id=user_id
+        )
+        with pytest.raises(TransportError, match="is not a Switch room"):
+            await transport.send_message(elsewhere_mxid, "hello", sender_name="admin")
 
 
 async def test_the_schema_forbids_a_client_row_in_another_tenants_room(

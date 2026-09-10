@@ -11,9 +11,10 @@ from switch_core.clients.client_base import ClientBase, ClientConfig
 from switch_core.clients.client_factory import ClientFactory
 from switch_core.config import SwitchConfig
 from switch_core.db.models import Client, Tenant
-from switch_core.db.session_scope import unscoped_session
+from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.client_store import ClientStore
 from switch_core.db.stores.tenant_store import TenantStore
+from switch_core.db.tenant_lookup import all_tenant_ids
 from switch_core.provisioning import Provisioning
 from switch_core.tenant_context import no_tenant, tenant_scope
 
@@ -63,17 +64,35 @@ class ClientLifecycleService:
         them or relay system messages, so "does one exist anywhere" is the
         wrong question to ask: it answers yes for a tenant that has none.
 
-        The enumeration is unscoped by nature — which tenants exist is exactly
-        what a bound session cannot see — and each row is then created with
-        that tenant bound, so the `Client` picks it up from the same default
-        every other scoped write uses instead of being handed a constant.
+        Which tenants exist is exactly what a bound session cannot see, so it
+        comes from `all_tenant_ids` — one of the eight `SECURITY DEFINER`
+        lookups that make up the whole exemption from row-level security
+        (`db/tenant_lookup.py`). Everything after that is an ordinary scoped
+        read, one tenant at a time, and each row is created with that tenant
+        bound so the `Client` picks it up from the same default every other
+        scoped write uses instead of being handed a constant.
+
+        A pass per tenant rather than one read across all of them: the
+        enumeration this replaced could see every tenant's clients at once
+        only because the connection was the tables' owner. Under the runtime
+        role it read nothing, and this whole method silently created a second
+        admin client for tenant zero on every boot.
         """
-        async with unscoped_session(self._session_factory) as session:
-            tenant_ids = await self._tenant_store.get_all_ids(session)
-            already_served = {
-                client.tenant_id
-                for client in await self._client_store.get_by_type(session, client_type)
-            }
+        tenant_ids = await all_tenant_ids(self._session_factory)
+        already_served = set()
+        for tenant_id in tenant_ids:
+            async with tenant_session(self._session_factory, tenant_id) as session:
+                # `get_by_type` carries no tenant filter of its own and leans
+                # on the policy for it, so on an owner connection it answers
+                # with every tenant's clients and marks every tenant served
+                # as soon as one of them is. See `db/tenant_lookup.py`.
+                if any(
+                    client.tenant_id == tenant_id
+                    for client in await self._client_store.get_by_type(
+                        session, client_type
+                    )
+                ):
+                    already_served.add(tenant_id)
 
         localpart = f"switch-{client_type.replace('_', '-')}"
         for tenant_id in tenant_ids:
@@ -104,25 +123,44 @@ class ClientLifecycleService:
         `ensure_system_client` rather than duplicating its per-type,
         per-tenant provisioning logic: the new tenant is simply the one gap
         that enumeration has not filled yet.
+
+        The insert binds the new tenant's *own* id, which is the one binding
+        that satisfies `tenants`' policy: it compares on `id` rather than on a
+        `tenant_id` column, because a tenant is the boundary rather than
+        something inside one. So creating a tenant needs no exemption at all —
+        the row is written by a session scoped to exactly the tenant being
+        created, and to nothing else. The id is generated here rather than by
+        the database for that reason.
         """
-        tenant = Tenant(name=name, slug=slug)
-        async with unscoped_session(self._session_factory) as session:
+        tenant = Tenant(id=str(uuid.uuid4()), name=name, slug=slug)
+        async with tenant_session(self._session_factory, tenant.id) as session:
             await self._tenant_store.create(session, tenant)
             await session.commit()
         await self.ensure_system_client("admin")
         return tenant
 
     async def start_all(self) -> None:
-        # Every tenant's clients in one pass at boot, so this read is
-        # unscoped by nature. Nothing is bound around `_start_task`: a client
-        # is not a single-tenant actor for the purposes of its own task. It
-        # reads which rooms it is in — a lookup keyed by a globally unique
-        # client id — and then works one room at a time, binding that room's
-        # tenant per delivery. A boot-time binding would only decide what the
-        # task snapshots, and the whole point is that nothing downstream may
-        # depend on that.
-        async with unscoped_session(self._session_factory) as session:
-            records = await self._client_store.get_all(session)
+        # Every tenant's clients at boot, read one tenant at a time. The
+        # enumeration is `all_tenant_ids` — the exemption answers which
+        # tenants there are, and each tenant's clients are then an ordinary
+        # scoped read (`db/tenant_lookup.py`).
+        #
+        # Nothing is bound around `_start_task`, and that is unchanged: a
+        # client's own task derives its tenant from its client row rather than
+        # inheriting one, so a binding here would only decide what the task
+        # snapshots, which is exactly what must not matter.
+        records: list[Client] = []
+        for tenant_id in await all_tenant_ids(self._session_factory):
+            async with tenant_session(self._session_factory, tenant_id) as session:
+                # Filtered on the row's own tenant, not left to the policy: on an
+                # owner connection no policy narrows this read, and the fan-out
+                # would act on every tenant's rows once per tenant. See
+                # `db/tenant_lookup.py`, "a fan-out ... filters what it reads back".
+                records.extend(
+                    record
+                    for record in await self._client_store.get_all(session)
+                    if record.tenant_id == tenant_id
+                )
 
         records = [r for r in records if r.type not in self.COLLAB_CLIENT_TYPES]
 

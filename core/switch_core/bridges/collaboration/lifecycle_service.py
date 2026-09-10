@@ -15,13 +15,14 @@ from switch_core.clients.bridge_client import BridgeClient, BridgeClientConfig
 from switch_core.clients.client_factory import ClientFactory
 from switch_core.config import SwitchConfig
 from switch_core.db.models import CollaborationBridge
-from switch_core.db.session_scope import tenant_session, unscoped_session
+from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.bridge_message_map_store import BridgeMessageMapStore
 from switch_core.db.stores.client_store import ClientStore
 from switch_core.db.stores.collaboration_bridge_store import CollaborationBridgeStore
 from switch_core.db.stores.external_user_store import ExternalUserStore
 from switch_core.db.stores.room_store import RoomStore
+from switch_core.db.tenant_lookup import all_tenant_ids, tenant_of_collaboration_bridge
 from switch_core.provisioning import Provisioning
 from switch_core.tenant_context import no_tenant
 
@@ -190,15 +191,35 @@ class CollaborationBridgeLifecycleService:
         config_cls.model_validate(connection_config)
 
     async def start_all(self) -> None:
-        # Every tenant's active bridges in one pass, so the read is unscoped
-        # by nature. Nothing is bound around `start`: the bridge's tenant is
-        # read from its own row inside `start`, and bound by each unit of work
-        # that needs it. Binding here instead would only decide what the
-        # long-lived task snapshots, which is exactly what must not matter —
-        # `start` is also reached from an HTTP request, and a bridge cannot
-        # run under whichever tenant happened to restart it.
-        async with unscoped_session(self._session_factory) as session:
-            bridges = await self._bridge_store.get_active(session)
+        # Every tenant's active bridges, read one tenant at a time. Which
+        # tenants there are comes from the exemption (`db/tenant_lookup.py`);
+        # each tenant's bridges are then an ordinary scoped read.
+        #
+        # This was one unscoped read, and under the runtime role it returned
+        # nothing — which is indistinguishable from a deployment with no
+        # bridges configured. No bridge started, and the line below said
+        # "Starting 0 collaboration bridges" with no error anywhere to say
+        # otherwise. It stayed invisible until a bridge row existed, because
+        # Postgres does not evaluate a policy for a scan that finds no rows.
+        #
+        # Nothing is bound around `start`: the bridge's tenant is read from its
+        # own row inside `start`, and bound by each unit of work that needs it.
+        # Binding here would only decide what the long-lived task snapshots,
+        # which is exactly what must not matter — `start` is also reached from
+        # an HTTP request, and a bridge cannot run under whichever tenant
+        # happened to restart it.
+        bridges: list[CollaborationBridge] = []
+        for tenant_id in await all_tenant_ids(self._session_factory):
+            async with tenant_session(self._session_factory, tenant_id) as session:
+                # Filtered on the row's own tenant, not left to the policy: on an
+                # owner connection no policy narrows this read, and the fan-out
+                # would act on every tenant's rows once per tenant. See
+                # `db/tenant_lookup.py`, "a fan-out ... filters what it reads back".
+                bridges.extend(
+                    bridge
+                    for bridge in await self._bridge_store.get_active(session)
+                    if bridge.tenant_id == tenant_id
+                )
 
         logger.info("Starting %d collaboration bridges", len(bridges))
         for bridge in bridges:
@@ -230,9 +251,21 @@ class CollaborationBridgeLifecycleService:
         # workspace, or the same Teams listen port, is precisely the collision
         # this exists to refuse — the resource is a property of the host and
         # the platform, not of a tenant — so narrowing to the caller's tenant
-        # would make it miss the case it was written for.
-        async with unscoped_session(self._session_factory) as session:
-            existing = await self._bridge_store.get_all(session)
+        # would make it miss the case it was written for. Reached from an
+        # authenticated request, so what is bound going in *is* the caller's
+        # tenant; the loop replaces it per tenant rather than inheriting it.
+        existing: list[CollaborationBridge] = []
+        for tenant_id in await all_tenant_ids(self._session_factory):
+            async with tenant_session(self._session_factory, tenant_id) as session:
+                # Filtered on the row's own tenant, not left to the policy: on an
+                # owner connection no policy narrows this read, and the fan-out
+                # would act on every tenant's rows once per tenant. See
+                # `db/tenant_lookup.py`, "a fan-out ... filters what it reads back".
+                existing.extend(
+                    bridge
+                    for bridge in await self._bridge_store.get_all(session)
+                    if bridge.tenant_id == tenant_id
+                )
         for other in existing:
             # Guard the None case explicitly: an unflushed row has no id yet, and
             # `other.id == exclude_bridge_id` would then be None == None and skip
@@ -348,15 +381,21 @@ class CollaborationBridgeLifecycleService:
         return bridge
 
     async def start(self, bridge_id: str) -> None:
-        # Unscoped: this is the read that answers which tenant the bridge is
-        # in, and it is reached both from boot (nothing bound) and from an
-        # HTTP request (the caller's tenant bound, which is not necessarily
-        # the bridge's). Everything below derives its tenant from this row.
-        async with unscoped_session(self._session_factory) as session:
+        # Two steps, because this is the point where the bridge's tenant is
+        # not yet known: the exemption answers which tenant the id is in
+        # (`db/tenant_lookup.py`), and the row itself is then read scoped to
+        # it. Reached both from boot, with nothing bound, and from an HTTP
+        # request, where what is bound is the caller's tenant and not
+        # necessarily the bridge's — so this deliberately does not inherit.
+        tenant_id = await tenant_of_collaboration_bridge(
+            self._session_factory, bridge_id
+        )
+        if tenant_id is None:
+            raise ValueError(f"Bridge not found: {bridge_id}")
+        async with tenant_session(self._session_factory, tenant_id) as session:
             bridge = await self._bridge_store.get(session, bridge_id)
         if bridge is None:
             raise ValueError(f"Bridge not found: {bridge_id}")
-        tenant_id = bridge.tenant_id
 
         adapter_cls = self._adapter_registry.get(bridge.type)
         config_cls = self._config_registry.get(bridge.type)

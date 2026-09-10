@@ -58,6 +58,7 @@ from switch_core.db.engine import (
     create_unpooled_engine,
 )
 from switch_core.db.models import TENANT_ZERO_ID, Tenant, User
+from switch_core.db.runtime_role import grant_runtime_role, verify_restricted_role
 from switch_core.db.stores.agent_session_store import AgentSessionStore
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.api_key_store import ApiKeyStore
@@ -87,6 +88,11 @@ from switch_core.transport.invites import InviteBus
 
 # ── Mirrors deploy/local/docker-compose.yml — keep in sync ──────────────────────
 POSTGRES_IMAGE = "postgres:16-alpine"
+
+# The role the application runs as here. Named the same as the one
+# `deploy/local/docker-compose.yml` creates, so what this suite exercises and
+# what a developer's stack runs are the same shape.
+RUNTIME_ROLE = "switch_app"
 
 # ── Throwaway test constants (not secrets — local ephemeral infra) ──────────────
 SERVER_NAME = "localhost"
@@ -119,12 +125,21 @@ class StackInfo:
 
 @dataclass
 class SessionEnv:
-    """Session-scoped pieces shared by every test: the engine/schema and the
+    """Session-scoped pieces shared by every test: the engines/schema and the
     (stateless) stores. The per-test `harness` fixture builds the in-memory
-    services on top of these."""
+    services on top of these.
+
+    Two engines, and which is which matters. `engine` is the restricted
+    runtime role every service here is wired to — the row-level-security
+    policies apply to it, so what this suite exercises is what a deployment
+    runs. `owner_engine` is the schema owner, used only for the two things
+    that need DDL and that the application never does: building the schema and
+    truncating it between tests.
+    """
 
     config: SwitchConfig
     engine: AsyncEngine
+    owner_engine: AsyncEngine
     session_factory: object
     agent_store: AgentStore
     agent_session_store: AgentSessionStore
@@ -180,13 +195,22 @@ def switch_stack() -> Iterator[StackInfo]:
         yield StackInfo(pg=pg)
 
 
-def _build_config(stack: StackInfo, db_name: str) -> SwitchConfig:
+def _build_config(
+    stack: StackInfo,
+    db_name: str,
+    *,
+    user: str | None = None,
+    password: str | None = None,
+) -> SwitchConfig:
+    """Config for one of the two roles. Defaults to the container's own —
+    the schema owner — and is given the runtime role explicitly for the config
+    the application is actually wired with."""
     pg = stack.pg
     return SwitchConfig(
         db_host=pg.get_container_host_ip(),
         db_port=str(pg.get_exposed_port(5432)),
-        db_user=pg.username,
-        db_password=pg.password,
+        db_user=user or pg.username,
+        db_password=password or pg.password,
         db_name=db_name,
         matrix_server_name=SERVER_NAME,
         agent_registration_token=REGISTRATION_TOKEN,
@@ -342,6 +366,22 @@ async def _truncate_all(engine: AsyncEngine) -> None:
 
 @pytest_asyncio.fixture(scope="session", loop_scope="session")
 async def session_env(switch_stack: StackInfo) -> AsyncIterator[SessionEnv]:
+    """The database, and the two roles that reach it.
+
+    **The application runs as a restricted role here, not as the owner**, and
+    that is the point of this fixture rather than an implementation detail of
+    it. Every row-level-security policy in this schema is inert against a
+    superuser or the tables' owner, so an integration suite connected as
+    either exercises the real code against a database with no isolation in it
+    — which is exactly how nineteen call sites came to depend on reads a
+    deployed system refuses, and why several of them were invisible until a
+    row existed. Wiring the app to `switch_app` makes this suite the thing
+    that catches the twentieth.
+
+    The owner connection stays, for the two jobs that genuinely need DDL and
+    that the application never does: building the schema, and truncating it
+    between tests.
+    """
     # One database for the whole session; tests reset it with TRUNCATE rather than
     # CREATE/DROP DATABASE. DROP at teardown uses FORCE to evict any still-open
     # sync connections.
@@ -351,21 +391,47 @@ async def session_env(switch_stack: StackInfo) -> AsyncIterator[SessionEnv]:
     await admin_conn.execute(f'CREATE DATABASE "{db_name}"')
     await admin_conn.close()
 
-    config = _build_config(switch_stack, db_name)
-    engine = create_engine_from_config(config)
-    session_factory = create_session_factory(engine)
+    owner_engine = create_engine_from_config(_build_config(switch_stack, db_name))
 
     # Schema is built directly from the SQLAlchemy models (not Alembic). This is
     # fast and always matches the current models, but means the integration suite
     # does NOT exercise the migration chain — model↔migration drift is caught
     # separately by `just migrate`, not here.
-    async with engine.begin() as conn:
+    async with owner_engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
-    await _seed_tenant_zero(engine)
+    await _seed_tenant_zero(owner_engine)
+
+    runtime_password = uuid.uuid4().hex
+    async with owner_engine.begin() as conn:
+        # CREATE ROLE takes no bind parameter for PASSWORD, so a fresh random
+        # throwaway is interpolated. Granted through `grant_runtime_role`, the
+        # same function a deployment runs at boot, so nothing here can pass on
+        # a privilege production has not got.
+        await conn.execute(
+            text(
+                f'CREATE ROLE "{RUNTIME_ROLE}" LOGIN '
+                f"PASSWORD '{runtime_password}' "
+                "NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS"
+            )
+        )
+        await grant_runtime_role(conn, RUNTIME_ROLE)
+
+    config = _build_config(
+        switch_stack, db_name, user=RUNTIME_ROLE, password=runtime_password
+    )
+    engine = create_engine_from_config(config)
+    session_factory = create_session_factory(engine)
+
+    # The same check `main.run()` makes before it serves a request: not a
+    # superuser, owns nothing policied, and cannot read a scoped table with no
+    # tenant bound. If this ever passed for the wrong reason, every isolation
+    # claim the suite below makes would be worth nothing.
+    await verify_restricted_role(engine)
 
     env = SessionEnv(
         config=config,
         engine=engine,
+        owner_engine=owner_engine,
         session_factory=session_factory,
         agent_store=AgentStore(),
         agent_session_store=AgentSessionStore(),
@@ -389,18 +455,28 @@ async def session_env(switch_stack: StackInfo) -> AsyncIterator[SessionEnv]:
         yield env
     finally:
         await engine.dispose()
+        # The role outlives the database it was granted in — roles are
+        # cluster-wide — so its privileges have to go before it can. `DROP
+        # OWNED BY` revokes what survives the database drop; it owns nothing,
+        # so there is nothing for it to drop.
+        async with owner_engine.begin() as conn:
+            await conn.execute(text(f'DROP OWNED BY "{RUNTIME_ROLE}"'))
+        await owner_engine.dispose()
         admin_conn = await asyncpg.connect(admin_dsn)
         try:
             await admin_conn.execute(
                 f'DROP DATABASE IF EXISTS "{db_name}" WITH (FORCE)'
             )
+            await admin_conn.execute(f'DROP ROLE IF EXISTS "{RUNTIME_ROLE}"')
         finally:
             await admin_conn.close()
 
 
 @pytest_asyncio.fixture(loop_scope="session")
 async def harness(session_env: SessionEnv) -> AsyncIterator[Harness]:
-    await _truncate_all(session_env.engine)
+    # Truncation is DDL-adjacent and crosses every tenant, so it runs as
+    # the owner. Nothing the application does goes through this engine.
+    await _truncate_all(session_env.owner_engine)
 
     config = session_env.config
     session_factory = session_env.session_factory

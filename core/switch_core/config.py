@@ -19,6 +19,35 @@ class SwitchConfig(BaseSettings):
     db_password: str
     db_name: str
 
+    # The schema owner, used for exactly two things and never to serve a
+    # request: running Alembic, and re-issuing the runtime role's grants right
+    # after it, so a table a migration has just added is readable by the role
+    # that is about to need it.
+    #
+    # `DB_USER` above is the *runtime* role, the one the row-level-security
+    # policies apply to. It deliberately owns nothing and can create nothing,
+    # so it cannot run a migration — that is what it is for, not an oversight
+    # — and granting it schema rights so that boot-time migrations keep
+    # working would hand back the ownership exemption the policies rely on it
+    # not having.
+    #
+    # Unset means "this deployment migrates somewhere else": boot applies no
+    # migrations and expects the schema to already be at head.
+    db_owner_user: str | None = None
+    db_owner_password: str | None = None
+
+    # Refuse to serve when the runtime connection is not actually subject to
+    # the policies — a superuser, a `BYPASSRLS` role, or the owner of the
+    # scoped tables. On by default because the failure it catches is silent: a
+    # Switch that believes it is isolating tenants and is not looks exactly
+    # like one that is, right up until a second customer reads the first's
+    # rooms.
+    #
+    # Set false only for a deployment that has not created its runtime role
+    # yet. Boot then logs at `error` on every start, because that is a
+    # deployment with no tenant isolation in it.
+    db_require_restricted_role: bool = True
+
     # The server half of every client's `@localpart:server` id. Not a
     # homeserver address — nothing is contacted at it — but the ids are stable
     # public handles, so the shape outlives the homeserver that chose it.
@@ -318,10 +347,31 @@ class SwitchConfig(BaseSettings):
 
     @property
     def database_url(self) -> str:
+        """The runtime connection: the restricted role that serves every request."""
         return (
             f"postgresql+asyncpg://{self.db_user}:{self.db_password}"
             f"@{self.db_host}:{self.db_port}/{self.db_name}"
         )
+
+    @property
+    def owner_database_url(self) -> str | None:
+        """The schema owner's connection, or None if this deployment has none.
+
+        Same host, port and database as the runtime connection — only the role
+        differs. Two roles rather than two databases is the entire shape: the
+        owner exists so that something can run DDL, and the runtime role exists
+        so that nothing serving a request can.
+        """
+        if self.db_owner_user is None or self.db_owner_password is None:
+            return None
+        return (
+            f"postgresql+asyncpg://{self.db_owner_user}:{self.db_owner_password}"
+            f"@{self.db_host}:{self.db_port}/{self.db_name}"
+        )
+
+    @property
+    def runs_migrations_at_boot(self) -> bool:
+        return self.owner_database_url is not None
 
     @property
     def db_connect_args(self) -> dict[str, object]:

@@ -10,6 +10,7 @@ from sqlalchemy import insert, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import (
     AsyncConnection,
+    AsyncEngine,
     AsyncSession,
     async_sessionmaker,
     create_async_engine,
@@ -22,6 +23,7 @@ import switch_core.db.models  # noqa: F401
 from switch_core.db.base import Base
 from switch_core.db.engine import create_session_factory
 from switch_core.db.models import TENANT_ZERO_ID, Tenant
+from switch_core.db.runtime_role import grant_runtime_role
 from switch_core.tenant_context import bind_tenant_id, unbind_tenant_id
 
 
@@ -124,6 +126,13 @@ class RLSHarness:
 
     owner: async_sessionmaker[AsyncSession]
     restricted: async_sessionmaker[AsyncSession]
+    # The engines behind the two factories, for the boot self-check
+    # (`db/runtime_role.verify_restricted_role`), which is asked of a
+    # connection rather than of a session. Exposed rather than rebuilt in the
+    # test so that what it inspects is the connection the assertions above
+    # were made through.
+    owner_engine: AsyncEngine
+    restricted_engine: AsyncEngine
 
 
 @pytest_asyncio.fixture
@@ -142,24 +151,24 @@ async def rls_harness(postgres_url: str) -> AsyncIterator[RLSHarness]:
     `session_factory` does), seeds tenant zero, and creates a throwaway login
     role that is not the owner (so it doesn't inherit the owner's blanket
     exemption from its own tables' policies), not a superuser, and carries no
-    `BYPASSRLS`. It is granted exactly what a restricted runtime role would
-    need — CRUD on the schema's tables and `EXECUTE` on `require_tenant_id()`
-    — and nothing else: deliberately the same shape `docs/old/multi-tenancy-
-    phase1-db.md`'s "runtime role" section describes for the real deployment
-    role this phase does not create. Creating it only here, inside a test
-    fixture, is what that section calls out as the one place Phase 1 does
-    keep a restricted role.
+    `BYPASSRLS`.
+
+    **It is granted by `db/runtime_role.grant_runtime_role`, the same function
+    boot runs against a real deployment**, rather than by a second list of
+    grants written out here. That is deliberate: a fixture that granted more
+    than production does would let a test pass on a privilege the deployment
+    has not got, and one that granted less would fail for a reason the
+    deployment never hits. Sharing the definition makes "the restricted role
+    can do its job" a property this suite actually proves.
 
     Only the tests that exist to prove the policies correct ask for this
     fixture — the rest of the suite keeps using `session_factory` exactly as
-    it does today. What this proves, and what it does not: it proves the
-    *policies* are correct, that a session subject to them cannot cross a
-    tenant boundary through the ordinary store layer. It does not prove the
-    *deployment* is subject to them, since nothing here changes which role
-    local Compose, the chart or production connect as — that is the separate
-    role work (CHOO-2685); until it lands, a superuser or table-owner
-    connection bypasses every policy below regardless of what this fixture
-    demonstrates.
+    it does today, connected as the owner. What this proves and what it does
+    not is worth stating: it proves the *policies* and the *exemption* are
+    correct against a role they apply to. Whether the deployment connects as
+    such a role is a separate question, asked at boot by
+    `db/runtime_role.verify_restricted_role` rather than here, because CI has
+    no production connection to ask it of.
     """
     owner_engine = create_async_engine(postgres_url)
     role = f"switch_rls_test_{uuid.uuid4().hex[:12]}"
@@ -177,19 +186,7 @@ async def rls_harness(postgres_url: str) -> AsyncIterator[RLSHarness]:
                 "NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS"
             )
         )
-        await conn.execute(text(f'GRANT USAGE ON SCHEMA public TO "{role}"'))
-        await conn.execute(
-            text(
-                "GRANT SELECT, INSERT, UPDATE, DELETE "
-                f'ON ALL TABLES IN SCHEMA public TO "{role}"'
-            )
-        )
-        await conn.execute(
-            text(f'GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO "{role}"')
-        )
-        await conn.execute(
-            text(f'GRANT EXECUTE ON FUNCTION require_tenant_id() TO "{role}"')
-        )
+        await grant_runtime_role(conn, role)
 
     restricted_url = make_url(postgres_url).set(username=role, password=password)
     restricted_engine = create_async_engine(restricted_url)
@@ -197,6 +194,8 @@ async def rls_harness(postgres_url: str) -> AsyncIterator[RLSHarness]:
         yield RLSHarness(
             owner=create_session_factory(owner_engine),
             restricted=create_session_factory(restricted_engine),
+            owner_engine=owner_engine,
+            restricted_engine=restricted_engine,
         )
     finally:
         await restricted_engine.dispose()

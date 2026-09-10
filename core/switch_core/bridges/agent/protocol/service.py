@@ -59,6 +59,7 @@ from switch_core.bridges.resource.service import ResourceService
 from switch_core.crypto import encrypt_token
 from switch_core.db.models import (
     Agent,
+    AgentRuntimeState,
     ApiKey,
     Message,
     MessageAttachment,
@@ -72,7 +73,7 @@ from switch_core.db.models import (
     Tool,
     User,
 )
-from switch_core.db.session_scope import unscoped_session
+from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.agent_runtime_state_store import (
     IDLE as RUNTIME_STATE_IDLE,
 )
@@ -83,6 +84,7 @@ from switch_core.db.stores.message_store import MessageStore
 from switch_core.db.stores.room_group_store import RoomGroupStore
 from switch_core.db.stores.room_role_store import RoomRoleStore
 from switch_core.db.stores.user_store import UserStore
+from switch_core.db.tenant_lookup import all_tenant_ids, tenant_of_api_key
 from switch_core.deeplinks import deeplink_for_platform
 from switch_core.events import (
     LlmCallReport as MatrixLlmCallReport,
@@ -480,16 +482,20 @@ class ProtocolService:
         confirming itself on every subsequent call.
         """
         token_hash = hashlib.sha256(registration_token.encode()).hexdigest()
-        # Resolving a credential is unscoped by definition — `key_hash` is one
-        # of the two columns deliberately left globally unique for exactly
-        # this reason — and it is the read that *produces* the tenant bound
-        # below. Answering it under a tenant would make it either a tautology
-        # or a false "invalid token".
-        async with unscoped_session(self.session_factory) as session:
+        # Resolving a credential is the read that *produces* a tenant, so it
+        # cannot be answered under one: doing so is either a tautology or a
+        # false "invalid token". `key_hash` is one of the two columns
+        # deliberately left globally unique for exactly this, and the
+        # exemption (`db/tenant_lookup.py`) turns it into a tenant id. The key
+        # row itself, and the owner resolution that reads it, are then
+        # ordinary scoped reads under that tenant.
+        tenant_id = await tenant_of_api_key(self.session_factory, token_hash)
+        if tenant_id is None:
+            raise PermissionError("Invalid registration token")
+        async with tenant_session(self.session_factory, tenant_id) as session:
             key = await self.api_key_store.get_by_hash(session, token_hash)
             if key is None or key.type not in REGISTRATION_KEY_TYPES:
                 raise PermissionError("Invalid registration token")
-            tenant_id = key.tenant_id
             try:
                 owner_id = await resolve_registration_owner_id(
                     session, self.user_store, key
@@ -1573,16 +1579,30 @@ class ProtocolService:
         deleted and recreated on every refresh rather than edited in place.
         """
         # This sweep spans every tenant by nature — it is the one place that
-        # decides whether *any* stale row anywhere needs resetting — so the
-        # initial read is unscoped. Everything done *with* a row then happens
-        # inside that row's own tenant, including the emit at the end: the
-        # clear event goes out to a bridge, which resolves a mention handle
-        # and posts a message, and those are writes in the row's tenant like
-        # any other. Closing the binding after the upsert and leaving the tail
-        # outside it would put exactly the visible half of the work back on
-        # whatever was ambient.
-        async with unscoped_session(self.session_factory) as session:
-            rows = await self.agent_runtime_state_store.get_active(session)
+        # decides whether *any* stale row anywhere needs resetting — so it
+        # asks the exemption which tenants there are (`db/tenant_lookup.py`)
+        # and reads each tenant's rows scoped to it. That is one extra round
+        # trip every five seconds, which is what the enumeration costs now
+        # that a single cross-tenant read is not available to it.
+        #
+        # Everything done *with* a row happens inside that row's own tenant,
+        # including the emit at the end: the clear event goes out to a bridge,
+        # which resolves a mention handle and posts a message, and those are
+        # writes in the row's tenant like any other. Closing the binding after
+        # the upsert and leaving the tail outside it would put exactly the
+        # visible half of the work back on whatever was ambient.
+        rows: list[AgentRuntimeState] = []
+        for tenant_id in await all_tenant_ids(self.session_factory):
+            async with tenant_session(self.session_factory, tenant_id) as session:
+                # Filtered on the row's own tenant, not left to the policy: on an
+                # owner connection no policy narrows this read, and the fan-out
+                # would act on every tenant's rows once per tenant. See
+                # `db/tenant_lookup.py`, "a fan-out ... filters what it reads back".
+                rows.extend(
+                    row
+                    for row in await self.agent_runtime_state_store.get_active(session)
+                    if row.tenant_id == tenant_id
+                )
         for row in rows:
             if self.connections.has_session_in(row.agent_id, row.room_id):
                 continue

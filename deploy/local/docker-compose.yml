@@ -4,13 +4,18 @@ services:
     ports:
       - "${SWITCH_BIND_ADDR:-127.0.0.1}:5432:5432"
     environment:
-      POSTGRES_USER: ${DB_USER}
-      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      # The container's bootstrapped superuser is the SCHEMA OWNER
+      # (DB_OWNER_USER), not the runtime role Switch serves requests as
+      # (DB_USER). Row-level security is inert against a table's owner, so
+      # the role every request authenticates as must be a separate, deliberately
+      # unprivileged login — created below by init-db, once the owner is up.
+      POSTGRES_USER: ${DB_OWNER_USER}
+      POSTGRES_PASSWORD: ${DB_OWNER_PASSWORD}
       POSTGRES_DB: ${DB_NAME}
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${DB_USER}"]
+      test: ["CMD-SHELL", "pg_isready -U ${DB_OWNER_USER}"]
       interval: 2s
       timeout: 3s
       retries: 10
@@ -18,12 +23,28 @@ services:
   init-db:
     image: postgres:16-alpine
     environment:
-      PGPASSWORD: ${DB_PASSWORD}
+      PGPASSWORD: ${DB_OWNER_PASSWORD}
+    # Runs as the owner: creating a database and a role both need privileges
+    # the runtime role is deliberately never given. Note the mixed quoting in
+    # the CREATE ROLE / ALTER ROLE statements is not optional — DB_USER is an
+    # identifier (double-quoted, and safe only because .env.example pins it to
+    # a fixed, non-attacker-controlled name) and the password is a string
+    # literal (single-quoted); swapping them would either fail to parse or
+    # quietly create a role named after the password.
+    #
+    # No GRANT here on purpose: on a fresh volume there is nothing yet to
+    # grant. The `switch` database has no tables until switch-core runs
+    # Alembic against the owner connection, so the runtime role's CRUD grants
+    # are issued by switch-core itself at boot, immediately after migrating —
+    # see db/runtime_role.py. This step only has to make the role exist.
     entrypoint: >
       sh -c "
-        until pg_isready -h postgres -U ${DB_USER}; do sleep 1; done
-        psql -h postgres -U ${DB_USER} -tc \"SELECT 1 FROM pg_database WHERE datname='mattermost'\" | grep -q 1 ||
-          psql -h postgres -U ${DB_USER} -c 'CREATE DATABASE mattermost;'
+        until pg_isready -h postgres -U ${DB_OWNER_USER}; do sleep 1; done
+        psql -h postgres -U ${DB_OWNER_USER} -tc \"SELECT 1 FROM pg_database WHERE datname='mattermost'\" | grep -q 1 ||
+          psql -h postgres -U ${DB_OWNER_USER} -c 'CREATE DATABASE mattermost;'
+        psql -h postgres -U ${DB_OWNER_USER} -tc \"SELECT 1 FROM pg_roles WHERE rolname='${DB_USER}'\" | grep -q 1 ||
+          psql -h postgres -U ${DB_OWNER_USER} -c 'CREATE ROLE \"${DB_USER}\" LOGIN PASSWORD '\\''${DB_PASSWORD}'\\'' NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS;'
+        psql -h postgres -U ${DB_OWNER_USER} -c 'ALTER ROLE \"${DB_USER}\" PASSWORD '\\''${DB_PASSWORD}'\\'';'
       "
     depends_on:
       postgres:
@@ -38,7 +59,13 @@ services:
       - mmdata:/mattermost/data
     environment:
       MM_SQLSETTINGS_DRIVERNAME: postgres
-      MM_SQLSETTINGS_DATASOURCE: postgres://${DB_USER}:${DB_PASSWORD}@postgres:5432/mattermost?sslmode=disable
+      # The owner's credentials, not the runtime role's: init-db creates the
+      # `mattermost` database as the owner, and the runtime role (DB_USER)
+      # neither owns it nor was granted anything on it — only `switch`'s
+      # tables get the runtime role's grants, issued by switch-core itself at
+      # boot. Mattermost's own schema has no row-level security in it, so
+      # there is no isolation reason to run it as the restricted role too.
+      MM_SQLSETTINGS_DATASOURCE: postgres://${DB_OWNER_USER}:${DB_OWNER_PASSWORD}@postgres:5432/mattermost?sslmode=disable
       MM_SERVICESETTINGS_SITEURL: http://localhost:8065
       MM_SERVICESETTINGS_ENABLELOCALMODE: "true"
       MM_SERVICESETTINGS_ENABLEBOTACCOUNTCREATION: "true"

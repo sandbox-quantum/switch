@@ -2,19 +2,45 @@
 
 from __future__ import annotations
 
+import hashlib
 from types import SimpleNamespace
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.addressing import parse_policy
 from switch_core.bridges.agent.protocol.service import ProtocolService
-from switch_core.db.models import TENANT_ZERO_ID
+from switch_core.db.models import TENANT_ZERO_ID, ApiKey
 from tests.switch_core.bridges.agent.protocol.registration_harness import (
     PROFILE,
     make_owner,
     make_service,
     register,
 )
+
+
+async def _seed_registration_key(
+    session_factory: async_sessionmaker[AsyncSession], owner_id: str, token: str
+) -> None:
+    """A real `api_keys` row for `token`.
+
+    `register_agent_with_token` resolves the token's tenant through
+    `tenant_of_api_key` — a `SECURITY DEFINER` SQL function reading the real
+    table — before it ever reaches `svc.api_key_store`, which these tests
+    stub (`_stub_key`) to control the row `register_agent_with_token` sees
+    once the tenant is known. Stubbing the store cannot stand in for this
+    row too: the tenant lookup has no store to intercept.
+    """
+    async with session_factory() as session:
+        session.add(
+            ApiKey(
+                user_id=owner_id,
+                key_hash=hashlib.sha256(token.encode()).hexdigest(),
+                encrypted_key="enc",
+                label="reg",
+                type="registration",
+            )
+        )
+        await session.commit()
 
 
 async def _policy_of(
@@ -141,6 +167,7 @@ class TestRegisterWithTokenPassesThrough:
     ) -> None:
         svc = make_service(session_factory)
         owner_id = await make_owner(session_factory)
+        await _seed_registration_key(session_factory, owner_id, "tok")
         captured: dict[str, object] = {}
 
         async def _register_agent(**kwargs: object) -> object:
@@ -167,6 +194,7 @@ class TestRegisterWithTokenPassesThrough:
     ) -> None:
         svc = make_service(session_factory)
         owner_id = await make_owner(session_factory)
+        await _seed_registration_key(session_factory, owner_id, "tok")
         captured: dict[str, object] = {}
 
         async def _register_agent(**kwargs: object) -> object:

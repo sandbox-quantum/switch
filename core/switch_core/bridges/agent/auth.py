@@ -13,8 +13,13 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 from switch_core.bridges.agent.api_key_cache import ApiKeyCache
 from switch_core.bridges.agent.registration_bootstrap import REGISTRATION_KEY_TYPES
 from switch_core.db.models import Agent, ApiKey
+from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.api_key_store import ApiKeyStore
+from switch_core.db.tenant_lookup import (
+    tenant_of_agent_oauth_client,
+    tenant_of_api_key,
+)
 from switch_core.logging_context import bind_log_context, unbind_log_context
 from switch_core.tenant_context import tenant_scope
 
@@ -94,10 +99,12 @@ class BearerAuthMiddleware:
     question about whether a downstream ``get_session`` might query before the
     tenant is known — it cannot, since it does not run until after
     ``self.app(...)`` is called below. The lookups that resolve the credential
-    itself (``_resolve_api_key``, ``_try_oidc``) run on their own session,
-    opened directly from ``session_factory`` rather than through that
-    downstream seam, because they are what determines the tenant and so must
-    run before one is bound.
+    itself (``_resolve_api_key``, ``_try_oidc``) run ahead of that, on
+    sessions of their own, and each is in two steps: the credential's *tenant*
+    comes from one of the eight ``SECURITY DEFINER`` lookups that are the
+    whole exemption from row-level security (``db/tenant_lookup.py``), and the
+    row itself is then read with that tenant bound, subject to the same
+    policies as everything else.
     """
 
     def __init__(
@@ -206,9 +213,23 @@ class BearerAuthMiddleware:
         if cached is not None:
             return cached
 
-        # A system session: no tenant is bound yet, because this lookup is
-        # what determines one.
-        async with self._session_factory() as session:
+        # Two steps, because a credential's tenant has to be known before its
+        # row can be read. `api_keys` is scoped like everything else, so a
+        # session with nothing bound reads nothing from it — this used to be a
+        # single unbound read, and under the restricted runtime role it failed
+        # on every request that missed the cache. The hash is resolved to a
+        # tenant through the `SECURITY DEFINER` exemption
+        # (`db/tenant_lookup.py`), which answers with a tenant id and nothing
+        # else, and the row itself is then read the ordinary scoped way.
+        #
+        # An unknown token resolves to no tenant and stops here, without a
+        # second round trip — which is also the shape that matters for load,
+        # since an unauthenticated flood never reaches the second query.
+        tenant_id = await tenant_of_api_key(self._session_factory, token_hash)
+        if tenant_id is None:
+            return None, None
+
+        async with tenant_session(self._session_factory, tenant_id) as session:
             found = await self._api_key_store.get_with_agent_by_hash(
                 session, token_hash
             )
@@ -236,9 +257,15 @@ class BearerAuthMiddleware:
             logger.warning("OIDC token has no azp or client_id claim")
             return None
 
-        # A system session, same reason as _resolve_api_key: this is what
-        # decides which agent (and so which tenant) is asking.
-        async with self._session_factory() as session:
+        # Same two steps as `_resolve_api_key`, for the same reason: `agents`
+        # is scoped, and this is the read that decides which agent — and so
+        # which tenant — is asking. `oauth_client_id` carries no unique index,
+        # so the lookup refuses rather than picking when two tenants have
+        # registered an agent under the same one.
+        tenant_id = await tenant_of_agent_oauth_client(self._session_factory, client_id)
+        if tenant_id is None:
+            return None
+        async with tenant_session(self._session_factory, tenant_id) as session:
             return await self._agent_store.get_by_oauth_client_id(session, client_id)
 
 

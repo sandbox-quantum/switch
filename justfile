@@ -26,7 +26,7 @@ init-env:
       exit 1
     fi
     cp .env.example .env
-    for key in DB_PASSWORD \
+    for key in DB_PASSWORD DB_OWNER_PASSWORD \
                AGENT_REGISTRATION_TOKEN JWT_SECRET_KEY GATEWAY_ADMIN_PASSWORD \
                MATTERMOST_ADMIN_PASSWORD MATTERMOST_USER_PASSWORD; do
       secret="$(openssl rand -hex 24)"

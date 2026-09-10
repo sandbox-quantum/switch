@@ -44,7 +44,7 @@ from switch_core.clients.mentions import (
 )
 from switch_core.clients.room_meta import RoomMeta
 from switch_core.db.models import Agent
-from switch_core.db.session_scope import unscoped_session
+from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.agent_session_store import AgentSessionStore
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.collaboration_bridge_store import CollaborationBridgeStore
@@ -53,6 +53,7 @@ from switch_core.db.stores.external_user_store import ExternalUserStore
 from switch_core.db.stores.reference_store import ReferenceStore
 from switch_core.db.stores.room_role_store import RoomRoleStore
 from switch_core.db.stores.room_store import RoomStore
+from switch_core.db.tenant_lookup import tenant_of_client
 from switch_core.delivery.addressing import (
     ADDRESSING_DENIED_MESSAGE,
     ADDRESSING_UNCLAIMED_MESSAGE,
@@ -300,14 +301,18 @@ class AgentClient(ClientBase[ClientConfig]):
     async def start(self) -> None:
         """Resolve the agent this client is, then run.
 
-        Unscoped, deliberately: this runs at the top of the client's own task,
-        which binds nothing, and it is the lookup that says which tenant this
-        client belongs to at all. `clients.id` is globally unique, so there is
-        nothing for a tenant to disambiguate — while a guessed one would turn
-        "this client is an agent" into "no agent found for client" and fail
-        the client at boot over a row that exists.
+        This runs at the top of the client's own task, which binds nothing, so
+        the tenant is derived rather than inherited: `clients.id` is a primary
+        key, and the exemption (`db/tenant_lookup.py`) turns it into the
+        tenant that row is in. A *guessed* tenant would turn "this client is
+        an agent" into "no agent found for client" and fail the client at boot
+        over a row that exists, which is why this is a lookup rather than a
+        default.
         """
-        async with unscoped_session(self.session_factory) as session:
+        tenant_id = await tenant_of_client(self.session_factory, self.client_id)
+        if tenant_id is None:
+            raise RuntimeError(f"No client row for: {self.client_id}")
+        async with tenant_session(self.session_factory, tenant_id) as session:
             agent = await self._agent_store.get_by_client_id(session, self.client_id)
             if agent is None:
                 raise RuntimeError(f"No agent found for client: {self.client_id}")

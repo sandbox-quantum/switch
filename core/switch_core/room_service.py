@@ -30,10 +30,11 @@ from switch_core.bridges.collaboration.models import (
 from switch_core.bridges.resource.service import ResourceService
 from switch_core.clients.client_lifecycle_service import ClientLifecycleService
 from switch_core.db.models import Room, RoomGroup, RoomRole
-from switch_core.db.session_scope import tenant_session, unscoped_session
+from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.collaboration_bridge_store import CollaborationBridgeStore
 from switch_core.db.stores.room_store import RoomStore
+from switch_core.db.tenant_lookup import all_tenant_ids
 from switch_core.provisioning import Provisioning
 from switch_core.tenant_context import tenant_scope
 
@@ -1178,10 +1179,24 @@ class RoomService:
         counted and reported at `error`, so a contained one is still an
         operator's problem rather than a silent one.
         """
-        # Which rooms exist is the read that spans tenants; each room's own
-        # tenant is bound only around reconciling that one room.
-        async with unscoped_session(self._session_factory) as session:
-            rooms = await self._room_store.get_all(session, include_archived=True)
+        # Which tenants exist is the one read that spans them (the exemption,
+        # `db/tenant_lookup.py`); each tenant's rooms are then an ordinary
+        # scoped read, and each room's own tenant is bound again around
+        # reconciling that one room.
+        rooms: list[Room] = []
+        for tenant_id in await all_tenant_ids(self._session_factory):
+            async with tenant_session(self._session_factory, tenant_id) as session:
+                # Filtered on the row's own tenant, not left to the policy: on an
+                # owner connection no policy narrows this read, and the fan-out
+                # would act on every tenant's rows once per tenant. See
+                # `db/tenant_lookup.py`, "a fan-out ... filters what it reads back".
+                rooms.extend(
+                    room
+                    for room in await self._room_store.get_all(
+                        session, include_archived=True
+                    )
+                    if room.tenant_id == tenant_id
+                )
 
         failures: list[str] = []
         for room in rooms:

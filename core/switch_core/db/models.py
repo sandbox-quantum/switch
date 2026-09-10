@@ -29,6 +29,7 @@ from switch_core.db.notify_ddl import (
     DROP_NOTIFY_TRIGGER,
 )
 from switch_core.db.rls_ddl import attach_row_level_security
+from switch_core.db.tenant_lookup import attach_tenant_lookups
 from switch_core.tenant_context import current_tenant_id
 
 
@@ -94,10 +95,10 @@ class TenantNotBoundError(RuntimeError):
 
     Raised from Python, before the row ever reaches the database, so the
     failure points at the write that forgot to bind rather than at whatever
-    row-level-security error Postgres would otherwise raise first. Any code
-    that means to write across tenants uses `unscoped_session` and passes
-    `tenant_id` explicitly (system seeding, bootstrap); this exists for
-    everything else, which is supposed to have one bound by now.
+    row-level-security error Postgres would otherwise raise first. There is no
+    longer any such thing as a cross-tenant write: work that spans tenants
+    enumerates them through `db/tenant_lookup.py` and then binds each in turn,
+    so every write has a tenant by the time it is constructed.
     """
 
 
@@ -119,7 +120,7 @@ def require_tenant_id() -> str:
     bind one by now: the long-lived background tasks unbind deliberately
     (`switch_core.tenant_context.no_tenant`) and then bind the tenant of the
     row they are about to act on before they act on it, and the raw-session
-    inventory in `tests/switch_core/db/test_unscoped_session_allowlist.py`
+    inventory in `tests/switch_core/db/test_tenant_exemption_allowlist.py`
     pins which modules may still open a session with nothing bound at all.
     A write reached from one of those without an explicit `tenant_id` is
     exactly the gap this now refuses to paper over.
@@ -1587,3 +1588,9 @@ event.listen(
 # shape; a migration carries its own frozen copy for the same reason the
 # notify trigger's migration does.
 attach_row_level_security(Base.metadata)
+
+# And the eight functions that are exempt from those policies, on the same
+# reasoning again: a restricted role cannot boot without them, so a schema
+# `create_all` built without them is not the schema the server runs against.
+# After the tables, not before — see `db/tenant_lookup.py`.
+attach_tenant_lookups(Base.metadata)

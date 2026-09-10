@@ -3,7 +3,11 @@ of the *user*, from their membership row — never a guess, never a request
 parameter.
 
 `TestGetSoleTenantId` covers `TenantMemberStore.get_sole_tenant_id` raising
-rather than picking a tenant when a user's memberships aren't exactly one.
+rather than picking a tenant when a user's memberships aren't exactly one. It
+takes a session factory rather than a session: `tenant_members` is a scoped
+table, so no session can read the row that says what it should be scoped to,
+and the store reads through `tenants_of_user` (`db/tenant_lookup.py`)
+instead, on a session of its own with nothing bound.
 `TestAGatewayRequestBindsTheCallersTenant` drives a real HTTP request through
 `get_current_user` end to end — cookie in, `app.tenant_id` on the database
 session out — the same way `test_reference_types_routes.py` builds a
@@ -57,10 +61,11 @@ class TestGetSoleTenantId:
         async with session_factory() as session:
             user = User(name="orphan", email="orphan@example.invalid", role="user")
             session.add(user)
-            await session.flush()
+            await session.commit()
+            user_id = user.id
 
-            with pytest.raises(TenantMembershipError):
-                await store.get_sole_tenant_id(session, user.id)
+        with pytest.raises(TenantMembershipError):
+            await store.get_sole_tenant_id(session_factory, user_id)
 
     async def test_raises_when_the_user_has_more_than_one_membership(
         self, session_factory: async_sessionmaker[AsyncSession]
@@ -80,10 +85,11 @@ class TestGetSoleTenantId:
                     TenantMember(tenant_id=TENANT_B, user_id=user.id, role="member"),
                 ]
             )
-            await session.flush()
+            await session.commit()
+            user_id = user.id
 
-            with pytest.raises(TenantMembershipError):
-                await store.get_sole_tenant_id(session, user.id)
+        with pytest.raises(TenantMembershipError):
+            await store.get_sole_tenant_id(session_factory, user_id)
 
     async def test_returns_the_one_tenant_a_user_belongs_to(
         self, session_factory: async_sessionmaker[AsyncSession]
@@ -96,9 +102,12 @@ class TestGetSoleTenantId:
             session.add(
                 TenantMember(tenant_id=TENANT_ZERO_ID, user_id=user.id, role="member")
             )
-            await session.flush()
+            await session.commit()
+            user_id = user.id
 
-            assert await store.get_sole_tenant_id(session, user.id) == TENANT_ZERO_ID
+        assert (
+            await store.get_sole_tenant_id(session_factory, user_id) == TENANT_ZERO_ID
+        )
 
 
 def _app(session_factory: async_sessionmaker[AsyncSession]) -> FastAPI:

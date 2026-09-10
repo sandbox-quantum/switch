@@ -14,7 +14,13 @@ import uvicorn
 from alembic import command as alembic_command
 from alembic.config import Config as AlembicConfig
 from fastapi.responses import JSONResponse
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from sqlalchemy.ext.asyncio import (
+    AsyncEngine,
+    AsyncSession,
+    async_sessionmaker,
+    create_async_engine,
+)
+from sqlalchemy.pool import NullPool
 
 from switch_core.bridges.agent.app import create_agent_bridge_app
 from switch_core.bridges.agent.protocol.connections import (
@@ -76,7 +82,12 @@ from switch_core.db.engine import (
     create_unpooled_engine,
 )
 from switch_core.db.models import TENANT_ZERO_ID, ApiKey, User
-from switch_core.db.session_scope import tenant_session, unscoped_session
+from switch_core.db.runtime_role import (
+    RuntimeRoleError,
+    grant_runtime_role,
+    verify_restricted_role,
+)
+from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.agent_session_store import AgentSessionStore
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.api_key_store import ApiKeyStore
@@ -99,6 +110,7 @@ from switch_core.db.stores.task_store import TaskStore
 from switch_core.db.stores.tenant_member_store import TenantMemberStore
 from switch_core.db.stores.tenant_store import TenantStore
 from switch_core.db.stores.user_store import UserStore
+from switch_core.db.tenant_lookup import all_tenant_ids
 from switch_core.gateway.app import create_gateway_app
 from switch_core.gateway.auth import hash_password
 from switch_core.logging_config import configure_logging
@@ -106,7 +118,7 @@ from switch_core.messages.notify import MessageListener
 from switch_core.provisioning import Provisioning
 from switch_core.provisioning.postgres import PostgresProvisioning
 from switch_core.room_service import RoomService
-from switch_core.tenant_context import no_tenant, tenant_scope
+from switch_core.tenant_context import no_tenant
 from switch_core.transport.ephemeral import EphemeralBus
 from switch_core.transport.invites import InviteBus
 from switch_core.version import switch_core_version
@@ -189,9 +201,59 @@ class _QuietPollFilter(logging.Filter):
 logging.getLogger("uvicorn.access").addFilter(_QuietPollFilter())
 
 
+async def _prepare_database(config: SwitchConfig) -> None:
+    """Re-issue the runtime role's grants, on the owner's connection.
+
+    Runs after `alembic upgrade head` and before anything opens the runtime
+    engine, so a table the migration has just added is granted before the role
+    that needs it connects. Skipped where no owner is configured: that is a
+    deployment whose migrations and grants are somebody else's job, and
+    inventing an owner connection for it would be worse than doing nothing.
+    """
+    owner_url = config.owner_database_url
+    if owner_url is None:
+        return
+    owner_engine = create_async_engine(
+        owner_url, poolclass=NullPool, connect_args=config.db_connect_args
+    )
+    try:
+        async with owner_engine.begin() as connection:
+            await grant_runtime_role(connection, config.db_user)
+    finally:
+        await owner_engine.dispose()
+    logger.info(
+        "Granted the runtime role %s access to the schema owned by %s",
+        config.db_user,
+        config.db_owner_user,
+    )
+
+
+async def _check_tenant_isolation(config: SwitchConfig, engine: AsyncEngine) -> None:
+    """Refuse to serve on a connection the policies do not apply to.
+
+    Before anything else touches the database, because the first thing that
+    does is the admin seeding, and a deployment that is not isolating tenants
+    should not get as far as writing a row.
+    """
+    try:
+        await verify_restricted_role(engine)
+    except RuntimeRoleError as exc:
+        if config.db_require_restricted_role:
+            raise
+        logger.error(
+            "Tenant isolation is NOT in force on this deployment: %s "
+            "Continuing only because DB_REQUIRE_RESTRICTED_ROLE is false. "
+            "Every row-level-security policy in this schema is inert, and any "
+            "second tenant onboarded here can read the first's data.",
+            exc,
+        )
+
+
 async def run(config: SwitchConfig) -> None:
     # ── Database ─────────────────────────────────────────────────────────────
+    await _prepare_database(config)
     engine = create_engine_from_config(config)
+    await _check_tenant_isolation(config, engine)
     session_factory = create_session_factory(engine)
     # Its connection is held rather than borrowed, so it builds its own outside
     # the pool. Nothing subscribes yet; it starts with the server so that the
@@ -248,9 +310,9 @@ async def run(config: SwitchConfig) -> None:
     # Once per tenant, not once for the deployment: `reference_types` is
     # scoped, so "every stored type a built-in shadows" is a question asked of
     # one tenant at a time. Which tenants there are is the one read that
-    # cannot be scoped to any of them.
-    async with unscoped_session(session_factory) as session:
-        tenant_ids = await tenant_store.get_all_ids(session)
+    # cannot be scoped to any of them, so it goes through the exemption
+    # (`db/tenant_lookup.py`) rather than through a session.
+    tenant_ids = await all_tenant_ids(session_factory)
     for tenant_id in tenant_ids:
         async with tenant_session(session_factory, tenant_id) as session:
             await resource_service.log_builtin_shadowing(session)
@@ -566,38 +628,69 @@ async def _seed_agent_registration_bootstrap_key(
     already exists under the old one, which would collide on the unique
     ``key_hash`` and fail the whole boot.
     """
-    # Genuinely cross-tenant, unlike `_seed_admin_user`: the bootstrap key is
-    # one per deployment, resolved by a globally unique hash, and the
-    # admin-owned-agent warning below must see every tenant's agents or it
-    # under-reports exactly the case it exists to flag. So the session stays
-    # unscoped and the two scoped rows written under it — the bootstrap
-    # owner's membership, and the `ApiKey` — name tenant zero themselves
-    # rather than inheriting a binding there isn't one of.
-    async with unscoped_session(session_factory) as session:
+    # This was one unscoped session, and it is the one place in the tree where
+    # "unscoped session" and "scoped write" met — the design doc named it as
+    # the path the runtime role would have to come back for. It has, and this
+    # is what it became: three phases, each scoped to the tenant it is
+    # actually acting in, and the only cross-tenant question left ("which
+    # tenants are there") answered by the exemption in `db/tenant_lookup.py`.
+    tenant_ids = await all_tenant_ids(session_factory)
+
+    # ── The two accounts, in tenant zero ────────────────────────────────────
+    # `users` is global, so the lookups need no tenant; `ensure_bootstrap_owner`
+    # writes a `tenant_members` row, which does. It named tenant zero before
+    # and still does — the deployment's own accounts belong to the tenant the
+    # migration created — but it now does so on a session that was bound
+    # *before* its transaction opened, which is what makes the write land at
+    # all: a `tenant_scope` entered inside an already-begun transaction changes
+    # nothing, because the `set_config` rides `after_begin`.
+    async with tenant_session(session_factory, TENANT_ZERO_ID) as session:
         admin = await user_store.get_by_email(session, config.gateway_admin_email)
         if admin is None:
             raise RuntimeError(
                 "Cannot seed agent-registration bootstrap key: admin user "
                 f"{config.gateway_admin_email} not found"
             )
-        with tenant_scope(TENANT_ZERO_ID):
-            bootstrap_owner = await ensure_bootstrap_owner(session, user_store)
+        admin_id = admin.id
+        bootstrap_owner = await ensure_bootstrap_owner(session, user_store)
+        bootstrap_owner_id = bootstrap_owner.id
+        owner_metadata = dict(bootstrap_owner.metadata_ or {})
+        await session.commit()
 
-        admin_owned_agents = [
-            a for a in await agent_store.get_all(session) if a.owner_id == admin.id
-        ]
-        if admin_owned_agents:
-            logger.warning(
-                "%d agent(s) are owned by the admin user (%s) and carry "
-                "admin-equivalent authority over every room and resource in "
-                "this deployment, not just their own: %s. If any were "
-                "registered through AGENT_REGISTRATION_TOKEN, reassign or "
-                "re-register them under a non-admin owner.",
-                len(admin_owned_agents),
-                config.gateway_admin_email,
-                ", ".join(a.name for a in admin_owned_agents),
+    # ── The admin-owned-agent warning, over every tenant ────────────────────
+    # It has to see every tenant's agents or it under-reports exactly the case
+    # it exists to flag, and it now does so one tenant at a time. The names
+    # are collected rather than the rows: nothing here needs an `Agent` past
+    # the session that read it.
+    admin_owned_agents: list[str] = []
+    for tenant_id in tenant_ids:
+        async with tenant_session(session_factory, tenant_id) as session:
+            # Filtered on the row's own tenant as well as the owner: on an
+            # owner connection no policy narrows the read, and every tenant's
+            # agents would be counted once per tenant. See
+            # `db/tenant_lookup.py`.
+            admin_owned_agents.extend(
+                agent.name
+                for agent in await agent_store.get_all(session)
+                if agent.owner_id == admin_id and agent.tenant_id == tenant_id
             )
+    if admin_owned_agents:
+        logger.warning(
+            "%d agent(s) are owned by the admin user (%s) and carry "
+            "admin-equivalent authority over every room and resource in "
+            "this deployment, not just their own: %s. If any were "
+            "registered through AGENT_REGISTRATION_TOKEN, reassign or "
+            "re-register them under a non-admin owner.",
+            len(admin_owned_agents),
+            config.gateway_admin_email,
+            ", ".join(admin_owned_agents),
+        )
 
+    # ── The key itself, in the one tenant that holds it ─────────────────────
+    key_tenant_id = await _bootstrap_key_tenant(
+        session_factory, api_key_store, tenant_ids
+    )
+    async with tenant_session(session_factory, key_tenant_id) as session:
         token_hash = hashlib.sha256(
             config.agent_registration_token.encode()
         ).hexdigest()
@@ -605,7 +698,16 @@ async def _seed_agent_registration_bootstrap_key(
             config.agent_registration_token, config.jwt_secret_key
         )
 
-        bootstrap_keys = await api_key_store.get_by_type(session, BOOTSTRAP_KEY_TYPE)
+        # Filtered on this tenant as well as on the type, for the same reason
+        # every other fan-out in this change is: `get_by_type` carries no
+        # tenant filter of its own, so on an owner connection it answers with
+        # every tenant's keys and this block would adopt or retire one that
+        # belongs to somebody else. See `db/tenant_lookup.py`.
+        bootstrap_keys = [
+            row
+            for row in await api_key_store.get_by_type(session, BOOTSTRAP_KEY_TYPE)
+            if row.tenant_id == key_tenant_id
+        ]
         if len(bootstrap_keys) > 1:
             raise RuntimeError(
                 f"Found {len(bootstrap_keys)} agent-registration bootstrap "
@@ -613,12 +715,8 @@ async def _seed_agent_registration_bootstrap_key(
             )
         bootstrap_key = bootstrap_keys[0] if bootstrap_keys else None
 
-        last_seeded_hash = (bootstrap_owner.metadata_ or {}).get(
-            BOOTSTRAP_LAST_SEEDED_HASH_META_KEY
-        )
-        raw_revoked_hashes = (bootstrap_owner.metadata_ or {}).get(
-            BOOTSTRAP_REVOKED_HASHES_META_KEY
-        )
+        last_seeded_hash = owner_metadata.get(BOOTSTRAP_LAST_SEEDED_HASH_META_KEY)
+        raw_revoked_hashes = owner_metadata.get(BOOTSTRAP_REVOKED_HASHES_META_KEY)
         if raw_revoked_hashes is not None and not isinstance(raw_revoked_hashes, list):
             raise RuntimeError(
                 f"{BOOTSTRAP_REVOKED_HASHES_META_KEY} on the agent-registration "
@@ -659,7 +757,7 @@ async def _seed_agent_registration_bootstrap_key(
                 for row in await api_key_store.get_by_label(
                     session, LEGACY_BOOTSTRAP_KEY_LABEL
                 )
-                if row.type == "registration"
+                if row.type == "registration" and row.tenant_id == key_tenant_id
             ]
             matching_legacy = next(
                 (row for row in legacy_rows if row.key_hash == token_hash), None
@@ -727,9 +825,12 @@ async def _seed_agent_registration_bootstrap_key(
                 "gateway's API Keys page instead."
             )
         else:
+            # No explicit `tenant_id`: the session is bound to the tenant this
+            # key belongs to, so the column default writes it, the same way
+            # every other scoped insert in the tree does. Naming a constant
+            # here was the shape that only worked while nothing enforced it.
             bootstrap_key = ApiKey(
-                tenant_id=TENANT_ZERO_ID,
-                user_id=admin.id,
+                user_id=admin_id,
                 key_hash=token_hash,
                 encrypted_key=encrypted_key,
                 label=BOOTSTRAP_KEY_LABEL,
@@ -746,12 +847,76 @@ async def _seed_agent_registration_bootstrap_key(
             meta_dirty = True
 
         if meta_dirty:
-            meta = dict(bootstrap_owner.metadata_ or {})
+            # `users` carries no tenant, so the owner row is writable from
+            # this session whichever tenant holds the key. Re-read rather than
+            # carried over from the block above: the object there belonged to
+            # a session that has since closed, and mutating a detached row
+            # persists nothing.
+            owner = await user_store.get(session, bootstrap_owner_id)
+            if owner is None:
+                raise RuntimeError(
+                    "The agent-registration bootstrap owner vanished between "
+                    "being seeded and being updated; this needs a direct "
+                    "database fix."
+                )
+            meta = dict(owner.metadata_ or {})
             meta[BOOTSTRAP_LAST_SEEDED_HASH_META_KEY] = new_last_seeded_hash
             meta[BOOTSTRAP_REVOKED_HASHES_META_KEY] = revoked_hashes
-            bootstrap_owner.metadata_ = meta
+            owner.metadata_ = meta
 
         await session.commit()
+
+
+async def _bootstrap_key_tenant(
+    session_factory: async_sessionmaker[AsyncSession],
+    api_key_store: ApiKeyStore,
+    tenant_ids: list[str],
+) -> str:
+    """Which tenant holds the deployment's agent-registration bootstrap key.
+
+    The key is one per deployment and `api_keys` is scoped, so "one per
+    deployment" is a claim about a set of per-tenant tables rather than about
+    one table. This asks each tenant in turn and refuses if two answer — the
+    same "expected at most one" rule the seeding already enforced within a
+    tenant, now enforced across them, which is where a second one could
+    actually appear.
+
+    Tenant zero when nobody holds one, because that is where a fresh
+    deployment's key is created. A legacy admin-owned registration row counts
+    as holding it: the seeding is about to adopt or retire that row, and it has
+    to do so in the tenant the row is actually in.
+    """
+    holders: list[str] = []
+    legacy_holders: list[str] = []
+    for tenant_id in tenant_ids:
+        async with tenant_session(session_factory, tenant_id) as session:
+            # Both reads are filtered on the row's own tenant as well: on an
+            # owner connection neither store method narrows by tenant, so
+            # every tenant would look like a holder as soon as one was. See
+            # `db/tenant_lookup.py`.
+            if any(
+                row.tenant_id == tenant_id
+                for row in await api_key_store.get_by_type(session, BOOTSTRAP_KEY_TYPE)
+            ):
+                holders.append(tenant_id)
+            elif any(
+                row.type == "registration" and row.tenant_id == tenant_id
+                for row in await api_key_store.get_by_label(
+                    session, LEGACY_BOOTSTRAP_KEY_LABEL
+                )
+            ):
+                legacy_holders.append(tenant_id)
+    if len(holders) > 1:
+        raise RuntimeError(
+            f"Tenants {sorted(holders)} each hold an agent-registration "
+            "bootstrap key; the key is one per deployment and expected in at "
+            "most one. This needs a direct database fix."
+        )
+    if holders:
+        return holders[0]
+    if legacy_holders:
+        return legacy_holders[0]
+    return TENANT_ZERO_ID
 
 
 async def _shutdown(
@@ -780,10 +945,20 @@ def main() -> None:
 
     logger.info("Starting switch-core %s", running_version or "(version unknown)")
 
+    # Migrations still run at boot, and on the same schedule as before — what
+    # changed is the connection they run on. `migrations/env.py` points Alembic
+    # at DB_OWNER_USER where one is configured, because DDL is exactly what the
+    # runtime role is not allowed to issue. Where none is, this is unchanged
+    # from before and runs as DB_USER, which is right for a developer pointing
+    # at a scratch database and fails loudly and immediately for a deployment
+    # that has moved to a restricted role without saying who its owner is.
     alembic_ini = Path(__file__).resolve().parent.parent / "alembic.ini"
     alembic_cfg = AlembicConfig(str(alembic_ini))
     alembic_command.upgrade(alembic_cfg, "head")
-    logger.info("Database migrations applied")
+    logger.info(
+        "Database migrations applied as %s",
+        config.db_owner_user or config.db_user,
+    )
 
     asyncio.run(run(config))
 

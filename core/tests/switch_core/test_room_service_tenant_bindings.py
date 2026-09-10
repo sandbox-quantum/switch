@@ -2,9 +2,12 @@
 
 `room_service.py` is the largest single piece of the tenant rework and it had
 no test that could tell the rework from its absence. The proof was mechanical:
-shadow `tenant_scope`, `tenant_session` and `unscoped_session` with no-ops
-inside that one module and the whole suite still passed, 2833 to 2833. Not one
-assertion anywhere depended on a single binding this file makes.
+shadow the three names it imports for binding and enumeration —
+`tenant_scope`, `tenant_session` and `all_tenant_ids` — with no-ops inside
+that one module, and the wider suite still passed. This file is what changed
+that: the same shadowing fails five of its own eight tests, because those
+five each read a binding back off the database rather than off the service's
+say-so.
 
 This module is built so that experiment fails. Two things make that possible
 where the rest of the suite could not:
@@ -13,11 +16,13 @@ where the rest of the suite could not:
 ``current_setting('app.tenant_id')`` on the very session the service handed the
 store — the value ``db/tenant_session.py``'s ``after_begin`` hook wrote, which
 is what the policies compare and what every scoped write is filed under. An
-assertion about rows cannot see a missing binding while Switch runs as the
-tables' owner, which is what Phase 1 deploys: Postgres exempts an owner from
-its own policies, so a session that forgot its tenant reads and writes exactly
-as much as one that remembered (the restricted runtime role is CHOO-2685).
-The setting is the one thing that still differs.
+assertion about rows cannot see a missing binding on this fixture's
+connection, which is the tables' owner: Postgres exempts an owner from its own
+policies, so a session that forgot its tenant reads and writes exactly as much
+as one that remembered. The setting is the one thing that still differs. (The
+deployment now runs as a restricted role the policies do apply to, and so does
+the integration suite — but the unit suite still connects as the owner, so
+this file has to be able to tell without them.)
 
 **It uses two tenants.** Half of what these bindings are for only has an
 observable effect once a second tenant owns something, which no other test in
@@ -55,6 +60,7 @@ from switch_core.db.models import (
     User,
     room_agents,
 )
+from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.client_store import ClientStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.tenant_store import TenantStore
@@ -421,20 +427,33 @@ class TestReconcileRoomClients:
         assert sorted(store.tenants_for("add_client")) == sorted(
             [TENANT_ZERO_ID, TENANT_B]
         )
-        assert sorted(store.tenants_for("get_client_ids")) == sorted(
-            [TENANT_ZERO_ID, TENANT_B]
-        )
+        # `all_tenant_ids` names two tenants, so `get_all` runs once per
+        # tenant — and this fixture connects as the tables' owner, the same
+        # connection Phase 1 deploys as (see the module docstring), which
+        # exempts it from the policy `get_all` otherwise relies on to narrow
+        # its result. So each of those two calls sees every room, and
+        # `_reconcile_one_room` — bound to each room's own `tenant_id`
+        # regardless of which pass found it — runs twice per room rather than
+        # once. Harmless (the second pass finds nothing missing and returns),
+        # but it means every tenant appears at least once here rather than
+        # exactly once; the real one-pass-per-room count arrives with the
+        # restricted runtime role.
+        assert set(store.tenants_for("get_client_ids")) == {TENANT_ZERO_ID, TENANT_B}
 
     async def test_the_room_enumeration_refuses_the_callers_tenant(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
-        """ "Which rooms exist" must span tenants whether or not one is bound.
+        """ "Which tenants exist" must answer for all of them, whether or not
+        one is bound, and never narrow to whatever the caller had bound.
 
-        That is `unscoped_session`'s whole contract (`db/session_scope.py`): a
-        helper that named the intent while inheriting the ambient tenant would
-        have the hook stamp it on the transaction and the cross-tenant read
-        would silently be a single-tenant one — here, a boot that reconciles
-        tenant zero's rooms and quietly skips everyone else's.
+        That is `all_tenant_ids`'s whole contract (`db/tenant_lookup.py`): it
+        opens its own session with nothing bound (`tenant_lookup._call` enters
+        `no_tenant()` first), so the caller's ambient tenant — tenant zero
+        here — cannot narrow the list of tenants reconciled. A version that
+        inherited it would have the hook stamp tenant zero on that lookup's
+        transaction, `all_tenant_ids` would answer with tenant zero alone, and
+        this boot would reconcile tenant zero's rooms and quietly skip tenant
+        B's — the one tenant this test gives a room to reconcile.
         """
         async with session_factory() as session:
             await _seed_tenant_b(session)
@@ -471,7 +490,12 @@ class TestReconcileRoomClients:
         finally:
             await registry.stop_all()
 
-        assert store.tenants_for("get_all") == [None], (
+        # One `get_all` per tenant `all_tenant_ids` named — tenant zero *and*
+        # tenant B, in the order `all_tenant_ids` returns them (oldest first),
+        # not tenant zero alone. Had the lookup inherited the ambient tenant
+        # bound around the whole call, this would read `[TENANT_ZERO_ID]` and
+        # tenant B's room would never be visited.
+        assert store.tenants_for("get_all") == [TENANT_ZERO_ID, TENANT_B], (
             "the room enumeration inherited the caller's tenant; under the "
             "policies it would have returned none of tenant B's rooms"
         )
@@ -594,7 +618,14 @@ class TestBindingsOnTheRoomsOwnTenant:
         default is `require_tenant_id`, which raises rather than guessing. So
         this write does not merely land in the wrong tenant without the
         binding; it does not land at all."""
-        async with session_factory() as session:
+        # The whole arrangement on a session opened *inside* tenant B's
+        # binding, rather than a bare session with a `tenant_scope` around the
+        # part that needs one. `_seed_agent` writes an `ApiKey`, which is
+        # scoped; binding after the session's first statement rebinds a
+        # contextvar and nothing the database can see, so the write would be
+        # filed under tenant B while the transaction still said tenant zero —
+        # which the policies refuse outright, and which this test used to do.
+        async with tenant_session(session_factory, TENANT_B) as session:
             await _seed_tenant_b(session)
             await _seed_room(
                 session,
@@ -602,13 +633,12 @@ class TestBindingsOnTheRoomsOwnTenant:
                 room_id="room-b",
                 matrix_room_id="!b:switch.local",
             )
-            with tenant_scope(TENANT_B):
-                await _seed_agent(
-                    session,
-                    tenant_id=TENANT_B,
-                    agent_id="agent-b",
-                    client_id="client-b",
-                )
+            await _seed_agent(
+                session,
+                tenant_id=TENANT_B,
+                agent_id="agent-b",
+                client_id="client-b",
+            )
             await session.commit()
 
         store = _TenantRecordingRoomStore()

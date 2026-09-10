@@ -101,12 +101,18 @@ async def _resolve_tenant_id(
 ) -> str:
     """Which tenant the JWT's subject belongs to, before one is bound.
 
-    Runs on its own session, opened and closed here, because the lookup is
-    what *determines* the tenant and so cannot run on a session that is
-    supposed to already carry it. Short-lived on purpose: held as a yield
-    dependency instead, it would keep a second pooled connection — idle in
-    transaction, since the lookup autobegins one nothing ever ends — for the
-    whole request, halving effective pool capacity.
+    Two reads, and they are unbound for different reasons. `users` carries no
+    tenant at all — a person is not a tenant member — so the existence check
+    is an ordinary read on a session with nothing bound. The membership read
+    is not: `tenant_members` is scoped, and this is the lookup that decides
+    what to scope to, so it goes through the `SECURITY DEFINER` exemption
+    (`db/tenant_lookup.py`) rather than through a session the policy would
+    refuse.
+
+    Both are short-lived on purpose. Held as a yield dependency instead, they
+    would keep a second pooled connection — idle in transaction, since the
+    lookup autobegins one nothing ever ends — for the whole request, halving
+    effective pool capacity.
 
     Nothing loaded here escapes: the caller re-reads the `User` from the
     request's own session, so the object an endpoint mutates belongs to the
@@ -115,22 +121,22 @@ async def _resolve_tenant_id(
     async with session_factory() as system_session:
         if not await user_store.exists(system_session, user_id):
             raise HTTPException(status_code=401, detail="User not found")
-        try:
-            return await tenant_member_store.get_sole_tenant_id(system_session, user_id)
-        except TenantMembershipError as exc:
-            # Phase 1 has exactly one tenant, so anything but one membership is
-            # a provisioning bug, not a credential problem — but the caller
-            # still deserves a legible answer instead of an opaque 500. The
-            # detail names no user id: it is rendered to whoever is holding
-            # the cookie, not to the operator, who gets the id from the log.
-            logger.error("Cannot resolve a tenant for user %s: %s", user_id, exc)
-            raise HTTPException(
-                status_code=403,
-                detail=(
-                    "This account is not a member of exactly one tenant; "
-                    "ask an administrator to check its membership."
-                ),
-            ) from exc
+    try:
+        return await tenant_member_store.get_sole_tenant_id(session_factory, user_id)
+    except TenantMembershipError as exc:
+        # Phase 1 has exactly one tenant, so anything but one membership is a
+        # provisioning bug, not a credential problem — but the caller still
+        # deserves a legible answer instead of an opaque 500. The detail names
+        # no user id: it is rendered to whoever is holding the cookie, not to
+        # the operator, who gets the id from the log.
+        logger.error("Cannot resolve a tenant for user %s: %s", user_id, exc)
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "This account is not a member of exactly one tenant; "
+                "ask an administrator to check its membership."
+            ),
+        ) from exc
 
 
 async def get_current_user(

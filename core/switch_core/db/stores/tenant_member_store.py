@@ -1,9 +1,8 @@
 from __future__ import annotations
 
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from switch_core.db.models import TenantMember
+from switch_core.db.tenant_lookup import tenants_of_user
 
 
 class TenantMembershipError(Exception):
@@ -35,18 +34,28 @@ class TenantMemberStore:
     as firmly as it refuses to invent one out of zero.
     """
 
-    async def get_sole_tenant_id(self, session: AsyncSession, user_id: str) -> str:
+    async def get_sole_tenant_id(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        user_id: str,
+    ) -> str:
         """The one tenant this user belongs to, raising if that isn't true.
 
-        Must run on a session with no tenant bound yet — this *is* how the
-        tenant gets found, so it cannot presuppose one. `gateway/auth.py`
-        opens a short-lived session for exactly this and closes it before the
-        request's own session is touched.
+        Takes the factory rather than a session, unlike every other store
+        method here, and the difference is the point: `tenant_members` is a
+        scoped table, so a session cannot read the row that would tell it what
+        to be scoped to. This goes through `tenants_of_user`, one of the eight
+        `SECURITY DEFINER` lookups that make up the whole exemption from
+        row-level security (`db/tenant_lookup.py`), which opens a session of
+        its own with nothing bound and answers with tenant ids and nothing
+        else.
+
+        It used to run a plain `select` on a session the caller opened and
+        left unbound. That worked only because every environment connected as
+        the tables' owner; under the restricted runtime role it is one of the
+        reads the policy refuses, and every gateway login failed on it.
         """
-        result = await session.execute(
-            select(TenantMember.tenant_id).where(TenantMember.user_id == user_id)
-        )
-        tenant_ids = result.scalars().all()
+        tenant_ids = await tenants_of_user(session_factory, user_id)
         if len(tenant_ids) != 1:
             raise TenantMembershipError(
                 f"user {user_id} has {len(tenant_ids)} tenant memberships; "
