@@ -1,26 +1,35 @@
 from __future__ import annotations
 
+import uuid
+
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from switch_core.db.models import Agent, ApiKey, Client, Room, Task, User
+from switch_core.db.models import Agent, ApiKey, Client, Room, Task, Tenant, User
 from switch_core.db.stores.agent_store import AgentStore
+from switch_core.tenant_context import tenant_scope
 
 
-async def _make_agent(session: AsyncSession, name: str) -> Agent:
-    """Minimal User → ApiKey → Client → Agent chain."""
-    user = User(name=name, email=f"{name}@test", role="user", password_hash="x")
+async def _make_agent(session: AsyncSession, name: str, *, unique: str = "") -> Agent:
+    """Minimal User → ApiKey → Client → Agent chain.
+
+    `unique` disambiguates the user email / api-key hash / client matrix id —
+    each globally unique columns — when two agents share `name` across
+    tenants, since `name` itself is only unique per tenant.
+    """
+    slug = f"{name}-{unique}" if unique else name
+    user = User(name=name, email=f"{slug}@test", role="user", password_hash="x")
     session.add(user)
     await session.flush()
     api_key = ApiKey(
         user_id=user.id,
-        key_hash=f"hash-{name}",
+        key_hash=f"hash-{slug}",
         encrypted_key="enc",
         label=name,
         type="agent",
     )
     client = Client(
-        matrix_user_id=f"@{name}:test",
+        matrix_user_id=f"@{slug}:test",
         display_name=name,
         type="agent",
     )
@@ -38,6 +47,18 @@ async def _make_agent(session: AsyncSession, name: str) -> Agent:
     session.add(agent)
     await session.flush()
     return agent
+
+
+async def _make_agent_for_tenant(
+    session: AsyncSession, tenant_id: str, name: str
+) -> Agent:
+    """An agent named `name`, filed under `tenant_id` rather than the ambient
+    tenant. The underlying user/api-key/client identifiers stay globally
+    unique (suffixed with a fresh uuid) regardless of tenant — only `name`
+    is meant to collide with another tenant's agent here."""
+    unique = uuid.uuid4().hex[:8]
+    with tenant_scope(tenant_id):
+        return await _make_agent(session, name, unique=unique)
 
 
 async def _make_room(session: AsyncSession, name: str) -> Room:
@@ -111,3 +132,61 @@ class TestDeleteAgentWithTasks:
             )
             assert remaining.scalars().first() is None
             assert await verify.get(Agent, performer_id) is not None
+
+
+class TestGetByNameMultiTenant:
+    """`Agent.name` is unique per tenant (`uq_agents_tenant_name`), not
+    globally — two tenants may each have an agent of the same name. Before
+    scoping the read, an unfiltered `get_by_name`/`get_by_name_insensitive`
+    matched both rows and raised `MultipleResultsFound` out of every caller
+    that resolves an agent by name (mention routing, registration, the
+    gateway).
+    """
+
+    async def test_get_by_name_returns_the_bound_tenants_agent(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        store = AgentStore()
+        other_tenant = f"tenant-{uuid.uuid4().hex[:8]}"
+
+        async with session_factory() as session:
+            session.add(Tenant(id=other_tenant, slug=other_tenant, name=other_tenant))
+            await session.flush()
+            own = await _make_agent(session, "shared-name")
+            other = await _make_agent_for_tenant(session, other_tenant, "shared-name")
+            await session.commit()
+
+        async with session_factory() as verify:
+            result = await store.get_by_name(verify, "shared-name")
+        assert result is not None
+        assert result.id == own.id
+
+        async with session_factory() as verify:
+            with tenant_scope(other_tenant):
+                result = await store.get_by_name(verify, "shared-name")
+        assert result is not None
+        assert result.id == other.id
+
+    async def test_get_by_name_insensitive_returns_the_bound_tenants_agent(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        store = AgentStore()
+        other_tenant = f"tenant-{uuid.uuid4().hex[:8]}"
+
+        async with session_factory() as session:
+            session.add(Tenant(id=other_tenant, slug=other_tenant, name=other_tenant))
+            await session.flush()
+            own = await _make_agent(session, "SharedName")
+            other = await _make_agent_for_tenant(session, other_tenant, "sharedname")
+            await session.commit()
+
+        async with session_factory() as verify:
+            result = await store.get_by_name_insensitive(verify, "sharedname")
+        assert result is not None
+        assert result.id == own.id
+
+        async with session_factory() as verify:
+            with tenant_scope(other_tenant):
+                result = await store.get_by_name_insensitive(verify, "sharedname")
+        assert result is not None
+        assert result.id == other.id
