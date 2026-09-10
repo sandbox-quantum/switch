@@ -140,6 +140,125 @@ async def test_a_recovery_interruption_does_not_claim_a_false_duration(
     assert elapsed is None
 
 
+async def test_a_recovery_interruption_still_claims_nothing_after_it_reported_running(
+    session_factory,
+):
+    """A real host reports "queued" the moment a command arrives and
+    "running" once it actually starts, both genuine — so a turn recovered
+    shortly after starting still has two host-reported stamps, both from
+    before the outage. Anchoring at "queued" would read the outage itself as
+    a few hundred milliseconds of work; there is nothing here to anchor a
+    start on once "queued" no longer counts, so this reports nothing rather
+    than that.
+    """
+    service, epoch = await setup(session_factory)
+    message = command(
+        epoch,
+        "message-demo",
+        {
+            "type": "message.send",
+            "text": "Run tests",
+            "attachments": [],
+            "delivery": "queue",
+        },
+    )
+    await service.submit(message, user_id="owner", bridge_id=None)
+    await service.ingest(
+        "agent-demo",
+        "host-demo",
+        HostEvent(
+            contract_version=1,
+            event_id="host-1",
+            session_id="session-demo",
+            epoch=epoch,
+            host_sequence=1,
+            occurred_at="2026-09-09T09:00:00Z",
+            body={
+                "type": "turn.upsert",
+                "turnId": "turn-demo",
+                "status": "queued",
+                "commandId": "message-demo",
+            },
+        ),
+    )
+    await service.ingest(
+        "agent-demo",
+        "host-demo",
+        HostEvent(
+            contract_version=1,
+            event_id="host-2",
+            session_id="session-demo",
+            epoch=epoch,
+            host_sequence=2,
+            occurred_at="2026-09-09T09:00:00.3Z",
+            body={
+                "type": "turn.upsert",
+                "turnId": "turn-demo",
+                "status": "running",
+                "commandId": "message-demo",
+            },
+        ),
+    )
+
+    await service.quiesce("agent-demo", "session-demo", "host-demo", epoch)
+    await service.recover(
+        "agent-demo", "session-demo", "host-demo", epoch, "recovery", 2
+    )
+
+    async with session_factory() as db:
+        elapsed = await _turn_elapsed_seconds(db, "session-demo", "turn-demo")
+
+    assert elapsed is None
+
+
+async def test_time_spent_queued_behind_another_turn_is_not_worked_time(
+    session_factory,
+):
+    """Turns run one at a time. A turn can sit queued for as long as the one
+    ahead of it takes, and that wait is not this turn's own work.
+    """
+    service, epoch = await setup(session_factory)
+    message = command(
+        epoch,
+        "message-demo",
+        {
+            "type": "message.send",
+            "text": "Run tests",
+            "attachments": [],
+            "delivery": "queue",
+        },
+    )
+    await service.submit(message, user_id="owner", bridge_id=None)
+    for sequence, occurred_at, status in (
+        (1, "2026-09-09T09:00:30Z", "queued"),
+        (2, "2026-09-09T09:04:00Z", "running"),
+        (3, "2026-09-09T09:04:20Z", "completed"),
+    ):
+        await service.ingest(
+            "agent-demo",
+            "host-demo",
+            HostEvent(
+                contract_version=1,
+                event_id=f"host-{sequence}",
+                session_id="session-demo",
+                epoch=epoch,
+                host_sequence=sequence,
+                occurred_at=occurred_at,
+                body={
+                    "type": "turn.upsert",
+                    "turnId": "turn-demo",
+                    "status": status,
+                    "commandId": "message-demo",
+                },
+            ),
+        )
+
+    async with session_factory() as db:
+        elapsed = await _turn_elapsed_seconds(db, "session-demo", "turn-demo")
+
+    assert elapsed == 20.0
+
+
 async def test_a_negative_delta_is_not_measured_either(session_factory):
     """A clock stepped, or a host's wall clock ran backward between the two
     events — reported as unmeasured, not as a lie in the other direction.

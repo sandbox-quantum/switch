@@ -237,51 +237,59 @@ def _as_aware(value: str) -> datetime:
 async def _turn_elapsed_seconds(
     db: AsyncSession, session_id: str, turn_id: str
 ) -> float | None:
-    """How long a turn ran, read back from the session's own event log.
+    """How long a turn actually ran, read back from the session's own event log.
 
     Neither a turn nor an item carries a timestamp, so there is nothing to
-    read this off in the snapshot itself — it comes from the `turn.upsert`
-    events for this turn that do: the first, whichever status the turn
-    opened at, and the last *host-reported* one, which is the one that set
-    the status a caller is only calling this for the turn having already
+    read this off in the snapshot itself — it comes from the host-reported
+    `turn.upsert` events for this turn: the first one whose status is
+    "running", and the last one of any status, which is the one that set the
+    status a caller is only calling this for the turn having already
     reached.
 
     Host-reported, not merely last: recovery ends every queued or running
     turn itself, stamped with the moment it noticed rather than anything the
     host ever said (`SessionAuthority`'s recovery path, `_append` with no
-    `host`) — outage time, not work. `SdkSessionEvent.host_event` is null on
-    exactly those synthetic rows, since `ingest` always has one to record and
-    nothing else appends a `turn.upsert`, so the query only reads a duration
-    off a real report of it.
+    `host`) — outage time, not work. `SdkSessionEvent.host_sequence` is null
+    on exactly those synthetic rows — a genuine `HostEvent` always carries
+    one — so the query only reads a duration off real reports of the turn.
 
-    One row means the turn was already ended the first time anything genuine
-    recorded it — the interrupted-by-recovery case with no earlier host
-    report to fall back to, among others — so there is no earlier point to
-    measure from. `None` rather than a duration of zero, which would claim a
-    measurement that was never taken; likewise a delta that comes out
-    negative — a clock stepped or a host's wall clock ran backward across
-    the two events — reports as unmeasured rather than as a lie in the other
-    direction.
+    Running, not merely first: a real host publishes "queued" the moment a
+    command arrives and turns run one at a time, so a turn can sit queued
+    behind another for as long as that one takes. Anchoring at "queued"
+    would count that wait as work. A turn recovered before it ever reported
+    running has nothing to anchor a start on at all, which is deliberate:
+    a few hundred milliseconds of queued-to-running is real but unmeasured
+    work, and reporting `None` for it is more honest than reporting zero.
+
+    Fewer than two stamps from "running" on — including a turn that never
+    reported running before something ended it — means there is no earlier
+    point to measure from. `None` rather than a duration of zero, which
+    would claim a measurement that was never taken; likewise a delta that
+    comes out negative — a clock stepped or a host's wall clock ran backward
+    across the two events — reports as unmeasured rather than as a lie in
+    the other direction.
     """
     rows = (
         await db.execute(
             select(
                 SdkSessionEvent.event["occurredAt"].as_string(),
-                SdkSessionEvent.host_event,
+                SdkSessionEvent.event["body"]["status"].as_string(),
             )
             .where(
                 SdkSessionEvent.session_id == session_id,
                 SdkSessionEvent.event["body"]["type"].as_string() == "turn.upsert",
                 SdkSessionEvent.event["body"]["turnId"].as_string() == turn_id,
+                SdkSessionEvent.host_sequence.isnot(None),
             )
             .order_by(SdkSessionEvent.sequence)
         )
     ).all()
-    # `host_event` is a JSON column, and a synthetic row's `None` is stored as
-    # `JSONB.none_as_null`'s default — a JSON `null`, not a SQL one — so
-    # excluding it has to happen after the fetch, in Python, rather than as
-    # `.isnot(None)` in the `WHERE` clause, which a JSON `null` still passes.
-    stamps = [occurred_at for occurred_at, host_event in rows if host_event is not None]
+    running_index = next(
+        (index for index, (_, status) in enumerate(rows) if status == "running"), None
+    )
+    if running_index is None:
+        return None
+    stamps = [at for at, _ in rows[running_index:]]
     if len(stamps) < 2:
         return None
     started = _as_aware(stamps[0])
