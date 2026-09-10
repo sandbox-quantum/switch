@@ -385,7 +385,9 @@ class RoomYamlService:
 
     async def _resolve_bridge_id(self, bridge_name: str | None) -> str | None:
         if bridge_name is None:
-            return None
+            async with self._session_factory() as session:
+                default = await self._bridge_store.get_default(session)
+            return default.id if default else None
         async with self._session_factory() as session:
             bridges = await self._bridge_store.get_all(session)
         matches = [b for b in bridges if b.display_name == bridge_name]
