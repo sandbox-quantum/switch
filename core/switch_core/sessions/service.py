@@ -7,6 +7,7 @@ from typing import get_args
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from switch_core.addressing import can_address, parse_policy
 from switch_core.bridges.agent.protocol.event_buffer import (
     CursorExpiredError,
     EventBuffer,
@@ -758,25 +759,39 @@ class SessionAuthority:
                 raise SessionError(
                     "NOT_AUTHORIZED", "Callback destination does not match the bridge."
                 )
-            owner = await db.scalar(
-                select(ExternalUserClaim.user_id)
-                .join(
-                    ExternalUser,
-                    ExternalUser.id == ExternalUserClaim.external_user_id,
-                )
+            external_user_id = await db.scalar(
+                select(ExternalUser.id)
                 .join(Client, Client.id == ExternalUser.client_id)
-                .join(
-                    ClientRoom,
-                    ClientRoom.client_id == Client.id,
-                )
+                .join(ClientRoom, ClientRoom.client_id == Client.id)
                 .where(
                     ExternalUser.bridge_id == bridge_id,
                     Client.matrix_user_id == origin.actor_id,
                     ClientRoom.room_id == origin.room_id,
-                    ExternalUserClaim.user_id == agent.owner_id,
                 )
             )
-            if owner is None:
+            if external_user_id is None:
+                raise SessionError(
+                    "NOT_AUTHORIZED",
+                    "Room visibility does not grant permission to answer.",
+                )
+            claimants = list(
+                await db.scalars(
+                    select(ExternalUserClaim.user_id).where(
+                        ExternalUserClaim.external_user_id == external_user_id
+                    )
+                )
+            )
+            allowed = can_address(
+                parse_policy(agent.addressing_policy),
+                room_id=origin.room_id,
+                group_id=room.group_id,
+                sender_kind="user",
+                sender_id=external_user_id,
+                sender_user_ids=claimants,
+                sender_owner_user_id=None,
+                owner_user_id=agent.owner_id,
+            )
+            if not allowed:
                 raise SessionError(
                     "NOT_AUTHORIZED",
                     "Room visibility does not grant permission to answer.",
