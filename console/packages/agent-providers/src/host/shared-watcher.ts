@@ -73,6 +73,8 @@ export class SharedWatchAssignments {
       const sessionId = sessionIdFor(template.session.agentId, event.roomId, event.messageId);
       config.session = { ...config.session, sessionId, hostId: randomUUID(), epoch: randomUUID() };
       config.start.input.sessionId = sessionId;
+      if (config.start.input.env.SWITCHDASH_SESSION_ID !== undefined)
+        config.start.input.env.SWITCHDASH_SESSION_ID = sessionId;
       delete config.start.input.resume;
       config.roomConnection = {
         connectionId: randomUUID(),

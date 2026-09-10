@@ -1,5 +1,7 @@
 import { getAgentLocation } from '@main/core/agents/agent-location';
 import { getAgentById } from '@main/core/agents/getAgentById';
+import { locationManager } from '@main/core/locations/location-manager';
+import { resolveSessionEnv } from '@main/core/locations/location-runtime-factory';
 import { locationTransport } from '@main/core/locations/location-transport';
 import { buildSharedHostConfig, deploySharedHost } from './shared-agent-runtime';
 
@@ -17,6 +19,14 @@ export async function configureSharedWatcher(
   const location = await getAgentLocation(agent);
   const transport = locationTransport(location);
   const identity = `watcher-${agent.switchAgentId}`;
+  const opened = await locationManager.openLocation(location);
+  if (!opened.success)
+    throw new Error(`Cannot read watcher execution settings: ${JSON.stringify(opened.error)}`);
+  const settings = await resolveSessionEnv(
+    { id: identity, title: 'Room session' },
+    { path: location.dir, fs: opened.data.fs },
+    opened.data.settings
+  );
   const config = await buildSharedHostConfig(
     {
       id: identity,
@@ -24,7 +34,7 @@ export async function configureSharedWatcher(
       providerId: agent.providerId,
       agentName: name ?? agent.name ?? undefined,
     },
-    { sessionPath: location.dir, sessionEnvVars: {} },
+    { sessionPath: location.dir, ...settings },
     transport,
     { rooms: [], startCursor: 0 }
   );

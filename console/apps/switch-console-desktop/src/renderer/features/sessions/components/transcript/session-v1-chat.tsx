@@ -128,6 +128,12 @@ export function SessionV1Chat({
           </span>
         </div>
       </div>
+      {session && !session.capabilities.questions && (
+        <div className="px-5 py-2 text-xs text-foreground-muted">
+          This provider does not support interactive questions. Supply additional instructions in
+          chat.
+        </div>
+      )}
       {(view.error || !view.connected) && (
         <div
           role="status"

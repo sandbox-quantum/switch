@@ -43,7 +43,7 @@ it.each(['claude', 'codex', 'opencode', 'gemini', 'cursor'])(
           sessionId: 'watcher',
           cwd: root,
           runtimeMode: 'approval-required',
-          env: { TEST_SETTING: 'preserved' },
+          env: { TEST_SETTING: 'preserved', SWITCHDASH_SESSION_ID: 'watcher' },
           mcpServers: {},
         },
       },
@@ -59,7 +59,10 @@ it.each(['claude', 'codex', 'opencode', 'gemini', 'cursor'])(
     );
     expect(restarted.sessions()).toHaveLength(1);
     expect(first.roomConnection).toMatchObject({ rooms: ['room'], startCursor: 6 });
-    expect(first.start.input.env).toEqual({ TEST_SETTING: 'preserved' });
+    expect(first.start.input.env).toEqual({
+      TEST_SETTING: 'preserved',
+      SWITCHDASH_SESSION_ID: first.session.sessionId,
+    });
     await expect(restarted.assign(template, { ...event, messageId: 'forged' })).rejects.toThrow(
       'identity'
     );
