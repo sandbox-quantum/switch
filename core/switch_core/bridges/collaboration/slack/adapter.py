@@ -613,7 +613,7 @@ class SlackAdapter(CollaborationAdapter):
                 content.items, content.turn, elapsed_seconds=content.elapsed_seconds
             )
         assert isinstance(content, RequestCard)
-        if content.turn is not None and content.items is not None:
+        if content.turn is not None:
             return render_turn_with_request(
                 content.items,
                 content.turn,

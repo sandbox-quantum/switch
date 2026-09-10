@@ -4,7 +4,7 @@ import asyncio
 import logging
 from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from typing import ClassVar
 
@@ -139,13 +139,16 @@ class RequestCard:
     `turn`/`items`/`elapsed_seconds` are set only once the request's own
     turn is drawn with it rather than apart from it — a card whose turn has
     not been folded in yet, or never will be, carries `turn=None` and draws
-    exactly as it always has.
+    exactly as it always has. `turn` alone is the switch: `items` defaults
+    to empty rather than to `None`, so a turn that has emitted nothing yet
+    is a state this can represent and draw correctly, not one a caller can
+    accidentally leave unset and have silently dropped.
     """
 
     request: SnapshotRequest
     reference: RequestReference
     turn: TurnUpsert | None = None
-    items: list[Item] | None = None
+    items: list[Item] = field(default_factory=list)
     elapsed_seconds: float | None = None
 
 

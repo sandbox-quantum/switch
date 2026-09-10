@@ -701,6 +701,26 @@ async def test_a_request_card_with_its_turn_draws_the_combined_message() -> None
     )
 
 
+async def test_a_turn_with_no_items_yet_still_draws_combined_not_dropped() -> None:
+    """`turn` alone is the switch — leaving `items` unset must not silently
+    fall back to the plain card. A turn that has emitted nothing yet is a
+    real state (the moment a request opens before any tool call has run),
+    and `items` defaults to empty rather than `None` so it stays
+    representable rather than becoming a caller mistake that drops the turn
+    with nothing logged.
+    """
+    turn = _turn()
+    request = await _request()
+    card = RequestCard(request, REFERENCE, turn)
+
+    combined = _slack_adapter()._render_rich(card)
+
+    assert combined == render_turn_with_request(
+        [], turn, request, REFERENCE, elapsed_seconds=None
+    )
+    assert combined != render_request(request, REFERENCE)
+
+
 async def test_a_turn_activity_card_is_unaffected_by_the_request_card_change() -> None:
     """Same dispatch function, two content types — confirms the new branch
     for `RequestCard` did not disturb the existing one for `TurnActivity`."""
