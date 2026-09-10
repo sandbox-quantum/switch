@@ -216,13 +216,11 @@ export class HostedSession {
   }
 
   private async refreshModels(): Promise<void> {
-    this.config.session.capabilities.attachmentMimeTypes = this.config.stageAttachments
-      ? ATTACHMENT_MIME_TYPES
-      : [];
     this.config.session.capabilities.compact =
       Boolean(this.adapter.compactSession) &&
       (!this.adapter.canCompact || (await this.adapter.canCompact(this.config.session.sessionId)));
     if (!this.adapter.listModels) {
+      this.updateAttachmentCapabilities();
       await this.publish({ type: 'session.upsert', session: structuredClone(this.config.session) });
       return;
     }
@@ -232,7 +230,18 @@ export class HostedSession {
       ? { id: this.config.input.model.id, options: this.config.input.model.options ?? {} }
       : null;
     this.config.session.capabilities.modelChange = Boolean(models.length && this.adapter.setModel);
+    this.updateAttachmentCapabilities();
     await this.publish({ type: 'session.upsert', session: structuredClone(this.config.session) });
+  }
+
+  private updateAttachmentCapabilities(): void {
+    const session = this.config.session;
+    const model = session.models?.find((entry) => entry.id === session.model?.id);
+    session.capabilities.attachmentMimeTypes = this.config.stageAttachments
+      ? ATTACHMENT_MIME_TYPES.filter(
+          (mime) => model?.imageInput !== false || !mime.startsWith('image/')
+        )
+      : [];
   }
 
   notice(message: string): Promise<void> {
@@ -276,6 +285,14 @@ export class HostedSession {
         throw new Error('PAYLOAD_TOO_LARGE: message exceeds the local host limit.');
       if (body.attachments.length && !this.config.stageAttachments)
         throw new Error('UNSUPPORTED_CAPABILITY: attachment staging is not configured.');
+      if (
+        body.attachments.some(
+          (file) => !session.capabilities.attachmentMimeTypes.includes(file.mimeType)
+        )
+      )
+        throw new Error(
+          'UNSUPPORTED_CAPABILITY: the selected provider model does not accept this attachment type.'
+        );
       if (session.status !== 'ready' && session.status !== 'running')
         throw new Error('Session is not ready.');
     } else if (
@@ -410,6 +427,7 @@ export class HostedSession {
         await this.inbox.append({ type: 'model', id: body.modelId, options: body.options });
         this.config.input.model = { id: body.modelId, options: body.options };
         this.config.session.model = { id: body.modelId, options: body.options };
+        this.updateAttachmentCapabilities();
         await this.publish({
           type: 'session.upsert',
           session: structuredClone(this.config.session),

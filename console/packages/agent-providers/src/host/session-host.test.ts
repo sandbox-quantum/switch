@@ -553,3 +553,37 @@ it('delivers staged execution paths once and keeps durable attachment metadata',
     command.body.attachments
   );
 });
+
+it('updates attachment support after a confirmed native model change', async () => {
+  const { adapter, config } = setup('opencode');
+  adapter.listModels = vi.fn(async () => [
+    { id: 'text', label: 'Text', options: {}, imageInput: false },
+    { id: 'vision', label: 'Vision', options: {}, imageInput: true },
+  ]);
+  adapter.setModel = vi.fn(async () => {});
+  const root = await mkdtemp(join(tmpdir(), 'sdk-model-images-'));
+  roots.push(root);
+  const host = await HostedSession.start(
+    root,
+    {
+      ...config,
+      input: { ...config.input, model: { id: 'text' } },
+      stageAttachments: async () => [],
+    },
+    adapter
+  );
+  hosts.push(host);
+  expect(host.snapshot().session.capabilities.attachmentMimeTypes).not.toContain('image/png');
+  const image = message('image');
+  if (image.body.type !== 'message.send') throw new Error('Expected message');
+  image.body.attachments = [
+    { attachmentId: randomUUID(), name: 'image.png', mimeType: 'image/png', bytes: 10 },
+  ];
+  await expect(host.command(image)).rejects.toThrow('attachment type');
+  expect(adapter.sendTurn).not.toHaveBeenCalled();
+  await host.command({
+    ...message('vision'),
+    body: { type: 'session.model.set', modelId: 'vision', options: {} },
+  });
+  expect(host.snapshot().session.capabilities.attachmentMimeTypes).toContain('image/png');
+});

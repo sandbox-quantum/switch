@@ -202,6 +202,7 @@ class ModelChoice(_Model):
     id: Id
     label: str
     options: dict[str, list[str]]
+    image_input: bool | None = None
 
 
 class Session(_Model):

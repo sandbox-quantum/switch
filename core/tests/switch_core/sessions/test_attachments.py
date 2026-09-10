@@ -115,3 +115,49 @@ async def test_attachment_validation(session_factory, name, mime, data):
         await authority.upload_attachment(
             "session-demo", "owner", str(uuid.uuid4()), name, mime, data
         )
+
+
+async def test_attachments_remain_session_scoped_across_recovery(session_factory):
+    authority, epoch = await setup(session_factory)
+    attachment_id = str(uuid.uuid4())
+    data = b"Durable contents after recovery"
+    attachment = await authority.upload_attachment(
+        "session-demo", "owner", attachment_id, "report.txt", "text/plain", data
+    )
+    original = await authority.snapshot("session-demo", "owner")
+    other = await authority.acquire(
+        "agent-demo",
+        original.session.model_copy(
+            update={"session_id": "session-other", "host_id": "host-other"}
+        ),
+    )
+    with pytest.raises(SessionError, match="does not belong"):
+        await authority.attachment(
+            "agent-demo",
+            "session-other",
+            "host-other",
+            other.session.epoch,
+            attachment_id,
+        )
+    await authority.quiesce("agent-demo", "session-demo", "host-demo", epoch)
+    recovered = await authority.recover(
+        "agent-demo", "session-demo", "host-demo", epoch, str(uuid.uuid4()), 0
+    )
+    with pytest.raises(SessionError):
+        await authority.attachment(
+            "agent-demo", "session-demo", "host-demo", epoch, attachment_id
+        )
+    result = await authority.attachment(
+        "agent-demo",
+        "session-demo",
+        "host-demo",
+        recovered.session.epoch,
+        attachment_id,
+    )
+    assert result.data == data
+    assert (
+        await authority.upload_attachment(
+            "session-demo", "owner", attachment_id, "report.txt", "text/plain", data
+        )
+        == attachment
+    )

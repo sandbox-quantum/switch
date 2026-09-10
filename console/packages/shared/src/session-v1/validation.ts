@@ -105,7 +105,12 @@ export const sessionSchema = z.strictObject({
   pendingRequestIds: z.array(id),
   models: z
     .array(
-      z.strictObject({ id, label: z.string(), options: z.record(z.string(), z.array(z.string())) })
+      z.strictObject({
+        id,
+        label: z.string(),
+        options: z.record(z.string(), z.array(z.string())),
+        imageInput: z.boolean().nullable().optional(),
+      })
     )
     .optional(),
   model: z

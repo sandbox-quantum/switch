@@ -877,16 +877,17 @@ function toolTitle(
   input: Record<string, unknown>,
   stateTitle: string | undefined
 ): string {
+  const title = stateTitle?.trim() || tool;
   const pick = (key: string): string | undefined => {
     const value = input[key];
     return typeof value === 'string' && value.length > 0 ? value : undefined;
   };
-  if (type === 'command_execution') return pick('command') ?? stateTitle ?? tool;
-  if (type === 'file_change') return pick('filePath') ?? stateTitle ?? tool;
+  if (type === 'command_execution') return pick('command') ?? title;
+  if (type === 'file_change') return pick('filePath') ?? title;
   if (type === 'subagent') {
-    return pick('description') ?? pick('prompt')?.slice(0, 120) ?? stateTitle ?? tool;
+    return pick('description') ?? pick('prompt')?.slice(0, 120) ?? title;
   }
-  return stateTitle ?? tool;
+  return title;
 }
 
 /**

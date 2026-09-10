@@ -142,6 +142,7 @@ export function createHttpTransport(options: HttpTransportOptions): OpencodeTran
               Object.values(provider.models).map((model) => ({
                 id: `${provider.id}/${model.id}`,
                 label: `${provider.name}: ${model.name}`,
+                imageInput: model.capabilities.input.image,
                 options: {},
               }))
             );

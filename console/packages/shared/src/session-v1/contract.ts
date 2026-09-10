@@ -69,7 +69,12 @@ export type Request = {
   expiresAt: string | null;
 };
 export type SessionModel = { id: string; options: Record<string, string> };
-export type ModelChoice = { id: string; label: string; options: Record<string, string[]> };
+export type ModelChoice = {
+  id: string;
+  label: string;
+  options: Record<string, string[]>;
+  imageInput?: boolean | null;
+};
 export type Session = {
   sessionId: Id;
   agentId: Id;

@@ -70,7 +70,9 @@ by this adapter. Neither receives a substitute summarization prompt.
 | Gemini CLI | Yes | ACP model catalog | Unavailable | Images/resources as bytes |
 | Cursor | Yes | ACP model catalog | Unavailable | Images as bytes; staged file references |
 
-Controls depend on the connected provider's reported support. A model can still
+Controls depend on the connected provider's reported support. OpenCode models
+that report no image input are labelled in the selector and reject images before
+dispatch. A model can still
 reject an image or exhaust its account quota; those failures remain visible.
 
 Attach files with the picker, paste, or drag and drop. Uploads require session-owner
@@ -124,5 +126,13 @@ The desktop's opt-in `shared-host-deployment.integration.test.ts` uses an isolat
 local SSH fixture. Set `SDK_SSH_TEST_KEY` to its disposable private-key path and
 `SDK_SSH_TEST_PORT` to its published localhost port. The fixture must permit key
 authentication as root, provide Node and `/workspace`, and permit TCP forwarding.
-The tests exercise real direct SSH, ProxyCommand, ProxyJump, SFTP deployment and
-reconnection to saved state. They do not run authenticated providers remotely.
+The tests exercise real direct SSH, ProxyCommand, ProxyJump, SFTP deployment,
+standalone bundle startup and reconnection to saved state. They also execute
+attachment staging, transient transfer retry, native skill paths and MCP environment
+checks on the SSH machine. The download source and provider are simulated in those
+checks; they do not run authenticated providers remotely.
+
+`SDK_ATTACHMENTS_LIVE=1` enables `src/host/attachments.integration.test.ts`. It
+requires native project-skill discovery, real MCP invocation, staged document
+contents and image recognition when the selected model supports images. Cursor
+requires an account with available usage.

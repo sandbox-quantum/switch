@@ -35,6 +35,7 @@ export function SessionV1Controls({
               {session.models?.map((entry) => (
                 <option key={entry.id} value={entry.id}>
                   {entry.label}
+                  {entry.imageInput === false ? ' (no images)' : ''}
                 </option>
               ))}
             </select>

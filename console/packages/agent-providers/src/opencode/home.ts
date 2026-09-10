@@ -1,7 +1,7 @@
 import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { isAbsolute, join, resolve } from 'node:path';
-import { parse, type ParseError } from 'jsonc-parser';
+import { parse, type ParseError } from 'jsonc-parser/lib/esm/main.js';
 import { linkHomeAsset, optionalText } from '../host/provider-home';
 import type { OpencodeConfigFile } from './config';
 import type { OpencodeSkill } from './server';

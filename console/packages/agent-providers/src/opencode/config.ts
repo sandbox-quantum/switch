@@ -52,11 +52,9 @@ function editAction(mode: RuntimeMode): OpencodePermissionAction {
  * registered. OpenCode names an MCP permission `<server>_<tool>` and matches a
  * permission key as a glob, so one entry per server covers its whole surface.
  *
- * They are allowed rather than asked about because the session's own
- * `XDG_CONFIG_HOME` hides the user's MCP registrations: every server a session
- * has is one the caller put there for it to use. For Switch Console that is the
- * room protocol, and a session that must ask a human before it may speak in the
- * room cannot answer the room at all — including to ask.
+ * Only explicitly supplied servers receive these rules. Native user MCP
+ * registrations retain their own permissions. Switch's room protocol must be
+ * available so the agent can ask the room for help.
  */
 function mcpPermissionKeys(mcpNames: string[]): string[] {
   return mcpNames.map((name) => `${name}_*`);

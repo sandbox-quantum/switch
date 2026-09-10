@@ -148,7 +148,9 @@ it
       if (process.env.SDK_CAPABILITIES_LIVE === '1') {
         const current = await get();
         expect(current.session.capabilities.modelChange).toBe(true);
-        expect(current.session.capabilities.compact).toBe(['claude', 'codex', 'opencode'].includes(provider));
+        expect(current.session.capabilities.compact).toBe(
+          ['claude', 'codex', 'opencode'].includes(provider)
+        );
         const choice =
           current.session.models?.find((model) => model.id === current.session.model?.id) ??
           current.session.models?.find((model) => /sonnet|big-pickle/.test(model.id)) ??
