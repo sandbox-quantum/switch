@@ -624,3 +624,26 @@ class TestAConnectionWithNoRoomDoesNotConsume:
 
         assert frames[1][0] == "message"
         await stream.aclose()
+
+
+async def test_replaced_stream_cannot_capture_its_successors_generation() -> None:
+    registry = ConnectionRegistry()
+    buffer = EventBuffer()
+    conn = _open(registry)
+    old = event_stream(conn=conn, registry=registry, buffer=buffer)
+    _open(registry)
+    assert await _take(old, 1) == []
+    assert registry.beat(AGENT, conn.id, 0).stream_attached
+
+
+async def test_closed_stream_cannot_detach_a_recreated_connection() -> None:
+    registry = ConnectionRegistry()
+    buffer = EventBuffer()
+    conn = _open(registry)
+    old = event_stream(conn=conn, registry=registry, buffer=buffer)
+    await anext(old)
+    registry.close(conn.id, "heartbeat lapsed")
+    replacement = _open(registry)
+    assert replacement is not conn
+    await old.aclose()
+    assert registry.beat(AGENT, replacement.id, 0).stream_attached

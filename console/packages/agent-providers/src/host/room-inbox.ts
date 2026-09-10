@@ -98,7 +98,11 @@ export class SharedRoomInbox {
         },
         onGap: (gap) =>
           fail(new Error(`Room delivery gap: ${gap.reason}. Read room context before continuing.`)),
-        onEvicted: (reason) => fail(new Error(`Room connection was evicted: ${reason}`)),
+        onEvicted: (reason) => {
+          if (reason === 'heartbeat lapsed')
+            console.warn('Room heartbeat lapsed; reconnecting from the saved cursor.');
+          else fail(new Error(`Room connection was evicted: ${reason}`));
+        },
         onRoomRejected: ({ roomId, detail }) =>
           fail(new Error(`Room ${roomId} was refused: ${detail}`)),
       });

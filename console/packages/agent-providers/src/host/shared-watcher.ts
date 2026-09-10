@@ -188,7 +188,11 @@ export async function runSharedWatcher(
             `Shared SDK watcher delivery gap: ${gap.reason}. Read room context before restarting.`
           )
         ),
-      onEvicted: (reason) => fail(new Error(`Shared SDK watcher was evicted: ${reason}`)),
+      onEvicted: (reason) => {
+        if (reason === 'heartbeat lapsed')
+          console.warn('Watcher heartbeat lapsed; reconnecting from the saved cursor.');
+        else fail(new Error(`Shared SDK watcher was evicted: ${reason}`));
+      },
     });
     stream.start();
     while (!stop.signal.aborted) {

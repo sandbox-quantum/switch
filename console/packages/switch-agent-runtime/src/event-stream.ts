@@ -241,7 +241,8 @@ export class SwitchEventStream {
           connection_id: connectionId,
           scope,
           filter,
-          start_from: this.cursor > 0 ? String(this.cursor) : 'head',
+          start_from:
+            this.cursor > 0 || this.deps.startCursor !== undefined ? String(this.cursor) : 'head',
           // What we are and what we speak, declared on the connect we already
           // make (CHOO-1865). A client that says nothing records as unknown
           // server-side, and a declaration cannot be backfilled after the fact
