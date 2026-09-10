@@ -22,11 +22,13 @@ documented — but only because every environment connected to Postgres as the
 tables' owner, which Postgres exempts from their policies. Under the
 restricted runtime role an unscoped session is not a hatch at all: unscoped is
 precisely the state `require_tenant_id()` raises on, so every one of its
-seventeen call sites either died at boot or silently read nothing. The whole
-model was inverted, and `db/tenant_lookup.py` is what replaced it: eight
-`SECURITY DEFINER` functions that answer *which tenant* and never return a
-row, so a cross-tenant question is asked in one place with a fixed shape, and
-the work it fans out into is scoped like everything else.
+seventeen call sites — the ones that went through this helper by name, which
+is not the same count as the exemption's full inventory; see
+`db/tenant_lookup.py` for the other two — either died at boot or silently
+read nothing. The whole model was inverted, and `db/tenant_lookup.py` is what
+replaced it: eight `SECURITY DEFINER` functions that answer *which tenant*
+and never return a row, so a cross-tenant question is asked in one place with
+a fixed shape, and the work it fans out into is scoped like everything else.
 
 What is left is the one helper. Two things still open a session with nothing
 bound, and neither is cross-tenant:

@@ -89,10 +89,15 @@ from switch_core.transport.invites import InviteBus
 # ── Mirrors deploy/local/docker-compose.yml — keep in sync ──────────────────────
 POSTGRES_IMAGE = "postgres:16-alpine"
 
-# The role the application runs as here. Named the same as the one
-# `deploy/local/docker-compose.yml` creates, so what this suite exercises and
-# what a developer's stack runs are the same shape.
-RUNTIME_ROLE = "switch_app"
+# Prefix for the role the application runs as here. `deploy/local/docker-compose.yml`
+# creates a fixed-name `switch_app`, and this suite's role is the same shape —
+# a plain restricted LOGIN role, granted the same way — but not the same name:
+# roles are cluster-wide, and a crashed session that never reached its own
+# teardown would otherwise leave `switch_app` behind for the next run's
+# `CREATE ROLE` to collide with. Each session gets its own `switch_app_<hex>`
+# instead, the same shape `rls_harness` (`core/tests/conftest.py`) already uses
+# for the same reason.
+RUNTIME_ROLE_PREFIX = "switch_app"
 
 # ── Throwaway test constants (not secrets — local ephemeral infra) ──────────────
 SERVER_NAME = "localhost"
@@ -375,8 +380,8 @@ async def session_env(switch_stack: StackInfo) -> AsyncIterator[SessionEnv]:
     either exercises the real code against a database with no isolation in it
     — which is exactly how nineteen call sites came to depend on reads a
     deployed system refuses, and why several of them were invisible until a
-    row existed. Wiring the app to `switch_app` makes this suite the thing
-    that catches the twentieth.
+    row existed. Wiring the app to a restricted role of its own makes this
+    suite the thing that catches the twentieth.
 
     The owner connection stays, for the two jobs that genuinely need DDL and
     that the application never does: building the schema, and truncating it
@@ -401,6 +406,11 @@ async def session_env(switch_stack: StackInfo) -> AsyncIterator[SessionEnv]:
         await conn.run_sync(Base.metadata.create_all)
     await _seed_tenant_zero(owner_engine)
 
+    # Cluster-wide and unique per session, not the fixed name Compose creates
+    # (see `RUNTIME_ROLE_PREFIX` above): a session that crashes before its own
+    # teardown runs must not leave a role behind for the next run's `CREATE
+    # ROLE` to collide with.
+    runtime_role = f"{RUNTIME_ROLE_PREFIX}_{uuid.uuid4().hex[:12]}"
     runtime_password = uuid.uuid4().hex
     async with owner_engine.begin() as conn:
         # CREATE ROLE takes no bind parameter for PASSWORD, so a fresh random
@@ -409,15 +419,15 @@ async def session_env(switch_stack: StackInfo) -> AsyncIterator[SessionEnv]:
         # a privilege production has not got.
         await conn.execute(
             text(
-                f'CREATE ROLE "{RUNTIME_ROLE}" LOGIN '
+                f'CREATE ROLE "{runtime_role}" LOGIN '
                 f"PASSWORD '{runtime_password}' "
                 "NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS"
             )
         )
-        await grant_runtime_role(conn, RUNTIME_ROLE)
+        await grant_runtime_role(conn, runtime_role)
 
     config = _build_config(
-        switch_stack, db_name, user=RUNTIME_ROLE, password=runtime_password
+        switch_stack, db_name, user=runtime_role, password=runtime_password
     )
     engine = create_engine_from_config(config)
     session_factory = create_session_factory(engine)
@@ -460,14 +470,14 @@ async def session_env(switch_stack: StackInfo) -> AsyncIterator[SessionEnv]:
         # OWNED BY` revokes what survives the database drop; it owns nothing,
         # so there is nothing for it to drop.
         async with owner_engine.begin() as conn:
-            await conn.execute(text(f'DROP OWNED BY "{RUNTIME_ROLE}"'))
+            await conn.execute(text(f'DROP OWNED BY "{runtime_role}"'))
         await owner_engine.dispose()
         admin_conn = await asyncpg.connect(admin_dsn)
         try:
             await admin_conn.execute(
                 f'DROP DATABASE IF EXISTS "{db_name}" WITH (FORCE)'
             )
-            await admin_conn.execute(f'DROP ROLE IF EXISTS "{RUNTIME_ROLE}"')
+            await admin_conn.execute(f'DROP ROLE IF EXISTS "{runtime_role}"')
         finally:
             await admin_conn.close()
 

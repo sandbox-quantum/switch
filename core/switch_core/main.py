@@ -312,6 +312,16 @@ async def run(config: SwitchConfig) -> None:
     # one tenant at a time. Which tenants there are is the one read that
     # cannot be scoped to any of them, so it goes through the exemption
     # (`db/tenant_lookup.py`) rather than through a session.
+    #
+    # No `row.tenant_id == tenant_id` filter here, unlike the fan-outs in
+    # `ClientLifecycleService`: `ReferenceTypeStore.list_all` names `tenant_id
+    # = require_tenant_id()` in its own query rather than leaning on the
+    # policy for it (it is the one store that has to, per `db/tenant_lookup.py`
+    # and `reference_type_store.py` — `reference_types` has no `id` column of
+    # its own to filter by otherwise). That WHERE clause narrows correctly on
+    # an owner connection too, so each pass through this loop already sees
+    # only the tenant it just bound; a row-by-row filter on top of it would
+    # compare a value against one it can never disagree with.
     tenant_ids = await all_tenant_ids(session_factory)
     for tenant_id in tenant_ids:
         async with tenant_session(session_factory, tenant_id) as session:
@@ -690,6 +700,17 @@ async def _seed_agent_registration_bootstrap_key(
     key_tenant_id = await _bootstrap_key_tenant(
         session_factory, api_key_store, tenant_ids
     )
+    # Retiring a stale legacy key is deployment-wide even though adopting one
+    # is not. The block below works in a single tenant, which is right for the
+    # key — it is one per deployment — and wrong for the sweep beside it: a
+    # legacy admin-owned registration row in some *other* tenant still
+    # authenticates and still registers agents with admin authority, which is
+    # the case that sweep exists to stop. It reads every tenant, one at a
+    # time, and hands back what it revoked so the owner's record below covers
+    # those hashes too.
+    retired_elsewhere = await _retire_legacy_keys_outside(
+        session_factory, api_key_store, tenant_ids, key_tenant_id
+    )
     async with tenant_session(session_factory, key_tenant_id) as session:
         token_hash = hashlib.sha256(
             config.agent_registration_token.encode()
@@ -725,6 +746,10 @@ async def _seed_agent_registration_bootstrap_key(
             )
         revoked_hashes: list[str] = list(raw_revoked_hashes or [])
         meta_dirty = False
+        for retired in retired_elsewhere:
+            if retired not in revoked_hashes:
+                revoked_hashes.append(retired)
+                meta_dirty = True
 
         if (
             bootstrap_key is None
@@ -865,6 +890,60 @@ async def _seed_agent_registration_bootstrap_key(
             owner.metadata_ = meta
 
         await session.commit()
+
+
+async def _retire_legacy_keys_outside(
+    session_factory: async_sessionmaker[AsyncSession],
+    api_key_store: ApiKeyStore,
+    tenant_ids: list[str],
+    key_tenant_id: str,
+) -> list[str]:
+    """Retire every legacy admin-owned registration key outside `key_tenant_id`.
+
+    The seeding proper works in one tenant, because the bootstrap key is one
+    per deployment. This sweep cannot: a `type: "registration"` row carrying
+    the legacy label is indistinguishable from a live credential that
+    authenticates as the admin, and one sitting in another tenant goes on
+    doing so. Adoption stays where the key is; retirement goes everywhere,
+    because "no longer authenticates" is not a per-tenant claim.
+
+    Retired rather than deleted, for the reason the seeding gives at length:
+    every consumer already refuses `RETIRED_KEY_TYPE`, so this stops it
+    authenticating exactly as deletion would, while the row stays on the API
+    Keys page with a label saying why. The hashes come back so the bootstrap
+    owner's `revoked_hashes` covers them and restoring an old .env cannot
+    bring one back through the rotation path.
+    """
+    retired: list[str] = []
+    for tenant_id in tenant_ids:
+        if tenant_id == key_tenant_id:
+            continue
+        async with tenant_session(session_factory, tenant_id) as session:
+            stale_rows = [
+                row
+                for row in await api_key_store.get_by_label(
+                    session, LEGACY_BOOTSTRAP_KEY_LABEL
+                )
+                if row.type == "registration" and row.tenant_id == tenant_id
+            ]
+            for stale in stale_rows:
+                stale.type = RETIRED_KEY_TYPE
+                stale.label = f"{stale.label} (retired: stale, no longer authenticates)"
+                retired.append(stale.key_hash)
+                logger.warning(
+                    "Retired a stale admin-owned registration key (id %s) in "
+                    "tenant %s: the deployment's agent-registration bootstrap "
+                    "key lives in tenant %s, so this one authenticates nothing "
+                    "the operator intends and would otherwise keep registering "
+                    "agents with admin authority indefinitely. It is now "
+                    "visible on the API Keys page for a human to review.",
+                    stale.id,
+                    tenant_id,
+                    key_tenant_id,
+                )
+            if stale_rows:
+                await session.commit()
+    return retired
 
 
 async def _bootstrap_key_tenant(

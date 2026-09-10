@@ -34,10 +34,16 @@ one" — two paths never become a `Session` at all, both deliberately:
 
 When no tenant is bound (see `switch_core.tenant_context`), the hook does
 nothing rather than substituting one — a system session (auth resolution,
-Alembic, startup seeding) has no tenant, and the database does not yet reject
-that (that lands with `require_tenant_id()` and the row-level-security
-policies, in a later change). Until then, a query issued with no tenant set
-simply runs unscoped, same as before this hook existed.
+Alembic, startup seeding) has no tenant, and there is none to stamp. What
+happens next to a query issued on it is no longer this module's to decide:
+`require_tenant_id()` and the row-level-security policy on every scoped table
+(`db/rls_ddl.py`) now raise the moment such a session touches one, so a
+session with nothing bound may only read what carries no policy at all —
+`users`, `oidc_identities`, and the tenant lookups' own exempt functions in
+`db/tenant_lookup.py`. This hook's job is unchanged either way: it stamps
+whatever is bound, including nothing. Whether nothing bound then reads
+quietly or is refused loudly is the policies' call, not this hook's, and it
+used to be the former.
 """
 
 from __future__ import annotations
@@ -91,12 +97,31 @@ def register_tenant_session_hook() -> None:
     event.listens_for(Session, "after_begin")(_set_tenant_on_begin)
     event.listens_for(Session, "after_transaction_end")(_forget_the_stamp)
     event.listens_for(Session, "do_orm_execute")(_refuse_a_binding_that_came_too_late)
+    # `do_orm_execute` does not cover a flush: the INSERTs and UPDATEs the unit
+    # of work emits go to the connection directly rather than through
+    # `Session.execute`, so a late binding followed only by `session.add(...)`
+    # and `commit()` would slip past the check above. That is the shape a
+    # *write* under a drifted binding actually takes, which makes it the case
+    # that matters most: the column default reads the late tenant while the
+    # transaction still carries the early one, so the row claims one tenant
+    # and the policy compares another.
+    event.listens_for(Session, "before_flush")(_refuse_a_flush_that_drifted)
     _registered = True
 
 
 def _set_tenant_on_begin(
     session: Session, transaction: SessionTransaction, connection: Connection
 ) -> None:
+    if transaction.nested:
+        # A savepoint, not a transaction. `after_begin` fires for one, but the
+        # setting it would issue belongs to the enclosing transaction: an
+        # `is_local` `set_config` inside a savepoint survives `RELEASE` and
+        # reverts on `ROLLBACK TO`, so re-stamping here would leave the record
+        # holding the savepoint's tenant while the connection had gone back to
+        # the outer one. Measured on 16, not assumed. The enclosing
+        # transaction already carries the right value; a savepoint has nothing
+        # to add and no business overwriting it.
+        return
     tenant_id = current_tenant_id()
     # Recorded even when it is None, because "this transaction was stamped
     # with nothing" is exactly what the drift check needs to be able to tell
@@ -128,12 +153,23 @@ def _refuse_a_binding_that_came_too_late(state: ORMExecuteState) -> None:
     """Raise if what is bound now is not what this transaction was stamped with.
 
     Fires before every `Session.execute`, which is every statement this
-    codebase issues through a session. For the first statement of a
-    transaction there is no stamp yet — `after_begin` has not run, since the
-    transaction begins as part of executing it — so there is nothing to
-    compare and nothing to refuse. From the second onwards the two must agree.
+    codebase issues through a session other than a flush. For the first
+    statement of a transaction there is no stamp yet — `after_begin` has not
+    run, since the transaction begins as part of executing it — so there is
+    nothing to compare and nothing to refuse. From the second onwards the two
+    must agree.
     """
-    session = state.session
+    _refuse_drift(state.session)
+
+
+def _refuse_a_flush_that_drifted(
+    session: Session, flush_context: object, instances: object
+) -> None:
+    """The same check, on the path `do_orm_execute` does not see."""
+    _refuse_drift(session)
+
+
+def _refuse_drift(session: Session) -> None:
     if _STAMPED not in session.info:
         return
     stamped = session.info[_STAMPED]

@@ -54,32 +54,50 @@ class TestItPassesForARoleThePoliciesApplyTo:
         since boot would then succeed and the first query would fail. The
         grants come from `grant_runtime_role`, the same function a deployment
         runs, so this is a statement about production and not about a fixture.
+
+        Two tenants, and a row in each, so the count at the end says something.
+        Against one tenant on a fresh schema `count(*) == 1` is satisfied by a
+        database with no policies in it at all — it would prove the grants and
+        nothing else, which is not what the name claims. With a second
+        tenant's row present, the same 1 is the policy filtering.
         """
-        tenant_id = f"tenant-{uuid.uuid4().hex[:8]}"
+        mine = f"tenant-{uuid.uuid4().hex[:8]}"
+        theirs = f"tenant-{uuid.uuid4().hex[:8]}"
         async with rls_harness.owner() as session:
+            for tenant_id in (mine, theirs):
+                await session.execute(
+                    text("INSERT INTO tenants (id, slug, name) VALUES (:id, :id, :id)"),
+                    {"id": tenant_id},
+                )
             await session.execute(
-                text("INSERT INTO tenants (id, slug, name) VALUES (:id, :id, :id)"),
-                {"id": tenant_id},
+                text(
+                    "INSERT INTO room_groups (id, tenant_id, name) "
+                    "VALUES (:id, :t, 'somebody else')"
+                ),
+                {"id": str(uuid.uuid4()), "t": theirs},
             )
             await session.commit()
 
         async with rls_harness.restricted() as session:
             await session.execute(
                 text("SELECT set_config('app.tenant_id', :t, true)"),
-                {"t": tenant_id},
+                {"t": mine},
             )
             await session.execute(
                 text(
                     "INSERT INTO room_groups (id, tenant_id, name) "
                     "VALUES (:id, :t, 'a group')"
                 ),
-                {"id": str(uuid.uuid4()), "t": tenant_id},
+                {"id": str(uuid.uuid4()), "t": mine},
             )
             visible = (
                 await session.execute(text("SELECT count(*) FROM room_groups"))
             ).scalar_one()
             await session.commit()
-        assert visible == 1
+        assert visible == 1, (
+            "the restricted role saw a row it does not own, so it can read and "
+            "write but is not actually scoped"
+        )
 
 
 class TestItRefusesEveryShapeThatWouldMakeThePoliciesInert:

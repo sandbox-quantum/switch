@@ -110,8 +110,9 @@ async def get_system_session() -> AsyncIterator[AsyncSession]:
     reads as a deliberate, reviewable exception rather than an
     accidentally-unscoped session, and so the guard test above can hold for
     `get_session` without exemptions. Nothing about opening it differs from
-    `get_session` today, since row-level security is not enforced yet; the two
-    must stay interchangeable in behaviour only, never in name.
+    `get_session` today — it is the same session and the same hook, simply
+    with nothing bound around it — so the two must stay interchangeable in
+    behaviour only, never in name.
 
     "No tenant bound" is not the same as "writes land nowhere in particular":
     the OIDC callback provisions a user and picks its tenant explicitly (see

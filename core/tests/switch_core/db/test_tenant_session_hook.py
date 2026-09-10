@@ -25,6 +25,7 @@ from sqlalchemy.orm import Session
 from switch_core.db import tenant_session
 from switch_core.db.base import Base
 from switch_core.db.engine import create_session_factory
+from switch_core.db.models import Tenant
 from switch_core.tenant_context import tenant_scope
 
 TENANT_A = "tenant-hook-a"
@@ -233,3 +234,73 @@ class TestNoLeakAcrossAPooledConnection:
             pid_c, setting_c = await _pid_and_setting(session)
             assert pid_c == pid_a
             assert setting_c is None
+
+
+class TestABindingThatArrivesTooLateIsRefused:
+    """`set_config` rides `after_begin`, so it is issued once — when the
+    transaction opens. Binding a tenant after that rebinds a contextvar and
+    nothing the database can see, and the call site looks correct while every
+    statement runs under whatever the transaction was actually told.
+
+    On a connection Postgres exempts from the policies (every environment
+    before the runtime role, and the whole unit suite still) both halves of
+    that are invisible: no policy narrows the reads, none rejects the writes.
+    So the process refuses rather than leaving it to a reviewer's eye —
+    `TenantBindingDriftError`, from two hooks, because a read and a write take
+    different paths out of a `Session`.
+    """
+
+    async def test_a_read_after_a_late_binding_raises(
+        self, single_connection_session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        async with single_connection_session_factory() as session:
+            # Opens the transaction with nothing bound; the hook stamps None.
+            assert (await _pid_and_setting(session))[1] is None
+            with tenant_scope(TENANT_A):
+                with pytest.raises(tenant_session.TenantBindingDriftError) as raised:
+                    await session.execute(text("SELECT 1"))
+        assert "opened with tenant None" in str(raised.value)
+        assert TENANT_A in str(raised.value)
+
+    async def test_a_flush_after_a_late_binding_raises(
+        self, single_connection_session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """The path `do_orm_execute` does not see, and the one that matters
+        most: the unit of work emits its INSERTs to the connection directly
+        rather than through `Session.execute`. A late binding followed only by
+        `add` and `commit` is exactly how a row comes to claim one tenant on a
+        transaction that carries another."""
+        async with single_connection_session_factory() as session:
+            assert (await _pid_and_setting(session))[1] is None
+            with tenant_scope(TENANT_A):
+                session.add(Tenant(id=TENANT_A, slug=TENANT_A, name=TENANT_A))
+                with pytest.raises(tenant_session.TenantBindingDriftError):
+                    await session.flush()
+
+    async def test_rebinding_the_same_tenant_is_not_drift(
+        self, single_connection_session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """A redundant binding is not a wrong one. `tenant_session` nested
+        inside a `tenant_scope` for the same tenant is an ordinary shape on the
+        delivery path, and refusing it would be a false positive."""
+        async with single_connection_session_factory() as session:
+            with tenant_scope(TENANT_A):
+                assert (await _pid_and_setting(session))[1] == TENANT_A
+                with tenant_scope(TENANT_A):
+                    await session.execute(text("SELECT 1"))
+            await session.commit()
+
+    async def test_a_commit_clears_the_stamp_so_the_next_binding_is_free(
+        self, single_connection_session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """The escape the error message offers has to actually work. A session
+        reused after a commit opens a fresh transaction, which gets its own
+        `set_config` and its own stamp, so binding a different tenant between
+        the two is correct rather than drift."""
+        async with single_connection_session_factory() as session:
+            with tenant_scope(TENANT_A):
+                assert (await _pid_and_setting(session))[1] == TENANT_A
+            await session.commit()
+            with tenant_scope(TENANT_B):
+                assert (await _pid_and_setting(session))[1] == TENANT_B
+                await session.commit()

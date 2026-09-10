@@ -327,9 +327,13 @@ class ClientLifecycleService:
         A puppet in particular is reused for every room the person it stands
         for speaks in, so the first room's tenant is exactly the value that
         must not survive into the second. Everything the client does binds
-        the tenant of the room it is acting on, or — for the two lookups that
-        answer *which* tenant, its own row and its room list — is unscoped on
-        purpose.
+        the tenant of the room it is acting on. The one lookup that still runs
+        with nothing bound is `PostgresTransport._tenant`, the exemption call
+        (`tenant_of_client`) that answers *which* tenant this client's own row
+        belongs to — asking that question on a session already bound to a
+        tenant would beg it. Its room list is not exempt any more: once the
+        transport knows its own tenant, `joined_rooms` reads under it, through
+        an ordinary `tenant_session`, rather than unscoped.
         """
         with no_tenant():
             try:

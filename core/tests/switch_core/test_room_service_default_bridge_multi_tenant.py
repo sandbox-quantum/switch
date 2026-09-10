@@ -31,6 +31,7 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.db.models import Client, CollaborationBridge, Tenant
+from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.collaboration_bridge_store import CollaborationBridgeStore
 from switch_core.db.stores.room_store import RoomStore
@@ -116,9 +117,22 @@ class _NoRunningClients:
         return []
 
 
-async def _make_default_bridge(session: AsyncSession, *, tenant_id: str) -> str:
-    """A bridge client and a bridge nominated default, filed under `tenant_id`."""
-    with tenant_scope(tenant_id):
+async def _make_default_bridge(
+    session_factory: async_sessionmaker[AsyncSession], *, tenant_id: str
+) -> str:
+    """A bridge client and a bridge nominated default, filed under `tenant_id`.
+
+    Opened on its own session, inside `tenant_session(tenant_id)`, rather
+    than on a session shared with the other tenant's fixture rows with
+    `tenant_scope(tenant_id)` layered around just this call. `set_config`
+    rides `after_begin`, so it is issued once, the first time a session's
+    transaction opens — a session whose transaction had already begun under
+    a different tenant (or none, here, since this suite runs under
+    `no_ambient_tenant`) would keep telling the database that regardless of
+    what the contextvar is rebound to afterwards. Opening a fresh session
+    inside the binding is what actually moves it.
+    """
+    async with tenant_session(session_factory, tenant_id) as session:
         client = Client(
             matrix_user_id=f"@bridge-{uuid.uuid4().hex[:8]}:switch.local",
             display_name="bridge client",
@@ -135,6 +149,7 @@ async def _make_default_bridge(session: AsyncSession, *, tenant_id: str) -> str:
         )
         session.add(bridge)
         await session.flush()
+        await session.commit()
         return bridge.id
 
 
@@ -168,10 +183,10 @@ async def test_create_room_succeeds_for_each_tenants_own_default_bridge(
                 Tenant(id=tenant_b, slug=tenant_b, name="B"),
             ]
         )
-        await session.flush()
-        bridge_a = await _make_default_bridge(session, tenant_id=tenant_a)
-        bridge_b = await _make_default_bridge(session, tenant_id=tenant_b)
         await session.commit()
+
+    bridge_a = await _make_default_bridge(session_factory, tenant_id=tenant_a)
+    bridge_b = await _make_default_bridge(session_factory, tenant_id=tenant_b)
 
     matrix = _FakeMatrix()
     svc = _service(

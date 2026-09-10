@@ -142,12 +142,6 @@ class PostgresTransport:
         # A room's transport id never changes, so this only grows and never
         # goes stale.
         self._room_ids: dict[str, str] = {}
-        # Switch room id -> the tenant that room belongs to. Filled by the same
-        # lookup that fills `_room_ids`, from the same row; a room's tenant is
-        # as immutable as its transport id. Each unit of work (one delivery,
-        # one send) binds the room it is actually for rather than reading a
-        # tenant off this transport.
-        self._room_tenants: dict[str, str] = {}
         # This client's own tenant, resolved once from its row and then held.
         # Not a guess and not ambient: `client_rooms` carries composite foreign
         # keys to both `clients` and `rooms`, so every room this client can be
@@ -190,12 +184,12 @@ class PostgresTransport:
         for transport_room_id in rooms:
             await self._watch(transport_room_id)
         self._receiving = True
-        self._invites.register(self.user_id, self._on_invited)
+        self._invites.register(self.client_id, self._on_invited)
         try:
             await self._closed.wait()
         finally:
             self._receiving = False
-            self._invites.unregister(self.user_id, self._on_invited)
+            self._invites.unregister(self.client_id, self._on_invited)
             self._unwatch_all()
             delivery.cancel()
 
@@ -354,9 +348,13 @@ class PostgresTransport:
         transport_room_id = self._watching.get(room_id)
         if transport_room_id is None:
             return
-        # `_watch` cannot have set up delivery for this room without already
-        # resolving it, which is what fills this in — see `_resolve_room`.
-        tenant_id = self._room_tenants[room_id]
+        # Every room this client can be in is in this client's own tenant --
+        # `client_rooms` and `messages` both key to `rooms` and to `clients`
+        # through `tenant_id` -- so there is one answer here rather than one
+        # per room. This used to be a per-room map filled from each room's own
+        # row; the map only ever held this value, and two sources for one fact
+        # is how they come to disagree.
+        tenant_id = await self._tenant()
         # Bound for the read *and* the delivery below: a handler (posting to a
         # bridge, gating a command) opens its own sessions rather than reusing
         # this one, and those still need the room's tenant. The contextvar
@@ -704,7 +702,6 @@ class PostgresTransport:
         if room is None:
             raise TransportError(f"{transport_room_id} is not a Switch room")
         self._room_ids[transport_room_id] = room.id
-        self._room_tenants[room.id] = room.tenant_id
         return room.id
 
     async def _resolve_room_and_tenant(self, transport_room_id: str) -> tuple[str, str]:
@@ -717,14 +714,13 @@ class PostgresTransport:
         both narrower and exact. Once cached, resolving costs nothing: no
         session, no query, no round trip.
         """
+        tenant_id = await self._tenant()
         cached = self._room_ids.get(transport_room_id)
         if cached is not None:
-            return cached, self._room_tenants[cached]
-        async with tenant_session(
-            self._session_factory, await self._tenant()
-        ) as session:
+            return cached, tenant_id
+        async with tenant_session(self._session_factory, tenant_id) as session:
             room_id = await self._resolve_room(session, transport_room_id)
-        return room_id, self._room_tenants[room_id]
+        return room_id, tenant_id
 
     async def _tenant(self) -> str:
         """This client's tenant, resolved once from its own row.

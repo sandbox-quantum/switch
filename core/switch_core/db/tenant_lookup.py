@@ -13,7 +13,10 @@ that. Under the owner connection every environment used, an unscoped session
 did read across tenants, so the model looked complete. Under a restricted
 role it is not a hatch at all — unscoped is precisely the state
 `require_tenant_id()` raises on — and a real deployment under a restricted
-role died at the first of nineteen such sites before it finished booting.
+role died at the first of nineteen such sites before it finished booting:
+seventeen of them the `unscoped_session` helper's own call sites
+(`db/session_scope.py`), and two more raw-session credential reads that
+leaned on the same ownership exemption without ever calling it.
 
 **What is exempt is this module, and nothing else.** Each function below is
 `SECURITY DEFINER`, owned by the schema owner, and so runs outside the
@@ -106,10 +109,21 @@ class TenantLookup:
     `argument` is the parameter name *without* the `p_` prefix the SQL carries.
     The prefix is not decoration: a `LANGUAGE sql` function whose parameter is
     spelled like a column of a table in its own query resolves the name to the
-    column, silently, so `WHERE id = client_id` against a table that has a
-    `client_id` column compares the column with itself and matches every row.
-    Prefixing every parameter makes that unrepresentable rather than a thing to
-    check per function.
+    column, silently, rather than to the parameter. Verified on Postgres 16,
+    because it is easy to get backwards: against a table that has a
+    `client_id` column, `WHERE id = client_id` becomes a comparison between
+    two columns of the same row, `id` and the table's own `client_id`, which
+    is false for every row whose `client_id` does not happen to equal its
+    `id` — a confident, silent *zero* rows, not every row. The sharper
+    failure needs the parameter named after the very column being compared:
+    `tenant_of_api_key(key_hash text) ... WHERE key_hash = key_hash` shadows
+    to a column compared with itself, true unconditionally, and *that* matches
+    every row regardless of the argument. Either shape is a caller left
+    unable to resolve a tenant it should have found, or handed every tenant
+    the row could belong to, in place of the one it actually named —
+    so prefixing every parameter makes the shadowing unrepresentable rather
+    than a thing to check per function, whichever direction it would have
+    failed.
     """
 
     name: str

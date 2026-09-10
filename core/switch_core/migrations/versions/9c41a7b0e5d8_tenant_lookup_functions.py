@@ -24,8 +24,16 @@ cardinality and refuses rather than picking.
 
 Each parameter is prefixed `p_`, which is load-bearing rather than a style
 choice: a `LANGUAGE sql` parameter spelled like a column of a table in its own
-query resolves to the column, so `WHERE id = client_id` against a table with a
-`client_id` column compares that column with itself and matches every row.
+query resolves to the column, not to the parameter — and which way that fails
+depends on which column it shadows. Against a table with a `client_id`
+column, `WHERE id = client_id` becomes a comparison between two columns of
+the same row, `id` and the table's own `client_id`; that is false for every
+row and so a confident, silent *zero* rows, not every row. The sharper
+failure needs the parameter named after the very column being compared —
+`WHERE key_hash = key_hash`, say — which shadows to a column compared with
+itself, true unconditionally, and matches every row regardless of the
+argument. Either way the prefix makes the shadowing unrepresentable rather
+than a thing to check per function.
 
 `SET search_path = pg_catalog, public, pg_temp`, with `pg_temp` last, per the
 Postgres note on writing `SECURITY DEFINER` functions safely: a role able to

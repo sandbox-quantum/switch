@@ -10,7 +10,6 @@ from switch_core.db.models import Reference, ReferenceType, Tenant, User
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.reference_store import ReferenceStore
 from switch_core.db.stores.reference_type_store import ReferenceTypeStore
-from switch_core.tenant_context import tenant_scope
 
 
 async def _make_user(session: AsyncSession, name: str) -> User:
@@ -270,32 +269,58 @@ class TestReferenceTypesAreScopedToTheBoundTenant:
     async def test_a_write_lands_in_the_bound_tenant(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
+        """The write under test happens on a session opened with
+        `tenant_session(other)`, not on the tenant-zero session `ada` and the
+        `other` tenant row are arranged on with `tenant_scope(other)` layered
+        over it afterwards. `set_config` runs once, at `after_begin`, so by
+        the time this session's first flush stamped its transaction with
+        tenant zero, entering `tenant_scope(other)` around the create would
+        only rebind the contextvar — the transaction, and so the row's own
+        `with check`, would still see tenant zero. Opening a fresh session
+        inside the binding stamps its transaction with `other` from the
+        start.
+        """
         other = f"tenant-{uuid.uuid4().hex[:8]}"
         store = ReferenceTypeStore()
         async with session_factory() as session:
             session.add(Tenant(id=other, slug=other, name=other))
             ada = await _make_user(session, "ada")
-            await session.flush()
-            with tenant_scope(other):
-                created = await store.create(session, _type("notion", ada.id))
             await session.commit()
-            assert created.tenant_id == other
+
+        async with tenant_session(session_factory, other) as other_session:
+            created = await store.create(other_session, _type("notion", ada.id))
+            await other_session.commit()
+
+        assert created.tenant_id == other
 
     async def test_a_read_does_not_see_another_tenants_type(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
+        """`other`'s type is written on a session opened with
+        `tenant_session(other)` rather than on the tenant-zero session used
+        to arrange `other` itself, with `tenant_scope(other)` entered around
+        just the create. The stamp that fixes what a transaction's rows are
+        checked against is set once, when it begins, so rebinding the
+        contextvar over an already-open transaction changes nothing the
+        database can see — the row would land under whatever tenant the
+        session's first statement stamped it with, not `other`. The read
+        assertions below run on a fresh tenant-zero session, matching what a
+        request bound to tenant zero would actually see.
+        """
         other = f"tenant-{uuid.uuid4().hex[:8]}"
         store = ReferenceTypeStore()
         async with session_factory() as session:
             session.add(Tenant(id=other, slug=other, name=other))
             ada = await _make_user(session, "ada")
-            await session.flush()
-            with tenant_scope(other):
-                await store.create(
-                    session, _type("notion", ada.id, read_visibility="public")
-                )
             await session.commit()
 
+        async with tenant_session(session_factory, other) as other_session:
+            await store.create(
+                other_session, _type("notion", ada.id, read_visibility="public")
+            )
+            await other_session.commit()
+
+        async with session_factory() as session:
             # Bound to tenant zero, which `session_factory` binds by default.
             assert await store.get(session, "notion") is None
             assert await store.get_many(session, ["notion"]) == []
@@ -308,30 +333,50 @@ class TestReferenceTypesAreScopedToTheBoundTenant:
     ) -> None:
         """The collision the per-tenant primary key exists for, through the
         store: two customers both call something `notion`, and editing or
-        deleting one leaves the other alone."""
+        deleting one leaves the other alone.
+
+        Tenant zero's row is created and deleted through ordinary sessions
+        from `session_factory`, which binds tenant zero for the whole test.
+        `other`'s row is created, updated and read back each through its own
+        session opened with `tenant_session(other)` — never by entering
+        `tenant_scope(other)` on a session already carrying tenant zero's
+        stamp. `set_config` is issued once, when a transaction begins, so a
+        session whose transaction already began under tenant zero keeps
+        telling the database it is tenant zero no matter what the contextvar
+        is rebound to afterwards; only opening the session inside the new
+        binding moves it.
+        """
         other = f"tenant-{uuid.uuid4().hex[:8]}"
         store = ReferenceTypeStore()
+
         async with session_factory() as session:
             session.add(Tenant(id=other, slug=other, name=other))
             ada = await _make_user(session, "ada")
-            await session.flush()
+            await session.commit()
+
+        async with session_factory() as session:
             await store.create(session, _type("notion", ada.id))
-            with tenant_scope(other):
-                await store.create(session, _type("notion", ada.id))
             await session.commit()
 
-            with tenant_scope(other):
-                await store.update_fields(session, "notion", display_name="Theirs")
-            await session.commit()
+        async with tenant_session(session_factory, other) as other_session:
+            await store.create(other_session, _type("notion", ada.id))
+            await other_session.commit()
 
+        async with tenant_session(session_factory, other) as other_session:
+            await store.update_fields(other_session, "notion", display_name="Theirs")
+            await other_session.commit()
+
+        async with session_factory() as session:
             mine = await store.get(session, "notion")
-            assert mine is not None and mine.display_name == "Notion"
+        assert mine is not None and mine.display_name == "Notion"
 
+        async with session_factory() as session:
             await store.delete(session, "notion")
             await session.commit()
-            with tenant_scope(other):
-                theirs = await store.get(session, "notion")
-            assert theirs is not None and theirs.display_name == "Theirs"
+
+        async with tenant_session(session_factory, other) as other_session:
+            theirs = await store.get(other_session, "notion")
+        assert theirs is not None and theirs.display_name == "Theirs"
 
     async def test_a_duplicate_slug_clashes_cleanly_when_another_tenant_has_it_too(
         self, session_factory: async_sessionmaker[AsyncSession]

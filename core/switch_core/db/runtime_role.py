@@ -10,29 +10,39 @@ that installs 38 policies and then connects as the owner has none of them.
 Two halves live here.
 
 **Grants.** The runtime role owns nothing and can create nothing, so it needs
-to be given access to every table the owner created. Re-issued on every boot,
-immediately after the migration that may have added one, rather than once by
-hand: `ALTER DEFAULT PRIVILEGES` covers a table created *later by the owner*
-and is easy to get subtly wrong (it is per-granting-role, and silently does
-nothing for objects an unnamed role creates), whereas a fresh `GRANT ... ON
-ALL TABLES` after `alembic upgrade head` cannot fall behind the schema it was
-just run against. It is idempotent and costs one round trip at boot.
+to be given access to every table the owner created. The actual mechanism is
+the four explicit `GRANT`s, re-issued fresh on every boot, immediately after
+the migration that may have added a table: naming everything the schema
+contains at that moment cannot fall behind it, the way a rule that has to fire
+once per object, at the moment of its creation, can. The three `ALTER DEFAULT
+PRIVILEGES` statements alongside them are belt to that grant's braces, not a
+second mechanism for the same job: they cover whatever the owner creates
+*between* one boot and the next, at the cost of being easy to get subtly
+wrong as a strategy on their own — the setting is per-granting-role, and
+silently grants nothing for an object some other role creates — a gap the
+next boot's fresh `GRANT` closes regardless of whether the default privilege
+fired. Both are idempotent and cost one round trip at boot.
 
-**The self-check.** Four questions asked of the runtime connection before the
-server listens, because this failure mode is silent and CI cannot ask it: CI
-has no production connection, and a Switch that believes it is isolating
-tenants and is not looks exactly like one that is. In order of how much they
-prove:
+**The self-check.** Questions asked of the runtime connection before the
+server listens, in increasing order of how much they prove, because this
+failure mode is silent and CI cannot ask it: CI has no production connection,
+and a Switch that believes it is isolating tenants and is not looks exactly
+like one that is.
 
 1. The role is not a superuser and carries no `BYPASSRLS`, nor is it a member
    of a role that has either — membership is a `SET ROLE` away from both.
-2. It owns none of the tables carrying a policy.
+2. It owns none of the tables carrying a policy, nor inherits the privileges
+   of a role that does.
 3. No scoped table has `force row level security`, which would take the
    ownership exemption away from the lookup functions and leave the process
    unable to resolve a credential at all.
-4. Every tenant lookup exists and this role may execute it, since a role that
+4. Every scoped table still has row-level security switched on and still
+   carries its policy — the schema half of the guarantee, which a check about
+   the connection alone cannot prove; a table someone quietly disarmed would
+   pass every check above it.
+5. Every tenant lookup exists and this role may execute it, since a role that
    cannot would authenticate nobody.
-5. **A read of `tenants` with nothing bound raises.** This is the one that
+6. **A read of `tenants` with nothing bound raises.** This is the one that
    actually proves it, because the others are inferences from the catalogue
    and this is the behaviour. `tenants` is the table to ask it of: the check
    is only meaningful against a populated table — Postgres does not evaluate a
@@ -55,6 +65,12 @@ from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
+# Imported for its side effect: registering every table on `Base.metadata`, so
+# `scoped_tables` below answers with the schema this process expects rather
+# than with an empty set — which would make the policy check pass vacuously.
+import switch_core.db.models  # noqa: F401
+from switch_core.db.base import Base
+from switch_core.db.rls_ddl import POLICY_NAME, scoped_tables
 from switch_core.db.tenant_lookup import TENANT_LOOKUPS
 
 logger = logging.getLogger(__name__)
@@ -80,6 +96,18 @@ async def grant_runtime_role(owner: AsyncConnection, role: str) -> None:
     Run as the owner, after `alembic upgrade head`. `EXECUTE ON ALL FUNCTIONS`
     covers `require_tenant_id()` and the tenant lookups without naming them,
     so a ninth lookup needs no change here.
+
+    The four plain `GRANT`s are what actually does the job, and doing it fresh
+    on every boot is what keeps it from falling behind: it names every table,
+    sequence and function the schema holds at that moment, so it cannot miss
+    one the way a rule that has to fire once per object, at creation, can. The
+    three `ALTER DEFAULT PRIVILEGES` statements after them are belt to that
+    grant's braces, covering an object the owner creates between this boot and
+    the next — at the cost of being unfit to carry the job alone, since the
+    setting is per-granting-role and silently grants nothing for an object
+    some other role creates. The next boot's fresh `GRANT` would close that
+    gap either way, which is why the default privileges are additional rather
+    than load-bearing on their own.
 
     No `CREATE` on the schema, and no ownership: the role is meant to be
     unable to alter the tables it reads, which is what keeps it subject to
@@ -116,6 +144,7 @@ async def verify_restricted_role(engine: AsyncEngine) -> None:
         await _refuse_privileged_role(connection, role)
         await _refuse_table_owner(connection, role)
         await _refuse_forced_row_level_security(connection)
+        await _require_every_policy(connection)
         await _require_the_lookups(connection, role)
     # The probe is the one check that provokes an error on purpose, and a
     # statement that raises aborts the transaction it ran in — every query
@@ -161,6 +190,16 @@ async def _refuse_privileged_role(connection: AsyncConnection, role: str) -> Non
 
 
 async def _refuse_table_owner(connection: AsyncConnection, role: str) -> None:
+    """Refuse a role that has the owner's privileges, not merely one that is it.
+
+    `pg_has_role(current_user, c.relowner, 'USAGE')` rather than comparing
+    names, because that is the test Postgres itself applies: `check_enable_rls`
+    asks `has_privs_of_role`, so a role granted membership in the owner with
+    `INHERIT` bypasses every policy while being a different role entirely.
+    Comparing identities would call that connection clean. Measured on 14 and
+    16, not inferred: a plain restricted role is refused the unbound read, an
+    inheriting member of the owner reads every row.
+    """
     result = await connection.execute(
         text(
             """
@@ -169,7 +208,7 @@ async def _refuse_table_owner(connection: AsyncConnection, role: str) -> None:
             JOIN pg_namespace n ON n.oid = c.relnamespace
             WHERE n.nspname = 'public'
               AND c.relrowsecurity
-              AND pg_get_userbyid(c.relowner) = current_user
+              AND pg_has_role(current_user, c.relowner, 'USAGE')
             ORDER BY c.relname
             """
         )
@@ -177,12 +216,14 @@ async def _refuse_table_owner(connection: AsyncConnection, role: str) -> None:
     owned = [row[0] for row in result]
     if owned:
         raise RuntimeRoleError(
-            f"The database role {role!r} owns {len(owned)} of the tables "
-            f"carrying a tenant-isolation policy (for example {owned[:3]}). "
-            "Postgres exempts a table's owner from its own policies unless "
-            "FORCE ROW LEVEL SECURITY is set, which this design deliberately "
-            "does not set, so those policies do nothing on this connection. "
-            "Run the service as a role that owns no table."
+            f"The database role {role!r} owns, or has the privileges of the "
+            f"owner of, {len(owned)} of the tables carrying a tenant-isolation "
+            f"policy (for example {owned[:3]}). Postgres exempts a table's "
+            "owner — and anything that inherits its privileges — from its own "
+            "policies unless FORCE ROW LEVEL SECURITY is set, which this "
+            "design deliberately does not set, so those policies do nothing on "
+            "this connection. Run the service as a role that owns no table and "
+            "is a member of no role that does."
         )
 
 
@@ -244,6 +285,52 @@ async def _refuse_a_connection_no_policy_stops(
     )
 
 
+async def _require_every_policy(connection: AsyncConnection) -> None:
+    """Every scoped table still has row-level security on, and still has its policy.
+
+    The checks above are all about the *connection*, and would each pass on a
+    schema somebody had quietly disarmed. `ALTER TABLE messages DISABLE ROW
+    LEVEL SECURITY` or `DROP POLICY tenant_isolation ON messages` leaves the
+    role restricted, owning nothing, forcing nothing — and leaves `messages`
+    readable by every tenant. The behavioural probe would not catch it either,
+    since it asks only `tenants`.
+
+    The expected set comes from `rls_ddl.scoped_tables`, the same derivation
+    that attached the policies in the first place, so this cannot drift from
+    what the schema is supposed to have. `test_tenant_schema_catalogue.py`
+    asks the same question of a database built by `create_all`; this asks it
+    of the one about to serve traffic, which is the only place the answer can
+    have changed.
+    """
+    expected = set(scoped_tables(Base.metadata))
+    rows = await connection.execute(
+        text(
+            """
+            SELECT c.relname, c.relrowsecurity, p.polname IS NOT NULL AS policied
+            FROM pg_class c
+            JOIN pg_namespace n ON n.oid = c.relnamespace
+            LEFT JOIN pg_policy p ON p.polrelid = c.oid AND p.polname = :policy
+            WHERE n.nspname = 'public' AND c.relkind = 'r'
+              AND c.relname = ANY(:names)
+            """
+        ),
+        {"policy": POLICY_NAME, "names": sorted(expected)},
+    )
+    state = {name: (bool(enabled), bool(policied)) for name, enabled, policied in rows}
+    disarmed = sorted(
+        name for name in expected if state.get(name, (False, False)) != (True, True)
+    )
+    if disarmed:
+        raise RuntimeRoleError(
+            f"{len(disarmed)} scoped table(s) have no tenant-isolation policy, "
+            f"or have row-level security switched off (for example "
+            f"{disarmed[:3]}). The connection is restricted, but those tables "
+            "are readable and writable across every tenant regardless. Either "
+            "the schema is behind the migration that installs the policies, or "
+            "something has disabled them since."
+        )
+
+
 async def _require_the_lookups(connection: AsyncConnection, role: str) -> None:
     """The exempt lookups must be callable, or nothing can resolve a tenant.
 
@@ -287,15 +374,29 @@ async def _require_the_lookups(connection: AsyncConnection, role: str) -> None:
             "EXECUTE, or let boot do it by configuring DB_OWNER_USER / "
             "DB_OWNER_PASSWORD."
         )
-    found = (
-        await connection.execute(text("SELECT count(*) FROM all_tenant_ids()"))
-    ).scalar_one()
+    # Calling one for real, not just asking the catalogue about it. A lookup
+    # that exists and is executable can still be unable to *read* — installed
+    # SECURITY INVOKER, or owned by a role that has since lost its grants —
+    # and the failure that produces is a bare driver error the escape hatch
+    # does not catch, so it is turned into a RuntimeRoleError here rather than
+    # left to kill a boot that asked to continue.
+    try:
+        found = (
+            await connection.execute(text("SELECT count(*) FROM all_tenant_ids()"))
+        ).scalar_one()
+    except DBAPIError as exc:
+        raise RuntimeRoleError(
+            f"all_tenant_ids() is installed and executable by {role!r} but "
+            f"could not read: {exc}. It is a SECURITY DEFINER function, so it "
+            "reads as its owner — most likely it was not installed as one, or "
+            "its owner no longer has access to `tenants`. Nothing in this "
+            "process can resolve a tenant while that is true."
+        ) from exc
     if not found:
         raise RuntimeRoleError(
-            "all_tenant_ids() answered with no tenants at all. Either the "
-            "schema predates the migration that seeds tenant zero, or the "
-            "function is not the SECURITY DEFINER one this process expects — "
-            "either way nothing here can be scoped to a tenant."
+            "all_tenant_ids() answered with no tenants at all, so the schema "
+            "predates the migration that seeds tenant zero and nothing here "
+            "can be scoped to a tenant."
         )
 
 
