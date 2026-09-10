@@ -43,7 +43,6 @@ function makeSessionRow(values: Partial<SessionRow>): SessionRow {
     config: values.config ?? null,
     shellId: values.shellId ?? 'system',
     status: values.status ?? 'in_progress',
-    agentSessionId: values.agentSessionId ?? null,
     agentStatus: values.agentStatus ?? null,
     agentStatusSeen: values.agentStatusSeen ?? 1,
     isInitialSession: values.isInitialSession ?? false,
@@ -108,11 +107,11 @@ describe('createSession', () => {
     expect(mocks.startSession).toHaveBeenCalledTimes(1);
   });
 
-  it('rolls back the session row and returns spawn-failed when provisioning throws', async () => {
+  it('preserves the session row after a failed launch so recovery cannot create another conversation', async () => {
     mocks.provisionSessionRuntime.mockRejectedValue(new Error('boom'));
     const result = await createSession(baseParams);
     expect(result).toEqual({ success: false, error: { type: 'spawn-failed', message: 'boom' } });
-    expect(mocks.deleteFn).toHaveBeenCalledTimes(1);
+    expect(mocks.deleteFn).not.toHaveBeenCalled();
   });
 
   it('returns already-exists when the id is taken, without provisioning or rollback', async () => {

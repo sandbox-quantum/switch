@@ -58,21 +58,18 @@ describe('restoreSwitchRoomSessions', () => {
     ensureSessionAttachable.mockResolvedValue(false);
   });
 
-  it('only ensures the sidecar for a remote session, never its terminal', async () => {
-    // The agent runs in a tmux pane on the VM and the sidecar injects room
-    // messages there. Opening 51 terminals nobody is looking at is what
-    // saturated the shared SSH transport.
+  it('rehydrates a remote shared session without opening a terminal', async () => {
     listPersistedSessionIds.mockResolvedValue(['session-1']);
     ensureSessionAttachable.mockResolvedValue(true);
 
     await restoreSwitchRoomSessions();
 
     expect(provisionSession).toHaveBeenCalledWith('session-1');
-    expect(ensureSessionAttachable).toHaveBeenCalledWith('session-1');
-    expect(hydrateSession).not.toHaveBeenCalled();
+    expect(ensureSessionAttachable).not.toHaveBeenCalled();
+    expect(hydrateSession).toHaveBeenCalledWith('session-1');
   });
 
-  it('still hydrates a local session, which needs a live TUI for injection', async () => {
+  it('rehydrates a local shared session', async () => {
     listPersistedSessionIds.mockResolvedValue(['session-1']);
     ensureSessionAttachable.mockResolvedValue(false);
 
@@ -87,9 +84,9 @@ describe('restoreSwitchRoomSessions', () => {
 
     await restoreSwitchRoomSessions();
 
-    expect(hydrateSession).toHaveBeenCalledTimes(1);
+    expect(hydrateSession).toHaveBeenCalledTimes(2);
     expect(hydrateSession).toHaveBeenCalledWith('local-1');
-    expect(ensureSessionAttachable).toHaveBeenCalledTimes(2);
+    expect(ensureSessionAttachable).not.toHaveBeenCalled();
   });
 
   it('prunes sessions whose row has gone', async () => {
@@ -127,6 +124,6 @@ describe('restoreSwitchRoomSessions', () => {
 
     await restoreSwitchRoomSessions();
 
-    expect(ensureSessionAttachable).toHaveBeenCalledWith('good-1');
+    expect(hydrateSession).toHaveBeenCalledWith('good-1');
   });
 });

@@ -6,13 +6,6 @@ import { rpc } from '@renderer/lib/ipc';
 import { useParams } from '@renderer/lib/layout/navigation-provider';
 import { Spinner } from '@renderer/lib/ui/spinner';
 
-/**
- * The "Sidecar" tab for a remote location: the on-host process that keeps this
- * agent connected to Switch while Switch Console is closed. Scoped to the same agent
- * the Settings tab resolves (by definition name, else the first). Only shown for
- * remote locations — `ActiveLocation` gates the tab — so this just resolves the
- * agent and hands off to the section.
- */
 export const SidecarPanel = observer(function SidecarPanel() {
   const {
     params: { locationId, agentName },
@@ -39,7 +32,7 @@ export const SidecarPanel = observer(function SidecarPanel() {
 
   return (
     <section className="flex flex-col gap-4">
-      <SectionLabel>Sidecar</SectionLabel>
+      <SectionLabel>SDK hosts</SectionLabel>
       <SidecarSettingsSection agentId={agent.id} />
     </section>
   );

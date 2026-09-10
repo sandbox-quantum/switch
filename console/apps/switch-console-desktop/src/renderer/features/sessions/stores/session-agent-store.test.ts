@@ -86,7 +86,7 @@ describe('SessionAgentStore hydration', () => {
     shellId: 'system' as const,
     status: 'in_progress' as const,
     statusChangedAt: now,
-    agentSessionId: null,
+
     isInitialSession: false,
     isPinned: false,
     createdAt: now,

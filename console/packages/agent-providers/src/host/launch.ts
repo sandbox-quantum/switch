@@ -1,8 +1,11 @@
-import { spawn } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { link, mkdir, open, readFile, unlink } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
+import { promisify } from 'node:util';
+import { replaceOwner, withOwnershipLock } from './ownership-lock';
 import { sharedConfigSchema, type SharedHostConfig } from './shared-config';
 
 export function sharedSessionRoot(sessionId: string): string {
@@ -16,13 +19,20 @@ export function sharedSessionRoot(sessionId: string): string {
   );
 }
 
-export async function ensureSharedProcess(input: {
+type LaunchInput = {
   root: string;
   entrypoint: string;
   config: SharedHostConfig;
   resuming: boolean;
   watcher: boolean;
-}): Promise<{ created: boolean }> {
+  restart: boolean;
+};
+
+export async function ensureSharedProcess(input: LaunchInput): Promise<{ created: boolean }> {
+  return withOwnershipLock(join(input.root, 'launch'), () => launch(input));
+}
+
+async function launch(input: LaunchInput): Promise<{ created: boolean }> {
   await mkdir(input.root, { recursive: true, mode: 0o700 });
   const path = join(input.root, 'config.json');
   let created = false;
@@ -30,7 +40,7 @@ export async function ensureSharedProcess(input: {
     await readFile(path);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
-    if (input.resuming && !input.config.start.input.resume)
+    if (input.restart || (input.resuming && !input.config.start.input.resume))
       throw new Error(
         'This session has no saved SDK conversation. It cannot be reopened as a new conversation.'
       );
@@ -61,7 +71,7 @@ export async function ensureSharedProcess(input: {
   }
   const saved = sharedConfigSchema.parse(JSON.parse(await readFile(path, 'utf8')));
   if (
-    saved.session.sessionId !== input.config.session.sessionId ||
+    (!input.watcher && saved.session.sessionId !== input.config.session.sessionId) ||
     saved.session.agentId !== input.config.session.agentId ||
     saved.start.provider !== input.config.start.provider ||
     saved.start.input.cwd !== input.config.start.input.cwd
@@ -69,6 +79,17 @@ export async function ensureSharedProcess(input: {
     throw new Error(
       'The saved SDK host identity or working directory differs from the requested session.'
     );
+  if (input.restart) {
+    await stopOwnedProcess(input.root, join(input.root, 'supervisor', 'owner.json'));
+    await stopOwnedProcess(input.root, join(input.root, 'shared-owner.lock'));
+  }
+  if (input.restart || input.watcher) {
+    await replaceOwner(path, {
+      ...input.config,
+      session: saved.session,
+      roomConnection: saved.roomConnection,
+    });
+  }
   try {
     const owner = JSON.parse(await readFile(join(input.root, 'supervisor', 'owner.json'), 'utf8'));
     if (!Number.isSafeInteger(owner.pid) || owner.pid <= 0)
@@ -98,4 +119,36 @@ export async function ensureSharedProcess(input: {
     await log.close();
   }
   return { created };
+}
+
+async function stopOwnedProcess(root: string, ownerPath: string): Promise<void> {
+  let pid: number;
+  try {
+    pid = JSON.parse(await readFile(ownerPath, 'utf8')).pid;
+    if (!Number.isSafeInteger(pid) || pid <= 0) throw new Error('Invalid SDK process owner.');
+    process.kill(pid, 0);
+  } catch (error) {
+    if (['ENOENT', 'ESRCH'].includes((error as NodeJS.ErrnoException).code ?? '')) return;
+    throw error;
+  }
+  if (process.platform === 'win32')
+    throw new Error(
+      'Automatic host restart requires process fencing, which is not available on Windows.'
+    );
+  const { stdout } = await promisify(execFile)('ps', ['-p', String(pid), '-o', 'command=']);
+  if (!stdout.includes(root))
+    throw new Error(
+      'The saved PID no longer identifies this SDK host. Refusing to stop another process.'
+    );
+  process.kill(pid, 'SIGTERM');
+  for (let attempt = 0; attempt < 100; attempt++) {
+    try {
+      process.kill(pid, 0);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ESRCH') return;
+      throw error;
+    }
+    await delay(200);
+  }
+  throw new Error('The SDK host has not stopped. Recovery cannot start a competing owner.');
 }

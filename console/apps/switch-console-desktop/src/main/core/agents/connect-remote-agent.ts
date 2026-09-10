@@ -1,4 +1,3 @@
-import type { SidecarHost } from '@main/core/agent-runtime/impl/remote-sidecar-launcher';
 import { SshExecutionContext } from '@main/core/execution-context/ssh-execution-context';
 import type { IExecutionContext } from '@main/core/execution-context/types';
 import { SshFileSystem } from '@main/core/fs/impl/ssh-fs';
@@ -8,17 +7,13 @@ import type { SshClientProxy } from '@main/core/ssh/lifecycle/ssh-client-proxy';
 import type { Agent } from '@shared/core/agents/agents';
 import { getRemoteAgentLocation } from './agent-location';
 
-function createSidecarHost(
-  ctx: IExecutionContext,
-  proxy: SshClientProxy,
-  remoteRepoDir: string
-): SidecarHost {
+function createSidecarHost(ctx: IExecutionContext, proxy: SshClientProxy, remoteRepoDir: string) {
   return {
-    exec: (command, args) => ctx.exec(command, args),
+    exec: (command: string, args: string[]) => ctx.exec(command, args),
     // SFTP channels do not self-close and this host object can be held for a
     // long time (the reconciler, the watcher) — open a throwaway filesystem
     // per transfer and close it, or every sidecar deploy leaks a channel.
-    putFile: async (localAbsPath, remoteRelPath) => {
+    putFile: async (localAbsPath: string, remoteRelPath: string) => {
       const fs = new SshFileSystem(proxy, remoteRepoDir);
       try {
         await fs.copyLocalFile(localAbsPath, remoteRelPath);
@@ -34,7 +29,7 @@ export async function connectRemoteAgent(agent: Agent): Promise<{
   ctx: IExecutionContext;
   connectionId: string;
   remoteRepoDir: string;
-  host: SidecarHost;
+  host: ReturnType<typeof createSidecarHost>;
   proxy: SshClientProxy;
 }> {
   const location = await getRemoteAgentLocation(agent);

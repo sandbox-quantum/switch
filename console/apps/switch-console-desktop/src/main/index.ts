@@ -30,7 +30,6 @@ import {
 } from './core/resource-monitor/resource-sampler';
 import { searchService } from './core/search/search-service';
 import { appSettingsService } from './core/settings/settings-service';
-import { registerSidecarDiagnostics } from './core/sidecar/sidecar-diagnostics';
 import { sshConnectionManager } from './core/ssh/lifecycle/production-ssh-connection-manager';
 import { autoSessionWatcher } from './core/switch-rooms/auto-session-watcher';
 import { restoreSwitchRoomSessions } from './core/switch-rooms/restore-sessions';
@@ -67,7 +66,6 @@ setupDeeplinks();
 initializeFileLogger();
 registerLogEnrichment();
 registerAppDiagnostics();
-registerSidecarDiagnostics();
 registerProcessErrorLogging(log);
 registerRendererLogHandler(ipcMain);
 logAppStart();

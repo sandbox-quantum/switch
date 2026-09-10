@@ -47,18 +47,18 @@ export interface HostEndpoint {
 const folder = (root: string, sessionId: string) =>
   join(root, 'sessions', createHash('sha256').update(sessionId).digest('hex'));
 
-export function adapterFor(provider: Session['provider']): ProviderAdapter {
+export function adapterFor(provider: Session['provider'], binaryPath?: string): ProviderAdapter {
   switch (provider) {
     case 'claude':
-      return createClaudeAdapter();
+      return createClaudeAdapter({ claudeExecutablePath: binaryPath });
     case 'codex':
-      return createCodexAdapter();
+      return createCodexAdapter({ binaryPath });
     case 'opencode':
-      return createOpencodeAdapter();
+      return createOpencodeAdapter({ binaryPath });
     case 'gemini':
-      return createGeminiAdapter();
+      return createGeminiAdapter({ binaryPath });
     case 'cursor':
-      return createCursorAdapter();
+      return createCursorAdapter({ binaryPath });
   }
 }
 
