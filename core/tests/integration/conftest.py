@@ -81,6 +81,7 @@ from switch_core.messages.notify import MessageListener
 from switch_core.provisioning import Provisioning
 from switch_core.provisioning.postgres import PostgresProvisioning
 from switch_core.room_service import RoomService
+from switch_core.tenant_context import tenant_scope
 from switch_core.transport.ephemeral import EphemeralBus
 from switch_core.transport.invites import InviteBus
 
@@ -404,140 +405,151 @@ async def harness(session_env: SessionEnv) -> AsyncIterator[Harness]:
     config = session_env.config
     session_factory = session_env.session_factory
 
-    # Owner user for agent registration (api keys are owned by a user); recreated
-    # each test because the users table was just truncated.
-    owner = User(name="Admin", email=GATEWAY_ADMIN_EMAIL, role="admin")
-    async with session_factory() as session:  # type: ignore[operator]
-        await session_env.user_store.create(session, owner)
-        await session.commit()
-    owner_id = owner.id
+    # A real deployment always has a tenant bound by the time application code
+    # runs — an authenticated request or one of the background call sites
+    # `db/session_scope.py` covers. This harness stands in for both, so it binds
+    # tenant zero itself for the whole test (the same role `core/tests/conftest.py`'s
+    # `session_factory` fixture plays for the unit suite) rather than leaving every
+    # scoped write here and in the tests that use this fixture to hit
+    # `TenantNotBoundError`. Held open across the `yield`: the fixture and the
+    # test body run as one continuation, and the tests exercise ordinary
+    # request-shaped code that assumes a tenant is already bound, not the
+    # tenant-context machinery itself.
+    with tenant_scope(TENANT_ZERO_ID):
+        # Owner user for agent registration (api keys are owned by a user); recreated
+        # each test because the users table was just truncated.
+        owner = User(name="Admin", email=GATEWAY_ADMIN_EMAIL, role="admin")
+        async with session_factory() as session:  # type: ignore[operator]
+            await session_env.user_store.create(session, owner)
+            await session.commit()
+        owner_id = owner.id
 
-    # Seeds the same deployment-wide bootstrap key `main.py` would on a real
-    # boot, so a test can register through REGISTRATION_TOKEN exactly as a
-    # standalone agent does, without duplicating that seeding logic here.
-    await _seed_agent_registration_bootstrap_key(
-        session_factory,
-        session_env.user_store,
-        session_env.api_key_store,
-        session_env.agent_store,
-        config,
-    )
+        # Seeds the same deployment-wide bootstrap key `main.py` would on a real
+        # boot, so a test can register through REGISTRATION_TOKEN exactly as a
+        # standalone agent does, without duplicating that seeding logic here.
+        await _seed_agent_registration_bootstrap_key(
+            session_factory,
+            session_env.user_store,
+            session_env.api_key_store,
+            session_env.agent_store,
+            config,
+        )
 
-    # Per-test in-memory wiring: a fresh EventBuffer / client registry so queued
-    # events and client registrations never leak across tests.
-    event_buffer = EventBuffer()
-    connections = ConnectionRegistry()
-    collab_lifecycle = _NoBridges()
+        # Per-test in-memory wiring: a fresh EventBuffer / client registry so queued
+        # events and client registrations never leak across tests.
+        event_buffer = EventBuffer()
+        connections = ConnectionRegistry()
+        collab_lifecycle = _NoBridges()
 
-    # The transport's wake-up path: rows are announced over LISTEN/NOTIFY, so
-    # nothing is delivered to a client until this connection is up.
-    message_listener = MessageListener(lambda: create_unpooled_engine(config))
-    await message_listener.start()
-    invites = InviteBus()
-    ephemeral = EphemeralBus()
+        # The transport's wake-up path: rows are announced over LISTEN/NOTIFY, so
+        # nothing is delivered to a client until this connection is up.
+        message_listener = MessageListener(lambda: create_unpooled_engine(config))
+        await message_listener.start()
+        invites = InviteBus()
+        ephemeral = EphemeralBus()
 
-    resource_service = ResourceService(
-        reference_store=session_env.reference_store,
-        reference_type_store=session_env.reference_type_store,
-        document_store=session_env.document_store,
-        package_store=session_env.package_store,
-        room_link_store=session_env.room_link_store,
-        session_factory=session_factory,
-    )
+        resource_service = ResourceService(
+            reference_store=session_env.reference_store,
+            reference_type_store=session_env.reference_type_store,
+            document_store=session_env.document_store,
+            package_store=session_env.package_store,
+            room_link_store=session_env.room_link_store,
+            session_factory=session_factory,
+        )
 
-    provisioning: Provisioning = PostgresProvisioning(
-        session_factory=session_factory,
-        room_store=session_env.room_store,
-        client_store=session_env.client_store,
-        message_store=session_env.message_store,
-        invites=invites,
-    )
+        provisioning: Provisioning = PostgresProvisioning(
+            session_factory=session_factory,
+            room_store=session_env.room_store,
+            client_store=session_env.client_store,
+            message_store=session_env.message_store,
+            invites=invites,
+        )
 
-    client_factory = ClientFactory(
-        client_store=session_env.client_store,
-        session_factory=session_factory,
-        config=config,
-        room_store=session_env.room_store,
-        message_store=session_env.message_store,
-        media_store=session_env.media_store,
-        listener=message_listener,
-        invites=invites,
-        ephemeral=ephemeral,
-    )
-    client_factory.register(
-        "agent",
-        AgentClient,
-        event_buffer=event_buffer,
-        agent_store=session_env.agent_store,
-        room_store=session_env.room_store,
-        bridge_store=session_env.bridge_store,
-        document_store=session_env.document_store,
-        reference_store=session_env.reference_store,
-        agent_session_store=session_env.agent_session_store,
-        room_role_store=session_env.room_role_store,
-        external_user_store=session_env.external_user_store,
-        connections=connections,
-        frontend_base_url=config.frontend_base_url,
-    )
-    client_factory.register("user", ClientBase)
-    client_factory.register("bridge", ClientBase)
+        client_factory = ClientFactory(
+            client_store=session_env.client_store,
+            session_factory=session_factory,
+            config=config,
+            room_store=session_env.room_store,
+            message_store=session_env.message_store,
+            media_store=session_env.media_store,
+            listener=message_listener,
+            invites=invites,
+            ephemeral=ephemeral,
+        )
+        client_factory.register(
+            "agent",
+            AgentClient,
+            event_buffer=event_buffer,
+            agent_store=session_env.agent_store,
+            room_store=session_env.room_store,
+            bridge_store=session_env.bridge_store,
+            document_store=session_env.document_store,
+            reference_store=session_env.reference_store,
+            agent_session_store=session_env.agent_session_store,
+            room_role_store=session_env.room_role_store,
+            external_user_store=session_env.external_user_store,
+            connections=connections,
+            frontend_base_url=config.frontend_base_url,
+        )
+        client_factory.register("user", ClientBase)
+        client_factory.register("bridge", ClientBase)
 
-    client_lifecycle = ClientLifecycleService(
-        matrix_admin=provisioning,
-        client_store=session_env.client_store,
-        tenant_store=TenantStore(),
-        client_factory=client_factory,
-        session_factory=session_factory,
-        config=config,
-    )
+        client_lifecycle = ClientLifecycleService(
+            matrix_admin=provisioning,
+            client_store=session_env.client_store,
+            tenant_store=TenantStore(),
+            client_factory=client_factory,
+            session_factory=session_factory,
+            config=config,
+        )
 
-    room_service = RoomService(
-        matrix_admin=provisioning,
-        room_store=session_env.room_store,
-        agent_store=session_env.agent_store,
-        client_lifecycle=client_lifecycle,
-        collab_lifecycle=collab_lifecycle,  # type: ignore[arg-type]
-        collab_bridge_store=session_env.bridge_store,
-        resource_service=resource_service,
-        session_factory=session_factory,
-    )
+        room_service = RoomService(
+            matrix_admin=provisioning,
+            room_store=session_env.room_store,
+            agent_store=session_env.agent_store,
+            client_lifecycle=client_lifecycle,
+            collab_lifecycle=collab_lifecycle,  # type: ignore[arg-type]
+            collab_bridge_store=session_env.bridge_store,
+            resource_service=resource_service,
+            session_factory=session_factory,
+        )
 
-    protocol = ProtocolService(
-        agent_store=session_env.agent_store,
-        agent_session_store=session_env.agent_session_store,
-        room_store=session_env.room_store,
-        room_service=room_service,
-        client_lifecycle=client_lifecycle,
-        collab_lifecycle=collab_lifecycle,  # type: ignore[arg-type]
-        event_buffer=event_buffer,
-        task_store=session_env.task_store,
-        resource_service=resource_service,
-        api_key_store=session_env.api_key_store,
-        api_key_cache=ApiKeyCache(
-            ttl_seconds=config.agent_auth_cache_ttl_seconds,
-            max_entries=config.agent_auth_cache_max_entries,
-        ),
-        external_user_store=session_env.external_user_store,
-        bridge_store=session_env.bridge_store,
-        session_factory=session_factory,
-        config=config,
-        connections=connections,
-    )
+        protocol = ProtocolService(
+            agent_store=session_env.agent_store,
+            agent_session_store=session_env.agent_session_store,
+            room_store=session_env.room_store,
+            room_service=room_service,
+            client_lifecycle=client_lifecycle,
+            collab_lifecycle=collab_lifecycle,  # type: ignore[arg-type]
+            event_buffer=event_buffer,
+            task_store=session_env.task_store,
+            resource_service=resource_service,
+            api_key_store=session_env.api_key_store,
+            api_key_cache=ApiKeyCache(
+                ttl_seconds=config.agent_auth_cache_ttl_seconds,
+                max_entries=config.agent_auth_cache_max_entries,
+            ),
+            external_user_store=session_env.external_user_store,
+            bridge_store=session_env.bridge_store,
+            session_factory=session_factory,
+            config=config,
+            connections=connections,
+        )
 
-    h = Harness(
-        protocol=protocol,
-        room_service=room_service,
-        client_lifecycle=client_lifecycle,
-        room_store=session_env.room_store,
-        event_buffer=event_buffer,
-        owner_id=owner_id,
-        session_factory=session_factory,
-    )
-    try:
-        yield h
-    finally:
-        # Stop the agents' receive loops before the next test truncates, so none
-        # is mid-query against a table being cleared.
-        await client_lifecycle.stop_all()
-        await message_listener.stop()
-        await provisioning.close()
+        h = Harness(
+            protocol=protocol,
+            room_service=room_service,
+            client_lifecycle=client_lifecycle,
+            room_store=session_env.room_store,
+            event_buffer=event_buffer,
+            owner_id=owner_id,
+            session_factory=session_factory,
+        )
+        try:
+            yield h
+        finally:
+            # Stop the agents' receive loops before the next test truncates, so none
+            # is mid-query against a table being cleared.
+            await client_lifecycle.stop_all()
+            await message_listener.stop()
+            await provisioning.close()
