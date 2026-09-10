@@ -231,3 +231,20 @@ it('does not acknowledge a delivery before the consumer has saved it', async () 
   await vi.waitFor(() => expect(stream.position).toBe(7));
   abort.abort();
 });
+
+it('replays from an explicitly saved zero cursor instead of starting at head', async () => {
+  const fetchMock = vi
+    .fn()
+    .mockImplementation(async (url: string) =>
+      url.includes('/events?')
+        ? { ok: true, body: openForever() }
+        : { ok: true, json: async () => ({ rooms: [] }) }
+    );
+  const { abort } = makeStream(fetchMock, { rooms: [], startCursor: 0 });
+  try {
+    await flush();
+    expect(new URL(urlsFor(fetchMock, '/events?')[0]).searchParams.get('start_from')).toBe('0');
+  } finally {
+    abort.abort();
+  }
+});
