@@ -20,11 +20,14 @@ long-lived task, and the four ways it leaked; it is written up rather than
 deleted because the reasoning that made it look right is easy to arrive at
 twice. **Row-level security has since been built too**: `require_tenant_id()`,
 the policy attached to each table, `db/rls_ddl.py` and the isolation test
-under "Done when" are all in place, in the migration `265ed188ad6f`. Read the
-remaining sections as a description of what is running today, except where a
-section says otherwise; "What Phase 1 does not close" says which gaps remain
-deliberately open — the runtime role that would make these policies bite in a
-deployed environment is the biggest of them, tracked separately as CHOO-2685.
+under "Done when" are all in place, in the migration `265ed188ad6f`.
+**And the runtime role has since been built** — the deployment now connects as
+a role the policies apply to, which is what makes any of the above bite. That
+work is what forced the rewrite of "The bootstrap problem" below: the model
+that section described did not survive contact with a restricted role, and the
+one that replaced it is `db/tenant_lookup.py`. Read the remaining sections as a
+description of what is running today, except where a section says otherwise;
+"What Phase 1 does not close" says which gaps remain deliberately open.
 
 Postgres 16 everywhere — local Compose, the chart, and the test containers —
 and two things below need at least 15, so that is a floor, not an incidental
@@ -313,47 +316,99 @@ create policy tenant_isolation on <t>
 - `tenants` uses `id = (select require_tenant_id())`; every other table uses
   `tenant_id`.
 
-## The runtime role, and why it is not in this phase
+## The runtime role
 
-Today the application connects to Postgres as the superuser in local Compose,
-in the chart and in the test containers. **A superuser ignores row-level
-security unconditionally** — not "unless forced", unconditionally. Until the
-runtime connects as a role that policies apply to, everything in the section
-above is inert in a deployed environment.
+Everything above is inert against a superuser or a table owner. Postgres
+exempts the first unconditionally — not "unless forced", unconditionally — and
+the second unless `force row level security` is set, which this design
+deliberately never sets. So a deployment that installs 38 policies and then
+connects as the owner has none of them, and until this landed every
+environment did exactly that.
 
-That work — creating a `switch_app` role in Compose, the chart and the RDS
-runbook, granting it, pointing the service at it, and a startup self-check that
-refuses to boot if the connection is a superuser or the table owner — **is
-tracked separately and is not part of Phase 1.** The shape it should take, so
-that whoever picks it up does not have to rediscover it:
+Two roles now, and nothing is transferred between them:
 
-- **Add one role, transfer nothing.** The existing role keeps owning the schema
-  and keeps running Alembic. Because it owns the tables it bypasses their
-  policies, and we deliberately do **not** set `force row level security`, so
-  that stays true. No `ALTER TABLE … OWNER TO`, no `REASSIGN OWNED`, nothing to
-  go wrong during a cutover.
-- **`switch_app` is the runtime role**: not the owner, not a superuser, no
-  `BYPASSRLS`, with `alter default privileges` so a later migration cannot ship
-  a table it cannot read.
-- **The check that matters runs at startup, not in CI.** CI asserts nothing
-  about production and this failure mode is silent. A Switch that believes it
-  is isolating tenants and is not is worse than one that is down.
-- **Cheapest during the RDS cutover** (CHOO-2622), which already creates an
-  application role by hand and restores with `--no-owner --no-privileges` — so
-  who owns the restored tables is a decision made there either way.
+- **The owner** keeps owning the schema. It runs Alembic and nothing else. It
+  is configured separately, as `DB_OWNER_USER` / `DB_OWNER_PASSWORD`, and it
+  never serves a request.
+- **`switch_app` is the runtime role**, and `DB_USER` now means that: a plain
+  `LOGIN` role, `NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS`, owning
+  nothing and able to create nothing. Every request runs on it.
 
-Splitting it is a reasonable call while the deployment has one tenant, because
-there is nothing to leak. It is not a follow-up nicety: **it is a prerequisite
-for onboarding a second tenant**, and Phase 1 shipping without it means the
-policies exist and do not yet bite.
+No `ALTER TABLE … OWNER TO`, no `REASSIGN OWNED`, nothing to go wrong during a
+cutover: the change to an existing deployment is to create one role and point
+`DB_USER` at it.
 
-Phase 1 does keep a restricted role **inside the test fixtures**, which is
-contained to the test harness and touches no environment. Without it nothing
-verifies a single policy, and 38 of them would ship unexercised.
+**Grants are re-issued at boot, by the owner, immediately after the
+migration.** `db/runtime_role.grant_runtime_role` gives the runtime role
+`USAGE` on the schema, CRUD on every table, `USAGE, SELECT` on every sequence
+and `EXECUTE` on every function, plus the matching `alter default privileges`.
+Doing it at boot rather than once by hand is what keeps it from falling behind
+the schema: a table added by a migration is granted on the same boot that
+added it, with no runbook step to forget. It is idempotent and costs one round
+trip. `ALTER DEFAULT PRIVILEGES` alone would not do — it is per-granting-role
+and silently covers nothing for objects some other role creates — so it is
+belt to the braces rather than the mechanism.
 
-Consequently this design's migration creates no roles and issues no grants.
-Both belong to the role work, in one place, rather than half here behind a
-conditional that silently does nothing.
+**The same function grants the test fixture.** `rls_harness`
+(`tests/conftest.py`) creates its throwaway role and then calls
+`grant_runtime_role`, rather than listing grants of its own. A fixture that
+granted more than production does would let a test pass on a privilege the
+deployment has not got; one that granted less would fail for a reason the
+deployment never hits.
+
+**The check that matters runs at startup, not in CI.** CI has no production
+connection, and this failure mode is silent: a Switch that believes it is
+isolating tenants and is not looks exactly like one that is.
+`db/runtime_role.verify_restricted_role` runs before the server listens and
+before anything writes a row, and asks five questions, in increasing order of
+how much they prove:
+
+1. the role is not a superuser and carries no `BYPASSRLS`, nor is it a member
+   of a role that has either — membership is a `SET ROLE` away from both;
+2. it owns none of the tables carrying a policy;
+3. no table sets `force row level security` — see the bootstrap section for
+   why that would be catastrophic rather than stricter;
+4. every tenant lookup exists and this role may execute it, since a role that
+   cannot would authenticate nobody;
+5. **a read of `tenants` with nothing bound raises** — the only one of the five
+   that observes behaviour rather than inferring it from the catalogue, and so
+   the only one that would catch an exemption the others did not think to look
+   for.
+
+Two details of that last check are load-bearing and were both got wrong first.
+It insists on SQLSTATE 42501 **and** on the message `app.tenant_id is not
+set`, because 42501 is `insufficient_privilege` and `permission denied for
+table tenants` carries it too — a role that had never been granted anything
+would otherwise satisfy the probe by failing for an unrelated reason. And it
+is asked of `tenants` rather than of any other scoped table because **the
+check is only meaningful against a populated table**: Postgres does not
+evaluate a policy for a scan that yields no rows, so an empty table answers
+"no error" whether or not the connection is exempt. `tenants` is the one
+scoped table guaranteed to hold a row, since the same migration that creates
+it inserts tenant zero. An empty one is refused rather than passed.
+
+`DB_REQUIRE_RESTRICTED_ROLE=false` turns the whole check into an `error` log,
+for a deployment that has not created its role yet. Nothing turns it into
+silence.
+
+**Migrations still run at boot, on a different connection.** That was the one
+real trade-off here. A restricted role cannot create a table, so something had
+to give: either migrations move out of boot — a deployment-ordering change for
+every environment — or the runtime role gets schema rights, which hands back
+the ownership exemption the policies depend on it not having. Neither is
+acceptable, so the connection moved instead of the step. `migrations/env.py`
+points Alembic at `DB_OWNER_USER` where one is configured and at `DB_USER`
+where none is, which keeps `alembic` on the command line working against a
+developer's scratch database and fails loudly and immediately for a deployment
+that has moved to a restricted role without saying who its owner is. The order
+at boot is: migrate as the owner, grant as the owner, self-check as the
+runtime role, then serve.
+
+The residual cost is stated rather than hidden: the process holds a credential
+that can run DDL. It is used for two statements at boot and never again, on an
+engine that is disposed before the runtime engine is built, and a deployment
+that runs its migrations elsewhere can simply not configure it. It is not
+nothing, and the alternative was worse.
 
 ## Setting the tenant
 
@@ -405,15 +460,19 @@ process can skip setting the tenant. Two things are not ORM sessions and do
 bypass it — the notify listener's raw asyncpg connection, which reads no scoped
 table, and Alembic's bare connection, which is deliberately global.
 
-**Resolution runs before the tenant exists, on a short-lived session.**
-Answering "which tenant does this caller belong to" is by definition unscoped.
-It happens on a session opened and closed inside the authenticating dependency,
-before the request's own session is touched. An earlier attempt held that
-second session open for the whole request; that both halved the connection pool
-and, because the `User` it returned belonged to a session nobody committed,
-silently discarded a password change. Resolution needs the subject id, not a
-`User` row — so it looks up only the membership, and the user is loaded from
-the session the endpoint actually commits.
+**Resolution runs before the tenant exists, and so cannot run on a session.**
+Answering "which tenant does this caller belong to" is by definition the
+question a scoped session cannot ask, and `tenant_members` is scoped like
+everything else — so it goes through `tenants_of_user`, one of the eight
+exempt lookups, which opens a short session of its own with nothing bound.
+The `users` existence check beside it is an ordinary unbound read, because
+`users` carries no tenant and no policy.
+
+Short-lived on purpose. An earlier attempt held a second session open for the
+whole request; that both halved the connection pool and, because the `User` it
+returned belonged to a session nobody committed, silently discarded a password
+change. Resolution needs the subject id, not a `User` row — so it looks up only
+the membership, and the user is loaded from the session the endpoint commits.
 
 **Background work is not a short list, and it has since been closed.** There
 are 157 places that open a session from the factory directly, with no request
@@ -486,35 +545,31 @@ So what is built now is:
   cannot disagree with their bridge in any case — `rooms` carries a composite
   foreign key to `collaboration_bridges` on `tenant_id` — but room-scoped work
   still binds the room's own tenant rather than relying on that.
-- **The lookups that produce a tenant are unscoped, not scoped to a guess.**
-  Which room is this transport id? Which rooms is this client in? Which agent
-  is this client? Which tenant is this bridge in? Each is asked before the
-  answer is known, so binding one first is either a tautology or, under
-  policies, a false "not found". These use `unscoped_session`, the same as the
-  credential lookups in the bootstrap section below.
+- **The lookups that produce a tenant do not consume one.** Which room is this
+  transport id? Which rooms is this client in? Which agent is this client?
+  Which tenant is this bridge in? Each is asked before the answer is known, so
+  binding one first is either a tautology or, under policies, a false "not
+  found". Each is now one of the eight exempt lookups in `db/tenant_lookup.py`
+  — see the bootstrap section, which is where that whole model is argued.
 
-Two named helpers carry this: `tenant_session` (`db/session_scope.py`) binds a
-given tenant and opens a session; `unscoped_session` **unbinds** for the
-duration of the block and opens one with nothing set, restoring the caller's
-binding on the way out. The unbinding is the point and was the second thing
-the first attempt got wrong: a helper that only *named* the intent while
-inheriting whatever was ambient has the hook stamp the caller's tenant onto
-the transaction, so the cross-tenant read the call site asked for is silently
-a single-tenant one — and the allowlist pinning it certifies a lie.
+**One named helper carries this**: `tenant_session` (`db/session_scope.py`)
+binds a tenant and opens a session, in that order. There was a second,
+`unscoped_session`, which unbound for the duration of a block; it is gone, for
+reasons the bootstrap section gives at length. The order in `tenant_session`
+is not cosmetic: the `set_config` rides `after_begin`, so binding *after* a
+session's transaction has opened changes nothing the database can see.
 
-`tests/switch_core/db/test_unscoped_session_allowlist.py` pins two lists,
-both derived from the source tree rather than from imports. The first is who
-may call `unscoped_session`, and it resolves the local name the helper was
-bound to rather than matching the spelling, so `import … as` does not walk
-past it. (The second cannot do the same: every service is handed its own
-factory, so there is no single definition to resolve. It matches on the name
-ending in `session_factory`, which is over-eager rather than under-eager —
-the safe direction for an audit — with the two accessors that hand a factory
-back rather than open a session named as exceptions.) The second is the one that matters more: **which modules
-may open a session straight from the factory at all.** A raw call inherits
-whatever is ambient, which in background code is now nothing — so it is
-unscoped in fact while declaring nothing, strictly worse than the hatch that
-announces itself. Those 174 call sites across nineteen modules are the
+`tests/switch_core/db/test_tenant_exemption_allowlist.py` pins two lists, both
+derived from the source tree rather than from imports. The first is which
+modules may reach the exemption at all — matched on the import rather than the
+call, so `import … as` cannot walk past it. The second is the one that matters
+more day to day: **which modules may open a session straight from the factory.**
+A raw call inherits whatever is ambient, which in background code is now
+nothing. (It cannot be matched the same way: every service is handed its own
+factory, so there is no single definition to resolve. It keys on a name ending
+in `session_factory`, which is over-eager rather than under-eager — the safe
+direction for an audit — with the two accessors that hand a factory back
+named as exceptions.) Those call sites across nineteen modules are the
 inventory this design has to work down; pinning the module list makes a new
 one a decision rather than a default.
 
@@ -616,24 +671,159 @@ would be worse than leaving it — every unattributed line in the deployment
 would then be indistinguishable from that tenant's own under a `tenant_id`
 filter.
 
-## The bootstrap problem, and the two exceptions
+## The bootstrap problem, and the exemption that answers it
 
-Authentication happens before a tenant is known — resolving an API key by hash,
-or a JWT subject to its memberships, is unscoped by definition. So:
+Authentication happens before a tenant is known — resolving an API key by
+hash, or a JWT subject to its memberships, is unscoped by definition. This
+section used to say:
 
-> **Authentication and tenant resolution run in a system session. Everything
-> downstream runs in a tenant session, as the restricted runtime role.**
+> ~~Authentication and tenant resolution run in a system session. Everything
+> downstream runs in a tenant session, as the restricted runtime role.~~
 
-The same escape hatch — `unscoped_session`, see above — covers work that is
-legitimately cross-tenant: Alembic (a bare `Connection`, not a session at all,
-so it never touches the helper either way), admin and bootstrap seeding at
-startup, the bridge and connector lifecycle loops that start every row at
-boot, and the runtime-state sweep. (The connection sweep touches no scoped
-table — it expires in-memory `Connection` objects on a heartbeat timeout —
-so it needed no exception in the first place.)
-`tests/switch_core/db/test_unscoped_session_allowlist.py` pins the set of
-modules allowed to call it, so a new one is a deliberate act rather than an
-accident.
+**That does not work, and the reason it does not is the whole of what follows.**
+`require_tenant_id()` raises when no tenant is bound. An "unscoped session" is
+a session with no tenant bound. So unscoped is not a hatch out of the
+policies; it is precisely the state they refuse. The model looked complete
+only because every environment connected as the tables' owner, whom Postgres
+exempts — the hatch was ownership all along, and the helper called
+`unscoped_session` was a name for something the connection was doing anyway.
+
+Standing a real deployment up under a restricted role found nineteen sites
+that depended on it, in four groups:
+
+- **Six fatal at startup**, before the process ever listened. The first was
+  the agent-registration bootstrap seeding; then the tenant enumeration for
+  built-in shadowing, `ensure_system_client`, `ClientLifecycleService.
+  start_all`, the collaboration-bridge lifecycle, and
+  `reconcile_room_clients`.
+- **One silent.** The server-side connector lifecycle is started by a bare
+  `create_task`, so when its read began returning nothing, no connector
+  started and nothing said so at any log level.
+- **One on a timer**, logging the same failure every five seconds: the
+  runtime-state sweep.
+- **Three per request** — the bearer-token lookup, the gateway's membership
+  resolution, and the OIDC client-id lookup — plus eight more reached once
+  startup was unblocked.
+
+Two findings from that exercise constrain any fix, and both were measured
+rather than reasoned:
+
+- **Fail-closed is data-dependent.** `require_tenant_id()` only raises if
+  Postgres evaluates the policy, and it does not for a scan that yields no
+  rows. Two of the nineteen were invisible until a row existed. Every test
+  asserting an exemption works therefore runs against a populated table, and
+  so does the boot self-check.
+- **Binding tenant zero as a default is not viable.** It was tried. Tenant one
+  worked end to end and tenant two was locked out entirely — membership
+  invisible, API keys invisible, agents never started. Credential resolution
+  is genuinely cross-tenant.
+
+### What replaced it
+
+> **The whole exemption is eight `SECURITY DEFINER` functions that answer
+> *which tenant*, and never return a row.**
+
+They live in `db/tenant_lookup.py`, are owned by the schema owner (so they run
+outside the policies), and each returns `setof text`:
+
+| function | answers |
+| --- | --- |
+| `all_tenant_ids()` | every tenant in the deployment |
+| `tenants_of_user(user_id)` | a login's memberships |
+| `tenant_of_api_key(key_hash)` | a bearer credential's tenant |
+| `tenant_of_agent_oauth_client(id)` | an OIDC agent's tenant |
+| `tenant_of_client(client_id)` | a room client's tenant |
+| `tenant_of_room(room_id)` | a room's tenant |
+| `tenant_of_collaboration_bridge(id)` | a bridge's tenant |
+| `tenant_of_server_connector(id)` | a connector's tenant |
+
+Two properties make that worth having. **The most a caller can extract is the
+tenant an identifier it already holds belongs to** — nothing crosses a tenant
+boundary except the boundary's own name. And **it is a closed list**:
+`TENANT_LOOKUPS` is compared against the functions actually installed, against
+the migration's frozen copy (statement text, not just the inputs to it), and
+against what each answers when called as the restricted role.
+
+The nineteen sites became one of three shapes, and the shape is the
+interesting part:
+
+1. **Credential resolution** — bearer token, JWT subject, OIDC client id,
+   registration token. Resolve the *tenant* through the exemption, bind it,
+   then read the row itself through the ordinary scoped store. No row ever
+   arrives from an exempt path.
+2. **Cross-tenant enumeration** — the boot passes over every client, bridge,
+   connector and room, and the runtime-state sweep. `all_tenant_ids()` and
+   then one scoped pass per tenant. These sites already fanned out per row and
+   bound that row's tenant; the loop moved one level up, and the read inside it
+   is now subject to the policies like every other read.
+3. **Per-item work that can derive its tenant** — a client's transport, a
+   bridge or connector started by id, a room reached by id. One lookup by the
+   globally unique identifier the caller already has, and everything after it
+   is scoped.
+
+Each fan-out filters what it reads back on the tenant it bound. That looks
+redundant and is not: most store methods here carry no `WHERE tenant_id = …`
+of their own and lean on the policy for it, so on a connection Postgres
+exempts — the unit suite's, and any deployment still running with
+`DB_REQUIRE_RESTRICTED_ROLE=false` — the same read returns every tenant's rows
+on every pass and the fan-out acts on each row once per tenant. Silent
+duplication is the failure this design refuses to ship, so the filter is
+written out rather than inferred from the connection.
+
+**`unscoped_session` is gone**, and with it the last helper that promised
+cross-tenant access. `db/session_scope.py` now holds one function. Two things
+still open a session with nothing bound, and neither is cross-tenant: the
+exemption's own plumbing, which touches only its own functions; and the reads
+of `users` and `oidc_identities` in `gateway/auth.py` and `main.py`, which
+carry no tenant and no policy, so an unbound session is the honest way to read
+them.
+
+### Why not the obvious alternatives
+
+- **Three narrow `SECURITY DEFINER` functions returning rows** was the first
+  instinct and does not scale to nineteen sites over nine tables: each would
+  be a second copy of a store method written in SQL, with its result mapped
+  back by hand, and the exemption's blast radius would widen from "a tenant
+  id" to "any row of those tables, to any caller". Returning only the tenant
+  is what keeps the surface small enough to read.
+- **A second engine connected as the owner, or a `BYPASSRLS` role.** Works,
+  and puts a credential that bypasses every policy inside the process for its
+  whole life, reachable from anything that can get at the factory. The
+  exemption stops being enumerable — it becomes "whatever that engine is used
+  for" — which is the property this design most needs to keep. `BYPASSRLS`
+  additionally cannot be granted by `rds_superuser`, so the managed cutover
+  would have to use the owner anyway.
+- **A GUC the policy consults**, e.g. `using (current_setting('app.bypass') =
+  'on' or tenant_id = require_tenant_id())`. Ambient by construction — the
+  exact property being removed — and settable by the very role it is meant to
+  constrain.
+- **`force row level security`.** Sounds like more isolation and is less: it
+  takes the ownership exemption away from the owner, which is what the eight
+  functions run as, so nothing in the process could resolve a credential and
+  no request would authenticate. Boot refuses to start if it is ever set, and
+  a test asserts no table has it.
+
+### Binding a tenant around a session that is already open does nothing
+
+Worth its own heading, because it is the seam where a mistake is invisible.
+The `set_config` rides `after_begin`: it is issued once, when the transaction
+opens. Entering a `tenant_scope` *inside* an open transaction rebinds a
+contextvar and nothing else — the connection keeps whatever it was told at
+begin. Every read after that runs under the original tenant, and a write's
+column default takes the *new* one while `with check` compares the *old*, so
+the database refuses it outright.
+
+The bootstrap seeding was exactly this shape, and it passed for years because
+the owner connection made both halves invisible.
+`db/tenant_session.TenantBindingDriftError` now raises on any statement whose
+bound tenant disagrees with what its transaction was stamped with, so the
+silent no-op is a loud failure everywhere rather than a thing to notice in
+review. Adding that guard found four more instances, all in tests arranging a
+second tenant's rows on a session already stamped with the first's.
+
+The fix is never to move the `tenant_scope` up a line or two. It is to open
+the session inside the binding, which is what `tenant_session` does and the
+only reason it exists.
 
 The delivery listener needs no exception: it holds one unpooled connection that
 relays NOTIFY payloads and never reads a scoped table. Its consumer
@@ -648,40 +838,43 @@ discovered it, so a handler's own downstream session opens (posting to a
 bridge, gating a command) are covered too — they run in the same task, and the
 binding is a contextvar, not something tied to one session object.
 
-One thing the transport deliberately does *not* do is treat its client as
-belonging to a tenant. `joined_rooms` is unscoped, because it runs once and
-decides what that client will ever hear: a tenant over that read returns a
-subset with no error to say so, and the client is then silently deaf in every
-room it did not see, forever. The client id it reads by is globally unique, so
-there is nothing for a tenant to disambiguate. (A client cannot in fact be a
-member of another tenant's room — `client_rooms` carries composite foreign
-keys to both `clients` and `rooms`, so the system client is one row per tenant
-rather than one row in every tenant's rooms. The transport does not lean on
-that; it is pinned by a test in
-`tests/switch_core/transport/test_postgres_transport.py` because the shape of
-the room list rests on it.)
+**The transport's tenant is its client's, derived rather than inherited.**
+This paragraph used to say the opposite: that `joined_rooms` must run with
+nothing bound, because it runs once and decides what that client will ever
+hear, and a tenant over that read returns a subset with no error to say so.
+The worry was right and the remedy was not. Under the runtime role, nothing
+bound returns *nothing* rather than a subset, which is the same silent
+deafness with a shorter list. The tenant now comes from the client's own row,
+through `tenant_of_client` — which is the same answer the read itself would
+have given, and cannot be a narrowing: `client_rooms` and `messages` both
+carry composite foreign keys through `tenant_id`, so a client is neither a
+member of nor a sender in any room outside its own tenant. That is pinned in
+`tests/switch_core/transport/test_postgres_transport.py`, because the shape of
+the room list rests on it.
 
-Three exceptions to the uniform rule, in full:
+Two exceptions to the uniform rule remain, in full:
 
 1. **`api_keys.key_hash` stays globally unique**, because authentication
-   resolves it before a tenant exists.
-2. **System sessions bypass policies by ownership.** This is a fail-open hatch
-   inside a fail-closed design and is named as such: nothing stops a pinned
-   module reading across tenants once a second one exists. Phase 1 accepts
-   that; the pinned list is what keeps it reviewable.
-3. **The agent-registration bootstrap key is seeded on an unbound
-   transaction, and writes two scoped rows there.** Everything else that
-   writes with nothing bound was converted to name its tenant; this one
-   cannot be, because the same block genuinely spans tenants — the key is
-   one per deployment, resolved by that globally unique hash, and the
-   admin-owned-agent warning beside it must see every tenant's agents or it
-   under-reports the case it exists to flag. So the block stays unscoped and
-   the two scoped rows in it, the bootstrap owner's membership and the
-   `ApiKey`, name tenant zero themselves. That works today only because
-   startup connects as the table owner. When the runtime role lands
-   (CHOO-2685) this path needs a system connection of its own; it is the one
-   place in the tree where "unscoped session" and "scoped write" meet, and it
-   is listed here rather than left for that work to discover.
+   resolves it before a tenant exists. It is the column
+   `tenant_of_api_key` reads.
+2. **The eight lookups bypass the policies by ownership**, which is what
+   `SECURITY DEFINER` buys them. That is a fail-open hatch inside a
+   fail-closed design and is named as such — but it is a hatch the width of a
+   tenant id, granted to a fixed list of functions, rather than the width of
+   a session. The list is the audit surface.
+
+The third exception this section used to carry is gone. **The
+agent-registration bootstrap key was seeded on an unbound transaction and
+wrote two scoped rows there** — the one place in the tree where "unscoped
+session" and "scoped write" met, listed here so the role work would not have
+to discover it. It did have to be discovered anyway, because the note
+undersold it: the `tenant_scope(TENANT_ZERO_ID)` inside that block was a
+no-op, since the transaction was already open (see the heading above). The
+seeding is now three phases — the two accounts in tenant zero, the
+admin-owned-agent warning over every tenant one at a time, and the key itself
+in whichever tenant holds it — and `_bootstrap_key_tenant` enforces "one
+bootstrap key per deployment" across tenants rather than within one, which is
+where a second one could actually appear.
 
 An earlier draft had one more — a membership-based policy on `users` — and it
 was wrong. Its `with check` made creating a user impossible: the membership row
@@ -713,15 +906,25 @@ table that forgets the mixin does not get skipped, it stops the import.
 
 ## The migration
 
-What shipped as one design landed as two revisions: the schema
-(`8b276792ee30`) below, and row-level security (`265ed188ad6f`, "Where the
-SQL lives" above) after it. Splitting them was not the original plan — it
-fell out of building this in stages — but it turned out to be the right
-shape anyway: the schema migration is safe to run and roll back on its own,
-with every policy still inert against the owner connection either way, and
-the second revision is a short, mechanical follow-on with nothing but
-`require_tenant_id()` and 38 near-identical `enable row level security` /
-`create policy` pairs to review.
+What shipped as one design landed as three revisions: the schema
+(`8b276792ee30`) below, row-level security (`265ed188ad6f`, "Where the SQL
+lives" above) after it, and the exemption (`9c41a7b0e5d8`) after that.
+Splitting them was not the original plan — it fell out of building this in
+stages — but it turned out to be the right shape anyway: the schema migration
+is safe to run and roll back on its own, with every policy still inert against
+the owner connection either way; the second revision is a short, mechanical
+follow-on with nothing but `require_tenant_id()` and 38 near-identical `enable
+row level security` / `create policy` pairs to review; and the third is eight
+`SECURITY DEFINER` functions, which is the only part of the schema a reviewer
+has to think about the privileges of.
+
+None of the three creates a role or issues a grant. The runtime role is
+created by the deployment — one `CREATE ROLE` in Compose, the chart's values,
+or the RDS runbook — and granted by the application at boot on the owner
+connection, right after `alembic upgrade head`, so a table a later revision
+adds is granted on the boot that adds it. A migration naming the role would
+fail wherever it does not exist yet, including `create_all` in tests, which is
+the same reason the policies carry no `to <role>` clause.
 
 The schema revision:
 
@@ -743,11 +946,13 @@ The schema revision:
 7. Rewrite each scoped-to-scoped foreign key as composite, `not valid` first
    and `validate constraint` after.
 
-No roles are created and no grants issued, in either revision — see the role
-section above. Row-level security is not part of the schema revision: it is
-the second one, `265ed188ad6f`, which creates `require_tenant_id()` and every
-table's policy and nothing else — no roles or grants there either, for the
-same reason.
+Row-level security is not part of the schema revision: it is the second one,
+`265ed188ad6f`, which creates `require_tenant_id()` and every table's policy
+and nothing else. The exemption is the third, `9c41a7b0e5d8`, which creates
+the eight lookups and nothing else. `EXECUTE` on a new function defaults to
+`PUBLIC`, which is what makes them callable by the runtime role without the
+migration having to know its name — and the most any caller can learn from one
+is the tenant an identifier it already holds belongs to.
 
 **On locking.** Alembic wraps a whole revision in one transaction
 (`migrations/env.py`, `context.begin_transaction()`), and this migration does
@@ -787,15 +992,39 @@ application paths — connected as a restricted role, through the store layer
 (`RoomGroupStore`), not by hand-written SQL. That needed test infrastructure
 which did not exist before this change: `rls_harness`
 (`tests/conftest.py`, alongside `session_factory`) creates the role, grants to
-it, connects as it, and seeds tenant zero against a schema built the same way
-`session_factory` builds one — because the rest of the suite still runs
-against the owner connection, and always will until the role in the section
-above exists somewhere real.
+it through `grant_runtime_role`, connects as it, and seeds tenant zero against
+a schema built the same way `session_factory` builds one.
 
-Note what this does and does not prove. It proves the **policies** are correct,
-which is the part Phase 1 owns. It does not prove the **deployment** is subject
-to them — that is the role work, and until it lands the same test against a
-real environment would pass for the wrong reason.
+**The integration suite runs the whole application as that role too.**
+`tests/integration/conftest.py` creates `switch_app`, grants it the same way,
+wires every service to it, and runs `verify_restricted_role` before the first
+test — keeping the owner connection only for building the schema and
+truncating between tests, neither of which the application does. That is what
+turns the integration suite from a test of the code into a test of the code
+*under the policies*, which is what it was not before, and what let nineteen
+call sites come to depend on reads a deployed system refuses.
+
+**And the deployment was stood up under one.** Postgres 16 in a container on a
+non-default port, `switch_owner` owning the schema and `switch_app` serving,
+with `python -m switch_core.main` run end to end: migrations applied as the
+owner, grants issued, the self-check passing and saying so, both front doors
+authenticating (gateway cookie login and agent bearer token, each refusing an
+absent or bogus credential), a room created through the gateway, a message
+posted by one agent and delivered to another through the Postgres transport,
+and then a second tenant added. With two tenants: boot created exactly one
+admin client for the new one and none extra for the old; each tenant's admin
+saw only its own rooms and agents; naming the other tenant's room id directly
+answered 404 on both the gateway and the agent bridge, in both directions; and
+an agent key from one tenant could neither read nor write the other's room,
+while the same key worked in its own. Every table involved held rows
+throughout, for the reason given above.
+
+Note what each layer proves. The unit tests prove the **policies and the
+exemption** are correct against a role they apply to. The integration suite
+proves the **application** works as that role. The stand-up proves the
+**deployment** does, which is the part no test can assert, because CI has no
+production connection — which is why `verify_restricted_role` runs at boot
+rather than in CI.
 
 Alongside it, the cheap tests that catch the regressions this design exists
 to prevent — in that file unless another is named:
@@ -846,15 +1075,14 @@ to prevent — in that file unless another is named:
 - **`room_service.py`'s bindings, asked of Postgres**
   (`tests/switch_core/test_room_service_tenant_bindings.py`). Worth its own
   entry because of how it came about: `tenant_scope`, `tenant_session` and
-  `unscoped_session` could be shadowed with no-ops inside that one module and
+  the tenant lookups could be shadowed with no-ops inside that one module and
   the suite still passed, 2833 to 2833 — the largest file in the rework, and
   nothing depended on a single binding it made. Two things had to change for
   a test to be able to tell. It reads
   `current_setting('app.tenant_id')` on the session the service handed the
-  store, rather than asserting on rows: while Switch connects as the tables'
-  owner no policy bites, so a session that forgot its tenant writes exactly
-  as much as one that remembered, and the setting is the only remaining
-  difference. And it arranges two tenants, which nothing else in the suite
+  store, rather than asserting on rows: the unit suite connects as the tables'
+  owner, so a session that forgot its tenant writes exactly as much as one
+  that remembered, and the setting is the only remaining difference. And it arranges two tenants, which nothing else in the suite
   does, because half of what these bindings are for is only observable once a
   second tenant owns something. Shadowing the three helpers now fails five of
   its eight tests; that experiment is the file's acceptance criterion and is
@@ -900,15 +1128,21 @@ security because it needed no policy to be meaningful.
 
 Named so they are decisions rather than omissions.
 
-- **The policies exist and do not yet bite.** `require_tenant_id()` and every
-  table's policy are built and tested (`265ed188ad6f`,
-  `tests/switch_core/db/test_row_level_security.py`), but local Compose, the
-  chart and production all still connect as the table owner, which bypasses
-  row-level security by ownership regardless of what the policies say. The
-  runtime role that would make a policy bite in a deployed environment —
-  `switch_app`, described above — is CHOO-2685, not this phase. Deliberate,
-  and safe while one tenant exists — and the hard prerequisite for the
-  second.
+- **The chart's managed Postgres mode still runs as the superuser.** With
+  `postgresql.mode: managed` the chart brings up its own StatefulSet and
+  hardcodes `DB_USER` to `postgres`, so such a deployment would fail the boot
+  self-check. `mode: existing` — which is what the managed-database
+  deployments use — takes the runtime role from its own values and is
+  unaffected. Giving the in-cluster StatefulSet a second role is a change to
+  the chart's own provisioning rather than to this design, so it is recorded
+  here and in `values.yaml` rather than fixed in passing.
+- **`unscoped_session`'s allowlist was load-bearing and is now only an
+  audit.** While that helper existed, the list of its callers *was* the
+  isolation boundary and a missing entry was a leak. Nothing is enforced by a
+  list any more — the database refuses — so
+  `test_tenant_exemption_allowlist.py` is an inventory a reviewer can read
+  rather than a control. Worth knowing when reading it, since it looks like
+  the same thing.
 - **Cross-tenant user enumeration.** `users` and `oidc_identities` have no
   policy, so any tenant session can read every account. There is no exposure
   while one tenant exists, and the correct fix needs invitations and a
