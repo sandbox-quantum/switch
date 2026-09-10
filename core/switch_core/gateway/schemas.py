@@ -1035,19 +1035,28 @@ class TemplateDetail(TemplateSummary):
     content: str
 
 
+# The document has its own budget (TEMPLATE_MAX_BYTES); these are the labels
+# around it. Bounded because the columns are unbounded `Text` and nothing else
+# in the request path caps a field — without these, a name is as big as the
+# body someone is willing to send.
+TEMPLATE_NAME_MAX = 200
+TEMPLATE_DESCRIPTION_MAX = 2000
+TEMPLATE_KIND_MAX = 64
+
+
 class TemplateCreateRequest(BaseModel):
-    name: str = Field(min_length=1)
-    description: str = ""
-    kind: str = Field(default="room", min_length=1)
+    name: str = Field(min_length=1, max_length=TEMPLATE_NAME_MAX)
+    description: str = Field(default="", max_length=TEMPLATE_DESCRIPTION_MAX)
+    kind: str = Field(default="room", min_length=1, max_length=TEMPLATE_KIND_MAX)
     content: str = Field(min_length=1)
 
 
 class TemplateUpdateRequest(BaseModel):
     model_config = {"extra": "forbid"}
 
-    name: str | None = Field(default=None, min_length=1)
-    description: str | None = None
-    kind: str | None = Field(default=None, min_length=1)
+    name: str | None = Field(default=None, min_length=1, max_length=TEMPLATE_NAME_MAX)
+    description: str | None = Field(default=None, max_length=TEMPLATE_DESCRIPTION_MAX)
+    kind: str | None = Field(default=None, min_length=1, max_length=TEMPLATE_KIND_MAX)
     content: str | None = Field(default=None, min_length=1)
 
 

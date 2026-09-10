@@ -11,7 +11,7 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.db.models import Template, User
-from switch_core.db.stores.template_store import TemplateStore
+from switch_core.db.stores.template_store import TemplateNameTaken, TemplateStore
 
 _STORE = TemplateStore()
 
@@ -112,6 +112,25 @@ class TestTemplateStoreRoundTrip:
 
 
 class TestTemplateStoreListing:
+    async def test_listing_reports_size_without_reading_the_document(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """A catalogue row carries a byte count, not the bytes.
+
+        Measured by Postgres, so listing a thousand templates does not drag a
+        thousand documents through it — and measured in bytes, so it agrees
+        with the upload limit rather than undercounting multibyte text.
+        """
+        async with session_factory() as session:
+            owner = await _make_user(session, "alice")
+            await _make_template(
+                session, owner_id=owner.id, name="coffee", content="☕" * 10
+            )
+
+            (row,) = await _STORE.list_all(session)
+            assert row.size_bytes == 30
+            assert not hasattr(row, "content")
+
     async def test_lists_templates_from_every_owner(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
@@ -187,7 +206,9 @@ class TestTemplateStoreNaming:
             owner = await _make_user(session, "alice")
             await _make_template(session, owner_id=owner.id, name="deploy-room")
 
-            with pytest.raises(ValueError, match="already have a template named"):
+            with pytest.raises(
+                TemplateNameTaken, match="already have a template named"
+            ):
                 await _make_template(session, owner_id=owner.id, name="deploy-room")
 
     async def test_a_clash_leaves_the_session_usable(
@@ -197,7 +218,7 @@ class TestTemplateStoreNaming:
         async with session_factory() as session:
             owner = await _make_user(session, "alice")
             await _make_template(session, owner_id=owner.id, name="deploy-room")
-            with pytest.raises(ValueError):
+            with pytest.raises(TemplateNameTaken):
                 await _make_template(session, owner_id=owner.id, name="deploy-room")
 
             await _make_template(session, owner_id=owner.id, name="something-else")
@@ -268,7 +289,9 @@ class TestTemplateStoreUpdate:
             other = await _make_template(session, owner_id=owner.id, name="free")
             await session.commit()
 
-            with pytest.raises(ValueError, match="already have a template named"):
+            with pytest.raises(
+                TemplateNameTaken, match="already have a template named"
+            ):
                 await _STORE.update_fields(session, other.id, name="taken")
 
     async def test_server_computed_timestamps_are_readable_after_an_update(

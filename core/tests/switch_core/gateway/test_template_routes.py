@@ -370,6 +370,28 @@ class TestOwnership:
             )
             assert await _TEMPLATE_STORE.get(session, created.id) is None  # type: ignore[attr-defined]
 
+    async def test_an_admin_may_edit_anyones(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        async with session_factory() as session:
+            alice = await add_user(session, name="alice")
+            admin = await add_user(session, name="root", role="admin")
+            await session.commit()
+            created = await _create(session, alice, name="alice-room")
+
+            updated = await patch_template(
+                created.id,  # type: ignore[attr-defined]
+                TemplateUpdateRequest(description="tidied up by an admin"),
+                session,
+                _TEMPLATE_STORE,
+                _USER_STORE,
+                _config(),
+                admin,
+            )
+            assert updated.description == "tidied up by an admin"
+            # Still Alice's — an admin edit is not a transfer of ownership.
+            assert updated.owner_id == alice.id
+
     async def test_deleting_a_missing_template_is_a_404(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:

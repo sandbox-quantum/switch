@@ -141,6 +141,52 @@ class TestOverTheWire:
         assert not raw.text.startswith("{")
         assert "owner_id" not in raw.text
 
+    @pytest.mark.parametrize(
+        "name",
+        ["café ☕", 'has"quote', "line\r\nX-Injected: yes", "../../etc/passwd", "  "],
+        ids=["non-latin1", "quote", "crlf", "traversal", "blank-ish"],
+    )
+    async def test_a_hostile_name_cannot_break_the_download_header(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        users: dict[str, User],
+        name: str,
+    ) -> None:
+        """Headers are latin-1 on the wire and the name is free text.
+
+        Interpolated raw, a `☕` fails the response outright and a CRLF appends
+        a header of the caller's choosing.
+        """
+        client = _client(session_factory, users["alice"])
+        created = await _upload(client, name=name, content="room:\n  name: r\n")
+
+        raw = await client.get(f"/templates/{created['id']}/content")
+        assert raw.status_code == 200
+        assert raw.content == b"room:\n  name: r\n"
+
+        disposition = raw.headers["content-disposition"]
+        assert "\r" not in disposition and "\n" not in disposition
+        assert "X-Injected" not in raw.headers
+        # The plain filename is an ASCII skeleton; the real name rides in
+        # `filename*`, percent-encoded.
+        ascii_part = disposition.split(";")[1]
+        assert ascii_part.strip().startswith('filename="')
+        assert ascii_part.encode("latin-1")
+        assert "filename*=UTF-8''" in disposition
+
+    async def test_the_download_refuses_to_be_sniffed(
+        self, session_factory: async_sessionmaker[AsyncSession], users: dict[str, User]
+    ) -> None:
+        """The bytes are whatever someone uploaded, HTML included."""
+        client = _client(session_factory, users["alice"])
+        created = await _upload(
+            client, name="sneaky", content="<script>alert(1)</script>"
+        )
+
+        raw = await client.get(f"/templates/{created['id']}/content")
+        assert raw.headers["x-content-type-options"] == "nosniff"
+        assert raw.headers["content-type"].startswith("application/x-yaml")
+
     async def test_the_catalogue_shows_every_owners_templates(
         self, session_factory: async_sessionmaker[AsyncSession], users: dict[str, User]
     ) -> None:
@@ -270,3 +316,53 @@ class TestOverTheWire:
         client = _client(session_factory, users["alice"])
         response = await client.post("/templates", json=body)
         assert response.status_code == 422
+
+    @pytest.mark.parametrize(
+        "field,size",
+        [("name", 201), ("description", 2001), ("kind", 65)],
+        ids=["name", "description", "kind"],
+    )
+    async def test_an_oversize_label_is_rejected(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        users: dict[str, User],
+        field: str,
+        size: int,
+    ) -> None:
+        """The document has a byte budget; the labels around it need one too.
+
+        The columns are unbounded `Text` and nothing else in the request path
+        caps a field, so without these a name is as large as the body someone
+        is willing to send.
+        """
+        client = _client(session_factory, users["alice"])
+        body = {
+            "name": "t",
+            "description": "d",
+            "kind": "room",
+            "content": "room:\n  name: r\n",
+        }
+        body[field] = "x" * size
+        assert (await client.post("/templates", json=body)).status_code == 422
+
+        created = await _upload(client, name="fine")
+        patched = await client.patch(
+            f"/templates/{created['id']}", json={field: "x" * size}
+        )
+        assert patched.status_code == 422
+
+    async def test_a_body_naming_the_owner_is_refused_outright(
+        self, session_factory: async_sessionmaker[AsyncSession], users: dict[str, User]
+    ) -> None:
+        """Not silently ignored — a caller trying to reassign should hear so."""
+        client = _client(session_factory, users["alice"])
+        created = await _upload(client, name="t")
+
+        response = await client.patch(
+            f"/templates/{created['id']}",
+            json={"owner_id": users["bob"].id, "description": "x"},
+        )
+        assert response.status_code == 422
+
+        unchanged = await client.get(f"/templates/{created['id']}")
+        assert unchanged.json()["owner_id"] == users["alice"].id
