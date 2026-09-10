@@ -7,6 +7,7 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.db.models import Client, CollaborationBridge, Tenant
+from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.collaboration_bridge_store import CollaborationBridgeStore
 from switch_core.tenant_context import tenant_scope
 
@@ -28,12 +29,6 @@ async def _make_bridge(session: AsyncSession) -> str:
     session.add(bridge)
     await session.flush()
     return bridge.id
-
-
-async def _make_bridge_for_tenant(session: AsyncSession, tenant_id: str) -> str:
-    """A bridge filed under `tenant_id` rather than the ambient tenant."""
-    with tenant_scope(tenant_id):
-        return await _make_bridge(session)
 
 
 @pytest.mark.asyncio
@@ -168,6 +163,16 @@ async def test_get_default_does_not_choke_on_a_second_tenants_default(
     matched both rows the moment a second tenant had a default and raised
     `MultipleResultsFound`, a 500 out of `create_room` for every tenant, not
     just the one that just onboarded.
+
+    The other tenant's bridge is created and nominated on a session opened
+    with `tenant_session`, not by entering `tenant_scope(other_tenant)` inside
+    the session already open for the own-tenant arrangement above. That
+    session's transaction was already stamped with the ambient tenant by its
+    first statement — the `set_config` a transaction gets is issued once, at
+    `after_begin` — so rebinding the contextvar mid-transaction would not move
+    what Postgres was told; it would only make the two disagree. Opening a
+    fresh session inside `tenant_session(other_tenant)` stamps its
+    transaction with the other tenant from the first statement on.
     """
     store = CollaborationBridgeStore()
     other_tenant = f"tenant-{uuid.uuid4().hex[:8]}"
@@ -176,11 +181,13 @@ async def test_get_default_does_not_choke_on_a_second_tenants_default(
         session.add(Tenant(id=other_tenant, slug=other_tenant, name=other_tenant))
         await session.flush()
         own_bridge = await _make_bridge(session)
-        other_bridge = await _make_bridge_for_tenant(session, other_tenant)
         await store.set_default(session, own_bridge)
-        with tenant_scope(other_tenant):
-            await store.set_default(session, other_bridge)
         await session.commit()
+
+    async with tenant_session(session_factory, other_tenant) as other_session:
+        other_bridge = await _make_bridge(other_session)
+        await store.set_default(other_session, other_bridge)
+        await other_session.commit()
 
     async with session_factory() as session:
         default = await store.get_default(session)
@@ -203,29 +210,43 @@ async def test_set_default_does_not_demote_another_tenants_default(
     has none of its own yet, and `set_default` then demotes a bridge it was
     never asked about — silently disabling another tenant's default the first
     time this tenant nominates its own.
+
+    The other tenant's bridge is arranged and read back through its own
+    session, opened with `tenant_session`, rather than by wrapping a
+    `tenant_scope(other_tenant)` block around statements on a session shared
+    with the own-tenant arrangement. A session's transaction is stamped with
+    whatever tenant was bound at its first statement — `set_config` rides
+    `after_begin`, issued once — so rebinding the contextvar afterwards, or
+    reverting it on the way out of a `with` block, changes nothing the
+    database was told; it only makes the next statement disagree with the
+    one before it. Two sessions, each opened inside the binding it needs,
+    keep every statement honest about which tenant it ran under.
     """
     store = CollaborationBridgeStore()
     other_tenant = f"tenant-{uuid.uuid4().hex[:8]}"
 
     async with session_factory() as session:
         session.add(Tenant(id=other_tenant, slug=other_tenant, name=other_tenant))
-        await session.flush()
-        other_bridge = await _make_bridge_for_tenant(session, other_tenant)
-        with tenant_scope(other_tenant):
-            await store.set_default(session, other_bridge)
+        await session.commit()
 
+    async with tenant_session(session_factory, other_tenant) as other_session:
+        other_bridge = await _make_bridge(other_session)
+        await store.set_default(other_session, other_bridge)
+        await other_session.commit()
+
+    async with session_factory() as session:
         own_bridge = await _make_bridge(session)
         await store.set_default(session, own_bridge)
         await session.commit()
 
-    async with session_factory() as session:
-        with tenant_scope(other_tenant):
-            other_default = await store.get(session, other_bridge)
+    async with tenant_session(session_factory, other_tenant) as other_session:
+        other_default = await store.get(other_session, other_bridge)
         assert other_default is not None
         assert other_default.is_default is True, (
             "the other tenant's default was demoted by a write it was never part of"
         )
 
+    async with session_factory() as session:
         own_default = await store.get(session, own_bridge)
         assert own_default is not None
         assert own_default.is_default is True

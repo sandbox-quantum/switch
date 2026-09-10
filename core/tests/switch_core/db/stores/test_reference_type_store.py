@@ -7,6 +7,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.db.models import Reference, ReferenceType, Tenant, User
+from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.reference_store import ReferenceStore
 from switch_core.db.stores.reference_type_store import ReferenceTypeStore
 from switch_core.tenant_context import tenant_scope
@@ -347,6 +348,19 @@ class TestReferenceTypesAreScopedToTheBoundTenant:
         filter on the row's own tenant is what keeps it single-valued, and
         this is the arrangement that tells the two apart: the same slug in
         tenant zero *and* in the tenant doing the create.
+
+        The other tenant's rows are all created and read through one session
+        opened with `tenant_session(other)`, not by entering
+        `tenant_scope(other)` around statements on the session already open
+        for tenant zero's row above. `set_config` is issued once, when a
+        transaction begins — that session's transaction was already stamped
+        with tenant zero by its first statement, so rebinding the contextvar
+        afterwards would not move what Postgres was told; every following
+        statement would still run under tenant zero, and the write meant to
+        land under `other` would clash with itself instead of with the row
+        this test is actually arranging a clash against. Opening a fresh
+        session inside `tenant_session(other)` stamps its transaction with
+        `other` from the first statement on.
         """
         other = f"tenant-{uuid.uuid4().hex[:8]}"
         store = ReferenceTypeStore()
@@ -355,31 +369,45 @@ class TestReferenceTypesAreScopedToTheBoundTenant:
             ada = await _make_user(session, "ada")
             await session.flush()
             await store.create(session, _type("notion", ada.id))
-            with tenant_scope(other):
-                await store.create(session, _type("notion", ada.id))
             await session.commit()
 
-            with tenant_scope(other):
-                with pytest.raises(
-                    ValueError, match="Reference type 'notion' already exists"
-                ):
-                    await store.create(session, _type("notion", ada.id))
+        async with tenant_session(session_factory, other) as other_session:
+            await store.create(other_session, _type("notion", ada.id))
+            await other_session.commit()
 
-                # The savepoint means the caller's transaction survives it,
-                # and neither tenant's row was disturbed.
-                await store.create(session, _type("linear", ada.id))
-                await session.commit()
-                assert {rt.type for rt in await store.list_all(session)} == {
-                    "notion",
-                    "linear",
-                }
+            with pytest.raises(
+                ValueError, match="Reference type 'notion' already exists"
+            ):
+                await store.create(other_session, _type("notion", ada.id))
+
+            # The savepoint means the caller's transaction survives it,
+            # and neither tenant's row was disturbed.
+            await store.create(other_session, _type("linear", ada.id))
+            await other_session.commit()
+            assert {rt.type for rt in await store.list_all(other_session)} == {
+                "notion",
+                "linear",
+            }
+
+        async with session_factory() as session:
             assert {rt.type for rt in await store.list_all(session)} == {"notion"}
 
     async def test_counting_references_ignores_another_tenants(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
         """This count decides whether a type may be deleted; another
-        customer's references must not veto it."""
+        customer's references must not veto it.
+
+        The other tenant's type and reference are created on a session opened
+        with `tenant_session(other)`, separate from the session tenant zero's
+        row is arranged on. Entering `tenant_scope(other)` around statements
+        on that same session would rebind the contextvar without moving what
+        the transaction was stamped with at `after_begin` — the two would
+        disagree from the second statement on. The two counts are read back
+        the same way: each through its own session, opened inside the
+        binding it is asserting about, rather than by toggling `tenant_scope`
+        on one shared session between the two assertions.
+        """
         other = f"tenant-{uuid.uuid4().hex[:8]}"
         store = ReferenceTypeStore()
         references = ReferenceStore()
@@ -388,11 +416,15 @@ class TestReferenceTypesAreScopedToTheBoundTenant:
             ada = await _make_user(session, "ada")
             await session.flush()
             await store.create(session, _type("notion", ada.id))
-            with tenant_scope(other):
-                await store.create(session, _type("notion", ada.id))
-                await references.create(session, _reference("notion", ada.id))
             await session.commit()
 
+        async with tenant_session(session_factory, other) as other_session:
+            await store.create(other_session, _type("notion", ada.id))
+            await references.create(other_session, _reference("notion", ada.id))
+            await other_session.commit()
+
+        async with session_factory() as session:
             assert await store.count_references_of_type(session, "notion") == 0
-            with tenant_scope(other):
-                assert await store.count_references_of_type(session, "notion") == 1
+
+        async with tenant_session(session_factory, other) as other_session:
+            assert await store.count_references_of_type(other_session, "notion") == 1
