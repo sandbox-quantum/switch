@@ -360,24 +360,42 @@ deployment never hits.
 connection, and this failure mode is silent: a Switch that believes it is
 isolating tenants and is not looks exactly like one that is.
 `db/runtime_role.verify_restricted_role` runs before the server listens and
-before anything writes a row, and asks five questions, in increasing order of
-how much they prove:
+before anything writes a row, in increasing order of how much they prove:
 
 1. the role is not a superuser and carries no `BYPASSRLS`, nor is it a member
    of a role that has either — membership is a `SET ROLE` away from both;
-2. it owns none of the tables carrying a policy;
+2. it neither owns, nor has the privileges of the owner of, any table carrying
+   a policy;
 3. no table sets `force row level security` — see the bootstrap section for
    why that would be catastrophic rather than stricter;
-4. every tenant lookup exists and this role may execute it, since a role that
-   cannot would authenticate nobody;
-5. **a read of `tenants` with nothing bound raises** — the only one of the five
-   that observes behaviour rather than inferring it from the catalogue, and so
-   the only one that would catch an exemption the others did not think to look
+4. every scoped table still has row-level security enabled and still has its
+   policy, taken from `rls_ddl.scoped_tables` so it cannot drift from what the
+   schema is supposed to have;
+5. every tenant lookup exists, this role may execute it, and calling one
+   actually answers — a role that could not would authenticate nobody;
+6. **a read of `tenants` with nothing bound raises** — the only one that
+   observes behaviour rather than inferring it from the catalogue, and so the
+   only one that would catch an exemption the others did not think to look
    for.
 
-Two details of that last check are load-bearing and were both got wrong first.
-It insists on SQLSTATE 42501 **and** on the message `app.tenant_id is not
-set`, because 42501 is `insufficient_privilege` and `permission denied for
+Three details are load-bearing and each was got wrong first, which is why they
+are written down rather than left to the code.
+
+The second check asks `pg_has_role(current_user, c.relowner, 'USAGE')` rather
+than comparing the owner's name to `current_user`, because that is the test
+Postgres itself applies: `check_enable_rls` asks `has_privs_of_role`, so a role
+granted membership in the owner with `INHERIT` bypasses every policy while
+being a different role entirely. Comparing identities called such a connection
+clean. Measured, not reasoned.
+
+The fourth exists because every other check is about the *connection*, and all
+of them pass on a schema somebody has quietly disarmed: `ALTER TABLE messages
+DISABLE ROW LEVEL SECURITY` leaves the role restricted, owning nothing,
+forcing nothing — and leaves `messages` readable by every tenant. The
+behavioural probe would not catch it either, since it asks only `tenants`.
+
+The last insists on SQLSTATE 42501 **and** on the message `app.tenant_id is
+not set`, because 42501 is `insufficient_privilege` and `permission denied for
 table tenants` carries it too — a role that had never been granted anything
 would otherwise satisfy the probe by failing for an unrelated reason. And it
 is asked of `tenants` rather than of any other scoped table because **the
@@ -689,7 +707,9 @@ exempts — the hatch was ownership all along, and the helper called
 `unscoped_session` was a name for something the connection was doing anyway.
 
 Standing a real deployment up under a restricted role found nineteen sites
-that depended on it, in four groups:
+that depended on it — seventeen of them `unscoped_session`'s own call sites,
+and two more raw-session credential reads that leaned on the same ownership
+exemption without ever calling that helper — in four groups:
 
 - **Six fatal at startup**, before the process ever listened. The first was
   the agent-registration bootstrap seeding; then the tenant enumeration for
@@ -818,8 +838,19 @@ the owner connection made both halves invisible.
 `db/tenant_session.TenantBindingDriftError` now raises on any statement whose
 bound tenant disagrees with what its transaction was stamped with, so the
 silent no-op is a loud failure everywhere rather than a thing to notice in
-review. Adding that guard found four more instances, all in tests arranging a
-second tenant's rows on a session already stamped with the first's.
+review. It hangs off two events, not one: `do_orm_execute` catches every read
+and every explicit `Session.execute`, and `before_flush` catches the writes,
+which do not go through `Session.execute` at all — the unit of work emits its
+`INSERT`s straight to the connection. The flush is the case that matters most,
+since a drifted *write* is where the column default and `with check` disagree
+about which tenant the row is in, and it was the half the first version of the
+guard missed. A savepoint deliberately does not re-stamp: an `is_local`
+setting made inside one survives `RELEASE` and reverts on `ROLLBACK TO`, so
+recording the savepoint's tenant would leave the record and the connection
+disagreeing after a rollback.
+
+Adding the guard found five more instances, all in tests arranging a second
+tenant's rows on a session already stamped with the first's.
 
 The fix is never to move the `tenant_scope` up a line or two. It is to open
 the session inside the binding, which is what `tenant_session` does and the
@@ -851,6 +882,27 @@ carry composite foreign keys through `tenant_id`, so a client is neither a
 member of nor a sender in any room outside its own tenant. That is pinned in
 `tests/switch_core/transport/test_postgres_transport.py`, because the shape of
 the room list rests on it.
+
+**Scoping the transport found a cross-tenant bug that predated it**, and it is
+worth recording because of the shape rather than the size. `InviteBus` keyed
+its handler slot on `matrix_user_id`, process-wide — and `matrix_user_id` is
+unique *per tenant*, with `ensure_system_client` deliberately giving every
+tenant's admin client the same `@switch-admin:<server>`. Two tenants running an
+admin client meant one slot and one winner. An invitation for either woke
+whichever had won, and `invite` answered True because *a* handler existed, so
+`invite_to_room` took that as "a live client has joined itself" and returned
+without writing the membership row — while the woken transport could not
+resolve a room in the other tenant and logged an error nobody was looking for.
+A tenant's rooms silently had no admin participant.
+
+The bug was there before; what changed is that it used to surface as an
+`IntegrityError` on `client_rooms`' composite key, and the scoped resolve turns
+that into a swallowed "not a Switch room". The fix is to key on `clients.id`,
+a uuid primary key, so there is nothing for a tenant to disambiguate — which
+is only possible because the transport now knows which client it is acting for
+in the first place. It is the same lesson as the rest of this section: an
+identifier that is unique *per tenant* cannot be used as a key in anything
+that spans them.
 
 Two exceptions to the uniform rule remain, in full:
 

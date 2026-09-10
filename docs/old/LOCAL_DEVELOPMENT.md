@@ -57,7 +57,10 @@ and `DB_OWNER_PASSWORD` to it and change `DB_USER` to `switch_app` (see
 `.env.example`), then run `just reset` to rebuild the Postgres volume from
 scratch — that's the clean way to get the runtime role created, since
 `init-db` only creates it on a fresh volume. Reusing an old volume with the
-new `.env` leaves the runtime role missing entirely.
+new `.env` leaves the runtime role missing entirely. `just up` refuses to
+start while the two owner variables are absent, and says this, rather than
+bringing up a Postgres container with an empty `POSTGRES_USER` and leaving
+you to work backwards from whatever fails after it.
 
 Boot refuses to serve if the runtime connection turns out not to be
 restricted — a superuser, a role with `BYPASSRLS`, or the owner of a policied
