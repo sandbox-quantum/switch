@@ -28,7 +28,7 @@ export type AttachConfiguredAgentsParams = {
    * taken from the scan: discovery infers it best-effort and reports `null` when
    * the directory names none, in which case the user picks.
    */
-  agents: Array<{ name: string; providerId: AgentProviderId }>;
+  agents: Array<{ name: string; providerId: AgentProviderId; ownerName?: string | null }>;
 };
 
 export type AttachConfiguredAgentsResult = Result<Agent[], OnboardAgentError>;
@@ -81,7 +81,8 @@ export async function attachConfiguredAgents(
     ).map((d) => [d.name, d])
   );
 
-  const selected: Array<{ name: string; providerId: AgentProviderId }> = [];
+  const selected: Array<{ name: string; providerId: AgentProviderId; ownerName?: string | null }> =
+    [];
   for (const requested of params.agents) {
     const found = discovered.get(requested.name);
     if (!found) {
@@ -110,7 +111,7 @@ export async function attachConfiguredAgents(
   });
 
   const created: Agent[] = [];
-  for (const { name, providerId } of selected) {
+  for (const { name, providerId, ownerName } of selected) {
     const found = discovered.get(name);
     if (!found) continue;
 
@@ -159,6 +160,7 @@ export async function attachConfiguredAgents(
       apiEndpoint: found.apiEndpoint,
       serverId: params.serverId,
       autoApprove: params.sshHost !== null,
+      ownerName: ownerName ?? null,
     });
     created.push(agent);
 
@@ -171,9 +173,22 @@ export async function attachConfiguredAgents(
   }
 
   await locationManager.openLocation(location);
-  // No control to name: an attach is driven by whichever screen offered the
-  // scan, and nothing on the way here says which. `unknown` reports the absence
-  // of a claim rather than inventing one.
   for (const agent of created) agentEvents._emit('agent:created', agent, 'unknown');
+
+  if (params.sshHost !== null) {
+    // Lazy import: remote-watcher transitively loads Electron's `app` module at
+    // the top level, which breaks the unit-test environment where `app` is
+    // undefined. A dynamic import defers that cost to runtime (always Electron).
+    const { startRemoteDiscovery } = await import('./remote-watcher');
+    for (const agent of created) {
+      startRemoteDiscovery(agent.id).catch((error) => {
+        log.warn('attachConfiguredAgents: failed to start session discovery', {
+          agentId: agent.id,
+          error: String(error),
+        });
+      });
+    }
+  }
+
   return ok(created);
 }
