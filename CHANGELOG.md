@@ -44,24 +44,6 @@ version of their own to them without also giving them a release of their own.
 
 ### [Unreleased]
 
-#### Changed
-- **Switch connects to Postgres as a restricted role now, and `DB_USER` names
-  that role.** Row-level security is inert against the role that owns the
-  tables it protects, so tenant isolation was not actually in force on any
-  deployment before this. **This is a breaking deployment change.** Create an
-  unprivileged login (`CREATE ROLE switch_app LOGIN PASSWORD '<generate one>'
-  NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS`), point `DB_USER` /
-  `DB_PASSWORD` at it, and give the schema owner's credentials as the new
-  `DB_OWNER_USER` / `DB_OWNER_PASSWORD` — that connection runs migrations at
-  boot and grants the runtime role its access immediately afterwards. Boot
-  refuses to serve if the runtime connection turns out to be a superuser, to
-  carry `BYPASSRLS`, or to own a policied table, because that failure is
-  silent otherwise; `DB_REQUIRE_RESTRICTED_ROLE=false` downgrades it to an
-  error on every boot while a deployment catches up. `just reset` rebuilds a
-  local stack with the role created. The chart's managed Postgres mode still
-  runs as the superuser and needs that flag until it gains a role of its own.
-  See `docs/old/LOCAL_DEVELOPMENT.md` and `docs/old/rds-migration.md`.
-
 ### [0.26.0] - 2026-09-09
 
 #### Added
