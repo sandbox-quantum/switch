@@ -29,7 +29,12 @@ def turn_summary(
     escape: Callable[[str], str],
     limit: int,
 ) -> str:
-    """One or two lines: what was last said, and where the turn got to.
+    """One or two lines: what the agent last said, and where the turn got to.
+
+    Only the agent's own words. A person's message is skipped rather than
+    taken as `items[-1]`: there is no card here to attribute it against the
+    way Slack's does, and a prompt or a mid-turn interjection shown bare on
+    its own line reads as the agent having said it.
 
     The state line is the one thing that always survives whole — it is a
     handful of words from a fixed vocabulary, never host text — so what gets
@@ -37,15 +42,20 @@ def turn_summary(
     still going.
     """
     state = turn_state(items, turn)
-    said = [item for item in items if item.kind != "tool-activity"]
+    said = [item for item in items if item.kind == "assistant-message"]
     if not said:
         return _fit(state, limit)
 
-    last = escape(said[-1].text) if said[-1].text else "(nothing said)"
     remaining = limit - len(state) - 1  # 1 for the newline between them
     if remaining <= 0:
         return _fit(state, limit)
-    return f"{_fit(last, remaining)}\n{state}"
+
+    # Cut the raw text and escape what survives, not the other way round: an
+    # escape that expands a character (`escape_mrkdwn`'s `&`, `<`, `>`) would
+    # otherwise have the cut land inside the entity it produced.
+    text = said[-1].text
+    body = escape(_fit(text, remaining)) if text else "(nothing said)"
+    return f"{body}\n{state}"
 
 
 def _fit(text: str, limit: int) -> str:

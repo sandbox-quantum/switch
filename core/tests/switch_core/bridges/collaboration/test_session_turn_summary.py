@@ -3,7 +3,7 @@
 `test_session_activity.py` covers Slack's own card and its notification
 string. This is the other one — written new rather than lifted off Slack's, so
 it carries only what a reader came for on a platform with nothing behind it at
-all: the last thing said, and whether the turn is still going.
+all: the last thing the agent said, and whether the turn is still going.
 """
 
 from __future__ import annotations
@@ -78,6 +78,53 @@ def test_a_budget_too_tight_even_for_the_state_still_returns_something() -> None
 
     assert summary
     assert len(summary) <= 3
+
+
+def test_a_persons_own_message_is_never_shown_as_the_agents() -> None:
+    """The prompt that started the turn arrives before the agent has said a word.
+
+    There is no card here to attribute it against the way Slack's does, so
+    showing it bare on its own line would read as the agent's words.
+    """
+    items = [_item(kind="user-message", title="", text="please do the thing")]
+
+    summary = turn_summary(items, _turn("running"), escape=_identity, limit=10_000)
+
+    assert summary == "Working…"
+
+
+def test_a_mid_turn_interjection_does_not_displace_what_the_agent_said() -> None:
+    """Someone types "actually, stop" after the agent has already said something."""
+    items = [
+        _item(itemId="i1", kind="assistant-message", title="", text="Looking now."),
+        _item(itemId="i2", kind="user-message", title="", text="actually, stop"),
+    ]
+
+    summary = turn_summary(items, _turn("running"), escape=_identity, limit=10_000)
+
+    assert summary.splitlines()[0] == "Looking now."
+
+
+def test_the_cut_lands_on_the_raw_text_not_on_what_the_escape_produced() -> None:
+    """An escape that expands a character must not have its output cut mid-entity.
+
+    Cutting the escaped form first could stop between `&` and `lt;`, leaving a
+    bare `&lt` with nothing to close it — exactly the partial markup escaping
+    exists to prevent.
+    """
+    items = [_item(kind="assistant-message", title="", text="<" * 5)]
+    state = "Turn complete."
+
+    def _entity_escape(text: str) -> str:
+        return text.replace("<", "&lt;")
+
+    summary = turn_summary(
+        items, _turn("completed"), escape=_entity_escape, limit=len(state) + 4
+    )
+
+    said = summary.splitlines()[0]
+    assert said == "&lt;&lt;…"
+    assert "&lt" not in said.replace("&lt;", "")
 
 
 def test_nothing_said_and_no_tool_calls_is_still_just_the_state() -> None:
