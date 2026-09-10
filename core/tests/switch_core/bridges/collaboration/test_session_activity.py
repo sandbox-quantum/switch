@@ -20,6 +20,8 @@ from typing import Any
 import pytest
 
 from switch_core.bridges.collaboration.session.contract import (
+    ApprovalContent,
+    ApprovalOption,
     Item,
     SnapshotRequest,
     TurnUpsert,
@@ -533,24 +535,71 @@ async def test_a_turn_with_a_request_is_one_message_not_two() -> None:
 
     activity = render_activity(items, turn)
     card = render_request(request, REFERENCE)
-    # blocks[0] gets the recovery marker added on top of whatever it already
-    # was — everything after it is untouched.
-    assert combined.blocks[1:] == (activity.blocks + card.blocks)[1:]
+    assert combined.blocks == activity.blocks + card.blocks
     assert combined.text == f"{activity.text}\n\n{card.text}"
 
 
-async def test_the_recovery_marker_lands_on_the_combined_messages_first_block() -> None:
-    """`find_request_card` only ever looks at the first block, so the marker
-    has to be there whichever renderer's content ends up first."""
+async def test_the_recovery_marker_is_still_findable_in_the_combined_message() -> None:
+    """`find_request_card` scans every block of a message for the marker, not
+    only the first — `switch/adapter.py`'s own recovery search does — so the
+    card's own marker, wherever it ends up, is enough on its own."""
     items = await _items()
     request = await _request()
 
     combined = render_turn_with_request(items, _turn(), request, REFERENCE)
 
-    assert combined.blocks[0]["block_id"] == f"switch-request:{REFERENCE.token}"
-    # render_activity's own first block never carries one of these — confirms
-    # the marker was added, not already there by coincidence.
-    assert "block_id" not in render_activity(items, _turn()).blocks[0]
+    assert any(
+        block.get("block_id") == f"switch-request:{REFERENCE.token}"
+        for block in combined.blocks
+    )
+    # Exactly one: render_turn_with_request must not also stamp its own,
+    # which would give the message two blocks sharing an id Slack expects
+    # to be unique within it.
+    markers = [
+        block
+        for block in combined.blocks
+        if block.get("block_id") == f"switch-request:{REFERENCE.token}"
+    ]
+    assert len(markers) == 1
+
+
+async def test_the_combined_text_stays_inside_what_slack_takes_for_one_string() -> None:
+    """Each half already bounds itself to fit alone; nothing bounded the sum.
+
+    Neither half on its own gets near Slack's cap, so this pushes both: a
+    long turn near `render_activity_text`'s own ~39000-character ceiling,
+    and a request with as many long options as an approval can carry. Only
+    the two together clear 40000 — which is the join this is testing, not
+    either renderer's own bound.
+    """
+    items = [
+        _item(itemId=f"i{n}", kind="assistant-message", title="", text="x" * 2400)
+        for n in range(20)
+    ]
+    request = await _request()
+    content = request.content
+    assert isinstance(content, ApprovalContent)
+    big_request = request.model_copy(
+        update={
+            "content": content.model_copy(
+                update={
+                    "title": "t" * 1500,
+                    "detail": "d" * 1200,
+                    "options": [
+                        ApprovalOption(
+                            option_id=f"option-{n}", label="l" * 150, decision="accept"
+                        )
+                        for n in range(25)
+                    ],
+                }
+            )
+        }
+    )
+
+    combined = render_turn_with_request(items, _turn(), big_request, REFERENCE)
+
+    assert len(combined.text) <= 40000
+    assert render_request(big_request, REFERENCE).text in combined.text
 
 
 async def test_a_combined_message_still_carries_the_request_s_buttons() -> None:

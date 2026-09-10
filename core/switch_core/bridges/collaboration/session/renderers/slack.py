@@ -812,20 +812,22 @@ def render_turn_with_request(
     content appended after it — same buttons, same footer, same settled
     wording, because a request drawn here is not a different card, only a
     different place to put the one `render_request` already knows how to
-    draw.
+    draw. `render_request` already marks its own first block for
+    `find_request_card`, which scans every block of a message rather than
+    only the first, so that marker needs no help finding it from here.
 
-    `find_request_card` recovers an uncertain delivery by scanning a
-    channel's messages for a block carrying `switch-request:<token>` as the
-    *first* block's `block_id`. `render_request` sets that expecting to be
-    building the first block of its own, standalone message, so it is set
-    again here, on whatever is actually first once the turn's own content is
-    ahead of it — the turn's `said` text, or its plan of what it did.
+    The combined `text` is bounded the same way `render_activity_text` bounds
+    itself, and for the same reason: each half is already under Slack's
+    40,000-character cap on its own, but nothing stopped the *sum* clearing
+    it, and the request is the half someone has to press to unstick the
+    session — dropping it to make room would be the one drop this cannot
+    make silently.
     """
     activity = render_activity(items, turn)
     card = render_request(request, reference)
     blocks = activity.blocks + card.blocks
-    blocks[0]["block_id"] = f"switch-request:{reference.token}"
-    return SlackMessage(text=f"{activity.text}\n\n{card.text}", blocks=blocks)
+    text = "\n\n".join(_within([activity.text, card.text], _MAX_TEXT))
+    return SlackMessage(text=text, blocks=blocks)
 
 
 def render_activity_text(items: list[Item], turn: TurnUpsert) -> str:
