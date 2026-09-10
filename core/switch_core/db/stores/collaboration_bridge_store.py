@@ -1,7 +1,7 @@
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from switch_core.db.models import CollaborationBridge
+from switch_core.db.models import CollaborationBridge, require_tenant_id
 
 
 class CollaborationBridgeStore:
@@ -29,19 +29,38 @@ class CollaborationBridgeStore:
 
     async def get_default(self, session: AsyncSession) -> CollaborationBridge | None:
         """The bridge new rooms land on when none is named, or None when the
-        instance has not nominated one."""
+        bound tenant has not nominated one.
+
+        Scoped explicitly rather than left to row-level security: `is_default`
+        is unique per tenant, not globally
+        (`ix_collaboration_bridges_single_default`), so the moment a second
+        tenant has a default bridge, an unfiltered `one_or_none()` here
+        matches both rows and raises `MultipleResultsFound` — a 500 out of
+        `create_room` and `POST /gateway/collaborations/{id}/default`, for
+        every tenant, not just the one that just onboarded. Filtering here
+        also keeps `set_default` from reading another tenant's default as its
+        own and demoting it (see there)."""
         result = await session.execute(
-            select(CollaborationBridge).where(CollaborationBridge.is_default.is_(True))
+            select(CollaborationBridge).where(
+                CollaborationBridge.tenant_id == require_tenant_id(),
+                CollaborationBridge.is_default.is_(True),
+            )
         )
         return result.scalars().one_or_none()
 
     async def set_default(
         self, session: AsyncSession, bridge_id: str
     ) -> CollaborationBridge:
-        """Nominate ``bridge_id`` as the instance default, demoting whichever
-        bridge held it before. The demotion is flushed first because a partial
-        unique index enforces a single default — writing the new one while the
-        old is still set would collide."""
+        """Nominate ``bridge_id`` as the bound tenant's default, demoting
+        whichever bridge held it before. The demotion is flushed first
+        because a partial unique index enforces a single default per tenant —
+        writing the new one while the old is still set would collide.
+
+        ``current`` comes from `get_default`, which is scoped to the bound
+        tenant — load-bearing here, not just for `create_room`: an unscoped
+        `get_default` would read *another* tenant's default as "the current
+        one" whenever the bound tenant had none of its own yet, and this
+        method would then demote a bridge it was never asked about."""
         bridge = await session.get(CollaborationBridge, bridge_id)
         if bridge is None:
             raise ValueError(f"Bridge not found: {bridge_id}")
