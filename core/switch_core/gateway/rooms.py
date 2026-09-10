@@ -398,7 +398,11 @@ async def create_room_from_yaml(
         else:
             text = (await request.body()).decode("utf-8")
             inputs = None
-        spec = rooms_yaml.parse(text, inputs=inputs)
+        spec = rooms_yaml.parse(
+            text,
+            inputs=inputs,
+            builtins={"creator": user.name},
+        )
         return await rooms_yaml.provision(
             spec,
             user_id=user.id,

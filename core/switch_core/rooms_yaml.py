@@ -282,7 +282,20 @@ class RoomYamlService:
 
     # ── Parse ─────────────────────────────────────────────────────────────
 
-    def parse(self, text: str, inputs: dict[str, Any] | None = None) -> RoomSpec:
+    def parse(
+        self,
+        text: str,
+        inputs: dict[str, Any] | None = None,
+        builtins: dict[str, str] | None = None,
+    ) -> RoomSpec:
+        """Parse a YAML template into a ``RoomSpec``.
+
+        ``builtins`` are server-injected variables (e.g. ``{creator}``) that
+        are always available for interpolation alongside user-supplied
+        ``inputs``.  They are resolved first and never collide with declared
+        params — a param named ``creator`` would shadow the built-in, which is
+        intentional (the template author owns the namespace).
+        """
         try:
             data = yaml.safe_load(text)
         except yaml.YAMLError as e:
@@ -318,8 +331,12 @@ class RoomYamlService:
         if inputs and not declared:
             raise ValueError("Inputs supplied but the template declares no params")
 
+        # Build the interpolation values: builtins first, then params override
+        values: dict[str, str | int | float | bool] = dict(builtins or {})
         if declared:
-            values = resolve_params(declared, inputs)
+            values.update(resolve_params(declared, inputs))
+
+        if values:
             room_data = interpolate(data["room"], values)
         else:
             room_data = data["room"]
@@ -340,18 +357,11 @@ class RoomYamlService:
         is_admin: bool,
     ) -> ProvisionResult:
         bridge_id = await self._resolve_bridge_id(spec.bridge)
-
-        # Always include the creating user so they're a member of the room
-        all_users = list(dict.fromkeys([user_name, *spec.users]))
-        if bridge_id is None and len(all_users) > 0:
-            # Without a bridge, users can't be invited — only warn if
-            # the template explicitly listed users beyond the creator
-            if spec.users:
-                raise ValueError(
-                    "Cannot attach users to a room with no bridge "
-                    "(users live on a collaboration bridge)"
-                )
-            all_users = []
+        if spec.users and bridge_id is None:
+            raise ValueError(
+                "Cannot attach users to a room with no bridge "
+                "(users live on a collaboration bridge)"
+            )
 
         attached_ref_ids, inline_refs = await self._resolve_references(
             spec.references, user_id=user_id, is_admin=is_admin
@@ -363,7 +373,7 @@ class RoomYamlService:
             instructions=spec.instructions,
             channel_type=cast(ChannelType, spec.channel_type),
             agent_names=spec.agents or None,
-            user_names=all_users or None,
+            user_names=spec.users or None,
             bridge_id=bridge_id,
             created_by=user_id,
             owner_id=user_id,
