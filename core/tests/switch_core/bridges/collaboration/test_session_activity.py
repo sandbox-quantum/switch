@@ -19,11 +19,18 @@ from typing import Any
 
 import pytest
 
-from switch_core.bridges.collaboration.session.contract import Item, TurnUpsert
+from switch_core.bridges.collaboration.session.contract import (
+    Item,
+    SnapshotRequest,
+    TurnUpsert,
+)
 from switch_core.bridges.collaboration.session.projection import SessionProjection
+from switch_core.bridges.collaboration.session.renderers import RequestReference
 from switch_core.bridges.collaboration.session.renderers.slack import (
     render_activity,
     render_activity_text,
+    render_request,
+    render_turn_with_request,
 )
 from switch_core.bridges.collaboration.session.transport import (
     FixtureEventSource,
@@ -34,6 +41,7 @@ REPO_ROOT = Path(__file__).resolve().parents[5]
 ACTIVITY_PATH = (
     REPO_ROOT / "console/packages/shared/src/session-v1/examples.activity.json"
 )
+EXAMPLES_PATH = REPO_ROOT / "console/packages/shared/src/session-v1/examples.json"
 
 TURN = "turn-activity"
 
@@ -503,3 +511,54 @@ async def test_the_card_and_its_fallback_say_the_same_things() -> None:
     message = render_activity(items, _turn())
 
     assert message.text == render_activity_text(items, _turn())
+
+
+# ── A turn drawn with its own request ─────────────────────────────────────────
+
+REFERENCE = RequestReference(token="opaque-token", handle="R1")
+
+
+async def _request() -> SnapshotRequest:
+    source = FixtureEventSource.from_examples(EXAMPLES_PATH, events=[])
+    projection = await project(source, source.session_id)
+    return projection.open_requests()[0]
+
+
+async def test_a_turn_with_a_request_is_one_message_not_two() -> None:
+    items = await _items()
+    turn = _turn()
+    request = await _request()
+
+    combined = render_turn_with_request(items, turn, request, REFERENCE)
+
+    activity = render_activity(items, turn)
+    card = render_request(request, REFERENCE)
+    # blocks[0] gets the recovery marker added on top of whatever it already
+    # was — everything after it is untouched.
+    assert combined.blocks[1:] == (activity.blocks + card.blocks)[1:]
+    assert combined.text == f"{activity.text}\n\n{card.text}"
+
+
+async def test_the_recovery_marker_lands_on_the_combined_messages_first_block() -> None:
+    """`find_request_card` only ever looks at the first block, so the marker
+    has to be there whichever renderer's content ends up first."""
+    items = await _items()
+    request = await _request()
+
+    combined = render_turn_with_request(items, _turn(), request, REFERENCE)
+
+    assert combined.blocks[0]["block_id"] == f"switch-request:{REFERENCE.token}"
+    # render_activity's own first block never carries one of these — confirms
+    # the marker was added, not already there by coincidence.
+    assert "block_id" not in render_activity(items, _turn()).blocks[0]
+
+
+async def test_a_combined_message_still_carries_the_request_s_buttons() -> None:
+    items = await _items()
+    request = await _request()
+
+    combined = render_turn_with_request(items, _turn(), request, REFERENCE)
+
+    actions = [b for b in combined.blocks if b["type"] == "actions"]
+    assert actions, "the request's buttons must survive being embedded"
+    assert actions[0]["elements"]

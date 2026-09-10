@@ -800,6 +800,34 @@ def render_activity(items: list[Item], turn: TurnUpsert) -> SlackMessage:
     return SlackMessage(text=render_activity_text(items, turn), blocks=blocks)
 
 
+def render_turn_with_request(
+    items: list[Item],
+    turn: TurnUpsert,
+    request: SnapshotRequest,
+    reference: RequestReference,
+) -> SlackMessage:
+    """One message for a turn whose request is drawn with it, not apart from it.
+
+    Everything `render_activity` already draws, with the request's own card
+    content appended after it — same buttons, same footer, same settled
+    wording, because a request drawn here is not a different card, only a
+    different place to put the one `render_request` already knows how to
+    draw.
+
+    `find_request_card` recovers an uncertain delivery by scanning a
+    channel's messages for a block carrying `switch-request:<token>` as the
+    *first* block's `block_id`. `render_request` sets that expecting to be
+    building the first block of its own, standalone message, so it is set
+    again here, on whatever is actually first once the turn's own content is
+    ahead of it — the turn's `said` text, or its plan of what it did.
+    """
+    activity = render_activity(items, turn)
+    card = render_request(request, reference)
+    blocks = activity.blocks + card.blocks
+    blocks[0]["block_id"] = f"switch-request:{reference.token}"
+    return SlackMessage(text=f"{activity.text}\n\n{card.text}", blocks=blocks)
+
+
 def render_activity_text(items: list[Item], turn: TurnUpsert) -> str:
     """The same turn with no card at all.
 
