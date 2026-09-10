@@ -30,6 +30,7 @@ from switch_core.db.stores.collaboration_bridge_store import CollaborationBridge
 from switch_core.db.stores.external_user_store import ExternalUserStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.task_store import TaskStore
+from switch_core.request_context import RequestContextMiddleware
 from switch_core.room_service import RoomService
 
 logger = logging.getLogger(__name__)
@@ -159,5 +160,8 @@ def create_agent_bridge_app(
         api_key_cache=api_key_cache,
         session_factory=session_factory,  # type: ignore[arg-type]
     )
+    # Added last, so it wraps the bearer middleware: a request rejected for bad
+    # credentials is logged with a request id like any other.
+    app.add_middleware(RequestContextMiddleware)
 
     return app, protocol

@@ -44,6 +44,34 @@ version of their own to them without also giving them a release of their own.
 
 ### [Unreleased]
 
+### [0.26.0] - 2026-09-09
+
+#### Added
+- **Multi-tenancy groundwork (phase 0).** Tenant scoping across the backend, and
+  the tenant id plus request context are now stamped on every log line.
+- **Typed `params` block in rooms YAML** with `{var}` interpolation, so room
+  definitions can be parameterised (#402).
+- **An agent can read any room it is a member of without connecting to it**
+  (CHOO-2628) — a new agent operation. (Reaches agents once the runtime and
+  connector plugins that expose it are released; the server side ships here.)
+- Users can change their own password in the gateway (#323).
+
+#### Fixed
+- **OIDC account linking hardened.** A verified OIDC identity is linked to its
+  account by email; multi-issuer and null-issuer collisions are handled rather
+  than guessed, duplicate emails no longer resolve silently, legacy identities
+  are backfilled and matched case-insensitively, and the race is retried with
+  savepoints (CHOO-2624).
+- **Agent bootstrap-key and registration hardening** — resilient bootstrap-key
+  seeding across admin changes and legacy migrations, retired key hashes are
+  revoked and keys retired rather than deleted, a config fault is no longer
+  misreported as a bad token, and the deployment-wide registration token is
+  scoped to a non-admin owner (CHOO-2624).
+- A Postgres server that fails over without closing the connection is now
+  noticed by the notify listener (CHOO-2622).
+- The setup job stays authenticated to the gateway (CHOO-2622); Helm applies the
+  secret and CA bundle before the migration that needs them.
+
 ### [0.25.0] - 2026-09-06
 
 #### Added

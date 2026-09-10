@@ -4,8 +4,9 @@ import asyncio
 import logging
 import re
 import uuid
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TypeVar
 
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -35,6 +36,7 @@ from switch_core.db.stores.client_store import ClientStore
 from switch_core.db.stores.external_user_store import ExternalUserStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.events import AgentRuntimeStateEvent
+from switch_core.logging_context import log_context
 from switch_core.provisioning import Provisioning
 from switch_core.room_service import RoomCreateConfig
 from switch_core.transport import (
@@ -53,6 +55,15 @@ if TYPE_CHECKING:
     from switch_core.room_service import RoomService
 
 logger = logging.getLogger(__name__)
+
+_InboundEventT = TypeVar(
+    "_InboundEventT",
+    InboundMessage,
+    InboundCommand,
+    InboundAgentJoin,
+    InboundUserJoin,
+    InboundAppJoin,
+)
 
 # How long to wait for a freshly-invited external-user puppet to actually join a
 # room before giving up on relaying its message.
@@ -186,17 +197,35 @@ class BridgeCore:
     def adapter(self) -> CollaborationAdapter:
         return self._adapter
 
+    def _traced(
+        self, handler: Callable[[_InboundEventT], Awaitable[None]]
+    ) -> Callable[[_InboundEventT], Awaitable[None]]:
+        """Give each inbound platform event its own id in the logs.
+
+        An event fans out across room lookup, identity provisioning and the
+        transport, so without this the lines from two events arriving at once
+        cannot be told apart. Applied where the adapter is wired up rather than
+        inside each handler, so every inbound path gets it.
+        """
+
+        async def traced(event: _InboundEventT) -> None:
+            event_id = uuid.uuid4().hex[:16]
+            with log_context(request_id=f"{self._bridge_type}-{event_id}"):
+                await handler(event)
+
+        return traced
+
     async def start(self) -> None:
         await self._load_channel_map()
         await self._load_existing_puppets()
         self._adapter.set_channel_migration_handler(self._handle_channel_migrated)
         self._adapter.set_agent_presentation_resolver(self._agent_presentation)
         await self._adapter.start(
-            on_message=self._handle_inbound_message,
-            on_command=self._handle_inbound_command,
-            on_agent_joined=self._handle_agent_joined_channel,
-            on_user_joined=self._handle_user_joined_channel,
-            on_app_joined=self._handle_app_joined_channel,
+            on_message=self._traced(self._handle_inbound_message),
+            on_command=self._traced(self._handle_inbound_command),
+            on_agent_joined=self._traced(self._handle_agent_joined_channel),
+            on_user_joined=self._traced(self._handle_user_joined_channel),
+            on_app_joined=self._traced(self._handle_app_joined_channel),
         )
         await self._ensure_channel_captures()
         # Deliberately not awaited. Provisioning is one call per agent against

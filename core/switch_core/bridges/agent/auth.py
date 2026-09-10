@@ -15,6 +15,7 @@ from switch_core.bridges.agent.registration_bootstrap import REGISTRATION_KEY_TY
 from switch_core.db.models import Agent, ApiKey
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.api_key_store import ApiKeyStore
+from switch_core.logging_context import bind_log_context, unbind_log_context
 
 logger = logging.getLogger(__name__)
 
@@ -133,7 +134,11 @@ class BearerAuthMiddleware:
         if agent is not None:
             scope["agent"] = agent
             scope["agent_id"] = agent.id
-            await self.app(scope, receive, send)
+            token = bind_log_context(agent_id=agent.id)
+            try:
+                await self.app(scope, receive, send)
+            finally:
+                unbind_log_context(token)
             return
 
         # Registration token: pass through (handler validates again). MCP rejects.

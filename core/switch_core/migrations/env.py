@@ -10,9 +10,13 @@ from switch_core.db import (
     models as _models,  # noqa: F401 — registers tables with Base.metadata
 )
 from switch_core.db.base import Base
+from switch_core.logging_config import logging_is_configured
 
 config = context.config
-if config.config_file_name is not None:
+# Run from the CLI this is the only logging there is. Run in-process from the
+# server, logging is already set up and applying the ini would install a second
+# root handler, doubling every line the server goes on to emit.
+if config.config_file_name is not None and not logging_is_configured():
     fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 target_metadata = Base.metadata

@@ -26,6 +26,9 @@ export type Agent = {
    * "bypass permissions" flag. Defaults false for local agents and true for
    * remote agents (seeded at onboarding); editable per agent. */
   autoApprove: boolean;
+  /** The agent's owner on the Switch server, set when the agent was loaded from
+   * another install. Null for agents this Console created. */
+  ownerName: string | null;
   /** Per-agent, provider-specific launch config (e.g. Codex model / effort /
    * instructions). Null when unset. */
   providerConfig: AgentProviderConfig | null;
@@ -47,6 +50,8 @@ export type CreateAgentParams = {
   /** Seed for the per-agent bypass-permissions flag: false for local agents,
    * true for remote agents. */
   autoApprove: boolean;
+  /** The agent's owner on the Switch server, when loaded from another install. */
+  ownerName?: string | null;
   /** Optional per-agent provider config set at creation. */
   providerConfig?: AgentProviderConfig | null;
 };

@@ -119,7 +119,11 @@ describe('deleteAgent', () => {
     const fs = fakeFs({ [agentSettingsRelativePath('codex-hoot')]: CREDS });
     h.state.fs = fs;
 
-    await deleteAgent('agent-1', { deleteInSwitch: false, trigger: 'user' });
+    await deleteAgent('agent-1', {
+      deleteInSwitch: false,
+      removeProvisionedFiles: true,
+      trigger: 'user',
+    });
 
     expect(await fs.exists(agentSettingsRelativePath('codex-hoot'))).toBe(false);
   });
@@ -131,10 +135,36 @@ describe('deleteAgent', () => {
     });
     h.state.fs = fs;
 
-    await deleteAgent('agent-1', { deleteInSwitch: false, trigger: 'user' });
+    await deleteAgent('agent-1', {
+      deleteInSwitch: false,
+      removeProvisionedFiles: true,
+      trigger: 'user',
+    });
 
     expect(await fs.exists(agentSettingsRelativePath('cc-hoot'))).toBe(false);
     expect(await fs.exists('.claude/agents/cc-hoot.md')).toBe(false);
+  });
+
+  it('leaves the working directory untouched on a plain remove (CHOO-2560)', async () => {
+    // An agent loaded from a shared host has credentials another install owns;
+    // a remove without removeProvisionedFiles must not reach into the directory.
+    h.state.agent = { id: 'agent-1', name: 'cc-hoot', providerId: 'claude', locationId: 'loc' };
+    const fs = fakeFs({
+      [agentSettingsRelativePath('cc-hoot')]: CREDS,
+      '.claude/agents/cc-hoot.md': '# cc-hoot',
+    });
+    h.state.fs = fs;
+
+    await deleteAgent('agent-1', {
+      deleteInSwitch: false,
+      removeProvisionedFiles: false,
+      trigger: 'user',
+    });
+
+    expect(await fs.exists(agentSettingsRelativePath('cc-hoot'))).toBe(true);
+    expect(await fs.exists('.claude/agents/cc-hoot.md')).toBe(true);
+    expect(h.removeLocal).not.toHaveBeenCalled();
+    expect(h.removeSwitchCredentials).not.toHaveBeenCalled();
   });
 
   it('leaves a sibling agent sharing the directory untouched', async () => {
@@ -144,14 +174,22 @@ describe('deleteAgent', () => {
     });
     h.state.fs = fs;
 
-    await deleteAgent('agent-1', { deleteInSwitch: false, trigger: 'user' });
+    await deleteAgent('agent-1', {
+      deleteInSwitch: false,
+      removeProvisionedFiles: true,
+      trigger: 'user',
+    });
 
     expect(await fs.exists(agentSettingsRelativePath('cc-sibling'))).toBe(true);
   });
 
   describe('what it reports', () => {
     it('describes the agent that was removed, from the row before it goes', async () => {
-      await deleteAgent('agent-1', { deleteInSwitch: false, trigger: 'user' });
+      await deleteAgent('agent-1', {
+        deleteInSwitch: false,
+        removeProvisionedFiles: false,
+        trigger: 'user',
+      });
 
       expect(h.trackEvent).toHaveBeenCalledWith('agent_removed', {
         agent_type: 'claude',
@@ -166,7 +204,11 @@ describe('deleteAgent', () => {
     it('separates a server teardown from a person removing an agent', async () => {
       // Wiping a managed server deletes every agent on it through this same
       // function; without the distinction one click looks like an exodus.
-      await deleteAgent('agent-1', { deleteInSwitch: false, trigger: 'server_teardown' });
+      await deleteAgent('agent-1', {
+        deleteInSwitch: false,
+        removeProvisionedFiles: false,
+        trigger: 'server_teardown',
+      });
 
       expect(h.trackEvent).toHaveBeenCalledWith(
         'agent_removed',
@@ -179,7 +221,11 @@ describe('deleteAgent', () => {
       // every one of them reported starting.
       h.state.sessionRows = [{ id: 's-1' }, { id: 's-2' }];
 
-      await deleteAgent('agent-1', { deleteInSwitch: false, trigger: 'user' });
+      await deleteAgent('agent-1', {
+        deleteInSwitch: false,
+        removeProvisionedFiles: false,
+        trigger: 'user',
+      });
 
       expect(h.sessionHookEmit).toHaveBeenCalledWith('session:deleted', 's-1');
       expect(h.sessionHookEmit).toHaveBeenCalledWith('session:deleted', 's-2');
@@ -201,7 +247,11 @@ describe('deleteAgent', () => {
       vi.mocked(getServer).mockResolvedValue({ id: 'srv-1' } as never);
 
       await expect(
-        deleteAgent('agent-1', { deleteInSwitch: true, trigger: 'user' })
+        deleteAgent('agent-1', {
+          deleteInSwitch: true,
+          removeProvisionedFiles: false,
+          trigger: 'user',
+        })
       ).rejects.toThrow();
 
       expect(h.trackEvent).toHaveBeenCalledWith(
@@ -221,7 +271,11 @@ describe('deleteAgent', () => {
       };
 
       await expect(
-        deleteAgent('agent-1', { deleteInSwitch: true, trigger: 'user' })
+        deleteAgent('agent-1', {
+          deleteInSwitch: true,
+          removeProvisionedFiles: false,
+          trigger: 'user',
+        })
       ).rejects.toThrow();
 
       expect(h.trackEvent).toHaveBeenCalledWith(

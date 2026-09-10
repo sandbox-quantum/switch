@@ -23,11 +23,18 @@ import { createAgent } from './createAgent';
 import { getAgentDefinitionFields } from './definition-fields';
 import { deleteAgent, type DeleteAgentOptions } from './deleteAgent';
 import { discoverConfiguredAgents } from './discover-configured-agents';
+import {
+  discoverLoadableAgentsInDir,
+  discoverLoadableAgentsOnHost,
+  type DiscoverLoadableAgentsParams,
+} from './discover-loadable-agents';
 import { discoverLocationAgents } from './discover-location-agents';
 import { getAgentById } from './getAgentById';
 import { getAgents } from './getAgents';
 import { onboardAgent } from './onboard-agent';
 import { onboardLocationAgents, type OnboardLocationParams } from './onboard-location-agents';
+import type { RemoveLoadableAgentConfigParams } from './remove-loadable-agent-config';
+import { removeLoadableAgentConfig } from './remove-loadable-agent-config';
 import { renameAgent } from './renameAgent';
 import { resetRemoteAgent } from './reset-remote-agent';
 import { setAgentAutoApprove, type AgentAutoApproveParams } from './setAgentAutoApprove';
@@ -85,13 +92,20 @@ export const agentsController = createRPCController({
   }) => discoverLocationAgents(params),
   discoverConfiguredAgents: (params: { sshHost: string | null; dir: string; serverId: string }) =>
     discoverConfiguredAgents(params),
+  discoverLoadableAgentsOnHost: (params: DiscoverLoadableAgentsParams) =>
+    discoverLoadableAgentsOnHost(params),
+  discoverLoadableAgentsInDir: (params: { sshHost: string; dir: string; serverId: string }) =>
+    discoverLoadableAgentsInDir(params),
   attachConfiguredAgents: (params: AttachConfiguredAgentsParams) => attachConfiguredAgents(params),
+  removeLoadableAgentConfig: (params: RemoveLoadableAgentConfigParams) =>
+    removeLoadableAgentConfig(params),
   getAgents: (locationId?: string) => getAgents(locationId),
   getAgentById: (agentId: string) => getAgentById(agentId),
   renameAgent: (params: RenameAgentParams) => renameAgent(params),
   deleteAgent: (params: { agentId: string } & DeleteAgentOptions) =>
     deleteAgent(params.agentId, {
       deleteInSwitch: params.deleteInSwitch,
+      removeProvisionedFiles: params.removeProvisionedFiles,
       trigger: params.trigger,
     }),
   resetRemoteAgent: (params: { agentId: string }) => resetRemoteAgent(params.agentId),
