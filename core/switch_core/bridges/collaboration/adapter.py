@@ -489,15 +489,22 @@ class CollaborationAdapter(ABC):
         `SlackAdapter` does, choosing its own renderer by `content`'s type —
         and this is never called.
 
-        Raises `RichContentFailed` if the platform refused the message.
-        Unlike `send_message`, whose callers already handle a `None` ref, this
-        is a new seam and raises on failure instead: a caller here cannot
-        forget to check what it did not ask to be told.
+        Raises `RichContentFailed` on any failure — whether the platform
+        raised (Teams' `send_message` does, on any non-2xx status) or merely
+        returned `None` (Slack's does, on a caught `SlackApiError`). Unlike
+        `send_message`, whose other callers already handle a `None` ref, this
+        is a new seam and raises on both shapes of failure instead: a caller
+        here cannot forget to check what it did not ask to be told.
         """
         text = self.rich_fallback_text(content)
-        ref = await self.send_message(
-            channel_id, agent_name, self.translate_outbound(text), thread_root_id
-        )
+        try:
+            ref = await self.send_message(channel_id, agent_name, text, thread_root_id)
+        except Exception as error:
+            raise RichContentFailed(
+                f"{self.platform_name} could not send the message in channel "
+                f"{channel_id}: {error}",
+                text=text,
+            ) from error
         if ref is None:
             raise RichContentFailed(
                 f"{self.platform_name} did not accept the message in channel "
@@ -511,16 +518,22 @@ class CollaborationAdapter(ABC):
     ) -> None:
         """Redraw what `post_rich` posted, in place.
 
-        Falls back the same way `post_rich` does. This base cannot detect
-        failure: `update_message` swallows its own errors by design, for the
-        runtime-status paths that depend on that, so this never raises here —
-        only an override with a real failure to report does.
+        Falls back the same way `post_rich` does. Most adapters'
+        `update_message` swallows its own errors by design, for the
+        runtime-status paths that depend on that — but not all of them (Teams'
+        raises on any non-2xx status), so this catches broadly rather than
+        trusting the convention: whichever it does, a caller of `update_rich`
+        sees `RichContentFailed` or nothing.
         """
-        await self.update_message(
-            channel_id,
-            message_ref,
-            self.translate_outbound(self.rich_fallback_text(content)),
-        )
+        text = self.rich_fallback_text(content)
+        try:
+            await self.update_message(channel_id, message_ref, text)
+        except Exception as error:
+            raise RichContentFailed(
+                f"{self.platform_name} could not update the message in "
+                f"channel {channel_id}: {error}",
+                text=text,
+            ) from error
 
     def rich_fallback_text(self, content: RichContent) -> str:
         """The neutral text form of `content`, for `post_rich` / `update_rich`'s
@@ -533,20 +546,44 @@ class CollaborationAdapter(ABC):
         `request_summary` raises rather than guess at a shape (title, detail,
         per-option or per-question lines, a footer) nobody has needed yet.
         Implement that alongside the first one.
+
+        The result is ready to send as-is — `post_rich` and `update_rich` do
+        not run it through `translate_outbound` again. `_rich_escape` already
+        does, so the budget these renderers cut to is measured on the string
+        that actually reaches the wire rather than the one before that last
+        transform, which can expand it (Telegram's turns one `&` into five
+        characters). The turn's own state line skips both passes rather than
+        being measured through them: it is a handful of fixed words, never
+        host text and never Switch Markdown, so translating it is assumed to
+        be a no-op — the same assumption that already excuses it from escaping.
         """
+        escape = self._rich_escape
         if isinstance(content, TurnActivity):
             return turn_summary(
                 content.items,
                 content.turn,
-                escape=self.escape_label_for_body,
+                escape=escape,
                 limit=self.rich_fallback_limit(),
             )
         return request_summary(
             content.request,
             content.reference,
-            escape=self.escape_label_for_body,
+            escape=escape,
             limit=self.rich_fallback_limit(),
         )
+
+    def _rich_escape(self, label: str) -> str:
+        """`rich_fallback_text`'s host text, neutralised and then rendered.
+
+        Composed so the one function `turn_summary` / `request_summary` cut
+        their budget against is the same pipeline `post_rich` / `update_rich`
+        actually sends: `escape_label_for_body` first, because that is what
+        keeps a display name or an assistant's words from forging markup;
+        `translate_outbound` after, because that is what turns Switch
+        Markdown into this platform's own and is the last thing to touch the
+        string before it goes on the wire.
+        """
+        return self.translate_outbound(self.escape_label_for_body(label))
 
     def rich_fallback_limit(self) -> int:
         """How many characters `rich_fallback_text` may spend on one message.

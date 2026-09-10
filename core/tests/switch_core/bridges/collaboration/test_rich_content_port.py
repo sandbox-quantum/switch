@@ -10,6 +10,7 @@ platform gets if it implements nothing beyond the port.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -36,11 +37,25 @@ EXAMPLES_PATH = REPO_ROOT / "console/packages/shared/src/session-v1/examples.jso
 
 class _BareAdapter(CollaborationAdapter):
     """Concrete only so it can be instantiated: `post_rich` / `update_rich`
-    are what is under test, and nothing else here is called."""
+    are what is under test, and nothing else here is called.
 
-    def __init__(self, *, send_ref: str | None = "C1:1.0") -> None:
+    `send_message` / `update_message` are configurable per test, because the
+    whole point of this port is that they behave differently across real
+    adapters — some return `None` on failure, some raise (Teams does), and
+    this base has to turn either into `RichContentFailed`.
+    """
+
+    def __init__(
+        self,
+        *,
+        send: Callable[[str], str | None] | None = None,
+        update: Callable[[str], None] | None = None,
+        translate: Callable[[str], str] | None = None,
+    ) -> None:
         super().__init__()
-        self._send_ref = send_ref
+        self._send = send or (lambda _content: "C1:1.0")
+        self._update = update or (lambda _content: None)
+        self._translate = translate or (lambda content: content)
         self.sent: list[tuple[str, str, str, str | None]] = []
         self.updated: list[tuple[str, str, str]] = []
 
@@ -52,15 +67,16 @@ class _BareAdapter(CollaborationAdapter):
         thread_root_id: str | None = None,
     ) -> str | None:
         self.sent.append((channel_id, sender_name, content, thread_root_id))
-        return self._send_ref
+        return self._send(content)
 
     async def update_message(
         self, channel_id: str, message_ref: str, new_content: str
     ) -> None:
         self.updated.append((channel_id, message_ref, new_content))
+        self._update(new_content)
 
     def translate_outbound(self, content: str) -> str:
-        return content
+        return self._translate(content)
 
     async def start(self, *a: Any, **k: Any) -> Any: ...
     async def stop(self, *a: Any, **k: Any) -> Any: ...
@@ -74,6 +90,15 @@ class _BareAdapter(CollaborationAdapter):
     async def create_agent_identity(self, *a: Any, **k: Any) -> Any: ...
     async def remove_agent_identity(self, *a: Any, **k: Any) -> Any: ...
     def translate_inbound(self, *a: Any, **k: Any) -> Any: ...
+
+
+def _rich_escape(adapter: _BareAdapter) -> Callable[[str], str]:
+    """The same pipeline `rich_fallback_text` composes internally, rebuilt
+    from the public methods so a test can predict its output without
+    reaching into a private one."""
+    return lambda label: adapter.translate_outbound(
+        adapter.escape_label_for_body(label)
+    )
 
 
 async def _request_card() -> RequestCard:
@@ -97,15 +122,13 @@ async def test_post_rich_falls_back_to_the_turn_summary() -> None:
     assert sender_name == "agent"
     assert thread_root_id is None
     assert content == turn_summary(
-        items,
-        turn,
-        escape=adapter.escape_label_for_body,
-        limit=adapter.rich_fallback_limit(),
+        items, turn, escape=_rich_escape(adapter), limit=adapter.rich_fallback_limit()
     )
 
 
-async def test_post_rich_raises_when_the_platform_refuses() -> None:
-    adapter = _BareAdapter(send_ref=None)
+async def test_post_rich_raises_when_the_platform_returns_none() -> None:
+    """Slack's own `send_message` swallows `SlackApiError` this way."""
+    adapter = _BareAdapter(send=lambda _content: None)
     items = [_item(kind="assistant-message", title="", text="Looking now.")]
 
     with pytest.raises(RichContentFailed) as excinfo:
@@ -115,10 +138,25 @@ async def test_post_rich_raises_when_the_platform_refuses() -> None:
     assert excinfo.value.text  # the text it tried to send is still to hand
 
 
-async def test_update_rich_falls_back_the_same_way_and_never_raises() -> None:
-    """`update_message` swallows its own errors by design, so this base has
-    nothing to raise on — only an override with a real failure to report
-    (`SlackAdapter`'s) does."""
+async def test_post_rich_raises_when_the_platform_raises() -> None:
+    """Teams' `send_message` raises rather than returning `None`, on any
+    non-2xx status — the base has to turn that into `RichContentFailed` too,
+    not just a `None` return."""
+
+    def _explode(_content: str) -> str | None:
+        raise RuntimeError("bot_connector_error: 500")
+
+    adapter = _BareAdapter(send=_explode)
+    items = [_item(kind="assistant-message", title="", text="Looking now.")]
+
+    with pytest.raises(RichContentFailed) as excinfo:
+        await adapter.post_rich("C1", "agent", TurnActivity(items, _turn("running")))
+
+    assert isinstance(excinfo.value.__cause__, RuntimeError)
+    assert excinfo.value.text
+
+
+async def test_update_rich_falls_back_the_same_way() -> None:
     adapter = _BareAdapter()
     items = [_item(kind="assistant-message", title="", text="Looking now.")]
     turn = _turn("completed")
@@ -130,11 +168,60 @@ async def test_update_rich_falls_back_the_same_way_and_never_raises() -> None:
     assert channel_id == "C1"
     assert message_ref == "C1:1.0"
     assert content == turn_summary(
-        items,
-        turn,
-        escape=adapter.escape_label_for_body,
-        limit=adapter.rich_fallback_limit(),
+        items, turn, escape=_rich_escape(adapter), limit=adapter.rich_fallback_limit()
     )
+
+
+async def test_update_rich_does_not_raise_when_the_platform_only_swallows() -> None:
+    """Mattermost, Discord and (mostly) Telegram log their own update failure
+    and return normally — there is nothing here for the base to detect or
+    raise on, which is the existing runtime-status contract."""
+    adapter = _BareAdapter()
+    items = [_item(kind="assistant-message", title="", text="Looking now.")]
+
+    await adapter.update_rich("C1", "C1:1.0", TurnActivity(items, _turn("completed")))
+
+
+async def test_update_rich_raises_when_the_platform_raises() -> None:
+    """Teams' `update_message` raises `RuntimeError` / a connector error on
+    failure instead of swallowing it — `update_rich` must not let that
+    through raw, or the redraw-failure fallback that catches
+    `RichContentFailed` never runs."""
+
+    def _explode(_content: str) -> None:
+        raise RuntimeError("bot_connector_error: 429")
+
+    adapter = _BareAdapter(update=_explode)
+    items = [_item(kind="assistant-message", title="", text="Looking now.")]
+
+    with pytest.raises(RichContentFailed) as excinfo:
+        await adapter.update_rich(
+            "C1", "C1:1.0", TurnActivity(items, _turn("completed"))
+        )
+
+    assert isinstance(excinfo.value.__cause__, RuntimeError)
+    assert excinfo.value.text
+
+
+async def test_the_fallback_budget_survives_translate_outbound_expanding_it() -> None:
+    """A budget cut before `translate_outbound` can be blown open by it —
+    Telegram's turns one `&` into `&amp;`, five characters. The cut has to
+    account for the platform's own rendering, not just `escape_label_for_body`.
+    """
+
+    def _html_escape(content: str) -> str:
+        return content.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+    adapter = _BareAdapter(translate=_html_escape)
+    items = [_item(kind="assistant-message", title="", text="&" * 2000)]
+
+    await adapter.post_rich("C1", "agent", TurnActivity(items, _turn("running")))
+
+    content = adapter.sent[0][2]
+    assert len(content) <= adapter.rich_fallback_limit()
+    # The expansion actually happened, so this is exercising the real risk
+    # rather than a no-op escape.
+    assert "&amp;" in content
 
 
 async def test_a_request_card_has_no_neutral_form_yet() -> None:
