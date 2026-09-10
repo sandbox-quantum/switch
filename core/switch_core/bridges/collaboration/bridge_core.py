@@ -226,8 +226,16 @@ class BridgeCore:
             if isinstance(adapter, SlackAdapter)
             else None
         )
+        self._session_activity = (
+            SessionTurnActivity(adapter) if isinstance(adapter, SlackAdapter) else None
+        )
         self._session_publisher = (
-            SessionPublisher(session_factory, bridge_id, self._session_cards)
+            SessionPublisher(
+                session_factory,
+                bridge_id,
+                self._session_cards,
+                self._session_activity,
+            )
             if self._session_cards is not None
             else None
         )

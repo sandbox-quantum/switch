@@ -7,7 +7,10 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.bridges.collaboration.session.contract import Command, Snapshot
-from switch_core.bridges.collaboration.session.outbound import SessionRequestCards
+from switch_core.bridges.collaboration.session.outbound import (
+    SessionRequestCards,
+    SessionTurnActivity,
+)
 from switch_core.db.models import Agent, ClientRoom, Room, SdkSession, SdkSessionCommand
 from switch_core.db.stores.session_request_post_store import SessionRequestPostStore
 from switch_core.sessions.service import SessionError
@@ -180,6 +183,75 @@ async def refresh_cards(
         raise PublicationIncomplete(session_id, errors, backed_off)
 
 
+async def refresh_activity(
+    session_factory: async_sessionmaker[AsyncSession],
+    bridge_id: str,
+    session_id: str,
+    activity: SessionTurnActivity,
+    *,
+    redraw_needed: Callable[[str, str, tuple[str, tuple[int, ...]]], bool],
+    redrawn: Callable[[str, str, tuple[str, tuple[int, ...]]], None],
+) -> None:
+    """Bring a session's turn activity up to date with its persisted state.
+
+    Unlike a request, a turn is not addressed to anyone and nothing resolves
+    against it, so a turn with no room to reach — no command behind it yet, no
+    origin, no membership, no channel — is skipped rather than treated as a
+    broken invariant the way a request's missing origin is.
+
+    `SessionTurnActivity.publish` never raises: a failed post or edit is
+    logged and retried on the next call, not surfaced, so there is nothing
+    here to aggregate the way `refresh_cards` aggregates card failures.
+    `redraw_needed` exists only to stop a running turn's channel-root message
+    being rewritten every cycle when nothing about it changed — a stream
+    already skips sending a chunk it has already sent.
+    """
+    async with session_factory() as db:
+        row = await db.get(SdkSession, session_id)
+        if row is None:
+            raise SessionError("NOT_FOUND", "Session not found.")
+        snapshot = Snapshot.model_validate(row.snapshot)
+        agent = await db.get(Agent, row.agent_id)
+        if agent is None:
+            raise SessionError("NOT_FOUND", "Session agent not found.")
+        publications = []
+        for turn in snapshot.turns:
+            if turn.command_id is None:
+                continue
+            stored = await db.get(SdkSessionCommand, (row.id, turn.command_id))
+            if stored is None:
+                continue
+            origin = Command.model_validate(stored.command).origin
+            if origin.room_id is None:
+                continue
+            room = await db.get(Room, origin.room_id)
+            if room is None or room.bridge_id != bridge_id:
+                continue
+            if await db.get(ClientRoom, (agent.client_id, room.id)) is None:
+                continue
+            if not room.external_channel_id:
+                continue
+            items = [item for item in snapshot.items if item.turn_id == turn.turn_id]
+            state = (turn.status, tuple(item.revision for item in items))
+            if not redraw_needed(session_id, turn.turn_id, state):
+                continue
+            publications.append(
+                (turn, items, room.external_channel_id, origin.thread_id, state)
+            )
+        agent_name = agent.name
+        db.expunge_all()
+    for turn, items, channel_id, thread_id, state in publications:
+        await activity.publish(
+            items,
+            turn,
+            session_id=session_id,
+            channel_id=channel_id,
+            thread_root_id=thread_id,
+            agent_name=agent_name,
+        )
+        redrawn(session_id, turn.turn_id, state)
+
+
 class _RecoveryBackoff:
     """Bounds how often `recover` re-scans a channel's history for one card.
 
@@ -247,6 +319,32 @@ class _RedrawGuard:
         self._drawn[token] = state
 
 
+class _TurnRedrawGuard:
+    """The `_RedrawGuard` above, for a turn rather than a card.
+
+    A turn has no revision of its own to pair a state with — neither
+    `TurnUpsert` nor `Item` carries one for the turn as a whole — so its
+    identity here is its status alongside every one of its items' own
+    revisions, in the order `SessionProjection.turn_activity` would return
+    them. Any of those changing is something to redraw; none of them changing
+    is the running turn this exists to stop from being rewritten every cycle
+    for no reason.
+    """
+
+    def __init__(self) -> None:
+        self._drawn: dict[tuple[str, str], tuple[str, tuple[int, ...]]] = {}
+
+    def needed(
+        self, session_id: str, turn_id: str, state: tuple[str, tuple[int, ...]]
+    ) -> bool:
+        return self._drawn.get((session_id, turn_id)) != state
+
+    def drawn(
+        self, session_id: str, turn_id: str, state: tuple[str, tuple[int, ...]]
+    ) -> None:
+        self._drawn[(session_id, turn_id)] = state
+
+
 class SessionPublisher:
     """Reconcile persisted snapshots independently of host acknowledgements."""
 
@@ -255,13 +353,16 @@ class SessionPublisher:
         session_factory: async_sessionmaker[AsyncSession],
         bridge_id: str,
         cards: SessionRequestCards,
+        activity: SessionTurnActivity | None = None,
     ) -> None:
         self._sessions = session_factory
         self._bridge_id = bridge_id
         self._cards = cards
+        self._activity = activity
         self._published: dict[str, int] = {}
         self._recovery = _RecoveryBackoff()
         self._redraw = _RedrawGuard()
+        self._turn_redraw = _TurnRedrawGuard()
         self._wake = asyncio.Event()
 
     def wake(self) -> None:
@@ -280,6 +381,7 @@ class SessionPublisher:
         for session_id, sequence in rows:
             if self._published.get(session_id) == sequence:
                 continue
+            ok = True
             try:
                 await refresh_cards(
                     self._sessions,
@@ -292,6 +394,7 @@ class SessionPublisher:
                     refreshed=self._redraw.drawn,
                 )
             except PublicationIncomplete as incomplete:
+                ok = False
                 if incomplete.errors:
                     logger.exception(
                         "Session %s card publication failed on bridge %s "
@@ -315,12 +418,31 @@ class SessionPublisher:
                         self._bridge_id,
                     )
             except Exception:
+                ok = False
                 logger.exception(
                     "Session %s card publication failed on bridge %s; will retry.",
                     session_id,
                     self._bridge_id,
                 )
-            else:
+            if self._activity is not None:
+                try:
+                    await refresh_activity(
+                        self._sessions,
+                        self._bridge_id,
+                        session_id,
+                        self._activity,
+                        redraw_needed=self._turn_redraw.needed,
+                        redrawn=self._turn_redraw.drawn,
+                    )
+                except Exception:
+                    ok = False
+                    logger.exception(
+                        "Session %s turn activity publication failed on bridge "
+                        "%s; will retry.",
+                        session_id,
+                        self._bridge_id,
+                    )
+            if ok:
                 self._published[session_id] = sequence
 
     async def run(self) -> None:
