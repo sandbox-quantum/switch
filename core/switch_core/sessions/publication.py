@@ -1,5 +1,7 @@
 import asyncio
 import logging
+import time
+from collections.abc import Callable
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -13,12 +15,33 @@ from switch_core.sessions.service import SessionError
 logger = logging.getLogger(__name__)
 
 
+def _always_recover(_token: str) -> bool:
+    return True
+
+
+def _ignore_recovery(_token: str) -> None:
+    return None
+
+
 async def refresh_cards(
     session_factory: async_sessionmaker[AsyncSession],
     bridge_id: str,
     session_id: str,
     cards: SessionRequestCards,
+    *,
+    recovery_allowed: Callable[[str], bool] = _always_recover,
+    recovery_succeeded: Callable[[str], None] = _ignore_recovery,
 ) -> None:
+    """Bring a session's cards up to date with its persisted requests.
+
+    `recovery_allowed` gates `recover` — the search for a card whose post is
+    unconfirmed — per token, and `recovery_succeeded` is told when one lands.
+    `SessionPublisher` passes a pair backed by a backoff, so a card that
+    genuinely never landed does not have this re-scan a channel's growing
+    history every cycle, forever; direct callers (tests, and anything that
+    wants recovery attempted unconditionally) get the defaults, which always
+    allow it and track nothing.
+    """
     posts = SessionRequestPostStore()
     async with session_factory() as db:
         row = await db.get(SdkSession, session_id)
@@ -57,23 +80,92 @@ async def refresh_cards(
         epoch = row.epoch
         agent_name = agent.name
         db.expunge_all()
+    errors: list[BaseException] = []
+    backed_off = 0
     for request, post, room_id, channel_id, thread_id in publications:
-        if post is None:
-            if request.state != "open":
-                continue
-            await cards.post(
-                request,
-                channel_id=channel_id,
-                thread_root_id=thread_id,
-                room_id=room_id,
-                session_id=session_id,
-                epoch=epoch,
-                agent_name=agent_name,
-            )
-        else:
-            if post.external_post_id == post.token:
+        try:
+            if post is None:
+                if request.state != "open":
+                    continue
+                await cards.post(
+                    request,
+                    channel_id=channel_id,
+                    thread_root_id=thread_id,
+                    room_id=room_id,
+                    session_id=session_id,
+                    epoch=epoch,
+                    agent_name=agent_name,
+                )
+            elif post.external_post_id == post.token:
+                if not recovery_allowed(post.token):
+                    backed_off += 1
+                    continue
                 post = await cards.recover(post)
-            await cards.refresh(post, request)
+                recovery_succeeded(post.token)
+                await cards.refresh(post, request)
+            else:
+                await cards.refresh(post, request)
+        except Exception as error:
+            # One request's card failing must not stop its siblings from
+            # being tried: a session can have several open requests, and a
+            # single stuck one previously aborted this loop before it reached
+            # any that came after. Each is retried on its own next cycle
+            # regardless — what this function reports below is what stops
+            # `publish_pending` marking the session done while any request in
+            # it is still broken or waiting out a recovery backoff.
+            logger.exception(
+                "Could not publish request %s of session %s on bridge %s; "
+                "the rest of the session's requests were tried anyway.",
+                request.request_id,
+                session_id,
+                bridge_id,
+            )
+            errors.append(error)
+    if len(errors) == 1 and not backed_off:
+        # The one exception a single-request session (by far the common
+        # case) always had, preserved as itself rather than wrapped — a
+        # caller matching on `CardNotPosted` or `RichContentFailed` still
+        # can.
+        raise errors[0]
+    if errors or backed_off:
+        raise SessionError(
+            "PUBLICATION_INCOMPLETE",
+            f"Session {session_id}: {len(errors)} request(s) failed to "
+            f"publish and {backed_off} are waiting out a recovery backoff.",
+        )
+
+
+class _RecoveryBackoff:
+    """Bounds how often `recover` re-scans a channel's history for one card.
+
+    Unbounded retries were the problem this closes: a card whose post
+    genuinely never landed had this run again every publish cycle, forever,
+    against a search that gets more expensive over time as the channel
+    accumulates history past the point it started from. The wait doubles per
+    token on every attempt that still finds nothing, up to `_MAX`, and clears
+    the moment one succeeds — so a card that does eventually turn up is not
+    left waiting out a long interval it no longer needs.
+    """
+
+    _MIN = 5.0
+    _MAX = 600.0  # 10 minutes
+
+    def __init__(self) -> None:
+        self._next_attempt: dict[str, float] = {}
+        self._interval: dict[str, float] = {}
+
+    def allowed(self, token: str) -> bool:
+        now = time.monotonic()
+        if self._next_attempt.get(token, 0.0) > now:
+            return False
+        interval = self._interval.get(token, self._MIN)
+        self._next_attempt[token] = now + interval
+        self._interval[token] = min(interval * 2, self._MAX)
+        return True
+
+    def succeeded(self, token: str) -> None:
+        self._next_attempt.pop(token, None)
+        self._interval.pop(token, None)
 
 
 class SessionPublisher:
@@ -89,6 +181,7 @@ class SessionPublisher:
         self._bridge_id = bridge_id
         self._cards = cards
         self._published: dict[str, int] = {}
+        self._recovery = _RecoveryBackoff()
         self._wake = asyncio.Event()
 
     def wake(self) -> None:
@@ -109,7 +202,12 @@ class SessionPublisher:
                 continue
             try:
                 await refresh_cards(
-                    self._sessions, self._bridge_id, session_id, self._cards
+                    self._sessions,
+                    self._bridge_id,
+                    session_id,
+                    self._cards,
+                    recovery_allowed=self._recovery.allowed,
+                    recovery_succeeded=self._recovery.succeeded,
                 )
             except Exception:
                 logger.exception(

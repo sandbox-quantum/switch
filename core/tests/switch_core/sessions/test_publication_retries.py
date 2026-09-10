@@ -26,7 +26,13 @@ from switch_core.bridges.collaboration.slack.adapter import (
 )
 from switch_core.db.models import ClientRoom, Room, SessionRequestPost
 from switch_core.db.stores.session_request_post_store import SessionRequestPostStore
-from switch_core.sessions.publication import SessionPublisher, refresh_cards
+from switch_core.sessions import publication
+from switch_core.sessions.publication import (
+    SessionPublisher,
+    _RecoveryBackoff,
+    refresh_cards,
+)
+from switch_core.sessions.service import SessionError
 
 from .test_authority import EXAMPLES, command, host_event, opened, setup
 from .test_publication import Platform
@@ -293,3 +299,201 @@ async def test_slack_recovery_pages_and_requires_own_bot(thread):
     assert read.await_args.kwargs["cursor"] == "next"
     if thread:
         assert read.await_args.kwargs["ts"] == "100.0"
+
+
+# ── A stuck card no longer blocks the rest of its session ──────────────────
+
+
+async def test_a_stuck_cards_post_does_not_block_a_sibling_request(session_factory):
+    """Two open requests in one session; only one of them can ever post.
+
+    Before this, `refresh_cards` aborted its loop on the first exception, so
+    the second request — reached later in `snapshot.requests` order — was
+    never even attempted while the first kept failing.
+    """
+    service, epoch = await setup(session_factory)
+    await opened(service, epoch)  # request-demo / turn-demo, in channel-demo
+
+    request = {
+        **EXAMPLES["hostRequest"]["body"]["request"],
+        "requestId": "other-request",
+        "turnId": "other-turn",
+    }
+    message = command(
+        epoch,
+        "other-message",
+        {
+            "type": "message.send",
+            "text": "Continue",
+            "attachments": [],
+            "delivery": "queue",
+        },
+    )
+    await service.submit(message, user_id="owner", bridge_id=None)
+    await service.ingest(
+        "agent-demo",
+        "host-demo",
+        host_event(
+            epoch,
+            3,
+            {
+                "type": "turn.upsert",
+                "turnId": "other-turn",
+                "commandId": "other-message",
+                "status": "running",
+            },
+        ),
+    )
+    await service.ingest(
+        "agent-demo",
+        "host-demo",
+        host_event(epoch, 4, {"type": "request.opened", "request": request}),
+    )
+
+    platform = RecoverablePlatform()
+    real_post_rich = platform.post_rich
+
+    async def flaky_post_rich(channel, agent, content, thread):
+        if content.request.request_id == "request-demo":
+            raise RichContentFailed("nope", text="nope")
+        return await real_post_rich(channel, agent, content, thread)
+
+    platform.post_rich = flaky_post_rich
+    cards = cards_for(session_factory, platform)
+
+    # Only the one request failed, so what propagates is its own exception
+    # (post() turns a refused post into CardNotPosted) rather than a wrapped
+    # one — the point of this test is what happened to its sibling, below.
+    with pytest.raises(CardNotPosted):
+        await refresh_cards(session_factory, "bridge", "session-demo", cards)
+
+    # The stuck one never posted; its sibling, reached after it in the loop,
+    # did — which is exactly what aborting on the first failure would miss.
+    assert [post[0] for post in platform.posts] == ["channel-demo"]
+
+
+async def test_two_failed_requests_in_one_session_raise_one_aggregate_error(
+    session_factory,
+):
+    """Two exceptions cannot both propagate as themselves, so when more than
+    one request in a session fails, what comes out names the count rather
+    than picking one of them arbitrarily."""
+    service, epoch = await setup(session_factory)
+    await opened(service, epoch)
+
+    request = {
+        **EXAMPLES["hostRequest"]["body"]["request"],
+        "requestId": "other-request",
+        "turnId": "other-turn",
+    }
+    message = command(
+        epoch,
+        "other-message",
+        {
+            "type": "message.send",
+            "text": "Continue",
+            "attachments": [],
+            "delivery": "queue",
+        },
+    )
+    await service.submit(message, user_id="owner", bridge_id=None)
+    await service.ingest(
+        "agent-demo",
+        "host-demo",
+        host_event(
+            epoch,
+            3,
+            {
+                "type": "turn.upsert",
+                "turnId": "other-turn",
+                "commandId": "other-message",
+                "status": "running",
+            },
+        ),
+    )
+    await service.ingest(
+        "agent-demo",
+        "host-demo",
+        host_event(epoch, 4, {"type": "request.opened", "request": request}),
+    )
+
+    platform = RecoverablePlatform()
+    platform.post_rich = AsyncMock(side_effect=RichContentFailed("nope", text="nope"))
+    cards = cards_for(session_factory, platform)
+
+    with pytest.raises(SessionError, match="2 request.s. failed to publish"):
+        await refresh_cards(session_factory, "bridge", "session-demo", cards)
+    assert platform.posts == []
+
+
+# ── Recovery stops hammering a card that never confirms ─────────────────────
+
+
+def test_recovery_backoff_widens_and_resets_on_success(monkeypatch):
+    clock = 0.0
+
+    def fake_monotonic() -> float:
+        return clock
+
+    monkeypatch.setattr(publication.time, "monotonic", fake_monotonic)
+    backoff = _RecoveryBackoff()
+
+    assert backoff.allowed("token") is True
+    assert backoff.allowed("token") is False  # still within the first interval
+
+    clock += _RecoveryBackoff._MIN
+    assert backoff.allowed("token") is True  # first interval elapsed
+    assert backoff.allowed("token") is False  # the interval doubled
+
+    clock += _RecoveryBackoff._MIN * 2
+    assert backoff.allowed("token") is True
+
+    backoff.succeeded("token")
+    assert (
+        backoff.allowed("token") is True
+    )  # cleared, not still waiting out the old one
+
+
+def test_recovery_backoff_is_tracked_per_token(monkeypatch):
+    monkeypatch.setattr(publication.time, "monotonic", lambda: 0.0)
+    backoff = _RecoveryBackoff()
+
+    assert backoff.allowed("a") is True
+    assert backoff.allowed("b") is True
+    assert backoff.allowed("a") is False
+    assert backoff.allowed("b") is False
+
+
+async def test_the_publisher_does_not_re_search_every_cycle_for_a_card_that_never_lands(
+    session_factory, monkeypatch
+):
+    """A card whose post genuinely never landed used to re-scan the channel's
+    history every publish cycle, forever. The publisher's backoff means a
+    cycle straight after the last one does not attempt it again."""
+    service, epoch = await setup(session_factory)
+    await opened(service, epoch)
+    platform = RecoverablePlatform()
+    cards = cards_for(session_factory, platform)
+    publisher = SessionPublisher(session_factory, "bridge", cards)
+
+    # The post itself is lost (a timeout, not a clean refusal), leaving the
+    # reservation committed but unconfirmed — `post()` writes that row before
+    # it ever calls the platform, which is exactly the durability this is
+    # meant to let a publisher recover from.
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            platform, "post_rich", AsyncMock(side_effect=TimeoutError("lost"))
+        )
+        await publisher.publish_pending()
+    async with session_factory() as db:
+        post = (await db.scalars(select(SessionRequestPost))).one()
+        assert post.external_post_id == post.token
+
+    find = AsyncMock(return_value=None)
+    monkeypatch.setattr(platform, "find_request_card", find)
+
+    await publisher.publish_pending()
+    assert find.await_count == 1
+
+    await publisher.publish_pending()
+    assert find.await_count == 1  # backing off; not attempted again immediately
