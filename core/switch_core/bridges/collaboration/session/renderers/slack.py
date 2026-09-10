@@ -787,8 +787,6 @@ def render_activity(items: list[Item], turn: TurnUpsert) -> SlackMessage:
     """
     said = [item for item in items if item.kind == "assistant-message"]
     did = [item for item in items if item.kind == "tool-activity"]
-    if not items:
-        raise ValueError("This turn has no items, so there is nothing to show.")
 
     blocks: list[dict[str, Any]] = []
     hidden = max(len(said) - _MAX_MESSAGES, 0)
@@ -851,8 +849,6 @@ def render_activity_text(items: list[Item], turn: TurnUpsert) -> str:
     """
     said = [item for item in items if item.kind == "assistant-message"]
     did = [item for item in items if item.kind == "tool-activity"]
-    if not items:
-        raise ValueError("This turn has no items, so there is nothing to show.")
 
     lines: list[str] = []
     hidden = max(len(said) - _MAX_MESSAGES, 0)

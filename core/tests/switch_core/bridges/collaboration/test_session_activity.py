@@ -17,8 +17,6 @@ import json
 from pathlib import Path
 from typing import Any
 
-import pytest
-
 from switch_core.bridges.collaboration.session.contract import (
     ApprovalContent,
     ApprovalOption,
@@ -383,6 +381,20 @@ async def test_a_turn_with_only_a_persons_message_shows_its_state_not_the_messag
     assert blocks[0]["type"] == "context"
 
 
+async def test_a_turn_with_no_items_at_all_shows_its_state_too() -> None:
+    """The normal first moment of every turn: `turn.upsert` always arrives
+    before the item that echoes the command which started it, so a turn can
+    be published with items still empty. That must render, not raise — the
+    publisher wakes on every event, so this is not a rare race to guard
+    against, it is what a fresh turn looks like for one event's worth of time.
+    """
+    blocks = render_activity([], _turn()).blocks
+
+    assert len(blocks) == 1
+    assert blocks[0]["type"] == "context"
+    assert render_activity_text([], _turn()) == "Working…"
+
+
 async def test_the_fallback_stays_inside_what_slack_takes_for_one_string() -> None:
     """Twenty messages each inside its own budget still clear the cap on `text`.
 
@@ -462,14 +474,6 @@ async def test_many_messages_keep_the_recent_end_and_say_what_they_dropped() -> 
 
 
 # ── The shapes a host can produce and nobody would choose ────────────────────
-
-
-async def test_a_turn_with_nothing_in_it_is_refused_rather_than_posted_empty() -> None:
-    """A message with no blocks is rejected by Slack and says nothing anyway."""
-    with pytest.raises(ValueError, match="nothing to show"):
-        render_activity([], _turn())
-    with pytest.raises(ValueError, match="nothing to show"):
-        render_activity_text([], _turn())
 
 
 async def test_an_untitled_tool_call_is_still_a_line() -> None:
