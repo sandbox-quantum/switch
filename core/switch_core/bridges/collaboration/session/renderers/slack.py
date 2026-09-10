@@ -749,7 +749,9 @@ def _answered_questions(request: SnapshotRequest, content: QuestionsContent) -> 
 # ── Activity ─────────────────────────────────────────────────────────────────
 
 
-def render_activity(items: list[Item], turn: TurnUpsert) -> SlackMessage:
+def render_activity(
+    items: list[Item], turn: TurnUpsert, *, elapsed_seconds: float | None = None
+) -> SlackMessage:
     """One turn, as the channel sees it: what was said, over what was done.
 
     The two are drawn differently because they are read differently. What the
@@ -797,10 +799,14 @@ def render_activity(items: list[Item], turn: TurnUpsert) -> SlackMessage:
         for item in said[len(said) - _MAX_MESSAGES :]
     ]
     if did:
-        blocks.append(_plan(items, did, turn))
+        blocks.append(_plan(items, did, turn, elapsed_seconds=elapsed_seconds))
     else:
-        blocks.append(_context(f"_{turn_state(items, turn)}_"))
-    return SlackMessage(text=render_activity_text(items, turn), blocks=blocks)
+        state = turn_state(items, turn, elapsed_seconds=elapsed_seconds)
+        blocks.append(_context(f"_{state}_"))
+    return SlackMessage(
+        text=render_activity_text(items, turn, elapsed_seconds=elapsed_seconds),
+        blocks=blocks,
+    )
 
 
 def render_turn_with_request(
@@ -808,6 +814,8 @@ def render_turn_with_request(
     turn: TurnUpsert,
     request: SnapshotRequest,
     reference: RequestReference,
+    *,
+    elapsed_seconds: float | None = None,
 ) -> SlackMessage:
     """One message for a turn whose request is drawn with it, not apart from it.
 
@@ -826,14 +834,16 @@ def render_turn_with_request(
     session — dropping it to make room would be the one drop this cannot
     make silently.
     """
-    activity = render_activity(items, turn)
+    activity = render_activity(items, turn, elapsed_seconds=elapsed_seconds)
     card = render_request(request, reference)
     blocks = activity.blocks + card.blocks
     text = "\n\n".join(_within([activity.text, card.text], _MAX_TEXT))
     return SlackMessage(text=text, blocks=blocks)
 
 
-def render_activity_text(items: list[Item], turn: TurnUpsert) -> str:
+def render_activity_text(
+    items: list[Item], turn: TurnUpsert, *, elapsed_seconds: float | None = None
+) -> str:
     """The same turn with no card at all.
 
     The notification string, and what a reader is left with if blocks do not
@@ -856,7 +866,7 @@ def render_activity_text(items: list[Item], turn: TurnUpsert) -> str:
         lines.append(f"…{hidden} earlier in this turn, not shown.")
     lines += [_message_text(item) for item in said[len(said) - _MAX_MESSAGES :]]
     lines += _activity_lines(did)
-    lines.append(turn_state(items, turn))
+    lines.append(turn_state(items, turn, elapsed_seconds=elapsed_seconds))
     return "\n".join(_within(lines, _MAX_TEXT))
 
 
@@ -903,7 +913,13 @@ def _activity_lines(items: list[Item]) -> list[str]:
     return lines
 
 
-def _plan(items: list[Item], did: list[Item], turn: TurnUpsert) -> dict[str, Any]:
+def _plan(
+    items: list[Item],
+    did: list[Item],
+    turn: TurnUpsert,
+    *,
+    elapsed_seconds: float | None = None,
+) -> dict[str, Any]:
     """The tool log as a plan: a header to read, and the steps behind it.
 
     The header is the turn's state, because collapsed is how most readers will
@@ -918,7 +934,7 @@ def _plan(items: list[Item], did: list[Item], turn: TurnUpsert) -> dict[str, Any
     """
     kept = did[len(did) - _MAX_PLAN_TASKS :]
     dropped = len(did) - len(kept)
-    title = turn_state(items, turn)
+    title = turn_state(items, turn, elapsed_seconds=elapsed_seconds)
     if dropped:
         step = "step" if dropped == 1 else "steps"
         title = f"{title} …{dropped} earlier {step}, not shown."
@@ -1033,7 +1049,9 @@ def stream_message_chunk(item: Item) -> dict[str, Any]:
     return {"type": "markdown_text", "text": f"{body}\n\n"}
 
 
-def stream_state_chunk(items: list[Item], turn: TurnUpsert) -> dict[str, Any]:
+def stream_state_chunk(
+    items: list[Item], turn: TurnUpsert, *, elapsed_seconds: float | None = None
+) -> dict[str, Any]:
     """Where the turn got to, appended once the turn has stopped.
 
     The last thing in the stream, and the reason the stream is not deleted when
@@ -1042,7 +1060,8 @@ def stream_state_chunk(items: list[Item], turn: TurnUpsert) -> dict[str, Any]:
     vanish, and this one is not going to — so the count is what tells a reader
     those lines have stopped moving.
     """
-    return {"type": "markdown_text", "text": f"_{turn_state(items, turn)}_"}
+    state = turn_state(items, turn, elapsed_seconds=elapsed_seconds)
+    return {"type": "markdown_text", "text": f"_{state}_"}
 
 
 def _task_id(item_id: str) -> str:

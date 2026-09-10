@@ -25,7 +25,10 @@ from switch_core.bridges.collaboration.session.contract import (
     TurnUpsert,
 )
 from switch_core.bridges.collaboration.session.projection import SessionProjection
-from switch_core.bridges.collaboration.session.renderers import RequestReference
+from switch_core.bridges.collaboration.session.renderers import (
+    RequestReference,
+    turn_state,
+)
 from switch_core.bridges.collaboration.session.renderers.slack import (
     render_activity,
     render_activity_text,
@@ -393,6 +396,53 @@ async def test_a_turn_with_no_items_at_all_shows_its_state_too() -> None:
     assert len(blocks) == 1
     assert blocks[0]["type"] == "context"
     assert render_activity_text([], _turn()) == "Working…"
+
+
+# ── How long it worked ────────────────────────────────────────────────────────
+
+
+async def test_a_completed_turn_shows_how_long_it_worked_instead_of_saying_so() -> None:
+    state = turn_state([], _turn("completed"), elapsed_seconds=80)
+
+    assert state == "Worked for 1m 20s."
+
+
+async def test_the_worked_for_line_counts_its_tool_calls() -> None:
+    did = [_item(itemId=f"c{n}") for n in range(20)]
+
+    state = turn_state(did, _turn("completed"), elapsed_seconds=80)
+
+    assert state == "Worked for 1m 20s. 20 tool calls."
+
+
+async def test_a_single_tool_call_is_not_pluralised() -> None:
+    state = turn_state([_item()], _turn("completed"), elapsed_seconds=5)
+
+    assert state == "Worked for 5s. 1 tool call."
+
+
+async def test_an_interrupted_turn_keeps_its_own_phrase_and_says_how_long_too() -> None:
+    """Worth knowing on its own, unlike "complete" — so this one is appended
+    rather than replaced."""
+    state = turn_state([], _turn("interrupted"), elapsed_seconds=45)
+
+    assert state == "Turn interrupted. Worked for 45s."
+
+
+async def test_a_running_turn_ignores_elapsed_seconds() -> None:
+    """A running turn's own line is not final, so a duration would be wrong
+    the moment it was drawn — this only ever applies once a turn has ended."""
+    state = turn_state([], _turn("running"), elapsed_seconds=80)
+
+    assert state == "Working…"
+
+
+async def test_with_no_elapsed_seconds_a_completed_turn_says_only_that() -> None:
+    """No timing to show is not the same as zero — the plain phrase stays
+    rather than claiming a duration nobody measured."""
+    state = turn_state([], _turn("completed"), elapsed_seconds=None)
+
+    assert state == "Turn complete."
 
 
 async def test_the_fallback_stays_inside_what_slack_takes_for_one_string() -> None:

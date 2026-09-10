@@ -118,10 +118,16 @@ class TurnActivity:
     an adapter with a card of its own reads them to build one; the base,
     which has none, reads them to build `turn_summary` instead. Neither has to
     agree on a shape neither of them owns.
+
+    `elapsed_seconds` is not part of the contract — neither a turn nor an item
+    carries a timestamp — so it travels here instead, from whatever tracked
+    one against the session's own event log. `None` until a caller has one to
+    give, which is only once the turn has ended.
     """
 
     items: list[Item]
     turn: TurnUpsert
+    elapsed_seconds: float | None = None
 
 
 @dataclass(frozen=True)

@@ -189,6 +189,7 @@ class SessionTurnActivity:
         channel_id: str,
         thread_root_id: str | None,
         agent_name: str,
+        elapsed_seconds: float | None = None,
     ) -> bool:
         """Draw the turn where it already is, or where it is not yet.
 
@@ -223,13 +224,19 @@ class SessionTurnActivity:
                 channel_id=channel_id,
                 thread_root_id=thread_root_id,
                 agent_name=agent_name,
+                elapsed_seconds=elapsed_seconds,
             )
             if begun is None:
                 return False
             anchor, drawn = begun
         elif anchor.sent is None:
             drawn = await self._edit(
-                anchor, items, turn, session_id=session_id, ended=ended
+                anchor,
+                items,
+                turn,
+                session_id=session_id,
+                ended=ended,
+                elapsed_seconds=elapsed_seconds,
             )
         else:
             drawn = await self._extend(
@@ -239,6 +246,7 @@ class SessionTurnActivity:
                 session_id=session_id,
                 agent_name=agent_name,
                 ended=ended,
+                elapsed_seconds=elapsed_seconds,
             )
 
         if ended:
@@ -256,6 +264,7 @@ class SessionTurnActivity:
         channel_id: str,
         thread_root_id: str | None,
         agent_name: str,
+        elapsed_seconds: float | None,
     ) -> tuple[_Anchor, bool] | None:
         """Start the turn where the caller put it, drawn how that place allows.
 
@@ -299,12 +308,16 @@ class SessionTurnActivity:
                     session_id=session_id,
                     agent_name=agent_name,
                     ended=ended,
+                    elapsed_seconds=elapsed_seconds,
                 )
                 return anchor, drawn
 
         try:
             posted = await self._adapter.post_rich(
-                channel_id, agent_name, TurnActivity(items, turn), thread_root_id
+                channel_id,
+                agent_name,
+                TurnActivity(items, turn, elapsed_seconds),
+                thread_root_id,
             )
         except RichContentFailed as error:
             logger.error(
@@ -327,11 +340,14 @@ class SessionTurnActivity:
         *,
         session_id: str,
         ended: bool,
+        elapsed_seconds: float | None,
     ) -> bool:
         """Rewrite the posted message with the turn as it now stands."""
         try:
             await self._adapter.update_rich(
-                anchor.channel_id, anchor.message_ref, TurnActivity(items, turn)
+                anchor.channel_id,
+                anchor.message_ref,
+                TurnActivity(items, turn, elapsed_seconds),
             )
         except RichContentFailed as error:
             logger.error(
@@ -358,6 +374,7 @@ class SessionTurnActivity:
         session_id: str,
         agent_name: str,
         ended: bool,
+        elapsed_seconds: float | None,
     ) -> bool:
         """Send the stream whatever has changed since the last time.
 
@@ -379,7 +396,9 @@ class SessionTurnActivity:
             raise TypeError("A streaming anchor can only come from a Slack adapter.")
         chunks, pending = self._difference(sent, items, turn, session_id=session_id)
         if ended:
-            chunks.append(stream_state_chunk(items, turn))
+            chunks.append(
+                stream_state_chunk(items, turn, elapsed_seconds=elapsed_seconds)
+            )
         drawn = True
         if chunks:
             pushed = await self._adapter.append_activity_stream(

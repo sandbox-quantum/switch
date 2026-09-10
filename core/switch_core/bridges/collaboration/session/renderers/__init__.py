@@ -29,7 +29,9 @@ TURN_STATE = {
 }
 
 
-def turn_state(items: list[Item], turn: TurnUpsert) -> str:
+def turn_state(
+    items: list[Item], turn: TurnUpsert, *, elapsed_seconds: float | None = None
+) -> str:
     """Where a turn got to, and what it left behind if it stopped.
 
     A turn that ends while a tool call is still open leaves that call marked
@@ -37,15 +39,44 @@ def turn_state(items: list[Item], turn: TurnUpsert) -> str:
     and is not rewritten here — the host is the only thing that knows how the
     call actually ended — so the count is what tells the reader those lines
     are not still moving.
+
+    `elapsed_seconds` comes from outside: neither a turn nor an item carries
+    a timestamp, so a caller that tracked one against the session's own event
+    log supplies it, only once a turn has ended. A completed turn shows it in
+    place of the plain "Turn complete." — that phrase said only that the turn
+    was over, and this says what happened while it ran. An interrupted or
+    errored turn keeps its own phrase, since that is still worth knowing on
+    its own, with the same account appended: the run still took the time it
+    took either way.
     """
     state = TURN_STATE[turn.status]
     if turn.status not in TURN_ENDED:
         return state
+    if elapsed_seconds is not None:
+        worked = _worked_for(elapsed_seconds, items)
+        state = worked if turn.status == "completed" else f"{state} {worked}"
     unfinished = sum(1 for item in items if item.status == "in-progress")
     if not unfinished:
         return state
     step = "step" if unfinished == 1 else "steps"
     return f"{state} {unfinished} {step} left unfinished."
+
+
+def _worked_for(elapsed_seconds: float, items: list[Item]) -> str:
+    """How long a turn ran, and how much of that was tool calls."""
+    calls = sum(1 for item in items if item.kind == "tool-activity")
+    worked = f"Worked for {_format_duration(elapsed_seconds)}."
+    if not calls:
+        return worked
+    noun = "call" if calls == 1 else "calls"
+    return f"{worked} {calls} tool {noun}."
+
+
+def _format_duration(elapsed_seconds: float) -> str:
+    """Minutes and seconds, dropping the minutes when there are none."""
+    total = max(int(elapsed_seconds), 0)
+    minutes, seconds = divmod(total, 60)
+    return f"{minutes}m {seconds}s" if minutes else f"{seconds}s"
 
 
 # Every platform that puts controls on a message gives each one an id it hands

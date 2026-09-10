@@ -3,16 +3,28 @@ import logging
 import time
 from collections import OrderedDict
 from collections.abc import Callable
+from datetime import datetime
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from switch_core.bridges.collaboration.session.contract import Command, Snapshot
+from switch_core.bridges.collaboration.session.contract import (
+    TURN_ENDED,
+    Command,
+    Snapshot,
+)
 from switch_core.bridges.collaboration.session.outbound import (
     SessionRequestCards,
     SessionTurnActivity,
 )
-from switch_core.db.models import Agent, ClientRoom, Room, SdkSession, SdkSessionCommand
+from switch_core.db.models import (
+    Agent,
+    ClientRoom,
+    Room,
+    SdkSession,
+    SdkSessionCommand,
+    SdkSessionEvent,
+)
 from switch_core.db.stores.session_request_post_store import SessionRequestPostStore
 from switch_core.sessions.service import SessionError
 
@@ -207,6 +219,38 @@ class TurnActivityIncomplete(Exception):
         )
 
 
+async def _turn_elapsed_seconds(
+    db: AsyncSession, session_id: str, turn_id: str
+) -> float | None:
+    """How long a turn ran, read back from the session's own event log.
+
+    Neither a turn nor an item carries a timestamp, so there is nothing to
+    read this off in the snapshot itself — it comes from the two
+    `turn.upsert` events for this turn that do: the first, whichever status
+    the turn opened at, and the last, which is the one that set the status a
+    caller is only calling this for the turn having already reached. One row
+    means the turn was already ended the first time anything recorded it, so
+    there is no earlier point to measure from — `None` rather than a
+    duration of zero, which would claim a measurement that was never taken.
+    """
+    stamps = (
+        await db.scalars(
+            select(SdkSessionEvent.event["occurredAt"].as_string())
+            .where(
+                SdkSessionEvent.session_id == session_id,
+                SdkSessionEvent.event["body"]["type"].as_string() == "turn.upsert",
+                SdkSessionEvent.event["body"]["turnId"].as_string() == turn_id,
+            )
+            .order_by(SdkSessionEvent.sequence)
+        )
+    ).all()
+    if len(stamps) < 2:
+        return None
+    started = datetime.fromisoformat(stamps[0].replace("Z", "+00:00"))
+    ended = datetime.fromisoformat(stamps[-1].replace("Z", "+00:00"))
+    return (ended - started).total_seconds()
+
+
 async def refresh_activity(
     session_factory: async_sessionmaker[AsyncSession],
     bridge_id: str,
@@ -269,14 +313,26 @@ async def refresh_activity(
             state = (turn.status, tuple(item.revision for item in items))
             if not redraw_needed(session_id, turn.turn_id, state):
                 continue
+            elapsed_seconds = (
+                await _turn_elapsed_seconds(db, session_id, turn.turn_id)
+                if turn.status in TURN_ENDED
+                else None
+            )
             publications.append(
-                (turn, items, room.external_channel_id, origin.thread_id, state)
+                (
+                    turn,
+                    items,
+                    room.external_channel_id,
+                    origin.thread_id,
+                    state,
+                    elapsed_seconds,
+                )
             )
         agent_name = agent.name
         db.expunge_all()
     failed: list[str] = []
     backed_off = 0
-    for turn, items, channel_id, thread_id, state in publications:
+    for turn, items, channel_id, thread_id, state, elapsed_seconds in publications:
         token = f"{session_id}:{turn.turn_id}"
         if not retry_allowed(token):
             backed_off += 1
@@ -288,6 +344,7 @@ async def refresh_activity(
             channel_id=channel_id,
             thread_root_id=thread_id,
             agent_name=agent_name,
+            elapsed_seconds=elapsed_seconds,
         )
         if drawn:
             retry_succeeded(token)

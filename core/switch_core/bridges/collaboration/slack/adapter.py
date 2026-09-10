@@ -608,7 +608,9 @@ class SlackAdapter(CollaborationAdapter):
 
     def _render_rich(self, content: RichContent) -> SlackMessage:
         if isinstance(content, TurnActivity):
-            return render_activity(content.items, content.turn)
+            return render_activity(
+                content.items, content.turn, elapsed_seconds=content.elapsed_seconds
+            )
         assert isinstance(content, RequestCard)
         return render_request(content.request, content.reference)
 
