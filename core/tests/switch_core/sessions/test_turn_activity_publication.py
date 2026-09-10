@@ -55,6 +55,72 @@ async def test_a_running_turn_is_published_for_a_real_session(session_factory):
     assert content.elapsed_seconds is None
 
 
+async def test_only_the_latest_turn_is_redrawn_by_a_freshly_started_publisher(
+    session_factory,
+):
+    """`snapshot.turns` keeps every turn a session has ever had. A freshly
+    started publisher's redraw guard remembers nothing, so without scoping
+    to the latest turn, every one of them looks undrawn on the first cycle
+    and gets reposted as a new message — replaying a session's whole history
+    into the channel on every restart, not just the one still worth a
+    duplicate.
+    """
+    service, epoch = await setup(session_factory)
+    await opened(service, epoch)
+    await service.ingest(
+        "agent-demo",
+        "host-demo",
+        host_event(
+            epoch,
+            3,
+            {
+                "type": "turn.upsert",
+                "turnId": "turn-demo",
+                "status": "completed",
+                "commandId": "message-demo",
+            },
+        ),
+    )
+    second_message = command(
+        epoch,
+        "message-2",
+        {
+            "type": "message.send",
+            "text": "Run them again",
+            "attachments": [],
+            "delivery": "queue",
+        },
+    )
+    await service.submit(second_message, user_id="owner", bridge_id=None)
+    await service.ingest(
+        "agent-demo",
+        "host-demo",
+        host_event(
+            epoch,
+            4,
+            {
+                "type": "turn.upsert",
+                "turnId": "turn-2",
+                "status": "running",
+                "commandId": "message-2",
+            },
+        ),
+    )
+
+    activity_platform = ActivityPlatform()
+    publisher = SessionPublisher(
+        session_factory,
+        "bridge",
+        cards_for(session_factory, Platform()),
+        SessionTurnActivity(activity_platform),
+    )
+    await publisher.publish_pending()
+
+    assert [content.turn.turn_id for _, content, _ in activity_platform.posts] == [
+        "turn-2"
+    ]
+
+
 async def test_a_completed_turns_activity_carries_how_long_it_ran(session_factory):
     """Neither a turn nor an item carries a timestamp, so this comes from the
     session's own event log: the first and last `turn.upsert` for it.

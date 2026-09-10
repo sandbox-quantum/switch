@@ -340,7 +340,21 @@ async def refresh_activity(
         if agent is None:
             raise SessionError("NOT_FOUND", "Session agent not found.")
         publications = []
+        latest_turn_id = snapshot.turns[-1].turn_id if snapshot.turns else None
         for turn in snapshot.turns:
+            if turn.turn_id != latest_turn_id:
+                # `snapshot.turns` keeps every turn a session has ever had,
+                # in the order each first appeared, and nothing here has a
+                # durable record of which of them already has a message —
+                # that is exactly the anchor request cards get from
+                # `SessionRequestPostStore` and turn activity does not yet.
+                # A freshly started publisher's redraw guard remembers
+                # nothing, so without this, every turn from earlier in the
+                # session's life looks undrawn on the very first cycle and
+                # each gets posted again as a new message. Only the latest
+                # turn is still worth that one bounded duplicate; an older,
+                # already-ended one has nothing left to say.
+                continue
             if turn.command_id is None:
                 continue
             stored = await db.get(SdkSessionCommand, (row.id, turn.command_id))
