@@ -161,6 +161,9 @@ export const agents = sqliteTable(
     // Defaults false for local agents; onboarding seeds it true for remote
     // agents (see onboard-agent). Editable per agent in location settings.
     autoApprove: integer('auto_approve', { mode: 'boolean' }).notNull().default(false),
+    // The display name of the agent's owner on the Switch server, set when the
+    // agent was loaded from another install rather than created here.
+    ownerName: text('owner_name'),
     // Per-agent, provider-specific launch config (Codex model / effort /
     // instructions folded into the agent's Codex profile). Null when unset.
     providerConfig: versionedJsonColumn(agentProviderConfig)('provider_config'),

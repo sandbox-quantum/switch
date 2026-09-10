@@ -1,0 +1,607 @@
+/**
+ * "Load existing agents" section for a remote host's page (CHOO-2560).
+ *
+ * Shows agents already configured on the host — by a colleague's Console or
+ * an earlier install — that this Console does not yet manage. The user
+ * selects which to load (attach); agents that need a provider pick get one
+ * inline. Already-loaded agents appear disabled.
+ *
+ * Discovery runs on demand when the user clicks "Discover agents".
+ */
+
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import {
+  ChevronDown,
+  ChevronRight,
+  Download,
+  FolderSearch,
+  Info,
+  RefreshCw,
+  ScanSearch,
+  Trash2,
+  X,
+} from 'lucide-react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { failureText } from '@renderer/lib/errors/describe-failure';
+import { toast } from '@renderer/lib/hooks/use-toast';
+import { rpc } from '@renderer/lib/ipc';
+import { useShowModal } from '@renderer/lib/modal/modal-provider';
+import { Button } from '@renderer/lib/ui/button';
+import { Checkbox } from '@renderer/lib/ui/checkbox';
+import { Input } from '@renderer/lib/ui/input';
+import { Label } from '@renderer/lib/ui/label';
+import { Progress } from '@renderer/lib/ui/progress';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@renderer/lib/ui/select';
+import { Spinner } from '@renderer/lib/ui/spinner';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@renderer/lib/ui/tooltip';
+import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
+import { AGENT_PROVIDERS, getProvider } from '@shared/core/providers/agent-provider-registry';
+
+type LoadableAgentRow = {
+  name: string;
+  dir: string;
+  switchAgentId: string;
+  apiEndpoint: string;
+  providerId: AgentProviderId | null;
+  providerSource: string;
+  alreadyAgent: boolean;
+  ownerName: string | null;
+  viewerIsOwner: boolean;
+  description: string | null;
+  source: 'server' | 'scan';
+  endpointMismatch: boolean;
+  blockedReason: string | null;
+};
+
+export const LOAD_AGENTS_QUERY_KEY = 'load-existing-agents';
+
+export function LoadExistingAgentsSection({
+  sshHost,
+  serverId,
+  initiallyOpen = false,
+}: {
+  sshHost: string;
+  serverId: string;
+  initiallyOpen?: boolean;
+}) {
+  const [isOpen, setIsOpen] = useState(initiallyOpen);
+  const [scanRequested, setScanRequested] = useState(false);
+  const queryClient = useQueryClient();
+  const showRemoveConfig = useShowModal('removeAgentConfigModal');
+
+  const discovery = useQuery({
+    queryKey: [LOAD_AGENTS_QUERY_KEY, sshHost, serverId],
+    queryFn: () => rpc.agents.discoverLoadableAgentsOnHost({ sshHost, serverId }),
+    enabled: isOpen && scanRequested,
+  });
+
+  const [manualAgents, setManualAgents] = useState<LoadableAgentRow[]>([]);
+  // Server URL for endpoint-mismatch copy; either discovery source reports it.
+  const [manualServerApiUrl, setManualServerApiUrl] = useState<string | null>(null);
+  const serverApiUrl = discovery.data?.serverApiUrl ?? manualServerApiUrl;
+
+  const agents: LoadableAgentRow[] = useMemo(() => {
+    const auto = discovery.data?.agents ?? [];
+    if (manualAgents.length === 0) return auto;
+    const seen = new Set(auto.map((a) => `${a.dir}\0${a.name}`));
+    return [...auto, ...manualAgents.filter((a) => !seen.has(`${a.dir}\0${a.name}`))];
+  }, [discovery.data, manualAgents]);
+
+  const [providerOverrides, setProviderOverrides] = useState<Record<string, AgentProviderId>>({});
+
+  const setProviderFor = useCallback((key: string, providerId: AgentProviderId) => {
+    setProviderOverrides((prev) => ({ ...prev, [key]: providerId }));
+  }, []);
+
+  // Selection state: keys are "dir\0name".
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+
+  const toggleAgent = useCallback((key: string) => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }, []);
+
+  const toggleExpanded = useCallback((key: string) => {
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }, []);
+
+  const selectableAgents = useMemo(() => agents.filter((a) => !a.blockedReason), [agents]);
+
+  const toggleAll = useCallback(() => {
+    if (selected.size === selectableAgents.length) {
+      setSelected(new Set());
+    } else {
+      setSelected(new Set(selectableAgents.map((a) => `${a.dir}\0${a.name}`)));
+    }
+  }, [selectableAgents, selected.size]);
+
+  const selectedByDir = useMemo(() => {
+    const byDir = new Map<
+      string,
+      Array<{ name: string; providerId: AgentProviderId; ownerName?: string | null }>
+    >();
+    for (const key of selected) {
+      const agent = agents.find((a) => `${a.dir}\0${a.name}` === key);
+      if (!agent) continue;
+      const pid = providerOverrides[key] ?? agent.providerId;
+      if (!pid) continue;
+      if (!byDir.has(agent.dir)) byDir.set(agent.dir, []);
+      byDir.get(agent.dir)!.push({ name: agent.name, providerId: pid, ownerName: agent.ownerName });
+    }
+    return byDir;
+  }, [selected, agents, providerOverrides]);
+
+  const allSelectedHaveProvider = useMemo(() => {
+    for (const key of selected) {
+      const agent = agents.find((a) => `${a.dir}\0${a.name}` === key);
+      if (!agent) continue;
+      if (!agent.providerId && !providerOverrides[key]) return false;
+    }
+    return true;
+  }, [selected, agents, providerOverrides]);
+
+  const canLoad = selected.size > 0 && allSelectedHaveProvider;
+
+  const loadMutation = useMutation({
+    mutationFn: async () => {
+      const results: string[] = [];
+      for (const [dir, dirAgents] of selectedByDir) {
+        const result = await rpc.agents.attachConfiguredAgents({
+          sshHost,
+          dir,
+          serverId,
+          agents: dirAgents,
+        });
+        if (result.success) {
+          results.push(...result.data.map((a: { name: string }) => a.name));
+        } else {
+          const e = result.error;
+          const msg =
+            'message' in e
+              ? e.message
+              : e.type === 'switch-agent-not-on-server'
+                ? `Agent ${e.agentId} not found on server ${e.serverName}`
+                : `Not signed in to server ${e.serverName}`;
+          throw new Error(msg);
+        }
+      }
+      return results;
+    },
+    onSuccess: async (names) => {
+      toast({
+        title: `Loaded ${names.length} agent${names.length === 1 ? '' : 's'}`,
+        description: names.join(', '),
+      });
+      setSelected(new Set());
+
+      // Mark loaded agents as blocked immediately so the label appears without
+      // waiting for the SSH round trip that a full refetch requires.
+      const loaded = new Set(names);
+      queryClient.setQueryData(
+        [LOAD_AGENTS_QUERY_KEY, sshHost, serverId],
+        (prev: { agents: LoadableAgentRow[]; serverApiUrl: string } | undefined) => {
+          if (!prev) return prev;
+          return {
+            ...prev,
+            agents: prev.agents.map((a) =>
+              loaded.has(a.name)
+                ? { ...a, alreadyAgent: true, blockedReason: 'Already loaded in this Console' }
+                : a
+            ),
+          };
+        }
+      );
+      // Also update manual agents so both lists stay consistent.
+      setManualAgents((prev) =>
+        prev.map((a) =>
+          loaded.has(a.name)
+            ? { ...a, alreadyAgent: true, blockedReason: 'Already loaded in this Console' }
+            : a
+        )
+      );
+
+      void queryClient.invalidateQueries({ queryKey: [LOAD_AGENTS_QUERY_KEY, sshHost, serverId] });
+    },
+    onError: (error) => {
+      toast({
+        title: 'Failed to load agents',
+        description: failureText(error, 'Could not load the selected agents.'),
+        variant: 'destructive',
+      });
+    },
+  });
+
+  const removeMutation = useMutation({
+    mutationFn: async (agent: LoadableAgentRow) => {
+      const result = await rpc.agents.removeLoadableAgentConfig({
+        sshHost,
+        dir: agent.dir,
+        name: agent.name,
+      });
+      if (!result.removed) throw new Error('Config file not found on the host.');
+      return agent;
+    },
+    onSuccess: (agent) => {
+      toast({ title: 'Config deleted', description: `${agent.name} removed from ${agent.dir}` });
+      const key = `${agent.dir}\0${agent.name}`;
+      setManualAgents((prev) => prev.filter((a) => `${a.dir}\0${a.name}` !== key));
+      setSelected((prev) => {
+        const next = new Set(prev);
+        next.delete(key);
+        return next;
+      });
+      void queryClient.invalidateQueries({ queryKey: [LOAD_AGENTS_QUERY_KEY, sshHost, serverId] });
+    },
+    onError: (error) => {
+      toast({
+        title: 'Failed to delete config',
+        description: failureText(error, 'Could not delete the config file.'),
+        variant: 'destructive',
+      });
+    },
+  });
+
+  const confirmRemove = useCallback(
+    (agent: LoadableAgentRow) => {
+      showRemoveConfig({
+        agentName: agent.name,
+        dir: agent.dir,
+        sshHost,
+        onSuccess: () => removeMutation.mutate(agent),
+      });
+    },
+    [showRemoveConfig, sshHost, removeMutation]
+  );
+
+  const [manualDir, setManualDir] = useState('');
+  const manualScan = useMutation({
+    mutationFn: (dir: string) => rpc.agents.discoverLoadableAgentsInDir({ sshHost, dir, serverId }),
+    onSuccess: (found) => {
+      setManualServerApiUrl(found.serverApiUrl);
+      setManualAgents((prev) => {
+        const keys = new Set(prev.map((a) => `${a.dir}\0${a.name}`));
+        return [
+          ...prev,
+          ...found.agents.filter((a: LoadableAgentRow) => !keys.has(`${a.dir}\0${a.name}`)),
+        ];
+      });
+      setManualDir('');
+    },
+  });
+
+  const deepScan = useMutation({
+    mutationFn: () =>
+      rpc.agents.discoverLoadableAgentsOnHost({ sshHost, serverId, includeHomeScan: true }),
+    onSuccess: (result) => {
+      queryClient.setQueryData([LOAD_AGENTS_QUERY_KEY, sshHost, serverId], result);
+    },
+  });
+
+  const [deepScanProgress, setDeepScanProgress] = useState(0);
+  const deepScanStartRef = useRef(0);
+  useEffect(() => {
+    if (!deepScan.isPending) {
+      setDeepScanProgress(0);
+      return;
+    }
+    deepScanStartRef.current = Date.now();
+    const ESTIMATED_DURATION = 30_000;
+    const id = setInterval(() => {
+      const elapsed = Date.now() - deepScanStartRef.current;
+      setDeepScanProgress(Math.min(100, (elapsed / ESTIMATED_DURATION) * 100));
+    }, 200);
+    return () => clearInterval(id);
+  }, [deepScan.isPending]);
+
+  const providerOptions = AGENT_PROVIDERS.filter((p) => p.detectable !== false);
+
+  return (
+    <section className="pt-2">
+      <button
+        type="button"
+        className="flex w-full items-center gap-1 px-3 py-2 text-left"
+        onClick={() =>
+          setIsOpen((prev) => {
+            if (prev) setScanRequested(false);
+            return !prev;
+          })
+        }
+      >
+        {isOpen ? <ChevronDown className="size-4" /> : <ChevronRight className="size-4" />}
+        <Label className="cursor-pointer">Load existing agents</Label>
+      </button>
+
+      {isOpen && (
+        <div className="space-y-3 px-3 pb-2">
+          {!scanRequested ? (
+            <div className="flex items-center gap-2">
+              <Button size="sm" variant="outline" onClick={() => setScanRequested(true)}>
+                <ScanSearch className="size-4" /> Discover agents
+              </Button>
+              <span className="text-xs text-foreground-muted">
+                Check this host for agents to load
+              </span>
+            </div>
+          ) : discovery.isLoading ? (
+            <div className="flex items-center gap-2 text-sm text-foreground-muted">
+              <Spinner /> Checking registered agents on this host…
+            </div>
+          ) : deepScan.isPending ? (
+            <div className="space-y-2">
+              <div className="flex items-center justify-between text-sm text-foreground-muted">
+                <span>Walking home directory on {sshHost}…</span>
+                <Button size="sm" variant="ghost" onClick={() => deepScan.reset()}>
+                  <X className="size-3" /> Cancel
+                </Button>
+              </div>
+              <Progress value={deepScanProgress} />
+            </div>
+          ) : discovery.isError ? (
+            <p className="text-xs text-destructive">
+              {failureText(discovery.error, 'Could not scan the host.')}
+            </p>
+          ) : agents.length === 0 ? (
+            <div className="space-y-1">
+              <p className="text-sm text-foreground-muted">
+                No registered agents found in this host's known directories. Scan a specific
+                directory below.
+              </p>
+              <Tooltip>
+                <TooltipTrigger>
+                  <Button size="sm" variant="outline" onClick={() => deepScan.mutate()}>
+                    <ScanSearch className="size-4" /> Deep scan
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>
+                  Scans the full filesystem on this host. May take a while on large VMs.
+                </TooltipContent>
+              </Tooltip>
+            </div>
+          ) : (
+            <>
+              <div className="flex items-center justify-between">
+                {selectableAgents.length > 0 && (
+                  <button
+                    type="button"
+                    className="text-xs text-foreground-muted hover:text-foreground"
+                    onClick={toggleAll}
+                  >
+                    {selected.size > 0 && selected.size === selectableAgents.length
+                      ? 'Deselect all'
+                      : 'Select all'}
+                  </button>
+                )}
+                <div className="flex items-center gap-1">
+                  <Tooltip>
+                    <TooltipTrigger>
+                      <Button size="sm" variant="outline" onClick={() => deepScan.mutate()}>
+                        <ScanSearch className="size-3" /> Deep scan
+                      </Button>
+                    </TooltipTrigger>
+                    <TooltipContent>
+                      Scans the full filesystem on this host. May take a while on large VMs.
+                    </TooltipContent>
+                  </Tooltip>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    disabled={discovery.isFetching}
+                    onClick={() =>
+                      void queryClient.invalidateQueries({
+                        queryKey: [LOAD_AGENTS_QUERY_KEY, sshHost, serverId],
+                      })
+                    }
+                  >
+                    <RefreshCw className={`size-3 ${discovery.isFetching ? 'animate-spin' : ''}`} />
+                    Rescan
+                  </Button>
+                </div>
+              </div>
+
+              <div className="divide-y divide-border rounded-md border">
+                {agents.map((agent) => {
+                  const key = `${agent.dir}\0${agent.name}`;
+                  const blocked = !!agent.blockedReason;
+                  const needsProvider = !agent.providerId && !providerOverrides[key];
+                  const isSelected = selected.has(key);
+                  const isExpanded = expanded.has(key);
+
+                  return (
+                    <div key={key}>
+                      <div className="flex items-center gap-3 px-3 py-2">
+                        <Checkbox
+                          checked={isSelected}
+                          disabled={blocked}
+                          onCheckedChange={() => toggleAgent(key)}
+                        />
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center gap-2">
+                            <span className="truncate text-sm font-medium">{agent.name}</span>
+                            {agent.blockedReason && (
+                              <span className="shrink-0 text-xs text-destructive">
+                                {agent.blockedReason}
+                              </span>
+                            )}
+                          </div>
+                          <div className="flex items-center gap-2 text-xs text-foreground-muted">
+                            <span className="truncate">{agent.dir}</span>
+                            {agent.ownerName && <span>· by {agent.ownerName}</span>}
+                            {agent.providerId && (
+                              <span>
+                                · {getProvider(agent.providerId)?.name ?? agent.providerId}
+                              </span>
+                            )}
+                          </div>
+                          {agent.endpointMismatch ? (
+                            <p className="text-xs text-foreground-muted">
+                              Registered against <code>{agent.apiEndpoint}</code>
+                              {serverApiUrl && (
+                                <>
+                                  ; this server is <code>{serverApiUrl}</code>
+                                </>
+                              )}
+                            </p>
+                          ) : (
+                            !blocked &&
+                            agent.ownerName && (
+                              <p className="text-xs text-foreground-muted">
+                                Session access: yes · rooms: policy admits only its owner
+                                {agent.viewerIsOwner
+                                  ? ' (you)'
+                                  : `, ask ${agent.ownerName} to widen`}
+                              </p>
+                            )
+                          )}
+                        </div>
+                        {!blocked && needsProvider && (
+                          <Select
+                            value={providerOverrides[key] ?? ''}
+                            onValueChange={(v) => setProviderFor(key, v as AgentProviderId)}
+                          >
+                            <SelectTrigger className="w-36">
+                              <SelectValue placeholder="Provider" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              {providerOptions.map((p) => (
+                                <SelectItem key={p.id} value={p.id}>
+                                  {p.name}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        )}
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          className="shrink-0 px-2 text-foreground-muted hover:text-foreground"
+                          aria-label={`${isExpanded ? 'Hide' : 'Show'} details for ${agent.name}`}
+                          onClick={() => toggleExpanded(key)}
+                        >
+                          <Info className="size-3.5" />
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          className="shrink-0 px-2 text-foreground-muted hover:text-destructive"
+                          aria-label={`Delete ${agent.name}'s config from this host`}
+                          disabled={agent.alreadyAgent || removeMutation.isPending}
+                          title={
+                            agent.alreadyAgent
+                              ? 'Loaded in this Console — remove it from the agent itself'
+                              : 'Delete this config file from the host'
+                          }
+                          onClick={() => confirmRemove(agent)}
+                        >
+                          <Trash2 className="size-3.5" />
+                        </Button>
+                      </div>
+                      {isExpanded && (
+                        <div className="space-y-1 border-t border-dashed border-border px-3 py-2 pl-10 text-xs">
+                          {agent.description && (
+                            <p className="text-foreground">{agent.description}</p>
+                          )}
+                          <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 text-foreground-muted">
+                            <dt>Agent ID</dt>
+                            <dd className="truncate font-mono">{agent.switchAgentId}</dd>
+                            <dt>Endpoint</dt>
+                            <dd className="truncate font-mono">{agent.apiEndpoint}</dd>
+                            <dt>Directory</dt>
+                            <dd className="truncate font-mono">{agent.dir}</dd>
+                            <dt>Provider</dt>
+                            <dd>
+                              {agent.providerId
+                                ? `${getProvider(agent.providerId)?.name ?? agent.providerId} (${agent.providerSource})`
+                                : 'unknown — pick one to load'}
+                            </dd>
+                            {agent.ownerName && (
+                              <>
+                                <dt>Owner</dt>
+                                <dd>
+                                  {agent.ownerName}
+                                  {agent.viewerIsOwner ? ' (you)' : ''}
+                                </dd>
+                              </>
+                            )}
+                            <dt>Found via</dt>
+                            <dd>
+                              {agent.source === 'server' ? 'server registration' : 'host scan'}
+                            </dd>
+                          </dl>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </>
+          )}
+
+          {/* Manual directory scan fallback */}
+          <div className="flex items-center gap-2">
+            <FolderSearch className="size-4 shrink-0 text-foreground-muted" />
+            <Input
+              value={manualDir}
+              placeholder="Scan a directory (absolute path)"
+              className="flex-1"
+              onChange={(e) => setManualDir(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && manualDir.trim()) manualScan.mutate(manualDir.trim());
+              }}
+            />
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={!manualDir.trim() || manualScan.isPending}
+              onClick={() => manualScan.mutate(manualDir.trim())}
+            >
+              {manualScan.isPending ? <Spinner /> : 'Scan'}
+            </Button>
+          </div>
+          {manualScan.isError && (
+            <p className="text-xs text-destructive">
+              {failureText(manualScan.error, 'Could not scan the directory.')}
+            </p>
+          )}
+
+          {/* Load button */}
+          {agents.length > 0 && (
+            <div className="flex justify-end">
+              <Button
+                size="sm"
+                disabled={!canLoad || loadMutation.isPending}
+                onClick={() => loadMutation.mutate()}
+              >
+                {loadMutation.isPending ? (
+                  <>
+                    <Spinner /> Loading…
+                  </>
+                ) : (
+                  <>
+                    <Download className="size-4" /> Load {selected.size} agent
+                    {selected.size === 1 ? '' : 's'}
+                  </>
+                )}
+              </Button>
+            </div>
+          )}
+        </div>
+      )}
+    </section>
+  );
+}
