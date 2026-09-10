@@ -282,6 +282,26 @@ async def test_a_tool_call_title_carries_no_markup() -> None:
     assert _tasks(client)[0]["title"] == "Read all of it"
 
 
+async def test_a_tool_call_title_cannot_forge_a_broadcast() -> None:
+    """A title is a host-written string, and `<!here>` notifies the channel.
+
+    The plan block's cards escape theirs. A streamed card that did not was the
+    same string reaching Slack by a different route with the guard missing.
+    """
+    client = FakeWebClient()
+    activity = SessionTurnActivity(_adapter(client))
+
+    await _publish(
+        activity,
+        [_item("call-1", title="Ran <!here> --force", text="<!channel>")],
+        _turn("running"),
+    )
+
+    chunk = _tasks(client)[0]
+    assert chunk["title"] == "Ran &lt;!here&gt; --force"
+    assert chunk["details"] == "&lt;!channel&gt;"
+
+
 # ── What Slack will take ─────────────────────────────────────────────────────
 
 
@@ -299,6 +319,23 @@ async def test_an_oversized_task_chunk_is_trimmed_to_fit() -> None:
     chunk = _tasks(client)[0]
     assert len(json.dumps(chunk, ensure_ascii=False)) <= 256
     assert [task["id"] for task in _tasks(client)] == ["call-1", "call-2"]
+
+
+async def test_trimming_a_title_never_leaves_half_an_entity() -> None:
+    """Cutting the escaped form can end on `&am`, which is what a reader sees.
+
+    So the cut is made on the source and the result escaped whole, the same way
+    every other budget in this renderer is spent.
+    """
+    client = FakeWebClient()
+    activity = SessionTurnActivity(_adapter(client))
+    long_one = _item("call-1", title="<" * 400)
+
+    await _publish(activity, [long_one], _turn("running"))
+
+    title = _tasks(client)[0]["title"]
+    assert len(json.dumps(_tasks(client)[0], ensure_ascii=False)) <= 256
+    assert title.replace("&lt;", "").rstrip("…") == ""
 
 
 async def test_an_over_long_item_id_becomes_a_stable_short_one() -> None:

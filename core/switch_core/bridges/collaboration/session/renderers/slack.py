@@ -1013,6 +1013,10 @@ def stream_task_chunk(item: Item) -> dict[str, Any]:
     A constant here — which is what the runtime-state path uses, having only
     ever one step to show — collapses a turn's work into a single card
     overwriting itself.
+
+    Plain text, and escaped, for the same two reasons the plan block's cards
+    are: a card renders no markup, and a tool call titled `Ran <!here>` is a
+    host-written string that would otherwise notify the channel.
     """
     title = plain_text(item.title) if item.title else ""
     if item.status == "declined":
@@ -1023,13 +1027,13 @@ def stream_task_chunk(item: Item) -> dict[str, Any]:
     chunk: dict[str, Any] = {
         "type": "task_update",
         "id": _task_id(item.item_id),
-        "title": _truncate(title, _MAX_TASK_TITLE) or "(untitled)",
+        "title": _fit(title, _MAX_TASK_TITLE) or "(untitled)",
         "status": _TASK_STATUS[item.status],
     }
-    details = _truncate(plain_text(item.text), _MAX_TASK_DETAILS) if item.text else ""
+    details = _fit(plain_text(item.text), _MAX_TASK_DETAILS) if item.text else ""
     if details:
         chunk["details"] = details
-    return _within_chunk(chunk)
+    return _within_chunk(chunk, title)
 
 
 def stream_message_chunk(item: Item) -> dict[str, Any]:
@@ -1077,13 +1081,17 @@ def _task_id(item_id: str) -> str:
     return hashlib.sha256(item_id.encode()).hexdigest()[:_MAX_TASK_ID]
 
 
-def _within_chunk(chunk: dict[str, Any]) -> dict[str, Any]:
+def _within_chunk(chunk: dict[str, Any], title: str) -> dict[str, Any]:
     """Bring a task chunk inside the size Slack accepts.
 
     Slack rejects the append rather than the chunk, so one oversized step takes
     every step sent with it — and the steps are what the timeline is for. The
     detail goes first, being the part a reader can do without, and then the
     title is cut down to whatever the id has left it.
+
+    The cut is made on the unescaped title rather than the one in the chunk,
+    because slicing an escaped string can leave half an entity behind and put a
+    literal `&am` in front of the reader.
     """
     over = len(json.dumps(chunk, ensure_ascii=False)) - _MAX_TASK_CHUNK
     if over <= 0:
@@ -1093,8 +1101,8 @@ def _within_chunk(chunk: dict[str, Any]) -> dict[str, Any]:
         over = len(json.dumps(chunk, ensure_ascii=False)) - _MAX_TASK_CHUNK
         if over <= 0:
             return chunk
-    title = str(chunk["title"])
-    chunk["title"] = _truncate(title, max(len(title) - over, 1))
+    room = max(len(str(chunk["title"])) - over, 1)
+    chunk["title"] = _fit(title, room) or "(untitled)"
     return chunk
 
 
