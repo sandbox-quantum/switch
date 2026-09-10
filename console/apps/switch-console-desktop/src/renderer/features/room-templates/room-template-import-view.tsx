@@ -1,6 +1,7 @@
 import { ArrowRight, Check, FileText, Loader2, Upload } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { toast } from 'sonner';
 import type { ParamSpec, ParsedTemplate } from '@main/core/room-templates/controller';
 import type { GuardResult, ViewDefinition } from '@renderer/app/view-registry';
 import { refreshSidebarRoomState } from '@renderer/features/sidebar/sidebar-tree-data';
@@ -506,6 +507,13 @@ const TemplateImportPanel = observer(function TemplateImportPanel() {
 
         const result = await rpc.switchServers.createRoomFromTemplate(serverId, yamlText, inputs);
         await refreshSidebarRoomState(true);
+        if (result.failedAttachments.length > 0) {
+          const names = result.failedAttachments.map((f) => `${f.id} (${f.error})`).join(', ');
+          toast.warning('Room created, but some items could not be added', {
+            description: names,
+            duration: 8000,
+          });
+        }
         appState.navigation.navigate('room', { roomId: result.roomId });
       } catch (e) {
         const serverDetail =
