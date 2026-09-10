@@ -19,6 +19,7 @@ export const VIEW_IDS = [
   'remoteHosts',
   'remoteHost',
   'roomTemplateImport',
+  'templates',
 ] as const;
 
 export type ViewIdName = (typeof VIEW_IDS)[number];

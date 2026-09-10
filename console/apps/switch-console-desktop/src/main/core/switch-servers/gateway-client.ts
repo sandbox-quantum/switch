@@ -1081,6 +1081,62 @@ export async function createRoomFromTemplate(
   };
 }
 
+// ── Stored templates (template registry) ────────────────────────────────────
+
+export type StoredTemplateSummary = {
+  id: string;
+  name: string;
+  description: string;
+  kind: string;
+  creator: string;
+};
+
+export type StoredTemplateDetail = StoredTemplateSummary & {
+  definition: string;
+};
+
+type RegistryTemplateSummary = {
+  id: string;
+  owner_id: string;
+  owner_name: string | null;
+  name: string;
+  description: string;
+  kind: string;
+};
+
+function toSummary(t: RegistryTemplateSummary): StoredTemplateSummary {
+  return {
+    id: t.id,
+    name: t.name,
+    description: t.description,
+    kind: t.kind,
+    creator: t.owner_name ?? t.owner_id,
+  };
+}
+
+export async function fetchTemplates(
+  server: SwitchServer,
+  kind?: string
+): Promise<StoredTemplateSummary[]> {
+  const qs = kind ? `?kind=${encodeURIComponent(kind)}` : '';
+  const res = await gatewayFetch(server, `/templates${qs}`, {
+    authenticated: true,
+  });
+  const json = (await res.json()) as RegistryTemplateSummary[];
+  return json.map(toSummary);
+}
+
+export async function fetchTemplateDetail(
+  server: SwitchServer,
+  templateId: string
+): Promise<StoredTemplateDetail> {
+  const res = await gatewayFetch(server, `/templates/${encodeURIComponent(templateId)}`, {
+    authenticated: true,
+  });
+  const t = (await res.json()) as RegistryTemplateSummary & { content: string };
+  return { ...toSummary(t), definition: t.content };
+}
+
 /**
  * Fetch the JSON Schema describing a valid room template. Returns null when
  * the server does not support the endpoint (404) — older servers that lack
