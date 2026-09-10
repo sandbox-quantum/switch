@@ -1,7 +1,7 @@
 """templates are held on the server, not passed around as files
 
 Revision ID: a3f61c02d5be
-Revises: 04f27f37e474
+Revises: b47e0c39a1f5
 
 A template has until now been a YAML file someone mailed you. This table is
 where a Switch server keeps one, so a template can be uploaded once and found
@@ -33,7 +33,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "a3f61c02d5be"
-down_revision: str | Sequence[str] | None = "04f27f37e474"
+down_revision: str | Sequence[str] | None = "b47e0c39a1f5"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
