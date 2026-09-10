@@ -75,6 +75,7 @@ from switch_core.db.stores.room_role_store import RoomRoleStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.task_store import TaskStore
 from switch_core.db.stores.user_store import UserStore
+from switch_core.main import _seed_agent_registration_bootstrap_key
 from switch_core.messages.notify import MessageListener
 from switch_core.provisioning import Provisioning
 from switch_core.provisioning.postgres import PostgresProvisioning
@@ -248,6 +249,24 @@ class Harness:
         self._registered.append(result.agent_id)
         return result
 
+    async def register_agent_via_registration_token(
+        self, name: str, token: str
+    ) -> RegistrationResult:
+        """Register the way a standalone agent does: with a bearer token
+        presented to `POST /agents`, resolved here directly against the
+        protocol service rather than over real HTTP."""
+        result = await self.protocol.register_agent_with_token(
+            registration_token=token,
+            name=name,
+            description=f"integration test agent {name}",
+            connector_type="test",
+            integration_profile=_PROFILE,
+            overwrite=True,
+            owner_only=False,
+        )
+        self._registered.append(result.agent_id)
+        return result
+
     async def start_clients(self, timeout: float = 20.0) -> None:
         """Start every registered agent's client and await readiness.
 
@@ -374,6 +393,17 @@ async def harness(session_env: SessionEnv) -> AsyncIterator[Harness]:
         await session_env.user_store.create(session, owner)
         await session.commit()
     owner_id = owner.id
+
+    # Seeds the same deployment-wide bootstrap key `main.py` would on a real
+    # boot, so a test can register through REGISTRATION_TOKEN exactly as a
+    # standalone agent does, without duplicating that seeding logic here.
+    await _seed_agent_registration_bootstrap_key(
+        session_factory,
+        session_env.user_store,
+        session_env.api_key_store,
+        session_env.agent_store,
+        config,
+    )
 
     # Per-test in-memory wiring: a fresh EventBuffer / client registry so queued
     # events and client registrations never leak across tests.

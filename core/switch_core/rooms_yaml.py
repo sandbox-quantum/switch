@@ -66,6 +66,10 @@ def _coerce(value: Any, spec: ParamSpec, name: str) -> str | int | float | bool:
     if t == "string":
         return str(value)
     if t == "number":
+        if isinstance(value, bool):
+            raise ValueError(f"param {name!r}: expected a number, got {value!r}")
+        if isinstance(value, int):
+            return value  # keep int as int; no float roundtrip, no precision loss
         try:
             f = float(value)
             return int(f) if f == int(f) else f
@@ -93,6 +97,8 @@ def resolve_params(
     inputs: dict[str, Any] | None,
 ) -> dict[str, str | int | float | bool]:
     """Merge inputs over defaults, enforce required, coerce types."""
+    if inputs is not None and not isinstance(inputs, dict):
+        raise ValueError("'inputs' must be a mapping of param name to value")
     inputs = inputs or {}
     undeclared = set(inputs) - set(declared)
     if undeclared:

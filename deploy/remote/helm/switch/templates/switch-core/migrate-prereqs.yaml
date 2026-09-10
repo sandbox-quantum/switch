@@ -1,0 +1,48 @@
+{{- if .Values.switchCore.migrations.preUpgradeJob }}
+# The migration Job runs as a pre-upgrade hook, so it starts before helm applies
+# the release's ordinary resources. Reading the release's own Secret and CA
+# ConfigMap therefore gets the *previous* release's values — which makes an
+# upgrade that repoints the deployment at a different database server
+# impossible: the credentials for that server only land once the migration
+# they are needed for has already passed.
+#
+# So the migration gets copies of its own, rendered from the same source and
+# created at a lower hook weight than the Job. They are deleted when the hook
+# succeeds, leaving nothing behind. Annotating the real Secret and ConfigMap as
+# hooks instead does not work: a resource that moves out of the manifest is
+# deleted during the apply that follows, taking the running release's
+# credentials with it.
+#
+# Not needed when the values come from outside the chart — an existing Secret or
+# ConfigMap is already there before the hook runs.
+{{- if not .Values.secrets.existingSecret }}
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ include "switch.secretName" . }}-migrate
+  labels:
+    {{- include "switch.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": pre-upgrade
+    "helm.sh/hook-weight": "-5"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+type: Opaque
+data:
+  {{- include "switch.secretData" . | nindent 2 }}
+{{- end }}
+{{- if and .Values.postgresql.caBundle.contents (not .Values.postgresql.caBundle.existingConfigMap) }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "switch.fullname" . }}-db-ca-migrate
+  labels:
+    {{- include "switch.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": pre-upgrade
+    "helm.sh/hook-weight": "-5"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+data:
+  {{- include "switch.dbCaBundleData" . | nindent 2 }}
+{{- end }}
+{{- end }}

@@ -725,6 +725,24 @@ def test_resolve_params_number_bad():
         resolve_params(declared, {"count": "abc"})
 
 
+def test_resolve_params_number_rejects_bool():
+    declared = {"count": ParamSpec(type="number")}
+    with pytest.raises(ValueError, match="expected a number"):
+        resolve_params(declared, {"count": True})
+
+
+def test_resolve_params_number_preserves_large_int():
+    declared = {"n": ParamSpec(type="number")}
+    big = 10**18 + 1  # loses precision if routed through float
+    assert resolve_params(declared, {"n": big}) == {"n": big}
+
+
+def test_resolve_params_rejects_non_dict_inputs():
+    declared = {"owner": ParamSpec(type="string")}
+    with pytest.raises(ValueError, match="'inputs' must be a mapping"):
+        resolve_params(declared, [1, 2, 3])
+
+
 # ── interpolate ─────────────────────────────────────────────────────────────
 
 

@@ -51,6 +51,65 @@ class User(Base):
     )
 
 
+# An OIDC login matches an account on email case-insensitively (CHOO-2624):
+# the IdP and the person typing a password don't reliably agree on casing for
+# the same mailbox, so a case-sensitive compare would silently defeat the
+# "same account" guarantee. Backs UserStore.get_by_email's lower() compare.
+Index("ix_users_email_lower", func.lower(User.email))
+
+
+class OidcIdentity(Base):
+    """A verified IdP identity linked to a user (CHOO-2624).
+
+    One row per linked ``(iss, sub)``, unique so a subject can never bind to
+    more than one account. A user may hold several — accounts are keyed on
+    verified email, not on login method, so a password sign-up that later
+    signs in with an IdP sharing its email gets this identity added to the
+    same account rather than a second one.
+
+    ``iss`` is nullable only for rows migrated from a pre-CHOO-2624 login that
+    predates the issuer being tracked at all (``oidc_sub`` stored alone); the
+    application never writes a NULL issuer itself. Such a row still matches on
+    ``sub`` alone and has its issuer backfilled on the next login, same as
+    before this identity had its own table. ``UNIQUE(iss, sub)`` does not
+    constrain these rows at all — Postgres treats every NULL as distinct from
+    every other NULL — so ``ix_oidc_identities_sub_null_iss`` separately
+    enforces at most one NULL-issuer row per ``sub``; without it two different
+    users could each hold one for the same ``sub``, and which one a login
+    resolved to would depend on row order, silently annexing one account and
+    orphaning the other.
+
+    Matching a legacy row on ``sub`` alone, with no issuer or email in the
+    comparison at all, is only safe because a deployment has exactly one
+    configured issuer (``gateway_oidc_issuer_url``) today. The moment a second
+    issuer exists — a later multi-tenancy phase — two different real-world
+    identities could share the same subject string, and a legacy row would
+    resolve to whichever one asserts it first regardless of which issuer
+    actually owns it. Re-verify or purge sub-only rows before a deployment is
+    ever configured with more than one issuer.
+    """
+
+    __tablename__ = "oidc_identities"
+    __table_args__ = (
+        UniqueConstraint("iss", "sub", name="uq_oidc_identities_iss_sub"),
+        Index("ix_oidc_identities_sub", "sub"),
+        Index(
+            "ix_oidc_identities_sub_null_iss",
+            "sub",
+            unique=True,
+            postgresql_where=text("iss IS NULL"),
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
+    user_id: Mapped[str] = mapped_column(Text, ForeignKey("users.id"), nullable=False)
+    iss: Mapped[str | None] = mapped_column(Text, nullable=True)
+    sub: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[str] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
 # ── API Keys ─────────────────────────────────────────────────────────────────
 
 

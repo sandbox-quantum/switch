@@ -13,8 +13,14 @@ room binding", and operations only ever compare them for equality.
 
 from __future__ import annotations
 
-from contextvars import ContextVar
+from contextvars import ContextVar, Token
 from dataclasses import dataclass
+
+from switch_core.logging_context import (
+    LogContext,
+    bind_log_context,
+    unbind_log_context,
+)
 
 
 @dataclass(frozen=True)
@@ -23,18 +29,35 @@ class CallContext:
     session_key: str | None
 
 
+@dataclass(frozen=True)
+class _CallContextToken:
+    """Undoes both the call context and the log context it also bound."""
+
+    call: Token[CallContext | None]
+    log: Token[LogContext]
+
+
 _current: ContextVar[CallContext | None] = ContextVar(
     "switch_call_context", default=None
 )
 
 
-def set_call_context(context: CallContext):
-    """Bind the caller for the duration of one operation. Returns a reset token."""
-    return _current.set(context)
+def set_call_context(context: CallContext) -> _CallContextToken:
+    """Bind the caller for the duration of one operation. Returns a reset token.
+
+    The calling agent is bound for logging at the same time — this is the one
+    place both front doors already name their caller, so it is the cheapest
+    place to make every line an operation emits attributable.
+    """
+    return _CallContextToken(
+        call=_current.set(context),
+        log=bind_log_context(agent_id=context.agent_id),
+    )
 
 
-def reset_call_context(token) -> None:  # type: ignore[no-untyped-def]
-    _current.reset(token)
+def reset_call_context(token: _CallContextToken) -> None:
+    unbind_log_context(token.log)
+    _current.reset(token.call)
 
 
 def current_call_context() -> CallContext | None:

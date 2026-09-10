@@ -90,6 +90,10 @@ from switch_core.bridges.agent.protocol.connections import (
 )
 from switch_core.bridges.agent.protocol.service import AgentExistsError, ProtocolService
 from switch_core.bridges.agent.protocol.stream import event_stream
+from switch_core.bridges.agent.registration_bootstrap import (
+    REGISTRATION_KEY_TYPES,
+    resolve_registration_owner_id,
+)
 from switch_core.db.models import Agent, Task
 from switch_core.db.stores.api_key_store import ApiKeyStore
 from switch_core.db.stores.feature_flag_store import FeatureFlagStore
@@ -130,17 +134,30 @@ async def _resolve_registration_user_id(
     authorization: Annotated[str, Header()],
     session: Annotated[AsyncSession, Depends(get_session)],
     api_key_store: Annotated[ApiKeyStore, Depends(get_api_key_store)],
+    protocol: Annotated[ProtocolService, Depends(get_protocol)],
 ) -> str:
     """Validate the registration token in the Authorization header and
-    return the owning user_id."""
+    return the user_id new agents should be owned by.
+
+    A personal ``"registration"`` key resolves to the user who minted it. The
+    deployment-wide ``"bootstrap"`` key (see ``registration_bootstrap.py``)
+    resolves to a dedicated, non-admin account instead of the admin who
+    seeded it, so holding it never confers admin authority.
+    """
     if not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Invalid authorization header")
     token = authorization[7:]
     token_hash = hashlib.sha256(token.encode()).hexdigest()
     key = await api_key_store.get_by_hash(session, token_hash)
-    if key is None or key.type != "registration":
+    if key is None or key.type not in REGISTRATION_KEY_TYPES:
         raise HTTPException(status_code=401, detail="Invalid registration token")
-    return key.user_id
+    try:
+        return await resolve_registration_owner_id(session, protocol.user_store, key)
+    except RuntimeError as exc:
+        logger.error("Agent-registration bootstrap owner resolution failed: %s", exc)
+        raise HTTPException(
+            status_code=503, detail="Agent registration is temporarily unavailable"
+        ) from exc
 
 
 # Registration endpoints

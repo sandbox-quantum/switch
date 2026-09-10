@@ -67,7 +67,10 @@ export default function RegistrationKeysPage() {
   }, []);
 
   const registrationKeys = useMemo(
-    () => keys?.filter((k) => k.type === "registration") ?? [],
+    // Everything that isn't an agent's own key is a way to register more
+    // agents — a personal "registration" key or the deployment-wide
+    // "bootstrap" key seeded from AGENT_REGISTRATION_TOKEN.
+    () => keys?.filter((k) => k.type !== "agent") ?? [],
     [keys],
   );
 

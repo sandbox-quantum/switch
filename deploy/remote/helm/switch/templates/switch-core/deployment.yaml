@@ -1,6 +1,8 @@
 {{- if ne (int .Values.switchCore.replicaCount) 1 }}
 {{- fail "switchCore.replicaCount must be 1: switch-core keeps live Matrix sync sessions in memory and cannot be horizontally scaled (a second replica would duplicate every client and split session state)." }}
 {{- end }}
+{{- include "switch.validateDbTls" . }}
+{{- include "switch.validateLogging" . }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -58,3 +60,11 @@ spec:
             periodSeconds: 30
           resources:
             {{- toYaml .Values.switchCore.resources | nindent 12 }}
+          {{- if include "switch.dbCaBundleConfigMap" . }}
+          volumeMounts:
+            {{- include "switch.dbCaBundleVolumeMount" . | nindent 12 }}
+          {{- end }}
+      {{- if include "switch.dbCaBundleConfigMap" . }}
+      volumes:
+        {{- include "switch.dbCaBundleVolume" . | nindent 8 }}
+      {{- end }}
