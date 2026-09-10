@@ -1123,9 +1123,12 @@ class BridgeCore:
             return
         outcome = await interactions.command_for(interaction)
         if isinstance(outcome, Refused):
-            # A press says nothing about where in the channel it happened, so
-            # the notice goes to the channel rather than to a thread. It names
-            # the card, which is the part that has to be right.
+            # outcome.card_ref is available here too, but deliberately unused:
+            # a press only reaches a platform whose buttons are live, which
+            # today is Slack alone, and there tell_actor's reply is already
+            # private to the actor — thread_ref only chooses where that
+            # ephemeral appears on screen, not who sees it. None is the
+            # current choice, not an oversight.
             await self._tell_refused(interaction, outcome, thread_ref=None)
             return
         self._drop_session_command(outcome, interaction.sender_id)

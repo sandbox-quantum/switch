@@ -289,8 +289,8 @@ class SessionInteractions:
             return None
 
         post = await self._post_for(message, answer)
-        if post is None or isinstance(post, Refused):
-            return post
+        if post is None:
+            return None
 
         resolved = resolve_text_answer(post.form, answer)
         if isinstance(resolved, Unanswerable):
@@ -330,7 +330,7 @@ class SessionInteractions:
 
     async def _post_for(
         self, message: InboundMessage, answer: TextAnswer
-    ) -> SessionRequestPost | Refused | None:
+    ) -> SessionRequestPost | None:
         """The card an answer is against: the one it named, or the one it replies to.
 
         A bare decision names nothing, so it only counts as a direct reply to a
