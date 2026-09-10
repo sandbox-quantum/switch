@@ -12,6 +12,7 @@ import {
 } from "@mui/material";
 import { useRef, useState } from "react";
 import { createTemplate } from "../../data/api";
+import { MAX_DOCUMENT_BYTES, formatBytes } from "./templateFormat";
 
 interface Props {
   open: boolean;
@@ -48,11 +49,24 @@ export default function CreateTemplateDialog({
 
   const handleFile = async (file: File) => {
     setError(null);
+    if (file.size > MAX_DOCUMENT_BYTES) {
+      // Caught here so a large file is refused before it is read into memory,
+      // rather than after a round trip that ends in a 413.
+      setError(
+        `That file is ${formatBytes(file.size)}, over the ` +
+          `${formatBytes(MAX_DOCUMENT_BYTES)} limit for a template.`,
+      );
+      return;
+    }
     // Read as text and hand the string on unchanged — the registry stores what
     // it is given, so anything reformatted here would be stored reformatted.
     const text = await file.text();
     setContent(text);
-    if (!name.trim()) setName(file.name.replace(/\.(ya?ml)$/i, ""));
+    // Against the latest name, not the one captured when this handler was
+    // made: reading the file is async, and the user may have typed meanwhile.
+    setName((current) =>
+      current.trim() ? current : file.name.replace(/\.(ya?ml)$/i, ""),
+    );
   };
 
   const handleSubmit = async () => {

@@ -8,7 +8,9 @@ than who may see it.
 
 from __future__ import annotations
 
+import re
 from typing import Annotated
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -16,7 +18,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from switch_core.authz import Principal, require_manage
 from switch_core.config import SwitchConfig
 from switch_core.db.models import Template, User
-from switch_core.db.stores.template_store import TemplateStore
+from switch_core.db.stores.template_store import (
+    TemplateListing,
+    TemplateNameTaken,
+    TemplateStore,
+)
 from switch_core.db.stores.user_store import UserStore
 from switch_core.gateway.auth import get_current_user
 from switch_core.gateway.dependencies import (
@@ -36,13 +42,46 @@ from switch_core.gateway.schemas import (
 router = APIRouter()
 
 
+_UNSAFE_IN_FILENAME = re.compile(r"[^A-Za-z0-9._-]+")
+
+
 def _size_bytes(content: str) -> int:
     """What the document weighs on the wire, not how many characters it has."""
     return len(content.encode("utf-8"))
 
 
-def _summary(template: Template, owner_name: str | None) -> TemplateSummary:
+def _content_disposition(name: str) -> str:
+    """A download header a template name cannot break out of (RFC 6266).
+
+    The name is free text, so it may hold a quote, a newline, or a character
+    outside latin-1. Interpolated raw, the first corrupts the header, the
+    second appends one of the caller's choosing, and the third fails the whole
+    response — headers are latin-1 on the wire. So the plain `filename` is
+    reduced to an ASCII skeleton and the real name travels percent-encoded in
+    `filename*`, which is what a modern client prefers anyway.
+    """
+    stem = _UNSAFE_IN_FILENAME.sub("-", name).strip("-") or "template"
+    encoded = quote(f"{name}.yaml", safe="")
+    return f"attachment; filename=\"{stem}.yaml\"; filename*=UTF-8''{encoded}"
+
+
+def _summary(row: TemplateListing, owner_name: str | None) -> TemplateSummary:
     return TemplateSummary(
+        id=row.id,
+        owner_id=row.owner_id,
+        owner_name=owner_name,
+        name=row.name,
+        description=row.description,
+        kind=row.kind,
+        version=row.version,
+        size_bytes=row.size_bytes,
+        created_at=str(row.created_at),
+        updated_at=str(row.updated_at),
+    )
+
+
+def _detail(template: Template, owner_name: str | None) -> TemplateDetail:
+    return TemplateDetail(
         id=template.id,
         owner_id=template.owner_id,
         owner_name=owner_name,
@@ -53,12 +92,7 @@ def _summary(template: Template, owner_name: str | None) -> TemplateSummary:
         size_bytes=_size_bytes(template.content),
         created_at=str(template.created_at),
         updated_at=str(template.updated_at),
-    )
-
-
-def _detail(template: Template, owner_name: str | None) -> TemplateDetail:
-    return TemplateDetail(
-        **_summary(template, owner_name).model_dump(), content=template.content
+        content=template.content,
     )
 
 
@@ -119,11 +153,9 @@ async def list_templates(
     owner_id: Annotated[str | None, Query()] = None,
 ) -> list[TemplateSummary]:
     """Browse the catalogue. `q` matches name or description, case-insensitively."""
-    templates = await template_store.list_all(
-        session, query=q, kind=kind, owner_id=owner_id
-    )
-    names = await _owner_names(session, user_store, {t.owner_id for t in templates})
-    return [_summary(t, names.get(t.owner_id)) for t in templates]
+    rows = await template_store.list_all(session, query=q, kind=kind, owner_id=owner_id)
+    names = await _owner_names(session, user_store, {r.owner_id for r in rows})
+    return [_summary(r, names.get(r.owner_id)) for r in rows]
 
 
 @router.post("/templates", status_code=201)
@@ -147,8 +179,10 @@ async def create_template(
                 content=req.content,
             ),
         )
-    except ValueError as e:
+    except TemplateNameTaken as e:
         raise HTTPException(status_code=409, detail=str(e)) from e
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
     await session.commit()
     return _detail(template, await _owner_name(session, user_store, user.id))
 
@@ -185,7 +219,12 @@ async def get_template_content(
     return Response(
         content=template.content.encode("utf-8"),
         media_type="application/x-yaml",
-        headers={"Content-Disposition": f'attachment; filename="{template.name}.yaml"'},
+        headers={
+            "Content-Disposition": _content_disposition(template.name),
+            # The bytes are whatever someone uploaded, so a browser must not be
+            # talked into sniffing them into something it will render.
+            "X-Content-Type-Options": "nosniff",
+        },
     )
 
 
@@ -225,6 +264,9 @@ async def delete_template(
     user: Annotated[User, Depends(get_current_user)],
 ) -> TemplateDeleteResponse:
     await _load_for_management(session, template_store, template_id, user)
-    await template_store.delete(session, template_id)
+    try:
+        await template_store.delete(session, template_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
     await session.commit()
     return TemplateDeleteResponse(deleted_id=template_id)

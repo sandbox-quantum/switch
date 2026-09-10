@@ -179,6 +179,7 @@ function DocumentSection({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [exportError, setExportError] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
 
   const dirty = useMemo(
     () =>
@@ -211,17 +212,26 @@ function DocumentSection({
   // Both of these go back to the server for the document rather than using the
   // copy on screen, so what you download is what is stored even if the editor
   // has unsaved edits in it.
-  const withStoredDocument = async (use: (text: string) => void) => {
+  const withStoredDocument = async (use: (text: string) => Promise<void> | void) => {
     setExportError(null);
+    setCopied(false);
     try {
-      use(await fetchTemplateContent(template.id));
+      await use(await fetchTemplateContent(template.id));
     } catch (e) {
       setExportError(e instanceof Error ? e.message : "Failed to fetch document");
     }
   };
 
   const handleCopy = () =>
-    withStoredDocument((text) => void navigator.clipboard.writeText(text));
+    withStoredDocument(async (text) => {
+      // Absent outside a secure context, where the bare property access would
+      // read as "failed to fetch document" rather than the truth.
+      if (!navigator.clipboard) {
+        throw new Error("Copying needs a secure connection (HTTPS).");
+      }
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+    });
 
   const handleDownload = () =>
     withStoredDocument((text) => {
@@ -231,8 +241,12 @@ function DocumentSection({
       const a = document.createElement("a");
       a.href = url;
       a.download = templateFilename(template.name);
+      document.body.appendChild(a);
       a.click();
-      URL.revokeObjectURL(url);
+      a.remove();
+      // The click only queues the download; revoking in the same tick can pull
+      // the blob out from under a browser that has not read it yet.
+      setTimeout(() => URL.revokeObjectURL(url), 60_000);
     });
 
   return (
@@ -252,6 +266,7 @@ function DocumentSection({
         </Button>
       </Stack>
       {exportError && <Alert severity="error">{exportError}</Alert>}
+      {copied && <Alert severity="success">Document copied to the clipboard.</Alert>}
       <TextField
         label="Name"
         value={name}
