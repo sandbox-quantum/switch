@@ -194,6 +194,10 @@ export class HostedSession {
     }
   }
 
+  notice(message: string): Promise<void> {
+    return this.publish({ type: 'notice', level: 'error', code: 'ROOM_DELIVERY_FAILED', message });
+  }
+
   snapshot(): Snapshot {
     return this.replica.snapshot();
   }

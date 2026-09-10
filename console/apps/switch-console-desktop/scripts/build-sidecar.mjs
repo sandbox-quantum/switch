@@ -66,3 +66,18 @@ if (unguarded) {
       'use import.meta.env?.X in shared code; it is undefined under raw Node and crashes the sidecar on boot'
   );
 }
+
+await build({
+  entryPoints: ['../../packages/agent-providers/src/host/shared-daemon.ts'],
+  bundle: true,
+  platform: 'node',
+  format: 'esm',
+  target: 'node20',
+  outfile: 'dist-sidecar/shared-host.mjs',
+  tsconfig: 'tsconfig.json',
+  banner: {
+    js: "import { createRequire as createSharedHostRequire } from 'node:module'; const require = createSharedHostRequire(import.meta.url);",
+  },
+  logLevel: 'info',
+  plugins: [guardForbiddenImports],
+});

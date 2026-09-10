@@ -2,25 +2,28 @@ import { spawn } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
-import { sessionSchema } from '@switch-console/shared/session-v1';
-import { z } from 'zod';
 import { ownProcessGroup } from './process-fence';
-import { adapterFor, startSchema } from './server';
+import { adapterFor } from './server';
+import { prepareSharedConfig, sharedConfigSchema } from './shared-config';
 import { runSharedHost, SharedHostLeaseExpiredError } from './shared-host';
+import { superviseSharedHost } from './supervisor';
 
-const [root, configPath] = process.argv.slice(2);
-const agentApiUrl = process.env.SWITCH_API_ENDPOINT;
-const token = process.env.SWITCH_API_TOKEN;
-if (!root || !configPath || !agentApiUrl || !token)
-  throw new Error(
-    'Shared SDK host requires a state directory, a configuration file, SWITCH_API_ENDPOINT and SWITCH_API_TOKEN.'
-  );
-const config = z
-  .strictObject({ session: sessionSchema, start: startSchema })
-  .parse(JSON.parse(await readFile(configPath, 'utf8')));
-if (config.session.provider !== config.start.provider)
-  throw new Error('Shared SDK host provider mismatch.');
-if (process.platform !== 'win32' && (await ownProcessGroup()) === null) {
+const [root, configPath, mode] = process.argv.slice(2);
+if (!root || !configPath)
+  throw new Error('Shared SDK host requires a state directory and configuration file.');
+const config = sharedConfigSchema.parse(JSON.parse(await readFile(configPath, 'utf8')));
+if (mode === '--supervise') {
+  const stop = new AbortController();
+  process.on('SIGTERM', () => stop.abort());
+  process.on('SIGINT', () => stop.abort());
+  await superviseSharedHost({
+    root: resolve(root),
+    executable: process.execPath,
+    args: [process.argv[1], root, configPath],
+    env: process.env,
+    signal: stop.signal,
+  });
+} else if (process.platform !== 'win32' && (await ownProcessGroup()) === null) {
   const child = spawn(process.execPath, process.argv.slice(1), {
     detached: true,
     stdio: 'inherit',
@@ -34,6 +37,7 @@ if (process.platform !== 'win32' && (await ownProcessGroup()) === null) {
     process.exitCode = code ?? 1;
   });
 } else {
+  const { agentApiUrl, token, input } = await prepareSharedConfig(root, config);
   const stop = new AbortController();
   process.on('SIGTERM', () => stop.abort());
   process.on('SIGINT', () => stop.abort());
@@ -45,7 +49,8 @@ if (process.platform !== 'win32' && (await ownProcessGroup()) === null) {
           agentApiUrl,
           token,
           session: config.session,
-          input: config.start.input,
+          input,
+          roomConnection: config.roomConnection,
         },
         adapterFor(config.start.provider),
         stop.signal

@@ -1,51 +1,10 @@
-import {
-  SessionChatClient,
-  commandStatusSchema,
-  serverEventSchema,
-  sessionSchema,
-} from '@switch-console/shared/session-v1';
-import type { SessionTransport } from '@switch-console/shared/session-v1';
+import { SessionChatClient, sessionSchema } from '@switch-console/shared/session-v1';
 import { useEffect, useState } from 'react';
 import { z } from 'zod';
 import { rpc } from '@renderer/lib/ipc';
 import { Button } from '@renderer/lib/ui/button';
 import { SessionV1Chat } from './session-v1-chat';
-
-function transport(serverId: string): SessionTransport {
-  return {
-    snapshot: (id) => rpc.sdkHost.sharedSnapshot(serverId, id),
-    submit: async (command) =>
-      commandStatusSchema.parse(await rpc.sdkHost.sharedSubmit(serverId, command)),
-    commandStatus: async (id, commandId) =>
-      commandStatusSchema.parse(await rpc.sdkHost.sharedCommandStatus(serverId, id, commandId)),
-    subscribe(id, after, onEvent, onError, onCursor) {
-      let stopped = false;
-      let cursor = after;
-      let timer: ReturnType<typeof setTimeout> | null = null;
-      const poll = async () => {
-        try {
-          const events = z
-            .array(serverEventSchema)
-            .parse(await rpc.sdkHost.sharedEvents(serverId, id, cursor));
-          if (stopped) return;
-          for (const event of events) {
-            onEvent(event);
-            cursor = event.sequence;
-          }
-          onCursor(cursor);
-          timer = setTimeout(() => void poll(), 500);
-        } catch (error) {
-          if (!stopped) onError(error instanceof Error ? error : new Error(String(error)));
-        }
-      };
-      void poll();
-      return () => {
-        stopped = true;
-        if (timer) clearTimeout(timer);
-      };
-    },
-  };
-}
+import { sharedSessionTransport } from './shared-session-transport';
 
 export function SharedSessionWorkbench() {
   const [servers, setServers] = useState<{ id: string; name: string }[]>([]);
@@ -99,7 +58,9 @@ export function SharedSessionWorkbench() {
           value={client?.sessionId ?? ''}
           onChange={(event) => {
             if (event.target.value)
-              setClient(new SessionChatClient(event.target.value, transport(serverId)));
+              setClient(
+                new SessionChatClient(event.target.value, sharedSessionTransport(serverId))
+              );
           }}
           className="rounded border border-border bg-background p-2"
         >

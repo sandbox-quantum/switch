@@ -311,6 +311,9 @@ importers:
       '@opencode-ai/sdk':
         specifier: ^1.18.27
         version: 1.18.27
+      '@sandboxaq/switch-agent-runtime':
+        specifier: workspace:*
+        version: link:../switch-agent-runtime
       '@switch-console/shared':
         specifier: workspace:*
         version: link:../shared

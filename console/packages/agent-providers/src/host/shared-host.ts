@@ -3,12 +3,15 @@ import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import {
   commandSchema,
+  commandStatusSchema,
   serverEventSchema,
   snapshotSchema,
 } from '@switch-console/shared/session-v1';
 import type { Session } from '@switch-console/shared/session-v1';
+import type { z } from 'zod';
 import type { ProviderAdapter, ProviderSessionStartInput } from '../adapter';
 import { Journal } from './journal';
+import { SharedRoomInbox, type roomConnectionSchema } from './room-inbox';
 import { HostedSession } from './session-host';
 import { SharedDelivery } from './shared-delivery';
 import { SharedState } from './shared-state';
@@ -19,9 +22,18 @@ export type SharedHostOptions = {
   token: string;
   session: Session;
   input: ProviderSessionStartInput;
+  roomConnection?: z.infer<typeof roomConnectionSchema>;
 };
 
 class TransportError extends Error {}
+class RequestError extends Error {
+  constructor(
+    readonly code: string,
+    message: string
+  ) {
+    super(message);
+  }
+}
 export class SharedHostLeaseExpiredError extends Error {
   constructor() {
     super('HOST_OFFLINE: lease renewal deadline passed.');
@@ -85,7 +97,13 @@ export async function runSharedHost(
         if (body && typeof body === 'object' && 'code' in body && body.code === 'HOST_OFFLINE')
           throw new SharedHostLeaseExpiredError();
       }
-      throw new Error(`Switch session request failed (${response.status}): ${text}`);
+      let code = '';
+      try {
+        code = JSON.parse(text).code ?? '';
+      } catch {
+        /* The response may be plain text. */
+      }
+      throw new RequestError(code, `Switch session request failed (${response.status}): ${text}`);
     }
     return response.json();
   };
@@ -247,6 +265,19 @@ export async function runSharedHost(
       }
     })();
     await state.journal.append({ type: 'running' });
+    let rooms: SharedRoomInbox | null = null;
+    if (options.roomConnection) {
+      rooms = await SharedRoomInbox.open(options.root);
+      await rooms.connect(
+        { agentId: session.agentId, apiEndpoint: options.agentApiUrl, token: options.token },
+        options.roomConnection,
+        executionSignal,
+        (error) => {
+          failure = error;
+          stopped.abort(error);
+        }
+      );
+    }
     starting = true;
     host = await HostedSession.start(
       options.root,
@@ -260,6 +291,42 @@ export async function runSharedHost(
     };
     while (!executionSignal.aborted) {
       await flush();
+      if (host.snapshot().session.status === 'stopped') break;
+      if (
+        host.snapshot().session.status === 'ready' ||
+        host.snapshot().session.status === 'running'
+      ) {
+        for (const event of rooms?.pending() ?? []) {
+          try {
+            const receipt = commandStatusSchema.parse(
+              await request(`${sessionPath}/room-message`, {
+                ...hostLease,
+                room_id: event.roomId,
+                message_id: event.messageId,
+                sequence: event.sequence,
+              })
+            );
+            if (receipt.status === 'unknown' || receipt.status === 'rejected')
+              await host.notice(
+                `Room message ${event.messageId}: ${receipt.message ?? receipt.status}. It was not resent.`
+              );
+          } catch (error) {
+            if (
+              !(error instanceof RequestError) ||
+              ![
+                'ROOM_EVENT_UNAVAILABLE',
+                'UNSUPPORTED_CAPABILITY',
+                'ROOM_MESSAGE_RESERVED',
+              ].includes(error.code)
+            )
+              throw error;
+            await host.notice(
+              `Room message ${event.messageId} was not submitted: ${error.message}`
+            );
+          }
+          await rooms!.acknowledge(event.sequence);
+        }
+      }
       const commands = await request(`${sessionPath}/commands`, hostLease);
       if (!Array.isArray(commands)) throw new Error('Switch returned an invalid command batch.');
       for (const value of commands) {

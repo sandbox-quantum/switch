@@ -86,6 +86,14 @@ class SwitchNotificationPoller {
    * is the only thing that returns the room's instructions, and re-claiming a
    * room already held by the same connection is a no-op.
    */
+  takeSharedIntent(sessionId: string, agentId: string): { rooms: string[]; startCursor: number } {
+    const intended = this.pendingRoom.get(sessionId);
+    this.pendingRoom.delete(sessionId);
+    const startCursor = this.pendingStart.get(agentId) ?? 0;
+    this.pendingStart.delete(agentId);
+    return { rooms: intended ? [intended.roomId] : [], startCursor };
+  }
+
   noteIntendedRoom(sessionId: string, roomId: string, roomName: string | null): void {
     this.pendingRoom.set(sessionId, { roomId, roomName });
   }

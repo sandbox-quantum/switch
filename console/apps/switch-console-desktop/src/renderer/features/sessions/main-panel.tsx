@@ -6,11 +6,10 @@ import {
   getSessionManagerStore,
   getSessionStore,
   sessionErrorMessage,
-  sessionRuntimeKind,
+  getRegisteredSessionData,
   sessionViewKind,
 } from '@renderer/features/sessions/stores/session-selectors';
-import { SessionTranscript } from './components/transcript/session-transcript';
-import { SessionTerminal } from './session-terminal';
+import { SharedSessionPanel } from './components/transcript/shared-session-panel';
 
 export const SessionMainPanel = observer(function SessionMainPanel() {
   const { locationId, sessionId } = useSessionViewContext();
@@ -111,9 +110,6 @@ export const SessionMainPanel = observer(function SessionMainPanel() {
     return null;
   }
 
-  if (sessionRuntimeKind(sessionStore) === 'provider') {
-    return <SessionTranscript />;
-  }
-
-  return <SessionTerminal />;
+  const session = getRegisteredSessionData(locationId, sessionId);
+  return session ? <SharedSessionPanel sessionId={sessionId} agentId={session.agentId} /> : null;
 });

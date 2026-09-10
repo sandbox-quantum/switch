@@ -37,6 +37,7 @@
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.3.260",
     "@opencode-ai/sdk": "^1.18.27",
+    "@sandboxaq/switch-agent-runtime": "workspace:*",
     "@switch-console/shared": "workspace:*",
     "zod": "^4.4.3"
   },

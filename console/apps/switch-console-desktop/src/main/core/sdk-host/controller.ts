@@ -8,6 +8,7 @@ import {
   type HostStartRequest,
 } from '@switch-console/agent-providers';
 import type { ClientCommand } from '@switch-console/shared/session-v1';
+import { getAgentById } from '@main/core/agents/getAgentById';
 import { resolveDatabasePath } from '@main/db/path';
 import { createRPCController } from '@shared/lib/ipc/rpc';
 import { prepareCodexSessionHome } from '../agent-runtime/impl/codex-session-home';
@@ -56,6 +57,11 @@ async function sharedServer(serverId: string) {
   return server;
 }
 export const sdkHostController = createRPCController({
+  serverForAgent: async (agentId: string) => {
+    const agent = await getAgentById(agentId);
+    if (!agent?.serverId) throw new Error('This agent has no Switch server.');
+    return agent.serverId;
+  },
   sharedList: async (serverId: string) => fetchSdkSessions(await sharedServer(serverId)),
   sharedSnapshot: async (serverId: string, sessionId: string) =>
     fetchSdkSnapshot(await sharedServer(serverId), sessionId),
