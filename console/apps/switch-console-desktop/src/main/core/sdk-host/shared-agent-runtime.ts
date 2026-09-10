@@ -207,7 +207,7 @@ export async function buildSharedHostConfig(
         approvals: capabilities.approvals,
         questions: capabilities.userInput,
         interrupt: true,
-        reset: false,
+        reset: true,
         compact: false,
         modelChange: false,
         attachmentMimeTypes: [],

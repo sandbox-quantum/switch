@@ -28,12 +28,16 @@ const recordSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('finished'), commandId: z.string() }),
   z.object({ type: z.literal('native'), nativeSessionId: z.string() }),
   z.object({ type: z.literal('stopped') }),
+  z.object({ type: z.literal('reset-started') }),
+  z.object({ type: z.literal('reset-completed') }),
+  z.object({ type: z.literal('model'), id: z.string(), options: z.record(z.string(), z.string()) }),
 ]);
 type RecordEntry = z.infer<typeof recordSchema>;
 export type HostSessionStart = {
   session: Session;
   input: ProviderSessionStartInput;
   epochAuthority?: 'server';
+  resetEpoch?: () => Promise<string>;
 };
 type PendingQuestion = { request: Request; options: Map<string, string> };
 
@@ -54,6 +58,8 @@ export class HostedSession {
   private fault: Error | null = null;
   private shuttingDown = false;
   private stopped = false;
+  private resetting = false;
+  private resetPending = false;
   private readonly unsubscribe: () => void;
   private readonly timer: ReturnType<typeof setInterval>;
 
@@ -95,6 +101,12 @@ export class HostedSession {
       if (record.type === 'finished') this.finished.add(record.commandId);
       if (record.type === 'native') this.nativeId = record.nativeSessionId;
       if (record.type === 'stopped') this.stopped = true;
+      if (record.type === 'reset-started') {
+        this.nativeId = null;
+        this.resetPending = true;
+      }
+      if (record.type === 'reset-completed') this.resetPending = false;
+      if (record.type === 'model') config.input.model = { id: record.id, options: record.options };
     }
     this.projector = new ChatProjector(config.session);
     this.unsubscribe = adapter.subscribe((event) => {
@@ -172,6 +184,10 @@ export class HostedSession {
           host.unsubscribe();
           return host;
         }
+        if (host.resetPending)
+          throw new Error(
+            'RESET_OUTCOME_UNKNOWN: reset was interrupted. Automatic recovery cannot choose a conversation.'
+          );
         if (!host.nativeId)
           throw new Error('Cannot recover a session without its native provider ID.');
         if (config.epochAuthority !== 'server') config.session.epoch = randomUUID();
@@ -240,9 +256,31 @@ export class HostedSession {
     } else if (
       body.type !== 'turn.interrupt' &&
       body.type !== 'session.stop' &&
+      body.type !== 'session.reset' &&
+      body.type !== 'session.model.set' &&
       body.type !== 'request.answer'
     )
       throw new Error('UNSUPPORTED_CAPABILITY');
+    if (body.type === 'session.reset' || body.type === 'session.model.set') {
+      if (
+        this.activeTurn ||
+        this.queue.length ||
+        session.status !== 'ready' ||
+        this.snapshot().requests.some((r) => r.state === 'open' || r.state === 'submitting')
+      )
+        throw new Error('SESSION_BUSY: finish or interrupt the current turn first.');
+      if (
+        body.type === 'session.reset' &&
+        (!session.capabilities.reset ||
+          (this.config.epochAuthority === 'server' && !this.config.resetEpoch))
+      )
+        throw new Error('UNSUPPORTED_CAPABILITY: reset needs a generation authority.');
+      if (
+        body.type === 'session.model.set' &&
+        (!session.capabilities.modelChange || !this.adapter.setModel)
+      )
+        throw new Error('UNSUPPORTED_CAPABILITY: model changes are unavailable.');
+    }
     if (body.type === 'request.answer') this.validateAnswer(command);
     await this.inbox.append({ type: 'accepted', command });
     this.commands.set(command.commandId, command);
@@ -281,6 +319,61 @@ export class HostedSession {
           },
         });
         this.queue.push(command);
+      } else if (body.type === 'session.model.set') {
+        await this.inbox.append({ type: 'dispatched', commandId: command.commandId });
+        this.dispatched.add(command.commandId);
+        await this.adapter.setModel!(session.sessionId, {
+          id: body.modelId,
+          options: body.options,
+        });
+        await this.inbox.append({ type: 'model', id: body.modelId, options: body.options });
+        this.config.input.model = { id: body.modelId, options: body.options };
+        await this.publish({
+          type: 'notice',
+          level: 'info',
+          code: 'MODEL_CHANGED',
+          message: `Model changed to ${body.modelId}.`,
+        });
+      } else if (body.type === 'session.reset') {
+        await this.inbox.append({ type: 'dispatched', commandId: command.commandId });
+        this.dispatched.add(command.commandId);
+        await this.inbox.append({ type: 'reset-started' });
+        this.nativeId = null;
+        this.resetPending = true;
+        this.resetting = true;
+        try {
+          await this.adapter.stopSession(session.sessionId);
+          await this.eventSerial;
+          const epoch = this.config.resetEpoch ? await this.config.resetEpoch() : randomUUID();
+          this.config.session.epoch = epoch;
+          this.config.session.status = 'starting';
+          const snapshot = this.snapshot();
+          snapshot.session = structuredClone(this.config.session);
+          this.replica = new SessionReplica(snapshot);
+          await this.publish({
+            type: 'session.upsert',
+            session: structuredClone(this.config.session),
+          });
+          const { resume: _resume, ...fresh } = this.config.input;
+          const native = await this.adapter.startSession(fresh);
+          await this.inbox.append({ type: 'native', nativeSessionId: native.nativeSessionId });
+          this.nativeId = native.nativeSessionId;
+          await this.eventSerial;
+          await this.inbox.append({ type: 'reset-completed' });
+          this.resetPending = false;
+          await this.publish({
+            type: 'notice',
+            level: 'info',
+            code: 'CONTEXT_RESET',
+            message:
+              'Started a fresh provider conversation. Earlier messages remain in the transcript for reference.',
+          });
+        } catch (error) {
+          await this.fail(error);
+          throw error;
+        } finally {
+          this.resetting = false;
+        }
       } else if (body.type === 'turn.interrupt') {
         if (body.turnId !== this.activeTurn) throw new Error('Turn is no longer active.');
         await this.inbox.append({ type: 'dispatched', commandId: command.commandId });
@@ -372,6 +465,7 @@ export class HostedSession {
   }
 
   private async providerEvent(event: ProviderRuntimeEvent): Promise<void> {
+    if (this.resetting && event.type === 'session.exited') return;
     if (event.type === 'session.exited') {
       for (const request of this.snapshot().requests)
         if (request.state === 'open' || request.state === 'submitting')

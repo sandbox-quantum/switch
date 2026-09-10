@@ -42,6 +42,8 @@ from switch_core.sessions.contract import (
     ServerEvent,
     Session,
     SessionConnectivity,
+    SessionModelSet,
+    SessionReset,
     SessionStop,
     SessionUpsert,
     Snapshot,
@@ -532,6 +534,27 @@ class SessionAuthority:
                 for turn in snapshot.turns
             ):
                 raise SessionError("TURN_NOT_ACTIVE", "The turn is no longer running.")
+        elif isinstance(body, (SessionReset, SessionModelSet)):
+            supported = (
+                snapshot.session.capabilities.reset
+                if isinstance(body, SessionReset)
+                else snapshot.session.capabilities.model_change
+            )
+            if not supported:
+                raise SessionError(
+                    "UNSUPPORTED_CAPABILITY", "Session control is unavailable."
+                )
+            if (
+                snapshot.session.status != "ready"
+                or any(turn.status in ("queued", "running") for turn in snapshot.turns)
+                or any(
+                    request.state in ("open", "submitting")
+                    for request in snapshot.requests
+                )
+            ):
+                raise SessionError(
+                    "SESSION_BUSY", "Finish or interrupt the current turn first."
+                )
         elif isinstance(body, SessionStop):
             if snapshot.session.status == "stopped":
                 raise SessionError(

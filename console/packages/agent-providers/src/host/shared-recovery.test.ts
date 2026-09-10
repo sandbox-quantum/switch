@@ -127,6 +127,7 @@ async function fixture() {
   vi.stubGlobal('fetch', fetchMock);
   return {
     root,
+    command,
     adapter,
     events,
     fetchMock,
@@ -230,5 +231,57 @@ it('stops an expired lease and resumes without repeating the accepted turn', asy
   } finally {
     stop.abort();
     await resumed;
+  }
+});
+
+it('resets under a server epoch despite a lost recovery acknowledgement', async () => {
+  const f = await fixture();
+  f.options.session.capabilities.reset = true;
+  f.command.body = { type: 'session.reset' };
+  f.command.commandId = 'reset';
+  const original = f.fetchMock.getMockImplementation()!;
+  let lost = false;
+  f.fetchMock.mockImplementation(async (url, options) => {
+    const response = await original(url, options);
+    if (url.endsWith('/recover') && !lost) {
+      lost = true;
+      throw new TypeError('Lost epoch acknowledgement');
+    }
+    return response;
+  });
+  const stop = new AbortController();
+  const running = runSharedHost(f.options, f.adapter, stop.signal);
+  try {
+    await vi.waitFor(
+      () =>
+        expect(
+          f.events.some(
+            (event) =>
+              event.epoch === 'epoch-2' &&
+              event.body.type === 'command.result' &&
+              event.body.commandId === 'reset' &&
+              event.body.status === 'applied'
+          )
+        ).toBe(true),
+      { timeout: 4000 }
+    );
+    expect(f.adapter.startSession).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(f.adapter.startSession).mock.calls[1][0].resume).toBeUndefined();
+    const recoveries = f.fetchMock.mock.calls.filter(([url]) => url.endsWith('/recover'));
+    expect(recoveries).toHaveLength(2);
+    expect(recoveries[0][1].body).toBe(recoveries[1][1].body);
+    expect(f.adapter.sendTurn).not.toHaveBeenCalled();
+    const started = f.events.filter(
+      (event) => event.body.type === 'session.upsert' && event.epoch === 'epoch-2'
+    );
+    expect(started.length).toBeGreaterThan(0);
+    expect(
+      started.every(
+        (event) => event.body.type === 'session.upsert' && event.body.session.epoch === 'epoch-2'
+      )
+    ).toBe(true);
+  } finally {
+    stop.abort();
+    await running;
   }
 });

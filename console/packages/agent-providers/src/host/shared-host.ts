@@ -242,20 +242,28 @@ export async function runSharedHost(
       await state.journal.append({ type: 'lease', snapshot, sourceBase: 0 });
     }
     lease = state.latest('lease')!;
-    const session = lease.snapshot.session;
+    const session = structuredClone(lease.snapshot.session);
     const hostLease = { host_id: session.hostId, epoch: session.epoch };
     // Renew before opening a provider, including after a lost acquisition response.
     const renewingAt = performance.now();
     await request(`${sessionPath}/renew`, hostLease);
     deadline = renewingAt + 25000;
     delivery = await SharedDelivery.load(options.root, session, lease.sourceBase);
+    let leaseSerial: Promise<unknown> = Promise.resolve();
+    const withLease = <T>(action: () => Promise<T>): Promise<T> => {
+      const result = leaseSerial.then(action);
+      leaseSerial = result.catch(() => {});
+      return result;
+    };
     heartbeat = (async () => {
       try {
         while (!executionSignal.aborted) {
           await delay(5000, undefined, { signal: executionSignal });
-          const renewingAt = performance.now();
-          await request(`${sessionPath}/renew`, hostLease);
-          deadline = renewingAt + 25000;
+          await withLease(async () => {
+            const renewingAt = performance.now();
+            await request(`${sessionPath}/renew`, hostLease);
+            deadline = renewingAt + 25000;
+          });
         }
       } catch (error) {
         if (!executionSignal.aborted) {
@@ -281,7 +289,50 @@ export async function runSharedHost(
     starting = true;
     host = await HostedSession.start(
       options.root,
-      { session, input: options.input, epochAuthority: 'server' },
+      {
+        session,
+        input: options.input,
+        epochAuthority: 'server',
+        resetEpoch: () =>
+          withLease(async () => {
+            for (const event of host!.replay(delivery!.cursor).events)
+              await delivery!.capture(event);
+            await upload(false);
+            await request(`${sessionPath}/quiesce`, hostLease);
+            const operation = {
+              type: 'recover' as const,
+              operationId: randomUUID(),
+              epoch: hostLease.epoch,
+              sourceBase: delivery!.cursor,
+              throughHostSequence: delivery!.throughHostSequence,
+            };
+            await state.journal.append(operation);
+            const snapshot = validateSession(
+              await request(`${sessionPath}/recover`, {
+                host_id: hostLease.host_id,
+                epoch: operation.epoch,
+                operation_id: operation.operationId,
+                through_host_sequence: operation.throughHostSequence,
+              })
+            );
+            await state.journal.append({
+              type: 'lease',
+              snapshot,
+              sourceBase: operation.sourceBase,
+            });
+            lease = state.latest('lease')!;
+            hostLease.epoch = snapshot.session.epoch;
+            delivery = await SharedDelivery.load(
+              options.root,
+              snapshot.session,
+              operation.sourceBase
+            );
+            const renewingAt = performance.now();
+            await request(`${sessionPath}/renew`, hostLease);
+            deadline = renewingAt + 25000;
+            return hostLease.epoch;
+          }),
+      },
       adapter
     );
     starting = false;
@@ -333,8 +384,9 @@ export async function runSharedHost(
         executionSignal.throwIfAborted();
         if (performance.now() >= deadline) throw new SharedHostLeaseExpiredError();
         const command = commandSchema.parse(value);
-        if (command.sessionId !== session.sessionId || command.epoch !== session.epoch)
-          throw new Error('Switch returned a command for another session generation.');
+        if (command.sessionId !== session.sessionId)
+          throw new Error('Switch returned a command for another session.');
+        if (command.epoch !== hostLease.epoch) continue;
         await host.command(command);
         await flush();
       }

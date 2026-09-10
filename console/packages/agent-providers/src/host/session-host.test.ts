@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { appendFile, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Command, Session } from '@switch-console/shared/session-v1';
@@ -74,7 +74,7 @@ function setup(provider: Session['provider']) {
         approvals: true,
         questions: true,
         interrupt: true,
-        reset: false,
+        reset: true,
         compact: false,
         modelChange: false,
         attachmentMimeTypes: [],
@@ -336,3 +336,71 @@ it('stops active and queued turns without dispatching the queue during cleanup',
   expect(host.snapshot().turns.map((turn) => turn.status)).toEqual(['interrupted', 'interrupted']);
   expect(adapter.sendTurn).toHaveBeenCalledOnce();
 });
+
+it('resets into a new epoch and native conversation while retaining history', async () => {
+  const { host, adapter, emit, root } = await start('claude');
+  await host.command(message('old-turn'));
+  await vi.waitFor(() => expect(host.snapshot().turns[0]?.status).toBe('running'));
+  emit({ type: 'turn.completed', turnId: 'old-turn', outcome: 'completed' });
+  await vi.waitFor(() => expect(host.snapshot().turns[0]?.status).toBe('completed'));
+  vi.mocked(adapter.startSession).mockImplementationOnce(async () => {
+    emit({ type: 'session.state.changed', status: 'ready' });
+    return { provider: 'claude', sessionId: 'session', nativeSessionId: 'fresh-native' };
+  });
+  const command = { ...message('reset'), body: { type: 'session.reset' as const } };
+  expect((await host.command(command)).status).toBe('applied');
+  expect(host.snapshot().session.epoch).not.toBe('epoch');
+  expect(host.snapshot().items[0].text).toBe('Hello');
+  expect(vi.mocked(adapter.startSession).mock.calls[1][0].resume).toBeUndefined();
+  expect((await host.command(command)).status).toBe('applied');
+  expect(adapter.startSession).toHaveBeenCalledTimes(2);
+  await expect(host.command(message('stale'))).rejects.toThrow('STALE_EPOCH');
+  await host.shutdown();
+  const next = setup('claude');
+  hosts.push(await HostedSession.start(root, next.config, next.adapter));
+  expect(next.adapter.startSession).toHaveBeenCalledWith(
+    expect.objectContaining({
+      resume: { nativeSessionId: 'fresh-native' },
+    })
+  );
+});
+
+it('rejects reset with queued work or a pending native request', async () => {
+  const { host, adapter, emit } = await start('claude');
+  await host.command(message('active'));
+  await host.command(message('queued'));
+  emit({
+    type: 'request.opened',
+    turnId: 'active',
+    requestId: 'permission',
+    requestType: 'tool_approval',
+    title: 'Run command',
+    options: [{ decision: 'accept', label: 'Allow' }],
+  });
+  await vi.waitFor(() => expect(host.snapshot().requests).toHaveLength(1));
+  await expect(
+    host.command({ ...message('reset'), body: { type: 'session.reset' } })
+  ).rejects.toThrow('SESSION_BUSY');
+  expect(adapter.stopSession).not.toHaveBeenCalled();
+  expect(host.snapshot().session.epoch).toBe('epoch');
+  expect(host.snapshot().requests[0].state).toBe('open');
+});
+
+it.each([false, true])(
+  'does not recover an uncertain reset (native ID recorded: %s)',
+  async (nativeRecorded) => {
+    const { host, root } = await start('claude');
+    await host.shutdown();
+    await appendFile(join(root, 'inbox.jsonl'), JSON.stringify({ type: 'reset-started' }) + '\n');
+    if (nativeRecorded)
+      await appendFile(
+        join(root, 'inbox.jsonl'),
+        JSON.stringify({ type: 'native', nativeSessionId: 'possibly-created' }) + '\n'
+      );
+    const next = setup('claude');
+    await expect(HostedSession.start(root, next.config, next.adapter)).rejects.toThrow(
+      'RESET_OUTCOME_UNKNOWN'
+    );
+    expect(next.adapter.startSession).not.toHaveBeenCalled();
+  }
+);

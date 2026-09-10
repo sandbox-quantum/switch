@@ -112,7 +112,7 @@ export async function startHostServer(
           approvals: adapter.capabilities.approvals,
           questions: adapter.capabilities.userInput,
           interrupt: true,
-          reset: false,
+          reset: true,
           compact: false,
           modelChange: false,
           attachmentMimeTypes: [],
