@@ -20,7 +20,7 @@ from switch_core.db.tenant_lookup import (
     tenant_of_agent_oauth_client,
     tenant_of_api_key,
 )
-from switch_core.logging_context import bind_log_context, unbind_log_context
+from switch_core.logging_context import log_context
 from switch_core.tenant_context import tenant_scope
 
 logger = logging.getLogger(__name__)
@@ -162,12 +162,10 @@ class BearerAuthMiddleware:
             # path resolves straight to an Agent with no ApiKey row, so it
             # falls back to the agent's own tenant.
             tenant_id = api_key.tenant_id if api_key is not None else agent.tenant_id
-            with tenant_scope(tenant_id):
-                log_token = bind_log_context(agent_id=agent.id, tenant_id=tenant_id)
-                try:
-                    await self.app(scope, receive, send)
-                finally:
-                    unbind_log_context(log_token)
+            with tenant_scope(tenant_id), log_context(
+                agent_id=agent.id, tenant_id=tenant_id
+            ):
+                await self.app(scope, receive, send)
             return
 
         # Registration token: pass through (handler validates again). MCP rejects.
@@ -184,12 +182,10 @@ class BearerAuthMiddleware:
             # tenant zero by fallback and make that wrong answer permanent and
             # self-confirming — so bind the token's own tenant here, exactly
             # as an agent key does.
-            with tenant_scope(api_key.tenant_id):
-                log_token = bind_log_context(tenant_id=api_key.tenant_id)
-                try:
-                    await self.app(scope, receive, send)
-                finally:
-                    unbind_log_context(log_token)
+            with tenant_scope(api_key.tenant_id), log_context(
+                tenant_id=api_key.tenant_id
+            ):
+                await self.app(scope, receive, send)
             return
 
         response = Response("Invalid credentials", status_code=401)

@@ -30,7 +30,7 @@ row the way the two bindings could.
 from __future__ import annotations
 
 import logging
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar, Token
 from dataclasses import dataclass, replace
@@ -80,17 +80,24 @@ def unbind_log_context(token: Token[LogContext]) -> None:
 
 
 @contextmanager
-def _held(token: Token[LogContext]) -> Iterator[None]:
-    """Hold `token` for the block and restore what it replaced on the way out.
+def restore_unless_finalising(restore: Callable[[], None]) -> Iterator[None]:
+    """Run `restore` on the way out of the block, except when it is unwound by
+    `GeneratorExit`.
 
-    Not restored when the block is unwound by `GeneratorExit`. That is a frame
-    being *finalised* rather than resumed — a coroutine dropped while
-    suspended and later closed by the garbage collector — and the collector
-    runs it in whatever context it happens to be in, not the one the token
-    belongs to. `Token.reset` refuses to cross contexts, correctly: restoring
-    there would stamp this scope's fields onto an unrelated one. There is also
-    nothing left to restore, since the context the token belongs to is
-    unreachable, which is why the frame is being finalised at all.
+    `GeneratorExit` here means the frame is being *finalised* rather than
+    resumed — a coroutine dropped while suspended and later closed by the
+    garbage collector — and the collector runs that close in whatever context
+    it happens to be in, not the one that entered the block. A `restore` built
+    on a `contextvars.Token.reset` refuses to cross contexts, correctly:
+    running it there would stamp this scope's state onto an unrelated one.
+    There is also nothing left to restore, since the context the token
+    belongs to is unreachable, which is why the frame is being finalised at
+    all.
+
+    Shared by every scope built on a context-variable token — `log_context`
+    below, and the call context in `bridges/agent/operations/callctx.py`,
+    which restores both a call token and a log token together — so the
+    finalisation check is written once rather than duplicated per token type.
     """
     finalising = False
     try:
@@ -100,12 +107,13 @@ def _held(token: Token[LogContext]) -> Iterator[None]:
         raise
     finally:
         if not finalising:
-            unbind_log_context(token)
+            restore()
 
 
 @contextmanager
 def log_context(**fields: str | None) -> Iterator[None]:
-    with _held(bind_log_context(**fields)):
+    token = bind_log_context(**fields)
+    with restore_unless_finalising(lambda: unbind_log_context(token)):
         yield
 
 

@@ -7,6 +7,10 @@ adds an operation and these fail, that is the point.
 
 from __future__ import annotations
 
+import contextvars
+from collections.abc import Coroutine, Generator
+from typing import Any
+
 import pytest
 
 from switch_core.bridges.agent.api.operations import (
@@ -24,6 +28,7 @@ from switch_core.bridges.agent.operations.callctx import (
     reset_call_context,
     set_call_context,
 )
+from switch_core.logging_context import current_log_context
 
 AGENT = "agent-1"
 
@@ -161,6 +166,63 @@ def test_session_key_is_none_when_bound_to_nothing() -> None:
     # Neither an HTTP call context nor an MCP session: operations that need a
     # room report "not connected" rather than guessing one.
     assert op_context.session_key() is None
+
+
+class _Suspend:
+    """An await that suspends once, so a coroutine can be left mid-scope with
+    no event loop in sight."""
+
+    def __await__(self) -> Generator[None, None, None]:
+        yield
+
+
+def _drive_then_finalise_elsewhere(coro: Coroutine[Any, Any, None]) -> None:
+    """Enter the scope inside its own context, then close from this one —
+    what the garbage collector does to a coroutine dropped while suspended."""
+    contextvars.copy_context().run(coro.send, None)
+    coro.close()
+
+
+async def test_the_call_context_survives_a_dropped_operation_call() -> None:
+    """A caller that suspends inside an operation and is then dropped — the
+    coroutine finalised by the garbage collector rather than resumed — must
+    not raise trying to restore a token from the wrong context.
+    """
+
+    async def hanging_op(room_id: str) -> str:
+        await _Suspend()
+        return "unreached"
+
+    from switch_core.bridges.agent.operations import registry
+
+    registry._REGISTRY["hanging_op"] = registry.Operation(
+        name="hanging_op",
+        fn=hanging_op,
+        description="hanging",
+        input_schema=registry._input_schema(hanging_op),
+    )
+    try:
+
+        async def body() -> None:
+            await call_operation(
+                operation="hanging_op",
+                arguments={"room_id": "room-1"},
+                agent_id=AGENT,
+                connection_id="conn-9",
+            )
+
+        assert current_call_context() is None
+        _drive_then_finalise_elsewhere(body())
+        assert current_call_context() is None, (
+            "finalising a dropped operation call leaked its call context "
+            "into the collector's context"
+        )
+        assert current_log_context().agent_id is None, (
+            "finalising a dropped operation call leaked its log context "
+            "into the collector's context"
+        )
+    finally:
+        registry._REGISTRY.pop("hanging_op", None)
 
 
 def test_the_registry_refuses_duplicate_operation_names() -> None:

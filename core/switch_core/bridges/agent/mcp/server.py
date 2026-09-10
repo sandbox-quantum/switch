@@ -23,11 +23,7 @@ from starlette.types import ASGIApp
 
 from switch_core.bridges.agent.auth import BearerAuthMiddleware, OIDCTokenValidator
 from switch_core.bridges.agent.operations import all_operations
-from switch_core.bridges.agent.operations.callctx import (
-    CallContext,
-    reset_call_context,
-    set_call_context,
-)
+from switch_core.bridges.agent.operations.callctx import CallContext, call_context
 from switch_core.bridges.agent.operations.context import init_operations_protocol
 
 if TYPE_CHECKING:
@@ -64,18 +60,15 @@ class CallContextMiddleware(Middleware):
             raise ValueError("No agent_id in request — authentication failed")
 
         fastmcp_context = context.fastmcp_context
-        token = set_call_context(
+        with call_context(
             CallContext(
                 agent_id=agent_id,
                 session_key=(
                     fastmcp_context.session_id if fastmcp_context is not None else None
                 ),
             )
-        )
-        try:
+        ):
             return await call_next(context)
-        finally:
-            reset_call_context(token)
 
 
 mcp = FastMCP("Switch")
