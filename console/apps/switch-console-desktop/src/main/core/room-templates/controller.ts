@@ -1,5 +1,6 @@
 import Ajv from 'ajv';
 import { dump, load } from 'js-yaml';
+import type { KV } from '@main/db/kv';
 import { createRPCController } from '@shared/lib/ipc/rpc';
 
 export type ParamSpec = {
@@ -48,8 +49,8 @@ const MAX_RECENTS = 10;
 
 // Lazy-initialized to avoid pulling in the Electron `app` module at import
 // time, which breaks tests running in a plain Node environment.
-let _recentsKV: import('@main/db/kv').KV<RecentsKV> | null = null;
-async function recentsKV(): Promise<import('@main/db/kv').KV<RecentsKV>> {
+let _recentsKV: KV<RecentsKV> | null = null;
+async function recentsKV(): Promise<KV<RecentsKV>> {
   if (!_recentsKV) {
     const { KV } = await import('@main/db/kv');
     _recentsKV = new KV<RecentsKV>('template-recents');
