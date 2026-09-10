@@ -23,11 +23,11 @@ def _ignore_recovery(_token: str) -> None:
     return None
 
 
-def _always_refresh(_token: str, _revision: int) -> bool:
+def _always_refresh(_token: str, _state: tuple[int, str]) -> bool:
     return True
 
 
-def _ignore_refresh(_token: str, _revision: int) -> None:
+def _ignore_refresh(_token: str, _state: tuple[int, str]) -> None:
     return None
 
 
@@ -62,19 +62,24 @@ async def refresh_cards(
     *,
     recovery_allowed: Callable[[str], bool] = _always_recover,
     recovery_succeeded: Callable[[str], None] = _ignore_recovery,
-    refresh_needed: Callable[[str, int], bool] = _always_refresh,
-    refreshed: Callable[[str, int], None] = _ignore_refresh,
+    refresh_needed: Callable[[str, tuple[int, str]], bool] = _always_refresh,
+    refreshed: Callable[[str, tuple[int, str]], None] = _ignore_refresh,
 ) -> None:
     """Bring a session's cards up to date with its persisted requests.
 
     `recovery_allowed` gates `recover` — the search for a card whose post is
     unconfirmed — per token, and `recovery_succeeded` is told when one lands.
     `refresh_needed` gates redrawing an already-confirmed card, per token and
-    revision, and `refreshed` is told once one lands. `SessionPublisher`
-    passes backoff-backed versions of both pairs, so a card that genuinely
-    never lands does not have this re-scan a channel's growing history every
-    cycle forever, and a session stuck on one broken request does not have
-    this redraw its unrelated, unchanged siblings on every retry either.
+    `(revision, state)`, and `refreshed` is told once one lands. Both parts of
+    that pair matter: `request.submitting` moves a request from `open` to
+    `submitting` — swapping its buttons for "Answering: …" — at the *same*
+    revision the answer was accepted at, only `request.settled` bumps it, so
+    revision alone cannot tell a request that just changed state from one
+    that has not changed at all. `SessionPublisher` passes backoff-backed
+    versions of both pairs, so a card that genuinely never lands does not
+    have this re-scan a channel's growing history every cycle forever, and a
+    session stuck on one broken request does not have this redraw its
+    unrelated, unchanged siblings on every retry either.
 
     Direct callers (tests, and anything that wants every card actually
     confirmed rather than trusted from memory — including a freshly started
@@ -123,6 +128,7 @@ async def refresh_cards(
     errors: list[BaseException] = []
     backed_off = 0
     for request, post, room_id, channel_id, thread_id in publications:
+        state = (request.revision, request.state)
         try:
             if post is None:
                 if request.state != "open":
@@ -136,7 +142,7 @@ async def refresh_cards(
                     epoch=epoch,
                     agent_name=agent_name,
                 )
-                refreshed(new_post.token, request.revision)
+                refreshed(new_post.token, state)
             elif post.external_post_id == post.token:
                 if not recovery_allowed(post.token):
                     backed_off += 1
@@ -144,10 +150,10 @@ async def refresh_cards(
                 post = await cards.recover(post)
                 recovery_succeeded(post.token)
                 await cards.refresh(post, request)
-                refreshed(post.token, request.revision)
-            elif refresh_needed(post.token, request.revision):
+                refreshed(post.token, state)
+            elif refresh_needed(post.token, state):
                 await cards.refresh(post, request)
-                refreshed(post.token, request.revision)
+                refreshed(post.token, state)
         except Exception as error:
             # One request's card failing must not stop its siblings from
             # being tried: a session can have several open requests, and a
@@ -208,8 +214,18 @@ class _RecoveryBackoff:
 
 
 class _RedrawGuard:
-    """Remembers, for one publisher's own lifetime, which revision of each
-    confirmed card it last drew.
+    """Remembers, for one publisher's own lifetime, the `(revision, state)`
+    of each confirmed card it last drew.
+
+    Both parts of that pair are the card's identity, not revision alone:
+    `request.submitting` moves a request from `open` to `submitting` — the
+    card loses its buttons and gains "Answering: …" — at the *same* revision
+    the answer was accepted at, and only settling it bumps the revision. A
+    guard keyed on revision alone would see that transition as "unchanged"
+    and skip it, leaving a card that still looks answerable, with working
+    buttons, for as long as the request being decided takes — exactly the
+    "still offering buttons that no longer work" state `refresh` exists to
+    prevent, produced by the thing meant to avoid drawing what has not moved.
 
     A session retried because a *different* request in it is stuck must not
     redraw this one again on every retry — nothing about it changed since
@@ -222,13 +238,13 @@ class _RedrawGuard:
     """
 
     def __init__(self) -> None:
-        self._drawn: dict[str, int] = {}
+        self._drawn: dict[str, tuple[int, str]] = {}
 
-    def needed(self, token: str, revision: int) -> bool:
-        return self._drawn.get(token) != revision
+    def needed(self, token: str, state: tuple[int, str]) -> bool:
+        return self._drawn.get(token) != state
 
-    def drawn(self, token: str, revision: int) -> None:
-        self._drawn[token] = revision
+    def drawn(self, token: str, state: tuple[int, str]) -> None:
+        self._drawn[token] = state
 
 
 class SessionPublisher:

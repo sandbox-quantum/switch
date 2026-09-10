@@ -35,7 +35,7 @@ from switch_core.sessions.publication import (
     refresh_cards,
 )
 
-from .test_authority import EXAMPLES, command, host_event, opened, setup
+from .test_authority import EXAMPLES, answer, command, host_event, opened, setup
 from .test_publication import Platform
 
 
@@ -646,3 +646,35 @@ async def test_a_pure_backoff_wait_logs_a_warning_not_an_exception(
         and "waiting out a recovery backoff" in record.message
         for record in caplog.records
     )
+
+
+async def test_a_request_moved_to_submitting_is_redrawn_though_its_revision_did_not_move(
+    session_factory,
+):
+    """`request.submitting` moves a request from `open` to `submitting` — the
+    card loses its buttons and gains "Answering: ..." — at the *same*
+    revision the answer was accepted at; only settling it bumps the
+    revision. A guard keyed on revision alone would see this as unchanged
+    and leave the card looking answerable, with working buttons, for as
+    long as deciding the answer takes."""
+    service, epoch = await setup(session_factory)
+    await opened(service, epoch)
+    platform = RecoverablePlatform()
+    publisher = SessionPublisher(
+        session_factory, "bridge", cards_for(session_factory, platform)
+    )
+
+    await publisher.publish_pending()
+    assert len(platform.posts) == 1
+    assert platform.edits == []
+
+    # Switch itself emits `request.submitting` the moment it accepts an
+    # answer — before the host has confirmed anything — so this is
+    # triggered the same way a real press or typed answer would.
+    await service.submit(
+        answer(epoch, "answer-demo", actor="@owner:example.test", surface="slack"),
+        user_id=None,
+        bridge_id="bridge",
+    )
+    await publisher.publish_pending()
+    assert len(platform.edits) == 1
