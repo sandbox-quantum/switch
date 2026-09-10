@@ -406,7 +406,6 @@ async def create_room_from_yaml(
         return await rooms_yaml.provision(
             spec,
             user_id=user.id,
-            user_name=user.name,
             is_admin=user.role == "admin",
         )
     except ValueError as e:

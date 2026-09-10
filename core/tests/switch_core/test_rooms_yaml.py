@@ -288,7 +288,7 @@ async def test_provision_basic_with_agents_roles_and_inline_ref(env):
               content: "# Onboarding\\nhello"
         """
     )
-    result = await _svc(env).provision(spec, user_id=env["user_id"], user_name="test-user", is_admin=False)
+    result = await _svc(env).provision(spec, user_id=env["user_id"], is_admin=False)
 
     assert result.room_name == "Pilot"
     assert len(result.created_reference_ids) == 1
@@ -308,7 +308,7 @@ async def test_provision_no_agents_or_users(env):
             - { name: "D", description: "d", instructions: "i", content: "c" }
         """
     )
-    result = await _svc(env).provision(spec, user_id=env["user_id"], user_name="test-user", is_admin=False)
+    result = await _svc(env).provision(spec, user_id=env["user_id"], is_admin=False)
     assert result.room_name == "Agentless"
     assert len(result.created_document_ids) == 1
     assert result.failed_attachments == []
@@ -325,7 +325,7 @@ async def test_provision_unknown_agent_fails_loud(env):
         """
     )
     with pytest.raises(ValueError, match="Unknown agents"):
-        await _svc(env).provision(spec, user_id=env["user_id"], user_name="test-user", is_admin=False)
+        await _svc(env).provision(spec, user_id=env["user_id"], is_admin=False)
 
 
 @pytest.mark.asyncio
@@ -350,7 +350,7 @@ async def test_provision_unknown_reference_type_fails_before_the_room_exists(env
         """
     )
     with pytest.raises(ValueError, match="Unknown reference type 'never_registered'"):
-        await _svc(env).provision(spec, user_id=env["user_id"], user_name="test-user", is_admin=False)
+        await _svc(env).provision(spec, user_id=env["user_id"], is_admin=False)
 
     async with env["session_factory"]() as session:
         rooms = (
@@ -401,7 +401,7 @@ async def test_provision_inline_ref_of_a_user_defined_type(env):
               value: { urls: ["https://example.com/notion/spec"] }
         """
     )
-    result = await _svc(env).provision(spec, user_id=env["user_id"], user_name="test-user", is_admin=False)
+    result = await _svc(env).provision(spec, user_id=env["user_id"], is_admin=False)
     assert len(result.created_reference_ids) == 1
     assert result.failed_attachments == []
 
@@ -434,7 +434,7 @@ async def test_provision_attach_reference_by_name(env):
             - { name: "Team space" }
         """
     )
-    result = await _svc(env).provision(spec, user_id=env["user_id"], user_name="test-user", is_admin=False)
+    result = await _svc(env).provision(spec, user_id=env["user_id"], is_admin=False)
     assert result.attached_reference_ids == [ref_id]
     assert result.created_reference_ids == []
 
@@ -451,7 +451,7 @@ async def test_provision_attach_reference_by_name_unknown_fails(env):
         """
     )
     with pytest.raises(ValueError, match="No reference named"):
-        await _svc(env).provision(spec, user_id=env["user_id"], user_name="test-user", is_admin=False)
+        await _svc(env).provision(spec, user_id=env["user_id"], is_admin=False)
 
 
 @pytest.mark.asyncio
@@ -482,7 +482,7 @@ async def test_provision_ambiguous_reference_name_fails(env):
         """
     )
     with pytest.raises(ValueError, match="Ambiguous reference name"):
-        await _svc(env).provision(spec, user_id=env["user_id"], user_name="test-user", is_admin=False)
+        await _svc(env).provision(spec, user_id=env["user_id"], is_admin=False)
 
 
 @pytest.mark.asyncio
@@ -497,7 +497,7 @@ async def test_provision_duplicate_doc_name_is_best_effort(env):
             - { name: "Same", description: "d", instructions: "i", content: "b" }
         """
     )
-    result = await _svc(env).provision(spec, user_id=env["user_id"], user_name="test-user", is_admin=False)
+    result = await _svc(env).provision(spec, user_id=env["user_id"], is_admin=False)
     # Room + first doc created; the duplicate is reported, not raised.
     assert len(result.created_document_ids) == 1
     assert len(result.failed_attachments) == 1
@@ -516,7 +516,7 @@ async def test_provision_users_without_bridge_fails(env):
         """
     )
     with pytest.raises(ValueError, match="without a bridge|no bridge"):
-        await _svc(env).provision(spec, user_id=env["user_id"], user_name="test-user", is_admin=False)
+        await _svc(env).provision(spec, user_id=env["user_id"], is_admin=False)
 
 
 # ── export ───────────────────────────────────────────────────────────────────
@@ -546,7 +546,7 @@ async def test_export_round_trips_within_import_surface(env):
               content: "line1\\nline2"
         """
     )
-    result = await _svc(env).provision(spec, user_id=env["user_id"], user_name="test-user", is_admin=False)
+    result = await _svc(env).provision(spec, user_id=env["user_id"], is_admin=False)
 
     yaml_text = await _svc(env).export(result.room_id)
     reparsed = _svc(env).parse(yaml_text)
@@ -579,7 +579,7 @@ async def test_export_toggles_drop_sections(env):
             - { name: "D", description: "d", instructions: "i", content: "c" }
         """
     )
-    result = await _svc(env).provision(spec, user_id=env["user_id"], user_name="test-user", is_admin=False)
+    result = await _svc(env).provision(spec, user_id=env["user_id"], is_admin=False)
 
     yaml_text = await _svc(env).export(
         result.room_id, agents=False, roles=False, docs=False
@@ -1000,13 +1000,11 @@ async def test_provision_template_two_owners(env):
             TEMPLATE, inputs={"owner": "alice", "deploy_agent": "claude-code.alice"}
         ),
         user_id=env["user_id"],
-        user_name="test-user",
         is_admin=False,
     )
     r2 = await svc.provision(
         svc.parse(TEMPLATE, inputs={"owner": "bob", "deploy_agent": "claude-code.bob"}),
         user_id=env["user_id"],
-        user_name="test-user",
         is_admin=False,
     )
     assert r1.room_name == "alice local-deploy"

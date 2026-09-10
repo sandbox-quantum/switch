@@ -353,7 +353,6 @@ class RoomYamlService:
         spec: RoomSpec,
         *,
         user_id: str,
-        user_name: str,
         is_admin: bool,
     ) -> ProvisionResult:
         bridge_id = await self._resolve_bridge_id(spec.bridge)
