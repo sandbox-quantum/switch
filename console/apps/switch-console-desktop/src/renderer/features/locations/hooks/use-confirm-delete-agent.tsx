@@ -34,14 +34,19 @@ export function useConfirmDeleteAgent() {
     if (!targetAgentId) return;
     const resolvedAgentId = targetAgentId;
 
+    const location = getLocationManagerStore().locations.get(locationId)?.data ?? null;
+
     showDeleteAgent({
       agentId: resolvedAgentId,
       agentLabel: locationLabel,
-      onSuccess: ({ deleteInSwitch }) => {
+      sshHost: location?.sshHost ?? null,
+      dir: location?.dir ?? null,
+      onSuccess: ({ deleteInSwitch, removeProvisionedFiles }) => {
         void (async () => {
           try {
             await getLocationManagerStore().removeAgent(locationId, resolvedAgentId, {
               deleteInSwitch,
+              removeProvisionedFiles,
             });
             // Refresh the detail views that list a location's agents (settings
             // sections, delete modal) so the removed agent drops and its siblings
