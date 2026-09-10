@@ -1,11 +1,9 @@
 import { err, ok, type Result } from '@switch-console/shared';
-import { eq, sql } from 'drizzle-orm';
-import { isAttachableRuntime } from '@main/core/agent-runtime/attachment/types';
+import { sql } from 'drizzle-orm';
 import { getAgentById } from '@main/core/agents/getAgentById';
 import { locationManager } from '@main/core/locations/location-manager';
 import { db } from '@main/db/client';
 import { sessions } from '@main/db/schema';
-import { agentRuntimeKind } from '@shared/core/agents/agent-provider-config';
 import type { SessionConfig } from '@shared/core/sessions/session-config';
 import type {
   CreateSessionError,
@@ -33,10 +31,6 @@ export async function createSession(
   const configObj: SessionConfig = {};
   if (params.autoApprove !== undefined) configObj.autoApprove = params.autoApprove;
   if (params.initialPrompt?.trim()) configObj.initialPrompt = params.initialPrompt.trim();
-  // Frozen onto the session at creation. The agent's toggle decides how a
-  // session is launched; once launched, the session is what it is.
-  const runtime = agentRuntimeKind(agent.providerConfig);
-  if (runtime === 'provider') configObj.runtime = runtime;
   // The session's launch identity is not stored — it is read live from the
   // owning agent's `name` (see mapSessionRowToSession). How that name spawns is
   // the provider's business (Claude Code → `--agent <name>`) (CHOO-1440).
@@ -50,7 +44,6 @@ export async function createSession(
       title: params.title,
       shellId: params.shellId ?? 'system',
       config,
-      agentSessionId: params.id,
       isInitialSession: false,
       status: 'in_progress',
       updatedAt: sql`CURRENT_TIMESTAMP`,
@@ -71,17 +64,13 @@ export async function createSession(
     const built = await provisionSessionRuntime(session, location);
     await sessionRuntimeManager.registerSession(session.id, built, location.ctx);
 
-    if (params.attach === false && isAttachableRuntime(built.agent)) {
-      // Adopting a session the VM already started: the agent is running in its
-      // tmux pane, so only the sidecar and its shared relay are needed. Opening
-      // a terminal for each adopted session would put a whole host's worth of
-      // channels on one transport in a single reconcile pass.
-      await built.agent.ensureAttachable(session);
-    } else {
-      await built.agent.start(session, params.initialSize, false, params.initialPrompt);
-    }
+    await built.agent.start(
+      session,
+      params.initialSize,
+      params.attach === false,
+      params.initialPrompt
+    );
   } catch (e) {
-    await db.delete(sessions).where(eq(sessions.id, params.id));
     return err({ type: 'spawn-failed', message: e instanceof Error ? e.message : String(e) });
   }
 

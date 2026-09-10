@@ -249,12 +249,8 @@ function effortFrom(model: ModelSelection | undefined): EffortLevel | undefined 
  * registered. Claude Code names an MCP tool `mcp__<server>__<tool>`, folding
  * anything outside `[A-Za-z0-9_-]` in the server name to `_`.
  *
- * Their tools are allowed rather than asked about because a session's MCP
- * servers are exactly the ones the caller registered for it — passing
- * `mcpServers` puts the CLI in strict MCP config, so the user's own
- * registrations are not there to be confused with these. For Switch Console
- * that server is the room protocol, and a session that must ask a human before
- * it may speak in the room cannot answer the room at all — including to ask.
+ * Only explicitly registered servers receive this permission. User-configured
+ * MCP servers retain the provider's normal permission checks.
  */
 export function mcpToolPrefixes(names: string[]): string[] {
   return names.map((name) => `mcp__${name.replace(/[^A-Za-z0-9_-]/g, '_')}__`);
@@ -334,14 +330,7 @@ export class ClaudeAdapter implements ProviderAdapter {
   /**
    * Start a Claude Code session.
    *
-   * `settingSources` is left unset, which loads what the CLI itself would: the
-   * user's settings, their installed plugins and their skills, and the project's
-   * `.claude/agents/<name>.md` definitions that {@link ProviderSessionStartInput.agentName}
-   * names. Passing `mcpServers` puts the CLI in strict MCP config — measured
-   * against 2.1.260, the session's `init` then lists *only* the servers passed
-   * here, so a server the user has registered for the same purpose (the Switch
-   * connector plugin's own) is not loaded a second time, while that plugin's
-   * skills and hooks still are.
+   * User and project settings supply plugins, skills and agent definitions.
    */
   async startSession(input: ProviderSessionStartInput): Promise<ProviderSession> {
     if (this.sessions.has(input.sessionId)) {
@@ -365,6 +354,7 @@ export class ClaudeAdapter implements ProviderAdapter {
       cwd: input.cwd,
       env: input.env,
       permissionMode,
+      strictMcpConfig: false,
       canUseTool: this.makeCanUseTool(input.sessionId),
       ...(permissionMode === 'bypassPermissions' ? { allowDangerouslySkipPermissions: true } : {}),
       ...(executable ? { pathToClaudeCodeExecutable: executable } : {}),

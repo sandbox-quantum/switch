@@ -27,9 +27,6 @@ export const ActiveLocation = observer(function ActiveLocation() {
 
   if (!store) return null;
 
-  // The sidecar is a remote-only concern — a local agent runs no on-host process.
-  const isRemote = store.data.sshHost !== null;
-
   return (
     <AgentEditsProvider>
       <div className="flex min-h-0 w-full flex-1 flex-col">
@@ -37,7 +34,7 @@ export const ActiveLocation = observer(function ActiveLocation() {
           <div className="mx-auto flex w-full max-w-[820px] flex-col gap-10 px-8 pb-20">
             <AgentPageHeader />
             <SettingsPanel />
-            {isRemote && <SidecarPanel />}
+            <SidecarPanel />
             <SessionList />
           </div>
         </div>

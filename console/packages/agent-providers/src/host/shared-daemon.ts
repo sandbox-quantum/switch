@@ -15,12 +15,12 @@ if (!root || !configPath)
   throw new Error('Shared SDK host requires a state directory and configuration file.');
 const config = sharedConfigSchema.parse(
   JSON.parse(
-    mode === '--ensure' || mode === '--ensure-watch'
+    mode === '--ensure' || mode === '--ensure-watch' || mode === '--restart'
       ? Buffer.from(configPath, 'base64').toString('utf8')
       : await readFile(configPath, 'utf8')
   )
 );
-if (mode === '--ensure' || mode === '--ensure-watch') {
+if (mode === '--ensure' || mode === '--ensure-watch' || mode === '--restart') {
   console.log(
     JSON.stringify(
       await ensureSharedProcess({
@@ -29,6 +29,7 @@ if (mode === '--ensure' || mode === '--ensure-watch') {
         config,
         resuming: process.argv[5] === 'true',
         watcher: mode === '--ensure-watch',
+        restart: mode === '--restart',
       })
     )
   );
@@ -82,7 +83,7 @@ if (mode === '--ensure' || mode === '--ensure-watch') {
           input,
           roomConnection: config.roomConnection,
         },
-        adapterFor(config.start.provider),
+        adapterFor(config.start.provider, config.execution?.binaryPath),
         stop.signal
       );
       break;

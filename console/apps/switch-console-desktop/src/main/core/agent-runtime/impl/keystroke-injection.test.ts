@@ -13,7 +13,7 @@ function makeSession(providerId: Session['providerId']): Session {
     shellId: 'system',
     status: 'in_progress',
     statusChangedAt: now,
-    agentSessionId: null,
+
     isInitialSession: false,
     isPinned: false,
     autoApprove: false,

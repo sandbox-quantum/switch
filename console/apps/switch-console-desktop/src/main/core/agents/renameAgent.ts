@@ -1,10 +1,6 @@
 import type { PluginFs } from '@switch-console/core/agents/plugins';
 import { type Result, err, ok } from '@switch-console/shared';
 import { eq, sql } from 'drizzle-orm';
-import {
-  agentSidecarTmuxName,
-  killSidecarSession,
-} from '@main/core/agent-runtime/impl/remote-sidecar-launcher';
 import { getPlugin } from '@main/core/providers/plugin-registry';
 import { parseSwitchAgentCredentials } from '@main/core/switch-rooms/switch-credentials';
 import { db } from '@main/db/client';
@@ -12,10 +8,9 @@ import { agents } from '@main/db/schema';
 import { log } from '@main/lib/logger';
 import type { Agent, RenameAgentParams } from '@shared/core/agents/agents';
 import { agentEvents } from './agent-events';
-import { getAgentLocation, getRemoteAgentLocation } from './agent-location';
+import { getAgentLocation } from './agent-location';
 import { agentNameTaken } from './agent-name-taken';
 import { resolveWorkspaceFsFor } from './agent-workspace-fs';
-import { connectRemoteAgent } from './connect-remote-agent';
 import { getAgentById } from './getAgentById';
 import { ensureRemoteWatcher } from './remote-watcher';
 import { removeAgentLaunchProfile } from './remove-launch-profile';
@@ -23,35 +18,8 @@ import { agentSettingsRelativePath } from './switch-settings-paths';
 import { mapAgentRowToAgent } from './utils';
 import { foreignCredentialsEndpoint } from './write-switch-settings';
 
-/**
- * Tear down the remote sidecar the agent ran under its previous name, then bring
- * one back up under the new one.
- *
- * A sidecar's tmux name is a hash of `(repo dir, creds slug)` and the slug is the
- * agent's name, so a rename makes the running sidecar unreachable to every code
- * path rather than renaming it: left alone it keeps polling the agent's Switch
- * rooms forever while the next launch starts a second one beside it.
- *
- * Best-effort — a rename must not fail because the VM is unreachable. The
- * leftover is then reaped by `reapStaleSidecarsForAgent` on the next launch.
- */
-async function moveSidecarToNewName(previous: Agent, renamed: Agent): Promise<void> {
-  try {
-    const location = await getRemoteAgentLocation(previous);
-    if (!location) return;
-    const { host, remoteRepoDir } = await connectRemoteAgent(previous);
-    await killSidecarSession(
-      host,
-      agentSidecarTmuxName(remoteRepoDir, previous.name ?? previous.id),
-      log
-    );
-    await ensureRemoteWatcher(renamed.id);
-  } catch (error) {
-    log.warn('renameAgent: failed to move the sidecar to the new name', {
-      agentId: previous.id,
-      error: String(error),
-    });
-  }
+async function moveSidecarToNewName(_previous: Agent, renamed: Agent): Promise<void> {
+  await ensureRemoteWatcher(renamed.id);
 }
 
 /**

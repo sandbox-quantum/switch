@@ -1,7 +1,6 @@
 import z from 'zod';
 import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
 import type { AgentStatus } from '@shared/core/providers/agentEvents';
-import type { SessionRuntimeKind } from '@shared/core/sessions/session-transcript';
 import type { SessionStartSource, UiEntryPoint } from '@shared/core/telemetry/reporting';
 import type { TerminalShellId } from '@shared/core/terminals/terminal-settings';
 
@@ -35,13 +34,7 @@ export type Session = {
   status: SessionLifecycleStatus;
   /** ISO timestamp: when lifecycle status last changed (current status entered). */
   statusChangedAt: string;
-  /** Provider-native session id captured at runtime for resume. */
-  agentSessionId: string | null;
-  /**
-   * Provider-native chat id stored in the session's `config` JSON (e.g. the
-   * Codex rollout / Droid UUID) used to resume the correct chat. Distinct from
-   * `agentSessionId`, which is the `agent_session_id` column.
-   */
+  /** Native conversation imported from an earlier session, when available. */
   providerSessionId?: string;
   agentStatus?: AgentStatus | null;
   agentStatusSeen?: boolean;
@@ -50,12 +43,6 @@ export type Session = {
   archivedAt?: string;
   lastInteractedAt?: string;
   autoApprove?: boolean;
-  /**
-   * How the session drives its agent: `provider` runs it through a
-   * `@switch-console/agent-providers` adapter and has a transcript instead of a
-   * terminal. Absent means `pty` — the tmux/TUI path every session used before.
-   */
-  runtime?: SessionRuntimeKind;
   /** The session's agent's name, read live from the agent row on every load
    *  (so it follows a rename). Absent only for a row that predates named agents. */
   agentName?: string;

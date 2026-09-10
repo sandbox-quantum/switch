@@ -272,7 +272,6 @@ export const sessions = sqliteTable(
     config: versionedJsonColumn(sessionConfig)('config'),
     shellId: text('shell_id').$type<TerminalShellId>().notNull().default('system'),
     status: text('status'),
-    agentSessionId: text('agent_session_id'),
     agentStatus: text('agent_status'),
     agentStatusSeen: integer('agent_status_seen').default(1),
     isInitialSession: integer('is_initial_session', { mode: 'boolean' }),
