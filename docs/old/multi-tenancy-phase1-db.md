@@ -13,7 +13,7 @@ foreign keys** landed first, in the migration `8b276792ee30`.
 what was actually implemented, which differs from what it originally proposed —
 an event hook rather than a dependency at every call site, for reasons given
 there. **The background half of it has since been built too** — the roughly
-164 session sites outside the request path now bind a tenant at each unit of
+157 session sites outside the request path now bind a tenant at each unit of
 work, described where "Setting the tenant" talks about background work below.
 That section also records the model that was tried first, of binding once per
 long-lived task, and the four ways it leaked; it is written up rather than
@@ -112,8 +112,12 @@ Three entries are worth justifying:
   holds attachment bytes reached by an opaque URI, and unguessable identifiers
   are not an isolation boundary.
 - **`clients` is scoped**, so the admin/system client becomes one row per
-  tenant rather than one per deployment. Today that is a no-op — the single
-  existing row backfills to tenant zero — and it is the right shape later.
+  tenant rather than one per deployment. The single existing row backfills to
+  tenant zero, and `ClientLifecycleService.ensure_system_client` — the
+  startup call that guarantees the admin client exists — enumerates tenants
+  and creates the missing row in each, rather than asking whether one exists
+  anywhere. The distinction has teeth: "one exists" is true for a deployment
+  whose second tenant has no admin client in any of its rooms.
 
 **Global — no `tenant_id`, no policy:** `users`, `oidc_identities`,
 `feature_flags`, `alembic_version`.
@@ -143,7 +147,14 @@ second tenant appears, so the whole list was walked.
 - `reference_types` primary key → `(tenant_id, type)`. Customer-defined type
   slugs collide. This table has no `id` column at all, so it is the one scoped
   table that cannot carry a `unique (id, tenant_id)` — harmless, because
-  nothing references it by foreign key.
+  nothing references it by foreign key. It is also the one store that has to
+  name the tenant in every method rather than leaving the filter to the
+  policy: `session.get` on a composite primary key cannot address a row
+  without it. That is why `ReferenceTypeStore` reads and writes both say
+  `require_tenant_id()` explicitly. They said `TENANT_ZERO_ID` until the
+  policies landed, which under enforcement gave a second tenant a bare 500 on
+  create and silence on read, and as owner leaked every tenant's type slugs
+  and instructions to every other.
 - `collaboration_bridges` default-bridge index → `unique (tenant_id) where
   is_default`. "One default bridge for the deployment" is exactly the global
   singleton that breaks on the second tenant.
@@ -219,7 +230,7 @@ create or replace function require_tenant_id() returns text
 language plpgsql stable as $$
 declare v text := current_setting('app.tenant_id', true);
 begin
-  if v is null or v = '' then
+  if v is null or btrim(v) = '' then
     raise exception 'app.tenant_id is not set on this session'
       using errcode = '42501';
   end if;
@@ -227,11 +238,19 @@ begin
 end $$;
 ```
 
-Three cases, one behaviour. Never set in this session returns NULL because of
+Four cases, one behaviour. Never set in this session returns NULL because of
 the `true`; set and then released at commit returns the empty string, not NULL
-— the trap that produced a P1 elsewhere in the company; set returns the value.
-Both empty cases raise. **The function fails closed, and every other safety
-property here rests on that.**
+— the trap that produced a P1 elsewhere in the company; whitespace is neither
+of those and names no tenant that can exist; set returns the value. The first
+three raise. **The function fails closed, and every other safety property here
+rests on that.**
+
+The `btrim` decides but does not repair: the value is returned as it was
+given. Trimming it on the way out would be the function deciding, on a
+caller's behalf, that a malformed tenant id meant a real tenant. Without the
+`btrim` at all, `set_config('app.tenant_id', '   ')` passes and what follows
+is a session whose every read comes back empty and whose every write matches
+nothing, with no error anywhere to say why.
 
 ```sql
 alter table <t> enable row level security;
@@ -242,10 +261,19 @@ create policy tenant_isolation on <t>
   with check  (tenant_id = (select require_tenant_id()));
 ```
 
-- **`with check` is not optional.** `using` filters what you can read; without
-  `with check` a write is unconstrained and you can insert a row into another
-  tenant that you cannot then read back. Two of the four prior-art bugs are
-  this.
+- **`with check` is not optional, and it is load-bearing for updates too.**
+  `using` filters what you can read; without `with check` a write is
+  unconstrained and you can insert a row into another tenant that you cannot
+  then read back. Two of the four prior-art bugs are this. It is tempting to
+  think `update` is covered anyway, because Postgres re-checks the updated
+  row against `using` — but it only does that when the statement needs
+  `select` rights, which is to say when it carries a `where` or a
+  `returning` clause. `update t set tenant_id = 'B'` carries neither, and
+  under a `with check (true)` it succeeds and moves every row the caller can
+  see into another tenant. Verified on 16, after this document twice claimed
+  otherwise; both shapes are pinned in
+  `tests/switch_core/db/test_row_level_security.py` so the weaker claim
+  cannot come back a third time.
 - **`(select require_tenant_id())`** rather than a bare call, so the planner
   evaluates it once per query as an InitPlan rather than once per row. Marking
   the function `stable` is not sufficient on its own.
@@ -359,9 +387,9 @@ silently discarded a password change. Resolution needs the subject id, not a
 the session the endpoint actually commits.
 
 **Background work is not a short list, and it has since been closed.** There
-are 164 places that open a session from the factory directly, with no request
-behind them (176 in all, across twenty modules, once the request path's own
-twelve are counted). One rule covers all of them:
+are 157 places that open a session from the factory directly, with no request
+behind them (174 in all, across nineteen modules, once the request path's own
+seventeen are counted). One rule covers all of them:
 
 > **Nothing is ambient. Every unit of background work binds the tenant of the
 > row it is acting on, at the point it acts. Long-lived tasks bind nothing for
@@ -457,7 +485,7 @@ back rather than open a session named as exceptions.) The second is the one that
 may open a session straight from the factory at all.** A raw call inherits
 whatever is ambient, which in background code is now nothing — so it is
 unscoped in fact while declaring nothing, strictly worse than the hatch that
-announces itself. Those 176 call sites across twenty modules are the
+announces itself. Those 174 call sites across nineteen modules are the
 inventory this design has to work down; pinning the module list makes a new
 one a decision rather than a default.
 
@@ -476,9 +504,39 @@ fewer times, and skipping it is how the prior-art bugs happened.
 **Writes fill the column automatically.** `tenant_id` gets a Python-side
 default reading the request's tenant, so ordinary ORM inserts need no change
 across roughly 250 store methods, and `with check` catches anything that
-disagrees. Two caveats, both real: the default yields nothing in a system
-session, so the startup seeding paths must pass tenant zero explicitly; and one
-Core `executemany` in the room store needs checking rather than assuming.
+disagrees. One Core `executemany` in the room store needed checking rather
+than assuming.
+
+**What the default does when nothing is bound changed with the policies.** It
+used to answer tenant zero. `db/models.py`'s `require_tenant_id` now raises
+`TenantNotBoundError` instead, in Python, before the row reaches the
+database — so the failure names the write that forgot to bind rather than
+whatever error Postgres would have raised later, and it fails on the owner
+connection every environment still uses, where no policy bites at all. The
+fallback was defensible while a missing tenant merely meant "the only tenant
+we have"; under `with check` it is a write into a real customer's data that
+the database cannot tell apart from one tenant zero intended.
+
+Three consequences worth naming, because they are the whole cost of removing
+it:
+
+- **Startup names its tenant.** Seeding the admin user, and provisioning the
+  admin client, run before any request has bound anything. They say tenant
+  zero, or the tenant of the row they are creating, rather than letting a
+  default say it for them — the same shape `gateway/oidc_routes.py` already
+  used for a just-in-time provisioned account.
+- **`tenant_members` is the one scoped write the default cannot cover**,
+  because the caller supplies its whole primary key. `UserStore` therefore
+  called `current_tenant_id() or TENANT_ZERO_ID` by hand: a private copy of
+  exactly the fallback being removed, and the thing keeping admin seeding
+  alive. It now calls `require_tenant_id` like everything else, and the
+  seeding paths bind.
+- **The test fixtures bind tenant zero by default.** Most of the suite
+  constructs scoped rows directly rather than through a request, so without
+  it they would be exercising a path the design does not have. A test that
+  is *about* what is bound opts out with the `no_ambient_tenant` marker.
+  Applying that marker suite-wide turns 354 tests red, which is the expected
+  shape rather than a finding.
 
 The same context value feeds the logging filter, which has had a `tenant_id`
 field since before tenants existed and which nothing has ever bound
@@ -529,7 +587,7 @@ that; it is pinned by a test in
 `tests/switch_core/transport/test_postgres_transport.py` because the shape of
 the room list rests on it.)
 
-Two exceptions to the uniform rule, in full:
+Three exceptions to the uniform rule, in full:
 
 1. **`api_keys.key_hash` stays globally unique**, because authentication
    resolves it before a tenant exists.
@@ -537,8 +595,21 @@ Two exceptions to the uniform rule, in full:
    inside a fail-closed design and is named as such: nothing stops a pinned
    module reading across tenants once a second one exists. Phase 1 accepts
    that; the pinned list is what keeps it reviewable.
+3. **The agent-registration bootstrap key is seeded on an unbound
+   transaction, and writes two scoped rows there.** Everything else that
+   writes with nothing bound was converted to name its tenant; this one
+   cannot be, because the same block genuinely spans tenants — the key is
+   one per deployment, resolved by that globally unique hash, and the
+   admin-owned-agent warning beside it must see every tenant's agents or it
+   under-reports the case it exists to flag. So the block stays unscoped and
+   the two scoped rows in it, the bootstrap owner's membership and the
+   `ApiKey`, name tenant zero themselves. That works today only because
+   startup connects as the table owner. When the runtime role lands
+   (CHOO-2685) this path needs a system connection of its own; it is the one
+   place in the tree where "unscoped session" and "scoped write" meet, and it
+   is listed here rather than left for that work to discover.
 
-An earlier draft had a third — a membership-based policy on `users` — and it
+An earlier draft had one more — a membership-based policy on `users` — and it
 was wrong. Its `with check` made creating a user impossible: the membership row
 cannot exist before the user, and the user cannot be inserted before the
 membership. It also would not have held, because `tenant_members` has no
@@ -650,19 +721,41 @@ to them — that is the role work, and until it lands the same test against a
 real environment would pass for the wrong reason.
 
 Alongside it, the cheap tests that catch the regressions this design exists
-to prevent, also in that file:
+to prevent — in that file unless another is named:
 
-- Every scoped table has row-level security enabled and a policy, asserted by
-  querying `pg_policies` and `pg_tables` rather than by reading the code, with
-  the table list itself derived from `rls_ddl.scoped_tables` rather than
-  copied.
-- A write-side pair — an `INSERT` addressed to another tenant, and an
-  `UPDATE` moving an own row into one — for what `with check` catches that
-  `using` alone would not. (The `UPDATE` case turns out to be defended either
-  way, because Postgres re-checks a row's new state against `using` on
-  `UPDATE` regardless of `with check`; it stays as the write-side test the
-  design calls for, and as a pin against the day the two predicates diverge.)
-- A query issued with no tenant set raises rather than returning nothing.
+- Every scoped table has row-level security enabled and a policy whose
+  `using` and `with check` both isolate on that table's tenant column,
+  asserted by querying `pg_policies` and `pg_tables` rather than by reading
+  the code, with the table list itself derived from `rls_ddl.scoped_tables`
+  rather than copied. The predicates are compared by content, not merely for
+  being present: `using (true)` is a policy that is enabled, catalogued and
+  isolates nothing.
+- The migration's frozen `SCOPED_TABLES` matches that same derivation. A
+  frozen copy is the right shape (a migration must not change meaning
+  because a model did) and its failure mode is falling behind in silence —
+  a table added to the models gets a policy from `create_all`, so every test
+  above still passes, while a deployment built by Alembic has none. They
+  agree at 38; a deliberate divergence is still expressible, as a new
+  migration.
+- A write-side trio for what `with check` catches that `using` alone would
+  not: an `INSERT` addressed to another tenant, an `UPDATE` moving an own row
+  into one, and an **unqualified** `UPDATE` that names no rows. The last is
+  the one that matters — see the `with check` bullet above — and the middle
+  one is refused by the `using` re-check either way, kept because it is the
+  shape application code writes.
+- A query issued with no tenant set raises rather than returning nothing, and
+  so does one issued with a whitespace tenant.
+- `TenantNotBoundError` — the Python-side half of the same rule — raises for
+  a scoped ORM row, a plain `Table()` junction insert and a membership write
+  with nothing bound, in
+  `tests/switch_core/db/test_require_tenant_id.py`. It arrives wrapped in a
+  `StatementError` when a column default raises it, which that file pins
+  too, because a caller catching `SQLAlchemyError` would otherwise swallow
+  it.
+- `ensure_system_client` creates one admin client per tenant, on a fresh
+  database and on a deployment that gained a tenant between two boots
+  (`tests/switch_core/clients/test_ensure_system_client.py`). It had no test
+  at all until it stopped booting.
 
 The foreign-key-carries-`tenant_id` catalogue check this section originally
 asked for shipped earlier, with the schema migration — see
@@ -692,6 +785,18 @@ Named so they are decisions rather than omissions.
   exists in another tenant fails on the index rather than being handled — an
   existence oracle and a bad error. Phase 2.
 - **System sessions can read across tenants** by design, as above.
+- **`RoomService._resolve_system_clients` is tenant-blind**, and now that
+  `ensure_system_client` makes one admin client per tenant there is more than
+  one for it to be blind about. It returns every running system client, and
+  both callers — creating a room, and `reconcile_room_clients` at startup —
+  put all of them in the room. With two tenants that means offering tenant
+  B's admin client to tenant A's room, which `client_rooms`' composite
+  foreign key refuses, so the failure is loud rather than a leak. It was
+  equally broken before, in the other direction: one admin client in tenant
+  zero, offered to every tenant's rooms, refused the same way. The fix is a
+  filter on the room's tenant at both call sites, and it belongs with
+  whatever onboards the second tenant rather than in the change that made
+  the row exist.
 - **No indexes on `tenant_id`.** With one tenant the column has no selectivity
   and an index is pure write cost. Add them when the second tenant lands, in
   one migration, `concurrently`, with data to measure against.
@@ -710,8 +815,23 @@ Named so they are decisions rather than omissions.
   matches — `agent_store.get_by_name`, `collaboration_bridge_store.get_default`,
   `client_store.get_by_matrix_user_id`, and `room_store.get_by_matrix_room_id`
   are four of them. They are correct today, with one tenant, and wrong the
-  day a second one exists; making the session tenant-scoped, in the next PR,
-  is what makes them correct rather than each needing its own fix.
+  day a second one exists; the session being tenant-scoped is what makes them
+  correct, and until the runtime role lands that is true of the policies
+  rather than of the connection. `client_store.get_by_matrix_user_id` is now
+  reachably ambiguous rather than theoretically so, because the admin client
+  is one row per tenant and every one of them carries the same
+  `@switch-admin:<server>` id.
+- **`INSERT … ON CONFLICT` against a row the policy hides behaves two
+  different unhelpful ways.** `DO NOTHING` reports zero rows inserted, which
+  the caller reads as "already there" when in fact it is another tenant's
+  row and the caller's own is now missing. `DO UPDATE` raises *"new row
+  violates row-level security policy (USING expression)"*, which is an
+  existence oracle for a row the caller may not see. Both measured on 16.
+  Not reachable today: every conflict target in this tree is a UUID or a
+  hash, so a conflict across tenants would need a guessed identifier. It is
+  reachable the moment a natural key gains an upsert, so it is recorded
+  rather than fixed — the fix is to include `tenant_id` in the conflict
+  target, which the composite unique constraints already permit.
 - No plan, status or soft-delete on `tenants`; no tenant deletion; no
   per-tenant feature flags; no tenant switching.
 - No per-tenant agent registration credential — Phase 2 owns it as a security

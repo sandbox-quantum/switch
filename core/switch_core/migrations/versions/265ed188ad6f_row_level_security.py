@@ -8,19 +8,24 @@ tables — the 36 the schema migration named plus `tenants` and
 `tenant_members`.
 
 `require_tenant_id()` reads `current_setting('app.tenant_id', true)` and
-raises unless it is a non-empty string. Both empty cases matter: a session
-that never bound a tenant reads NULL; a session whose transaction already
-committed — releasing the `is_local` setting `db/tenant_session.py` issued —
-reads the empty string, not NULL. A function that only checked for NULL would
-miss the second, which is exactly the pooled-connection leak this design
-exists to close.
+raises unless it holds something other than whitespace. All three empty cases
+matter: a session that never bound a tenant reads NULL; a session whose
+transaction already committed — releasing the `is_local` setting
+`db/tenant_session.py` issued — reads the empty string, not NULL; and a
+whitespace-only value is neither of those while naming no tenant that can
+exist. A function that only checked for NULL would miss the second, which is
+exactly the pooled-connection leak this design exists to close, and one that
+stopped at the empty string would let the third through into a session whose
+every read comes back silently empty.
 
 Every policy is `for all`, comparing `tenant_id` (or, for `tenants` itself,
 `id`) against `(select require_tenant_id())` in both `using` and `with
 check`. The `select` wrapper makes the planner evaluate the function once per
 query rather than once per row; `with check` is not optional — without it an
-`insert` or `update` can write any tenant at all, which is two of the four
-prior-art bugs this design cites. There is no `to <role>` clause: naming the
+`insert` can address any tenant at all, and an `update` with neither a
+`where` clause nor a `returning` clause can move rows out of the caller's own
+tenant, which is two of the four prior-art bugs this design cites. There is
+no `to <role>` clause: naming the
 future runtime role here would make this migration fail on every environment
 that role does not exist in yet, and Postgres already exempts a table's owner
 from its own policies (this migration does not set `force row level
@@ -64,7 +69,7 @@ LANGUAGE plpgsql STABLE AS $$
 DECLARE
     v text := current_setting('app.tenant_id', true);
 BEGIN
-    IF v IS NULL OR v = '' THEN
+    IF v IS NULL OR btrim(v) = '' THEN
         RAISE EXCEPTION 'app.tenant_id is not set on this session'
             USING ERRCODE = '42501';
     END IF;

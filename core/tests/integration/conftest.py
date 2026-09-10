@@ -74,6 +74,7 @@ from switch_core.db.stores.room_link_store import RoomLinkStore
 from switch_core.db.stores.room_role_store import RoomRoleStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.task_store import TaskStore
+from switch_core.db.stores.tenant_store import TenantStore
 from switch_core.db.stores.user_store import UserStore
 from switch_core.main import _seed_agent_registration_bootstrap_key
 from switch_core.messages.notify import MessageListener
@@ -484,6 +485,7 @@ async def harness(session_env: SessionEnv) -> AsyncIterator[Harness]:
     client_lifecycle = ClientLifecycleService(
         matrix_admin=provisioning,
         client_store=session_env.client_store,
+        tenant_store=TenantStore(),
         client_factory=client_factory,
         session_factory=session_factory,
         config=config,

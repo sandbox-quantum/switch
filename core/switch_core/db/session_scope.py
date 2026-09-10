@@ -6,7 +6,7 @@ Everything in a request already gets a tenant for free: `gateway/auth.py` and
 `after_begin` hook (`db/tenant_session.py`) stamps it on every transaction
 that session opens from then on, at any depth, with no call site to remember.
 
-Nothing does that for the 164 places that open a session from the factory
+Nothing does that for the 157 places that open a session from the factory
 directly with no request behind them — the delivery loop, the
 collaboration and server-connector lifecycle services, the startup seeding in
 `main.py`, the periodic sweeps. Each needs to say, at the point it opens a

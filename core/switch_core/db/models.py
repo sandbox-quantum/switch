@@ -101,13 +101,18 @@ class TenantNotBoundError(RuntimeError):
     """
 
 
-def _tenant_id_default() -> str:
-    """The tenant a new scoped row lands in when nothing tells it otherwise.
+def require_tenant_id() -> str:
+    """The tenant bound to this unit of work, raising when nothing is bound.
 
-    Used to prefer the tenant bound to the current unit of work and fall back
-    to tenant zero when nothing was bound. That fallback is gone: with the
-    row-level-security policies in place (`db/rls_ddl.py`), a write into
-    tenant zero on behalf of a caller who forgot to bind is not a safe
+    The Python-side default on every scoped column, and the answer for the one
+    store whose primary key includes the tenant and so has to name it in a
+    `session.get` (`ReferenceTypeStore`). Named after the SQL function of the
+    same name in `db/rls_ddl.py` because it is the same rule on the other side
+    of the wire, and it fails the same way.
+
+    This used to prefer the bound tenant and fall back to tenant zero. That
+    fallback is gone: with the row-level-security policies in place, a write
+    into tenant zero on behalf of a caller who forgot to bind is not a safe
     default any more — it is a write into a real tenant that happens to be
     wrong the day a second one exists, and `with check` cannot tell it apart
     from a write tenant zero actually intended. Every writer is expected to
@@ -150,7 +155,7 @@ class TenantScoped:
                 name=f"fk_{cls.__tablename__}_tenant",  # type: ignore[attr-defined]
             ),
             nullable=False,
-            default=_tenant_id_default,
+            default=require_tenant_id,
         )
 
 
@@ -426,7 +431,7 @@ agent_skills = Table(
         Text,
         ForeignKey("tenants.id", name="fk_agent_skills_tenant"),
         nullable=False,
-        default=_tenant_id_default,
+        default=require_tenant_id,
     ),
     Column("agent_id", Text, primary_key=True),
     Column("skill_id", Text, primary_key=True),
@@ -481,7 +486,7 @@ room_agents = Table(
         Text,
         ForeignKey("tenants.id", name="fk_room_agents_tenant"),
         nullable=False,
-        default=_tenant_id_default,
+        default=require_tenant_id,
     ),
     Column("room_id", Text, primary_key=True),
     Column("agent_id", Text, primary_key=True),
@@ -515,7 +520,7 @@ room_skills = Table(
         Text,
         ForeignKey("tenants.id", name="fk_room_skills_tenant"),
         nullable=False,
-        default=_tenant_id_default,
+        default=require_tenant_id,
     ),
     Column("room_id", Text, primary_key=True),
     Column("skill_id", Text, primary_key=True),
@@ -735,7 +740,7 @@ room_references = Table(
         Text,
         ForeignKey("tenants.id", name="fk_room_references_tenant"),
         nullable=False,
-        default=_tenant_id_default,
+        default=require_tenant_id,
     ),
     Column("room_id", Text, primary_key=True),
     Column("reference_id", Text, primary_key=True),
@@ -759,7 +764,7 @@ room_documents = Table(
         Text,
         ForeignKey("tenants.id", name="fk_room_documents_tenant"),
         nullable=False,
-        default=_tenant_id_default,
+        default=require_tenant_id,
     ),
     Column("room_id", Text, primary_key=True),
     Column("document_id", Text, primary_key=True),
@@ -812,12 +817,7 @@ class ReferenceType(TenantScoped, Base):
         Text,
         ForeignKey("tenants.id", name="fk_reference_types_tenant"),
         primary_key=True,
-        # Deliberately still the literal constant, not `_tenant_id_default`:
-        # every read in `ReferenceTypeStore` is hardcoded to `TENANT_ZERO_ID`
-        # too (each marked `TODO(next PR)`), so a context-aware write here
-        # would create rows a same-tenant read could no longer find. Fixing
-        # the pair is that follow-up's job, not this one's.
-        default=TENANT_ZERO_ID,
+        default=require_tenant_id,
     )
     type: Mapped[str] = mapped_column(Text, primary_key=True)
     owner_id: Mapped[str] = mapped_column(Text, ForeignKey("users.id"), nullable=False)
@@ -884,7 +884,7 @@ room_packages = Table(
         Text,
         ForeignKey("tenants.id", name="fk_room_packages_tenant"),
         nullable=False,
-        default=_tenant_id_default,
+        default=require_tenant_id,
     ),
     Column("room_id", Text, primary_key=True),
     Column("package_id", Text, primary_key=True),
@@ -908,7 +908,7 @@ package_references = Table(
         Text,
         ForeignKey("tenants.id", name="fk_package_references_tenant"),
         nullable=False,
-        default=_tenant_id_default,
+        default=require_tenant_id,
     ),
     Column("package_id", Text, primary_key=True),
     Column("reference_id", Text, primary_key=True),
@@ -932,7 +932,7 @@ package_documents = Table(
         Text,
         ForeignKey("tenants.id", name="fk_package_documents_tenant"),
         nullable=False,
-        default=_tenant_id_default,
+        default=require_tenant_id,
     ),
     Column("package_id", Text, primary_key=True),
     Column("document_id", Text, primary_key=True),

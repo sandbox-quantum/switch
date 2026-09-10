@@ -11,9 +11,9 @@ is ambient — the request's tenant on the request path, and *nothing at all* in
 background code, since the long-lived tasks deliberately unbind (see
 `tenant_context.no_tenant`). So a raw call in background code is unscoped in
 fact while saying nothing about it, which is strictly worse than the hatch
-that announces itself. There are 176 of them across the twenty modules below;
-that is the number this design has to work down, and pinning the module list
-is how a new one becomes a decision rather than a default.
+that announces itself. There are 174 of them across the nineteen modules
+below; that is the number this design has to work down, and pinning the
+module list is how a new one becomes a decision rather than a default.
 
 A module failing either check is not a bug in the test. It means someone
 opened a session without saying which tenant it is for, and either that is
@@ -79,6 +79,8 @@ _RAW_SESSION_FACTORY_MODULES = {
     "switch_core.bridges.agent.operations.context",
     "switch_core.bridges.agent.operations.definitions",
     "switch_core.bridges.agent.mediation",
+    # Reached only from the gateway's rooms endpoints, so the same holds.
+    "switch_core.rooms_yaml",
     # ── Reached only from inside a unit of work that has already bound the
     # tenant of the row it is acting on — an inbound bridge event, a delivery,
     # a sweep row, an authenticated agent operation.
@@ -93,11 +95,11 @@ _RAW_SESSION_FACTORY_MODULES = {
     "switch_core.provisioning.postgres",
     "switch_core.room_service",
     "switch_core.transport.postgres",
-    # ── Deployment-level startup, with no tenant to inherit and none bound.
-    # Rows these write land in tenant zero via the model default. Correct
-    # while one tenant exists; both need revisiting before a second.
-    "switch_core.main",
-    "switch_core.rooms_yaml",
+    # `switch_core.main` came off this list when the tenant-zero fallback
+    # went. Every session startup opens now says which it is: a tenant
+    # session for the admin-user seeding and for the per-tenant work at boot,
+    # `unscoped_session` for the deployment-wide bootstrap key, which is
+    # resolved by a globally unique hash and has no tenant to be scoped to.
 }
 
 # Calls that end in `session_factory` but hand one back rather than open a

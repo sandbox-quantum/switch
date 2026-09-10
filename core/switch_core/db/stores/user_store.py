@@ -6,8 +6,12 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from switch_core.db.models import TENANT_ZERO_ID, OidcIdentity, TenantMember, User
-from switch_core.tenant_context import current_tenant_id
+from switch_core.db.models import (
+    OidcIdentity,
+    TenantMember,
+    User,
+    require_tenant_id,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -68,11 +72,18 @@ class UserStore:
         two.
 
         Joins the tenant bound to the caller's context, so an admin creating a
-        user joins them to their own tenant; falls back to tenant zero for the
-        callers with no tenant bound (startup and bootstrap seeding) — the
-        only tenant Phase 1 has anyway. The role mirrors the migration's own
-        mapping for pre-existing users: `owner` for the global admin role,
-        `member` otherwise.
+        user joins them to their own tenant. There is no fallback: `tenant_id`
+        is not nullable and nothing else in this schema fills it in, so an
+        unbound caller would otherwise get whichever tenant this function
+        happened to name — the same silent write into a real tenant that
+        `require_tenant_id` exists to refuse, and this is the one scoped write
+        the model default cannot cover because `TenantMember` is addressed by
+        its whole primary key. The seeding paths that legitimately run with
+        nothing bound name tenant zero themselves (`main.py`,
+        `gateway/oidc_routes.py`).
+
+        The role mirrors the migration's own mapping for pre-existing users:
+        `owner` for the global admin role, `member` otherwise.
         """
         existing = await session.execute(
             select(TenantMember.tenant_id).where(TenantMember.user_id == user.id)
@@ -81,7 +92,7 @@ class UserStore:
             return
         session.add(
             TenantMember(
-                tenant_id=current_tenant_id() or TENANT_ZERO_ID,
+                tenant_id=require_tenant_id(),
                 user_id=user.id,
                 role="owner" if user.role == "admin" else "member",
             )

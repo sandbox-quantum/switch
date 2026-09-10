@@ -20,6 +20,13 @@ this whole design exists to close: a session that finishes a tenant's
 transaction and is then handed unset-but-not-NULL to the next borrower. Empty
 string produced a real incident elsewhere in the company for that reason, so
 it gets the same treatment as NULL here rather than being assumed away.
+Whitespace is the third spelling of the same thing and gets it too: no tenant
+id is whitespace, `set_config('app.tenant_id', '   ')` would otherwise satisfy
+the check, and what follows is a session whose every read is silently empty
+and whose every write silently matches nothing. The raise trims to decide,
+and returns the value untrimmed — a fail-closed function that quietly
+repaired its input would be deciding, on a caller's behalf, that a malformed
+tenant id meant a real tenant.
 
 The policy text is one shape, applied identically to every scoped table:
 
@@ -29,12 +36,21 @@ The policy text is one shape, applied identically to every scoped table:
       using       (<col> = (select require_tenant_id()))
       with check  (<col> = (select require_tenant_id()));
 
-- **`with check` is not optional.** `using` only gates which existing rows a
-  statement can see; it says nothing about what a statement may write. An
-  `INSERT` has no existing row for `using` to filter, so without `with check`
-  it is free to address any tenant at all — writing a row into another
-  tenant that the writer can never read back. Prior art elsewhere, not a
-  hypothetical.
+- **`with check` is not optional, on inserts *and* on updates.** `using` only
+  gates which existing rows a statement can see; it says nothing about the row
+  a statement leaves behind. An `INSERT` has no existing row for `using` to
+  filter, so without `with check` it is free to address any tenant at all —
+  writing a row into another tenant that the writer can never read back.
+  Prior art elsewhere, not a hypothetical.
+
+  `UPDATE` is the same gap, and it is easy to talk yourself out of that.
+  Postgres *does* re-check the updated row against `using` — but only when
+  the statement needs `SELECT` rights on the table, which is to say when it
+  carries a `WHERE` or a `RETURNING` clause. `UPDATE t SET tenant_id = 'B'`
+  carries neither, so under a `with check (true)` it succeeds and moves every
+  row the caller can see into another tenant. Verified on Postgres 16;
+  `tests/switch_core/db/test_row_level_security.py` pins both shapes so the
+  weaker claim cannot be restated.
 - **`(select require_tenant_id())`**, not a bare call: wrapping it in a
   `select` makes the planner evaluate it once per query, as an `InitPlan`,
   instead of once per row. Marking the function `stable` is necessary but not
@@ -87,7 +103,7 @@ LANGUAGE plpgsql STABLE AS $$
 DECLARE
     v text := current_setting('app.tenant_id', true);
 BEGIN
-    IF v IS NULL OR v = '' THEN
+    IF v IS NULL OR btrim(v) = '' THEN
         RAISE EXCEPTION 'app.tenant_id is not set on this session'
             USING ERRCODE = '{_TENANT_NOT_SET_SQLSTATE}';
     END IF;

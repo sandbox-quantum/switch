@@ -13,15 +13,16 @@ decide what happens when nothing is bound — callers do, deliberately:
 - `db/tenant_session.py`'s `after_begin` hook treats "nothing bound" as
   "do nothing" — a system session (auth resolution, startup seeding, Alembic)
   has no tenant and must not be given one it invented.
-- `db/models.py`'s `TenantScoped` default treats "nothing bound" as tenant
-  zero, because the background call sites that still write through it have
-  not been converted to bind one yet — and because the long-lived tasks now
-  unbind deliberately (`no_tenant` below), "nothing bound" is the ordinary
-  state there rather than an accident.
+- `db/models.py`'s `require_tenant_id` treats "nothing bound" as an error and
+  raises, because a scoped row has to land in *some* tenant and guessing
+  which is how a write ends up in a real customer's data. It answered tenant
+  zero until row-level security landed; that made the guess unsafe rather
+  than merely approximate, since `with check` cannot tell a guess apart from
+  a write tenant zero actually intended.
 
-Neither of those fallbacks lives here. A `current_tenant_id()` that quietly
-substituted a default would make both of those call sites indistinguishable
-from a real bind, which is exactly the ambiguity the fail-closed design (see
+Neither of those answers lives here. A `current_tenant_id()` that quietly
+substituted a default would make an unbound context indistinguishable from a
+bound one, which is exactly the ambiguity the fail-closed design (see
 `docs/old/multi-tenancy-phase1-db.md`) depends on not existing.
 """
 

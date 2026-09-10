@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import uuid
+
 import pytest
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from switch_core.db.models import Reference, ReferenceType, User
+from switch_core.db.models import Reference, ReferenceType, Tenant, User
 from switch_core.db.stores.reference_store import ReferenceStore
 from switch_core.db.stores.reference_type_store import ReferenceTypeStore
+from switch_core.tenant_context import tenant_scope
 
 
 async def _make_user(session: AsyncSession, name: str) -> User:
@@ -250,3 +253,103 @@ class TestReferenceTypeStore:
             assert await store.count_references_of_type(session, "notion") == 2
             assert await store.count_references_of_type(session, "github") == 1
             assert await store.count_references_of_type(session, "unused") == 0
+
+
+class TestReferenceTypesAreScopedToTheBoundTenant:
+    """Reads and writes both, because half of either is worse than neither.
+
+    Every method here used to hardcode tenant zero or filter on nothing at
+    all, each marked `TODO(next PR)`. Left half-done, a context-aware write
+    puts a row where a tenant-zero read can never find it, and an unfiltered
+    read serves one customer's type slugs — and their instructions — to
+    another. These run on the owner connection, where no policy bites, so
+    what they assert is the store's own filtering rather than the database's.
+    """
+
+    async def test_a_write_lands_in_the_bound_tenant(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        other = f"tenant-{uuid.uuid4().hex[:8]}"
+        store = ReferenceTypeStore()
+        async with session_factory() as session:
+            session.add(Tenant(id=other, slug=other, name=other))
+            ada = await _make_user(session, "ada")
+            await session.flush()
+            with tenant_scope(other):
+                created = await store.create(session, _type("notion", ada.id))
+            await session.commit()
+            assert created.tenant_id == other
+
+    async def test_a_read_does_not_see_another_tenants_type(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        other = f"tenant-{uuid.uuid4().hex[:8]}"
+        store = ReferenceTypeStore()
+        async with session_factory() as session:
+            session.add(Tenant(id=other, slug=other, name=other))
+            ada = await _make_user(session, "ada")
+            await session.flush()
+            with tenant_scope(other):
+                await store.create(
+                    session, _type("notion", ada.id, read_visibility="public")
+                )
+            await session.commit()
+
+            # Bound to tenant zero, which `session_factory` binds by default.
+            assert await store.get(session, "notion") is None
+            assert await store.get_many(session, ["notion"]) == []
+            assert await store.list_all(session) == []
+            assert await store.list_for_user(session, None) == []
+            assert await store.list_for_user(session, ada.id) == []
+
+    async def test_the_same_slug_is_two_independent_types(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """The collision the per-tenant primary key exists for, through the
+        store: two customers both call something `notion`, and editing or
+        deleting one leaves the other alone."""
+        other = f"tenant-{uuid.uuid4().hex[:8]}"
+        store = ReferenceTypeStore()
+        async with session_factory() as session:
+            session.add(Tenant(id=other, slug=other, name=other))
+            ada = await _make_user(session, "ada")
+            await session.flush()
+            await store.create(session, _type("notion", ada.id))
+            with tenant_scope(other):
+                await store.create(session, _type("notion", ada.id))
+            await session.commit()
+
+            with tenant_scope(other):
+                await store.update_fields(session, "notion", display_name="Theirs")
+            await session.commit()
+
+            mine = await store.get(session, "notion")
+            assert mine is not None and mine.display_name == "Notion"
+
+            await store.delete(session, "notion")
+            await session.commit()
+            with tenant_scope(other):
+                theirs = await store.get(session, "notion")
+            assert theirs is not None and theirs.display_name == "Theirs"
+
+    async def test_counting_references_ignores_another_tenants(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """This count decides whether a type may be deleted; another
+        customer's references must not veto it."""
+        other = f"tenant-{uuid.uuid4().hex[:8]}"
+        store = ReferenceTypeStore()
+        references = ReferenceStore()
+        async with session_factory() as session:
+            session.add(Tenant(id=other, slug=other, name=other))
+            ada = await _make_user(session, "ada")
+            await session.flush()
+            await store.create(session, _type("notion", ada.id))
+            with tenant_scope(other):
+                await store.create(session, _type("notion", ada.id))
+                await references.create(session, _reference("notion", ada.id))
+            await session.commit()
+
+            assert await store.count_references_of_type(session, "notion") == 0
+            with tenant_scope(other):
+                assert await store.count_references_of_type(session, "notion") == 1

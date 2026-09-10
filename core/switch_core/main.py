@@ -76,7 +76,7 @@ from switch_core.db.engine import (
     create_unpooled_engine,
 )
 from switch_core.db.models import TENANT_ZERO_ID, ApiKey, User
-from switch_core.db.session_scope import unscoped_session
+from switch_core.db.session_scope import tenant_session, unscoped_session
 from switch_core.db.stores.agent_session_store import AgentSessionStore
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.api_key_store import ApiKeyStore
@@ -97,6 +97,7 @@ from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.server_connector_store import ServerConnectorStore
 from switch_core.db.stores.task_store import TaskStore
 from switch_core.db.stores.tenant_member_store import TenantMemberStore
+from switch_core.db.stores.tenant_store import TenantStore
 from switch_core.db.stores.user_store import UserStore
 from switch_core.gateway.app import create_gateway_app
 from switch_core.gateway.auth import hash_password
@@ -105,7 +106,7 @@ from switch_core.messages.notify import MessageListener
 from switch_core.provisioning import Provisioning
 from switch_core.provisioning.postgres import PostgresProvisioning
 from switch_core.room_service import RoomService
-from switch_core.tenant_context import no_tenant
+from switch_core.tenant_context import no_tenant, tenant_scope
 from switch_core.transport.ephemeral import EphemeralBus
 from switch_core.transport.invites import InviteBus
 from switch_core.version import switch_core_version
@@ -214,6 +215,7 @@ async def run(config: SwitchConfig) -> None:
     user_store = UserStore()
     api_key_store = ApiKeyStore()
     tenant_member_store = TenantMemberStore()
+    tenant_store = TenantStore()
     reference_store = ReferenceStore()
     reference_type_store = ReferenceTypeStore()
     document_store = DocumentStore()
@@ -243,8 +245,15 @@ async def run(config: SwitchConfig) -> None:
         room_link_store=room_link_store,
         session_factory=session_factory,
     )
-    async with session_factory() as session:
-        await resource_service.log_builtin_shadowing(session)
+    # Once per tenant, not once for the deployment: `reference_types` is
+    # scoped, so "every stored type a built-in shadows" is a question asked of
+    # one tenant at a time. Which tenants there are is the one read that
+    # cannot be scoped to any of them.
+    async with unscoped_session(session_factory) as session:
+        tenant_ids = await tenant_store.get_all_ids(session)
+    for tenant_id in tenant_ids:
+        async with tenant_session(session_factory, tenant_id) as session:
+            await resource_service.log_builtin_shadowing(session)
 
     # ── Provisioning ─────────────────────────────────────────────────────────
     matrix_admin: Provisioning = PostgresProvisioning(
@@ -295,6 +304,7 @@ async def run(config: SwitchConfig) -> None:
     client_lifecycle = ClientLifecycleService(
         matrix_admin=matrix_admin,
         client_store=client_store,
+        tenant_store=tenant_store,
         client_factory=client_factory,
         session_factory=session_factory,
         config=config,
@@ -487,11 +497,15 @@ async def _seed_admin_user(
     user_store: UserStore,
     config: SwitchConfig,
 ) -> None:
-    # Cross-tenant by necessity: this runs before any request has ever bound
-    # one. The admin User row itself is global (db/models.py); UserStore.create
-    # gives it a tenant_members row via its own tenant-zero fallback since
-    # nothing is bound here to join instead.
-    async with unscoped_session(session_factory) as session:
+    # Tenant zero by name, not by fallback. The admin `User` row is global
+    # (db/models.py) and the lookup below spans every tenant either way, but
+    # `UserStore.create` also writes a `tenant_members` row, and which tenant
+    # the deployment's own admin joins is a decision this line makes rather
+    # than one a default makes for it. It is the same decision, and the same
+    # reasoning, as `gateway/oidc_routes.py` binding tenant zero around a
+    # just-in-time provisioned account: exactly one tenant exists, and signing
+    # up into a tenant of one's own is a later phase, whose change is here.
+    async with tenant_session(session_factory, TENANT_ZERO_ID) as session:
         existing = await user_store.get_by_email(session, config.gateway_admin_email)
         if existing is not None:
             logger.info("Admin user already exists: %s", config.gateway_admin_email)
@@ -534,10 +548,13 @@ async def _seed_agent_registration_bootstrap_key(
     already exists under the old one, which would collide on the unique
     ``key_hash`` and fail the whole boot.
     """
-    # Cross-tenant by necessity, same as _seed_admin_user: no tenant exists
-    # yet to bind. The ApiKey row created below names tenant zero explicitly
-    # rather than leaning on the model default's fallback to it, so this
-    # keeps working once that fallback is removed.
+    # Genuinely cross-tenant, unlike `_seed_admin_user`: the bootstrap key is
+    # one per deployment, resolved by a globally unique hash, and the
+    # admin-owned-agent warning below must see every tenant's agents or it
+    # under-reports exactly the case it exists to flag. So the session stays
+    # unscoped and the two scoped rows written under it — the bootstrap
+    # owner's membership, and the `ApiKey` — name tenant zero themselves
+    # rather than inheriting a binding there isn't one of.
     async with unscoped_session(session_factory) as session:
         admin = await user_store.get_by_email(session, config.gateway_admin_email)
         if admin is None:
@@ -545,7 +562,8 @@ async def _seed_agent_registration_bootstrap_key(
                 "Cannot seed agent-registration bootstrap key: admin user "
                 f"{config.gateway_admin_email} not found"
             )
-        bootstrap_owner = await ensure_bootstrap_owner(session, user_store)
+        with tenant_scope(TENANT_ZERO_ID):
+            bootstrap_owner = await ensure_bootstrap_owner(session, user_store)
 
         admin_owned_agents = [
             a for a in await agent_store.get_all(session) if a.owner_id == admin.id

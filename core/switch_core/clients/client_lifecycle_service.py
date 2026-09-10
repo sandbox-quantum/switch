@@ -13,8 +13,9 @@ from switch_core.config import SwitchConfig
 from switch_core.db.models import Client
 from switch_core.db.session_scope import unscoped_session
 from switch_core.db.stores.client_store import ClientStore
+from switch_core.db.stores.tenant_store import TenantStore
 from switch_core.provisioning import Provisioning
-from switch_core.tenant_context import no_tenant
+from switch_core.tenant_context import no_tenant, tenant_scope
 
 logger = logging.getLogger(__name__)
 
@@ -25,12 +26,14 @@ class ClientLifecycleService:
         *,
         matrix_admin: Provisioning,
         client_store: ClientStore,
+        tenant_store: TenantStore,
         client_factory: ClientFactory,
         session_factory: async_sessionmaker[AsyncSession],
         config: SwitchConfig,
     ) -> None:
         self._matrix_admin = matrix_admin
         self._client_store = client_store
+        self._tenant_store = tenant_store
         self._client_factory = client_factory
         self._session_factory = session_factory
         self._config = config
@@ -44,16 +47,38 @@ class ClientLifecycleService:
     COLLAB_CLIENT_TYPES = ("bridge", "user")
 
     async def ensure_system_client(self, client_type: str) -> None:
-        async with self._session_factory() as session:
-            existing = await self._client_store.get_by_type(session, client_type)
-        if existing:
-            return
+        """One system client of `client_type` per tenant, created where missing.
+
+        `clients` is a scoped table, so the admin client is one row per tenant
+        rather than one per deployment — that is the whole reason
+        `clients.matrix_user_id` became unique per tenant rather than globally
+        (`docs/old/multi-tenancy-phase1-db.md`, "Which tables are scoped"). A
+        tenant with no admin client has no client in its rooms to provision
+        them or relay system messages, so "does one exist anywhere" is the
+        wrong question to ask: it answers yes for a tenant that has none.
+
+        The enumeration is unscoped by nature — which tenants exist is exactly
+        what a bound session cannot see — and each row is then created with
+        that tenant bound, so the `Client` picks it up from the same default
+        every other scoped write uses instead of being handed a constant.
+        """
+        async with unscoped_session(self._session_factory) as session:
+            tenant_ids = await self._tenant_store.get_all_ids(session)
+            already_served = {
+                client.tenant_id
+                for client in await self._client_store.get_by_type(session, client_type)
+            }
+
         localpart = f"switch-{client_type.replace('_', '-')}"
-        await self.create_client(
-            client_type=client_type,
-            display_name=client_type.replace("_", "-"),
-            localpart=localpart,
-        )
+        for tenant_id in tenant_ids:
+            if tenant_id in already_served:
+                continue
+            with tenant_scope(tenant_id):
+                await self.create_client(
+                    client_type=client_type,
+                    display_name=client_type.replace("_", "-"),
+                    localpart=localpart,
+                )
 
     async def start_all(self) -> None:
         # Every tenant's clients in one pass at boot, so this read is
