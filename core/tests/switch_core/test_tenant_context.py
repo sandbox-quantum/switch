@@ -4,6 +4,9 @@ that reads or writes it for a real request."""
 from __future__ import annotations
 
 import asyncio
+import contextvars
+from collections.abc import Coroutine, Generator
+from typing import Any
 
 from switch_core.tenant_context import (
     bind_tenant_id,
@@ -13,6 +16,14 @@ from switch_core.tenant_context import (
     tenant_scope,
     unbind_tenant_id,
 )
+
+
+class _Suspend:
+    """An await that suspends once, so a coroutine can be left mid-scope with
+    no event loop in sight."""
+
+    def __await__(self) -> Generator[None, None, None]:
+        yield
 
 
 class TestBindAndUnbind:
@@ -113,3 +124,37 @@ class TestNoTenant:
             assert current_tenant_id() is None
             unbind_tenant_id(token)
             assert current_tenant_id() == "tenant-a"
+
+
+class TestFinalisationInAnotherContext:
+    """A dropped coroutine is closed by the garbage collector, and the
+    collector runs the frame's `finally` in whatever context it is in rather
+    than the task's. A scope that reset its token there would either raise
+    (`Token.reset` refuses to cross contexts) or, worse, write its tenant into
+    a context that never asked for one."""
+
+    @staticmethod
+    def _drive_then_finalise_elsewhere(coro: Coroutine[Any, Any, None]) -> None:
+        """Enter the scope inside its own context, then close from this one."""
+        contextvars.copy_context().run(coro.send, None)
+        coro.close()
+
+    def test_no_tenant_survives_being_closed_from_another_context(self) -> None:
+        async def body() -> None:
+            with no_tenant():
+                await _Suspend()
+
+        with tenant_scope("caller"):
+            self._drive_then_finalise_elsewhere(body())
+            assert current_tenant_id() == "caller"
+
+    def test_tenant_scope_survives_being_closed_from_another_context(self) -> None:
+        async def body() -> None:
+            with tenant_scope("the-task-s-tenant"):
+                await _Suspend()
+
+        self._drive_then_finalise_elsewhere(body())
+        assert current_tenant_id() is None, (
+            "finalising a dropped coroutine leaked its tenant into the "
+            "collector's context"
+        )

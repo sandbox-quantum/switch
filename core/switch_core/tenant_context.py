@@ -62,13 +62,34 @@ def clear_tenant_id() -> Token[str | None]:
 
 
 @contextmanager
-def tenant_scope(tenant_id: str) -> Iterator[None]:
-    """Bind `tenant_id` for the duration of the block."""
-    token = bind_tenant_id(tenant_id)
+def _held(token: Token[str | None]) -> Iterator[None]:
+    """Hold `token` for the block and restore what it replaced on the way out.
+
+    Not restored when the block is unwound by `GeneratorExit`. That is a frame
+    being *finalised* rather than resumed — a coroutine dropped while
+    suspended and later closed by the garbage collector — and the collector
+    runs it in whatever context it happens to be in, not the one the token
+    belongs to. `Token.reset` refuses to cross contexts, correctly: restoring
+    there would write this scope's tenant into an unrelated one. There is also
+    nothing left to restore, since the context the token belongs to is
+    unreachable, which is why the frame is being finalised at all.
+    """
+    finalising = False
     try:
         yield
+    except GeneratorExit:
+        finalising = True
+        raise
     finally:
-        unbind_tenant_id(token)
+        if not finalising:
+            unbind_tenant_id(token)
+
+
+@contextmanager
+def tenant_scope(tenant_id: str) -> Iterator[None]:
+    """Bind `tenant_id` for the duration of the block."""
+    with _held(bind_tenant_id(tenant_id)):
+        yield
 
 
 @contextmanager
@@ -88,8 +109,5 @@ def no_tenant() -> Iterator[None]:
       has to bind the tenant of the row it is acting on — and one that forgets
       reads nothing rather than reading the wrong tenant.
     """
-    token = clear_tenant_id()
-    try:
+    with _held(clear_tenant_id()):
         yield
-    finally:
-        unbind_tenant_id(token)

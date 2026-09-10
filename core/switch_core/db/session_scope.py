@@ -56,7 +56,7 @@ from contextlib import asynccontextmanager
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from switch_core.tenant_context import bind_tenant_id, no_tenant, unbind_tenant_id
+from switch_core.tenant_context import no_tenant, tenant_scope
 
 
 @asynccontextmanager
@@ -65,16 +65,13 @@ async def tenant_session(
 ) -> AsyncIterator[AsyncSession]:
     """Open a session bound to `tenant_id` for the life of the `async with` block.
 
-    Binds before the session is constructed and unbinds in a `finally`, so a
+    Binds before the session is constructed and unbinds on the way out, so a
     long-lived caller (a bridge's own task, say) cannot leak this tenant into
     whatever it does next even if the block raises.
     """
-    token = bind_tenant_id(tenant_id)
-    try:
+    with tenant_scope(tenant_id):
         async with session_factory() as session:
             yield session
-    finally:
-        unbind_tenant_id(token)
 
 
 @asynccontextmanager
