@@ -1142,7 +1142,11 @@ class BridgeCore:
             return
         outcome = await interactions.command_for_text(msg)
         if isinstance(outcome, Refused):
-            await self._tell_refused(msg, outcome, thread_ref=msg.root_id)
+            # The card's own thread, not wherever the answer was typed: a
+            # handle answers a card from anywhere in the channel, including
+            # the root, where `msg.root_id` is None and there would be
+            # nothing to say it in.
+            await self._tell_refused(msg, outcome, thread_ref=outcome.card_ref)
             return
         self._drop_session_command(outcome, msg.sender_id)
 

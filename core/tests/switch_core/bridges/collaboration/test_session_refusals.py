@@ -226,11 +226,32 @@ def test_a_refusal_that_names_no_card_leaves_the_card_out_of_the_sentence() -> N
 # ── Where it comes out ───────────────────────────────────────────────────────
 
 
-def test_a_typed_answer_is_answered_back_in_the_thread_it_was_typed_in() -> None:
-    """The card offers two options, so a ninth is aimed at it and misses."""
+def test_a_typed_answer_is_answered_back_in_the_cards_thread() -> None:
+    """The card offers two options, so a ninth is aimed at it and misses.
+
+    Answered back under the card, not under wherever the message that missed
+    was typed — a handle answers a card from anywhere in the channel, and the
+    ordinary case is the channel root, which has no thread of its own.
+    """
     bridge, _ = _bridge(_interactions(_post()))
 
     _run(bridge._handle_inbound_message(_typed("R42 9", root_id=CARD)))
+
+    assert [(actor, thread) for _, actor, _, thread, _ in bridge._adapter.told] == [
+        ("U1", CARD)
+    ]
+
+
+def test_a_typed_answer_from_the_channel_root_still_lands_in_the_cards_thread() -> None:
+    """The ordinary way to answer by handle: no thread at all, just the channel.
+
+    `msg.root_id` is None here, so a notice threaded on the answer rather than
+    the card would have nowhere to go and would silently log instead — which
+    is exactly what the answer path is supposed to prevent.
+    """
+    bridge, _ = _bridge(_interactions(_post()))
+
+    _run(bridge._handle_inbound_message(_typed("R42 9")))
 
     assert [(actor, thread) for _, actor, _, thread, _ in bridge._adapter.told] == [
         ("U1", CARD)

@@ -134,11 +134,15 @@ class Refused:
     does, because most of these are one: the wording that explains a refusal to
     whoever reads the log is the wording that explains it to whoever typed.
     `handle` names the card when it is known, so the person can be told which
-    of several they were answering.
+    of several they were answering. `card_ref` is the card's own post — set
+    whenever a card was found, which is every refusal past the lookup — so a
+    notice can be said in the card's thread rather than wherever the answer
+    happened to be typed, which may be nowhere at all.
     """
 
     reason: str
     handle: str | None
+    card_ref: str | None = None
 
     def told(self) -> str:
         """What to say to the person who gave the answer.
@@ -231,7 +235,9 @@ class SessionInteractions:
                 self._bridge_id,
                 answer.reason,
             )
-            return Refused(reason=answer.reason, handle=post.handle)
+            return Refused(
+                reason=answer.reason, handle=post.handle, card_ref=post.external_post_id
+            )
 
         actor_id = await self._identify(interaction)
         if actor_id is None:
@@ -242,7 +248,9 @@ class SessionInteractions:
                 interaction.sender_id,
                 self._bridge_id,
             )
-            return Refused(reason=_NO_IDENTITY, handle=post.handle)
+            return Refused(
+                reason=_NO_IDENTITY, handle=post.handle, card_ref=post.external_post_id
+            )
 
         origin = Origin(
             surface=self._surface,
@@ -292,7 +300,11 @@ class SessionInteractions:
                 self._bridge_id,
                 resolved.reason,
             )
-            return Refused(reason=resolved.reason, handle=post.handle)
+            return Refused(
+                reason=resolved.reason,
+                handle=post.handle,
+                card_ref=post.external_post_id,
+            )
 
         actor_id = await self._identify(message)
         if actor_id is None:
@@ -303,7 +315,9 @@ class SessionInteractions:
                 message.sender_id,
                 self._bridge_id,
             )
-            return Refused(reason=_NO_IDENTITY, handle=post.handle)
+            return Refused(
+                reason=_NO_IDENTITY, handle=post.handle, card_ref=post.external_post_id
+            )
 
         origin = Origin(
             surface=self._surface,
