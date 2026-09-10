@@ -38,10 +38,27 @@ class InviteBus:
         self._handlers: dict[str, InviteHandler] = {}
 
     def register(self, user_id: str, handler: InviteHandler) -> None:
+        """Make `handler` the live listener for `user_id`, displacing any other.
+
+        One slot per user, so a client that starts while an older instance of
+        itself is still unwinding takes the slot from it. That is the right
+        answer — the newer one is the client with a live receive loop — and it
+        is why `unregister` wants the handler back.
+        """
         self._handlers[user_id] = handler
 
-    def unregister(self, user_id: str) -> None:
-        self._handlers.pop(user_id, None)
+    def unregister(self, user_id: str, handler: InviteHandler) -> None:
+        """Give the slot up, but only if `handler` still holds it.
+
+        A transport unregisters from the `finally` of its receive loop, which
+        runs whenever that loop ends — including long after a newer client for
+        the same user took the slot. Clearing by user id alone would deafen
+        that newer client: `invite` would find nobody listening, the caller
+        would write the membership row itself, and the client would sit in a
+        room it was never told it was in until something restarted it.
+        """
+        if self._handlers.get(user_id) == handler:
+            del self._handlers[user_id]
 
     async def invite(self, user_id: str, transport_room_id: str) -> bool:
         """Tell `user_id` it is in `transport_room_id`.

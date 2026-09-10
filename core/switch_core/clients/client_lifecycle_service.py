@@ -168,7 +168,9 @@ class ClientLifecycleService:
             logger.warning("Cannot stop unknown client %s", client_id)
             return
         await client.stop()
-        self._cancel_task(client_id)
+        task = self._cancel_task(client_id)
+        if task is not None:
+            await asyncio.gather(task, return_exceptions=True)
         del self._clients[client_id]
         self._client_types.pop(client_id, None)
         self._client_tenants.pop(client_id, None)
@@ -178,8 +180,14 @@ class ClientLifecycleService:
         logger.info("Stopping all %d clients", len(self._clients))
         for client in self._clients.values():
             await client.stop()
-        for task in self._tasks.values():
+        tasks = list(self._tasks.values())
+        for task in tasks:
             task.cancel()
+        # Awaited, not merely cancelled. A cancelled task unwinds when the
+        # loop next runs it, or never — and a receive loop that is never run
+        # again is collected instead, which runs its `finally` under the
+        # garbage collector, in a context that is not the task's.
+        await asyncio.gather(*tasks, return_exceptions=True)
         self._clients.clear()
         self._client_types.clear()
         self._client_tenants.clear()
@@ -226,13 +234,23 @@ class ClientLifecycleService:
         ]
 
     def _start_task(self, client_id: str, client: ClientBase[ClientConfig]) -> None:
+        # A client row is one running task. Anything that starts a second for
+        # the same row — a boot sweep reaching a client that registration
+        # already started, a bridge restarting its own — replaces the first,
+        # and the first has to be told to stop rather than dropped on the
+        # floor. An abandoned receive loop is still subscribed to its rooms and
+        # still holds the invite slot for its user, and when the collector
+        # finally reaches it, it runs the teardown for both: the live client
+        # for that user goes deaf to invitations it never saw arrive.
+        self._cancel_task(client_id)
         task = asyncio.create_task(self._run_client(client_id, client))
         self._tasks[client_id] = task
 
-    def _cancel_task(self, client_id: str) -> None:
+    def _cancel_task(self, client_id: str) -> asyncio.Task[None] | None:
         task = self._tasks.pop(client_id, None)
         if task and not task.done():
             task.cancel()
+        return task
 
     async def _run_client(
         self, client_id: str, client: ClientBase[ClientConfig]

@@ -189,7 +189,7 @@ class PostgresTransport:
             await self._closed.wait()
         finally:
             self._receiving = False
-            self._invites.unregister(self.user_id)
+            self._invites.unregister(self.user_id, self._on_invited)
             self._unwatch_all()
             delivery.cancel()
 
