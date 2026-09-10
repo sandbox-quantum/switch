@@ -15,7 +15,7 @@ from switch_core.clients.bridge_client import BridgeClient, BridgeClientConfig
 from switch_core.clients.client_factory import ClientFactory
 from switch_core.config import SwitchConfig
 from switch_core.db.models import CollaborationBridge
-from switch_core.db.session_scope import unscoped_session
+from switch_core.db.session_scope import tenant_session, unscoped_session
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.bridge_message_map_store import BridgeMessageMapStore
 from switch_core.db.stores.client_store import ClientStore
@@ -23,7 +23,7 @@ from switch_core.db.stores.collaboration_bridge_store import CollaborationBridge
 from switch_core.db.stores.external_user_store import ExternalUserStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.provisioning import Provisioning
-from switch_core.tenant_context import tenant_scope
+from switch_core.tenant_context import no_tenant
 
 if TYPE_CHECKING:
     from switch_core.clients.client_lifecycle_service import ClientLifecycleService
@@ -191,20 +191,19 @@ class CollaborationBridgeLifecycleService:
 
     async def start_all(self) -> None:
         # Every tenant's active bridges in one pass, so the read is unscoped
-        # by nature. Each row already carries its own tenant; bind that one
-        # only around starting it, not the whole fan-out. `start` spawns the
-        # bridge's long-lived task from inside this binding, and an asyncio
-        # task snapshots the context it was created under, so the task keeps
-        # this tenant for its own life without the loop needing to hold it
-        # open past the moment the task exists.
+        # by nature. Nothing is bound around `start`: the bridge's tenant is
+        # read from its own row inside `start`, and bound by each unit of work
+        # that needs it. Binding here instead would only decide what the
+        # long-lived task snapshots, which is exactly what must not matter —
+        # `start` is also reached from an HTTP request, and a bridge cannot
+        # run under whichever tenant happened to restart it.
         async with unscoped_session(self._session_factory) as session:
             bridges = await self._bridge_store.get_active(session)
 
         logger.info("Starting %d collaboration bridges", len(bridges))
         for bridge in bridges:
             try:
-                with tenant_scope(bridge.tenant_id):
-                    await self.start(bridge.id)
+                await self.start(bridge.id)
             except Exception:
                 logger.exception("Failed to start bridge %s", bridge.id)
 
@@ -227,7 +226,12 @@ class CollaborationBridgeLifecycleService:
         if wanted is None:
             return
 
-        async with self._session_factory() as session:
+        # Deliberately across every tenant. Two tenants binding the same Slack
+        # workspace, or the same Teams listen port, is precisely the collision
+        # this exists to refuse — the resource is a property of the host and
+        # the platform, not of a tenant — so narrowing to the caller's tenant
+        # would make it miss the case it was written for.
+        async with unscoped_session(self._session_factory) as session:
             existing = await self._bridge_store.get_all(session)
         for other in existing:
             # Guard the None case explicitly: an unflushed row has no id yet, and
@@ -344,10 +348,15 @@ class CollaborationBridgeLifecycleService:
         return bridge
 
     async def start(self, bridge_id: str) -> None:
-        async with self._session_factory() as session:
+        # Unscoped: this is the read that answers which tenant the bridge is
+        # in, and it is reached both from boot (nothing bound) and from an
+        # HTTP request (the caller's tenant bound, which is not necessarily
+        # the bridge's). Everything below derives its tenant from this row.
+        async with unscoped_session(self._session_factory) as session:
             bridge = await self._bridge_store.get(session, bridge_id)
         if bridge is None:
             raise ValueError(f"Bridge not found: {bridge_id}")
+        tenant_id = bridge.tenant_id
 
         adapter_cls = self._adapter_registry.get(bridge.type)
         config_cls = self._config_registry.get(bridge.type)
@@ -371,11 +380,13 @@ class CollaborationBridgeLifecycleService:
         typed_config = config_cls.model_validate(bridge.connection_config or {})
         adapter = adapter_cls(config=typed_config)  # type: ignore[call-arg]
         adapter.set_service_url_persister(
-            lambda service_url: self._persist_service_url(bridge_id, service_url)
+            lambda service_url: self._persist_service_url(
+                bridge_id, tenant_id, service_url
+            )
         )
         adapter.set_channel_team_persister(
             lambda channel_id, team_id: self._persist_channel_team(
-                bridge_id, channel_id, team_id
+                bridge_id, tenant_id, channel_id, team_id
             )
         )
         adapter.set_max_attachment_bytes(self._config.agent_media_max_bytes)
@@ -394,7 +405,7 @@ class CollaborationBridgeLifecycleService:
                 bridge_id,
             )
 
-        async with self._session_factory() as session:
+        async with tenant_session(self._session_factory, tenant_id) as session:
             bridge_client_record = await self._client_store.get(
                 session, bridge.client_id
             )
@@ -403,6 +414,7 @@ class CollaborationBridgeLifecycleService:
 
         bridge_core = BridgeCore(
             bridge_id=bridge_id,
+            bridge_tenant_id=tenant_id,
             bridge_type=bridge.type,
             bridge_display_name=bridge.display_name,
             adapter=adapter,
@@ -432,7 +444,7 @@ class CollaborationBridgeLifecycleService:
         )
 
         task = asyncio.create_task(
-            self._run_bridge(bridge_id, bridge_core, bridge_client)
+            self._run_bridge(bridge_id, tenant_id, bridge_core, bridge_client)
         )
         self._bridges[bridge_id] = bridge_core
         self._tasks[bridge_id] = task
@@ -441,25 +453,32 @@ class CollaborationBridgeLifecycleService:
 
         logger.info("Started collaboration bridge %s (%s)", bridge_id, bridge.type)
 
-    async def _persist_service_url(self, bridge_id: str, service_url: str) -> None:
+    async def _persist_service_url(
+        self, bridge_id: str, tenant_id: str, service_url: str
+    ) -> None:
         """Persist an outbound serviceUrl an adapter learned from inbound traffic
-        so outbound survives a restart (used by the Teams adapter)."""
-        async with self._session_factory() as session:
+        so outbound survives a restart (used by the Teams adapter).
+
+        Called from inside the adapter's own task, which binds nothing, so the
+        bridge's tenant is carried here explicitly rather than inherited."""
+        async with tenant_session(self._session_factory, tenant_id) as session:
             await self._bridge_store.set_service_url(session, bridge_id, service_url)
             await session.commit()
 
     async def _persist_channel_team(
-        self, bridge_id: str, channel_id: str, team_id: str
+        self, bridge_id: str, tenant_id: str, channel_id: str, team_id: str
     ) -> None:
         """Persist the team an adapter learned a channel belongs to, so channel
         capture survives a restart (used by the Teams adapter)."""
-        async with self._session_factory() as session:
+        async with tenant_session(self._session_factory, tenant_id) as session:
             await self._bridge_store.set_channel_team(
                 session, bridge_id, channel_id, team_id
             )
             await session.commit()
 
-    async def _record_bridge_memberships(self, bridge_id: str, client_id: str) -> None:
+    async def _record_bridge_memberships(
+        self, bridge_id: str, tenant_id: str, client_id: str
+    ) -> None:
         """Make the bridge's rooms its recorded memberships before it starts.
 
         A bridge belongs in every room it carries, and that was expressed by
@@ -472,7 +491,7 @@ class CollaborationBridgeLifecycleService:
         Run at every start rather than repaired once, because the rooms a
         bridge carries change while it is stopped.
         """
-        async with self._session_factory() as session:
+        async with tenant_session(self._session_factory, tenant_id) as session:
             rooms = await self._room_store.get_by_bridge(session, bridge_id)
             added = 0
             for room in rooms:
@@ -492,18 +511,34 @@ class CollaborationBridgeLifecycleService:
     async def _run_bridge(
         self,
         bridge_id: str,
+        tenant_id: str,
         bridge_core: BridgeCore,
         bridge_client: BridgeClient,
     ) -> None:
-        try:
-            await self._record_bridge_memberships(bridge_id, bridge_client.client_id)
-            await bridge_core.start()
-            await bridge_client.start()
-        except Exception:
-            logger.exception("Bridge %s crashed", bridge_id)
-            self._bridges.pop(bridge_id, None)
-            self._tasks.pop(bridge_id, None)
-            self._held_resources.pop(bridge_id, None)
+        """The bridge's own long-lived task.
+
+        `no_tenant` first, because an `asyncio.Task` snapshots the contextvars
+        of whoever created it — and `start` is reached from an HTTP request as
+        often as from boot, so without this the bridge would spend its whole
+        life acting as the operator who happened to restart it. Nothing here
+        is ambient afterwards: `_record_bridge_memberships` binds the bridge's
+        tenant for its own writes, `BridgeCore.start` binds it around each
+        piece of bridge-level loading it does, and `bridge_client.start()` —
+        which runs until shutdown — binds nothing at all, leaving each
+        delivery to bind the tenant of the room it is for.
+        """
+        with no_tenant():
+            try:
+                await self._record_bridge_memberships(
+                    bridge_id, tenant_id, bridge_client.client_id
+                )
+                await bridge_core.start()
+                await bridge_client.start()
+            except Exception:
+                logger.exception("Bridge %s crashed", bridge_id)
+                self._bridges.pop(bridge_id, None)
+                self._tasks.pop(bridge_id, None)
+                self._held_resources.pop(bridge_id, None)
 
     async def stop(self, bridge_id: str) -> None:
         bridge_core = self._bridges.get(bridge_id)

@@ -55,7 +55,9 @@ def _fake_bridge(*, agent_ids: list[str], slash_hint: str | None = None):  # noq
     ) -> list[str]:
         return agent_ids
 
-    def add_room_mapping(room_id: str, matrix_room_id: str, channel_id: str) -> None:
+    def add_room_mapping(
+        room_id: str, matrix_room_id: str, channel_id: str, tenant_id: str
+    ) -> None:
         pass
 
     async def _adopt_existing_room(channel_id: str) -> tuple[str, str] | None:

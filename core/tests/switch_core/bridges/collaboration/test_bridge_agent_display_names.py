@@ -99,6 +99,7 @@ def _bridge(*agents: SimpleNamespace) -> BridgeCore:
     """A BridgeCore with only the two collaborators the resolver and the echo
     check touch — the rest of `__init__` needs a live Matrix stack."""
     bridge = BridgeCore.__new__(BridgeCore)
+    bridge._bridge_tenant_id = "tenant-1"
     bridge._agent_store = _AgentStore({a.name: a for a in agents})  # type: ignore[assignment]
     bridge._session_factory = _Session  # type: ignore[assignment]
     return bridge

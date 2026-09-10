@@ -4,10 +4,13 @@ that finds them is unscoped. Each row is itself tenant-scoped, so the rest of
 the work for that row — the liveness check and the reset — binds that row's
 own tenant, one at a time, rather than the whole sweep.
 
-This pins the two things that matter about that: each row's write is bound to
-its own tenant, and a row from one tenant cannot leak its binding into the
-next row's work, even when the two are processed back to back in the same
-sweep.
+This pins three things about that: each row's write is bound to its own
+tenant; a row from one tenant cannot leak its binding into the next row's
+work, even when the two are processed back to back in the same sweep; and the
+*whole* of a row's work is inside its binding, the emit at the end included.
+That last one is not decoration — the emit is the visible half. It resolves a
+mention handle and posts to a bridge, and leaving it outside the scope would
+put every write a reader actually sees back on whatever was ambient.
 """
 
 from __future__ import annotations
@@ -156,3 +159,39 @@ async def test_sweep_binds_each_row_s_own_tenant_and_does_not_leak(
         row_b = await store.get(session, agent_b, room_b)
     assert row_a is not None and row_a.state == "idle"
     assert row_b is not None and row_b.state == "idle"
+
+
+async def test_the_tail_of_a_row_s_work_is_still_inside_its_binding(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """`_mention_handle_for` and `_emit_runtime_state` run after the upsert's
+    session has closed. They are still that row's work — the handle is read
+    from `external_users`, and what the emit provokes is a post into the
+    room — so they must still be under the row's tenant."""
+    tenant_a = f"tenant-{uuid.uuid4().hex[:8]}"
+    tenant_b = f"tenant-{uuid.uuid4().hex[:8]}"
+    async with session_factory() as session:
+        await _make_tenant(session, tenant_a)
+        await _make_tenant(session, tenant_b)
+        agent_a, _ = await _make_stale_runtime_state(session, tenant_id=tenant_a)
+        agent_b, _ = await _make_stale_runtime_state(session, tenant_id=tenant_b)
+        await session.commit()
+
+    service = _service(session_factory)
+    emitted: dict[str, str | None] = {}
+    handles: dict[str, str | None] = {}
+
+    async def _record_emit(**kwargs: object) -> None:
+        emitted[str(kwargs["agent_id"])] = current_tenant_id()
+
+    async def _record_handle(agent: object, bridge_id: object) -> None:
+        handles[str(getattr(agent, "id", agent))] = current_tenant_id()
+
+    service._emit_runtime_state = _record_emit  # type: ignore[attr-defined,method-assign]
+    service._mention_handle_for = _record_handle  # type: ignore[attr-defined,method-assign]
+
+    await service.sweep_runtime_states()
+
+    assert emitted == {agent_a: tenant_a, agent_b: tenant_b}
+    assert handles == {agent_a: tenant_a, agent_b: tenant_b}
+    assert current_tenant_id() is None

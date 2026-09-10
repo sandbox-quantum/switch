@@ -17,7 +17,6 @@ from switch_core.db.models import ApiKey, ServerConnector
 from switch_core.db.session_scope import unscoped_session
 from switch_core.db.stores.api_key_store import ApiKeyStore
 from switch_core.db.stores.server_connector_store import ServerConnectorStore
-from switch_core.tenant_context import tenant_scope
 
 logger = logging.getLogger(__name__)
 
@@ -54,17 +53,16 @@ class ServerSideConnectorLifecycleService:
     async def start_all(self) -> None:
         # Every tenant's active connectors in one pass — unscoped by nature,
         # same reasoning as CollaborationBridgeLifecycleService.start_all.
-        # Each row carries its own tenant; bind it only around starting that
-        # one connector, and the poll loop `start` spawns keeps it for that
-        # task's own life via the context asyncio.create_task snapshots.
+        # Nothing is bound around `start`: it reads the connector's own row
+        # and hands that row's tenant to the core, which binds it per unit of
+        # work rather than once for the poll loop's life.
         async with unscoped_session(self._session_factory) as session:
             connectors = await self._connector_store.get_active(session)
 
         logger.info("Starting %d server-side connectors", len(connectors))
         for record in connectors:
             try:
-                with tenant_scope(record.tenant_id):
-                    await self.start(record.id)
+                await self.start(record.id)
             except Exception:
                 logger.exception("Failed to start connector %s", record.id)
 
@@ -118,7 +116,10 @@ class ServerSideConnectorLifecycleService:
         return record
 
     async def start(self, connector_id: str) -> None:
-        async with self._session_factory() as session:
+        # Unscoped: the read that answers which tenant this connector is in,
+        # reached both from boot with nothing bound and from an HTTP request
+        # whose tenant is the caller's, not necessarily the connector's.
+        async with unscoped_session(self._session_factory) as session:
             record = await self._connector_store.get(session, connector_id)
             if record is None:
                 raise ValueError(f"Connector not found: {connector_id}")
@@ -140,6 +141,7 @@ class ServerSideConnectorLifecycleService:
 
         core = ConnectorCore(
             connector_id=connector_id,
+            connector_tenant_id=record.tenant_id,
             connector_type=record.type,
             connector=connector,
             registration_token=registration_token,

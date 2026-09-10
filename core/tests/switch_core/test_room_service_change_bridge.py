@@ -100,7 +100,11 @@ class _FakeBridgeCore:
         self.adapter = _FakeAdapter(events, new_channel_id)
 
     def add_room_mapping(
-        self, room_id: str, matrix_room_id: str, external_channel_id: str
+        self,
+        room_id: str,
+        matrix_room_id: str,
+        external_channel_id: str,
+        tenant_id: str,
     ) -> None:
         self._events.append(("add_room_mapping", room_id, external_channel_id))
 

@@ -17,13 +17,14 @@ import uuid
 from collections.abc import Iterator
 
 import pytest
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from switch_core.db.models import Client, Room, Tenant
+from switch_core.db.models import Client, ClientRoom, Message, Room, Tenant
 from switch_core.db.stores.media_store import MediaStore
 from switch_core.db.stores.message_store import MessageStore
 from switch_core.db.stores.room_store import RoomStore
-from switch_core.tenant_context import current_tenant_id
+from switch_core.tenant_context import current_tenant_id, tenant_scope
 from switch_core.transport import (
     InboundCustomEvent,
     InboundMedia,
@@ -931,3 +932,239 @@ class TestDeliveryBindsTheRoomsTenant:
         assert all(tenant == tenant_id for tenant in seen)
         # Bound only for the read itself, not left dangling on the process.
         assert current_tenant_id() is None
+
+
+class TestATransportOwnsNoTenantOfItsOwn:
+    """A transport is not a single-tenant actor, and CHOO-2623 stops it
+    behaving like one.
+
+    Its task binds nothing: `ClientLifecycleService` unbinds before running a
+    client, so anything the transport does under an inherited tenant would be
+    doing it under the tenant of whoever happened to create the task — boot,
+    a gateway request, or the inbound bridge message that minted a puppet
+    mid-conversation. Two consequences are pinned here: the lookup that says
+    which rooms this client is in runs with nothing bound, and each delivery
+    binds the tenant of the room it is for.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _cleanup(self) -> Iterator[None]:
+        self._tasks: list[asyncio.Task] = []
+        yield
+        for task in self._tasks:
+            task.cancel()
+
+    async def test_the_room_list_is_read_with_no_tenant_bound(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """`joined_rooms` decides, once, what this client will ever hear. A
+        tenant bound over that read narrows it to a subset with no error to
+        say so — the client is simply deaf everywhere else, forever. So it
+        must run unscoped even when reached from a bound context."""
+        tenant_id = f"tenant-{uuid.uuid4().hex[:8]}"
+        async with session_factory() as session:
+            session.add(Tenant(id=tenant_id, slug=tenant_id, name=tenant_id))
+            await session.flush()
+            suffix = uuid.uuid4().hex[:8]
+            client = Client(
+                tenant_id=tenant_id,
+                matrix_user_id=f"@sys-{suffix}:test",
+                display_name="admin",
+                type="admin",
+            )
+            session.add(client)
+            room = Room(
+                tenant_id=tenant_id,
+                matrix_room_id=f"!room-{suffix}:test",
+                name="a room",
+                description="",
+            )
+            session.add(room)
+            await session.flush()
+            session.add(
+                ClientRoom(tenant_id=tenant_id, client_id=client.id, room_id=room.id)
+            )
+            await session.commit()
+            client_id, user_id = client.id, client.matrix_user_id
+            transport_room_id = room.matrix_room_id
+
+        seen: list[str | None] = []
+        original = RoomStore.get_for_client
+
+        async def _spy(self, session, client_id):  # type: ignore[no-untyped-def]
+            seen.append(current_tenant_id())
+            return await original(self, session, client_id)
+
+        monkeypatch.setattr(RoomStore, "get_for_client", _spy)
+
+        transport = _transport(session_factory, client_id=client_id, user_id=user_id)
+        # Stands in for a task that inherited a tenant it has no business
+        # acting under — a bridge restart, a puppet minted mid-conversation.
+        with tenant_scope("some-other-tenant"):
+            rooms = await transport.joined_rooms()
+
+        assert rooms == [transport_room_id]
+        assert seen == [None], (
+            "joined_rooms inherited a tenant; under row-level security it "
+            "would have returned a subset of this client's rooms and gone "
+            "silent in the rest"
+        )
+
+    async def test_each_room_is_delivered_under_its_own_tenant(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """One transport, two rooms, two tenants — the shape a reused puppet
+        takes. The client whose transport this is belongs to one of the two
+        tenants, and that must not decide how the other room is read.
+
+        Membership is only recorded for the room in the transport's own
+        tenant, because `client_rooms` carries composite foreign keys to both
+        `clients` and `rooms` and so cannot join a client to a room in another
+        tenant at all — see
+        `test_the_schema_forbids_a_client_row_in_another_tenants_room`. The
+        watch and the delivery do not go through membership, which is what
+        makes the two-tenant case reachable here.
+        """
+        tenant_a = f"tenant-{uuid.uuid4().hex[:8]}"
+        tenant_b = f"tenant-{uuid.uuid4().hex[:8]}"
+        suffix = uuid.uuid4().hex[:8]
+        async with session_factory() as session:
+            for tenant_id in (tenant_a, tenant_b):
+                session.add(Tenant(id=tenant_id, slug=tenant_id, name=tenant_id))
+            await session.flush()
+            puppet = Client(
+                tenant_id=tenant_a,
+                matrix_user_id=f"@puppet-{suffix}:test",
+                display_name="puppet",
+                type="user",
+            )
+            speaker_b = Client(
+                tenant_id=tenant_b,
+                matrix_user_id=f"@speaker-{suffix}:test",
+                display_name="someone",
+                type="agent",
+            )
+            session.add_all([puppet, speaker_b])
+            room_a = Room(
+                tenant_id=tenant_a,
+                matrix_room_id=f"!a-{suffix}:test",
+                name="room a",
+                description="",
+            )
+            room_b = Room(
+                tenant_id=tenant_b,
+                matrix_room_id=f"!b-{suffix}:test",
+                name="room b",
+                description="",
+            )
+            session.add_all([room_a, room_b])
+            await session.commit()
+            ids = {
+                room_a.id: tenant_a,
+                room_b.id: tenant_b,
+            }
+            mxid_a, mxid_b = room_a.matrix_room_id, room_b.matrix_room_id
+            room_b_id = room_b.id
+            speaker_b_id, speaker_b_mxid = speaker_b.id, speaker_b.matrix_user_id
+            client_id, user_id = puppet.id, puppet.matrix_user_id
+
+        seen: dict[str, list[str | None]] = {}
+        original = MessageStore.list_for_room
+
+        async def _spy(self, session, room_id, **kwargs):  # type: ignore[no-untyped-def]
+            seen.setdefault(room_id, []).append(current_tenant_id())
+            return await original(self, session, room_id, **kwargs)
+
+        monkeypatch.setattr(MessageStore, "list_for_room", _spy)
+
+        listener = _FakeListener()
+        received = _Received()
+        transport = _transport(
+            session_factory, client_id=client_id, user_id=user_id, listener=listener
+        )
+        transport.register_handlers(received.handlers())
+        await transport.join_room(mxid_a)
+        self._tasks.append(asyncio.create_task(transport.receive_forever()))
+        await _watched_room(transport)
+        await transport._watch(mxid_b)
+
+        await transport.send_message(mxid_a, "in a", sender_name="puppet")
+        # Written as a client of tenant B: a message in room B carries room
+        # B's tenant, and the composite key to `clients` will not let a
+        # tenant-A client be its sender.
+        async with session_factory() as session:
+            await MessageStore().create(
+                session,
+                Message(
+                    tenant_id=tenant_b,
+                    room_id=room_b_id,
+                    transport_event_id=f"sw_{uuid.uuid4().hex}",
+                    sender_id=speaker_b_mxid,
+                    sender_client_id=speaker_b_id,
+                    sender_name="someone",
+                    event_type="m.room.message",
+                    msgtype="m.text",
+                    body="in b",
+                    formatted_body=None,
+                    thread_root_event_id=None,
+                    content={"body": "in b", "msgtype": "m.text"},
+                ),
+                [],
+            )
+            await session.commit()
+
+        for room_id in ids:
+            await listener.announce(room_id)
+
+        assert {getattr(e, "body", None) for e in received.events} == {"in a", "in b"}
+        assert set(seen) == set(ids), "a room was never read"
+        for room_id, tenants in seen.items():
+            assert tenants and all(t == ids[room_id] for t in tenants), (
+                f"room {room_id} was read under {tenants}, not {ids[room_id]}"
+            )
+        assert current_tenant_id() is None
+
+
+async def test_the_schema_forbids_a_client_row_in_another_tenants_room(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """Why "one system client, a member of every tenant's rooms" is not a
+    state this deployment can reach, and so not a case the transport has to
+    handle: `client_rooms` keys to both `clients` and `rooms` on `tenant_id`,
+    so membership cannot cross a tenant boundary. The system client is one
+    row per tenant, which is what the Phase 1 design says it becomes.
+
+    Pinned as a test rather than argued in a comment, because everything the
+    transport does about its room list rests on it.
+    """
+    tenant_a = f"tenant-{uuid.uuid4().hex[:8]}"
+    tenant_b = f"tenant-{uuid.uuid4().hex[:8]}"
+    suffix = uuid.uuid4().hex[:8]
+    async with session_factory() as session:
+        for tenant_id in (tenant_a, tenant_b):
+            session.add(Tenant(id=tenant_id, slug=tenant_id, name=tenant_id))
+        await session.flush()
+        client = Client(
+            tenant_id=tenant_a,
+            matrix_user_id=f"@sys-{suffix}:test",
+            display_name="admin",
+            type="admin",
+        )
+        session.add(client)
+        room = Room(
+            tenant_id=tenant_b,
+            matrix_room_id=f"!b-{suffix}:test",
+            name="room b",
+            description="",
+        )
+        session.add(room)
+        await session.flush()
+        session.add(
+            ClientRoom(tenant_id=tenant_a, client_id=client.id, room_id=room.id)
+        )
+        with pytest.raises(IntegrityError):
+            await session.commit()

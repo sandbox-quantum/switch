@@ -14,7 +14,7 @@ from switch_core.db.models import Client
 from switch_core.db.session_scope import unscoped_session
 from switch_core.db.stores.client_store import ClientStore
 from switch_core.provisioning import Provisioning
-from switch_core.tenant_context import tenant_scope
+from switch_core.tenant_context import no_tenant
 
 logger = logging.getLogger(__name__)
 
@@ -57,14 +57,13 @@ class ClientLifecycleService:
 
     async def start_all(self) -> None:
         # Every tenant's clients in one pass at boot, so this read is
-        # unscoped by nature. Each row carries its own tenant; bind it only
-        # around starting that one client. `_start_task` spawns the client's
-        # own long-lived task from inside this binding, and an asyncio task
-        # snapshots the context it was created under, so the task keeps this
-        # tenant as its default for its own life — a bootstrap fallback for
-        # a read like AgentClient.start() resolving its own row, not a cache
-        # any room-scoped work relies on: PostgresTransport binds the tenant
-        # of the room it is actually acting on for each of those.
+        # unscoped by nature. Nothing is bound around `_start_task`: a client
+        # is not a single-tenant actor for the purposes of its own task. It
+        # reads which rooms it is in — a lookup keyed by a globally unique
+        # client id — and then works one room at a time, binding that room's
+        # tenant per delivery. A boot-time binding would only decide what the
+        # task snapshots, and the whole point is that nothing downstream may
+        # depend on that.
         async with unscoped_session(self._session_factory) as session:
             records = await self._client_store.get_all(session)
 
@@ -75,8 +74,7 @@ class ClientLifecycleService:
             client = self._client_factory.create(record)
             self._clients[record.id] = client
             self._client_types[record.id] = record.type
-            with tenant_scope(record.tenant_id):
-                self._start_task(record.id, client)
+            self._start_task(record.id, client)
 
     async def create_client(
         self,
@@ -188,11 +186,24 @@ class ClientLifecycleService:
     async def _run_client(
         self, client_id: str, client: ClientBase[ClientConfig]
     ) -> None:
-        try:
-            await client.start()
-        except Exception:
-            logger.exception(
-                "Client %s (%s) crashed", client.display_name, client.matrix_user_id
-            )
-            self._clients.pop(client_id, None)
-            self._tasks.pop(client_id, None)
+        """A client's long-lived task, deliberately ambient-free.
+
+        `no_tenant` because a task keeps the context of whoever created it,
+        and the creators differ: boot, a gateway request that added an agent,
+        or an inbound bridge message that minted a puppet mid-conversation.
+        A puppet in particular is reused for every room the person it stands
+        for speaks in, so the first room's tenant is exactly the value that
+        must not survive into the second. Everything the client does binds
+        the tenant of the room it is acting on, or — for the two lookups that
+        answer *which* tenant, its own row and its room list — is unscoped on
+        purpose.
+        """
+        with no_tenant():
+            try:
+                await client.start()
+            except Exception:
+                logger.exception(
+                    "Client %s (%s) crashed", client.display_name, client.matrix_user_id
+                )
+                self._clients.pop(client_id, None)
+                self._tasks.pop(client_id, None)

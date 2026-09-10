@@ -5,17 +5,21 @@ named ways background code may open a session with no request behind it.
 session, so what these tests pin is the composition — bound inside the block,
 released on the way out, even on an exception — rather than the binding
 mechanics themselves, which `test_tenant_session_hook.py` already covers.
-`unscoped_session` does nothing at all beyond calling the factory; it is
-tested here for what it does *not* do — bind anything — and its callers are
-pinned separately, in `test_unscoped_session_allowlist.py`.
+`unscoped_session` is tested here for the one thing its name promises and its
+callers depend on: that a session opened through it has no tenant set, no
+matter what the caller had bound. Its callers are pinned separately, in
+`test_unscoped_session_allowlist.py`.
 """
 
 from __future__ import annotations
 
+import uuid
+
 import pytest
-from sqlalchemy import text
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from switch_core.db.models import Room, Tenant
 from switch_core.db.session_scope import tenant_session, unscoped_session
 from switch_core.tenant_context import current_tenant_id, tenant_scope
 
@@ -87,17 +91,30 @@ class TestUnscopedSession:
             assert current_tenant_id() is None
             assert await _current_setting(session) is None
 
-    async def test_it_neither_binds_nor_clears_an_outer_tenant(
+    async def test_it_unbinds_an_outer_tenant_for_the_duration(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
-        """It is not a "no tenant" guarantee, only a "no new binding" one —
-        the docstring is explicit that this is not force-unscoped. A caller
-        already inside a bound context keeps seeing that context's tenant."""
+        """The whole contract. A caller already inside a bound context — a
+        request, an outer `tenant_scope`, a task that inherited one — still
+        gets a session with nothing set, because otherwise "unscoped" would
+        mean "scoped to whoever happened to call me" and the allowlist that
+        pins these call sites would be certifying a cross-tenant read that
+        never happens."""
         with tenant_scope(TENANT_A):
             async with unscoped_session(session_factory) as session:
-                assert current_tenant_id() == TENANT_A
-                assert await _current_setting(session) == TENANT_A
+                assert current_tenant_id() is None
+                assert await _current_setting(session) is None
+            assert current_tenant_id() == TENANT_A
         assert current_tenant_id() is None
+
+    async def test_an_exception_still_restores_the_outer_tenant(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        with tenant_scope(TENANT_A):
+            with pytest.raises(RuntimeError, match="boom"):
+                async with unscoped_session(session_factory):
+                    raise RuntimeError("boom")
+            assert current_tenant_id() == TENANT_A
 
     async def test_current_tenant_id_is_unchanged_after_the_block(
         self, session_factory: async_sessionmaker[AsyncSession]
@@ -106,3 +123,38 @@ class TestUnscopedSession:
         async with unscoped_session(session_factory):
             pass
         assert current_tenant_id() is None
+
+    async def test_it_reads_rows_from_two_tenants_with_one_of_them_bound(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """What the callers actually rely on, stated in rows rather than in
+        contextvars: a sweep or an enumeration reached from inside a bound
+        context still sees the whole deployment.
+
+        Today no policy filters anything, so the `set_config` assertion is
+        what carries the weight — it is the value the policies will read once
+        they land. Both are asserted so this test keeps meaning the same thing
+        on either side of that change.
+        """
+        tenant_a = f"tenant-{uuid.uuid4().hex[:8]}"
+        tenant_b = f"tenant-{uuid.uuid4().hex[:8]}"
+        async with session_factory() as session:
+            for tenant_id in (tenant_a, tenant_b):
+                session.add(Tenant(id=tenant_id, slug=tenant_id, name=tenant_id))
+            await session.flush()
+            for tenant_id in (tenant_a, tenant_b):
+                session.add(
+                    Room(
+                        tenant_id=tenant_id,
+                        matrix_room_id=f"!{tenant_id}:test",
+                        name=tenant_id,
+                        description="",
+                    )
+                )
+            await session.commit()
+
+        with tenant_scope(tenant_a):
+            async with unscoped_session(session_factory) as session:
+                assert await _current_setting(session) is None
+                rows = (await session.execute(select(Room.tenant_id))).scalars().all()
+        assert {tenant_a, tenant_b} <= set(rows)

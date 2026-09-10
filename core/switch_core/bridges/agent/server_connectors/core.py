@@ -20,6 +20,7 @@ from switch_core.bridges.agent.server_connectors.base import (
     DiscoveredAgent,
     ServerSideConnector,
 )
+from switch_core.tenant_context import no_tenant, tenant_scope
 
 if TYPE_CHECKING:
     from switch_core.bridges.agent.protocol.service import ProtocolService
@@ -78,12 +79,17 @@ class ConnectorCore:
         self,
         *,
         connector_id: str,
+        connector_tenant_id: str,
         connector_type: str,
         connector: ServerSideConnector,
         registration_token: str,
         protocol: ProtocolService,
     ) -> None:
         self._connector_id = connector_id
+        # The tenant of the connector's own row. Held, never bound for the
+        # life of anything: each poll and each event it produces binds it for
+        # that piece of work and releases it again.
+        self._connector_tenant_id = connector_tenant_id
         self._connector_type = connector_type
         self._connector = connector
         self._registration_token = registration_token
@@ -133,29 +139,30 @@ class ConnectorCore:
     # ── internal ─────────────────────────────────────────────────────────
 
     async def _register_agent(self, agent: DiscoveredAgent) -> None:
-        # Runs from `start()`, which the caller wraps in the connector's own
-        # tenant (ServerSideConnectorLifecycleService.start_all binds it
-        # before starting each connector's task; an admin registering one
-        # over HTTP already has it bound). register_agent_with_token
-        # additionally binds the registration token's own tenant for the
-        # write itself — the same tenant either way — see its docstring.
+        # Registering one agent is one unit of work for this connector's row,
+        # so it binds that row's tenant here rather than inheriting anything.
+        # `register_agent_with_token` additionally binds the registration
+        # token's own tenant for the write itself — the same tenant either
+        # way — see its docstring.
         try:
-            result = await self._protocol.register_agent_with_token(
-                registration_token=self._registration_token,
-                name=agent.name,
-                description=agent.description,
-                connector_type=f"server-side:{self._connector_type}",
-                integration_profile=agent.integration_profile,
-                tools=agent.tools,
-                models=agent.models,
-                metadata={"server_connector_id": self._connector_id},
-                overwrite=True,
-                # A server-side connector agent is a service the deployment
-                # offers everyone, not one person's assistant; it is owned by
-                # whoever holds the registration token only in the bookkeeping
-                # sense. Owner-only would make it answer to that account alone.
-                owner_only=False,
-            )
+            with tenant_scope(self._connector_tenant_id):
+                result = await self._protocol.register_agent_with_token(
+                    registration_token=self._registration_token,
+                    name=agent.name,
+                    description=agent.description,
+                    connector_type=f"server-side:{self._connector_type}",
+                    integration_profile=agent.integration_profile,
+                    tools=agent.tools,
+                    models=agent.models,
+                    metadata={"server_connector_id": self._connector_id},
+                    overwrite=True,
+                    # A server-side connector agent is a service the
+                    # deployment offers everyone, not one person's assistant;
+                    # it is owned by whoever holds the registration token only
+                    # in the bookkeeping sense. Owner-only would make it
+                    # answer to that account alone.
+                    owner_only=False,
+                )
         except Exception:
             logger.exception(
                 "Failed to register agent %s from connector %s",
@@ -178,42 +185,56 @@ class ConnectorCore:
         return _ProtocolReporter(self._protocol, handle)
 
     async def _poll_loop(self, handle: _AgentHandle) -> None:
+        """One agent's long-poll loop.
+
+        `no_tenant` around the loop and `tenant_scope` around each pass: the
+        loop itself is a task and owns no tenant, while one poll and the
+        events it returns are one unit of work for this connector's row. The
+        binding is taken and released per pass, so a loop that has been
+        running for days is in exactly the same state as one that just
+        started.
+        """
         logger.info(
             "Starting poll loop for agent %s (%s)",
             handle.agent_name,
             handle.agent_id,
         )
 
-        while True:
-            try:
-                events = await self._protocol.poll_events(
-                    handle.agent_id, timeout=CONNECTOR_POLL_TIMEOUT_SECONDS
-                )
-                for event in events:
-                    payload = event.payload
+        with no_tenant():
+            while True:
+                try:
+                    with tenant_scope(self._connector_tenant_id):
+                        await self._poll_once(handle)
+                except asyncio.CancelledError:
+                    logger.info("Poll loop cancelled for agent %s", handle.agent_name)
+                    return
+                except Exception:
+                    logger.exception(
+                        "Error in poll loop for agent %s (%s)",
+                        handle.agent_name,
+                        handle.agent_id,
+                    )
+                    await asyncio.sleep(5)
 
-                    if isinstance(payload, MessagePayload):
-                        await self._handle_message(handle, event.room_id, payload)
-                    elif isinstance(payload, CommandPayload):
-                        await self._handle_command(handle, event.room_id, payload)
-                    elif isinstance(payload, TaskDelegatePayload):
-                        await self._handle_task_delegate(handle, event.room_id, payload)
-                    elif isinstance(payload, TaskUpdatePayload):
-                        await self._handle_task_update(handle, event.room_id, payload)
-                    elif isinstance(payload, TaskFinalisePayload):
-                        await self._handle_task_finalise(handle, event.room_id, payload)
-                    elif isinstance(payload, TaskCancelPayload):
-                        await self._handle_task_cancel(handle, event.room_id, payload)
-            except asyncio.CancelledError:
-                logger.info("Poll loop cancelled for agent %s", handle.agent_name)
-                return
-            except Exception:
-                logger.exception(
-                    "Error in poll loop for agent %s (%s)",
-                    handle.agent_name,
-                    handle.agent_id,
-                )
-                await asyncio.sleep(5)
+    async def _poll_once(self, handle: _AgentHandle) -> None:
+        events = await self._protocol.poll_events(
+            handle.agent_id, timeout=CONNECTOR_POLL_TIMEOUT_SECONDS
+        )
+        for event in events:
+            payload = event.payload
+
+            if isinstance(payload, MessagePayload):
+                await self._handle_message(handle, event.room_id, payload)
+            elif isinstance(payload, CommandPayload):
+                await self._handle_command(handle, event.room_id, payload)
+            elif isinstance(payload, TaskDelegatePayload):
+                await self._handle_task_delegate(handle, event.room_id, payload)
+            elif isinstance(payload, TaskUpdatePayload):
+                await self._handle_task_update(handle, event.room_id, payload)
+            elif isinstance(payload, TaskFinalisePayload):
+                await self._handle_task_finalise(handle, event.room_id, payload)
+            elif isinstance(payload, TaskCancelPayload):
+                await self._handle_task_cancel(handle, event.room_id, payload)
 
     async def _handle_message(
         self,

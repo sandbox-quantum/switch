@@ -540,7 +540,7 @@ class RoomService:
 
             if bridge_core and external_channel_id:
                 bridge_core.add_room_mapping(
-                    room.id, matrix_room_id, external_channel_id
+                    room.id, matrix_room_id, external_channel_id, room.tenant_id
                 )
         finally:
             if bridge_core and external_channel_id:
@@ -781,15 +781,23 @@ class RoomService:
 
         logger.info("Removed %d agents from room %s", len(agent_ids), room_id)
 
-    async def _room_tenant(self, room_id: str) -> str:
-        """The tenant a room belongs to, resolved fresh — never cached beside
-        a room id, since nothing here holds one room for longer than a call.
+    async def _load_room(self, room_id: str) -> Room:
+        """A room row, read with no tenant bound.
+
+        The bootstrap read: every caller below is about to bind the tenant
+        this returns, so scoping the read to a tenant would be circular — and
+        worse than circular under policies, where the wrong guess turns into
+        `Room not found` for a room that exists. Nothing is cached: no caller
+        here holds a room for longer than the call.
         """
-        async with self._session_factory() as session:
+        async with unscoped_session(self._session_factory) as session:
             room = await self._room_store.get(session, room_id)
         if room is None:
             raise ValueError(f"Room not found: {room_id}")
-        return room.tenant_id
+        return room
+
+    async def _room_tenant(self, room_id: str) -> str:
+        return (await self._load_room(room_id)).tenant_id
 
     async def update_room(
         self,
@@ -941,7 +949,7 @@ class RoomService:
 
         if bridge_core and external_channel_id:
             bridge_core.add_room_mapping(
-                room.id, room.matrix_room_id, external_channel_id
+                room.id, room.matrix_room_id, external_channel_id, room.tenant_id
             )
             await self._ensure_channel_capture(
                 bridge_core, external_channel_id, channel_type
@@ -1054,7 +1062,7 @@ class RoomService:
                     await session.commit()
 
                 new_bridge.add_room_mapping(
-                    room_id, matrix_room_id, external_channel_id
+                    room_id, matrix_room_id, external_channel_id, room.tenant_id
                 )
             finally:
                 new_bridge.end_provisioning(external_channel_id)
@@ -1182,10 +1190,8 @@ class RoomService:
         """Invite a single running client to the room (it auto-joins) and record
         its membership. Idempotent — safe to call repeatedly, e.g. on every
         bridged message from an external user's puppet."""
-        async with self._session_factory() as session:
-            room = await self._room_store.get(session, room_id)
-            if room is None:
-                raise ValueError(f"Room not found: {room_id}")
+        room = await self._load_room(room_id)
+        async with tenant_session(self._session_factory, room.tenant_id) as session:
             already_member = client_id in await self._room_store.get_client_ids(
                 session, room_id
             )

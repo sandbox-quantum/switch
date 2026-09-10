@@ -60,6 +60,8 @@ class _Session:
 def _make_bridge(rooms: dict[str, SimpleNamespace]) -> BridgeCore:
     bridge = BridgeCore.__new__(BridgeCore)
     bridge._bridge_id = "bridge-1"
+    bridge._bridge_tenant_id = "tenant-1"
+    bridge._room_tenants = {}
     bridge._channel_locks = {}
     bridge._channel_to_room = {}
     bridge._room_to_channel = {}

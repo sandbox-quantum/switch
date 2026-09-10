@@ -16,8 +16,12 @@ when" were all split out into a later change.
 what was actually implemented, which differs from what it originally proposed —
 an event hook rather than a dependency at every call site, for reasons given
 there. **The background half of it has since been built too** — the roughly
-206 session sites outside the request path now bind a tenant, described where
-"Setting the tenant" talks about background work below. Read the remaining
+197 session sites outside the request path now bind a tenant at each unit of
+work, described where "Setting the tenant" talks about background work below.
+That section also records the model that was tried first, of binding once per
+long-lived task, and the four ways it leaked; it is written up rather than
+deleted because the reasoning that made it look right is easy to arrive at
+twice. Read the remaining
 sections as the design those later changes implement rather than as a
 description of what is running today; "What Phase 1 does not close" says which
 gaps are this migration's and which belong to the deferred work — row-level
@@ -356,41 +360,105 @@ silently discarded a password change. Resolution needs the subject id, not a
 the session the endpoint actually commits.
 
 **Background work is not a short list, and it has since been closed.** There
-were roughly 206 places that opened a session from the factory directly, with
-no request behind them. They fall into three shapes, each handled differently
-rather than by one helper covering all of them:
+are roughly 197 places that open a session from the factory directly, with no
+request behind them. One rule covers all of them:
 
-- **Acting for a room** — the delivery loop (`transport/postgres.py`), most of
-  `room_service.py`, the collaboration bridges' inbound and outbound handling
-  (`bridges/collaboration/bridge_core.py`). Each derives the tenant from the
-  room the unit of work is actually for — one delivery, one inbound event, one
-  membership change — rather than caching it, because a client or a bridge is
-  not guaranteed to act for only one tenant over its life. Resolving which
-  room (and so which tenant) a unit of work is for is itself unscoped by
-  necessity, the same bootstrap as resolving a principal below; each of these
-  files caches the answer per room id once resolved, since a room's tenant
-  cannot change, the same way each already cached the room's own id.
-- **Acting for a bridge or connector** — `bridges/collaboration/lifecycle_service.py`
-  and `bridges/agent/server_connectors/lifecycle.py` bind the bridge's or
-  connector's own tenant once, around starting its long-lived task; the task
-  keeps it for its life because an `asyncio.Task` snapshots the contextvar
-  state it was created under.
-- **Acting for the deployment** — startup seeding (`main.py`), the
-  runtime-state sweep (`ProtocolService.sweep_runtime_states`), and the
-  lifecycle enumerations that read every row before fanning out
-  (`start_all` on both lifecycle services above, and on
-  `ClientLifecycleService`). These read cross-tenant by nature; where they
-  then act per row, they bind that row's own tenant rather than the tenant of
-  the whole pass.
+> **Nothing is ambient. Every unit of background work binds the tenant of the
+> row it is acting on, at the point it acts. Long-lived tasks bind nothing for
+> their lifetime. A lookup that must span tenants uses a helper that genuinely
+> unbinds.**
+
+**The first attempt at this had a different rule, and it was wrong.** It said a
+long-lived task "acts for exactly one bridge, so it can bind once for the
+task's lifetime", and leaned on an `asyncio.Task` snapshotting the contextvars
+of whoever created it. Four things went wrong, and they are one thing:
+
+- **Who creates the task is not who owns it.** A bridge is started at boot,
+  with nothing bound, *and* from an HTTP request that edited its connection
+  (`gateway/collaborations.py` calls `restart`), with the requesting
+  operator's tenant bound. Bind-at-creation makes the bridge spend its entire
+  life acting as whoever last restarted it.
+- **A long-lived object is not a single-tenant actor.** A client's transport
+  reads which rooms it is in — a lookup keyed by a globally unique client id —
+  and then works one room at a time. A puppet minted for one person on a
+  bridge is reused for every room they ever speak in. A boot-time tenant on
+  either is a value that happens to be right until it is not, with no error
+  when it turns.
+- **A cache that is only filled at startup is empty for everything created
+  after startup.** The bridge's room→tenant map was loaded at boot and not
+  written by `add_room_mapping`, so every room created later missed it and
+  fell back to a database read under whatever was ambient — which on the
+  inbound path is the very thing being asked.
+- **Not every task inherits anything.** Mattermost's websocket runs on an OS
+  thread and dispatches with `asyncio.run_coroutine_threadsafe`, which starts
+  the coroutine in an *empty* context. Under bind-at-creation, an auto-created
+  room landed in tenant zero on Mattermost and in the bridge's tenant
+  everywhere else — the platform decided the tenant. Binding at the inbound
+  choke point instead makes the platform irrelevant, which is the property
+  worth having.
+
+So what is built now is:
+
+- **Long-lived tasks unbind first.** `CollaborationBridgeLifecycleService._run_bridge`,
+  `ClientLifecycleService._run_client`, `BridgeCore._run_agent_identities` and
+  the connectors' per-agent poll loop each enter `tenant_context.no_tenant()`
+  as their first act. Nothing inside them can read a tenant it did not derive,
+  and once the policies land, a unit of work that forgot to bind reads nothing
+  rather than reading someone else's rows.
+- **Each unit of work binds the row it is acting on.** A delivery binds the
+  room's tenant (`transport/postgres.py`); an inbound platform event binds the
+  room's, or — when the handler is about to auto-create the room — the
+  bridge's, at the single choke point every handler passes through
+  (`BridgeCore._traced`); a membership change binds the room's
+  (`room_service.py`); a sweep row binds its own, for the *whole* of that
+  row's work including the event emitted at the end
+  (`ProtocolService.sweep_runtime_states`); one poll and the events it
+  returns bind the connector's (`server_connectors/core.py`).
+- **An object may know its tenant without binding it.** `BridgeCore` holds
+  `bridge_tenant_id` and `ConnectorCore` holds `connector_tenant_id`, read
+  once from the row they are the runtime for. Knowing is not binding: the
+  value is bound around a piece of work and released, never held open. Rooms
+  cannot disagree with their bridge in any case — `rooms` carries a composite
+  foreign key to `collaboration_bridges` on `tenant_id` — but room-scoped work
+  still binds the room's own tenant rather than relying on that.
+- **The lookups that produce a tenant are unscoped, not scoped to a guess.**
+  Which room is this transport id? Which rooms is this client in? Which agent
+  is this client? Which tenant is this bridge in? Each is asked before the
+  answer is known, so binding one first is either a tautology or, under
+  policies, a false "not found". These use `unscoped_session`, the same as the
+  credential lookups in the bootstrap section below.
 
 Two named helpers carry this: `tenant_session` (`db/session_scope.py`) binds a
-given tenant and opens a session; `unscoped_session` opens one with nothing
-bound at all — the fail-open hatch, named so a reader can tell at the call site
-which one is meant, and used only by the "acting for the deployment" sites
-above. `tests/switch_core/db/test_unscoped_session_allowlist.py` pins the
-modules allowed to call it, deriving the list from the source tree rather than
-from imports, so a new caller is a deliberate, reviewed act rather than an
-accident.
+given tenant and opens a session; `unscoped_session` **unbinds** for the
+duration of the block and opens one with nothing set, restoring the caller's
+binding on the way out. The unbinding is the point and was the second thing
+the first attempt got wrong: a helper that only *named* the intent while
+inheriting whatever was ambient has the hook stamp the caller's tenant onto
+the transaction, so the cross-tenant read the call site asked for is silently
+a single-tenant one — and the allowlist pinning it certifies a lie.
+
+`tests/switch_core/db/test_unscoped_session_allowlist.py` pins two lists,
+derived from the source tree rather than from imports and resolving aliased
+imports rather than matching a spelling. The first is who may call
+`unscoped_session`. The second is the one that matters more: **which modules
+may open a session straight from the factory at all.** A raw call inherits
+whatever is ambient, which in background code is now nothing — so it is
+unscoped in fact while declaring nothing, strictly worse than the hatch that
+announces itself. Those ~197 call sites across nineteen modules are the
+inventory this design has to work down; pinning the module list makes a new
+one a decision rather than a default.
+
+**Cost, stated rather than hidden.** The hook adds one `SELECT set_config(…)`
+round trip per transaction, which on the delivery path is roughly per message
+once a handler writes. Measured against the test container (Postgres 16 over
+a colima socket, 400 single-statement transactions per arm, two runs): mean
+0.95–1.20 ms unbound against 1.30–1.41 ms bound, a delta of **0.20–0.36 ms per
+transaction**. That environment's round trip is slower than a deployed one's,
+so read it as an upper bound on the shape rather than a production figure —
+but it is one extra round trip per transaction, and on a chatty room that is
+one extra round trip per message. If it ever matters, the fix is to widen the
+unit of work rather than to skip the hook: fewer, larger transactions pay it
+fewer times, and skipping it is how the prior-art bugs happened.
 
 **Writes fill the column automatically.** `tenant_id` gets a Python-side
 default reading the request's tenant, so ordinary ORM inserts need no change
@@ -434,6 +502,19 @@ delivery itself and for a send, not only for the row read that first
 discovered it, so a handler's own downstream session opens (posting to a
 bridge, gating a command) are covered too — they run in the same task, and the
 binding is a contextvar, not something tied to one session object.
+
+One thing the transport deliberately does *not* do is treat its client as
+belonging to a tenant. `joined_rooms` is unscoped, because it runs once and
+decides what that client will ever hear: a tenant over that read returns a
+subset with no error to say so, and the client is then silently deaf in every
+room it did not see, forever. The client id it reads by is globally unique, so
+there is nothing for a tenant to disambiguate. (A client cannot in fact be a
+member of another tenant's room — `client_rooms` carries composite foreign
+keys to both `clients` and `rooms`, so the system client is one row per tenant
+rather than one row in every tenant's rooms. The transport does not lean on
+that; it is pinned by a test in
+`tests/switch_core/transport/test_postgres_transport.py` because the shape of
+the room list rests on it.)
 
 Two exceptions to the uniform rule, in full:
 
