@@ -19,13 +19,12 @@ Order:
    `users.role = 'admin'`, `member` otherwise.
 4. Add `tenant_id` to every scoped table as `NOT NULL DEFAULT '<zero>'`, then
    drop the default. Since Postgres 11, adding a column with a constant
-   default is a metadata-only change — no rewrite, no table lock beyond
-   `ACCESS EXCLUSIVE` for the instant it takes to update the catalog. The
-   alternative sequence (nullable, backfill every row, then `SET NOT NULL`)
-   is what the spike proposed and is not needed here: there is only one
-   tenant to backfill to, the same constant for every row, so a computed
-   backfill buys nothing and would rewrite `messages` and `media_blobs`
-   (20MB rows) under an exclusive lock instead.
+   default is a metadata-only change — no rewrite. The alternative sequence
+   (nullable, backfill every row, then `SET NOT NULL`) is what the spike
+   proposed and is not needed here: there is only one tenant to backfill to,
+   the same constant for every row, so a computed backfill buys nothing and
+   would rewrite `messages` and `media_blobs` (20MB rows) instead of just
+   touching the catalog.
 5. Add the foreign key to `tenants`, and `UNIQUE (id, tenant_id)` on the
    tables actually referenced by a composite key.
 6. Swap the uniqueness constraints that were global singletons and are not
@@ -34,12 +33,27 @@ Order:
    default-bridge partial index.
 7. Rewrite every scoped-to-scoped foreign key as composite: drop the old
    single-column constraint, add the new one `NOT VALID`, then `VALIDATE
-   CONSTRAINT` — so the validation scan takes a lock no stronger than a
-   plain read for the duration of the scan, rather than blocking writes for
-   as long as the scan takes. Five keys use the Postgres 15+ column-list
-   `ON DELETE SET NULL (<col>)` form: a plain multi-column `SET NULL` would
-   null every referencing column including `tenant_id`, which then fails
-   the new NOT NULL constraint on the very delete this is meant to allow.
+   CONSTRAINT`. Five keys use the Postgres 15+ column-list `ON DELETE SET
+   NULL (<col>)` form: a plain multi-column `SET NULL` would null every
+   referencing column including `tenant_id`, which then fails the new NOT
+   NULL constraint on the very delete this is meant to allow.
+
+**On locking: this whole revision runs inside one transaction** —
+`migrations/env.py` wraps every revision in `context.begin_transaction()`,
+and this one adds no `autocommit_block` of its own. Every `ACCESS EXCLUSIVE`
+lock taken by any statement above — including the plain `CREATE UNIQUE INDEX`
+built for each `UNIQUE (id, tenant_id)` and for the uniqueness swaps in step
+6 — is held on its table until the whole migration commits, not just for the
+instant that statement runs. The `NOT VALID` / `VALIDATE CONSTRAINT` split in
+step 7 buys nothing here: a single transaction holds the lock from the first
+statement to the commit regardless of when the validating scan runs, and
+`VALIDATE CONSTRAINT` cannot run in a later, separate transaction unless the
+`NOT VALID` addition already committed. It stays anyway, commented, because
+it becomes useful the day this migration is split so the addition and the
+validation are in different transactions — see the note on `CONCURRENTLY`
+below in the design doc if that split is needed. The longest-held lock here
+is whichever unique index build takes the longest, most likely the ones on
+`messages` and `media_blobs`.
 
 This migration creates no roles, issues no grants, and adds no row-level
 security policy — that is a separate, later change (see the design doc's
@@ -728,7 +742,11 @@ def upgrade() -> None:
         postgresql_where=sa.text("is_default"),
     )
 
-    # 7. Rewrite every scoped-to-scoped FK as composite.
+    # 7. Rewrite every scoped-to-scoped FK as composite. `NOT VALID` then
+    # `VALIDATE CONSTRAINT` buys no lock reduction while the whole revision
+    # runs in one transaction (see the module docstring) — it stays because
+    # it is what makes the pair splittable across two transactions later,
+    # which is the only way this split ever pays for itself.
     for (
         table,
         old_name,

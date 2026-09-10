@@ -319,7 +319,7 @@ async def _seed_tenant_zero(engine: AsyncEngine) -> None:
     async with engine.begin() as conn:
         await conn.execute(
             insert(Tenant.__table__).values(
-                id=TENANT_ZERO_ID, slug="default", name="Tenant Zero"
+                id=TENANT_ZERO_ID, slug="default", name="Default"
             )
         )
 

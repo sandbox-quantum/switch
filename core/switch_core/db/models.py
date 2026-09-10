@@ -20,7 +20,7 @@ from sqlalchemy import (
     text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, declared_attr, mapped_column
 
 from switch_core.db.base import Base
 from switch_core.db.notify_ddl import (
@@ -94,11 +94,27 @@ class TenantScoped:
     today — so an ordinary ORM insert needs no change to land in the right
     place. A later PR replaces this default with a value read from the
     request/session context; nothing here reads from a contextvar yet.
+
+    The foreign key is named explicitly (`fk_<table>_tenant`) rather than left
+    for the dialect to default, because `declared_attr` gives each subclass
+    its own column and an unnamed constraint would default to
+    `<table>_tenant_id_fkey` — a different name than the migration gives the
+    same constraint, which would make a schema built by `create_all` disagree
+    with one built by Alembic and break the migration's `downgrade` against
+    the former.
     """
 
-    tenant_id: Mapped[str] = mapped_column(
-        Text, ForeignKey("tenants.id"), nullable=False, default=TENANT_ZERO_ID
-    )
+    @declared_attr
+    def tenant_id(cls) -> Mapped[str]:  # noqa: N805 - SQLAlchemy convention
+        return mapped_column(
+            Text,
+            ForeignKey(
+                "tenants.id",
+                name=f"fk_{cls.__tablename__}_tenant",  # type: ignore[attr-defined]
+            ),
+            nullable=False,
+            default=TENANT_ZERO_ID,
+        )
 
 
 # ── Users ──────────────────────────────────────────────────────────────────────
@@ -371,7 +387,7 @@ agent_skills = Table(
     Column(
         "tenant_id",
         Text,
-        ForeignKey("tenants.id"),
+        ForeignKey("tenants.id", name="fk_agent_skills_tenant"),
         nullable=False,
         default=TENANT_ZERO_ID,
     ),
@@ -426,7 +442,7 @@ room_agents = Table(
     Column(
         "tenant_id",
         Text,
-        ForeignKey("tenants.id"),
+        ForeignKey("tenants.id", name="fk_room_agents_tenant"),
         nullable=False,
         default=TENANT_ZERO_ID,
     ),
@@ -460,7 +476,7 @@ room_skills = Table(
     Column(
         "tenant_id",
         Text,
-        ForeignKey("tenants.id"),
+        ForeignKey("tenants.id", name="fk_room_skills_tenant"),
         nullable=False,
         default=TENANT_ZERO_ID,
     ),
@@ -680,7 +696,7 @@ room_references = Table(
     Column(
         "tenant_id",
         Text,
-        ForeignKey("tenants.id"),
+        ForeignKey("tenants.id", name="fk_room_references_tenant"),
         nullable=False,
         default=TENANT_ZERO_ID,
     ),
@@ -704,7 +720,7 @@ room_documents = Table(
     Column(
         "tenant_id",
         Text,
-        ForeignKey("tenants.id"),
+        ForeignKey("tenants.id", name="fk_room_documents_tenant"),
         nullable=False,
         default=TENANT_ZERO_ID,
     ),
@@ -756,7 +772,10 @@ class ReferenceType(TenantScoped, Base):
     __tablename__ = "reference_types"
 
     tenant_id: Mapped[str] = mapped_column(
-        Text, ForeignKey("tenants.id"), primary_key=True, default=TENANT_ZERO_ID
+        Text,
+        ForeignKey("tenants.id", name="fk_reference_types_tenant"),
+        primary_key=True,
+        default=TENANT_ZERO_ID,
     )
     type: Mapped[str] = mapped_column(Text, primary_key=True)
     owner_id: Mapped[str] = mapped_column(Text, ForeignKey("users.id"), nullable=False)
@@ -821,7 +840,7 @@ room_packages = Table(
     Column(
         "tenant_id",
         Text,
-        ForeignKey("tenants.id"),
+        ForeignKey("tenants.id", name="fk_room_packages_tenant"),
         nullable=False,
         default=TENANT_ZERO_ID,
     ),
@@ -845,7 +864,7 @@ package_references = Table(
     Column(
         "tenant_id",
         Text,
-        ForeignKey("tenants.id"),
+        ForeignKey("tenants.id", name="fk_package_references_tenant"),
         nullable=False,
         default=TENANT_ZERO_ID,
     ),
@@ -869,7 +888,7 @@ package_documents = Table(
     Column(
         "tenant_id",
         Text,
-        ForeignKey("tenants.id"),
+        ForeignKey("tenants.id", name="fk_package_documents_tenant"),
         nullable=False,
         default=TENANT_ZERO_ID,
     ),

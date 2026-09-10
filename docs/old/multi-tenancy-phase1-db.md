@@ -1,11 +1,24 @@
 # Multi-tenancy Phase 1: the database design
 
-Status: design, reviewed once. Implements §2 of `multi-tenancy.md` (spike
-CHOO-2603) for CHOO-2623. Not yet built.
+Status: partially built. Implements §2 of `multi-tenancy.md` (spike CHOO-2603)
+for CHOO-2623.
 
-This document is the schema half of Phase 1: what tables change, what the
-policies look like, how a session learns which tenant it is acting for, and
-what the one migration does.
+This document was written as one design covering the whole schema half of
+Phase 1 — new tables, per-tenant uniqueness, composite foreign keys, the
+row-level-security policies, and the session plumbing that sets the tenant —
+and its reasoning below still describes that whole shape. What actually
+shipped is narrower: **the tenant model, per-tenant uniqueness and the
+composite foreign keys are built**, in the one migration this document
+describes. **Row-level security is not**: `require_tenant_id()`, the policy
+attached to each table, `db/rls_ddl.py`, and the isolation test under "Done
+when" were all split out into a later change, along with everything in
+"Setting the tenant" and "The bootstrap problem" below — the `tenant_session`
+/ `system_session` seam, the 107-call-site and 206-call-site migrations off
+the raw session, and the request-side wiring. None of that exists in the
+codebase yet. Read the sections below as the design those later changes
+implement, not as a description of what is running today; "What Phase 1 does
+not close" has been updated to say which gaps are this migration's and which
+belong to the deferred work.
 
 Postgres 16 everywhere — local Compose, the chart, and the test containers —
 and two things below need at least 15, so that is a floor, not an incidental
@@ -397,20 +410,48 @@ One revision:
 3. Insert a membership for every existing user — `owner` for accounts with the
    global admin role, `member` otherwise.
 4. Per scoped table: `add column tenant_id text not null default '<zero>'`,
-   then drop the default. Since Postgres 11 that is a metadata-only operation;
-   the add-nullable-then-backfill-then-set-not-null sequence the spike
-   describes rewrites the whole table under an exclusive lock, which on
-   `messages` and on `media_blobs` with its 20MB rows is the difference between
-   a blink and an outage.
+   then drop the default. Since Postgres 11 that is a metadata-only operation
+   for *this one statement* — no table rewrite, unlike the
+   add-nullable-then-backfill-then-set-not-null sequence the spike describes,
+   which would rewrite `messages` and `media_blobs` (20MB rows) instead of
+   just touching the catalog.
 5. Add the foreign key to `tenants` and, where the table is referenced, the
    `unique (id, tenant_id)`.
 6. Swap the uniqueness constraints listed above.
 7. Rewrite each scoped-to-scoped foreign key as composite, `not valid` first
-   and `validate constraint` after, so the validation scan does not hold an
-   exclusive lock.
-8. Enable row-level security and create the policy on each table.
+   and `validate constraint` after.
 
 No roles are created and no grants issued — see the role section above.
+Row-level security is not part of this migration either: `require_tenant_id()`,
+the policies and the isolation test described elsewhere in this document are
+deferred to a later change, tracked separately from the schema landed here
+(see "Status" at the top of this document).
+
+**On locking.** Alembic wraps a whole revision in one transaction
+(`migrations/env.py`, `context.begin_transaction()`), and this migration does
+not open an `autocommit_block` to opt out. So every `ACCESS EXCLUSIVE` lock
+taken above — including the plain `CREATE UNIQUE INDEX` behind step 5's
+`unique (id, tenant_id)` and step 6's uniqueness swaps — is held on its table
+for the whole migration, not released until it commits. The `not valid` /
+`validate constraint` split in step 7 does not reduce that: both statements
+run inside the same transaction, so the exclusive lock from the `not valid`
+add is already held by the time `validate constraint` runs its scan, and
+holding it is what a single transaction means. The split is retained anyway,
+commented at the call site, because it is the shape this migration would need
+if it were ever divided into two transactions — seconds without which
+dividing it later means rewriting the FK step, not just moving code. The
+longest single lock is very likely whichever unique index build takes
+longest — plausibly the ones on `messages` and `media_blobs`.
+
+If a rehearsal against a copy of the production database shows this is too
+slow to run as one migration, the fix is to move the index builds to `create
+unique index concurrently` inside an Alembic `autocommit_block`, each in its
+own non-transactional step. That drops the exclusive lock during the (much
+slower) concurrent build down to a share lock, at the cost of the migration
+no longer being atomic — a partial failure leaves indexes to clean up by hand
+rather than a rolled-back transaction. Deliberately not done here: there are
+no measurements yet showing it is needed, and atomicity is worth keeping
+until there are.
 
 Only tenant zero exists when this runs, so the usual expand-then-contract
 caution does not apply yet. From the next customer onward it does, and that
@@ -443,10 +484,12 @@ to prevent:
 
 Named so they are decisions rather than omissions.
 
-- **The policies do not bite in a deployed environment.** The runtime still
-  connects as a superuser, so every policy here is inert outside the test
-  suite until the runtime-role work lands. Deliberate, and safe while one
-  tenant exists — and the hard prerequisite for the second.
+- **No row-level security yet.** The migration that landed adds the tenant
+  model, per-tenant uniqueness and the composite foreign keys, and stops
+  there — `require_tenant_id()`, the policy, and the runtime-role work that
+  would make a policy bite are a later change, not merely inert code sitting
+  next to this one. Deliberate, and safe while one tenant exists — and the
+  hard prerequisite for the second.
 - **Cross-tenant user enumeration.** `users` and `oidc_identities` have no
   policy, so any tenant session can read every account. There is no exposure
   while one tenant exists, and the correct fix needs invitations and a
@@ -460,6 +503,23 @@ Named so they are decisions rather than omissions.
 - **No indexes on `tenant_id`.** With one tenant the column has no selectivity
   and an index is pure write cost. Add them when the second tenant lands, in
   one migration, `concurrently`, with data to measure against.
+- **Two references bypass the composite-key guarantee entirely, by being
+  plain strings rather than foreign keys.** `message_attachments.uri`
+  references `media_blobs.uri`, and `Reference.type` references
+  `reference_types.type`, and neither carries a `tenant_id` or a constraint of
+  any kind — so a row can be made to name another tenant's blob or reference
+  type, and nothing in this schema stops it. Row-level security closes this
+  once a session is tenant-scoped, because the lookup itself becomes
+  tenant-filtered rather than because the reference is checked; it does not
+  need a foreign key to be safe, but it is unsafe until that lands.
+- **Roughly ten read paths call `scalar_one_or_none()` on a column that is
+  now unique per tenant rather than globally**, so they raise
+  `MultipleResultsFound` the moment a second tenant has a row that also
+  matches — `agent_store.get_by_name`, `collaboration_bridge_store.get_default`,
+  `client_store.get_by_matrix_user_id`, and `room_store.get_by_matrix_room_id`
+  are four of them. They are correct today, with one tenant, and wrong the
+  day a second one exists; making the session tenant-scoped, in the next PR,
+  is what makes them correct rather than each needing its own fix.
 - No plan, status or soft-delete on `tenants`; no tenant deletion; no
   per-tenant feature flags; no tenant switching.
 - No per-tenant agent registration credential — Phase 2 owns it as a security

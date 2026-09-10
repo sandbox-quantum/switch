@@ -15,6 +15,8 @@ class ReferenceTypeStore:
                 session.add(reference_type)
                 await session.flush()
         except IntegrityError as exc:
+            # TODO(next PR): scope to the request's tenant instead of matching
+            # across all of them.
             clash = await session.execute(
                 select(ReferenceType.type).where(
                     ReferenceType.type == reference_type.type
@@ -34,6 +36,8 @@ class ReferenceTypeStore:
     async def get_many(
         self, session: AsyncSession, types: list[str]
     ) -> list[ReferenceType]:
+        # TODO(next PR): scope to the request's tenant instead of matching
+        # across all of them.
         if not types:
             return []
         result = await session.execute(
@@ -50,6 +54,8 @@ class ReferenceTypeStore:
         ``owner_id = NULL`` comparison is never true in SQL, so it is left out
         rather than relied on.
         """
+        # TODO(next PR): scope to the request's tenant instead of matching
+        # across all of them.
         condition: ColumnElement[bool]
         if user_id is None:
             condition = ReferenceType.read_visibility == "public"
@@ -62,6 +68,8 @@ class ReferenceTypeStore:
         return list(result.scalars().all())
 
     async def list_all(self, session: AsyncSession) -> list[ReferenceType]:
+        # TODO(next PR): scope to the request's tenant instead of matching
+        # across all of them.
         result = await session.execute(select(ReferenceType))
         return list(result.scalars().all())
 
