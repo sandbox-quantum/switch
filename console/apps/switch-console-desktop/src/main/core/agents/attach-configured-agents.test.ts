@@ -103,6 +103,7 @@ vi.mock('./setAgentAutoSession', () => ({
   reconcileAgentAutoSessionFromGateway: vi.fn(async () => {}),
 }));
 vi.mock('./agent-events', () => ({ agentEvents: { _emit: h.emit } }));
+vi.mock('./remote-watcher', () => ({ startRemoteDiscovery: vi.fn(async () => {}) }));
 vi.mock('@main/lib/logger', () => ({ log: { info: vi.fn(), warn: h.warn, error: vi.fn() } }));
 
 const { attachConfiguredAgents } = await import('./attach-configured-agents');

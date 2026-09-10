@@ -233,6 +233,11 @@ Tests live in `core/tests/switch_core/` mirroring the module structure. Uses pyt
   `ARCHITECTURE.md` overlap
 - `docs/old/bridges/` — collaboration bridge setup: `README.md` plus one page each
   for Slack, Mattermost, Discord, Teams, and Telegram
+- `docs/old/GATEWAY_OIDC_SETUP.md` — configuring the gateway's bring-your-own
+  OIDC browser sign-in (variables, redirect URI, WorkOS Connect setup)
+- `docs/old/LOCAL_DEVELOPMENT.md` — running Switch locally for development:
+  `just` recipes, which port serves what, connecting Switch Console to a
+  local server
 
 There is no separate schema, room-design, HTTP-API or MCP-surface document. Read
 those from the code: `core/switch_core/db/models.py` for the schema,
