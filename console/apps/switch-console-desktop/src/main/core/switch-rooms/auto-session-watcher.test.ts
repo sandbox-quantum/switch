@@ -7,8 +7,25 @@ vi.mock('@main/lib/logger', () => ({
   log: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
 
+const provisionSession = vi.fn(async (..._args: unknown[]) => ({ success: true }));
 vi.mock('@main/core/sessions/session-service', () => ({
-  sessionService: { createSession: (...args: unknown[]) => createSession(...args) },
+  sessionService: {
+    createSession: (...args: unknown[]) => createSession(...args),
+    provisionSession: (...args: unknown[]) => provisionSession(...args),
+  },
+}));
+
+// A provider-backed spawn hands its trigger to the session's runtime as a turn
+// rather than putting it in the opening prompt, so the runtime has to be
+// reachable for that path to be exercised at all.
+const sendTurn = vi.fn(async (..._args: unknown[]) => ({ turnId: 't1' }));
+vi.mock('@main/core/sessions/session-runtime-manager', () => ({
+  sessionRuntimeManager: {
+    getAgent: () => ({
+      sendTurn: (...args: unknown[]) => sendTurn(...args),
+      getTranscript: () => ({}),
+    }),
+  },
 }));
 
 // spawnForRoom reads the agent to decide autoApprove; startForAgent / the loops
@@ -249,13 +266,19 @@ describe('AutoSessionWatcher.handleNotification', () => {
     // opens already claiming it. Without this it starts room-less and only
     // joins once the agent gets round to connect_to_room — until then it shows
     // outside the room it was started for.
+    //
+    // With the name we already looked up for the title: nothing else tells the
+    // connection what the room is called, so without it every line the session
+    // writes about the room names an id instead.
+    getAgentById.mockResolvedValue({ id: 'local-1', autoApprove: false, serverId: 'server-1' });
+    fetchRoomDetail.mockResolvedValue({ id: 'room-x', name: 'Charlie' });
     const watcher = fakeWatcher();
 
     handle(watcher, 'room-x');
     await vi.waitFor(() => expect(createSession).toHaveBeenCalledTimes(1));
 
     const sessionId = (createSession.mock.calls[0][0] as { id: string }).id;
-    expect(noteIntendedRoom).toHaveBeenCalledWith(sessionId, 'room-x', null);
+    expect(noteIntendedRoom).toHaveBeenCalledWith(sessionId, 'room-x', 'Charlie');
   });
 });
 
@@ -278,6 +301,7 @@ describe('the message that started the session', () => {
     getAgentById.mockResolvedValue({ id: 'local-1', autoApprove: false, serverId: 'server-1' });
     createSession.mockResolvedValue({ success: true, data: { session: { id: 'new' } } });
     noteSpawnTrigger.mockReset();
+    sendTurn.mockClear();
     fetchRoomDetail.mockReset();
     fetchRoomDetail.mockResolvedValue({ id: 'room-x', name: 'Charlie' });
   });
@@ -353,6 +377,37 @@ describe('the message that started the session', () => {
     expect(noteSpawnTrigger).toHaveBeenCalledWith('switch-agent-1', 7, true, {
       threadId: null,
       anchorId: 'msg-42',
+    });
+  });
+
+  /**
+   * A provider-backed session has no terminal, so its trigger goes in as a turn
+   * rather than in the opening prompt — and that is the one message a session
+   * receives without passing through the room connection. Handed over bare, the
+   * first entry in the transcript is the only one that reads as raw protocol.
+   */
+  it('hands a provider session its trigger with the sender and room, not just the envelope', async () => {
+    getAgentById.mockResolvedValue({
+      id: 'local-1',
+      autoApprove: false,
+      serverId: 'server-1',
+      providerConfig: { version: '2', providerId: 'opencode', values: {}, runtime: 'provider' },
+    });
+    createSession.mockResolvedValue({ success: true, data: { session: { id: 'session-9' } } });
+    const watcher = fakeWatcher();
+
+    handle(watcher, 'room-x', { body: '@agent hello', messageId: 'msg-42' });
+    await vi.waitFor(() => expect(sendTurn).toHaveBeenCalled());
+
+    const [text, source, origin] = sendTurn.mock.calls[0] as [string, string, unknown];
+    expect(text).toContain('msg-42');
+    expect(source).toBe('room');
+    expect(origin).toEqual({
+      sender: 'user',
+      body: '@agent hello',
+      roomId: 'room-x',
+      roomName: 'Charlie',
+      messageId: 'msg-42',
     });
   });
 });

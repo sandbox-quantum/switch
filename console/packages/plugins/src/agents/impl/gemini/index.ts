@@ -59,5 +59,21 @@ export const provider = registerPluginBehavior(plugin, {
         extraEnv: ctx.autoApprove ? { GEMINI_CLI_TRUST_WORKSPACE: 'true' } : {},
       }),
   },
-  mcp: geminiMcpAdapter(),
+  mcp: {
+    ...geminiMcpAdapter(),
+    launchProfileFields: () => [
+      {
+        key: 'model',
+        label: 'Model (ACP sessions)',
+        type: 'text',
+        help: 'Blank uses the Gemini CLI default. Applies to local ACP sessions.',
+      },
+      {
+        key: 'instructions',
+        label: 'Instructions (ACP sessions)',
+        type: 'textarea',
+        help: 'Additional instructions for local ACP sessions.',
+      },
+    ],
+  },
 });

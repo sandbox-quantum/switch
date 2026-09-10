@@ -152,7 +152,9 @@ export const AgentAdvancedSettingsSection = observer(function AgentAdvancedSetti
   const onSave = useCallback(async () => {
     await saveMutation();
   }, [saveMutation]);
-  const onRevert = useCallback(() => setForm(savedForm), [savedForm]);
+  const onRevert = useCallback(() => {
+    setForm(savedForm);
+  }, [savedForm]);
 
   const [restartFailed, setRestartFailed] = useState<string[]>([]);
   const restart = useMutation({
@@ -195,7 +197,7 @@ export const AgentAdvancedSettingsSection = observer(function AgentAdvancedSetti
     editable &&
     fields.length > 0 &&
     JSON.stringify(attributesFromForm(fields, form)) !==
-      JSON.stringify(attributesFromForm(fields, savedForm));
+        JSON.stringify(attributesFromForm(fields, savedForm));
 
   const setField = (key: string, value: FormValue) =>
     setForm((prev) => ({ ...prev, [key]: value }));

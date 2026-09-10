@@ -25,7 +25,7 @@ export const plugin = definePlugin(
     },
     hostDependency: {
       id: 'cursor',
-      binaryNames: ['cursor-agent'],
+      binaryNames: ['agent', 'cursor-agent'],
       installCommands: {
         macos: [
           {
@@ -83,5 +83,21 @@ export const provider = registerPluginBehavior(plugin, {
         resumeFlag: '--resume',
       }),
   },
-  mcp: cursorMcpAdapter(),
+  mcp: {
+    ...cursorMcpAdapter(),
+    launchProfileFields: () => [
+      {
+        key: 'model',
+        label: 'Model (ACP sessions)',
+        type: 'text',
+        help: 'Blank uses the Cursor default. Applies to local ACP sessions.',
+      },
+      {
+        key: 'instructions',
+        label: 'Instructions (ACP sessions)',
+        type: 'textarea',
+        help: 'Additional instructions for local ACP sessions.',
+      },
+    ],
+  },
 });

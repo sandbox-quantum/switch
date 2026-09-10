@@ -5,6 +5,7 @@ import { getAgentById } from '@main/core/agents/getAgentById';
 import { locationManager } from '@main/core/locations/location-manager';
 import { db } from '@main/db/client';
 import { sessions } from '@main/db/schema';
+import { agentRuntimeKind } from '@shared/core/agents/agent-provider-config';
 import type { SessionConfig } from '@shared/core/sessions/session-config';
 import type {
   CreateSessionError,
@@ -32,6 +33,10 @@ export async function createSession(
   const configObj: SessionConfig = {};
   if (params.autoApprove !== undefined) configObj.autoApprove = params.autoApprove;
   if (params.initialPrompt?.trim()) configObj.initialPrompt = params.initialPrompt.trim();
+  // Frozen onto the session at creation. The agent's toggle decides how a
+  // session is launched; once launched, the session is what it is.
+  const runtime = agentRuntimeKind(agent.providerConfig);
+  if (runtime === 'provider') configObj.runtime = runtime;
   // The session's launch identity is not stored — it is read live from the
   // owning agent's `name` (see mapSessionRowToSession). How that name spawns is
   // the provider's business (Claude Code → `--agent <name>`) (CHOO-1440).

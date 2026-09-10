@@ -57,3 +57,22 @@ or notify an inferred status for that event.
 3. update allowlisted agent env vars in `src/main/core/pty/pty-env.ts` if needed
 4. validate detection behavior in `src/main/core/dependencies/`
 5. add or update tests for any non-standard behavior
+
+## Gemini ACP
+
+Gemini's Switch integration is local and uses `@switch-console/agent-providers`.
+Enable its provider runtime to receive room messages, show the transcript and
+answer permissions in Console or the room. Its existing TUI descriptor supplies
+CLI detection; no standalone connector or remote sidecar integration is claimed.
+SSH hosts retain the existing PTY path; Gemini room integration requires a local ACP session. The Gemini room skill
+is sourced from `connectors/gemini-cli/skills/switch/SKILL.md` and embedded by the
+plugins package, with a parity test.
+
+### Cursor ACP
+
+Cursor uses `agent acp`, session MCP registration, and existing Cursor login.
+New local Cursor agents use the provider runtime automatically. The provider
+settings card describes the bundled setup; no marketplace connector is installed.
+Its native question and plan extension handlers support both ordinary and
+underscore-prefixed ACP methods. Ordinary prompts queue behind active turns.
+Remote/terminal Switch sessions are not supported for this provider.

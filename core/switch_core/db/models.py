@@ -1,4 +1,5 @@
 import uuid
+from datetime import datetime
 
 from sqlalchemy import (
     DDL,
@@ -1103,3 +1104,49 @@ event.listen(
     "before_drop",
     DDL(DROP_NOTIFY_TRIGGER).execute_if(dialect="postgresql"),
 )
+
+
+class SdkSession(Base):
+    __tablename__ = "sdk_sessions"
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True)
+    agent_id: Mapped[str] = mapped_column(Text, ForeignKey("agents.id"), nullable=False)
+    host_id: Mapped[str] = mapped_column(Text, nullable=False)
+    epoch: Mapped[str] = mapped_column(Text, nullable=False)
+    lease_expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    snapshot: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    host_sequence: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+
+    recovery: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+
+
+class SdkSessionEvent(Base):
+    __tablename__ = "sdk_session_events"
+    __table_args__ = (
+        UniqueConstraint("session_id", "epoch", "host_sequence"),
+        UniqueConstraint("session_id", "event_id"),
+    )
+
+    session_id: Mapped[str] = mapped_column(
+        Text, ForeignKey("sdk_sessions.id", ondelete="CASCADE"), primary_key=True
+    )
+    sequence: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    epoch: Mapped[str] = mapped_column(Text, nullable=False)
+    event_id: Mapped[str] = mapped_column(Text, nullable=False)
+    host_sequence: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    host_event: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    event: Mapped[dict] = mapped_column(JSONB, nullable=False)
+
+
+class SdkSessionCommand(Base):
+    __tablename__ = "sdk_session_commands"
+
+    session_id: Mapped[str] = mapped_column(
+        Text, ForeignKey("sdk_sessions.id", ondelete="CASCADE"), primary_key=True
+    )
+    command_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    accepted_sequence: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    command: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    status: Mapped[dict] = mapped_column(JSONB, nullable=False)

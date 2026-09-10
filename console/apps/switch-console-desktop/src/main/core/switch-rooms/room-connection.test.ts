@@ -154,7 +154,7 @@ describe('RoomConnection', () => {
   });
 
   function connect(
-    sink: { acquire: () => InjectionTarget | null },
+    sink: { acquire: () => InjectionTarget | null; isBusy?: () => boolean },
     events: AgentBridgeEvent[],
     isHumanTyping: () => boolean = () => false,
     spawnTurn: { threadId: string | null; anchorId: string | null } | null = null
@@ -392,6 +392,147 @@ describe('RoomConnection', () => {
       expect.objectContaining({ queued: 1 })
     );
     conn.stop();
+  });
+
+  /**
+   * A provider session says it is busy while a turn runs, because a turn sent
+   * then is steered into the running one instead of starting its own. The gate
+   * is on messages only: `!interrupt` is executed through the acquired target
+   * and is wanted precisely while the session is busy — gating `acquire` on it
+   * instead dropped every interrupt with "no live target".
+   */
+  it('holds a room message while the session is mid-turn but still runs a command', async () => {
+    const target: InjectionTarget = { write: vi.fn() };
+    const busy = { acquire: () => target, isBusy: () => true };
+
+    const message = connect(busy, [messageEvent(true)]);
+    await flush();
+    expect(target.write).not.toHaveBeenCalled();
+    expect(silentLog.debug).toHaveBeenCalledWith(
+      'RoomConnection: injection deferred — the session is mid-turn',
+      expect.objectContaining({ queued: 1 })
+    );
+    message.conn.stop();
+
+    const command = connect(busy, [commandEvent('interrupt')]);
+    await flush();
+    expect(target.write).toHaveBeenCalledWith('\x1b');
+    command.conn.stop();
+  });
+
+  /**
+   * The written text stays the Switch envelope — the agent answers with the ids
+   * in it — so a target that shows a person the message needs the parts of it
+   * separately. A terminal ignores the second argument entirely.
+   */
+  it('hands the target who said what, alongside the envelope it writes', async () => {
+    const target: InjectionTarget = { write: vi.fn() };
+    const { conn } = connect({ acquire: () => target }, [messageEvent(true)]);
+
+    await flush();
+
+    const [text, meta] = vi.mocked(target.write).mock.calls[0] as [string, unknown];
+    expect(text).toContain('addressed you');
+    expect(meta).toEqual({
+      sender: 'Someone',
+      body: 'hello agent',
+      roomId: 'room-1',
+      roomName: 'Room One',
+      messageId: 'msg-1',
+    });
+    conn.stop();
+  });
+
+  /**
+   * The room this connection holds is the server's to set, and it is briefly
+   * null between the stream opening and the claim landing — which is exactly
+   * when a spawned session's first message goes out. Read back from the
+   * connection, that message reached the transcript with no room at all.
+   */
+  it('names the room the message came from, not the one the connection holds', async () => {
+    const target: InjectionTarget = { write: vi.fn() };
+    const fetchMock = makeFetch([messageEvent(true)]);
+    vi.stubGlobal('fetch', fetchMock);
+    const conn = new RoomConnection({
+      creds,
+      roomId: null,
+      roomName: null,
+      connectionId: 'conn-1',
+      sessionId: 'session-1',
+      sink: { acquire: () => target },
+      injector,
+      control,
+      deeplinkScheme: 'switchdash',
+      isHumanTyping: () => false,
+      mediaDir,
+      spawnTurn: null,
+      log: silentLog,
+    });
+    conn.start();
+
+    await flush();
+
+    expect(vi.mocked(target.write).mock.calls[0]?.[1]).toMatchObject({
+      roomId: 'room-1',
+      roomName: null,
+      sender: 'Someone',
+    });
+    conn.stop();
+  });
+
+  it('carries no sender for a line the app wrote rather than a person', async () => {
+    const target: InjectionTarget = { write: vi.fn() };
+    const { conn } = connect({ acquire: () => target }, [
+      {
+        type: 'task_delegate',
+        room_id: 'room-1',
+        payload: { task_id: 't1', summary: 'do a thing', description: 'the thing' },
+      } as AgentBridgeEvent,
+    ]);
+
+    await flush();
+
+    expect(vi.mocked(target.write).mock.calls[0]?.[1]).toBeUndefined();
+    conn.stop();
+  });
+
+  /**
+   * The hold is right until it isn't: a turn runs for as long as the agent keeps
+   * working, and a message nobody ever sees is worse than one answered as an
+   * aside. Past the cap it goes in anyway, and the session is told that is what
+   * happened so a mid-turn interruption is not mistaken for a fresh request.
+   */
+  it('delivers a room message held past the cap into the running turn, and says so', async () => {
+    vi.useFakeTimers();
+    try {
+      const control = vi.fn(async () => true);
+      const target: InjectionTarget = { write: vi.fn(), control };
+      const { conn } = connect({ acquire: () => target, isBusy: () => true }, [messageEvent(true)]);
+
+      await vi.advanceTimersByTimeAsync(1);
+      expect(target.write).not.toHaveBeenCalled();
+
+      // Still held four minutes in — the ordinary turn finishes first.
+      await vi.advanceTimersByTimeAsync(4 * 60_000);
+      expect(target.write).not.toHaveBeenCalled();
+
+      await vi.advanceTimersByTimeAsync(60_000 + 500);
+
+      expect(vi.mocked(target.write).mock.calls[0]?.[0]).toContain('addressed you');
+      expect(control).toHaveBeenCalledWith(
+        expect.objectContaining({
+          kind: 'notice',
+          text: expect.stringContaining('delivered into it'),
+        })
+      );
+      expect(silentLog.warn).toHaveBeenCalledWith(
+        'RoomConnection: delivering a held room message into the running turn',
+        expect.objectContaining({ event: 'switch_message_held_too_long' })
+      );
+      conn.stop();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('delivers the message once the session has a terminal to type into', async () => {
@@ -1729,5 +1870,139 @@ describe('a room the server refuses', () => {
     expect(opens).toHaveLength(2);
     expect(opens[1]).not.toContain('rooms=');
     conn.stop();
+  });
+});
+
+/**
+ * Consuming a room message instead of delivering it.
+ *
+ * A provider-backed session posts its approvals and questions into the room and
+ * answers them from the reply. The reply must not also reach the agent as a
+ * turn: "2" arriving as a prompt is noise at best, and the agent is blocked on
+ * the very request that reply answers.
+ */
+describe('RoomConnection: intercepted messages', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  function connectWithInterceptor(
+    intercept: (text: string, message: unknown) => boolean,
+    events: AgentBridgeEvent[]
+  ) {
+    const writes: string[] = [];
+    const target: InjectionTarget = { write: (data) => writes.push(data) };
+    const fetchMock = makeFetch(events);
+    vi.stubGlobal('fetch', fetchMock);
+    const conn = new RoomConnection({
+      creds,
+      roomId: 'room-1',
+      roomName: 'Room One',
+      connectionId: 'conn-1',
+      sessionId: 'session-1',
+      sink: { acquire: () => target },
+      injector,
+      control,
+      deeplinkScheme: 'switchdash',
+      isHumanTyping: () => false,
+      interceptInjection: intercept,
+      mediaDir,
+      log: silentLog,
+    });
+    conn.start();
+    return { conn, fetchMock, writes };
+  }
+
+  it('does not inject a message the interceptor consumed', async () => {
+    const { conn, writes } = connectWithInterceptor(() => true, [messageEvent(true)]);
+    await flush();
+    conn.stop();
+
+    expect(writes).toEqual([]);
+  });
+
+  /**
+   * An intercepted message is an answer, not a new request. Opening a turn for
+   * it would put "working on it…" in the room for work nobody asked for.
+   */
+  it('opens no room turn for a message the interceptor consumed', async () => {
+    const { conn, fetchMock } = connectWithInterceptor(() => true, [messageEvent(true)]);
+    await flush();
+    conn.stop();
+
+    expect(runtimeStates(fetchMock)).not.toContain('working');
+  });
+
+  it('hands the interceptor the message as it arrived, not only the injection line', async () => {
+    const seen: unknown[] = [];
+    const { conn } = connectWithInterceptor(
+      (_text, message) => {
+        seen.push(message);
+        return true;
+      },
+      [messageEvent(true)]
+    );
+    await flush();
+    conn.stop();
+
+    expect(seen[0]).toMatchObject({ body: 'hello agent', message_id: 'msg-1' });
+  });
+
+  it('delivers the message normally when the interceptor declines it', async () => {
+    const { conn, writes, fetchMock } = connectWithInterceptor(() => false, [messageEvent(true)]);
+    await flush();
+    conn.stop();
+
+    expect(writes.some((w) => w.includes('hello agent'))).toBe(true);
+    expect(runtimeStates(fetchMock)).toContain('working');
+  });
+
+  /**
+   * Only an addressed message can be an answer. Unaddressed chatter is not
+   * surfaced at all, and a task event is not something anyone replied to.
+   */
+  it('never offers an unaddressed message to the interceptor', async () => {
+    const intercept = vi.fn(() => true);
+    const { conn } = connectWithInterceptor(intercept, [messageEvent(false)]);
+    await flush();
+    conn.stop();
+
+    expect(intercept).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * A target with no submit keystroke — a provider session, where the write *is*
+ * the turn. An empty submit write would land as a blank turn of its own.
+ */
+describe('RoomConnection: a target with no submit keystroke', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('writes the payload once and nothing after it', async () => {
+    const writes: string[] = [];
+    const fetchMock = makeFetch([messageEvent(true)]);
+    vi.stubGlobal('fetch', fetchMock);
+    const conn = new RoomConnection({
+      creds,
+      roomId: 'room-1',
+      roomName: 'Room One',
+      connectionId: 'conn-1',
+      sessionId: 'session-1',
+      sink: { acquire: () => ({ write: (data: string) => writes.push(data) }) },
+      injector: { build: (text) => ({ payload: text, submitSequence: '', submitDelayMs: 0 }) },
+      control,
+      deeplinkScheme: 'switchdash',
+      isHumanTyping: () => false,
+      mediaDir,
+      log: silentLog,
+    });
+    conn.start();
+    await flush(8);
+    conn.stop();
+
+    expect(writes).toHaveLength(1);
+    expect(writes[0]).toContain('hello agent');
   });
 });

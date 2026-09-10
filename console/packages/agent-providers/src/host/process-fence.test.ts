@@ -1,0 +1,45 @@
+import { spawn } from 'node:child_process';
+import { once } from 'node:events';
+import { expect, it } from 'vitest';
+import { fenceDeadOwner } from './process-fence';
+
+function terminateGroup(pid: number): void {
+  try {
+    process.kill(-pid, 'SIGKILL');
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error;
+  }
+}
+
+it.skipIf(process.platform === 'win32')(
+  'fences provider children after a real host process crash',
+  async () => {
+    const owner = spawn(
+      process.execPath,
+      [
+        '-e',
+        `
+    const { spawn } = require('node:child_process');
+    const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });
+    console.log(child.pid);
+    setInterval(() => {}, 1000);
+  `,
+      ],
+      { detached: true, stdio: ['ignore', 'pipe', 'ignore'] }
+    );
+    const pid = owner.pid!;
+    let fenced = false;
+    try {
+      await once(owner.stdout!, 'data');
+      await expect(fenceDeadOwner(pid, pid)).rejects.toThrow('still alive');
+      const exited = once(owner, 'exit');
+      owner.kill('SIGKILL');
+      await exited;
+      await fenceDeadOwner(pid, pid);
+      fenced = true;
+      expect(() => process.kill(-pid, 0)).toThrow();
+    } finally {
+      if (!fenced) terminateGroup(pid);
+    }
+  }
+);

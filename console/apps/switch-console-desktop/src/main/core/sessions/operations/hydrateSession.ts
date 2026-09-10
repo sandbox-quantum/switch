@@ -1,6 +1,7 @@
 import { eq } from 'drizzle-orm';
 import { remoteAttachmentPool } from '@main/core/agent-runtime/attachment/production-remote-attachment-pool';
 import { isAttachableRuntime } from '@main/core/agent-runtime/attachment/types';
+import { isProviderRuntime } from '@main/core/agent-runtime/types';
 import { db } from '@main/db/client';
 import { sessions } from '@main/db/schema';
 import { resolveSessionAgent } from '../../locations/utils';
@@ -33,6 +34,24 @@ export async function hydrateSession(sessionId: string): Promise<void> {
 
   const config = row.config ?? {};
   const session = mapSessionRowToSession(row, loaded.providerId, loaded.name);
+
+  // A provider session has no terminal to open and no pane to attach to, so it
+  // never goes through the attachment pool: hydrating one is starting it.
+  //
+  // Not only on a first spawn. The adapter's session lives in this process, so
+  // a session restored after the app restarted has to be started again — its
+  // provider is gone, whatever the row remembers. Starting one that is already
+  // up is what must not happen, and the runtime's own guard is what stops it,
+  // rather than a proxy for it here that reads a restart as "already running".
+  if (isProviderRuntime(agent)) {
+    await agent.start(
+      session,
+      undefined,
+      !isFirstSpawn,
+      isFirstSpawn ? config.initialPrompt : undefined
+    );
+    return;
+  }
 
   if (!isFirstSpawn && isAttachableRuntime(agent)) {
     await agent.ensureAttachable(session);
