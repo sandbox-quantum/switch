@@ -25,6 +25,8 @@ interface Props {
   typeFilter?: string;
   onTypeChange?: (t: string) => void;
   types?: TypeOption[];
+  /** What this axis is called on the resource being listed. */
+  typeLabel?: string;
 }
 
 export default function ResourceFiltersBar({
@@ -36,6 +38,7 @@ export default function ResourceFiltersBar({
   typeFilter,
   onTypeChange,
   types,
+  typeLabel = "Type",
 }: Props) {
   const hasType = types !== undefined && onTypeChange !== undefined;
 
@@ -76,12 +79,12 @@ export default function ResourceFiltersBar({
         <TextField
           size="small"
           select
-          label="Type"
+          label={typeLabel}
           value={typeFilter ?? ""}
           onChange={(e) => onTypeChange(e.target.value)}
           sx={{ minWidth: 180 }}
         >
-          <MenuItem value="">All types</MenuItem>
+          <MenuItem value="">{`All ${typeLabel.toLowerCase()}s`}</MenuItem>
           {(types ?? []).map((t) => (
             <MenuItem key={t.value} value={t.value}>
               {t.label}
