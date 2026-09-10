@@ -1,8 +1,10 @@
 import { createHash } from 'node:crypto';
 import { chmod, copyFile, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { parse, stringify } from 'smol-toml';
+import { linkHomeAsset, linkSkills, optionalText } from '../host/provider-home';
 
-/** Persistent rollouts stay beside the Console database, outside the working tree. */
+/** Native rollouts remain in the persistent session directory on the execution host. */
 export async function prepareCodexSessionHome(input: {
   root: string;
   sessionId: string;
@@ -23,15 +25,24 @@ export async function prepareCodexSessionHome(input: {
       await copyFile(join(input.sourceHome, 'auth.json'), join(home, 'auth.json'));
       await chmod(join(home, 'auth.json'), 0o600);
     } catch (cause) {
-      throw new Error(
-        'Could not load the Codex login. Run `codex login` before starting this session.',
-        { cause }
-      );
+      if ((cause as NodeJS.ErrnoException).code !== 'ENOENT')
+        throw new Error('Could not load the execution-host Codex login.', { cause });
     }
   }
-  await writeFile(join(home, 'config.toml'), input.config, { mode: 0o600 });
+  const sourceConfig = await optionalText(join(input.sourceHome, 'config.toml'));
+  const config = { ...(sourceConfig ? parse(sourceConfig) : {}), ...parse(input.config) };
+  const servers = config.mcp_servers as Record<string, unknown> | undefined;
+  if (servers) delete servers.switch;
+  const plugins = config.plugins as Record<string, { enabled?: boolean }> | undefined;
+  for (const [name, plugin] of Object.entries(plugins ?? {})) {
+    if (name.includes('switch-connector')) plugin.enabled = false;
+  }
+  await writeFile(join(home, 'config.toml'), stringify(config), { mode: 0o600 });
+  for (const name of ['AGENTS.md', 'rules', 'plugins', 'hooks.json'])
+    await linkHomeAsset(join(input.sourceHome, name), join(home, name));
   const skillDir = join(home, 'skills', 'switch');
   await mkdir(skillDir, { recursive: true });
   await writeFile(join(skillDir, 'SKILL.md'), input.skill);
+  await linkSkills(join(input.sourceHome, 'skills'), join(home, 'skills'));
   return home;
 }

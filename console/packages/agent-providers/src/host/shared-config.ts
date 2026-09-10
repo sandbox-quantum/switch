@@ -1,4 +1,4 @@
-import { readFile } from 'node:fs/promises';
+import { readFile, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { sessionSchema } from '@switch-console/shared/session-v1';
@@ -20,6 +20,9 @@ export const sharedConfigSchema = z.strictObject({
       codexConfig: z.string(),
       skill: z.string(),
       context: z.string(),
+      agentDefinition: z
+        .strictObject({ name: z.string().min(1), path: z.string().min(1) })
+        .optional(),
     })
     .optional(),
 });
@@ -33,17 +36,16 @@ export async function prepareSharedConfig(root: string, config: SharedHostConfig
   const input = structuredClone(config.start.input);
   if (config.execution) {
     const execution = config.execution;
-    const credentials = z
-      .object({
-        env: z.object({
-          SWITCH_API_ENDPOINT: z.string().min(1),
-          SWITCH_API_TOKEN: z.string().min(1),
-          SWITCH_AGENT_ID: z.string().min(1),
-        }),
-      })
-      .parse(JSON.parse(await readFile(execution.credentialsPath, 'utf8'))).env;
-    if (credentials.SWITCH_AGENT_ID !== config.session.agentId)
-      throw new Error('The execution host credentials belong to a different agent.');
+    if (execution.agentDefinition) {
+      try {
+        if (!(await stat(join(input.cwd, execution.agentDefinition.path))).isFile())
+          throw new Error('The provider agent definition is not a file.');
+        input.agentName = execution.agentDefinition.name;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      }
+    }
+    const credentials = await readSharedCredentials(config);
     agentApiUrl = credentials.SWITCH_API_ENDPOINT;
     token = credentials.SWITCH_API_TOKEN;
     const inherited: Record<string, string> = {};
@@ -84,4 +86,20 @@ export async function prepareSharedConfig(root: string, config: SharedHostConfig
   if (!agentApiUrl || !token)
     throw new Error('Shared SDK host requires execution-host Switch credentials.');
   return { agentApiUrl, token, input };
+}
+
+export async function readSharedCredentials(config: SharedHostConfig) {
+  if (!config.execution) throw new Error('Shared execution credentials are required.');
+  const credentials = z
+    .object({
+      env: z.object({
+        SWITCH_API_ENDPOINT: z.string().min(1),
+        SWITCH_API_TOKEN: z.string().min(1),
+        SWITCH_AGENT_ID: z.string().min(1),
+      }),
+    })
+    .parse(JSON.parse(await readFile(config.execution.credentialsPath, 'utf8'))).env;
+  if (credentials.SWITCH_AGENT_ID !== config.session.agentId)
+    throw new Error('The execution host credentials belong to a different agent.');
+  return credentials;
 }

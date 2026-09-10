@@ -161,6 +161,29 @@ describe('session-v1 client transport', () => {
     expect(vi.mocked(wire.api.submit).mock.calls[0][0]).not.toHaveProperty('origin');
     expect(client.getSnapshot().snapshot?.commandStatuses[0].status).toBe('accepted');
   });
+  it('reconnects reads after an epoch change without resending an uncertain command', async () => {
+    vi.useFakeTimers();
+    const wire = transport();
+    const client = new SessionChatClient('session-demo', wire.api);
+    try {
+      await client.connect();
+      vi.mocked(wire.api.submit).mockRejectedValueOnce(new Error('Lost reply'));
+      await expect(client.send('Hello', 'send')).rejects.toThrow();
+      const recovered = initial();
+      recovered.session.epoch = 'recovered-epoch';
+      vi.mocked(wire.api.snapshot).mockResolvedValue(recovered);
+      wire.fail();
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(client.getSnapshot().connected).toBe(true);
+      expect(client.getSnapshot().snapshot?.session.epoch).toBe('recovered-epoch');
+      expect(client.hasPendingCommand()).toBe(true);
+      expect(wire.api.submit).toHaveBeenCalledTimes(1);
+      await expect(client.send('Hello', 'send')).rejects.toThrow('STALE_EPOCH');
+    } finally {
+      client.dispose();
+      vi.useRealTimers();
+    }
+  });
   it('preserves command ID and body after a lost receipt, then reconciles', async () => {
     const wire = transport();
     const client = new SessionChatClient('session-demo', wire.api);

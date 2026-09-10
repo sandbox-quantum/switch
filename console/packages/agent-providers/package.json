@@ -39,6 +39,7 @@
     "@opencode-ai/sdk": "^1.18.27",
     "@sandboxaq/switch-agent-runtime": "workspace:*",
     "@switch-console/shared": "workspace:*",
+    "smol-toml": "^1.6.1",
     "zod": "^4.4.3"
   },
   "devDependencies": {

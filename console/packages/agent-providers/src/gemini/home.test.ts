@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { expect, it } from 'vitest';
 import { prepareGeminiHome } from './home';
 
-it('isolates settings, preserves refreshed login, and grants only the supplied MCP servers', async () => {
+it('isolates settings, preserves refreshed login, and preserves host MCP configuration', async () => {
   const root = await mkdtemp(join(tmpdir(), 'gemini-home-test-'));
   try {
     const sourceHome = join(root, 'source');
@@ -27,11 +27,11 @@ it('isolates settings, preserves refreshed login, and grants only the supplied M
     const home = await prepareGeminiHome(input);
     const configDir = join(home, '.gemini');
     const config = JSON.parse(await readFile(join(configDir, 'settings.json'), 'utf8'));
-    expect(config.mcpServers).toBeUndefined();
+    expect(config.mcpServers).toEqual({ unrelated: { command: 'unrelated' } });
     expect(config.security.auth.selectedType).toBe('oauth-personal');
     expect(config.tools.exclude).toContain('ask_user');
     expect(await readFile(join(configDir, 'GEMINI.md'), 'utf8')).toBe('Switch instructions');
-    expect(config.mcp.allowed).toEqual(['switch']);
+    expect(config.mcp.allowed).toEqual(['unrelated', 'switch']);
     expect((await stat(configDir)).mode & 0o777).toBe(0o700);
     await writeFile(join(configDir, 'oauth_creds.json'), 'refreshed-fixture');
     expect(await prepareGeminiHome(input)).toBe(home);

@@ -1,8 +1,9 @@
 import { mkdtemp, mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { parse } from 'smol-toml';
 import { afterEach, expect, it } from 'vitest';
-import { prepareCodexSessionHome } from './codex-session-home';
+import { prepareCodexSessionHome } from './home';
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -15,7 +16,7 @@ it('isolates config, preserves rollouts and refreshed auth on resume, and protec
   const sourceHome = join(root, 'source');
   await mkdir(sourceHome);
   await writeFile(join(sourceHome, 'auth.json'), 'fixture-login');
-  await writeFile(join(sourceHome, 'config.toml'), 'unrelated-user-config');
+  await writeFile(join(sourceHome, 'config.toml'), 'model_reasoning_effort = "high"');
   const input = {
     root: join(root, 'sessions'),
     sessionId: '../session',
@@ -24,7 +25,10 @@ it('isolates config, preserves rollouts and refreshed auth on resume, and protec
     skill: 'Switch workflow',
   };
   const home = await prepareCodexSessionHome(input);
-  expect(await readFile(join(home, 'config.toml'), 'utf8')).toBe(input.config);
+  expect(parse(await readFile(join(home, 'config.toml'), 'utf8'))).toEqual({
+    model: 'test-model',
+    model_reasoning_effort: 'high',
+  });
   expect(await readFile(join(home, 'skills/switch/SKILL.md'), 'utf8')).toBe(input.skill);
   expect(await readdir(home)).toEqual(['auth.json', 'config.toml', 'skills']);
   if (process.platform !== 'win32')
@@ -33,12 +37,14 @@ it('isolates config, preserves rollouts and refreshed auth on resume, and protec
   await mkdir(join(home, 'sessions'));
   expect(await prepareCodexSessionHome(input)).toBe(home);
   expect(await readFile(join(home, 'auth.json'), 'utf8')).toBe('refreshed-fixture');
-  expect(await readFile(join(sourceHome, 'config.toml'), 'utf8')).toBe('unrelated-user-config');
+  expect(await readFile(join(sourceHome, 'config.toml'), 'utf8')).toBe(
+    'model_reasoning_effort = "high"'
+  );
   const other = await prepareCodexSessionHome({ ...input, sessionId: 'other' });
   expect(other).not.toBe(home);
 });
 
-it('fails clearly when there is no login to copy', async () => {
+it('allows native environment or keychain authentication when no login file exists', async () => {
   const root = await mkdtemp(join(tmpdir(), 'codex-home-test-'));
   roots.push(root);
   await expect(
@@ -49,5 +55,5 @@ it('fails clearly when there is no login to copy', async () => {
       config: '',
       skill: '',
     })
-  ).rejects.toThrow('codex login');
+  ).resolves.toEqual(expect.any(String));
 });

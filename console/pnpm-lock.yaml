@@ -317,6 +317,9 @@ importers:
       '@switch-console/shared':
         specifier: workspace:*
         version: link:../shared
+      smol-toml:
+        specifier: ^1.6.1
+        version: 1.6.1
       zod:
         specifier: ^4.4.3
         version: 4.4.3
