@@ -344,13 +344,17 @@ async def refresh_activity(
     Position in the list cannot tell "not drawn yet" from "drawn by a
     previous process and since forgotten" — that needs a durable anchor
     turn activity does not have — so this narrows only the one sweep where
-    every turn looks equally undrawn and the ambiguity is total. An older
-    turn skipped on that first sweep because it was not yet the latest — one
-    still running behind whichever is, or one recovery is about to end — is
-    simply new to `redraw_needed` on the very next sweep, `first_sweep` or
-    not, and gets drawn then: one cycle later, not never. From the second
-    sweep on this session, every turn is judged only on whether its own
-    state changed, the same as before this parameter existed.
+    every turn looks equally undrawn and the ambiguity is total. A turn this
+    skips is told to the guard exactly as if it had been drawn at its
+    current state, not merely passed over: `redrawn` is the only thing that
+    teaches `redraw_needed` a turn exists, and every sweep after this one is
+    unrestricted, so a skip that left no trace would be new again on the
+    very next sweep — replaying the same history this parameter exists to
+    hold back, just one sweep later rather than never. Recording it instead
+    means an old, already-ended turn stays held back for good, and a turn
+    still running behind the latest — or one recovery is about to end —
+    only draws again once its own state actually changes from here, the
+    same as any turn this process already knows about.
     """
     async with session_factory() as db:
         row = await db.get(SdkSession, session_id)
@@ -363,7 +367,21 @@ async def refresh_activity(
         publications = []
         latest_turn_id = snapshot.turns[-1].turn_id if snapshot.turns else None
         for turn in snapshot.turns:
+            items = [item for item in snapshot.items if item.turn_id == turn.turn_id]
+            state = (turn.status, tuple(item.revision for item in items))
             if first_sweep and turn.turn_id != latest_turn_id:
+                # Recorded as already at its current state, not just passed
+                # over: `redrawn` is the only thing that teaches the guard a
+                # turn exists at all, and every sweep after this one is
+                # unrestricted. Skip without it and the whole history this
+                # sweep held back is new to the guard again on the very next
+                # sweep — whatever wakes it, a user's next message or a
+                # session re-checked for an unrelated reason — so it floods
+                # in one sweep later instead of never. A turn this process
+                # never actually posted is a turn nobody here can show; that
+                # is the same trade this restriction already makes for an
+                # old, already-ended turn, just kept rather than undone.
+                redrawn(session_id, turn.turn_id, state)
                 continue
             if turn.command_id is None:
                 continue
@@ -380,8 +398,6 @@ async def refresh_activity(
                 continue
             if not room.external_channel_id:
                 continue
-            items = [item for item in snapshot.items if item.turn_id == turn.turn_id]
-            state = (turn.status, tuple(item.revision for item in items))
             if not redraw_needed(session_id, turn.turn_id, state):
                 continue
             elapsed_seconds = (

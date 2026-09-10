@@ -121,6 +121,91 @@ async def test_only_the_latest_turn_is_redrawn_by_a_freshly_started_publisher(
     ]
 
 
+async def test_a_turn_skipped_on_the_first_sweep_stays_held_back_on_the_next(
+    session_factory,
+):
+    """Skipping a non-latest turn on the first sweep must stick.
+
+    `redraw_needed` only knows a turn exists once `redrawn` has told it so —
+    skip a turn without that and it is new again on the very next sweep,
+    which is unrestricted, so the whole history the first sweep held back
+    would flood in one sweep later instead of never: on the user's next
+    message, or a session re-checked for any other reason, not only a
+    second restart.
+    """
+    service, epoch = await setup(session_factory)
+    await opened(service, epoch)
+    await service.ingest(
+        "agent-demo",
+        "host-demo",
+        host_event(
+            epoch,
+            3,
+            {
+                "type": "turn.upsert",
+                "turnId": "turn-demo",
+                "status": "completed",
+                "commandId": "message-demo",
+            },
+        ),
+    )
+    second_message = command(
+        epoch,
+        "message-2",
+        {
+            "type": "message.send",
+            "text": "Run them again",
+            "attachments": [],
+            "delivery": "queue",
+        },
+    )
+    await service.submit(second_message, user_id="owner", bridge_id=None)
+    await service.ingest(
+        "agent-demo",
+        "host-demo",
+        host_event(
+            epoch,
+            4,
+            {
+                "type": "turn.upsert",
+                "turnId": "turn-2",
+                "status": "running",
+                "commandId": "message-2",
+            },
+        ),
+    )
+    activity_platform = ActivityPlatform()
+    publisher = SessionPublisher(
+        session_factory,
+        "bridge",
+        cards_for(session_factory, Platform()),
+        SessionTurnActivity(activity_platform),
+    )
+
+    await publisher.publish_pending()
+    assert [c.turn.turn_id for _, c, _ in activity_platform.posts] == ["turn-2"]
+
+    # Something else in the session changes, waking a second, unrestricted
+    # sweep — a user's next message in the real system, a plain notice here.
+    await service.ingest(
+        "agent-demo",
+        "host-demo",
+        host_event(
+            epoch,
+            5,
+            {
+                "type": "notice",
+                "level": "info",
+                "code": "TEST",
+                "message": "still running",
+            },
+        ),
+    )
+    await publisher.publish_pending()
+
+    assert "turn-demo" not in [c.turn.turn_id for _, c, _ in activity_platform.posts]
+
+
 async def test_an_older_turn_queued_behind_the_latest_still_gets_its_final_draw(
     session_factory,
 ):
