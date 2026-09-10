@@ -1,0 +1,89 @@
+import type { ProviderSessionRuntime } from '@main/core/agent-runtime/types';
+import { log } from '@main/lib/logger';
+import type { InjectedRoomMessage, InjectionSink, InjectionTarget } from './injection-sink';
+import type { PromptInjector } from './room-connection';
+import type { SessionControlAction } from './session-control';
+
+/**
+ * Delivers a room message to a provider-backed session as a turn.
+ *
+ * The PTY sinks exist because a TUI has to be typed into — hence a bracketed-
+ * paste payload and a submit keystroke. Neither applies here: `sendTurn` is a
+ * call, it is accepted or it throws, and the "write" is the turn.
+ *
+ * A busy gate does apply, for a different reason. A turn sent while one is
+ * running is *steered into* it rather than starting its own, and a room message
+ * is not a correction of what the agent is already doing — it is a new request,
+ * from someone who may not even be the person who made the last one. Steered,
+ * it arrived as an aside to a turn that was wrapping up: the agent answered it
+ * in its closing text and never posted the answer to the room, so the room saw
+ * nothing at all. So `isBusy` holds a room message until the turn ends, and
+ * `RoomConnection` comes back for it — up to the cap it enforces, past which a
+ * message steered into the running turn beats one nobody ever answers.
+ * `acquire` stays unconditional: a control
+ * command such as `!interrupt` is needed exactly while the session is busy.
+ *
+ * `sendTurn` is asynchronous while `InjectionTarget.write` is not — deliberately
+ * so, because `RoomConnection` treats a write as delivery and a rejection as a
+ * reason to requeue, and awaiting a whole turn would mean requeueing on the
+ * agent's answer rather than on its acceptance of the question. A send that is
+ * refused is logged and surfaced in the transcript by the runtime.
+ */
+export class ProviderInjectionSink implements InjectionSink, InjectionTarget {
+  constructor(
+    private readonly sessionId: string,
+    private readonly runtime: ProviderSessionRuntime,
+    /** Say something in the session's transcript. Supplied by the runtime,
+     *  which owns it; the sink only knows when a control step calls for one. */
+    private readonly notice: (text: string) => void
+  ) {}
+
+  acquire(): InjectionTarget | null {
+    return this;
+  }
+
+  isBusy(): boolean {
+    return this.runtime.isTurnRunning();
+  }
+
+  /** The two control steps a runtime can run for itself. */
+  async control(action: SessionControlAction): Promise<boolean> {
+    if (action.kind === 'interrupt') {
+      await this.runtime.interrupt();
+      return true;
+    }
+    if (action.kind === 'notice') {
+      this.notice(action.text);
+      return true;
+    }
+    return false;
+  }
+
+  write(data: string, meta?: InjectedRoomMessage): void {
+    if (!data) return;
+    // `data` is what the agent is sent — the Switch envelope, ids and all. The
+    // metadata rides alongside so the transcript can show the person who wrote
+    // it and what they wrote, rather than the envelope built around it.
+    void this.runtime.sendTurn(data, 'room', meta).catch((error: unknown) => {
+      log.error('ProviderInjectionSink: the session refused a room message', {
+        event: 'provider_room_turn_refused',
+        sessionId: this.sessionId,
+        error: String(error),
+      });
+    });
+  }
+}
+
+/**
+ * The no-op counterpart to `PluginPromptInjector` for a session with no
+ * terminal: the text goes over as it stands, and there is no Enter to press.
+ *
+ * The empty submit sequence is load-bearing — `RoomConnection` skips the second
+ * write when there is nothing to send, which is what keeps a stray empty turn
+ * out of the transcript after every room message.
+ */
+export class ProviderPromptInjector implements PromptInjector {
+  build(text: string): { payload: string; submitSequence: string; submitDelayMs: number } {
+    return { payload: text, submitSequence: '', submitDelayMs: 0 };
+  }
+}

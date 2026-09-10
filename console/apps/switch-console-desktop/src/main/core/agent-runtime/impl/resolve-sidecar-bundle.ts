@@ -29,3 +29,7 @@ function resolveBundlePath(bundleName: string): string {
 export function resolveSidecarBundlePath(): string {
   return resolveBundlePath('sidecar.mjs');
 }
+
+export function resolveSharedHostBundlePath(): string {
+  return resolveBundlePath('shared-host.mjs');
+}

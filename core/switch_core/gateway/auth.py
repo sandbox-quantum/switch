@@ -14,6 +14,7 @@ from switch_core.db.models import Room, User
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.user_store import UserStore
 from switch_core.gateway.dependencies import get_config, get_session, get_user_store
+from switch_core.logging_context import bind_log_context
 
 JWT_ALGORITHM = "HS256"
 JWT_EXPIRY_HOURS = 24
@@ -90,6 +91,9 @@ async def get_current_user(
     user = await user_store.get(session, payload["sub"])
     if user is None:
         raise HTTPException(status_code=401, detail="User not found")
+    # Unbound by RequestContextMiddleware when the request ends: its reset
+    # restores the context to what it was before the request, discarding this.
+    bind_log_context(user_id=user.id)
     return user
 
 

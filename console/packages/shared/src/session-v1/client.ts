@@ -30,6 +30,7 @@ export class SessionChatClient {
   private view: ChatView = { snapshot: null, connected: false, error: null, notices: [] };
   private off: (() => void) | null = null;
   private generation = 0;
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private pending: ClientCommand | null = null;
   private readonly listeners = new Set<() => void>();
 
@@ -44,6 +45,8 @@ export class SessionChatClient {
   };
 
   async connect(): Promise<void> {
+    if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+    this.reconnectTimer = null;
     const generation = ++this.generation;
     this.off?.();
     this.off = null;
@@ -102,7 +105,10 @@ export class SessionChatClient {
       if (generation === this.generation) this.off = off;
       else off();
     } catch (error) {
-      if (generation === this.generation) this.publish(false, String(error));
+      if (generation === this.generation) {
+        this.publish(false, String(error));
+        this.scheduleReconnect();
+      }
     }
   }
 
@@ -129,7 +135,6 @@ export class SessionChatClient {
         text,
         attachments: [],
         delivery: 'queue',
-        audience: { kind: 'session-members' },
       },
     };
     if (command.epoch !== snapshot.session.epoch)
@@ -181,6 +186,8 @@ export class SessionChatClient {
   }
 
   dispose(): void {
+    if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+    this.reconnectTimer = null;
     ++this.generation;
     this.off?.();
     this.off = null;
@@ -206,6 +213,15 @@ export class SessionChatClient {
     this.off?.();
     this.off = null;
     this.publish(false, error);
+    this.scheduleReconnect();
+  }
+
+  private scheduleReconnect(): void {
+    if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      void this.connect();
+    }, 1000);
   }
 
   private publish(connected: boolean, error: string | null): void {

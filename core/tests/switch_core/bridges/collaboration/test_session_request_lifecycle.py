@@ -15,6 +15,9 @@ import json
 from pathlib import Path
 from typing import Any, cast
 
+import pytest
+
+from switch_core.bridges.collaboration.adapter import RichContentFailed
 from switch_core.bridges.collaboration.session.contract import SnapshotRequest
 from switch_core.bridges.collaboration.session.outbound import SessionRequestCards
 from switch_core.bridges.collaboration.session.projection import SessionProjection
@@ -324,19 +327,30 @@ async def test_the_card_is_edited_in_place_rather_than_reposted() -> None:
     edit = client.updated[0]
     assert edit["channel"] == "C1"
     assert edit["ts"] == "111.0"
-    assert edit["blocks"] == render_approval(request, REFERENCE).blocks
+    expected = render_approval(request, REFERENCE).blocks
+    expected[0]["block_id"] = f"switch-request:{_post().token}"
+    assert edit["blocks"] == expected
     assert edit["text"] == render_approval_text(request, REFERENCE)
     assert client.posted == []
 
 
 async def test_a_failed_edit_puts_the_outcome_in_the_thread_instead() -> None:
-    """The card is stuck showing buttons. Saying nothing leaves it looking live."""
+    """The card is stuck showing buttons. Saying nothing leaves it looking live.
+
+    Raises on every attempt — a caller retrying publication has to see the
+    failure to know to retry — but the reply is only posted once: a card
+    stuck at the same revision and state would otherwise get the same notice
+    again on every retry.
+    """
     request = await _request(through=SETTLED)
     adapter, client = _adapter()
     client.update_error = "message_not_found"
     post = _post()
 
-    await _cards(adapter, post).refresh(post, request)
+    cards = _cards(adapter, post)
+    for _ in range(2):
+        with pytest.raises(RichContentFailed):
+            await cards.refresh(post, request)
 
     assert client.updated == []
     assert len(client.posted) == 1

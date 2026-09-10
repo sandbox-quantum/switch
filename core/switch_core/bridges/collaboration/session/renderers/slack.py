@@ -205,10 +205,21 @@ class SlackMessage:
 def render_request(
     request: SnapshotRequest, reference: RequestReference
 ) -> SlackMessage:
-    """Whichever card `request` calls for, by the kind of thing it asks."""
-    if isinstance(request.content, QuestionsContent):
-        return render_questions(request, reference)
-    return render_approval(request, reference)
+    """Whichever card `request` calls for, by the kind of thing it asks.
+
+    The first block always carries the token as its `block_id`, whatever kind
+    or state the card is in: `find_request_card` recovers an uncertain
+    delivery by scanning a channel's messages for it, and it has only the
+    token to look for — the actions block's own `block_id` is keyed by
+    request id and only present while the card still offers buttons.
+    """
+    message = (
+        render_questions(request, reference)
+        if isinstance(request.content, QuestionsContent)
+        else render_approval(request, reference)
+    )
+    message.blocks[0]["block_id"] = f"switch-request:{reference.token}"
+    return message
 
 
 def render_approval(
@@ -327,9 +338,12 @@ def _footer(
         return "Closed without being answered."
     # A closed request reporting `answered` contradicts itself. Say both rather
     # than pick one, and never the word that would read as a decision.
-    return _CLOSED.get(
+    summary = _CLOSED.get(
         settled.outcome, f"Closed, though the host called it {settled.outcome}."
     )
+    if request.decided_by is not None:
+        summary += f" Decided by {_actor(request.decided_by)}."
+    return summary
 
 
 def _answered(request: SnapshotRequest, content: ApprovalContent) -> str:
@@ -611,9 +625,12 @@ def _questions_footer(
     settled = request.result
     if settled is None:
         return "Closed without being answered."
-    return _CLOSED.get(
+    summary = _CLOSED.get(
         settled.outcome, f"Closed, though the host called it {settled.outcome}."
     )
+    if request.decided_by is not None:
+        summary += f" Decided by {_actor(request.decided_by)}."
+    return summary
 
 
 def _unanswerable(questions: list[Question]) -> str | None:

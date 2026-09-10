@@ -15,9 +15,32 @@ import {
 /**
  * Surfaces the Switch connector plugin status for an agent type and exposes
  * Install / Update / Uninstall actions plus a manual "Check for updates".
- * Renders nothing for agent types that declare no Switch setup.
+ * Console-managed providers describe their bundled connection instead.
  */
 export function SwitchSetupCard({ agentId }: { agentId: string }) {
+  if (agentId === 'gemini' || agentId === 'cursor') {
+    const name = agentId === 'cursor' ? 'Cursor' : 'Gemini';
+    return (
+      <Field>
+        <Label>Switch setup</Label>
+        <div className="space-y-2 rounded-lg border p-3">
+          <span className="text-sm text-foreground">Built into Switch Console</span>
+          <p className="text-xs text-foreground-muted">
+            Switch Console connects local {name} ACP sessions to your rooms automatically. Sign in
+            with {name} CLI, then add a {name} agent to your Switch server.
+          </p>
+          <p className="text-xs text-foreground-muted">
+            Included with Console updates. No separate connector installation is needed. Terminal
+            sessions and remote hosts are not supported for this connection.
+          </p>
+        </div>
+      </Field>
+    );
+  }
+  return <ConnectorSetupCard agentId={agentId} />;
+}
+
+function ConnectorSetupCard({ agentId }: { agentId: string }) {
   const {
     status,
     isLoading,

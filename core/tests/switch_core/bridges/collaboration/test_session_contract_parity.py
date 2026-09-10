@@ -7,18 +7,6 @@ separate implementations in separate languages reading the same
 nowhere on its own, it just renders the wrong thing in a room, or rejects a
 message the other end considers valid.
 
-One field is deliberately out of step. `audience` is being removed from the
-contract, so Python accepts it and models nothing about it — see
-`session/contract.py`. Until the removal lands in `session-v1/`, the fixtures
-still carry it and both sides still have to parse it.
-
-Two recordings sit beside `examples.json` and are read only from Python:
-`examples.questions.json`, exercised below, and `examples.activity.json`, in
-`test_session_activity.py`. They are there because the lift is byte-identical
-and cannot be edited here, and they are weaker evidence than the rest of this
-file for the same reason — they say the Python reader accepts these shapes, not
-that both readers agree on them.
-
 The TypeScript half of these cases lives in
 `console/packages/shared/src/session-v1/session-v1.test.ts`; the assertions
 here are chosen to match it. Its client-side cases (`SessionChatClient`,
@@ -72,7 +60,6 @@ def item(revision: int, text: str) -> Item:
             "text": text,
             "attachments": [],
             "origin": None,
-            "audience": {"kind": "session-members"},
         }
     )
 
@@ -296,3 +283,37 @@ def test_a_question_with_no_options_still_has_to_invite_an_answer() -> None:
 
     assert written.options == []
     assert written.allow_custom_answer is True
+
+
+def test_host_publication_claims_are_rejected() -> None:
+    payload = json.loads(json.dumps(EXAMPLES["hostRequest"]))
+    payload["body"]["request"]["audience"] = {"kind": "room", "roomId": "room-demo"}
+    with pytest.raises(ValueError):
+        parse_host_event(payload)
+
+
+def test_cancellation_retains_only_the_matching_deciding_actor() -> None:
+    for command_id in ("answer-demo", None):
+        projection = SessionProjection(initial())
+        projection.apply(parse_server_event(EXAMPLES["answerLifecycle"][1]))
+        projection.apply(
+            event(
+                13,
+                {
+                    "type": "request.settled",
+                    "requestId": "request-demo",
+                    "revision": 2,
+                    "outcome": "cancelled",
+                    "commandId": command_id,
+                    "result": None,
+                },
+            )
+        )
+        request = projection.snapshot.requests[0]
+        assert request.state == "closed"
+        assert request.result.result is None
+        if command_id:
+            assert request.decided_by.command_id == command_id
+            assert request.decided_by.surface == "mattermost"
+        else:
+            assert request.decided_by is None

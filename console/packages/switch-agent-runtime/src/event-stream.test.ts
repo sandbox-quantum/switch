@@ -203,3 +203,31 @@ describe('the heartbeat', () => {
     abort.abort();
   });
 });
+
+it('does not acknowledge a delivery before the consumer has saved it', async () => {
+  let finish: () => void = () => {};
+  const saved = new Promise<void>((resolve) => {
+    finish = resolve;
+  });
+  const onEvent = vi.fn(() => saved);
+  const fetchMock = vi.fn(async (url: string) => {
+    if (!url.includes('/events')) return Response.json({});
+    return new Response(
+      new ReadableStream({
+        start(controller) {
+          controller.enqueue(
+            new TextEncoder().encode(
+              'id: 7\nevent: message\ndata: {"type":"message","room_id":"room","sequence":7}\n\n'
+            )
+          );
+        },
+      })
+    );
+  });
+  const { stream, abort } = makeStream(fetchMock, { rooms: ['room'], startCursor: 6, onEvent });
+  await vi.waitFor(() => expect(onEvent).toHaveBeenCalledOnce());
+  expect(stream.position).toBe(6);
+  finish();
+  await vi.waitFor(() => expect(stream.position).toBe(7));
+  abort.abort();
+});

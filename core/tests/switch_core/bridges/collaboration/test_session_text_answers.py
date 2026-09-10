@@ -12,7 +12,9 @@ what happens once something does.
 from __future__ import annotations
 
 import logging
+from types import SimpleNamespace
 from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -263,7 +265,18 @@ def test_an_app_cannot_answer_a_request() -> None:
     )
 
 
-def test_ordinary_talk_never_reaches_the_store() -> None:
+@pytest.mark.parametrize(
+    "body",
+    [
+        "R42 is the one I meant",
+        "sounds good to me",
+        "@test-agent 1",
+        "@test-agent allow",
+        "<@U123> allow",
+        "<!subteam^S123|test-agent> 1",
+    ],
+)
+def test_ordinary_talk_never_reaches_the_store(body: str) -> None:
     """The grammar runs before the query, so a channel pays nothing for this."""
 
     class _Explodes:
@@ -276,8 +289,7 @@ def test_ordinary_talk_never_reaches_the_store() -> None:
     interactions = _interactions(_post())
     interactions._posts = _Explodes()  # type: ignore[assignment]
 
-    assert _run(interactions.command_for_text(_typed("R42 is the one I meant"))) is None
-    assert _run(interactions.command_for_text(_typed("sounds good to me"))) is None
+    assert _run(interactions.command_for_text(_typed(body))) is None
 
 
 # ── Where the bridge picks it up ─────────────────────────────────────────────
@@ -329,6 +341,12 @@ def _bridge(interactions: Any) -> tuple[Any, list[dict[str, str]]]:
     bridge._session_interactions = interactions
     bridge._session_demo = None
     bridge._adapter = _Notices()
+    # A no-op authority: tests that care about what gets submitted replace
+    # this, the way test_a_message_in_a_channel_is_offered_to_the_session
+    # does; everything else just needs an answer that lands to go somewhere.
+    bridge._session_authority = SimpleNamespace(submit=AsyncMock())
+    bridge._bridge_id = "bridge-1"
+    bridge.refresh_sdk_session = AsyncMock()  # type: ignore[method-assign]
     # Instance attrs shadow the class methods so the DB is never touched.
     bridge._is_registered_agent = _is_registered_agent  # type: ignore[assignment]
     bridge._repair_placeholder_username = _repair_placeholder_username  # type: ignore[assignment]
@@ -336,22 +354,19 @@ def _bridge(interactions: Any) -> tuple[Any, list[dict[str, str]]]:
     return bridge, relayed
 
 
-def test_a_message_in_a_channel_is_offered_to_the_session(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    """The relay path is where a typed answer is noticed, and it says so.
-
-    There is no route into a session yet, so the command is built and dropped —
-    but dropped out loud, because an answer that vanishes is the one outcome
-    nobody could debug.
-    """
+def test_a_message_in_a_channel_is_offered_to_the_session() -> None:
     bridge, relayed = _bridge(_interactions(_post()))
-    with caplog.at_level(logging.WARNING):
-        _run(bridge._handle_inbound_message(_typed("R42 1")))
+    submit = AsyncMock()
+    refresh = AsyncMock()
+    bridge._session_authority = SimpleNamespace(submit=submit)
+    bridge._bridge_id = "bridge-1"
+    bridge.refresh_sdk_session = refresh
+    _run(bridge._handle_inbound_message(_typed("R42 1")))
 
-    assert "dropped it" in caplog.text
-    assert "session-demo" in caplog.text
-    # Answering is not instead of speaking: the channel still said this.
+    submit.assert_awaited_once()
+    assert submit.call_args.kwargs == {"user_id": None, "bridge_id": "bridge-1"}
+    assert submit.call_args.args[0].session_id == "session-demo"
+    refresh.assert_awaited_once_with("session-demo")
     assert len(relayed) == 1
 
 

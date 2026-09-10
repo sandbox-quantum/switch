@@ -477,9 +477,9 @@ def test_a_request_is_drawn_by_the_kind_of_thing_it_asks() -> None:
     """One entry point, because the card that gets edited is not told apart by
     its caller: a request opens as one kind and stays that kind, and the
     refresh path only has the request."""
-    assert (
-        render_request(_form(), FORM).blocks == render_questions(_form(), FORM).blocks
-    )
+    expected = render_questions(_form(), FORM).blocks
+    expected[0]["block_id"] = f"switch-request:{FORM.token}"
+    assert render_request(_form(), FORM).blocks == expected
 
 
 # ── Escaping ─────────────────────────────────────────────────────────────────

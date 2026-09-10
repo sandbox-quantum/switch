@@ -69,7 +69,6 @@ def _item(**fields: object) -> Item:
             "text": "",
             "attachments": [],
             "origin": None,
-            "audience": {"kind": "session-members"},
             **fields,
         }
     )
@@ -504,23 +503,3 @@ async def test_the_card_and_its_fallback_say_the_same_things() -> None:
     message = render_activity(items, _turn())
 
     assert message.text == render_activity_text(items, _turn())
-
-
-# ── What the contract no longer decides ──────────────────────────────────────
-
-
-async def test_the_audience_a_host_asked_for_is_not_consulted() -> None:
-    """Every tool call in the recording is marked `session-members`.
-
-    All nine reach the channel, because who sees a session's activity is
-    Switch's decision and not the host's. Nothing has yet been built that takes
-    it — the only caller is the demo, which shows the turn to whoever asked for
-    it — so this records where the behaviour stands rather than endorsing it as
-    the answer. See the PR's risks.
-    """
-    items = await _items()
-    private = [item for item in items if item.audience == {"kind": "session-members"}]
-
-    assert len(private) == 9
-    rendered = json.dumps(_plan(items), ensure_ascii=False)
-    assert all(item.title.split()[0] in rendered for item in private)

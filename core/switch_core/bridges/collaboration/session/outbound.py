@@ -450,6 +450,7 @@ class SessionRequestCards:
         self._bridge_id = bridge_id
         self._posts = posts
         self._session_factory = session_factory
+        self._reported_edit_failures: dict[str, tuple[int, str]] = {}
 
     async def post(
         self,
@@ -462,20 +463,20 @@ class SessionRequestCards:
         epoch: str,
         agent_name: str,
     ) -> SessionRequestPost:
-        """Draw `request` as a card in a channel, and record what it offers.
+        """Reserve the card durably, then send it to the platform.
 
-        The handle is reserved before the card is drawn, because the card
-        carries it: minting after posting would mean a clash could only be
-        resolved by editing a message someone may already be reading. So the row
-        goes in first, holding its own token where the post ref will go — unique
-        already, so two reservations cannot collide on it either — and the ref
-        is filled in once Slack has one.
+        The reservation is committed before the platform call, not after: a
+        process that dies or times out between the two leaves a row whose
+        `external_post_id` still equals its own token, and that is what
+        marks a card unconfirmed rather than missing. `recover` resolves one
+        by searching the platform for it instead of risking a duplicate post,
+        and an unconfirmed card answers nothing until it does — see the
+        matching check in `command_for_text`.
 
-        Which leaves one ordering to be deliberate about: a card that posts and
-        then fails to record is a card offering buttons that resolve to nothing,
-        and that cannot happen here, because the recording came first. A
-        reservation that fails to post is the other way round — a handle held
-        for a card nobody can see — so it is released before raising.
+        A reservation that fails outright (the platform refuses the post) is
+        the other thing this must not leave behind: a handle held for a card
+        nobody can see, so it is released and the caller told, rather than
+        left for `recover` to find nothing.
         """
         form = posted_form(request)
         token = secrets.token_urlsafe(16)
@@ -492,6 +493,7 @@ class SessionRequestCards:
                 request=request,
             )
             reference = RequestReference(token=post.token, handle=post.handle)
+            await session.commit()
             try:
                 ref = await self._adapter.post_rich(
                     channel_id,
@@ -517,6 +519,30 @@ class SessionRequestCards:
                 channel_id,
             )
             return post
+
+    async def recover(self, post: SessionRequestPost) -> SessionRequestPost:
+        """Bind an uncertain delivery to its existing platform message; never repost."""
+        ref = await self._adapter.find_request_card(
+            post.external_channel_id, post.thread_id, post.token, post.created_at
+        )
+        if ref is None:
+            raise CardNotPosted(
+                f"Delivery of card {post.handle} is unconfirmed; retaining its reservation "
+                "and retrying lookup instead of risking a duplicate."
+            )
+        async with self._session_factory() as session:
+            stored = await session.get(
+                SessionRequestPost, post.id, with_for_update=True
+            )
+            if stored is None:
+                raise CardNotPosted("The reserved card no longer exists.")
+            if stored.external_post_id not in (stored.token, ref):
+                raise CardNotPosted(
+                    "The reserved card is bound to a different message."
+                )
+            stored.external_post_id = ref
+            await session.commit()
+            return stored
 
     async def _reserve(
         self,
@@ -642,6 +668,13 @@ class SessionRequestCards:
         The epoch is not touched. Nothing here has a new one, and a session that
         has changed epoch has invalidated every card it posted rather than moved
         them on — which is the publisher's to notice, not a redraw's.
+
+        Re-raises after the reply is posted, so a caller polling for pending
+        publications (`SessionPublisher`) sees the failure and retries rather
+        than believing the redraw landed. The reply itself is sent once per
+        distinct `(revision, state)` rather than on every retry, or a card
+        stuck at the same state would get the same notice again every few
+        seconds until something moves it on.
         """
         reference = RequestReference(token=post.token, handle=post.handle)
         try:
@@ -658,14 +691,18 @@ class SessionRequestCards:
                 post.external_channel_id,
                 error,
             )
-            await self._adapter.admin_message(
-                post.external_channel_id,
-                f"The card for request {post.handle} above could not be updated, "
-                f"so it may still be offering buttons that no longer "
-                f"work.\n{error.text}",
-                post.external_post_id,
-            )
-            return
+            state = (request.revision, request.state)
+            if self._reported_edit_failures.get(post.token) != state:
+                await self._adapter.admin_message(
+                    post.external_channel_id,
+                    f"The card for request {post.handle} above could not be updated, "
+                    f"so it may still be offering buttons that no longer "
+                    f"work.\n{error.text}",
+                    post.external_post_id,
+                )
+                self._reported_edit_failures[post.token] = state
+            raise
+        self._reported_edit_failures.pop(post.token, None)
         await self._record(post, request)
 
     async def _record(self, post: SessionRequestPost, request: SnapshotRequest) -> None:

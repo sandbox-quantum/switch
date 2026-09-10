@@ -16,9 +16,6 @@ export type Origin = {
   threadId: Id | null;
   messageId: Id | null;
 };
-export type Audience =
-  | { kind: 'session-members' }
-  | { kind: 'room'; roomId: Id; threadId: Id | null };
 export type Capability = {
   input: 'queue' | 'steer';
   approvals: boolean;
@@ -45,7 +42,6 @@ export type Item = {
   text: string;
   attachments: Attachment[];
   origin: Origin | null;
-  audience: Audience;
 };
 export type ApprovalOption = {
   optionId: Id;
@@ -70,7 +66,6 @@ export type Request = {
   revision: number;
   state: 'open' | 'submitting' | 'resolved' | 'closed';
   content: RequestContent;
-  audience: Audience;
   expiresAt: string | null;
 };
 export type Session = {
@@ -105,7 +100,7 @@ export type HostBody =
   | {
       type: 'command.result';
       commandId: Id;
-      status: 'applied' | 'rejected';
+      status: 'applied' | 'rejected' | 'unknown';
       code: string | null;
       message: string | null;
     }
@@ -125,7 +120,6 @@ export type CommandBody =
       text: string;
       attachments: Attachment[];
       delivery: 'queue' | 'steer';
-      audience: Audience;
     }
   | {
       type: 'request.answer';

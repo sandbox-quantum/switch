@@ -158,7 +158,12 @@ class SessionProjection:
                     "state": "resolved" if answered else "closed",
                     "revision": body.revision,
                     "result": body,
-                    "decided_by": request.decided_by if answered else None,
+                    "decided_by": (
+                        request.decided_by
+                        if request.decided_by is not None
+                        and request.decided_by.command_id == body.command_id
+                        else None
+                    ),
                 }
             ),
             lambda x: x.request_id,

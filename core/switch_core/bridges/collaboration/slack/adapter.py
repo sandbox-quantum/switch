@@ -8,6 +8,7 @@ import uuid
 from collections import OrderedDict
 from collections.abc import Awaitable, Callable
 from dataclasses import replace
+from datetime import datetime
 from typing import Any, ClassVar
 
 import httpx
@@ -476,10 +477,69 @@ class SlackAdapter(CollaborationAdapter):
                 unfurl_media=False,
             )
             ts = result.get("ts", "")
-            return f"{channel_id}:{ts}" if ts else None
+            if not ts:
+                raise RuntimeError(
+                    "Slack accepted a card without returning its message reference."
+                )
+            return f"{channel_id}:{ts}"
         except SlackApiError as e:
             logger.error("Failed to post blocks to Slack channel %s: %s", channel_id, e)
+            if e.response.get("error") in {
+                "internal_error",
+                "fatal_error",
+                "request_timeout",
+                "service_unavailable",
+            }:
+                raise
             return None
+
+    async def find_request_card(
+        self,
+        channel_id: str,
+        thread_root_id: str | None,
+        token: str,
+        created_at: datetime,
+    ) -> str | None:
+        if self._web_client is None:
+            raise RuntimeError(
+                "Cannot recover a request card: Slack client not connected."
+            )
+        cursor = ""
+        while True:
+            arguments: dict[str, Any] = dict(
+                channel=channel_id,
+                oldest=str(created_at.timestamp()),
+                inclusive=True,
+                limit=100,
+                cursor=cursor,
+            )
+            if thread_root_id:
+                thread_ts = (
+                    self._parse_message_ref(thread_root_id)[1]
+                    if ":" in thread_root_id
+                    else thread_root_id
+                )
+                result = await self._web_client.conversations_replies(
+                    ts=thread_ts, **arguments
+                )
+            else:
+                result = await self._web_client.conversations_history(**arguments)
+            messages: list[dict[str, Any]] = result.get("messages") or []
+            for message in messages:
+                if not (
+                    (self._bot_user_id and message.get("user") == self._bot_user_id)
+                    or (self._bot_id and message.get("bot_id") == self._bot_id)
+                ):
+                    continue
+                if any(
+                    block.get("block_id") == f"switch-request:{token}"
+                    for block in message.get("blocks", [])
+                ):
+                    return f"{channel_id}:{message['ts']}"
+            metadata: dict[str, Any] = result.get("response_metadata") or {}
+            cursor = metadata.get("next_cursor", "")
+            if not cursor:
+                return None
 
     async def update_blocks(
         self,

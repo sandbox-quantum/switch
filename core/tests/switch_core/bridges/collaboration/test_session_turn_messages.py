@@ -84,7 +84,6 @@ def _item(turn_id: str = TURN) -> Item:
             "text": f"Working on {turn_id}",
             "attachments": [],
             "origin": None,
-            "audience": {"kind": "session-members"},
         }
     )
 

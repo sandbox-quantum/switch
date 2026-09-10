@@ -99,7 +99,6 @@ def _item(
             "text": text,
             "attachments": [],
             "origin": None,
-            "audience": {"kind": "session-members"},
         }
     )
 

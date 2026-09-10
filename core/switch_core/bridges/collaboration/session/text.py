@@ -142,7 +142,7 @@ def parse_text_answer(body: str) -> TextAnswer | None:
     if not rest:
         return _bare(head)
     handle = head.rstrip(_SEPARATOR_CHARS)
-    if not handle:
+    if re.fullmatch(r"[Rr][1-9][0-9]*", handle) is None:
         return None
 
     # "R42 yes" is the one form that is a word rather than a selection, and it

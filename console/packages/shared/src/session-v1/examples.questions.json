@@ -1,5 +1,5 @@
 {
-  "_comment": "Recorded questions requests, in the shapes examples.json has no case for: several questions at once, multi-select, and a question with no options that is answered in words. Same file layout as examples.json and read by the same loaders, kept beside it rather than inside it because that file is agreed wire evidence and stays byte-identical.",
+  "_comment": "Session interaction examples shared by the TypeScript and Python contract tests.",
   "initialSnapshot": {
     "contractVersion": 1,
     "throughSequence": 20,
@@ -66,9 +66,21 @@
               "title": "Which checks should run before I push?",
               "prompt": "Pick as many as you want.",
               "options": [
-                { "optionId": "unit", "label": "Unit tests", "description": null },
-                { "optionId": "types", "label": "Type check", "description": null },
-                { "optionId": "lint", "label": "Lint", "description": null }
+                {
+                  "optionId": "unit",
+                  "label": "Unit tests",
+                  "description": null
+                },
+                {
+                  "optionId": "types",
+                  "label": "Type check",
+                  "description": null
+                },
+                {
+                  "optionId": "lint",
+                  "label": "Lint",
+                  "description": null
+                }
               ],
               "multiSelect": true,
               "allowCustomAnswer": false
@@ -82,11 +94,6 @@
               "allowCustomAnswer": true
             }
           ]
-        },
-        "audience": {
-          "kind": "room",
-          "roomId": "room-demo",
-          "threadId": "thread-questions"
         },
         "expiresAt": null,
         "result": null,
@@ -106,18 +113,21 @@
               "title": "Which environment?",
               "prompt": "The deploy needs one and the config names two.",
               "options": [
-                { "optionId": "staging", "label": "Staging", "description": null },
-                { "optionId": "production", "label": "Production", "description": null }
+                {
+                  "optionId": "staging",
+                  "label": "Staging",
+                  "description": null
+                },
+                {
+                  "optionId": "production",
+                  "label": "Production",
+                  "description": null
+                }
               ],
               "multiSelect": false,
               "allowCustomAnswer": false
             }
           ]
-        },
-        "audience": {
-          "kind": "room",
-          "roomId": "room-demo",
-          "threadId": "thread-questions"
         },
         "expiresAt": null,
         "result": null,
@@ -150,18 +160,21 @@
               "title": "Which environment?",
               "prompt": "The deploy needs one and the config names two.",
               "options": [
-                { "optionId": "staging", "label": "Staging", "description": null },
-                { "optionId": "production", "label": "Production", "description": null }
+                {
+                  "optionId": "staging",
+                  "label": "Staging",
+                  "description": null
+                },
+                {
+                  "optionId": "production",
+                  "label": "Production",
+                  "description": null
+                }
               ],
               "multiSelect": false,
               "allowCustomAnswer": false
             }
           ]
-        },
-        "audience": {
-          "kind": "room",
-          "roomId": "room-demo",
-          "threadId": "thread-questions"
         },
         "expiresAt": null
       }

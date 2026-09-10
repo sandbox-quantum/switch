@@ -227,6 +227,15 @@ class SessionInteractions:
                 handle=None,
             )
 
+        if (
+            interaction.channel_id != post.external_channel_id
+            or interaction.message_ref != post.external_post_id
+        ):
+            logger.warning(
+                "Refusing an answer whose channel or message differs from the request card."
+            )
+            return None
+
         answer = resolve_pressed_option(post.form, option_id)
         if isinstance(answer, Unanswerable):
             logger.warning(
@@ -290,6 +299,14 @@ class SessionInteractions:
 
         post = await self._post_for(message, answer)
         if post is None:
+            return None
+
+        if post.external_post_id == post.token:
+            logger.warning(
+                "Refusing a typed answer to unconfirmed card %s on bridge %s.",
+                post.handle,
+                self._bridge_id,
+            )
             return None
 
         resolved = resolve_text_answer(post.form, answer)

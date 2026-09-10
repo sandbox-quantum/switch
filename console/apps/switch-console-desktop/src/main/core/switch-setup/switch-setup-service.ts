@@ -298,22 +298,32 @@ class SwitchSetupService {
     };
   }
 
-  /**
-   * Agent types that are usable in Switch right now: Switch-supported (a `cli`
-   * descriptor) AND with their connector plugin already installed. Drives the
-   * onboarding agent-type picker, which only offers ready-to-use types.
-   */
-  /**
-   * Agent types that can actually be onboarded on this machine — those whose
-   * Switch connector plugin is installed.
-   */
+  /** Local provider availability, including Console-managed ACP sessions. */
   async listAgentTypeAvailability(): Promise<AgentTypeAvailability[]> {
     const types = listPlugins()
-      .filter((plugin) => plugin.capabilities.switchSetup.kind !== 'none')
+      .filter(
+        (plugin) =>
+          plugin.capabilities.switchSetup.kind !== 'none' ||
+          ['gemini', 'cursor'].includes(plugin.metadata.id)
+      )
       .map((plugin) => plugin.metadata.id);
 
     const availability: AgentTypeAvailability[] = [];
     for (const agentId of types) {
+      if (agentId === 'gemini' || agentId === 'cursor') {
+        const installed = await resolveCommandPath(
+          agentId === 'cursor' ? 'agent' : 'gemini',
+          this.ctx
+        );
+        availability.push({
+          agentId,
+          available: Boolean(installed),
+          blockedReason: installed
+            ? null
+            : `Install ${agentId === 'cursor' ? 'Cursor' : 'Gemini'} CLI on this computer to use ACP sessions.`,
+        });
+        continue;
+      }
       const status = await this.getStatus(agentId);
       availability.push(
         status.installed

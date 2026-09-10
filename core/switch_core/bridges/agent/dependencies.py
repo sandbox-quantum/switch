@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
-from typing import Any
+from typing import Any, cast
 
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.bridges.agent.api_key_cache import ApiKeyCache
 from switch_core.bridges.agent.protocol.connections import ConnectionRegistry
@@ -134,3 +134,7 @@ def get_config() -> SwitchConfig:
 
 def get_protocol() -> ProtocolService:
     return _state["protocol"]  # type: ignore[no-any-return]
+
+
+def get_session_factory() -> async_sessionmaker[AsyncSession]:
+    return cast(async_sessionmaker[AsyncSession], _state["session_factory"])

@@ -1,3 +1,4 @@
+import type { ClientCommand } from '@switch-console/shared/session-v1';
 import type { KnownAgentType } from '@main/core/agents/known-agent-type';
 import {
   managedServerHostBlocked,
@@ -1244,4 +1245,57 @@ export async function createRoom(
     },
   });
   return mapRoomSummary((await res.json()) as RoomSummaryJson);
+}
+
+export async function fetchSdkSessions(server: SwitchServer): Promise<unknown> {
+  return (await gatewayFetch(server, '/sessions', { authenticated: true })).json();
+}
+export async function fetchSdkSnapshot(server: SwitchServer, sessionId: string): Promise<unknown> {
+  return (
+    await gatewayFetch(server, `/sessions/${encodeURIComponent(sessionId)}`, {
+      authenticated: true,
+    })
+  ).json();
+}
+export async function fetchSdkEvents(
+  server: SwitchServer,
+  sessionId: string,
+  after: number
+): Promise<unknown> {
+  return (
+    await gatewayFetch(server, `/sessions/${encodeURIComponent(sessionId)}/events?after=${after}`, {
+      authenticated: true,
+    })
+  ).json();
+}
+export async function fetchSdkCommandStatus(
+  server: SwitchServer,
+  sessionId: string,
+  commandId: string
+): Promise<unknown> {
+  return (
+    await gatewayFetch(
+      server,
+      `/sessions/${encodeURIComponent(sessionId)}/commands/${encodeURIComponent(commandId)}`,
+      { authenticated: true }
+    )
+  ).json();
+}
+export async function submitSdkCommand(
+  server: SwitchServer,
+  command: ClientCommand
+): Promise<unknown> {
+  return (
+    await gatewayFetch(server, `/sessions/${encodeURIComponent(command.sessionId)}/commands`, {
+      authenticated: true,
+      method: 'POST',
+      body: {
+        commandId: command.commandId,
+        epoch: command.epoch,
+        surface: 'console',
+        roomId: null,
+        body: command.body,
+      },
+    })
+  ).json();
 }

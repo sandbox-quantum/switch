@@ -38,6 +38,7 @@ export function mapSessionRowToSession(
     archivedAt: row.archivedAt ?? undefined,
     lastInteractedAt: row.lastInteractedAt ?? undefined,
     autoApprove: config.autoApprove,
+    runtime: config.runtime ?? 'pty',
     providerSessionId: config.providerSessionId,
     agentName,
     createdAt: row.createdAt,

@@ -181,10 +181,11 @@ def test_a_press_becomes_the_answer_the_contract_documents() -> None:
     recorded = json.loads(EXAMPLES_PATH.read_text())["platformAnswer"]
     interactions = _interactions(_post(), actor="actor-demo", surface="mattermost")
 
-    command = _run(interactions.command_for(_press(message_ref="message-answer")))
+    command = _run(interactions.command_for(_press()))
 
     assert command is not None
     built = command.model_dump(by_alias=True)
+    recorded["origin"]["messageId"] = "C1:111.0"
     assert built | {"commandId": recorded["commandId"]} == recorded
 
 
@@ -213,7 +214,7 @@ def test_pressing_twice_is_one_command() -> None:
     interactions = _interactions(_post())
 
     first = _run(interactions.command_for(_press()))
-    second = _run(interactions.command_for(_press(message_ref="C1:222.0")))
+    second = _run(interactions.command_for(_press()))
 
     assert first is not None and second is not None
     assert first.command_id == second.command_id
@@ -259,3 +260,10 @@ def test_an_actor_with_no_switch_identity_answers_nothing() -> None:
     interactions = _interactions(_post(), actor=None)
 
     assert isinstance(_run(interactions.command_for(_press())), Refused)
+
+
+def test_callback_cannot_reuse_a_token_on_another_message_or_channel() -> None:
+    interactions = _interactions(_post())
+    assert _run(interactions.command_for(_press(channel_id="another-channel"))) is None
+    assert _run(interactions.command_for(_press(message_ref="C1:222.0"))) is None
+    assert _run(interactions.command_for(_press(message_ref=None))) is None

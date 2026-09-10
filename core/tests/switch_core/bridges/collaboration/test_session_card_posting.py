@@ -23,6 +23,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from switch_core.bridges.collaboration.adapter import RichContentFailed
 from switch_core.bridges.collaboration.bridge_core import BridgeCore
 from switch_core.bridges.collaboration.models import (
     InboundCommand,
@@ -550,7 +551,8 @@ async def test_a_redraw_slack_refused_leaves_the_row_on_what_is_on_screen(
     post = await _post_one(cards, room_id)
     client.update_error = "message_not_found"
 
-    await cards.refresh(post, await _revised_request())
+    with pytest.raises(RichContentFailed):
+        await cards.refresh(post, await _revised_request())
 
     async with session_factory() as session:
         row = await SessionRequestPostStore().get_by_token(

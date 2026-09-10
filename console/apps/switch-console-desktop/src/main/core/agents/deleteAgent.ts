@@ -249,7 +249,7 @@ async function removeAgent(
     });
     if (agent) await killRemoteSidecar(agent);
   } else {
-    autoSessionWatcher.stopForAgent(agentId);
+    await autoSessionWatcher.stopForAgent(agentId);
   }
 
   await setAutoSessionAgent(agentId, false);

@@ -92,17 +92,6 @@ class Origin(_Model):
     message_id: Id | None
 
 
-# `audience` let a host say which room a thing was for, and it is on its way out
-# of the contract: who is shown a session's request is Switch's decision, made
-# from the agent and the rooms it is in, and a host is not in a position to take
-# it. Nothing here reads it. It stays declared only because `extra="forbid"`
-# would otherwise refuse a wire message that still carries it, and it is typed
-# as unread rather than modelled so that no code can start depending on it
-# again. Delete these three lines, and the fields, when the removal lands
-# upstream in `session-v1/`.
-Unread = dict[str, Any]
-
-
 class Capability(_Model):
     input: Literal["queue", "steer"]
     approvals: bool
@@ -131,7 +120,6 @@ class Item(_Model):
     text: str
     attachments: list[Attachment]
     origin: Origin | None
-    audience: Unread
 
 
 class ApprovalOption(_Model):
@@ -202,7 +190,6 @@ class Request(_Model):
     revision: Counter
     state: Literal["open", "submitting", "resolved", "closed"]
     content: RequestContent
-    audience: Unread
     expires_at: Timestamp | None
 
 
@@ -261,7 +248,7 @@ class RequestSettled(_Model):
 class CommandResult(_Model):
     type: Literal["command.result"]
     command_id: Id
-    status: Literal["applied", "rejected"]
+    status: Literal["applied", "rejected", "unknown"]
     code: str | None
     message: str | None
 
@@ -340,7 +327,6 @@ class MessageSend(_Model):
     text: str
     attachments: list[Attachment]
     delivery: Literal["queue", "steer"]
-    audience: Unread
 
 
 class RequestAnswer(_Model):

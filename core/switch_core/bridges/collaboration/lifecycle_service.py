@@ -115,6 +115,10 @@ class CollaborationBridgeLifecycleService:
     def get_registered_types(self) -> list[str]:
         return list(self._adapter_registry.keys())
 
+    async def refresh_sdk_session(self, session_id: str) -> None:
+        for bridge in self._bridges.values():
+            await bridge.refresh_sdk_session(session_id)
+
     def get_adapter(self, bridge_id: str) -> CollaborationAdapter | None:
         """The live adapter for a running bridge, or None if it isn't running.
 

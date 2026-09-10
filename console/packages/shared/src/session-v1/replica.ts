@@ -77,7 +77,7 @@ export class SessionReplica {
           request.state = body.outcome === 'answered' ? 'resolved' : 'closed';
           request.revision = body.revision;
           request.result = body;
-          if (body.outcome !== 'answered') request.decidedBy = null;
+          if (request.decidedBy?.commandId !== body.commandId) request.decidedBy = null;
         }
         break;
       }

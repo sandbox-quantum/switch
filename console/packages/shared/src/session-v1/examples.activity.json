@@ -1,5 +1,5 @@
 {
-  "_comment": "A turn with work in it: what the agent did, what it said, and what it stopped to ask. Sits beside examples.json rather than inside it because that file is a byte-identical lift and cannot be edited here. Every item carries an `audience` the readers no longer interpret; it goes when the field does. `turnEnd` stops the same turn where it stands: nobody answered the permission, so the request closes unanswered and the edit it was waiting on is left unfinished. Deliberately messy, because a tidy turn proves nothing: tools overlap and are revised out of the order they opened in, one title is longer than Slack will take on a task card and one detail is longer than the room left after it, a step is declined rather than failed, and the titles mix prose with the tool-call shape a host is as likely to emit — nothing produces these events yet, so the renderer has to survive both.",
+  "_comment": "A turn with work in it: what the agent did, what it said, and what it stopped to ask. Sits beside examples.json rather than inside it because that file is a byte-identical lift and cannot be edited here. `audience` is gone from the contract, so no item carries one any more. `turnEnd` stops the same turn where it stands: nobody answered the permission, so the request closes unanswered and the edit it was waiting on is left unfinished. Deliberately messy, because a tidy turn proves nothing: tools overlap and are revised out of the order they opened in, one title is longer than Slack will take on a task card and one detail is longer than the room left after it, a step is declined rather than failed, and the titles mix prose with the tool-call shape a host is as likely to emit — nothing produces these events yet, so the renderer has to survive both.",
   "initialSnapshot": {
     "contractVersion": 1,
     "throughSequence": 0,
@@ -66,10 +66,6 @@
             "roomId": "room-activity",
             "threadId": null,
             "messageId": "message-activity"
-          },
-          "audience": {
-            "kind": "room",
-            "roomId": "room-activity"
           }
         }
       }
@@ -91,10 +87,7 @@
           "title": "Searching for the login tests",
           "text": "",
           "attachments": [],
-          "origin": null,
-          "audience": {
-            "kind": "session-members"
-          }
+          "origin": null
         }
       }
     },
@@ -115,10 +108,7 @@
           "title": "Read(tests/auth/test_login.py)",
           "text": "",
           "attachments": [],
-          "origin": null,
-          "audience": {
-            "kind": "session-members"
-          }
+          "origin": null
         }
       }
     },
@@ -139,10 +129,7 @@
           "title": "Searched for the login tests",
           "text": "4 files",
           "attachments": [],
-          "origin": null,
-          "audience": {
-            "kind": "session-members"
-          }
+          "origin": null
         }
       }
     },
@@ -163,10 +150,7 @@
           "title": "Read(tests/auth/conftest.py)",
           "text": "",
           "attachments": [],
-          "origin": null,
-          "audience": {
-            "kind": "session-members"
-          }
+          "origin": null
         }
       }
     },
@@ -187,10 +171,7 @@
           "title": "Read(tests/auth/test_login.py)",
           "text": "312 lines",
           "attachments": [],
-          "origin": null,
-          "audience": {
-            "kind": "session-members"
-          }
+          "origin": null
         }
       }
     },
@@ -211,10 +192,7 @@
           "title": "Grep(fixture_user)",
           "text": "",
           "attachments": [],
-          "origin": null,
-          "audience": {
-            "kind": "session-members"
-          }
+          "origin": null
         }
       }
     },
@@ -235,10 +213,7 @@
           "title": "Read(tests/auth/conftest.py)",
           "text": "88 lines",
           "attachments": [],
-          "origin": null,
-          "audience": {
-            "kind": "session-members"
-          }
+          "origin": null
         }
       }
     },
@@ -259,10 +234,7 @@
           "title": "Grep(fixture_user)",
           "text": "17 matches in 6 files",
           "attachments": [],
-          "origin": null,
-          "audience": {
-            "kind": "session-members"
-          }
+          "origin": null
         }
       }
     },
@@ -283,10 +255,7 @@
           "title": "Bash(uv run --project core pytest core/tests/switch_core/bridges/collaboration/test_session_login_fixture_isolation.py -x -q --no-header)",
           "text": "",
           "attachments": [],
-          "origin": null,
-          "audience": {
-            "kind": "session-members"
-          }
+          "origin": null
         }
       }
     },
@@ -307,10 +276,7 @@
           "title": "Bash(uv run --project core pytest core/tests/switch_core/bridges/collaboration/test_session_login_fixture_isolation.py -x -q --no-header)",
           "text": "1 failed, 41 passed in 12.44s — tests/auth/test_login.py::test_login_rejects_a_stale_session",
           "attachments": [],
-          "origin": null,
-          "audience": {
-            "kind": "session-members"
-          }
+          "origin": null
         }
       }
     },
@@ -331,10 +297,7 @@
           "title": "Running tests/auth/test_login.py",
           "text": "",
           "attachments": [],
-          "origin": null,
-          "audience": {
-            "kind": "session-members"
-          }
+          "origin": null
         }
       }
     },
@@ -355,10 +318,7 @@
           "title": "Read(tests/session/test_session.py)",
           "text": "",
           "attachments": [],
-          "origin": null,
-          "audience": {
-            "kind": "session-members"
-          }
+          "origin": null
         }
       }
     },
@@ -379,10 +339,7 @@
           "title": "Ran tests/auth/test_login.py",
           "text": "1 failed, 41 passed",
           "attachments": [],
-          "origin": null,
-          "audience": {
-            "kind": "session-members"
-          }
+          "origin": null
         }
       }
     },
@@ -403,10 +360,7 @@
           "title": "Read(tests/session/test_session.py)",
           "text": "204 lines",
           "attachments": [],
-          "origin": null,
-          "audience": {
-            "kind": "session-members"
-          }
+          "origin": null
         }
       }
     },
@@ -427,10 +381,7 @@
           "title": "Bash(git log -L :fixture_user:tests/auth/conftest.py)",
           "text": "",
           "attachments": [],
-          "origin": null,
-          "audience": {
-            "kind": "session-members"
-          }
+          "origin": null
         }
       }
     },
@@ -451,10 +402,7 @@
           "title": "Bash(git log -L :fixture_user:tests/auth/conftest.py)",
           "text": "Not permitted in this session",
           "attachments": [],
-          "origin": null,
-          "audience": {
-            "kind": "session-members"
-          }
+          "origin": null
         }
       }
     },
@@ -475,11 +423,7 @@
           "title": "",
           "text": "It fails whenever it runs after the session test:",
           "attachments": [],
-          "origin": null,
-          "audience": {
-            "kind": "room",
-            "roomId": "room-activity"
-          }
+          "origin": null
         }
       }
     },
@@ -500,11 +444,7 @@
           "title": "",
           "text": "It fails whenever it runs after the session test: both write to the same fixture user, and only the second one has to notice. Pinning the fixture to one user per test fixes it.",
           "attachments": [],
-          "origin": null,
-          "audience": {
-            "kind": "room",
-            "roomId": "room-activity"
-          }
+          "origin": null
         }
       }
     },
@@ -525,10 +465,7 @@
           "title": "Editing tests/auth/conftest.py",
           "text": "",
           "attachments": [],
-          "origin": null,
-          "audience": {
-            "kind": "session-members"
-          }
+          "origin": null
         }
       }
     },
@@ -549,10 +486,7 @@
           "title": "Editing tests/auth/conftest.py",
           "text": "Waiting for permission",
           "attachments": [],
-          "origin": null,
-          "audience": {
-            "kind": "session-members"
-          }
+          "origin": null
         }
       }
     },
@@ -590,10 +524,6 @@
                 "decision": "decline"
               }
             ]
-          },
-          "audience": {
-            "kind": "room",
-            "roomId": "room-activity"
           },
           "expiresAt": null
         }

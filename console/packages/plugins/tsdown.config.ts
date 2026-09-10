@@ -3,6 +3,15 @@ import { defineConfig } from 'tsdown';
 export default defineConfig({
   entry: {
     agents: 'src/agents/registry.ts',
+    // The runtime pin, for the parts of the app that register the Switch MCP
+    // server themselves rather than through a connector file.
+    distribution: 'src/distribution.ts',
+    // The room-workflow skill, for a session whose config directory the app
+    // writes and which therefore cannot see the installed connector's copy.
+    'cursor-skill': 'src/agents/impl/cursor/skill-file.ts',
+    'gemini-skill': 'src/agents/impl/gemini/skill-file.ts',
+    'codex-skill': 'src/agents/impl/codex/skill-file.ts',
+    'opencode-skill': 'src/agents/impl/opencode/skill-file.ts',
   },
   format: ['esm'],
   dts: true,

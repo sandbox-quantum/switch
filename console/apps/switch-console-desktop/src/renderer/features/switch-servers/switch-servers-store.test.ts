@@ -62,13 +62,22 @@ function newStore(servers: SwitchServer[]) {
   return store;
 }
 
-/** A promise the test resolves by hand, to hold a fetch in flight. */
+/** A promise the test settles by hand, to hold a fetch in flight and control
+ * exactly when — and in what order relative to another fetch — it lands. */
 function deferred<T>() {
   let resolve!: (value: T) => void;
-  const promise = new Promise<T>((r) => {
-    resolve = r;
+  let reject!: (reason: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
   });
-  return { promise, resolve };
+  return { promise, resolve, reject };
+}
+
+/** Flushes pending timers and microtasks so an in-flight fetch's `.then`
+ * chain (including its `runInAction` writes) has fully landed. */
+async function flush(): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, 0));
 }
 
 beforeEach(() => {
@@ -121,6 +130,30 @@ describe('fetching sign-in options', () => {
 
     expect(getAuthConfig).toHaveBeenCalledTimes(1);
     expect(store.authConfigFor('srv-a')).toEqual(authConfig);
+  });
+
+  it('reports a retry as checking rather than still failed while it runs', async () => {
+    // The panel picks its message from configCheckFailed and configChecking
+    // together: without this signal, a retry after a failure would claim the
+    // check failed right up until the moment it actually succeeds or fails
+    // again, even while it is genuinely in flight.
+    const store = newStore([server('srv-a')]);
+    getAuthConfig.mockRejectedValueOnce(new Error('fetch failed'));
+    await store.ensureAuthConfig('srv-a');
+    expect(store.authConfigCheckFailed('srv-a')).toBe(true);
+    expect(store.authConfigChecking('srv-a')).toBe(false);
+
+    const retryPending = deferred<typeof authConfig>();
+    getAuthConfig.mockReturnValueOnce(retryPending.promise);
+    const retrying = store.ensureAuthConfig('srv-a');
+    await flush();
+    expect(store.authConfigChecking('srv-a')).toBe(true);
+
+    retryPending.resolve(authConfig);
+    await retrying;
+
+    expect(store.authConfigChecking('srv-a')).toBe(false);
+    expect(store.authConfigCheckFailed('srv-a')).toBe(false);
   });
 });
 
@@ -222,6 +255,23 @@ describe('a server on an unreachable host', () => {
 
     expect(store.authConfigFor('srv-a')).toEqual(authConfig);
   });
+
+  it('does not carry a pre-outage sign-in-options failure past the skip', async () => {
+    // The failure recorded before the host went down belongs to a check that
+    // is no longer running — the skip must not let it sit there as if it
+    // were still current, or unblocking would show it "once more" for a
+    // check that never actually happened during the outage.
+    const store = newStore([remoteServer('srv-a', 'host-1')]);
+    getAuthConfig.mockRejectedValueOnce(new Error('fetch failed'));
+    await store.ensureAuthConfig('srv-a');
+    expect(store.authConfigCheckFailed('srv-a')).toBe(true);
+
+    blockedHosts.add('host-1');
+    await store.ensureAuthConfig('srv-a');
+
+    expect(store.authConfigCheckFailed('srv-a')).toBe(false);
+    expect(getAuthConfig).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe('the manual refresh button', () => {
@@ -234,6 +284,101 @@ describe('the manual refresh button', () => {
 
     expect(getConnectionStatus).toHaveBeenCalledWith('srv-a');
     expect(store.authConfigFor('srv-a')).toEqual(authConfig);
+  });
+
+  it('re-fetches sign-in options even when a config is already cached', async () => {
+    // The bug: once cached, ensureAuthConfig's short-circuit meant Refresh
+    // never asked again — a server that gained OIDC after Console cached
+    // password-only kept showing password-only until the app restarted.
+    const store = newStore([server('srv-a')]);
+    await store.ensureAuthConfig('srv-a');
+    expect(store.authConfigFor('srv-a')).toEqual(authConfig);
+
+    const updatedConfig = {
+      passwordLoginEnabled: true,
+      oidcEnabled: true,
+      oidcProviderLabel: 'WorkOS',
+    };
+    getAuthConfig.mockResolvedValueOnce(updatedConfig);
+
+    await store.refreshServer('srv-a');
+
+    expect(store.authConfigFor('srv-a')).toEqual(updatedConfig);
+  });
+});
+
+describe("the unreachable card's automatic retry", () => {
+  it('does not re-fetch sign-in options once they are already known', async () => {
+    // Before the manual-refresh fix, the auto-retry's call to refreshServer
+    // would have started re-fetching sign-in options on every tick forever.
+    // The retry loop exists to re-probe connectivity, not to hammer an
+    // endpoint whose answer rarely changes.
+    const store = newStore([server('srv-a')]);
+    await store.ensureAuthConfig('srv-a');
+    getAuthConfig.mockClear();
+
+    await store.retryConnection('srv-a');
+
+    expect(getAuthConfig).not.toHaveBeenCalled();
+    expect(getConnectionStatus).toHaveBeenCalledWith('srv-a');
+  });
+});
+
+describe('the reachability flag under concurrent checks', () => {
+  it('does not evict a reachable server over a later-landing sign-in-options failure', async () => {
+    // refreshServer runs the connection check and the sign-in-options check
+    // concurrently. If the connection check lands first and succeeds, a
+    // sign-in-options fetch that fails afterward must not overwrite that with
+    // "unreachable" — that would throw a perfectly signed-in user onto the
+    // cannot-reach screen over an unrelated endpoint's hiccup.
+    const store = newStore([server('srv-a')]);
+    const authPending = deferred<typeof authConfig>();
+    getAuthConfig.mockReturnValueOnce(authPending.promise);
+
+    const refreshing = store.refreshServer('srv-a');
+    await flush();
+    expect(store.isUnreachable('srv-a')).toBe(false);
+
+    authPending.reject(new Error('fetch failed'));
+    await refreshing;
+
+    expect(store.isUnreachable('srv-a')).toBe(false);
+  });
+});
+
+describe('a persistently broken sign-in-options endpoint', () => {
+  it('stays disclosed to the sign-in panel without evicting an otherwise reachable server', async () => {
+    // The durable case, as opposed to the transient one above: the
+    // sign-in-options endpoint never recovers while the server itself stays
+    // fine. isUnreachable must not flip true — once a status read has ever
+    // landed, it is the sole authority, so this failure can never reach it
+    // again — but the failure must still be visible *somewhere*, or the panel
+    // would silently keep showing a stale answer as if it were current,
+    // forever, for the rest of the session.
+    const store = newStore([server('srv-a')]);
+    await store.ensureAuthConfig('srv-a');
+    expect(store.authConfigFor('srv-a')).toEqual(authConfig);
+    getAuthConfig.mockRejectedValue(new Error('fetch failed'));
+
+    await store.refreshServer('srv-a');
+    await store.refreshServer('srv-a');
+    await store.refreshServer('srv-a');
+
+    expect(store.isUnreachable('srv-a')).toBe(false);
+    expect(store.authConfigCheckFailed('srv-a')).toBe(true);
+    expect(store.authConfigFor('srv-a')).toEqual(authConfig);
+  });
+
+  it('clears once the endpoint answers again', async () => {
+    const store = newStore([server('srv-a')]);
+    await store.ensureAuthConfig('srv-a');
+    getAuthConfig.mockRejectedValueOnce(new Error('fetch failed'));
+    await store.refreshServer('srv-a');
+    expect(store.authConfigCheckFailed('srv-a')).toBe(true);
+
+    await store.refreshServer('srv-a');
+
+    expect(store.authConfigCheckFailed('srv-a')).toBe(false);
   });
 });
 

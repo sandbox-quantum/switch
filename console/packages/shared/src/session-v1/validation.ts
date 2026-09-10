@@ -22,10 +22,6 @@ const origin = z.strictObject({
   threadId: id.nullable(),
   messageId: id.nullable(),
 });
-const audience = z.discriminatedUnion('kind', [
-  z.strictObject({ kind: z.literal('session-members') }),
-  z.strictObject({ kind: z.literal('room'), roomId: id, threadId: id.nullable() }),
-]);
 const capabilities = z.strictObject({
   input: z.enum(['queue', 'steer']),
   approvals: z.boolean(),
@@ -52,7 +48,6 @@ const item = z.strictObject({
   text: z.string(),
   attachments: z.array(attachment),
   origin: origin.nullable(),
-  audience,
 });
 const option = z.strictObject({
   optionId: id,
@@ -96,7 +91,6 @@ const request = z.strictObject({
       questions: z.array(question),
     }),
   ]),
-  audience,
   expiresAt: timestamp.nullable(),
 });
 export const sessionSchema = z.strictObject({
@@ -140,7 +134,7 @@ const hostBodies = [
   z.strictObject({
     type: z.literal('command.result'),
     commandId: id,
-    status: z.enum(['applied', 'rejected']),
+    status: z.enum(['applied', 'rejected', 'unknown']),
     code: z.string().nullable(),
     message: z.string().nullable(),
   }),
@@ -205,7 +199,6 @@ export const commandSchema: z.ZodType<Command> = z.strictObject({
       text: z.string(),
       attachments: z.array(attachment),
       delivery: z.enum(['queue', 'steer']),
-      audience,
     }),
     z.strictObject({
       type: z.literal('request.answer'),

@@ -4,8 +4,9 @@ import asyncio
 import logging
 import re
 import uuid
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, cast, get_args
+from typing import TYPE_CHECKING, Any, TypeVar, cast, get_args
 
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -49,6 +50,7 @@ from switch_core.db.stores.external_user_store import ExternalUserStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.session_request_post_store import SessionRequestPostStore
 from switch_core.events import AgentRuntimeStateEvent
+from switch_core.logging_context import log_context
 from switch_core.provisioning import Provisioning
 from switch_core.room_service import RoomCreateConfig
 from switch_core.transport import (
@@ -66,7 +68,19 @@ if TYPE_CHECKING:
     from switch_core.clients.client_lifecycle_service import ClientLifecycleService
     from switch_core.room_service import RoomService
 
+from switch_core.sessions.publication import SessionPublisher
+from switch_core.sessions.service import SessionAuthority, SessionError
+
 logger = logging.getLogger(__name__)
+
+_InboundEventT = TypeVar(
+    "_InboundEventT",
+    InboundMessage,
+    InboundCommand,
+    InboundAgentJoin,
+    InboundUserJoin,
+    InboundAppJoin,
+)
 
 # How long to wait for a freshly-invited external-user puppet to actually join a
 # room before giving up on relaying its message.
@@ -200,6 +214,23 @@ class BridgeCore:
         # Answers to a session's requests, coming back off the platform's own
         # controls. Absent on a platform the session contract has no surface
         # name for, because an answer must record where it was given.
+        self._session_authority = SessionAuthority(session_factory)
+        self._session_publication_task: asyncio.Task[None] | None = None
+        self._session_cards = (
+            SessionRequestCards(
+                adapter,
+                bridge_id=bridge_id,
+                posts=session_request_post_store,
+                session_factory=session_factory,
+            )
+            if isinstance(adapter, SlackAdapter)
+            else None
+        )
+        self._session_publisher = (
+            SessionPublisher(session_factory, bridge_id, self._session_cards)
+            if self._session_cards is not None
+            else None
+        )
         self._session_interactions = self._build_session_interactions(
             session_request_post_store
         )
@@ -255,6 +286,24 @@ class BridgeCore:
     def adapter(self) -> CollaborationAdapter:
         return self._adapter
 
+    def _traced(
+        self, handler: Callable[[_InboundEventT], Awaitable[None]]
+    ) -> Callable[[_InboundEventT], Awaitable[None]]:
+        """Give each inbound platform event its own id in the logs.
+
+        An event fans out across room lookup, identity provisioning and the
+        transport, so without this the lines from two events arriving at once
+        cannot be told apart. Applied where the adapter is wired up rather than
+        inside each handler, so every inbound path gets it.
+        """
+
+        async def traced(event: _InboundEventT) -> None:
+            event_id = uuid.uuid4().hex[:16]
+            with log_context(request_id=f"{self._bridge_type}-{event_id}"):
+                await handler(event)
+
+        return traced
+
     async def start(self) -> None:
         await self._load_channel_map()
         await self._load_existing_puppets()
@@ -263,13 +312,17 @@ class BridgeCore:
         if self._session_interactions is not None:
             self._adapter.set_interaction_handler(self._handle_inbound_interaction)
         await self._adapter.start(
-            on_message=self._handle_inbound_message,
-            on_command=self._handle_inbound_command,
-            on_agent_joined=self._handle_agent_joined_channel,
-            on_user_joined=self._handle_user_joined_channel,
-            on_app_joined=self._handle_app_joined_channel,
+            on_message=self._traced(self._handle_inbound_message),
+            on_command=self._traced(self._handle_inbound_command),
+            on_agent_joined=self._traced(self._handle_agent_joined_channel),
+            on_user_joined=self._traced(self._handle_user_joined_channel),
+            on_app_joined=self._traced(self._handle_app_joined_channel),
         )
         await self._ensure_channel_captures()
+        if self._session_publisher is not None:
+            self._session_publication_task = asyncio.create_task(
+                self._session_publisher.run()
+            )
         # Deliberately not awaited. Provisioning is one call per agent against
         # the platform, and a rate-limited platform makes that minutes of
         # mostly waiting — which would hold up the bridge coming online, and
@@ -279,6 +332,13 @@ class BridgeCore:
         self._identity_task = asyncio.create_task(self._run_agent_identities())
 
     async def stop(self) -> None:
+        if self._session_publication_task is not None:
+            self._session_publication_task.cancel()
+            try:
+                await self._session_publication_task
+            except asyncio.CancelledError:
+                pass
+            self._session_publication_task = None
         if self._identity_task and not self._identity_task.done():
             self._identity_task.cancel()
         self._identity_task = None
@@ -1131,7 +1191,9 @@ class BridgeCore:
             # current choice, not an oversight.
             await self._tell_refused(interaction, outcome, thread_ref=None)
             return
-        self._drop_session_command(outcome, interaction.sender_id)
+        await self._submit_session_command(
+            outcome, interaction.channel_id, interaction.message_ref
+        )
 
     async def _handle_text_answer(self, msg: InboundMessage) -> None:
         """The same answer, typed rather than pressed.
@@ -1151,7 +1213,9 @@ class BridgeCore:
             # nothing to say it in.
             await self._tell_refused(msg, outcome, thread_ref=outcome.card_ref)
             return
-        self._drop_session_command(outcome, msg.sender_id)
+        await self._submit_session_command(
+            outcome, msg.channel_id, msg.root_id or msg.message_ref
+        )
 
     async def _tell_refused(
         self, actor: InboundActor, refused: Refused, thread_ref: str | None
@@ -1210,22 +1274,27 @@ class BridgeCore:
             )
             return True
 
-    def _drop_session_command(self, command: Command | None, sender_id: str) -> None:
-        """Say out loud that an answer went nowhere.
+    async def refresh_sdk_session(self, session_id: str) -> None:
+        if self._session_publisher is not None:
+            self._session_publisher.wake()
 
-        There is no route into a session yet — that is the server half. Until
-        there is, an answer is built and discarded, and a discard nobody can see
-        is the one thing this must not be.
-        """
+    async def _submit_session_command(
+        self, command: Command | None, channel_id: str, message_ref: str | None
+    ) -> None:
         if command is None:
             return
-        logger.warning(
-            "Built command %s for session %s from %s, and dropped it: nothing "
-            "consumes session commands, so the session does not see this answer",
-            command.command_id,
-            command.session_id,
-            sender_id,
-        )
+        try:
+            await self._session_authority.submit(
+                command, user_id=None, bridge_id=self._bridge_id
+            )
+        except SessionError as error:
+            await self._adapter.admin_message(
+                channel_id,
+                f"Answer was not accepted ({error.code}): {error}",
+                message_ref,
+            )
+            return
+        await self.refresh_sdk_session(command.session_id)
 
     async def _identify_actor(self, actor: InboundActor) -> str | None:
         """The Switch identity behind the platform account that acted.

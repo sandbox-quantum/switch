@@ -2,7 +2,9 @@ import { describe, expect, it, vi } from 'vitest';
 import { SessionChatClient } from './client';
 import type { CommandStatus, SessionTransport } from './client';
 import type { Item, ServerEvent, Snapshot } from './contract';
+import activity from './examples.activity.json';
 import examples from './examples.json';
+import questions from './examples.questions.json';
 import { SessionReplica } from './replica';
 import { commandSchema, parseHostEvent, serverEventSchema, snapshotSchema } from './validation';
 
@@ -17,7 +19,6 @@ const item = (revision: number, text: string): Item => ({
   text,
   attachments: [],
   origin: null,
-  audience: { kind: 'session-members' },
 });
 const event = (sequence: number, body: ServerEvent['body']): ServerEvent => ({
   contractVersion: 1,
@@ -160,6 +161,29 @@ describe('session-v1 client transport', () => {
     expect(vi.mocked(wire.api.submit).mock.calls[0][0]).not.toHaveProperty('origin');
     expect(client.getSnapshot().snapshot?.commandStatuses[0].status).toBe('accepted');
   });
+  it('reconnects reads after an epoch change without resending an uncertain command', async () => {
+    vi.useFakeTimers();
+    const wire = transport();
+    const client = new SessionChatClient('session-demo', wire.api);
+    try {
+      await client.connect();
+      vi.mocked(wire.api.submit).mockRejectedValueOnce(new Error('Lost reply'));
+      await expect(client.send('Hello', 'send')).rejects.toThrow();
+      const recovered = initial();
+      recovered.session.epoch = 'recovered-epoch';
+      vi.mocked(wire.api.snapshot).mockResolvedValue(recovered);
+      wire.fail();
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(client.getSnapshot().connected).toBe(true);
+      expect(client.getSnapshot().snapshot?.session.epoch).toBe('recovered-epoch');
+      expect(client.hasPendingCommand()).toBe(true);
+      expect(wire.api.submit).toHaveBeenCalledTimes(1);
+      await expect(client.send('Hello', 'send')).rejects.toThrow('STALE_EPOCH');
+    } finally {
+      client.dispose();
+      vi.useRealTimers();
+    }
+  });
   it('preserves command ID and body after a lost receipt, then reconciles', async () => {
     const wire = transport();
     const client = new SessionChatClient('session-demo', wire.api);
@@ -230,4 +254,68 @@ describe('session-v1 client transport', () => {
     await connecting;
     expect(wire.api.subscribe).not.toHaveBeenCalled();
   });
+});
+
+it('rejects publication authority on host items and requests', () => {
+  const audience = { kind: 'room', roomId: 'room', threadId: null };
+  expect(() =>
+    parseHostEvent({
+      ...examples.hostRequest,
+      body: {
+        type: 'request.opened',
+        request: { ...examples.hostRequest.body.request, audience },
+      },
+    })
+  ).toThrow();
+  expect(() =>
+    parseHostEvent({
+      ...examples.hostRequest,
+      body: {
+        type: 'item.upsert',
+        item: { ...item(1, 'Hello'), audience },
+      },
+    })
+  ).toThrow();
+});
+
+it('retains the verified actor for cancellation and clears an unrelated reservation', () => {
+  for (const commandId of ['answer-demo', null]) {
+    const replica = new SessionReplica(initial());
+    replica.apply(examples.answerLifecycle[1]);
+    replica.apply(
+      event(13, {
+        type: 'request.settled',
+        requestId: 'request-demo',
+        revision: 2,
+        outcome: 'cancelled',
+        commandId,
+        result: null,
+      })
+    );
+    const request = replica.snapshot().requests[0];
+    expect(request.state).toBe('closed');
+    expect(request.result?.result).toBeNull();
+    expect(request.decidedBy).toEqual(
+      commandId
+        ? {
+            actorId: 'actor-demo',
+            surface: 'mattermost',
+            commandId,
+          }
+        : null
+    );
+    expect(new SessionReplica(replica.snapshot()).snapshot().requests[0]).toEqual(request);
+  }
+});
+
+it('validates the bridge question and activity recordings with the SDK reader', () => {
+  parseHostEvent(questions.hostQuestions);
+  commandSchema.parse(questions.platformFormAnswer);
+  for (const [snapshot, events] of [
+    [questions.initialSnapshot, questions.formAnswerLifecycle],
+    [activity.initialSnapshot, activity.turnActivity],
+  ] as const) {
+    const replica = new SessionReplica(snapshot);
+    for (const event of events) replica.apply(event);
+  }
 });

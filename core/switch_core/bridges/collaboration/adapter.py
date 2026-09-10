@@ -5,6 +5,7 @@ import logging
 from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
+from datetime import datetime
 from typing import ClassVar
 
 from switch_core.agent_display_name import defuse_label_markup
@@ -594,6 +595,23 @@ class CollaborationAdapter(ABC):
         contract; override once a platform's actual limit is known.
         """
         return 2000
+
+    async def find_request_card(
+        self,
+        channel_id: str,
+        thread_root_id: str | None,
+        token: str,
+        created_at: datetime,
+    ) -> str | None:
+        """Search for a request card already on the platform, by its token.
+
+        `recover` calls this when a post's outcome is uncertain, so it can
+        bind the reservation to what is actually there instead of risking a
+        duplicate. `None` means either nothing was found or, as here, that
+        this platform has no way to look — a card recovers only where an
+        adapter can search for one, which today is only `SlackAdapter`.
+        """
+        return None
 
     @abstractmethod
     async def delete_message(self, channel_id: str, message_ref: str) -> None: ...
