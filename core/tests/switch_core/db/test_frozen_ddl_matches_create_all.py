@@ -158,9 +158,9 @@ def _tenant_lookups(connection: Connection) -> dict[str, tuple[Any, ...]]:
     re-evaluating them per row, `proconfig` carries the `search_path` that
     stops a temporary table shadowing what they read, and
     `pg_get_function_arguments` catches an argument list that drifted. A
-    migration whose frozen copy said `SECURITY INVOKER` would install eight
-    functions unable to resolve a tenant, and every other test in the suite
-    would stay green because none of them runs that SQL.
+    migration whose frozen copy said `SECURITY INVOKER` would install a set
+    of functions unable to resolve a tenant, and every other test in the
+    suite would stay green because none of them runs that SQL.
     """
     rows = connection.execute(
         text(
@@ -185,6 +185,27 @@ def _tenant_lookups(connection: Connection) -> dict[str, tuple[Any, ...]]:
     }
 
 
+def _security_definer_functions(connection: Connection) -> set[str]:
+    """Every `SECURITY DEFINER` function in the schema, by name.
+
+    The comparison above asks about the lookups the live module still
+    names, so a function removed from the module and never dropped by a
+    revision is in neither snapshot's dictionary and passes unseen — while a
+    real deployment, whose schema Alembic built, still has it installed,
+    still `SECURITY DEFINER`, and still answering. Comparing the whole set
+    catches that: the migrated database must hold exactly what `create_all`
+    builds, no more.
+    """
+    rows = connection.execute(
+        text(
+            "SELECT p.proname FROM pg_proc p "
+            "JOIN pg_namespace n ON n.oid = p.pronamespace "
+            "WHERE n.nspname = 'public' AND p.prosecdef"
+        )
+    )
+    return {row.proname for row in rows}
+
+
 def _trigger_def(connection: Connection, table: str, trigger: str) -> str:
     row = connection.execute(
         text(
@@ -203,6 +224,7 @@ class _DDLSnapshot:
     rls_enabled: dict[str, bool]
     require_tenant_id_body: str
     tenant_lookups: dict[str, tuple[Any, ...]]
+    security_definer_functions: set[str]
     notify_function_body: str
     notify_trigger_def: str
 
@@ -213,6 +235,7 @@ def _snapshot(connection: Connection) -> _DDLSnapshot:
         rls_enabled=_rls_enabled(connection),
         require_tenant_id_body=_function_body(connection, REQUIRE_TENANT_FUNCTION_NAME),
         tenant_lookups=_tenant_lookups(connection),
+        security_definer_functions=_security_definer_functions(connection),
         notify_function_body=_function_body(connection, NOTIFY_FUNCTION_NAME),
         notify_trigger_def=_trigger_def(connection, "messages", NOTIFY_TRIGGER_NAME),
     )
@@ -297,6 +320,17 @@ async def test_migration_ddl_matches_the_live_copy(ddl_parity_urls: Any) -> None
         "db/rls_ddl.py's live copy:\n"
         f"  migration:  {migrated.require_tenant_id_body!r}\n"
         f"  create_all: {live.require_tenant_id_body!r}"
+    )
+    assert migrated.security_definer_functions == live.security_definer_functions, (
+        "the Alembic chain installs a different set of SECURITY DEFINER "
+        "functions than db/tenant_lookup.py builds. Every one of them is "
+        "exempt from row-level security, so an extra is an exemption nobody "
+        "is auditing and a missing one is a credential nothing can resolve. "
+        "A lookup taken out of the module needs a revision that drops it:\n"
+        f"  only in the migrated database: "
+        f"{sorted(migrated.security_definer_functions - live.security_definer_functions)}\n"
+        f"  only in create_all's: "
+        f"{sorted(live.security_definer_functions - migrated.security_definer_functions)}"
     )
     assert migrated.tenant_lookups == live.tenant_lookups, (
         "the migration's frozen tenant lookups no longer match "

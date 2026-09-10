@@ -1,4 +1,4 @@
-"""The whole exemption from row-level security, written out as eight functions.
+"""The whole exemption from row-level security, written out as seven functions.
 
 Row-level security is enforced by `require_tenant_id()` (`db/rls_ddl.py`),
 which raises when no tenant is bound. That is the property everything else
@@ -26,13 +26,47 @@ design deliberately never sets `force row level security` — see
 worth having:
 
 - **They answer *which tenant*, never *what row*.** Every one returns
-  `setof text`: tenant ids. The most a caller can extract is the tenant an
-  identifier it already holds belongs to. Nothing crosses a tenant boundary
-  except the boundary's own name.
+  `setof text`: tenant ids. What exactly that does and does not concede is
+  worth stating precisely, and is stated below rather than summarised here,
+  because the obvious summary of it is false.
 - **They are a closed list.** `TENANT_LOOKUPS` below is the list; a test
   compares it against the functions actually installed, against the
   migration's frozen copy, and against what each one answers when called as
-  the restricted role. Adding a ninth is an edit a reviewer sees.
+  the restricted role. Adding an eighth is an edit a reviewer sees.
+
+**What the exemption gives, stated exactly.** Every lookup returns `setof
+text` — tenant ids, never a row of a scoped table. That much is the part
+worth having: no customer data crosses a tenant boundary through this module,
+on any function, for any argument.
+
+Three things the shorter statement of that property — "the most any caller can
+extract is the tenant of an identifier it already holds" — got wrong, all of
+them about *metadata* rather than rows:
+
+1. `all_tenant_ids()` takes no identifier. It enumerates the deployment: how
+   many tenants there are and what their ids are. Nothing about it is narrowed
+   to what the caller already holds, and nothing can be — the boot fan-outs
+   and the runtime-state sweep exist precisely to visit tenants the caller has
+   never heard of.
+2. `EXECUTE` used to be left at the `PUBLIC` default a new function gets, so
+   any role with `CONNECT` on this database could call every one of them. That
+   is closed: `grant_runtime_role` revokes `EXECUTE` on the schema's functions
+   from `PUBLIC` and grants it to the runtime role by name, and the boot
+   self-check refuses to serve if `PUBLIC` has it back.
+3. `users` and `oidc_identities` carry no tenant and so no policy
+   (`db/rls_ddl.py`'s `GLOBAL_TABLES`) — a person is global, and the
+   per-tenant object is the `tenant_members` row. A session with nothing bound
+   may therefore read every user id, and feeding those one at a time to
+   `tenants_of_user` reconstructs the whole user-to-tenant membership graph.
+   That follows from the schema rather than from this module, and it is not
+   closed here.
+
+So the property this design actually holds is: **the exemption discloses the
+shape of the deployment — which tenants exist, and which tenant a given user,
+credential, room, bridge or connector belongs to — and no row of any
+tenant-scoped table.** It is a boundary on data, not on metadata. Narrowing
+the second is a question about who may hold the runtime role's credentials at
+all, since everything above is reachable by anyone who has them.
 
 Everything else in the process binds a tenant. The nineteen sites that could
 not are now one of three shapes, and the shape is the interesting part:
@@ -46,16 +80,26 @@ not are now one of three shapes, and the shape is the interesting part:
    then one scoped pass per tenant. These sites already fanned out per row
    and bound that row's tenant; the loop simply moved one level up, and the
    read inside it is now subject to the policies like any other.
-3. **Per-item work that can derive its tenant** — a client's transport, a
-   bridge or connector being started by id, a room reached by id. One lookup
-   by the globally unique identifier the caller already has, and everything
-   after it is scoped.
+3. **Per-item work that can derive its tenant** — a bridge or connector being
+   started by id, a room reached by id. One lookup by the globally unique
+   identifier the caller already has, and everything after it is scoped.
+
+**A lookup whose caller already knows the answer does not belong here.** There
+was an eighth, `tenant_of_client`, and it was the one called most: every
+client's transport asked it, once per transport, and so did every agent
+client's `start`. Both were built from a `clients` row that names the tenant
+in a column, so the question was asked of the database with the answer already
+in hand. `ClientBase` and `PostgresTransport` now take a `tenant_id` the way
+they take a `client_id`, and revision `b1d7c4f0a92e` drops the function. The
+test that keeps the list honest is the one that would have let this stand: a
+function nobody needs is still a function every role could call, so the shorter
+list is the whole point of noticing.
 
 Why not the obvious alternatives is argued in
 `docs/old/multi-tenancy-phase1-db.md`, "The bootstrap problem"; the short
 version is that returning rows instead of tenant ids would put a second copy
 of a dozen store methods in SQL and widen the exemption from "a tenant id"
-to "any row of nine tables", and that a second engine connected as the owner
+to "any row of every table they read", and that a second engine connected as the owner
 would make the exemption ambient again — reachable from anything holding the
 factory, and no longer a list anybody can read.
 
@@ -140,7 +184,7 @@ class TenantLookup:
         return f"{self.name}({'' if self.argument is None else 'text'})"
 
 
-# The eight of them. Ordered as the three shapes above: enumeration, then
+# The seven of them. Ordered as the three shapes above: enumeration, then
 # credential resolution, then deriving a tenant from an identifier in hand.
 TENANT_LOOKUPS: tuple[TenantLookup, ...] = (
     TenantLookup(
@@ -187,17 +231,6 @@ TENANT_LOOKUPS: tuple[TenantLookup, ...] = (
             "column carries no unique index, so this is the one lookup that "
             "can legitimately answer twice; the caller refuses rather than "
             "picking."
-        ),
-    ),
-    TenantLookup(
-        name="tenant_of_client",
-        argument="client_id",
-        query="SELECT tenant_id FROM clients WHERE id = p_client_id",
-        purpose=(
-            "Which tenant a room client belongs to. Its transport's tenant for "
-            "everything it does: `client_rooms` carries composite foreign keys "
-            "to both `clients` and `rooms`, so a client's rooms are all in the "
-            "client's own tenant."
         ),
     ),
     TenantLookup(
@@ -344,13 +377,6 @@ async def tenant_of_agent_oauth_client(
 ) -> str | None:
     lookup = TENANT_LOOKUPS_BY_NAME["tenant_of_agent_oauth_client"]
     return _at_most_one(lookup, await _call(session_factory, lookup, oauth_client_id))
-
-
-async def tenant_of_client(
-    session_factory: async_sessionmaker[AsyncSession], client_id: str
-) -> str | None:
-    lookup = TENANT_LOOKUPS_BY_NAME["tenant_of_client"]
-    return _at_most_one(lookup, await _call(session_factory, lookup, client_id))
 
 
 async def tenant_of_room(

@@ -209,4 +209,17 @@ async def rls_harness(postgres_url: str) -> AsyncIterator[RLSHarness]:
             # ROLE` succeed right after.
             await conn.execute(text(f'DROP OWNED BY "{role}"'))
             await conn.execute(text(f'DROP ROLE "{role}"'))
+            # `grant_runtime_role` also revokes PUBLIC's default EXECUTE on
+            # functions, and that one is recorded against the *owner* rather
+            # than against the throwaway role — so `DROP OWNED BY` above does
+            # not touch it and it outlives this test, governing every schema
+            # every later test in the session builds. Left in place it makes
+            # the checks about it pass for the wrong reason: the second test
+            # to ask whether a new function is PUBLIC-executable would be
+            # answered by the first test's leftover rather than by the grants
+            # under test. Granting it back restores the built-in default,
+            # which Postgres records by deleting the row.
+            await conn.execute(
+                text("ALTER DEFAULT PRIVILEGES GRANT EXECUTE ON FUNCTIONS TO PUBLIC")
+            )
         await owner_engine.dispose()

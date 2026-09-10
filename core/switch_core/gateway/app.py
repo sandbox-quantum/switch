@@ -21,7 +21,6 @@ from switch_core.db.stores.external_user_store import ExternalUserStore
 from switch_core.db.stores.room_group_store import RoomGroupStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.server_connector_store import ServerConnectorStore
-from switch_core.db.stores.tenant_member_store import TenantMemberStore
 from switch_core.db.stores.user_store import UserStore
 from switch_core.gateway.agents import router as agents_router
 from switch_core.gateway.api_keys import router as api_keys_router
@@ -57,7 +56,6 @@ def create_gateway_app(
     user_store: UserStore,
     external_user_store: ExternalUserStore,
     api_key_store: ApiKeyStore,
-    tenant_member_store: TenantMemberStore,
     resource_service: ResourceService,
     protocol: ProtocolService,
     config: SwitchConfig,
@@ -77,7 +75,6 @@ def create_gateway_app(
         user_store=user_store,
         external_user_store=external_user_store,
         api_key_store=api_key_store,
-        tenant_member_store=tenant_member_store,
         resource_service=resource_service,
         protocol=protocol,
         config=config,

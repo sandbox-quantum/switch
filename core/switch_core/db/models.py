@@ -1589,7 +1589,7 @@ event.listen(
 # notify trigger's migration does.
 attach_row_level_security(Base.metadata)
 
-# And the eight functions that are exempt from those policies, on the same
+# And the seven functions that are exempt from those policies, on the same
 # reasoning again: a restricted role cannot boot without them, so a schema
 # `create_all` built without them is not the schema the server runs against.
 # After the tables, not before — see `db/tenant_lookup.py`.

@@ -2,12 +2,12 @@
 of the *user*, from their membership row — never a guess, never a request
 parameter.
 
-`TestGetSoleTenantId` covers `TenantMemberStore.get_sole_tenant_id` raising
-rather than picking a tenant when a user's memberships aren't exactly one. It
-takes a session factory rather than a session: `tenant_members` is a scoped
-table, so no session can read the row that says what it should be scoped to,
-and the store reads through `tenants_of_user` (`db/tenant_lookup.py`)
-instead, on a session of its own with nothing bound.
+`TestSoleTenantId` covers `gateway.auth.sole_tenant_id` raising rather than
+picking a tenant when a user's memberships aren't exactly one. It takes a
+session factory rather than a session: `tenant_members` is a scoped table, so
+no session can read the row that says what it should be scoped to, and it
+reads through `tenants_of_user` (`db/tenant_lookup.py`) instead, on a session
+of its own with nothing bound.
 `TestAGatewayRequestBindsTheCallersTenant` drives a real HTTP request through
 `get_current_user` end to end — cookie in, `app.tenant_id` on the database
 session out — the same way `test_reference_types_routes.py` builds a
@@ -41,23 +41,23 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from switch_core.db.base import Base
 from switch_core.db.engine import create_session_factory
 from switch_core.db.models import TENANT_ZERO_ID, Tenant, TenantMember, User
-from switch_core.db.stores.tenant_member_store import (
-    TenantMembershipError,
-    TenantMemberStore,
-)
 from switch_core.db.stores.user_store import UserStore
 from switch_core.gateway import dependencies as gw_deps
-from switch_core.gateway.auth import create_jwt, get_current_user
+from switch_core.gateway.auth import (
+    TenantMembershipError,
+    create_jwt,
+    get_current_user,
+    sole_tenant_id,
+)
 
 _SECRET = "unit-test-jwt-key-unit-test-jwt-key-unit-test"  # gitleaks:allow
 TENANT_B = "tenant-resolution-b"
 
 
-class TestGetSoleTenantId:
+class TestSoleTenantId:
     async def test_raises_when_the_user_has_no_membership(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
-        store = TenantMemberStore()
         async with session_factory() as session:
             user = User(name="orphan", email="orphan@example.invalid", role="user")
             session.add(user)
@@ -65,12 +65,11 @@ class TestGetSoleTenantId:
             user_id = user.id
 
         with pytest.raises(TenantMembershipError):
-            await store.get_sole_tenant_id(session_factory, user_id)
+            await sole_tenant_id(session_factory, user_id)
 
     async def test_raises_when_the_user_has_more_than_one_membership(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
-        store = TenantMemberStore()
         async with session_factory() as session:
             user = User(name="dual", email="dual@example.invalid", role="user")
             session.add(user)
@@ -89,12 +88,11 @@ class TestGetSoleTenantId:
             user_id = user.id
 
         with pytest.raises(TenantMembershipError):
-            await store.get_sole_tenant_id(session_factory, user_id)
+            await sole_tenant_id(session_factory, user_id)
 
     async def test_returns_the_one_tenant_a_user_belongs_to(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
-        store = TenantMemberStore()
         async with session_factory() as session:
             user = User(name="single", email="single@example.invalid", role="user")
             session.add(user)
@@ -105,9 +103,7 @@ class TestGetSoleTenantId:
             await session.commit()
             user_id = user.id
 
-        assert (
-            await store.get_sole_tenant_id(session_factory, user_id) == TENANT_ZERO_ID
-        )
+        assert await sole_tenant_id(session_factory, user_id) == TENANT_ZERO_ID
 
 
 def _app(session_factory: async_sessionmaker[AsyncSession]) -> FastAPI:
@@ -123,9 +119,6 @@ def _app(session_factory: async_sessionmaker[AsyncSession]) -> FastAPI:
     app.dependency_overrides[gw_deps.get_session] = _session_dep
     app.dependency_overrides[gw_deps.get_session_factory] = lambda: session_factory
     app.dependency_overrides[gw_deps.get_user_store] = lambda: UserStore()
-    app.dependency_overrides[gw_deps.get_tenant_member_store] = lambda: (
-        TenantMemberStore()
-    )
     app.dependency_overrides[gw_deps.get_config] = lambda: SimpleNamespace(
         jwt_secret_key=_SECRET
     )

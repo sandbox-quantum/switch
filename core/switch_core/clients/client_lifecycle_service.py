@@ -40,11 +40,12 @@ class ClientLifecycleService:
         self._config = config
         self._clients: dict[str, ClientBase[ClientConfig]] = {}
         self._client_types: dict[str, str] = {}
-        # Which tenant each running client's row belongs to. A `ClientBase`
-        # does not carry it — a client's own work resolves the tenant from the
-        # room it is acting on — but this registry holds every tenant's
-        # clients at once, so anything picking clients *out* of it has to be
-        # able to say which tenant it wants. See `get_by_type`.
+        # Which tenant each running client's row belongs to. The client
+        # carries the same value (`ClientBase.tenant_id`); this is the index
+        # on it, keyed like `_clients` and `_client_types` so the three are
+        # populated and emptied together and a caller picking clients *out* of
+        # a registry that holds every tenant's at once can say which tenant it
+        # wants without reaching into the objects. See `get_by_type`.
         self._client_tenants: dict[str, str] = {}
         self._tasks: dict[str, asyncio.Task[None]] = {}
 
@@ -65,7 +66,7 @@ class ClientLifecycleService:
         wrong question to ask: it answers yes for a tenant that has none.
 
         Which tenants exist is exactly what a bound session cannot see, so it
-        comes from `all_tenant_ids` — one of the eight `SECURITY DEFINER`
+        comes from `all_tenant_ids` — one of the seven `SECURITY DEFINER`
         lookups that make up the whole exemption from row-level security
         (`db/tenant_lookup.py`). Everything after that is an ordinary scoped
         read, one tenant at a time, and each row is created with that tenant
@@ -327,13 +328,15 @@ class ClientLifecycleService:
         A puppet in particular is reused for every room the person it stands
         for speaks in, so the first room's tenant is exactly the value that
         must not survive into the second. Everything the client does binds
-        the tenant of the room it is acting on. The one lookup that still runs
-        with nothing bound is `PostgresTransport._tenant`, the exemption call
-        (`tenant_of_client`) that answers *which* tenant this client's own row
-        belongs to — asking that question on a session already bound to a
-        tenant would beg it. Its room list is not exempt any more: once the
-        transport knows its own tenant, `joined_rooms` reads under it, through
-        an ordinary `tenant_session`, rather than unscoped.
+        the tenant of the room it is acting on.
+
+        Nothing in here runs unbound, and nothing has to ask the database
+        which tenant this client is in. A `ClientBase` carries its own
+        `tenant_id`, taken from the `clients` row it was built from, and hands
+        it to its transport; `joined_rooms` and every media read then go
+        through an ordinary `tenant_session` under that tenant. An exemption
+        call here would have been a question whose answer the caller was
+        already holding.
         """
         with no_tenant():
             try:

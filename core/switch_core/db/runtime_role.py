@@ -11,17 +11,26 @@ Two halves live here.
 
 **Grants.** The runtime role owns nothing and can create nothing, so it needs
 to be given access to every table the owner created. The actual mechanism is
-the four explicit `GRANT`s, re-issued fresh on every boot, immediately after
-the migration that may have added a table: naming everything the schema
-contains at that moment cannot fall behind it, the way a rule that has to fire
-once per object, at the moment of its creation, can. The three `ALTER DEFAULT
-PRIVILEGES` statements alongside them are belt to that grant's braces, not a
-second mechanism for the same job: they cover whatever the owner creates
-*between* one boot and the next, at the cost of being easy to get subtly
-wrong as a strategy on their own — the setting is per-granting-role, and
-silently grants nothing for an object some other role creates — a gap the
-next boot's fresh `GRANT` closes regardless of whether the default privilege
-fired. Both are idempotent and cost one round trip at boot.
+the explicit `GRANT`s, re-issued fresh on every boot, immediately after the
+migration that may have added a table: naming everything the schema contains
+at that moment cannot fall behind it, the way a rule that has to fire once per
+object, at the moment of its creation, can. The `ALTER DEFAULT PRIVILEGES`
+statements alongside them are belt to that grant's braces, not a second
+mechanism for the same job: they cover whatever the owner creates *between*
+one boot and the next, at the cost of being easy to get subtly wrong as a
+strategy on their own — the setting is per-granting-role, and silently grants
+nothing for an object some other role creates — a gap the next boot's fresh
+`GRANT` closes regardless of whether the default privilege fired. Both are
+idempotent and cost one round trip at boot.
+
+**Revokes, for the same reason in reverse.** `EXECUTE` on a new function is
+granted to `PUBLIC` by default, so the exempt lookups in `db/tenant_lookup.py`
+arrive callable by every role that can connect to this database. Nothing about
+that is deliberate — it is the shape a `CREATE FUNCTION` has, and the
+migration that installs them has no role name to grant to. So the same pass
+takes it away and grants `EXECUTE` to the runtime role by name, which makes
+the grant, rather than a default, the reason those functions are callable at
+all.
 
 **The self-check.** Questions asked of the runtime connection before the
 server listens, in increasing order of how much they prove, because this
@@ -42,7 +51,9 @@ like one that is.
    pass every check above it.
 5. Every tenant lookup exists and this role may execute it, since a role that
    cannot would authenticate nobody.
-6. **A read of `tenants` with nothing bound raises.** This is the one that
+6. `PUBLIC` may *not* execute them, so the exemption is reachable through the
+   runtime role's credentials rather than by anything holding a connection.
+7. **A read of `tenants` with nothing bound raises.** This is the one that
    actually proves it, because the others are inferences from the catalogue
    and this is the behaviour. `tenants` is the table to ask it of: the check
    is only meaningful against a populated table — Postgres does not evaluate a
@@ -95,19 +106,52 @@ async def grant_runtime_role(owner: AsyncConnection, role: str) -> None:
 
     Run as the owner, after `alembic upgrade head`. `EXECUTE ON ALL FUNCTIONS`
     covers `require_tenant_id()` and the tenant lookups without naming them,
-    so a ninth lookup needs no change here.
+    so an eighth lookup needs no change here.
 
-    The four plain `GRANT`s are what actually does the job, and doing it fresh
-    on every boot is what keeps it from falling behind: it names every table,
+    The plain `GRANT`s are what actually does the job, and doing it fresh on
+    every boot is what keeps it from falling behind: it names every table,
     sequence and function the schema holds at that moment, so it cannot miss
     one the way a rule that has to fire once per object, at creation, can. The
-    three `ALTER DEFAULT PRIVILEGES` statements after them are belt to that
-    grant's braces, covering an object the owner creates between this boot and
-    the next — at the cost of being unfit to carry the job alone, since the
+    `ALTER DEFAULT PRIVILEGES` statements after them are belt to that grant's
+    braces, covering an object the owner creates between this boot and the
+    next — at the cost of being unfit to carry the job alone, since the
     setting is per-granting-role and silently grants nothing for an object
     some other role creates. The next boot's fresh `GRANT` would close that
     gap either way, which is why the default privileges are additional rather
     than load-bearing on their own.
+
+    **The two revokes are what make the grant mean something.** Without them
+    `EXECUTE` on the tenant lookups stays at the `PUBLIC` default a new
+    function is created with, so every role with `CONNECT` on this database
+    can resolve which tenant any user, credential, client, room, bridge or
+    connector belongs to — see `db/tenant_lookup.py` on what that discloses.
+    Revoking from `PUBLIC` and granting to `role` by name replaces "callable
+    by anyone" with "callable by the process".
+
+    Two things must survive that revoke, and it is worth saying which and why
+    rather than trusting the blanket grant to have covered them.
+    `require_tenant_id()` is called by every policy and is evaluated as the
+    *querying* role, so a runtime role without `EXECUTE` on it cannot read or
+    write a single scoped table — measured on 16: the read fails with
+    `permission denied for function require_tenant_id`, not with a policy
+    refusal, which is a boot-time outage dressed up as an authorization error.
+    The delivery trigger in `db/notify_ddl.py` is the opposite case: a trigger
+    function's `EXECUTE` is checked when the trigger is created, not each time
+    it fires, so an insert succeeds for a role that may not call it — also
+    measured, also on 16. The blanket `GRANT EXECUTE ON ALL FUNCTIONS` covers
+    both regardless, and `verify_restricted_role` exercises the first on every
+    boot.
+
+    The default-privileges revoke carries no `IN SCHEMA`, unlike every other
+    statement here, and that is not an oversight. A per-schema default ACL is
+    *unioned* with the built-in one rather than replacing it, so
+    `ALTER DEFAULT PRIVILEGES IN SCHEMA public REVOKE EXECUTE ON FUNCTIONS
+    FROM PUBLIC` records nothing and a function created after it is still
+    `PUBLIC`-executable — verified on Postgres 16, where it leaves
+    `pg_default_acl` empty and the new function's `proacl` null. The
+    schema-less form is the one that takes, and it is the right scope anyway:
+    it is a statement about what this owner creates, and this owner creates
+    only this schema.
 
     No `CREATE` on the schema, and no ownership: the role is meant to be
     unable to alter the tables it reads, which is what keeps it subject to
@@ -118,9 +162,11 @@ async def grant_runtime_role(owner: AsyncConnection, role: str) -> None:
         f"GRANT USAGE ON SCHEMA public TO {identifier}",
         f"GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO {identifier}",
         f"GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO {identifier}",
+        "REVOKE EXECUTE ON ALL FUNCTIONS IN SCHEMA public FROM PUBLIC",
         f"GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA public TO {identifier}",
         f"ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO {identifier}",
         f"ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT USAGE, SELECT ON SEQUENCES TO {identifier}",
+        "ALTER DEFAULT PRIVILEGES REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC",
         f"ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT EXECUTE ON FUNCTIONS TO {identifier}",
     ):
         await owner.execute(text(statement))
@@ -146,6 +192,7 @@ async def verify_restricted_role(engine: AsyncEngine) -> None:
         await _refuse_forced_row_level_security(connection)
         await _require_every_policy(connection)
         await _require_the_lookups(connection, role)
+        await _refuse_public_execute(connection)
     # The probe is the one check that provokes an error on purpose, and a
     # statement that raises aborts the transaction it ran in — every query
     # after it on that connection fails with "current transaction is aborted"
@@ -397,6 +444,57 @@ async def _require_the_lookups(connection: AsyncConnection, role: str) -> None:
             "all_tenant_ids() answered with no tenants at all, so the schema "
             "predates the migration that seeds tenant zero and nothing here "
             "can be scoped to a tenant."
+        )
+
+
+async def _refuse_public_execute(connection: AsyncConnection) -> None:
+    """The exemption must be the runtime role's, not everybody's.
+
+    `EXECUTE` on a new function is granted to `PUBLIC`, so the lookups arrive
+    callable by every role that can connect — including one created later for
+    reporting, for a migration tool, or for a person. None of them can read a
+    row of a scoped table, which is the boundary that matters, and all of them
+    could enumerate the tenants and resolve any identifier they hold to one
+    (`db/tenant_lookup.py` states exactly what that discloses). `boot`'s own
+    `grant_runtime_role` closes it; this is the check that it did, and that
+    nothing has re-granted it since — a `GRANT EXECUTE ON ALL FUNCTIONS IN
+    SCHEMA public TO PUBLIC` issued to fix some unrelated permission error
+    would reopen it in one statement and leave every other check here passing.
+
+    `has_function_privilege('public', …)` is the pseudo-role spelling, which
+    the access-privilege inquiry functions accept in place of a role name.
+    Asked of the function's oid rather than its signature so a lookup that is
+    not installed at all is absent from the result instead of raising —
+    `_require_the_lookups` above is the check that says so, and it has already
+    run by the time this one does.
+    """
+    expected = sorted(lookup.name for lookup in TENANT_LOOKUPS)
+    rows = await connection.execute(
+        text(
+            """
+            SELECT p.proname
+            FROM pg_proc p
+            JOIN pg_namespace n ON n.oid = p.pronamespace
+            WHERE n.nspname = 'public' AND p.proname = ANY(:names)
+              AND has_function_privilege('public', p.oid, 'EXECUTE')
+            ORDER BY p.proname
+            """
+        ),
+        {"names": expected},
+    )
+    public = [row[0] for row in rows]
+    if public:
+        raise RuntimeRoleError(
+            f"PUBLIC holds EXECUTE on {public}, so every role with CONNECT on "
+            "this database can call the tenant lookups (db/tenant_lookup.py) "
+            "— enumerate every tenant, and resolve any user, credential, "
+            "client, room, bridge or connector it can name to the tenant that "
+            "owns it. That is the default a CREATE FUNCTION leaves behind, so "
+            "either the boot grants have never run against this database "
+            "(configure DB_OWNER_USER / DB_OWNER_PASSWORD) or something has "
+            "granted EXECUTE back to PUBLIC since. Revoke it: REVOKE EXECUTE "
+            "ON ALL FUNCTIONS IN SCHEMA public FROM PUBLIC, then grant it to "
+            "the runtime role by name."
         )
 
 

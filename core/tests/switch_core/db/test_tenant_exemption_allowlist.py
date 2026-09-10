@@ -11,10 +11,17 @@ session reads nothing. So these lists are now what they always should have
 been: an inventory a reviewer can read, backed by a database that refuses
 regardless.
 
-**`db/tenant_lookup.py`** is the whole exemption: eight `SECURITY DEFINER`
+**`db/tenant_lookup.py`** is the whole exemption: seven `SECURITY DEFINER`
 functions that answer *which tenant* and never return a row. Every module that
 imports one is named below. Keep the list short — it is the complete set of
 places in the process that ask a question no tenant can be scoped to.
+
+Short in both directions. A module reaches the exemption if it *can* call a
+lookup, not if it happens to; a helper on an injected store, reachable by
+anything that declares the store, put one module on this list and the
+exemption within reach of every endpoint behind it. That is why
+`get_sole_tenant_id` lives in `gateway/auth.py` as a function rather than on a
+`TenantMemberStore`: the one caller it ever had is the one module named here.
 
 **A raw `session_factory()` call** is the other surface. It inherits whatever
 is ambient, which in background code is nothing at all, since the long-lived
@@ -55,20 +62,23 @@ _ALLOWED_MODULES = {
     # Bearer and OIDC authentication: the credential's tenant, before its row.
     "switch_core.bridges.agent.auth",
     # The gateway's JWT subject resolves to its membership, and
-    # `tenant_members` is scoped, so nothing else can answer it.
-    "switch_core.db.stores.tenant_member_store",
+    # `tenant_members` is scoped, so nothing else can answer it. In the
+    # authentication module itself rather than on an injected store: a store
+    # is reachable by any endpoint that declares it, which would make this
+    # list name one module while the exemption was open to every route.
+    "switch_core.gateway.auth",
     # Enumerating tenants at boot, and starting one bridge or one connector by
     # id from a context bound to somebody else's tenant.
     "switch_core.clients.client_lifecycle_service",
     "switch_core.bridges.collaboration.lifecycle_service",
     "switch_core.bridges.agent.server_connectors.lifecycle",
-    # A client's own task binds nothing, so its transport and its agent
-    # resolution derive the tenant from the client row.
-    "switch_core.clients.agent_client",
-    "switch_core.transport.postgres",
     # `_room_tenant`'s fallback: which tenant is this room in, asked when the
     # answer is not already cached alongside the channel mapping.
     "switch_core.bridges.collaboration.bridge_core",
+    # `switch_core.transport.postgres` and `switch_core.clients.agent_client`
+    # came off this list with `tenant_of_client`: both were built from a
+    # `clients` row that already named the tenant, so they carry it instead of
+    # asking for it.
 }
 
 # Every module allowed to open a session straight from the factory. Not short,
@@ -101,7 +111,7 @@ _RAW_SESSION_FACTORY_MODULES = {
     "switch_core.provisioning.postgres",
     "switch_core.room_service",
     # ── The exemption's own plumbing. It opens a session with nothing bound
-    # on purpose and touches only the eight functions above, which are the one
+    # on purpose and touches only the seven functions above, which are the one
     # thing a session with nothing bound may read.
     "switch_core.db.tenant_lookup",
     # `switch_core.transport.postgres` and `switch_core.bridges.agent.auth`
@@ -117,6 +127,9 @@ _RAW_SESSION_FACTORY_MODULES = {
 _FACTORY_ACCESSORS = {"create_session_factory", "get_session_factory"}
 
 _LOOKUP_NAMES = {lookup.name for lookup in TENANT_LOOKUPS}
+
+_LOOKUP_MODULE = "switch_core.db.tenant_lookup"
+_LOOKUP_PACKAGE, _, _LOOKUP_MODULE_LEAF = _LOOKUP_MODULE.rpartition(".")
 
 _PACKAGE_ROOT = Path(switch_core.__file__).resolve().parent
 
@@ -137,22 +150,43 @@ def _imports_a_lookup(path: Path) -> bool:
     """Whether `path` reaches for one of the exempt lookups.
 
     Matched on the import rather than on the call, unlike the raw-factory
-    detector below, because there is a single module to import from: an
-    `import ... as` renames the local binding but not the name in the `from`
-    clause, so aliasing cannot walk past this. Importing without calling is
-    flagged too, which is the safe direction — a module that reaches for the
-    exemption at all is one this list wants to name. Importing the DDL helpers
-    is not reaching for it: `TENANT_LOOKUPS` and `attach_tenant_lookups`
-    describe the exemption rather than using it.
+    detector below, because there is a single module to import from and
+    Python has only three ways to name it. All three are checked, because
+    checking one and describing it as "the import" is how an audit surface
+    comes to be narrower than the thing it claims to cover:
+
+    - `from switch_core.db.tenant_lookup import tenants_of_user` — the shape
+      every current caller uses. An `as` alias renames the local binding but
+      not the name inside the `from` clause, so aliasing cannot walk past it.
+    - `import switch_core.db.tenant_lookup [as x]` — binds the module, and
+      every function on it, under a name of the writer's choosing.
+    - `from switch_core.db import tenant_lookup [as x]` — the same thing
+      spelled so that the module name never appears in a `from` clause at all.
+
+    The last two are flagged on reaching the *module*, without asking which
+    attribute is used, because there is no attribute on it worth having except
+    a lookup and the DDL helpers, and a module holding the module object can
+    reach any of them at any point later.
+
+    Importing the DDL helpers *by name* is not reaching for the exemption:
+    `TENANT_LOOKUPS` and `attach_tenant_lookups` describe it rather than using
+    it, which is why the first shape asks which names are imported and the
+    other two cannot. Importing without calling is flagged too, which is the
+    safe direction — a module that reaches for the exemption at all is one
+    this list wants to name.
     """
     tree = ast.parse(path.read_text(), filename=str(path))
     for node in ast.walk(tree):
-        if not isinstance(node, ast.ImportFrom):
-            continue
-        if node.module != "switch_core.db.tenant_lookup":
-            continue
-        if any(alias.name in _LOOKUP_NAMES for alias in node.names):
-            return True
+        if isinstance(node, ast.Import):
+            if any(alias.name == _LOOKUP_MODULE for alias in node.names):
+                return True
+        elif isinstance(node, ast.ImportFrom):
+            if node.module == _LOOKUP_MODULE:
+                if any(alias.name in _LOOKUP_NAMES for alias in node.names):
+                    return True
+            elif node.module == _LOOKUP_PACKAGE:
+                if any(alias.name == _LOOKUP_MODULE_LEAF for alias in node.names):
+                    return True
     return False
 
 
@@ -307,6 +341,72 @@ class TestTheDetectorsCatchANewCaller:
             "    return await every(session_factory)\n"
         )
         assert _imports_a_lookup(new_caller)
+
+    def test_importing_the_module_itself_is_detected(self, tmp_path: Path) -> None:
+        """`import switch_core.db.tenant_lookup` names no function in the
+        statement, so a detector that only reads `from ... import` clauses
+        reports the module clean while it calls whatever it likes off the
+        module object."""
+        new_caller = tmp_path / "a_new_background_job.py"
+        new_caller.write_text(
+            "import switch_core.db.tenant_lookup\n"
+            "async def sweep(session_factory):\n"
+            "    return await switch_core.db.tenant_lookup.all_tenant_ids(\n"
+            "        session_factory\n"
+            "    )\n"
+        )
+        assert _imports_a_lookup(new_caller)
+
+    def test_an_aliased_module_import_is_detected(self, tmp_path: Path) -> None:
+        new_caller = tmp_path / "a_new_background_job.py"
+        new_caller.write_text(
+            "import switch_core.db.tenant_lookup as lookups\n"
+            "async def sweep(session_factory):\n"
+            "    return await lookups.all_tenant_ids(session_factory)\n"
+        )
+        assert _imports_a_lookup(new_caller)
+
+    def test_importing_the_module_from_its_package_is_detected(
+        self, tmp_path: Path
+    ) -> None:
+        """`from switch_core.db import tenant_lookup` reaches the same module
+        without its dotted name ever appearing in a `from` clause."""
+        new_caller = tmp_path / "a_new_background_job.py"
+        new_caller.write_text(
+            "from switch_core.db import tenant_lookup\n"
+            "async def sweep(session_factory):\n"
+            "    return await tenant_lookup.all_tenant_ids(session_factory)\n"
+        )
+        assert _imports_a_lookup(new_caller)
+
+    def test_an_aliased_package_relative_module_import_is_detected(
+        self, tmp_path: Path
+    ) -> None:
+        new_caller = tmp_path / "a_new_background_job.py"
+        new_caller.write_text(
+            "from switch_core.db import tenant_lookup as lookups\n"
+            "async def sweep(session_factory):\n"
+            "    return await lookups.all_tenant_ids(session_factory)\n"
+        )
+        assert _imports_a_lookup(new_caller)
+
+    def test_a_neighbouring_module_from_the_same_package_is_not_flagged(
+        self, tmp_path: Path
+    ) -> None:
+        """The package-relative shape must key on the module, not the package.
+        `from switch_core.db import ...` is how half the tree reaches a
+        session helper, and flagging all of it would make the list meaningless
+        by being unreadable."""
+        clean = tmp_path / "an_ordinary_service.py"
+        clean.write_text(
+            "from switch_core.db import session_scope\n"
+            "async def work(session_factory, tenant_id):\n"
+            "    async with session_scope.tenant_session(\n"
+            "        session_factory, tenant_id\n"
+            "    ) as session:\n"
+            "        ...\n"
+        )
+        assert not _imports_a_lookup(clean)
 
     def test_importing_the_ddl_helpers_is_not_reaching_for_it(
         self, tmp_path: Path

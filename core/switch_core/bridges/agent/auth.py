@@ -101,7 +101,7 @@ class BearerAuthMiddleware:
     ``self.app(...)`` is called below. The lookups that resolve the credential
     itself (``_resolve_api_key``, ``_try_oidc``) run ahead of that, on
     sessions of their own, and each is in two steps: the credential's *tenant*
-    comes from one of the eight ``SECURITY DEFINER`` lookups that are the
+    comes from one of the seven ``SECURITY DEFINER`` lookups that are the
     whole exemption from row-level security (``db/tenant_lookup.py``), and the
     row itself is then read with that tenant bound, subject to the same
     policies as everything else.

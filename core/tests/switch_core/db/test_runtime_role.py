@@ -26,6 +26,7 @@ import uuid
 import pytest
 from sqlalchemy import text
 from sqlalchemy.engine import make_url
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from switch_core.db.runtime_role import (
@@ -133,7 +134,7 @@ class TestItRefusesEveryShapeThatWouldMakeThePoliciesInert:
         """`force row level security` sounds like more isolation and is less.
 
         It takes the ownership exemption away from the schema owner, and the
-        eight tenant lookups (`db/tenant_lookup.py`) are `SECURITY DEFINER`
+        seven tenant lookups (`db/tenant_lookup.py`) are `SECURITY DEFINER`
         functions running as exactly that owner. Force it and nothing in the
         process can answer "which tenant is this credential in", so no request
         authenticates — a total outage arriving as a wall of 401s. Boot says
@@ -175,6 +176,15 @@ class TestItRefusesEveryShapeThatWouldMakeThePoliciesInert:
         unrelated reason, and a check keyed on the code alone would read that
         as "the policy refused it" and let boot proceed on a connection that
         cannot serve a single request.
+
+        Two assertions, because two checks now stand between such a role and
+        the probe. `verify_restricted_role` refuses it earlier and more
+        precisely: the lookups are no longer `PUBLIC`-executable, so a role
+        that was granted nothing cannot call them, and boot says *that* rather
+        than reporting a suspicious read. The probe is then asked directly on
+        the same connection, because the trap it guards against is a property
+        of the probe rather than of the order the checks happen to run in —
+        and the order is exactly the sort of thing a later edit changes.
         """
         role = f"switch_ungranted_{uuid.uuid4().hex[:12]}"
         password = uuid.uuid4().hex
@@ -192,8 +202,13 @@ class TestItRefusesEveryShapeThatWouldMakeThePoliciesInert:
         try:
             with pytest.raises(RuntimeRoleError) as raised:
                 await verify_restricted_role(engine)
-            assert "not with 42501" in str(raised.value)
-            assert "missing its grants" in str(raised.value)
+            assert "cannot execute" in str(raised.value)
+
+            async with engine.connect() as connection:
+                with pytest.raises(RuntimeRoleError) as probed:
+                    await _refuse_a_connection_no_policy_stops(connection, role)
+            assert "not with 42501" in str(probed.value)
+            assert "missing its grants" in str(probed.value)
         finally:
             await engine.dispose()
             async with rls_harness.owner_engine.begin() as connection:
@@ -221,6 +236,135 @@ class TestItRefusesEveryShapeThatWouldMakeThePoliciesInert:
         with pytest.raises(RuntimeRoleError) as raised:
             await verify_restricted_role(rls_harness.restricted_engine)
         assert "cannot execute" in str(raised.value)
+        assert "all_tenant_ids" in str(raised.value)
+
+
+class TestTheExemptionBelongsToTheRuntimeRoleAndNotToEverybody:
+    """`EXECUTE` on a new function is granted to `PUBLIC`, and these are new
+    functions.
+
+    Left at that default the tenant lookups are callable by every role with
+    `CONNECT` on the database — a reporting role, a migration tool's role, a
+    person's. None of them can read a row of a scoped table, which is the
+    boundary that matters, but all of them could enumerate the deployment's
+    tenants and resolve any identifier they hold to one. `grant_runtime_role`
+    closes it and the self-check refuses to serve if it reopens.
+    """
+
+    async def test_a_second_role_with_connect_cannot_call_a_lookup(
+        self, rls_harness: RLSHarness, postgres_url: str
+    ) -> None:
+        """The property itself, measured rather than read off the catalogue.
+
+        A role created after `grant_runtime_role` has run, given nothing but
+        the `USAGE` any role needs to see the schema at all, tries the
+        enumeration and is refused. Asked of a *second* role because the
+        runtime role must still be able to call it, and a check that looked
+        only at one of them could pass by breaking the wrong thing.
+        """
+        role = f"switch_bystander_{uuid.uuid4().hex[:12]}"
+        password = uuid.uuid4().hex
+        async with rls_harness.owner_engine.begin() as connection:
+            await connection.execute(
+                text(
+                    f"CREATE ROLE \"{role}\" LOGIN PASSWORD '{password}' "
+                    "NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS"
+                )
+            )
+            await connection.execute(text(f'GRANT USAGE ON SCHEMA public TO "{role}"'))
+        engine = create_async_engine(
+            make_url(postgres_url).set(username=role, password=password)
+        )
+        try:
+            async with engine.connect() as connection:
+                with pytest.raises(DBAPIError) as raised:
+                    await connection.execute(
+                        text("SELECT count(*) FROM all_tenant_ids()")
+                    )
+            assert "permission denied for function all_tenant_ids" in str(raised.value)
+
+            # And the runtime role still can, which is the half that makes the
+            # refusal above a boundary rather than a broken schema.
+            async with rls_harness.restricted_engine.connect() as connection:
+                assert (
+                    await connection.execute(
+                        text("SELECT count(*) FROM all_tenant_ids()")
+                    )
+                ).scalar_one() >= 1
+        finally:
+            await engine.dispose()
+            async with rls_harness.owner_engine.begin() as connection:
+                await connection.execute(text(f'DROP OWNED BY "{role}"'))
+                await connection.execute(text(f'DROP ROLE "{role}"'))
+
+    async def test_a_function_created_after_the_grants_is_not_public_executable(
+        self, rls_harness: RLSHarness
+    ) -> None:
+        """The gap between one boot and the next.
+
+        A revision adding an eighth lookup creates it `PUBLIC`-executable, and
+        the boot that would revoke that has not happened yet. The default
+        privileges cover the window — and they only do so because the revoke
+        is issued without `IN SCHEMA`: a per-schema default ACL is unioned
+        with the built-in one rather than replacing it, so the schema-scoped
+        spelling records nothing and the new function arrives
+        `PUBLIC`-executable regardless. Measured here, because that is not
+        something to take on trust from a statement that reports success.
+        """
+        async with rls_harness.owner_engine.begin() as connection:
+            await connection.execute(
+                text(
+                    "CREATE FUNCTION tenant_of_something_new(p_id text) "
+                    "RETURNS SETOF text LANGUAGE sql STABLE SECURITY DEFINER "
+                    "SET search_path = pg_catalog, public, pg_temp "
+                    "AS $$SELECT id FROM tenants WHERE id = p_id$$"
+                )
+            )
+        try:
+            async with rls_harness.restricted_engine.connect() as connection:
+                public_may, runtime_may = (
+                    await connection.execute(
+                        text(
+                            "SELECT has_function_privilege("
+                            "  'public', 'tenant_of_something_new(text)', 'EXECUTE'), "
+                            "has_function_privilege("
+                            "  current_user, 'tenant_of_something_new(text)', 'EXECUTE')"
+                        )
+                    )
+                ).one()
+            assert not public_may, (
+                "a function created between two boots is PUBLIC-executable, so "
+                "an eighth lookup would be open to every role until the next "
+                "restart revoked it"
+            )
+            assert runtime_may, (
+                "the default privileges revoked PUBLIC's EXECUTE and did not "
+                "grant the runtime role's, so a new function would be callable "
+                "by nobody until the next boot"
+            )
+        finally:
+            async with rls_harness.owner_engine.begin() as connection:
+                await connection.execute(
+                    text("DROP FUNCTION tenant_of_something_new(text)")
+                )
+
+    async def test_granting_execute_back_to_public_is_refused_at_boot(
+        self, rls_harness: RLSHarness
+    ) -> None:
+        """One statement reopens it, and every other check here still passes.
+
+        `GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA public TO PUBLIC` is the sort
+        of thing issued to clear an unrelated permission error. The role stays
+        restricted, owns nothing, forces nothing, and the unbound read of
+        `tenants` still raises — so nothing but this check would notice.
+        """
+        async with rls_harness.owner_engine.begin() as connection:
+            await connection.execute(
+                text("GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA public TO PUBLIC")
+            )
+        with pytest.raises(RuntimeRoleError) as raised:
+            await verify_restricted_role(rls_harness.restricted_engine)
+        assert "PUBLIC holds EXECUTE" in str(raised.value)
         assert "all_tenant_ids" in str(raised.value)
 
 

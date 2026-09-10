@@ -24,20 +24,23 @@ database client.
 
 from __future__ import annotations
 
+import ast
 import logging
+import pathlib
 
 import pytest
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+import switch_core
 from switch_core.config import SwitchConfig
 from switch_core.db.models import TENANT_ZERO_ID, TenantMember, User
-from switch_core.db.stores.tenant_member_store import (
-    TenantMembershipError,
-    TenantMemberStore,
-)
 from switch_core.db.stores.user_store import UserStore
-from switch_core.gateway.auth import hash_password
+from switch_core.gateway.auth import (
+    TenantMembershipError,
+    hash_password,
+    sole_tenant_id,
+)
 from switch_core.main import _seed_admin_user
 from switch_core.tenant_context import tenant_scope
 
@@ -180,7 +183,7 @@ class TestWhatBeingStrandedCosts:
         await _strand_the_admin(session_factory, user_id)
 
         with pytest.raises(TenantMembershipError):
-            await TenantMemberStore().get_sole_tenant_id(session_factory, user_id)
+            await sole_tenant_id(session_factory, user_id)
 
     async def test_creating_a_user_still_writes_one(
         self, session_factory: async_sessionmaker[AsyncSession]
@@ -200,13 +203,32 @@ class TestWhatBeingStrandedCosts:
         ]
 
 
-def test_the_membership_store_offers_no_second_way_to_write_one() -> None:
-    """`TenantMemberStore.create` existed and nothing called it.
+def test_there_is_one_way_to_write_a_membership() -> None:
+    """`UserStore.ensure_membership` is it, and nothing else writes one.
 
-    Removed rather than wired up: "exactly one membership per account" holds
-    because a single idempotent function writes them all, and an unguarded
-    `create(tenant_id=…, user_id=…, role=…)` beside it is an invitation to
-    write a second — which `get_sole_tenant_id` rejects just as firmly as it
-    rejects none.
+    "Exactly one membership per account" holds because a single idempotent
+    function writes them all. There was a `TenantMemberStore.create` beside
+    it, taking `tenant_id`, `user_id` and `role` from whatever the caller
+    felt like; nothing ever called it, and an unguarded second way in is how
+    an account ends up with two — which `sole_tenant_id` rejects just as
+    firmly as it rejects none. The store is gone, so this asserts the
+    property rather than the absence: only `UserStore` constructs a
+    `TenantMember`.
     """
-    assert not hasattr(TenantMemberStore, "create")
+    package = pathlib.Path(switch_core.__file__).resolve().parent
+    writers = set()
+    for path in package.rglob("*.py"):
+        tree = ast.parse(path.read_text(), filename=str(path))
+        for node in ast.walk(tree):
+            # The constructor call, not the class statement: `db/models.py`
+            # declares `class TenantMember(Base)`, which a text scan reads as
+            # a write and an AST walk does not.
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+                if node.func.id == "TenantMember":
+                    writers.add(path.relative_to(package).as_posix())
+    assert sorted(writers) == ["db/stores/user_store.py"], (
+        "a membership row is written outside UserStore.ensure_membership by "
+        f"{sorted(writers)}. Every account must end up with exactly one, "
+        "which holds because one idempotent function writes them all — route "
+        "the new write through it rather than adding a second way in."
+    )

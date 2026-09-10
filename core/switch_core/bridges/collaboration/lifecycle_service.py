@@ -24,7 +24,7 @@ from switch_core.db.stores.external_user_store import ExternalUserStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.tenant_lookup import all_tenant_ids, tenant_of_collaboration_bridge
 from switch_core.provisioning import Provisioning
-from switch_core.tenant_context import no_tenant
+from switch_core.tenant_context import current_tenant_id, no_tenant
 
 if TYPE_CHECKING:
     from switch_core.clients.client_lifecycle_service import ClientLifecycleService
@@ -247,13 +247,22 @@ class CollaborationBridgeLifecycleService:
         if wanted is None:
             return
 
+        # Captured before the loop below rebinds per tenant. This method is
+        # only ever reached from an authenticated request, so what is bound
+        # going in *is* the caller's tenant — the loop then replaces it, once
+        # per tenant, for the scoped read of that tenant's bridges. A call
+        # with nothing bound (no request behind it, if one ever exists) is
+        # treated as belonging to no tenant at all rather than guessed at: it
+        # can never match `other.tenant_id`, so it falls straight into the
+        # cross-tenant branch below and gets the non-disclosing message. Fail
+        # closed, not open.
+        caller_tenant_id = current_tenant_id()
+
         # Deliberately across every tenant. Two tenants binding the same Slack
         # workspace, or the same Teams listen port, is precisely the collision
         # this exists to refuse — the resource is a property of the host and
         # the platform, not of a tenant — so narrowing to the caller's tenant
-        # would make it miss the case it was written for. Reached from an
-        # authenticated request, so what is bound going in *is* the caller's
-        # tenant; the loop replaces it per tenant rather than inheriting it.
+        # would make it miss the case it was written for.
         existing: list[CollaborationBridge] = []
         for tenant_id in await all_tenant_ids(self._session_factory):
             async with tenant_session(self._session_factory, tenant_id) as session:
@@ -290,7 +299,13 @@ class CollaborationBridgeLifecycleService:
                     exc_info=True,
                 )
                 continue
-            if held == wanted:
+            if held != wanted:
+                continue
+            if caller_tenant_id is not None and other.tenant_id == caller_tenant_id:
+                # The incumbent is the caller's own bridge, so naming it tells
+                # the caller nothing they cannot already see on their own
+                # bridge list — and the name is what turns this from "refused"
+                # into "refused, and here is the one to delete or move".
                 raise ValueError(
                     f"'{other.display_name}' already uses {wanted} on this "
                     f"instance, and two {bridge_type} bridges cannot share it. "
@@ -299,6 +314,36 @@ class CollaborationBridgeLifecycleService:
                     "chart publishes only one Teams port, so a second one needs "
                     "its own Service port and route."
                 )
+            # The incumbent belongs to a different tenant (or the caller's
+            # tenant could not be determined at all — see the fail-closed note
+            # above). Refuse the same way, but without the incumbent's display
+            # name or tenant: naming either would tell tenant A that tenant B
+            # exists, is on this instance, and holds this specific workspace or
+            # port, none of which A has any business learning from an error
+            # message. `wanted` itself is not a new disclosure — it is an echo
+            # of the connection_config the caller just submitted, not
+            # information about the incumbent.
+            #
+            # "already claimed on this instance" is still a narrow leak: it
+            # tells the caller *someone* holds this resource, which they would
+            # not otherwise know. That is unavoidable if the collision is to be
+            # refused at all rather than silently misconfigured, and it is a
+            # great deal less than a bridge name and a tenant identity.
+            logger.warning(
+                "Refused to register a %s bridge for tenant %s: %s is already "
+                "held by bridge %s in tenant %s",
+                bridge_type,
+                caller_tenant_id,
+                wanted,
+                other.id,
+                other.tenant_id,
+            )
+            raise ValueError(
+                f"{wanted} is already claimed by a {bridge_type} bridge on "
+                "this instance and cannot be shared. This is a host- and "
+                "platform-level limit, not specific to your workspace; an "
+                "operator can see which bridge holds it."
+            )
 
     async def register(
         self,
@@ -474,6 +519,7 @@ class CollaborationBridgeLifecycleService:
         bridge_client = BridgeClient(
             bridge_core=bridge_core,
             client_id=bridge_client_record.id,
+            tenant_id=bridge_client_record.tenant_id,
             matrix_user_id=bridge_client_record.matrix_user_id,
             display_name=bridge_client_record.display_name,
             session_factory=self._session_factory,

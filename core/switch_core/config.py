@@ -31,8 +31,19 @@ class SwitchConfig(BaseSettings):
     # working would hand back the ownership exemption the policies rely on it
     # not having.
     #
-    # Unset means "this deployment migrates somewhere else": boot applies no
-    # migrations and expects the schema to already be at head.
+    # Boot always runs `alembic upgrade head`, unconditionally, whether or not
+    # this is set — that is `main()`'s job, not this setting's. What this
+    # setting decides is which connection that migration (and the runtime
+    # role's grant re-issue right after it) runs on: `migrations/env.py` uses
+    # the owner connection where one is configured here, and falls back to the
+    # runtime connection where none is. That fallback is what keeps `alembic`
+    # on the command line working against a scratch database a developer
+    # points it at, where the two roles are the same one. For a deployment
+    # that has moved DB_USER to a genuinely restricted runtime role without
+    # also setting this, the same fallback is what makes the failure loud: the
+    # runtime role cannot issue DDL, so the migration fails immediately with a
+    # permission error naming the statement it could not run, rather than
+    # boot silently skipping the migration or half-applying it.
     db_owner_user: str | None = None
     db_owner_password: str | None = None
 
@@ -368,10 +379,6 @@ class SwitchConfig(BaseSettings):
             f"postgresql+asyncpg://{self.db_owner_user}:{self.db_owner_password}"
             f"@{self.db_host}:{self.db_port}/{self.db_name}"
         )
-
-    @property
-    def runs_migrations_at_boot(self) -> bool:
-        return self.owner_database_url is not None
 
     @property
     def db_connect_args(self) -> dict[str, object]:

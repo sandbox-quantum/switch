@@ -26,9 +26,12 @@ seventeen call sites — the ones that went through this helper by name, which
 is not the same count as the exemption's full inventory; see
 `db/tenant_lookup.py` for the other two — either died at boot or silently
 read nothing. The whole model was inverted, and `db/tenant_lookup.py` is what
-replaced it: eight `SECURITY DEFINER` functions that answer *which tenant*
+replaced it: seven `SECURITY DEFINER` functions that answer *which tenant*
 and never return a row, so a cross-tenant question is asked in one place with
 a fixed shape, and the work it fans out into is scoped like everything else.
+That module states exactly what the exemption concedes and what it does not;
+it is a boundary on rows rather than on the shape of the deployment, and the
+difference is worth reading there rather than guessing at from here.
 
 What is left is the one helper. Two things still open a session with nothing
 bound, and neither is cross-tenant:

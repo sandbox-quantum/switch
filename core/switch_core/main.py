@@ -76,6 +76,7 @@ from switch_core.clients.client_factory import ClientFactory
 from switch_core.clients.client_lifecycle_service import ClientLifecycleService
 from switch_core.config import SwitchConfig
 from switch_core.crypto import encrypt_token
+from switch_core.db.boot_lock import boot_lock
 from switch_core.db.engine import (
     create_engine_from_config,
     create_session_factory,
@@ -107,7 +108,6 @@ from switch_core.db.stores.room_role_store import RoomRoleStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.server_connector_store import ServerConnectorStore
 from switch_core.db.stores.task_store import TaskStore
-from switch_core.db.stores.tenant_member_store import TenantMemberStore
 from switch_core.db.stores.tenant_store import TenantStore
 from switch_core.db.stores.user_store import UserStore
 from switch_core.db.tenant_lookup import all_tenant_ids
@@ -251,7 +251,11 @@ async def _check_tenant_isolation(config: SwitchConfig, engine: AsyncEngine) -> 
 
 async def run(config: SwitchConfig) -> None:
     # ── Database ─────────────────────────────────────────────────────────────
-    await _prepare_database(config)
+    # The migration and the runtime role's grant re-issue already ran, under
+    # Switch's boot-time advisory lock, before this coroutine was ever started
+    # — see `main._migrate_and_grant`, which `main()` awaits first. Both use
+    # the schema owner's connection where one is configured, and neither
+    # belongs on the pooled application engine built below.
     engine = create_engine_from_config(config)
     await _check_tenant_isolation(config, engine)
     session_factory = create_session_factory(engine)
@@ -276,7 +280,6 @@ async def run(config: SwitchConfig) -> None:
     bridge_message_map_store = BridgeMessageMapStore()
     user_store = UserStore()
     api_key_store = ApiKeyStore()
-    tenant_member_store = TenantMemberStore()
     tenant_store = TenantStore()
     reference_store = ReferenceStore()
     reference_type_store = ReferenceTypeStore()
@@ -289,10 +292,20 @@ async def run(config: SwitchConfig) -> None:
     media_store = MediaStore()
 
     # ── Seed admin user + agent-registration bootstrap key ──────────────────
-    await _seed_admin_user(session_factory, user_store, config)
-    await _seed_agent_registration_bootstrap_key(
-        session_factory, user_store, api_key_store, agent_store, config
-    )
+    # A second acquisition of the boot lock, distinct from the one around the
+    # migration in `main._migrate_and_grant`: nothing between the two needs
+    # another replica kept out, so there is nothing to gain from holding one
+    # lock across the whole of boot instead of two narrower ones. This one
+    # cannot be a transaction-scoped `pg_advisory_xact_lock` the way a single
+    # migration transaction could be, though — the seeding below reads its own
+    # state and writes it back across several separate sessions (see
+    # `_seed_agent_registration_bootstrap_key`'s docstring), so only a
+    # session-level lock, held for the whole span, actually serialises it.
+    async with boot_lock(config):
+        await _seed_admin_user(session_factory, user_store, config)
+        await _seed_agent_registration_bootstrap_key(
+            session_factory, user_store, api_key_store, agent_store, config
+        )
 
     # ── Event queue + request trackers ───────────────────────────────────────
     event_buffer = EventBuffer()
@@ -474,7 +487,6 @@ async def run(config: SwitchConfig) -> None:
         user_store=user_store,
         external_user_store=external_user_store,
         api_key_store=api_key_store,
-        tenant_member_store=tenant_member_store,
         resource_service=resource_service,
         protocol=protocol,
         config=config,
@@ -1017,6 +1029,50 @@ async def _shutdown(
     os._exit(0)
 
 
+async def _migrate_and_grant(config: SwitchConfig) -> None:
+    """Apply pending migrations and reissue the runtime role's grants.
+
+    Migrations still run at boot, on the same schedule as before — what
+    changed is the connection they run on, and the lock now held around both
+    this and the grant re-issue. `migrations/env.py` points Alembic at
+    DB_OWNER_USER where one is configured, because DDL is exactly what the
+    runtime role is not allowed to issue. Where none is, this is unchanged
+    from before and runs as DB_USER, which is right for a developer pointing
+    at a scratch database and fails loudly and immediately for a deployment
+    that has moved to a restricted role without saying who its owner is.
+
+    Held under `db/boot_lock.boot_lock` because a rolling deploy, or a crash
+    racing a restart, starts more than one replica of this process at once,
+    and neither step here tolerates two replicas doing it at the same time:
+    two concurrent `alembic upgrade head` runs contend on the same catalogue
+    locks Postgres itself takes for DDL — the usual result is a deadlock or a
+    "duplicate object" error, not one side quietly winning — and
+    `_prepare_database`'s grant re-issue right after it touches
+    `pg_default_acl`, which two concurrent `ALTER DEFAULT PRIVILEGES`
+    statements contend on the same way. One acquisition covers both rather
+    than two: a table a migration just added is usable only once the grant
+    after it has run, so nothing is served by letting a second replica in
+    between them, and holding the lock across both is simpler than justifying
+    why it would be safe to drop in the gap.
+
+    `alembic_command.upgrade` is synchronous, and `migrations/env.py` calls
+    `asyncio.run` internally to drive its own async engine when it isn't
+    offline — which raises if called from a thread that already has a running
+    event loop. This coroutine has one, so the upgrade runs via
+    `asyncio.to_thread`, on a worker thread that starts with no event loop of
+    its own, which is exactly what that inner `asyncio.run` needs.
+    """
+    alembic_ini = Path(__file__).resolve().parent.parent / "alembic.ini"
+    alembic_cfg = AlembicConfig(str(alembic_ini))
+    async with boot_lock(config):
+        await asyncio.to_thread(alembic_command.upgrade, alembic_cfg, "head")
+        await _prepare_database(config)
+    logger.info(
+        "Database migrations applied as %s",
+        config.db_owner_user or config.db_user,
+    )
+
+
 def main() -> None:
     config = SwitchConfig()
     running_version = switch_core_version()
@@ -1024,20 +1080,7 @@ def main() -> None:
 
     logger.info("Starting switch-core %s", running_version or "(version unknown)")
 
-    # Migrations still run at boot, and on the same schedule as before — what
-    # changed is the connection they run on. `migrations/env.py` points Alembic
-    # at DB_OWNER_USER where one is configured, because DDL is exactly what the
-    # runtime role is not allowed to issue. Where none is, this is unchanged
-    # from before and runs as DB_USER, which is right for a developer pointing
-    # at a scratch database and fails loudly and immediately for a deployment
-    # that has moved to a restricted role without saying who its owner is.
-    alembic_ini = Path(__file__).resolve().parent.parent / "alembic.ini"
-    alembic_cfg = AlembicConfig(str(alembic_ini))
-    alembic_command.upgrade(alembic_cfg, "head")
-    logger.info(
-        "Database migrations applied as %s",
-        config.db_owner_user or config.db_user,
-    )
+    asyncio.run(_migrate_and_grant(config))
 
     asyncio.run(run(config))
 

@@ -53,7 +53,6 @@ from switch_core.db.stores.external_user_store import ExternalUserStore
 from switch_core.db.stores.reference_store import ReferenceStore
 from switch_core.db.stores.room_role_store import RoomRoleStore
 from switch_core.db.stores.room_store import RoomStore
-from switch_core.db.tenant_lookup import tenant_of_client
 from switch_core.delivery.addressing import (
     ADDRESSING_DENIED_MESSAGE,
     ADDRESSING_UNCLAIMED_MESSAGE,
@@ -302,17 +301,13 @@ class AgentClient(ClientBase[ClientConfig]):
         """Resolve the agent this client is, then run.
 
         This runs at the top of the client's own task, which binds nothing, so
-        the tenant is derived rather than inherited: `clients.id` is a primary
-        key, and the exemption (`db/tenant_lookup.py`) turns it into the
-        tenant that row is in. A *guessed* tenant would turn "this client is
-        an agent" into "no agent found for client" and fail the client at boot
-        over a row that exists, which is why this is a lookup rather than a
-        default.
+        the tenant is carried rather than inherited: it comes from the
+        `clients` row this client was built from. A *guessed* tenant would
+        turn "this client is an agent" into "no agent found for client" and
+        fail the client at boot over a row that exists, which is why nothing
+        here falls back to whatever is ambient.
         """
-        tenant_id = await tenant_of_client(self.session_factory, self.client_id)
-        if tenant_id is None:
-            raise RuntimeError(f"No client row for: {self.client_id}")
-        async with tenant_session(self.session_factory, tenant_id) as session:
+        async with tenant_session(self.session_factory, self.tenant_id) as session:
             agent = await self._agent_store.get_by_client_id(session, self.client_id)
             if agent is None:
                 raise RuntimeError(f"No agent found for client: {self.client_id}")

@@ -28,6 +28,7 @@ from switch_core.bridges.collaboration.teams.crypto import (
     generate_encryption_keypair,
     load_certificate_der_b64,
 )
+from switch_core.tenant_context import tenant_scope
 
 
 def _raw_config(**overrides: Any) -> dict[str, Any]:
@@ -454,16 +455,26 @@ async def _stored_bridge(**overrides: Any) -> Any:
 async def test_second_teams_bridge_on_the_same_port_is_refused(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The failure this replaces was a bind error in a background task."""
+    """The failure this replaces was a bind error in a background task.
+
+    Registering from within the incumbent's own tenant (`tenant_scope`,
+    matching what `_stub_tenant_lookups` says every stored row belongs to) is
+    the realistic case this message is written for: the operator can already
+    see "Contoso Teams" on their own bridge list, so naming it here is what
+    turns the refusal into something actionable rather than a disclosure —
+    see `test_lifecycle_tenant_binding.py` for the cross-tenant case, where
+    naming it would be exactly that.
+    """
     service = _service_with_existing([await _stored_bridge()], monkeypatch)
 
-    with pytest.raises(ValueError) as excinfo:
-        await service.register(
-            bridge_type="teams",
-            display_name="Second Teams",
-            connection_config=_raw_config(),
-            channel_creation_enabled=True,
-        )
+    with tenant_scope(_STUB_TENANT):
+        with pytest.raises(ValueError) as excinfo:
+            await service.register(
+                bridge_type="teams",
+                display_name="Second Teams",
+                connection_config=_raw_config(),
+                channel_creation_enabled=True,
+            )
 
     message = str(excinfo.value)
     assert "Contoso Teams" in message

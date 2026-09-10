@@ -39,13 +39,18 @@ than a thing to check per function.
 Postgres note on writing `SECURITY DEFINER` functions safely: a role able to
 create a temporary table could otherwise shadow one of the tables read here.
 
-No grants and no roles are created here either. `EXECUTE` defaults to `PUBLIC`
-for a new function, which is what makes these callable by the runtime role
-without this migration having to know its name — and the most a caller can
-learn from any of them is the tenant an identifier it already holds belongs
-to. The runtime role's table grants are re-issued at boot by the owner
-connection (`db/runtime_role.py`), after this migration has run, so a table a
-later revision adds is granted without a runbook step.
+No grants and no roles are created here either, and the `EXECUTE` these
+functions are created with is not a property to lean on. A new function is
+`PUBLIC`-executable by default, which makes them callable by the runtime role
+without this migration having to know its name — and callable by every other
+role with `CONNECT` on this database just as readily, which is not the same
+thing and is not wanted. Narrowing it needs a role name, which only boot has:
+`db/runtime_role.grant_runtime_role` runs on the owner connection immediately
+after this migration, revokes `EXECUTE` on the schema's functions from
+`PUBLIC` and grants it to the runtime role by name, and the boot self-check
+beside it refuses to serve if `PUBLIC` ever holds it again. The same pass
+re-issues the role's table grants, so a table a later revision adds is granted
+without a runbook step.
 
 The DDL below is a verbatim copy of `switch_core/db/tenant_lookup.py` as it
 stood when this migration was written, copied rather than imported for the

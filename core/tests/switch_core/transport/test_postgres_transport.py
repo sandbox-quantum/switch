@@ -20,7 +20,7 @@ import pytest
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from switch_core.db.models import Client, ClientRoom, Room, Tenant
+from switch_core.db.models import TENANT_ZERO_ID, Client, ClientRoom, Room, Tenant
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.media_store import MediaStore
 from switch_core.db.stores.message_store import MessageStore
@@ -134,42 +134,29 @@ class _Received:
         self.events.append(event)
 
 
-async def _seed_client(
-    session_factory: async_sessionmaker[AsyncSession], client_id: str
-) -> None:
-    """Give a transport's client a row, so it has a tenant to act in.
-
-    A `PostgresTransport` resolves its own tenant from `clients` (see
-    `PostgresTransport._tenant`), because its task binds nothing and
-    everything it writes is scoped. A transport built for a client id with no
-    row behind it is a transport for a client that does not exist, and it says
-    so rather than falling back to whatever tenant happens to be ambient —
-    which for `upload_media` would mean putting a blob in a tenant nobody
-    chose. Tests that need only *a* client take one from here.
-    """
-    async with session_factory() as session:
-        session.add(
-            Client(
-                id=client_id,
-                matrix_user_id=f"@{client_id}-{uuid.uuid4().hex[:8]}:test",
-                display_name="a client",
-                type="agent",
-            )
-        )
-        await session.commit()
-
-
 def _transport(
     session_factory: async_sessionmaker[AsyncSession],
     *,
     client_id: str,
     user_id: str,
+    tenant_id: str = TENANT_ZERO_ID,
     listener: _FakeListener | None = None,
     ephemeral: EphemeralBus | None = None,
 ) -> PostgresTransport:
+    """A transport for `client_id`, acting in `tenant_id`.
+
+    The tenant is handed in because production hands it in: a transport is
+    built by `ClientFactory.transport_for` from a client that took it off
+    its own `clients` row, so there is nothing here for the transport to
+    look up and nothing ambient for it to fall back to. The default is the
+    tenant the `session_factory` fixture binds, which is the one every row
+    these tests write lands in; the handful that arrange their own tenant
+    pass it, and those are the tests where the value is the point.
+    """
     return PostgresTransport(
         user_id=user_id,
         client_id=client_id,
+        tenant_id=tenant_id,
         display_name="agent one",
         session_factory=session_factory,
         room_store=RoomStore(),
@@ -381,14 +368,14 @@ class TestRooms:
 
 class TestMedia:
     """`media_blobs` is scoped, so a blob is written into the uploading
-    client's tenant — which means every test here needs a client row for the
-    transport to read that tenant off. Without one the transport refuses,
-    which is the right answer and not the one these tests are about."""
+    client's tenant — the one the transport was built with, which is what
+    keeps a blob out of a tenant nobody chose. That the tenant is the
+    client's own is `TestATransportActsInItsClientsTenant`'s business; here
+    it is simply the tenant these rows are expected in."""
 
     async def test_bytes_go_in_and_come_back(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
-        await _seed_client(session_factory, "c")
         transport = _transport(session_factory, client_id="c", user_id="@a:test")
 
         uploaded = await transport.upload_media(b"file contents", "text/plain", "a.txt")
@@ -402,7 +389,6 @@ class TestMedia:
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
         """Deduplicating would make one sender's delete another's data loss."""
-        await _seed_client(session_factory, "c")
         transport = _transport(session_factory, client_id="c", user_id="@a:test")
 
         first = await transport.upload_media(b"same", "text/plain", "a.txt")
@@ -420,24 +406,36 @@ class TestMedia:
         transport raises `TransportError` for having no tenant, and this test
         would pass for entirely the wrong reason.
         """
-        await _seed_client(session_factory, "c")
         transport = _transport(session_factory, client_id="c", user_id="@a:test")
 
         with pytest.raises(TransportError, match="No media stored under"):
             await transport.download_media("switch-media://nothing")
 
-    async def test_a_transport_whose_client_has_no_row_refuses_to_upload(
+    def test_a_transport_cannot_be_built_without_a_tenant(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
-        """The fail-loud half of the same rule. A blob has to name a tenant,
-        and the only honest source for one is the uploading client's own row;
-        with no row there is no tenant, and the alternatives — whatever is
-        ambient, or tenant zero — are both a write into a real customer's
-        data that nobody chose."""
-        transport = _transport(session_factory, client_id="ghost", user_id="@a:test")
+        """The fail-loud half of the same rule, moved to construction.
 
-        with pytest.raises(TransportError, match="no tenant to act in"):
-            await transport.upload_media(b"bytes", "text/plain", "a.txt")
+        A blob has to name a tenant, and the alternatives to being told which
+        one — whatever is ambient, or tenant zero — are both a write into a
+        real customer's data that nobody chose. So `tenant_id` is a required
+        argument rather than something derived on the first write: a caller
+        that has not got one cannot build the transport at all, which is a
+        failure at wiring time instead of a wrong row at run time.
+        """
+        with pytest.raises(TypeError):
+            PostgresTransport(  # type: ignore[call-arg]
+                user_id="@a:test",
+                client_id="ghost",
+                display_name="agent one",
+                session_factory=session_factory,
+                room_store=RoomStore(),
+                message_store=MessageStore(),
+                media_store=MediaStore(),
+                listener=_FakeListener(),
+                invites=InviteBus(),
+                ephemeral=EphemeralBus(),
+            )
 
 
 class TestWhatIsNotBuiltYet:
@@ -969,7 +967,11 @@ class TestDeliveryBindsTheRoomsTenant:
         listener = _FakeListener()
         received = _Received()
         transport = _transport(
-            session_factory, client_id=client_id, user_id=user_id, listener=listener
+            session_factory,
+            client_id=client_id,
+            user_id=user_id,
+            tenant_id=tenant_id,
+            listener=listener,
         )
         transport.register_handlers(received.handlers())
         await transport.join_room(transport_room_id)
@@ -989,7 +991,7 @@ class TestDeliveryBindsTheRoomsTenant:
 
 
 class TestATransportActsInItsClientsTenant:
-    """A transport's tenant is its client's, derived and never inherited.
+    """A transport's tenant is its client's, carried and never inherited.
 
     Its task binds nothing: `ClientLifecycleService` unbinds before running a
     client, so anything the transport did under an *inherited* tenant would be
@@ -1004,12 +1006,18 @@ class TestATransportActsInItsClientsTenant:
     only be a guess and a guess returns a silent subset. Under a role the
     policies apply to, nothing bound returns a silent *empty* — so "unscoped"
     stopped being the safe answer and became the worst one. The tenant now
-    comes from the client's own row, through the exemption
-    (`db/tenant_lookup.py`), which is exact rather than a guess: `client_rooms`
-    and `messages` both carry composite foreign keys through `tenant_id`, so a
-    client cannot be a member of, or a sender in, a room outside its own
-    tenant. `test_the_schema_forbids_a_client_row_in_another_tenants_room`
-    below is what that rests on.
+    comes from the client's own `clients` row, handed to the transport when it
+    is built, which is exact rather than a guess: `client_rooms` and `messages`
+    both carry composite foreign keys through `tenant_id`, so a client cannot
+    be a member of, or a sender in, a room outside its own tenant.
+    `test_the_schema_forbids_a_client_row_in_another_tenants_room` below is
+    what that rests on.
+
+    That the value really is the client row's, rather than something a caller
+    invented, is the factory's business and is pinned in
+    `tests/switch_core/clients/test_client_tenant_plumbing.py`. What these
+    tests pin is the other half: given it, the transport reads and writes
+    under that tenant and never under whatever a caller had bound.
     """
 
     @pytest.fixture(autouse=True)
@@ -1074,7 +1082,12 @@ class TestATransportActsInItsClientsTenant:
 
         monkeypatch.setattr(RoomStore, "get_for_client", _spy)
 
-        transport = _transport(session_factory, client_id=client_id, user_id=user_id)
+        transport = _transport(
+            session_factory,
+            client_id=client_id,
+            user_id=user_id,
+            tenant_id=tenant_id,
+        )
         # Stands in for a task that inherited a tenant it has no business
         # acting under — a bridge restart, a puppet minted mid-conversation.
         with tenant_scope("some-other-tenant"):
@@ -1195,7 +1208,11 @@ class TestATransportActsInItsClientsTenant:
         listener = _FakeListener()
         received = _Received()
         transport = _transport(
-            session_factory, client_id=client_id, user_id=user_id, listener=listener
+            session_factory,
+            client_id=client_id,
+            user_id=user_id,
+            tenant_id=tenant_id,
+            listener=listener,
         )
         transport.register_handlers(received.handlers())
         await transport.join_room(mxid_a)
@@ -1255,7 +1272,10 @@ class TestATransportActsInItsClientsTenant:
             elsewhere_mxid = elsewhere.matrix_room_id
 
         transport = _transport(
-            rls_harness.restricted, client_id=client_id, user_id=user_id
+            rls_harness.restricted,
+            client_id=client_id,
+            user_id=user_id,
+            tenant_id=tenant_id,
         )
         with pytest.raises(TransportError, match="is not a Switch room"):
             await transport.send_message(elsewhere_mxid, "hello", sender_name="admin")

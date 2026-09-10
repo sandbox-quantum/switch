@@ -13,7 +13,7 @@ class TenantStore:
     exactly its own row and no store method can enumerate them — the previous
     one only appeared to because every caller handed it a session connected as
     the tables' owner. The enumeration is `all_tenant_ids` in
-    `db/tenant_lookup.py`, one of the eight `SECURITY DEFINER` functions that
+    `db/tenant_lookup.py`, one of the seven `SECURITY DEFINER` functions that
     are the whole exemption from row-level security, and it takes a session
     factory rather than a session precisely because there is no session it
     could correctly run on.

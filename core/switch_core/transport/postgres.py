@@ -43,7 +43,6 @@ from typing import TYPE_CHECKING, Any
 from switch_core.attachments import ATTACHMENT_GROUP_KEY
 from switch_core.db.models import ClientRoom, MediaBlob, Message, MessageAttachment
 from switch_core.db.session_scope import tenant_session
-from switch_core.db.tenant_lookup import tenant_of_client
 from switch_core.messages.recorded_types import EPHEMERAL
 from switch_core.messages.row import attachments_in, text_field, thread_root_of
 from switch_core.tenant_context import no_tenant, tenant_scope
@@ -106,6 +105,7 @@ class PostgresTransport:
         *,
         user_id: str,
         client_id: str,
+        tenant_id: str,
         display_name: str,
         session_factory: async_sessionmaker[AsyncSession],
         room_store: RoomStore,
@@ -117,6 +117,20 @@ class PostgresTransport:
     ) -> None:
         self.user_id = user_id
         self.client_id = client_id
+        # The tenant everything this transport reads and writes is scoped to,
+        # handed in with the client id rather than looked up from it. Neither
+        # this transport's context nor its caller's is the right answer — the
+        # client's task binds nothing and its handlers bind some room's tenant
+        # — but the client row that named this `client_id` also named its
+        # tenant, so whoever built the transport already had it.
+        #
+        # It is the whole answer, not a starting point: `client_rooms` carries
+        # composite foreign keys to both `clients` and `rooms`, so every room
+        # this client can be a member of is in this tenant, and a room lookup
+        # scoped to it cannot return a subset. That is what makes
+        # `joined_rooms` safe to scope — see its docstring for the failure
+        # this replaces.
+        self.tenant_id = tenant_id
         self.display_name = display_name
         self._session_factory = session_factory
         self._room_store = room_store
@@ -142,13 +156,6 @@ class PostgresTransport:
         # A room's transport id never changes, so this only grows and never
         # goes stale.
         self._room_ids: dict[str, str] = {}
-        # This client's own tenant, resolved once from its row and then held.
-        # Not a guess and not ambient: `client_rooms` carries composite foreign
-        # keys to both `clients` and `rooms`, so every room this client can be
-        # a member of is in this tenant, and a room lookup scoped to it cannot
-        # return a subset. That is what makes `joined_rooms` safe to scope —
-        # see its docstring for the failure this replaces.
-        self._tenant_id: str | None = None
 
     # ── Session ───────────────────────────────────────────────────────────────
 
@@ -354,7 +361,7 @@ class PostgresTransport:
         # per room. This used to be a per-room map filled from each room's own
         # row; the map only ever held this value, and two sources for one fact
         # is how they come to disagree.
-        tenant_id = await self._tenant()
+        tenant_id = self.tenant_id
         # Bound for the read *and* the delivery below: a handler (posting to a
         # bridge, gating a command) opens its own sessions rather than reusing
         # this one, and those still need the room's tenant. The contextvar
@@ -536,9 +543,7 @@ class PostgresTransport:
         # row has to name a tenant that means something. It is the same answer
         # a room's tenant would give — a client is only in rooms of its own —
         # and it does not depend on there being a room in hand.
-        async with tenant_session(
-            self._session_factory, await self._tenant()
-        ) as session:
+        async with tenant_session(self._session_factory, self.tenant_id) as session:
             await self._media_store.put(
                 session,
                 MediaBlob(
@@ -559,9 +564,7 @@ class PostgresTransport:
         bytes: an attachment the sender was told had been stored and a reader
         gets back as a zero-byte file is the worst of the available answers.
         """
-        async with tenant_session(
-            self._session_factory, await self._tenant()
-        ) as session:
+        async with tenant_session(self._session_factory, self.tenant_id) as session:
             blob = await self._media_store.get(session, uri)
         if blob is None:
             raise TransportError(f"No media stored under {uri}")
@@ -655,16 +658,15 @@ class PostgresTransport:
     async def joined_rooms(self) -> list[str]:
         """The transport-side ids of this client's rooms.
 
-        Scoped to this client's own tenant, which is *derived* rather than
+        Scoped to this client's own tenant, which is *carried* rather than
         inherited — the distinction the earlier version of this method was
         right to insist on. It runs once, at the top of `receive_forever`, in
         a task that binds nothing, so a tenant taken from whatever created the
         task would return a subset with no error to say so, and the client
-        would be silently deaf in every room it did not see, forever. That is
-        still true. What has changed is where the tenant comes from: not from
-        the caller's context but from this client's own row, through the
-        exemption (`db/tenant_lookup.py`), which is the same answer the read
-        itself would have given.
+        would be silently deaf in every room it did not see, forever. The
+        tenant this reads under comes from the client row the transport was
+        built from, which is the same answer the read itself would have given
+        and one nobody has to be in the right context to have.
 
         The subset it cannot be is guaranteed by the schema rather than
         assumed: `client_rooms` carries composite foreign keys to both
@@ -672,9 +674,7 @@ class PostgresTransport:
         its own tenant. `tests/switch_core/transport/test_postgres_transport.py`
         pins that, because the shape of this list rests on it.
         """
-        async with tenant_session(
-            self._session_factory, await self._tenant()
-        ) as session:
+        async with tenant_session(self._session_factory, self.tenant_id) as session:
             rooms = await self._room_store.get_for_client(session, self.client_id)
         return [room.matrix_room_id for room in rooms if room.matrix_room_id]
 
@@ -714,32 +714,13 @@ class PostgresTransport:
         both narrower and exact. Once cached, resolving costs nothing: no
         session, no query, no round trip.
         """
-        tenant_id = await self._tenant()
+        tenant_id = self.tenant_id
         cached = self._room_ids.get(transport_room_id)
         if cached is not None:
             return cached, tenant_id
         async with tenant_session(self._session_factory, tenant_id) as session:
             room_id = await self._resolve_room(session, transport_room_id)
         return room_id, tenant_id
-
-    async def _tenant(self) -> str:
-        """This client's tenant, resolved once from its own row.
-
-        Its own row rather than its context: this runs inside the client's
-        long-lived task, which unbinds on purpose, and from handlers that have
-        some *room's* tenant bound. Neither is the question being asked. The
-        client id is a primary key, so the exemption
-        (`db/tenant_lookup.py`) answers it exactly.
-        """
-        if self._tenant_id is None:
-            tenant_id = await tenant_of_client(self._session_factory, self.client_id)
-            if tenant_id is None:
-                raise TransportError(
-                    f"Client {self.client_id} has no row, so its transport has "
-                    "no tenant to act in."
-                )
-            self._tenant_id = tenant_id
-        return self._tenant_id
 
 
 def to_inbound(

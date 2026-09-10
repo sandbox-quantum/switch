@@ -13,7 +13,7 @@ for were invisible for exactly that reason — they returned nothing, silently,
 until a row existed — so the rule is written down here rather than left to
 whoever adds the next test.
 
-Four things are pinned:
+Five things are pinned:
 
 - **the catalogue**: the functions installed are exactly `TENANT_LOOKUPS`, and
   each one is `SECURITY DEFINER`, `STABLE`, and carries a search path that a
@@ -22,6 +22,11 @@ Four things are pinned:
   two tenants, where the equivalent ordinary read answers nothing;
 - **the boundary**: they return tenant ids and never rows, and the tables they
   read are still refused to the same role in the same session;
+- **what that boundary does not cover**: `users` carries no tenant and so no
+  policy, which makes the whole user-to-tenant membership graph readable with
+  nothing bound. Written down as a deliberate property rather than left to be
+  found, because the shorter statement of the boundary — "the tenant of an
+  identifier you already hold" — reads as though it were covered;
 - **the constraint they rest on**: no scoped table has `force row level
   security`, which would take the ownership exemption away from them and leave
   nothing in the process able to resolve a credential.
@@ -59,7 +64,6 @@ from switch_core.db.tenant_lookup import (
     create_lookup_ddl,
     tenant_of_agent_oauth_client,
     tenant_of_api_key,
-    tenant_of_client,
     tenant_of_collaboration_bridge,
     tenant_of_room,
     tenant_of_server_connector,
@@ -73,9 +77,17 @@ pytestmark = pytest.mark.no_ambient_tenant
 # The revision that installs the exemption for a database built by Alembic.
 _LOOKUP_REVISION = "9c41a7b0e5d8"
 
+# What a later revision took back out, and which one did it. A migration is
+# a record of a change that already happened, so `9c41a7b0e5d8` still names
+# every function it created; the live module names what the schema holds
+# today. The two agree only once the drops between them are accounted for,
+# and naming the revision here is what keeps 'we removed it from the module'
+# from passing as 'we removed it from the database'.
+_DROPPED_SINCE = {"tenant_of_client": "b1d7c4f0a92e"}
 
-def _migration_module() -> ModuleType:
-    """The `9c41a7b0e5d8` revision module, loaded through Alembic.
+
+def _revision_module(revision: str) -> ModuleType:
+    """One revision module, loaded through Alembic.
 
     Alembic's own loader rather than an `importlib` call on a path, so this
     finds the file the same way a deployment would and fails the same way if
@@ -84,7 +96,12 @@ def _migration_module() -> ModuleType:
     core = Path(switch_core.__file__).resolve().parents[1]
     config = Config(str(core / "alembic.ini"))
     config.set_main_option("script_location", str(core / "switch_core" / "migrations"))
-    return ScriptDirectory.from_config(config).get_revision(_LOOKUP_REVISION).module
+    return ScriptDirectory.from_config(config).get_revision(revision).module
+
+
+def _migration_module() -> ModuleType:
+    """The revision that installed the exemption."""
+    return _revision_module(_LOOKUP_REVISION)
 
 
 class _Fixture:
@@ -366,12 +383,11 @@ class TestWhatTheyAnswer:
         await _two_populated_tenants(rls_harness)
         assert await tenant_of_api_key(rls_harness.restricted, "no-such-hash") is None
 
-    async def test_a_client_room_bridge_and_connector_resolve_to_their_tenant(
+    async def test_a_room_bridge_and_connector_resolve_to_their_tenant(
         self, rls_harness: RLSHarness
     ) -> None:
         fixture = await _two_populated_tenants(rls_harness)
         restricted = rls_harness.restricted
-        assert await tenant_of_client(restricted, fixture.client_a) == fixture.tenant_a
         assert await tenant_of_room(restricted, fixture.room_a) == fixture.tenant_a
         assert (
             await tenant_of_collaboration_bridge(restricted, fixture.bridge_a)
@@ -396,6 +412,74 @@ class TestWhatTheyAnswer:
                 rls_harness.restricted, fixture.oauth_client_a
             )
         assert "refusing to pick one" in str(raised.value)
+
+
+class TestWhatTheExemptionDiscloses:
+    """The boundary is on rows, not on the shape of the deployment.
+
+    `db/tenant_lookup.py` used to claim that the most a caller could extract
+    was the tenant of an identifier it already held. That is false three ways,
+    and the two that are closed are pinned elsewhere: `all_tenant_ids()` takes
+    no identifier at all (`TestWhatTheyAnswer` above), and `PUBLIC` no longer
+    holds `EXECUTE` (`test_runtime_role.py`). The third is not closed, and is
+    pinned here as a deliberate property rather than left to be rediscovered
+    as a surprise.
+    """
+
+    async def test_the_membership_graph_is_readable_with_nothing_bound(
+        self, rls_harness: RLSHarness
+    ) -> None:
+        """`users` carries no tenant, so it carries no policy.
+
+        A person is global — the per-tenant object is the `tenant_members`
+        row — and `db/rls_ddl.py`'s `GLOBAL_TABLES` says so on purpose. The
+        consequence is that a session with nothing bound reads every user id,
+        and feeding those to `tenants_of_user` one at a time reconstructs the
+        whole user-to-tenant membership graph. No row of a scoped table
+        crosses a boundary doing it; what is disclosed is who exists and which
+        tenants they belong to.
+
+        Closing it means giving `users` a tenant, which it cannot have while a
+        person may belong to more than one, or taking `tenants_of_user` out of
+        the exemption, which is the read every gateway login depends on. So it
+        stands, and it stands as something written down: anyone holding the
+        runtime role's credentials can learn this, and that is the boundary
+        this design draws rather than an oversight in it.
+        """
+        fixture = await _two_populated_tenants(rls_harness)
+
+        async with rls_harness.restricted() as session:
+            user_ids = [
+                row[0] for row in await session.execute(text("SELECT id FROM users"))
+            ]
+        assert {fixture.user_a, fixture.user_in_both} <= set(user_ids)
+
+        graph = {
+            user_id: sorted(await tenants_of_user(rls_harness.restricted, user_id))
+            for user_id in user_ids
+        }
+        assert graph[fixture.user_a] == [fixture.tenant_a]
+        assert graph[fixture.user_in_both] == sorted(
+            [fixture.tenant_a, fixture.tenant_b]
+        )
+
+    async def test_the_membership_rows_themselves_are_still_refused(
+        self, rls_harness: RLSHarness
+    ) -> None:
+        """The half that is closed, next to the half that is not.
+
+        `tenant_members` is scoped, so the row — its role, when it was
+        written, everything on it other than the pair of ids — is refused to
+        the same session that just reconstructed the pairs. That is the
+        difference between disclosing metadata and disclosing data, and it is
+        the line the exemption actually holds.
+        """
+        await _two_populated_tenants(rls_harness)
+
+        async with rls_harness.restricted() as session:
+            with pytest.raises(DBAPIError) as raised:
+                await session.execute(text("SELECT role FROM tenant_members"))
+        assert "app.tenant_id is not set" in str(raised.value)
 
 
 class TestTheBoundary:
@@ -470,6 +554,7 @@ class TestTheMigrationInstallsTheSameThing:
         frozen = {
             (name, parameters, signature, body)
             for name, parameters, signature, body in module.LOOKUPS
+            if name not in _DROPPED_SINCE
         }
         live = {
             (
@@ -485,7 +570,46 @@ class TestTheMigrationInstallsTheSameThing:
             "db/tenant_lookup.py. A deployment built by Alembic would get the "
             "migration's functions and every test above would still pass "
             "against create_all's. If the divergence is deliberate, express "
-            "it as a new migration rather than by editing this one."
+            "it as a new migration rather than by editing this one — and, if "
+            "the new migration drops a lookup, name it in _DROPPED_SINCE "
+            "above so this comparison stays exact rather than being loosened."
+        )
+
+    def test_the_dropped_lookup_is_dropped_by_a_revision_and_not_only_here(
+        self,
+    ) -> None:
+        """Removing a function from `db/tenant_lookup.py` removes it from what
+        `create_all` builds and from nothing else.
+
+        A deployment's schema is built by Alembic, so a lookup deleted from the
+        module and left in the chain is still installed, still `SECURITY
+        DEFINER`, and still answers — while every test in this file, which
+        builds its schema from the models, agrees it is gone. That is the exact
+        shape of failure the frozen-copy tests exist for, arrived at from the
+        other direction.
+
+        The downgrade is checked against `9c41a7b0e5d8`'s frozen text rather
+        than against what the module would build, because the module no longer
+        builds it at all: a rollback past this revision has to land on the
+        schema the revision below it created.
+        """
+        installed = _migration_module()
+        dropped = _revision_module(_DROPPED_SINCE["tenant_of_client"])
+        assert (
+            dropped.DROP_TENANT_OF_CLIENT
+            == "DROP FUNCTION IF EXISTS tenant_of_client(text)"
+        )
+        frozen = {
+            name: (parameters, body)
+            for name, parameters, _signature, body in installed.LOOKUPS
+        }
+        parameters, body = frozen["tenant_of_client"]
+        assert dropped.CREATE_TENANT_OF_CLIENT == installed.create_lookup_ddl(
+            "tenant_of_client", parameters, body
+        ), (
+            "the downgrade would recreate tenant_of_client with different DDL "
+            "from the one 9c41a7b0e5d8 installed, so a rollback past it lands "
+            "on a schema that revision would not recognise."
         )
 
     def test_the_statement_it_would_run_is_the_statement_the_module_builds(
@@ -497,7 +621,7 @@ class TestTheMigrationInstallsTheSameThing:
         still say `SECURITY INVOKER`, or drop the `search_path`, and the check
         above would pass. Nothing else would catch it — this suite builds its
         schema from the models, so the migration's own DDL is never executed
-        here, and an Alembic-built database would install eight functions
+        here, and an Alembic-built database would install functions
         unable to resolve a tenant with the whole suite green. So what is
         compared is the rendered statement, not the inputs to it.
         """
