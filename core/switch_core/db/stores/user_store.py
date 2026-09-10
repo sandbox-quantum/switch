@@ -50,17 +50,35 @@ class UserStore:
         a user has no membership, so every path that creates a user — this
         one, reached by the admin "create user" endpoint, JIT OIDC
         provisioning, and startup admin seeding — must leave exactly one
-        `tenant_members` row behind, or that user's first login raises.
-
-        Joins the tenant bound to the caller's context, so an admin creating
-        a user joins them to their own tenant; falls back to tenant zero for
-        the callers with no tenant bound (JIT OIDC provisioning at login, and
-        startup/bootstrap seeding) — the only tenant Phase 1 has anyway. The
-        role mirrors the migration's own mapping for pre-existing users:
-        `owner` for the global admin role, `member` otherwise.
+        `tenant_members` row behind, or that user's first login cannot be
+        placed in a tenant at all.
         """
         session.add(user)
         await session.flush()
+        await self._ensure_membership(session, user)
+
+    async def _ensure_membership(self, session: AsyncSession, user: User) -> None:
+        """Give `user` a membership if they have none; leave any they have.
+
+        Called from every path that can produce a user who would otherwise
+        have zero: creation, and linking an identity to an account that
+        predates memberships existing. Idempotent because the link path runs
+        against accounts that usually already have one, and adding a second
+        would be worse than adding none — resolution refuses to pick between
+        two.
+
+        Joins the tenant bound to the caller's context, so an admin creating a
+        user joins them to their own tenant; falls back to tenant zero for the
+        callers with no tenant bound (startup and bootstrap seeding) — the
+        only tenant Phase 1 has anyway. The role mirrors the migration's own
+        mapping for pre-existing users: `owner` for the global admin role,
+        `member` otherwise.
+        """
+        existing = await session.execute(
+            select(TenantMember.tenant_id).where(TenantMember.user_id == user.id)
+        )
+        if existing.first() is not None:
+            return
         session.add(
             TenantMember(
                 tenant_id=current_tenant_id() or TENANT_ZERO_ID,
@@ -72,6 +90,17 @@ class UserStore:
 
     async def get(self, session: AsyncSession, user_id: str) -> User | None:
         return await session.get(User, user_id)
+
+    async def exists(self, session: AsyncSession, user_id: str) -> bool:
+        """Whether this id names a real account, without loading the row.
+
+        Tenant resolution needs the answer on a session it closes immediately
+        (`gateway/auth.py`), and a `User` loaded there would be attached to a
+        session nobody can commit — the exact shape of bug this replaced. It
+        needs no attribute of the row, only that there is one.
+        """
+        result = await session.execute(select(User.id).where(User.id == user_id))
+        return result.first() is not None
 
     async def get_by_email(self, session: AsyncSession, email: str) -> User | None:
         """Case-insensitive: an IdP and a person typing a password don't
@@ -237,6 +266,10 @@ class UserStore:
         logger.warning(
             "Linking OIDC identity (iss=%r, sub=%r) to user %s", iss, sub, user.id
         )
+        # Linking reaches accounts this store did not create, including any
+        # that predate memberships. Nothing else repairs an account with none,
+        # and the symptom would be that the person can never sign in again.
+        await self._ensure_membership(session, user)
 
     async def get_all(self, session: AsyncSession) -> list[User]:
         result = await session.execute(select(User))

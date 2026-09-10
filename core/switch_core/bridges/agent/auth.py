@@ -84,16 +84,20 @@ class BearerAuthMiddleware:
     entirely. The MCP path also requires an agent — registration tokens
     are not enough to open an MCP session.
 
-    This is where an authenticated request's tenant gets bound (see
-    ``switch_core.tenant_context``), not a FastAPI dependency: this class runs
-    as ASGI middleware, ahead of routing and dependency injection entirely,
-    so there is no ordering question about whether a downstream ``get_session``
-    might query before the tenant is known — it cannot, since it does not run
-    until after ``self.app(...)`` is called below. The lookups that resolve
-    the credential itself (``_resolve_api_key``, ``_try_oidc``) run on their
-    own session, opened directly from ``session_factory`` rather than through
-    that downstream seam, because they are what determines the tenant and so
-    must run before one is bound.
+    This is where a request's tenant gets bound (see
+    ``switch_core.tenant_context``), for all three credentials — registration
+    tokens included, since the request one of those carries is the request
+    that *creates* the rows every later request is authenticated against.
+
+    A middleware rather than a FastAPI dependency: this class runs ahead of
+    routing and dependency injection entirely, so there is no ordering
+    question about whether a downstream ``get_session`` might query before the
+    tenant is known — it cannot, since it does not run until after
+    ``self.app(...)`` is called below. The lookups that resolve the credential
+    itself (``_resolve_api_key``, ``_try_oidc``) run on their own session,
+    opened directly from ``session_factory`` rather than through that
+    downstream seam, because they are what determines the tenant and so must
+    run before one is bound.
     """
 
     def __init__(
@@ -167,7 +171,20 @@ class BearerAuthMiddleware:
             and not path.startswith("/mcp")
         ):
             scope["api_key"] = api_key
-            await self.app(scope, receive, send)
+            # The endpoints this reaches *insert* the `api_keys` and `agents`
+            # rows a later request will be authenticated against, and the
+            # branch above then treats `api_keys.tenant_id` as the source of
+            # truth. Registering with no tenant bound would land those rows in
+            # tenant zero by fallback and make that wrong answer permanent and
+            # self-confirming — so bind the token's own tenant here, exactly
+            # as an agent key does.
+            log_token = bind_log_context(tenant_id=api_key.tenant_id)
+            tenant_token = bind_tenant_id(api_key.tenant_id)
+            try:
+                await self.app(scope, receive, send)
+            finally:
+                unbind_tenant_id(tenant_token)
+                unbind_log_context(log_token)
             return
 
         response = Response("Invalid credentials", status_code=401)

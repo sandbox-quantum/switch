@@ -60,10 +60,9 @@ async def session_factory(
         await conn.run_sync(Base.metadata.create_all)
         await _seed_tenant_zero(conn)
     try:
-        # Goes through the same factory constructor production wiring uses
-        # (not a bare `async_sessionmaker(...)`) so the tenant-scoping
-        # `after_begin` hook (db/tenant_session.py) is registered here too —
-        # this fixture backs most of the store test suite.
+        # Goes through the same factory constructor production wiring uses,
+        # so this fixture — which backs most of the store test suite — differs
+        # from production in as little as possible.
         yield create_session_factory(engine)
     finally:
         async with engine.begin() as conn:

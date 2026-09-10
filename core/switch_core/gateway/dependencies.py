@@ -77,16 +77,24 @@ async def get_session() -> AsyncIterator[AsyncSession]:
 
     Opening it does no I/O: the transaction — and with it the `after_begin`
     hook that stamps `app.tenant_id` (`db/tenant_session.py`) — only begins on
-    the first query the caller issues. By the time an endpoint body runs its
-    first query, `get_current_user` (or `require_admin`) has already resolved
-    and bound the tenant, because FastAPI resolves every dependency an
-    endpoint declares before calling the endpoint itself, regardless of the
-    order its parameters are listed in. A dependency that queries the
-    database *during its own resolution*, before the tenant is known, would
-    break that — none does; auth resolution runs on `get_system_session`
-    instead, a separate session, precisely so it never becomes this one.
+    the first query someone issues on it. `get_current_user` takes *this*
+    session (not one of its own) and binds the caller's tenant before its
+    first query on it, so the transaction is stamped from the moment it opens,
+    and the `User` an endpoint receives belongs to the session that endpoint
+    commits.
 
-    Pre-auth lookups (deciding who is asking) must not use this — see
+    Resolution order is load-bearing, so do not read the paragraph above as
+    "order doesn't matter". FastAPI resolves an endpoint's dependencies in
+    declaration order, and a sibling dependency declared *before*
+    `get_current_user` that queries this session during its own resolution
+    would open the transaction with no tenant bound and keep it that way for
+    the rest of the request. None does today — every other dependency is a
+    plain accessor — and
+    `tests/switch_core/gateway/test_session_requires_authentication.py` keeps
+    the weaker, checkable half of that true: every route reaching this
+    dependency also reaches `get_current_user`.
+
+    A request with no authenticated caller must not use this — see
     `get_system_session`.
     """
     async with _state["session_factory"]() as session:
@@ -94,15 +102,20 @@ async def get_session() -> AsyncIterator[AsyncSession]:
 
 
 async def get_system_session() -> AsyncIterator[AsyncSession]:
-    """A session opened before any tenant is known.
+    """The session for a request that has no authenticated caller yet.
 
-    Used only by the lookups that resolve *who* is asking and *which tenant*
-    they belong to (`gateway/auth.py`'s `get_current_user`) — never by an
-    endpoint. Named separately from `get_session` so a system lookup reads as
-    a deliberate, reviewable exception rather than an accidentally-unscoped
-    session; nothing about opening it differs from `get_session` today, since
-    row-level security is not enforced yet, but the two must stay
-    interchangeable in behaviour only, never in name.
+    Password login and the OIDC callback are the whole list: both run before
+    anyone is signed in, so neither can bind a tenant from a principal the way
+    `get_current_user` does. Named separately from `get_session` so that
+    reads as a deliberate, reviewable exception rather than an
+    accidentally-unscoped session, and so the guard test above can hold for
+    `get_session` without exemptions. Nothing about opening it differs from
+    `get_session` today, since row-level security is not enforced yet; the two
+    must stay interchangeable in behaviour only, never in name.
+
+    "No tenant bound" is not the same as "writes land nowhere in particular":
+    the OIDC callback provisions a user and picks its tenant explicitly (see
+    `oidc_routes.py`).
     """
     async with _state["session_factory"]() as session:
         yield session

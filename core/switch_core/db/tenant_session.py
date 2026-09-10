@@ -14,12 +14,23 @@ nothing to leak: `is_local=true` scopes the setting to the transaction, and it
 is released the moment that transaction ends, whether by commit or rollback.
 
 Registered once, globally, on `sqlalchemy.orm.Session` — the class every
-`AsyncSession` this codebase creates is built on — via
-`register_tenant_session_hook()`, called from
-`switch_core.db.engine.create_session_factory`. That is the one place an
-`async_sessionmaker` is built, so calling it there is the single seam that
-makes it "impossible to open a session that skips setting the tenant" rather
-than a convention to remember at each one.
+`AsyncSession` this codebase creates is built on — as a side effect of
+importing this module, not of calling a factory. Importing is the weakest
+precondition available: a process that builds its own `async_sessionmaker`
+rather than calling `switch_core.db.engine.create_session_factory` still gets
+the hook, because `db/engine.py` imports this module and an engine is the one
+thing every session needs.
+
+The boundary that gives, stated exactly: **no ORM session in this process can
+skip setting the tenant.** Not "no statement can reach the database without
+one" — two paths never become a `Session` at all, both deliberately:
+
+- the delivery listener (`messages/notify.py`) reaches past SQLAlchemy to the
+  raw asyncpg connection to issue `LISTEN`, so nothing it does passes through
+  this hook. It reads no scoped table, which is what makes that acceptable
+  rather than a gap.
+- Alembic (`migrations/env.py`) runs a migration on a bare `Connection`, and
+  is cross-tenant by definition.
 
 When no tenant is bound (see `switch_core.tenant_context`), the hook does
 nothing rather than substituting one — a system session (auth resolution,
@@ -43,8 +54,10 @@ _registered = False
 def register_tenant_session_hook() -> None:
     """Attach the `after_begin` hook, once per process.
 
-    Idempotent so callers don't have to track whether some earlier
-    `create_session_factory` call already registered it.
+    Called at the bottom of this module, so importing it is enough. Idempotent
+    so that an explicit call — a test asserting the registration, say — cannot
+    end up with the hook attached twice and the `set_config` issued twice per
+    transaction.
     """
     global _registered
     if _registered:
@@ -63,3 +76,6 @@ def _set_tenant_on_begin(
         text("SELECT set_config('app.tenant_id', :tenant_id, true)"),
         {"tenant_id": tenant_id},
     )
+
+
+register_tenant_session_hook()

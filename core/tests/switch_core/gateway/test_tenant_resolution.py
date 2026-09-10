@@ -8,7 +8,9 @@ rather than picking a tenant when a user's memberships aren't exactly one.
 `get_current_user` end to end — cookie in, `app.tenant_id` on the database
 session out — the same way `test_reference_types_routes.py` builds a
 route-scoped app rather than the process-global `init_dependencies`, so nothing
-here leaks into another test.
+here leaks into another test. `TestConcurrentRequests` runs two of those at
+once, in different tenants, because the whole design rests on one request's
+tenant being invisible to another.
 
 Uses `httpx.AsyncClient` over `ASGITransport` rather than
 `fastapi.testclient.TestClient`: the sync `TestClient` runs the app in a
@@ -20,15 +22,20 @@ paper over here.
 
 from __future__ import annotations
 
+import asyncio
+from collections.abc import AsyncIterator
 from types import SimpleNamespace
 from typing import Annotated
 
 import httpx
 import pytest
+import pytest_asyncio
 from fastapi import Depends, FastAPI
-from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from sqlalchemy import insert, text
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
+from switch_core.db.base import Base
+from switch_core.db.engine import create_session_factory
 from switch_core.db.models import TENANT_ZERO_ID, Tenant, TenantMember, User
 from switch_core.db.stores.tenant_member_store import (
     TenantMembershipError,
@@ -104,8 +111,8 @@ def _app(session_factory: async_sessionmaker[AsyncSession]) -> FastAPI:
             yield session
 
     app = FastAPI()
-    app.dependency_overrides[gw_deps.get_system_session] = _session_dep
     app.dependency_overrides[gw_deps.get_session] = _session_dep
+    app.dependency_overrides[gw_deps.get_session_factory] = lambda: session_factory
     app.dependency_overrides[gw_deps.get_user_store] = lambda: UserStore()
     app.dependency_overrides[gw_deps.get_tenant_member_store] = lambda: (
         TenantMemberStore()
@@ -118,13 +125,52 @@ def _app(session_factory: async_sessionmaker[AsyncSession]) -> FastAPI:
     async def whoami(
         user: Annotated[User, Depends(get_current_user)],
         session: Annotated[AsyncSession, Depends(gw_deps.get_session)],
+        hold: float = 0.0,
     ) -> dict:
-        row = await session.execute(
-            text("SELECT current_setting('app.tenant_id', true)")
-        )
-        return {"user_id": user.id, "db_tenant_id": row.scalar_one() or None}
+        first = await _session_tenant(session)
+        # `hold` lets a caller keep this request inside its transaction while
+        # another one runs, so the second read below happens with both in
+        # flight rather than one after the other.
+        await asyncio.sleep(hold)
+        return {
+            "user_id": user.id,
+            "db_tenant_id": first,
+            "db_tenant_id_after": await _session_tenant(session),
+        }
 
     return app
+
+
+async def _session_tenant(session: AsyncSession) -> str | None:
+    row = await session.execute(text("SELECT current_setting('app.tenant_id', true)"))
+    return row.scalar_one() or None
+
+
+def _client(app: FastAPI, token: str) -> httpx.AsyncClient:
+    return httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://test",
+        cookies={"switch_auth": token},
+    )
+
+
+async def _make_user(
+    session_factory: async_sessionmaker[AsyncSession],
+    *,
+    name: str,
+    tenant_id: str,
+) -> str:
+    """A user with exactly one membership, in `tenant_id`."""
+    async with session_factory() as session:
+        if tenant_id != TENANT_ZERO_ID:
+            session.add(Tenant(id=tenant_id, slug=tenant_id, name=tenant_id))
+            await session.flush()
+        user = User(name=name, email=f"{name}@example.invalid", role="user")
+        session.add(user)
+        await session.flush()
+        session.add(TenantMember(tenant_id=tenant_id, user_id=user.id, role="member"))
+        await session.commit()
+        return user.id
 
 
 class TestAGatewayRequestBindsTheCallersTenant:
@@ -142,10 +188,7 @@ class TestAGatewayRequestBindsTheCallersTenant:
             user_id = user.id
 
         token = create_jwt(user_id, "ada@example.invalid", "user", _SECRET)
-        transport = httpx.ASGITransport(app=_app(session_factory))
-        async with httpx.AsyncClient(
-            transport=transport, base_url="http://test", cookies={"switch_auth": token}
-        ) as client:
+        async with _client(_app(session_factory), token) as client:
             response = await client.get("/whoami")
 
         assert response.status_code == 200
@@ -163,3 +206,116 @@ class TestAGatewayRequestBindsTheCallersTenant:
             response = await client.get("/whoami")
 
         assert response.status_code == 401
+
+
+class TestAUserWithNoMembership:
+    """The failure has no current cause — every creation path leaves a
+    membership — but it must be legible if one ever appears, rather than the
+    opaque 500 an uncaught `TenantMembershipError` produces."""
+
+    async def test_the_response_is_403_and_names_no_user_id(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        # Inserted directly, not through UserStore.create, precisely because
+        # that would give them the membership this test needs them to lack.
+        async with session_factory() as session:
+            user = User(name="orphan", email="orphan@example.invalid", role="user")
+            session.add(user)
+            await session.commit()
+            user_id = user.id
+
+        token = create_jwt(user_id, "orphan@example.invalid", "user", _SECRET)
+        async with _client(_app(session_factory), token) as client:
+            response = await client.get("/whoami")
+
+        assert response.status_code == 403
+        detail = response.json()["detail"]
+        assert "tenant" in detail
+        assert user_id not in detail
+
+
+class TestConcurrentRequests:
+    async def test_two_requests_in_different_tenants_do_not_see_each_other(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        zero_user = await _make_user(
+            session_factory, name="inzero", tenant_id=TENANT_ZERO_ID
+        )
+        b_user = await _make_user(session_factory, name="inb", tenant_id=TENANT_B)
+        app = _app(session_factory)
+
+        async def _call(user_id: str, name: str) -> dict:
+            token = create_jwt(user_id, f"{name}@example.invalid", "user", _SECRET)
+            async with _client(app, token) as client:
+                response = await client.get("/whoami", params={"hold": 0.2})
+            assert response.status_code == 200, response.text
+            return response.json()
+
+        # Both are inside their own transaction for the whole `hold`, so the
+        # second read in each happens while the other request is live. A
+        # tenant that leaked — through the contextvar or through a shared
+        # connection — would show up there.
+        in_zero, in_b = await asyncio.gather(
+            _call(zero_user, "inzero"), _call(b_user, "inb")
+        )
+
+        assert in_zero["db_tenant_id"] == TENANT_ZERO_ID
+        assert in_zero["db_tenant_id_after"] == TENANT_ZERO_ID
+        assert in_b["db_tenant_id"] == TENANT_B
+        assert in_b["db_tenant_id_after"] == TENANT_B
+
+
+@pytest_asyncio.fixture
+async def one_connection_session_factory(
+    postgres_url: str,
+) -> AsyncIterator[async_sessionmaker[AsyncSession]]:
+    """A pool of exactly one connection, and a short timeout for waiting on it.
+
+    Makes "how many connections does a request hold at once?" an assertion
+    rather than an inspection: a request needing two deadlocks against itself
+    and fails on the timeout instead of quietly halving pool capacity in
+    production.
+    """
+    engine = create_async_engine(
+        postgres_url, pool_size=1, max_overflow=0, pool_timeout=5
+    )
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+        await conn.execute(
+            insert(Tenant.__table__).values(
+                id=TENANT_ZERO_ID, slug="default", name="Default"
+            )
+        )
+    try:
+        yield create_session_factory(engine)
+    finally:
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.drop_all)
+        await engine.dispose()
+
+
+class TestARequestHoldsOneConnection:
+    """Tenant resolution's session is opened and closed inside
+    `get_current_user`, before the request's own session is touched, so an
+    authenticated request never holds two pooled connections at once.
+
+    Held as a yield dependency instead — the shape this replaced — the
+    resolution session would keep its connection, idle in a transaction
+    nothing ever ends, for the whole request. On a pool of one that is a
+    deadlock; on a real pool it is half the capacity and every request one
+    `idle_in_transaction_session_timeout` away from failing.
+    """
+
+    async def test_an_authenticated_request_completes_on_a_pool_of_one(
+        self, one_connection_session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        user_id = await _make_user(
+            one_connection_session_factory, name="solo", tenant_id=TENANT_ZERO_ID
+        )
+        token = create_jwt(user_id, "solo@example.invalid", "user", _SECRET)
+
+        async with _client(_app(one_connection_session_factory), token) as client:
+            response = await client.get("/whoami")
+
+        assert response.status_code == 200, response.text
+        assert response.json()["db_tenant_id"] == TENANT_ZERO_ID

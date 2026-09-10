@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.addressing import parse_policy
 from switch_core.bridges.agent.protocol.service import ProtocolService
+from switch_core.db.models import TENANT_ZERO_ID
 from tests.switch_core.bridges.agent.protocol.registration_harness import (
     PROFILE,
     make_owner,
@@ -192,6 +193,10 @@ class TestRegisterWithTokenPassesThrough:
 
 def _stub_key(owner_id: str):  # type: ignore[no-untyped-def]
     async def _get_by_key(_session: AsyncSession, _token: str) -> object:
-        return SimpleNamespace(user_id=owner_id, type="registration")
+        # Carries a `tenant_id` because registration binds the token's tenant
+        # for the write it delegates to — see `register_agent_with_token`.
+        return SimpleNamespace(
+            user_id=owner_id, type="registration", tenant_id=TENANT_ZERO_ID
+        )
 
     return _get_by_key

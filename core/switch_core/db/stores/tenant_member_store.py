@@ -14,6 +14,10 @@ class TenantMembershipError(Exception):
     created the account), and more than one is Phase 2's tenant-switching
     shape arriving early. Either way this must not be resolved by picking
     one — see `docs/old/multi-tenancy-phase1-db.md`, "Setting the tenant".
+
+    Raised, not returned, but not left to reach the client either: the gateway
+    turns it into a 403 naming no user id (`gateway/auth.py`), so a broken
+    account gets an answer an operator can act on instead of a bare 500.
     """
 
 
@@ -28,8 +32,9 @@ class TenantMemberStore:
         """The one tenant this user belongs to, raising if that isn't true.
 
         Must run on a session with no tenant bound yet — this *is* how the
-        tenant gets found, so it cannot presuppose one (see `get_system_session`
-        in `gateway/dependencies.py`).
+        tenant gets found, so it cannot presuppose one. `gateway/auth.py`
+        opens a short-lived session for exactly this and closes it before the
+        request's own session is touched.
         """
         result = await session.execute(
             select(TenantMember.tenant_id).where(TenantMember.user_id == user_id)

@@ -12,7 +12,12 @@ from sqlalchemy.ext.asyncio import (
 from sqlalchemy.pool import NullPool
 
 from switch_core.config import SwitchConfig
-from switch_core.db.tenant_session import register_tenant_session_hook
+
+# Imported for its side effect: it registers the `after_begin` hook that stamps
+# the bound tenant onto every session's transaction. Here rather than at a
+# factory call site, so a process that builds an `async_sessionmaker` by hand
+# is covered too — it still needs an engine, and an engine comes from here.
+from switch_core.db import tenant_session  # noqa: F401
 
 logger = logging.getLogger(__name__)
 
@@ -162,9 +167,4 @@ def create_unpooled_engine(config: SwitchConfig) -> AsyncEngine:
 
 
 def create_session_factory(engine: AsyncEngine) -> async_sessionmaker[AsyncSession]:
-    # The one place an async_sessionmaker is built, so it is the one seam
-    # where registering the tenant-scoping hook (db/tenant_session.py) makes
-    # every session it produces covered, rather than relying on every caller
-    # of this function to remember to ask for that separately.
-    register_tenant_session_hook()
     return async_sessionmaker(bind=engine, expire_on_commit=False)

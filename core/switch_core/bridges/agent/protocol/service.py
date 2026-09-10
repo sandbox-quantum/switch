@@ -90,6 +90,7 @@ from switch_core.events import (
     ToolCallReport as MatrixToolCallReport,
 )
 from switch_core.messages.recorded_types import MEMBERSHIP_EVENT_TYPE
+from switch_core.tenant_context import tenant_scope
 from switch_core.transport import (
     TransportError,
 )
@@ -461,12 +462,23 @@ class ProtocolService:
         exception, to match the HTTP registration path's handling of the
         same failure).
         Raises AgentExistsError if the name is taken and ``overwrite`` is False.
+
+        The token also decides the *tenant* the new agent and its API key land
+        in, and that is bound here rather than left to the caller. The HTTP
+        registration endpoint has ``BearerAuthMiddleware`` in front of it doing
+        the same thing; this path has nothing in front of it at all — a
+        server-side connector registers its agents from a startup task
+        (``server_connectors/core.py``), where no request and so no tenant
+        exists. Without this the rows would fall back to tenant zero, and
+        because bearer authentication then reads ``api_keys.tenant_id`` back as
+        the source of truth, that guess would confirm itself forever.
         """
         token_hash = hashlib.sha256(registration_token.encode()).hexdigest()
         async with self.session_factory() as session:
             key = await self.api_key_store.get_by_hash(session, token_hash)
             if key is None or key.type not in REGISTRATION_KEY_TYPES:
                 raise PermissionError("Invalid registration token")
+            tenant_id = key.tenant_id
             try:
                 owner_id = await resolve_registration_owner_id(
                     session, self.user_store, key
@@ -479,20 +491,21 @@ class ProtocolService:
                     "Agent registration is temporarily unavailable"
                 ) from exc
 
-        return await self.register_agent(
-            name=name,
-            description=description,
-            display_name=display_name,
-            connector_type=connector_type,
-            integration_profile=integration_profile,
-            tools=tools,
-            models=models,
-            metadata=metadata,
-            owner_id=owner_id,
-            overwrite=overwrite,
-            addressable_by_agent_ids=addressable_by_agent_ids,
-            owner_only=owner_only,
-        )
+        with tenant_scope(tenant_id):
+            return await self.register_agent(
+                name=name,
+                description=description,
+                display_name=display_name,
+                connector_type=connector_type,
+                integration_profile=integration_profile,
+                tools=tools,
+                models=models,
+                metadata=metadata,
+                owner_id=owner_id,
+                overwrite=overwrite,
+                addressable_by_agent_ids=addressable_by_agent_ids,
+                owner_only=owner_only,
+            )
 
     async def _create_agent(
         self,
