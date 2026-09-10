@@ -127,6 +127,26 @@ object. `oidc_identities` records how that person proves who they are, equally
 tenant-independent. `feature_flags` is a deployment switch; a flag that needs
 to vary per tenant is a new table, not a nullable column.
 
+**This is the list that is written down, and the scoped list is the one that
+is derived** — that way round, deliberately. The three in the model metadata
+are hardcoded in `db/rls_ddl.py`'s `GLOBAL_TABLES` (`alembic_version` needs no
+entry; Alembic owns it and never registers it there), and **every other table
+in the metadata is scoped by definition**: it must carry the tenant, must have
+a policy, and must carry `tenant_id` on its foreign keys to other scoped
+tables. A table that is neither in that list nor actually carrying a tenant
+raises `UnscopedTableError` from `scoped_tables()`, which runs at the bottom
+of `db/models.py` — so the process does not start.
+
+Stated the other way round it fails open, and it was written that way round
+first: deriving "scoped" as *has a `tenant_id` foreign key* means a new table
+full of customer data and no tenant column is simply not in the set, so
+nothing attaches a policy to it, nothing checks its foreign keys, and every
+catalogue test passes. That is the regression these tests exist to prevent,
+passing. Widening `GLOBAL_TABLES` is the intended escape hatch and stays
+available — it just has to be argued for in a diff, because
+`tests/switch_core/db/test_tenant_schema_catalogue.py` pins the contents of
+the list as well as the rule.
+
 Leaving `users` and `oidc_identities` unpoliced has a consequence, and it is
 recorded as an open item rather than buried: see "What Phase 1 does not close".
 
@@ -629,10 +649,13 @@ metadata rather than by running migrations, so a policy that existed only in a
 migration would be invisible to every test — the isolation test would pass
 against a database with no isolation in it.
 
-A `TenantScoped` declarative mixin carries the column, its default and its
-registration in the policy list, so adding a table means inheriting from it and
-writing the foreign keys. Without the mixin a new table needs seven separate
-things remembered; with it, two, and both are checked by tests.
+A `TenantScoped` declarative mixin carries the column and its default, so
+adding a table means inheriting from it and writing the foreign keys. Without
+the mixin a new table needs seven separate things remembered; with it, two,
+and both are checked by tests. There is no third thing to remember —
+registering the table in the policy list — because there is no list to
+register in: a table is in it unless `GLOBAL_TABLES` says otherwise, and a
+table that forgets the mixin does not get skipped, it stops the import.
 
 ## The migration
 
@@ -723,13 +746,23 @@ real environment would pass for the wrong reason.
 Alongside it, the cheap tests that catch the regressions this design exists
 to prevent — in that file unless another is named:
 
+- **Every table in the metadata is scoped unless it is named in
+  `rls_ddl.GLOBAL_TABLES`**, and that list is pinned by its own test so
+  extending it is a two-place, reviewable change rather than the quick way to
+  quieten a red suite (`tests/switch_core/db/test_tenant_schema_catalogue.py`,
+  and the same list drives every check below). This is the inverted form
+  described under "Which tables are scoped"; the original derivation —
+  "scoped" means *carries a `tenant_id` foreign key* — was checked against a
+  table added with customer data and no tenant column, and the whole
+  catalogue passed.
 - Every scoped table has row-level security enabled and a policy whose
   `using` and `with check` both isolate on that table's tenant column,
   asserted by querying `pg_policies` and `pg_tables` rather than by reading
-  the code, with the table list itself derived from `rls_ddl.scoped_tables`
-  rather than copied. The predicates are compared by content, not merely for
-  being present: `using (true)` is a policy that is enabled, catalogued and
-  isolates nothing.
+  the code, with the table list itself coming from `rls_ddl.scoped_tables` —
+  the same derivation that attached the policies, not a second copy of it,
+  which is what let the catalogue and the policies disagree before. The
+  predicates are compared by content, not merely for being present: `using
+  (true)` is a policy that is enabled, catalogued and isolates nothing.
 - The migration's frozen `SCOPED_TABLES` matches that same derivation. A
   frozen copy is the right shape (a migration must not change meaning
   because a model did) and its failure mode is falling behind in silence —
@@ -756,6 +789,17 @@ to prevent — in that file unless another is named:
   database and on a deployment that gained a tenant between two boots
   (`tests/switch_core/clients/test_ensure_system_client.py`). It had no test
   at all until it stopped booting.
+- A reference type whose slug clashes *while another tenant holds the same
+  slug* still reports "already exists" rather than a 500
+  (`tests/switch_core/db/stores/test_reference_type_store.py`).
+  `ReferenceTypeStore.create` names the clashing row by looking it up inside
+  its own `IntegrityError` handler, with a `scalar_one_or_none()`; the slug is
+  only unique per tenant, so an unfiltered lookup there matches two rows and
+  raises `MultipleResultsFound` from inside the handler — turning the 400
+  `gateway/references.py` maps `ValueError` to into an unhandled 500. The
+  lookup names the row's own tenant, and the arrangement that tells the two
+  apart needs the slug present in two tenants at once, which no
+  single-tenant test could produce.
 
 The foreign-key-carries-`tenant_id` catalogue check this section originally
 asked for shipped earlier, with the schema migration — see

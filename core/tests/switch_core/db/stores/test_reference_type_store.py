@@ -332,6 +332,49 @@ class TestReferenceTypesAreScopedToTheBoundTenant:
                 theirs = await store.get(session, "notion")
             assert theirs is not None and theirs.display_name == "Theirs"
 
+    async def test_a_duplicate_slug_clashes_cleanly_when_another_tenant_has_it_too(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """A clash in the second tenant is a `ValueError`, not a 500.
+
+        `create` reports "already exists" by looking the clashing row up
+        *inside* its `IntegrityError` handler, and that lookup is a
+        `scalar_one_or_none()`. The slug is only unique per tenant, so the
+        moment two tenants hold the same one an unfiltered lookup matches two
+        rows and raises `MultipleResultsFound` from inside the handler —
+        which the gateway has no `except` for, so a 400 the caller can act on
+        (`gateway/references.py` maps `ValueError` to one) becomes a 500. The
+        filter on the row's own tenant is what keeps it single-valued, and
+        this is the arrangement that tells the two apart: the same slug in
+        tenant zero *and* in the tenant doing the create.
+        """
+        other = f"tenant-{uuid.uuid4().hex[:8]}"
+        store = ReferenceTypeStore()
+        async with session_factory() as session:
+            session.add(Tenant(id=other, slug=other, name=other))
+            ada = await _make_user(session, "ada")
+            await session.flush()
+            await store.create(session, _type("notion", ada.id))
+            with tenant_scope(other):
+                await store.create(session, _type("notion", ada.id))
+            await session.commit()
+
+            with tenant_scope(other):
+                with pytest.raises(
+                    ValueError, match="Reference type 'notion' already exists"
+                ):
+                    await store.create(session, _type("notion", ada.id))
+
+                # The savepoint means the caller's transaction survives it,
+                # and neither tenant's row was disturbed.
+                await store.create(session, _type("linear", ada.id))
+                await session.commit()
+                assert {rt.type for rt in await store.list_all(session)} == {
+                    "notion",
+                    "linear",
+                }
+            assert {rt.type for rt in await store.list_all(session)} == {"notion"}
+
     async def test_counting_references_ignores_another_tenants(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:

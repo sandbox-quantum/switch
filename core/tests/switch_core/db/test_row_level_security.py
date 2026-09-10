@@ -43,9 +43,11 @@ import switch_core
 from switch_core.db.base import Base
 from switch_core.db.models import RoomGroup, Tenant
 from switch_core.db.rls_ddl import (
+    GLOBAL_TABLES,
     POLICY_NAME,
     REQUIRE_TENANT_FUNCTION_NAME,
     scoped_tables,
+    unscoped_tables,
 )
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.room_group_store import RoomGroupStore
@@ -347,19 +349,29 @@ class TestCatalogueCoverage:
     hand-kept list. The table list itself comes from `rls_ddl.scoped_tables`,
     the same derivation `create_all` used to attach the policies in the first
     place, not a copy of it.
+
+    That derivation is *everything but `GLOBAL_TABLES`*, and the direction
+    matters. Derived the other way round — "the tables that carry a
+    `tenant_id`" — a new table holding customer data with no tenant column
+    would not be in the list, so nothing below would look for a policy on it
+    and nothing would fail: the regression these tests exist to catch,
+    passing. Inverted, that table has no policy to find and this class says
+    so; and `scoped_tables` itself refuses to answer at all, so in practice
+    the failure arrives even earlier, at import.
     """
 
-    async def test_scoped_table_list_is_not_trivially_small(
+    async def test_every_table_is_scoped_unless_it_is_named_global(
         self, session_factory: async_sessionmaker
     ) -> None:
+        """The list the rest of this class rests on, checked for the failure
+        mode a derived list has: silently being short."""
+        assert unscoped_tables(Base.metadata) == []
         scoped = scoped_tables(Base.metadata)
+        assert set(scoped) == set(Base.metadata.tables) - set(GLOBAL_TABLES)
         assert len(scoped) >= 30, scoped
-        assert "tenants" in scoped
         assert scoped["tenants"] == "id"
-        assert "messages" in scoped
-        assert "agents" in scoped
-        for global_table in ("users", "oidc_identities", "feature_flags"):
-            assert global_table not in scoped
+        assert scoped["messages"] == "tenant_id"
+        assert scoped["tenant_members"] == "tenant_id"
 
     async def test_every_scoped_table_has_rls_enabled_and_the_right_policy(
         self, session_factory: async_sessionmaker
@@ -418,9 +430,14 @@ class TestCatalogueCoverage:
     async def test_global_tables_carry_no_policy(
         self, session_factory: async_sessionmaker
     ) -> None:
+        """The other side of the exemption: a table named in `GLOBAL_TABLES`
+        really is left unpoliced, so the list is not a place to hide a table
+        that then quietly gets a policy anyway. Driven by the list itself, so
+        an addition to it is checked here rather than skipped."""
         scoped = scoped_tables(Base.metadata)
         async with session_factory() as session:
             policies = await _tenant_isolation_policies(session)
-        for global_table in ("users", "oidc_identities", "feature_flags"):
+        for global_table in sorted(GLOBAL_TABLES):
+            assert global_table in Base.metadata.tables
             assert global_table not in scoped
             assert global_table not in policies
