@@ -95,6 +95,7 @@ async def _publish(
     *,
     session_id: str = SESSION,
     channel_id: str = CHANNEL,
+    elapsed_seconds: float | None = None,
 ) -> None:
     await activity.publish(
         items,
@@ -103,6 +104,7 @@ async def _publish(
         channel_id=channel_id,
         thread_root_id=None,
         agent_name="agent-demo",
+        elapsed_seconds=elapsed_seconds,
     )
 
 

@@ -189,7 +189,7 @@ class SessionTurnActivity:
         channel_id: str,
         thread_root_id: str | None,
         agent_name: str,
-        elapsed_seconds: float | None = None,
+        elapsed_seconds: float | None,
     ) -> bool:
         """Draw the turn where it already is, or where it is not yet.
 

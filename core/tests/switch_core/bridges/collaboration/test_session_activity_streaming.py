@@ -109,6 +109,7 @@ async def _publish(
     turn: TurnUpsert,
     *,
     thread_root_id: str | None = TRIGGER,
+    elapsed_seconds: float | None = None,
 ) -> bool:
     return await activity.publish(
         items,
@@ -117,6 +118,7 @@ async def _publish(
         channel_id=CHANNEL,
         thread_root_id=thread_root_id,
         agent_name="agent-demo",
+        elapsed_seconds=elapsed_seconds,
     )
 
 

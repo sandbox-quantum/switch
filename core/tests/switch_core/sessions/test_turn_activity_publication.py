@@ -2,7 +2,11 @@ from switch_core.bridges.collaboration.adapter import RichContentFailed
 from switch_core.bridges.collaboration.session.contract import HostEvent
 from switch_core.bridges.collaboration.session.outbound import SessionTurnActivity
 from switch_core.sessions import publication
-from switch_core.sessions.publication import SessionPublisher, _RecoveryBackoff
+from switch_core.sessions.publication import (
+    SessionPublisher,
+    _RecoveryBackoff,
+    _turn_elapsed_seconds,
+)
 
 from .test_authority import command, host_event, opened, setup
 from .test_publication import Platform
@@ -113,6 +117,141 @@ async def test_a_completed_turns_activity_carries_how_long_it_ran(session_factor
     _, content, _ = activity_platform.posts[0]
     assert content.turn.status == "completed"
     assert content.elapsed_seconds == 80.0
+
+
+async def test_a_recovery_interruption_does_not_claim_a_false_duration(
+    session_factory,
+):
+    """Recovery ends every queued or running turn itself, stamped with the
+    moment it noticed rather than anything the host said — outage time, not
+    work. That must not be read as how long the turn ran.
+    """
+    service, epoch = await setup(session_factory)
+    await opened(service, epoch)
+
+    await service.quiesce("agent-demo", "session-demo", "host-demo", epoch)
+    await service.recover(
+        "agent-demo", "session-demo", "host-demo", epoch, "recovery", 2
+    )
+
+    async with session_factory() as db:
+        elapsed = await _turn_elapsed_seconds(db, "session-demo", "turn-demo")
+
+    assert elapsed is None
+
+
+async def test_a_negative_delta_is_not_measured_either(session_factory):
+    """A clock stepped, or a host's wall clock ran backward between the two
+    events — reported as unmeasured, not as a lie in the other direction.
+    """
+    service, epoch = await setup(session_factory)
+    message = command(
+        epoch,
+        "message-demo",
+        {
+            "type": "message.send",
+            "text": "Run tests",
+            "attachments": [],
+            "delivery": "queue",
+        },
+    )
+    await service.submit(message, user_id="owner", bridge_id=None)
+    await service.ingest(
+        "agent-demo",
+        "host-demo",
+        host_event(
+            epoch,
+            1,
+            {
+                "type": "turn.upsert",
+                "turnId": "turn-demo",
+                "status": "running",
+                "commandId": "message-demo",
+            },
+        ),
+    )
+    await service.ingest(
+        "agent-demo",
+        "host-demo",
+        HostEvent(
+            contract_version=1,
+            event_id="host-2",
+            session_id="session-demo",
+            epoch=epoch,
+            host_sequence=2,
+            occurred_at="2026-09-09T11:58:00Z",
+            body={
+                "type": "turn.upsert",
+                "turnId": "turn-demo",
+                "status": "completed",
+                "commandId": "message-demo",
+            },
+        ),
+    )
+
+    async with session_factory() as db:
+        elapsed = await _turn_elapsed_seconds(db, "session-demo", "turn-demo")
+
+    assert elapsed is None
+
+
+async def test_a_naive_timestamp_from_a_nonconforming_host_does_not_crash_this(
+    session_factory,
+):
+    """`_iso_datetime` accepts an offset-less string the TypeScript-side
+    validator would not, so a non-conforming host can post one. Comparing it
+    against an aware timestamp must not raise and take the session's whole
+    publication cycle down with it.
+    """
+    service, epoch = await setup(session_factory)
+    message = command(
+        epoch,
+        "message-demo",
+        {
+            "type": "message.send",
+            "text": "Run tests",
+            "attachments": [],
+            "delivery": "queue",
+        },
+    )
+    await service.submit(message, user_id="owner", bridge_id=None)
+    await service.ingest(
+        "agent-demo",
+        "host-demo",
+        HostEvent(
+            contract_version=1,
+            event_id="host-1",
+            session_id="session-demo",
+            epoch=epoch,
+            host_sequence=1,
+            occurred_at="2026-09-09T12:00:00",
+            body={
+                "type": "turn.upsert",
+                "turnId": "turn-demo",
+                "status": "running",
+                "commandId": "message-demo",
+            },
+        ),
+    )
+    await service.ingest(
+        "agent-demo",
+        "host-demo",
+        host_event(
+            epoch,
+            2,
+            {
+                "type": "turn.upsert",
+                "turnId": "turn-demo",
+                "status": "completed",
+                "commandId": "message-demo",
+            },
+        ),
+    )
+
+    async with session_factory() as db:
+        elapsed = await _turn_elapsed_seconds(db, "session-demo", "turn-demo")
+
+    assert elapsed == 0.0
 
 
 async def test_an_unchanged_turn_is_not_redrawn_on_the_next_cycle(session_factory):

@@ -3,7 +3,7 @@ import logging
 import time
 from collections import OrderedDict
 from collections.abc import Callable
-from datetime import datetime
+from datetime import UTC, datetime
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -219,23 +219,56 @@ class TurnActivityIncomplete(Exception):
         )
 
 
+def _as_aware(value: str) -> datetime:
+    """A timestamp's own moment, never naive.
+
+    `_iso_datetime` (contract.py) accepts what `datetime.fromisoformat` does,
+    which is looser than the `z.iso.datetime()` the TypeScript side actually
+    enforces: a non-conforming host can post an offset-less string and it
+    still validates. Comparing that against an aware one raises, so a bare
+    string is read as UTC — the same assumption `_append` already makes for
+    a timestamp it stamps itself — rather than let one non-conforming host
+    event stop this turn's session from publishing any activity at all.
+    """
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
+
+
 async def _turn_elapsed_seconds(
     db: AsyncSession, session_id: str, turn_id: str
 ) -> float | None:
     """How long a turn ran, read back from the session's own event log.
 
     Neither a turn nor an item carries a timestamp, so there is nothing to
-    read this off in the snapshot itself — it comes from the two
-    `turn.upsert` events for this turn that do: the first, whichever status
-    the turn opened at, and the last, which is the one that set the status a
-    caller is only calling this for the turn having already reached. One row
-    means the turn was already ended the first time anything recorded it, so
-    there is no earlier point to measure from — `None` rather than a
-    duration of zero, which would claim a measurement that was never taken.
+    read this off in the snapshot itself — it comes from the `turn.upsert`
+    events for this turn that do: the first, whichever status the turn
+    opened at, and the last *host-reported* one, which is the one that set
+    the status a caller is only calling this for the turn having already
+    reached.
+
+    Host-reported, not merely last: recovery ends every queued or running
+    turn itself, stamped with the moment it noticed rather than anything the
+    host ever said (`SessionAuthority`'s recovery path, `_append` with no
+    `host`) — outage time, not work. `SdkSessionEvent.host_event` is null on
+    exactly those synthetic rows, since `ingest` always has one to record and
+    nothing else appends a `turn.upsert`, so the query only reads a duration
+    off a real report of it.
+
+    One row means the turn was already ended the first time anything genuine
+    recorded it — the interrupted-by-recovery case with no earlier host
+    report to fall back to, among others — so there is no earlier point to
+    measure from. `None` rather than a duration of zero, which would claim a
+    measurement that was never taken; likewise a delta that comes out
+    negative — a clock stepped or a host's wall clock ran backward across
+    the two events — reports as unmeasured rather than as a lie in the other
+    direction.
     """
-    stamps = (
-        await db.scalars(
-            select(SdkSessionEvent.event["occurredAt"].as_string())
+    rows = (
+        await db.execute(
+            select(
+                SdkSessionEvent.event["occurredAt"].as_string(),
+                SdkSessionEvent.host_event,
+            )
             .where(
                 SdkSessionEvent.session_id == session_id,
                 SdkSessionEvent.event["body"]["type"].as_string() == "turn.upsert",
@@ -244,11 +277,17 @@ async def _turn_elapsed_seconds(
             .order_by(SdkSessionEvent.sequence)
         )
     ).all()
+    # `host_event` is a JSON column, and a synthetic row's `None` is stored as
+    # `JSONB.none_as_null`'s default — a JSON `null`, not a SQL one — so
+    # excluding it has to happen after the fetch, in Python, rather than as
+    # `.isnot(None)` in the `WHERE` clause, which a JSON `null` still passes.
+    stamps = [occurred_at for occurred_at, host_event in rows if host_event is not None]
     if len(stamps) < 2:
         return None
-    started = datetime.fromisoformat(stamps[0].replace("Z", "+00:00"))
-    ended = datetime.fromisoformat(stamps[-1].replace("Z", "+00:00"))
-    return (ended - started).total_seconds()
+    started = _as_aware(stamps[0])
+    ended = _as_aware(stamps[-1])
+    elapsed = (ended - started).total_seconds()
+    return elapsed if elapsed >= 0 else None
 
 
 async def refresh_activity(

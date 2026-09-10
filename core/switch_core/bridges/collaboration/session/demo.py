@@ -259,4 +259,5 @@ class SessionDemo:
             channel_id=channel_id,
             thread_root_id=None,
             agent_name=projection.snapshot.session.agent_id,
+            elapsed_seconds=None,
         )
