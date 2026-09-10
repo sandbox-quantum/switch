@@ -308,6 +308,7 @@ async def refresh_activity(
     retry_succeeded: Callable[[str], None] = _ignore_recovery,
     redraw_needed: Callable[[str, str, tuple[str, tuple[int, ...]]], bool],
     redrawn: Callable[[str, str, tuple[str, tuple[int, ...]]], None],
+    first_sweep: bool,
 ) -> None:
     """Bring a session's turn activity up to date with its persisted state.
 
@@ -330,6 +331,26 @@ async def refresh_activity(
     a turn whose stream already closed that means a brand new message every
     cycle rather than one bounded duplicate, since a fresh attempt has no
     anchor left to edit and opens fresh.
+
+    `first_sweep` scopes this call, on a session this publisher has not
+    handled activity for before, to the session's single latest turn.
+    `snapshot.turns` keeps every turn a session has ever had, in the order
+    each first appeared, and a freshly started publisher's redraw guard
+    remembers nothing, so without this every turn from earlier in the
+    session's life looks undrawn on the first sweep and each gets posted
+    again as a new message — the whole session's history replayed into the
+    channel.
+
+    Position in the list cannot tell "not drawn yet" from "drawn by a
+    previous process and since forgotten" — that needs a durable anchor
+    turn activity does not have — so this narrows only the one sweep where
+    every turn looks equally undrawn and the ambiguity is total. An older
+    turn skipped on that first sweep because it was not yet the latest — one
+    still running behind whichever is, or one recovery is about to end — is
+    simply new to `redraw_needed` on the very next sweep, `first_sweep` or
+    not, and gets drawn then: one cycle later, not never. From the second
+    sweep on this session, every turn is judged only on whether its own
+    state changed, the same as before this parameter existed.
     """
     async with session_factory() as db:
         row = await db.get(SdkSession, session_id)
@@ -342,18 +363,7 @@ async def refresh_activity(
         publications = []
         latest_turn_id = snapshot.turns[-1].turn_id if snapshot.turns else None
         for turn in snapshot.turns:
-            if turn.turn_id != latest_turn_id:
-                # `snapshot.turns` keeps every turn a session has ever had,
-                # in the order each first appeared, and nothing here has a
-                # durable record of which of them already has a message —
-                # that is exactly the anchor request cards get from
-                # `SessionRequestPostStore` and turn activity does not yet.
-                # A freshly started publisher's redraw guard remembers
-                # nothing, so without this, every turn from earlier in the
-                # session's life looks undrawn on the very first cycle and
-                # each gets posted again as a new message. Only the latest
-                # turn is still worth that one bounded duplicate; an older,
-                # already-ended one has nothing left to say.
+            if first_sweep and turn.turn_id != latest_turn_id:
                 continue
             if turn.command_id is None:
                 continue
@@ -542,6 +552,7 @@ class SessionPublisher:
         self._redraw = _RedrawGuard()
         self._turn_redraw = _TurnRedrawGuard()
         self._activity_retry = _RecoveryBackoff()
+        self._activity_seen: set[str] = set()
         self._wake = asyncio.Event()
 
     def wake(self) -> None:
@@ -604,6 +615,8 @@ class SessionPublisher:
                     self._bridge_id,
                 )
             if self._activity is not None:
+                first_sweep = session_id not in self._activity_seen
+                swept = False
                 try:
                     await refresh_activity(
                         self._sessions,
@@ -614,9 +627,12 @@ class SessionPublisher:
                         retry_succeeded=self._activity_retry.succeeded,
                         redraw_needed=self._turn_redraw.needed,
                         redrawn=self._turn_redraw.drawn,
+                        first_sweep=first_sweep,
                     )
+                    swept = True
                 except TurnActivityIncomplete as incomplete:
                     ok = False
+                    swept = True
                     if incomplete.turn_ids:
                         logger.exception(
                             "Session %s turn activity publication failed on "
@@ -641,6 +657,12 @@ class SessionPublisher:
                             self._bridge_id,
                         )
                 except Exception:
+                    # Unlike TurnActivityIncomplete, this means the sweep
+                    # itself did not run to completion — the query that
+                    # decides what "latest" even is may never have finished
+                    # — so `first_sweep` is not consumed: the next cycle
+                    # retries the same restricted view rather than risking
+                    # the flood this parameter exists to stop.
                     ok = False
                     logger.exception(
                         "Session %s turn activity publication failed on bridge "
@@ -648,6 +670,8 @@ class SessionPublisher:
                         session_id,
                         self._bridge_id,
                     )
+                if swept:
+                    self._activity_seen.add(session_id)
             if ok:
                 self._published[session_id] = sequence
 

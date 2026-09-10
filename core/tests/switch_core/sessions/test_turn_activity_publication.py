@@ -121,6 +121,84 @@ async def test_only_the_latest_turn_is_redrawn_by_a_freshly_started_publisher(
     ]
 
 
+async def test_an_older_turn_queued_behind_the_latest_still_gets_its_final_draw(
+    session_factory,
+):
+    """A real host publishes the next turn's "queued" while the current one
+    is still running, so "not latest" cannot mean "already ended" — the
+    turn that stopped being latest here is still working, and later still
+    has to show that it finished.
+    """
+    service, epoch = await setup(session_factory)
+    await opened(service, epoch)
+    activity_platform = ActivityPlatform()
+    publisher = SessionPublisher(
+        session_factory,
+        "bridge",
+        cards_for(session_factory, Platform()),
+        SessionTurnActivity(activity_platform),
+    )
+
+    # First sweep: turn-demo is the only turn, and the one this publisher's
+    # own first_sweep restriction would have kept anyway.
+    await publisher.publish_pending()
+    assert [c.turn.turn_id for _, c, _ in activity_platform.posts] == ["turn-demo"]
+
+    # A follow-up arrives and is queued while turn-demo is still running.
+    second_message = command(
+        epoch,
+        "message-2",
+        {
+            "type": "message.send",
+            "text": "Run them again",
+            "attachments": [],
+            "delivery": "queue",
+        },
+    )
+    await service.submit(second_message, user_id="owner", bridge_id=None)
+    await service.ingest(
+        "agent-demo",
+        "host-demo",
+        host_event(
+            epoch,
+            3,
+            {
+                "type": "turn.upsert",
+                "turnId": "turn-2",
+                "status": "queued",
+                "commandId": "message-2",
+            },
+        ),
+    )
+    await publisher.publish_pending()
+
+    # turn-demo completes after it has stopped being the latest turn.
+    await service.ingest(
+        "agent-demo",
+        "host-demo",
+        host_event(
+            epoch,
+            4,
+            {
+                "type": "turn.upsert",
+                "turnId": "turn-demo",
+                "status": "completed",
+                "commandId": "message-demo",
+            },
+        ),
+    )
+    await publisher.publish_pending()
+
+    edited_turns = [content.turn.turn_id for _, _, content in activity_platform.edits]
+    assert "turn-demo" in edited_turns
+    completed_edit = next(
+        content
+        for _, _, content in activity_platform.edits
+        if content.turn.turn_id == "turn-demo"
+    )
+    assert completed_edit.turn.status == "completed"
+
+
 async def test_a_completed_turns_activity_carries_how_long_it_ran(session_factory):
     """Neither a turn nor an item carries a timestamp, so this comes from the
     session's own event log: the first and last `turn.upsert` for it.
