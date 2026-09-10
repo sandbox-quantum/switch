@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { readFile, realpath } from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
+import type { ModelChoice } from '@switch-console/shared/session-v1';
 import type {
   ModelSelection,
   ProviderAdapter,
@@ -47,6 +48,7 @@ interface Update extends Omit<ToolUpdate, 'content'> {
 interface State {
   id: string;
   nativeId: string;
+  models?: ModelChoice[];
   client: StdioJsonRpcClient;
   turn: string | null;
   queue: ProviderSendTurnInput[];
@@ -179,11 +181,20 @@ export class GeminiAdapter implements ProviderAdapter {
         await protectGeminiRollout(input.env.GEMINI_CLI_HOME, input.resume.nativeSessionId);
       }
       state.nativeId = input.resume?.nativeSessionId ?? '';
-      const result = await client.request<{ sessionId?: string }>(
-        input.resume ? 'session/load' : 'session/new',
-        { cwd, mcpServers, ...(input.resume ? { sessionId: input.resume.nativeSessionId } : {}) }
-      );
+      const result = await client.request<{
+        sessionId?: string;
+        models?: { availableModels: { modelId: string; name: string }[] };
+      }>(input.resume ? 'session/load' : 'session/new', {
+        cwd,
+        mcpServers,
+        ...(input.resume ? { sessionId: input.resume.nativeSessionId } : {}),
+      });
       state.nativeId = result.sessionId ?? state.nativeId;
+      state.models = (result.models?.availableModels ?? []).map((model) => ({
+        id: model.modelId,
+        label: model.name,
+        options: {},
+      }));
       if (!state.nativeId) throw new Error('Gemini returned no session ID.');
       await client.request('session/set_mode', {
         sessionId: state.nativeId,
@@ -299,6 +310,10 @@ export class GeminiAdapter implements ProviderAdapter {
     state.interrupted = true;
     state.client.notify('session/cancel', { sessionId: state.nativeId });
     this.cancelApprovals(state);
+  }
+
+  async listModels(id: string): Promise<ModelChoice[]> {
+    return this.require(id).models ?? [];
   }
 
   async setModel(id: string, model: ModelSelection): Promise<void> {

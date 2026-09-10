@@ -103,6 +103,15 @@ export const sessionSchema = z.strictObject({
   connectivity: z.enum(['online', 'offline']),
   capabilities,
   pendingRequestIds: z.array(id),
+  models: z
+    .array(
+      z.strictObject({ id, label: z.string(), options: z.record(z.string(), z.array(z.string())) })
+    )
+    .optional(),
+  model: z
+    .strictObject({ id, options: z.record(z.string(), z.string()) })
+    .nullable()
+    .optional(),
 });
 const turn = z.strictObject({
   type: z.literal('turn.upsert'),

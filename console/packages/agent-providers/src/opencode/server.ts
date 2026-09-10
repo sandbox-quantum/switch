@@ -1,11 +1,9 @@
 import { type ChildProcess, spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:net';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import { ProviderUnavailableError } from '../adapter';
 import type { OpencodeConfigFile } from './config';
+import { prepareOpencodeHome } from './home';
 
 const READY_PREFIX = 'opencode server listening';
 
@@ -35,10 +33,7 @@ export interface StartServerInput {
   config: OpencodeConfigFile;
   startupTimeoutMs: number;
   /**
-   * Skills to write beside the generated config. Isolating `XDG_CONFIG_HOME`
-   * hides the user's own `~/.config/opencode/skills` along with their MCP
-   * registrations, so a caller that needs a skill in the session has to supply
-   * it here.
+   * Managed skills to load in addition to the execution host's native skills.
    */
   skills: OpencodeSkill[];
 }
@@ -59,32 +54,9 @@ async function findFreePort(): Promise<number> {
   });
 }
 
-/**
- * OpenCode reads `$XDG_CONFIG_HOME/opencode/opencode.json` and merges nothing
- * else in, so pointing it at a directory Switch writes is the only way to keep
- * a user's own MCP registrations out of the session. `OPENCODE_CONFIG` and
- * `OPENCODE_CONFIG_CONTENT` were both measured against 1.18.27 and leave the
- * user's global `mcp` block in place. Auth lives under `XDG_DATA_HOME`, which
- * is deliberately left alone so the spawned server stays signed in.
- */
-async function writeSessionConfig(
-  config: OpencodeConfigFile,
-  skills: OpencodeSkill[]
-): Promise<string> {
-  const configHome = await mkdtemp(join(tmpdir(), 'switch-opencode-'));
-  await mkdir(join(configHome, 'opencode'), { recursive: true });
-  await writeFile(join(configHome, 'opencode', 'opencode.json'), JSON.stringify(config, null, 2));
-  for (const skill of skills) {
-    const dir = join(configHome, 'opencode', 'skills', skill.name);
-    await mkdir(dir, { recursive: true });
-    await writeFile(join(dir, 'SKILL.md'), skill.content);
-  }
-  return configHome;
-}
-
 export async function startOpencodeServer(input: StartServerInput): Promise<OpencodeServerHandle> {
   const password = randomBytes(24).toString('base64url');
-  const configHome = await writeSessionConfig(input.config, input.skills);
+  const configHome = await prepareOpencodeHome(input.config, input.skills, input.env);
   const port = await findFreePort();
 
   const child = spawn(input.binaryPath, ['serve', '--hostname=127.0.0.1', `--port=${port}`], {

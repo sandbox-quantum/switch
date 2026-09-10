@@ -8,6 +8,7 @@ import {
   serverEventSchema,
 } from '@switch-console/shared/session-v1';
 import type {
+  Attachment,
   Command,
   HostBody,
   Request,
@@ -16,10 +17,11 @@ import type {
   Snapshot,
 } from '@switch-console/shared/session-v1';
 import { z } from 'zod';
-import type { ProviderAdapter, ProviderSessionStartInput } from '../adapter';
+import type { ProviderAdapter, ProviderSessionStartInput, TurnAttachment } from '../adapter';
 import type { UserInputAnswers } from '../events';
 import type { ProviderRuntimeEvent } from '../events';
 import { ChatProjector } from '../session-v1/chat-projector';
+import { ATTACHMENT_MIME_TYPES } from './attachments';
 import { Journal } from './journal';
 
 const recordSchema = z.discriminatedUnion('type', [
@@ -38,6 +40,7 @@ export type HostSessionStart = {
   input: ProviderSessionStartInput;
   epochAuthority?: 'server';
   resetEpoch?: () => Promise<string>;
+  stageAttachments?: (attachments: Attachment[]) => Promise<TurnAttachment[]>;
 };
 type PendingQuestion = { request: Request; options: Map<string, string> };
 
@@ -202,12 +205,34 @@ export class HostedSession {
       });
       await host.inbox.append({ type: 'native', nativeSessionId: native.nativeSessionId });
       host.nativeId = native.nativeSessionId;
+      await host.eventSerial;
+      await host.refreshModels();
       return host;
     } catch (error) {
       await host.fail(error);
       await host.shutdown();
       throw error;
     }
+  }
+
+  private async refreshModels(): Promise<void> {
+    this.config.session.capabilities.attachmentMimeTypes = this.config.stageAttachments
+      ? ATTACHMENT_MIME_TYPES
+      : [];
+    this.config.session.capabilities.compact =
+      Boolean(this.adapter.compactSession) &&
+      (!this.adapter.canCompact || (await this.adapter.canCompact(this.config.session.sessionId)));
+    if (!this.adapter.listModels) {
+      await this.publish({ type: 'session.upsert', session: structuredClone(this.config.session) });
+      return;
+    }
+    const models = await this.adapter.listModels(this.config.session.sessionId);
+    this.config.session.models = models;
+    this.config.session.model = this.config.input.model
+      ? { id: this.config.input.model.id, options: this.config.input.model.options ?? {} }
+      : null;
+    this.config.session.capabilities.modelChange = Boolean(models.length && this.adapter.setModel);
+    await this.publish({ type: 'session.upsert', session: structuredClone(this.config.session) });
   }
 
   notice(message: string): Promise<void> {
@@ -232,7 +257,6 @@ export class HostedSession {
   }
 
   private async accept(command: Command): Promise<Snapshot['commandStatuses'][number]> {
-    if (this.fault) throw this.fault;
     if (this.shuttingDown) throw new Error('HOST_STOPPING');
     const { session } = this.snapshot();
     if (command.sessionId !== session.sessionId) throw new Error('NOT_FOUND: session mismatch.');
@@ -241,6 +265,7 @@ export class HostedSession {
       if (!isDeepStrictEqual(previous, command)) throw new Error('IDEMPOTENCY_CONFLICT');
       return this.status(command.commandId);
     }
+    if (this.fault) throw this.fault;
     if (command.epoch !== session.epoch) throw new Error('STALE_EPOCH');
     const body = command.body;
     if (body.type === 'message.send') {
@@ -249,7 +274,7 @@ export class HostedSession {
         throw new Error('UNSUPPORTED_CAPABILITY: host currently accepts queued messages.');
       if (eventBytes(command) > 60 * 1024)
         throw new Error('PAYLOAD_TOO_LARGE: message exceeds the local host limit.');
-      if (body.attachments.length)
+      if (body.attachments.length && !this.config.stageAttachments)
         throw new Error('UNSUPPORTED_CAPABILITY: attachment staging is not configured.');
       if (session.status !== 'ready' && session.status !== 'running')
         throw new Error('Session is not ready.');
@@ -257,11 +282,16 @@ export class HostedSession {
       body.type !== 'turn.interrupt' &&
       body.type !== 'session.stop' &&
       body.type !== 'session.reset' &&
+      body.type !== 'session.compact' &&
       body.type !== 'session.model.set' &&
       body.type !== 'request.answer'
     )
       throw new Error('UNSUPPORTED_CAPABILITY');
-    if (body.type === 'session.reset' || body.type === 'session.model.set') {
+    if (
+      body.type === 'session.reset' ||
+      body.type === 'session.model.set' ||
+      body.type === 'session.compact'
+    ) {
       if (
         this.activeTurn ||
         this.queue.length ||
@@ -280,6 +310,14 @@ export class HostedSession {
         (!session.capabilities.modelChange || !this.adapter.setModel)
       )
         throw new Error('UNSUPPORTED_CAPABILITY: model changes are unavailable.');
+    }
+    if (body.type === 'session.model.set') {
+      const model = session.models?.find((entry) => entry.id === body.modelId);
+      if (
+        !model ||
+        Object.entries(body.options).some(([key, value]) => !model.options[key]?.includes(value))
+      )
+        throw new Error('UNSUPPORTED_MODEL: choose an offered model and options.');
     }
     if (body.type === 'request.answer') this.validateAnswer(command);
     await this.inbox.append({ type: 'accepted', command });
@@ -314,11 +352,54 @@ export class HostedSession {
             status: 'completed',
             title: '',
             text: body.text,
-            attachments: [],
+            attachments: body.attachments,
             origin: command.origin,
           },
         });
         this.queue.push(command);
+      } else if (body.type === 'session.compact') {
+        await this.inbox.append({ type: 'dispatched', commandId: command.commandId });
+        this.dispatched.add(command.commandId);
+        this.config.session.status = 'running';
+        await this.publish({
+          type: 'session.upsert',
+          session: structuredClone(this.config.session),
+        });
+        await this.publish({
+          type: 'notice',
+          level: 'info',
+          code: 'COMPACTION_STARTED',
+          message: 'Compacting provider context…',
+        });
+        let timeout: ReturnType<typeof setTimeout>;
+        try {
+          await Promise.race([
+            this.adapter.compactSession!(session.sessionId),
+            new Promise<never>((_, reject) => {
+              timeout = setTimeout(
+                () => reject(new Error('Native compaction outcome is unknown after 180 seconds.')),
+                180000
+              );
+            }),
+          ]);
+          await this.eventSerial;
+          await this.publish({
+            type: 'notice',
+            level: 'info',
+            code: 'COMPACTION_COMPLETED',
+            message: 'Provider context compaction completed. The transcript remains available.',
+          });
+          this.config.session.status = 'ready';
+          await this.publish({
+            type: 'session.upsert',
+            session: structuredClone(this.config.session),
+          });
+        } catch (error) {
+          await this.fail(error);
+          throw error;
+        } finally {
+          clearTimeout(timeout!);
+        }
       } else if (body.type === 'session.model.set') {
         await this.inbox.append({ type: 'dispatched', commandId: command.commandId });
         this.dispatched.add(command.commandId);
@@ -328,6 +409,11 @@ export class HostedSession {
         });
         await this.inbox.append({ type: 'model', id: body.modelId, options: body.options });
         this.config.input.model = { id: body.modelId, options: body.options };
+        this.config.session.model = { id: body.modelId, options: body.options };
+        await this.publish({
+          type: 'session.upsert',
+          session: structuredClone(this.config.session),
+        });
         await this.publish({
           type: 'notice',
           level: 'info',
@@ -361,6 +447,7 @@ export class HostedSession {
           await this.eventSerial;
           await this.inbox.append({ type: 'reset-completed' });
           this.resetPending = false;
+          await this.refreshModels();
           await this.publish({
             type: 'notice',
             level: 'info',
@@ -404,6 +491,7 @@ export class HostedSession {
       if (body.type === 'message.send')
         void this.runNext().catch((error: unknown) => this.fail(error));
     } catch (error) {
+      if (body.type === 'session.model.set') await this.fail(error);
       if (body.type === 'request.answer') {
         const request = this.snapshot().requests.find((r) => r.requestId === body.requestId);
         if (request?.state === 'submitting')
@@ -427,6 +515,19 @@ export class HostedSession {
     return this.status(command.commandId);
   }
 
+  async reject(command: Command, error: unknown): Promise<void> {
+    if (this.fault || this.commands.has(command.commandId)) throw error;
+    await this.inbox.append({ type: 'accepted', command });
+    this.commands.set(command.commandId, command);
+    await this.publish({
+      type: 'command.status',
+      commandId: command.commandId,
+      status: 'rejected',
+      code: 'COMMAND_REJECTED',
+      message: String(error),
+    });
+  }
+
   status(commandId: string): Snapshot['commandStatuses'][number] {
     const status = this.snapshot().commandStatuses.find((value) => value.commandId === commandId);
     if (!status) throw new Error('NOT_FOUND: command not found.');
@@ -439,12 +540,17 @@ export class HostedSession {
     if (!command || command.body.type !== 'message.send') return;
     this.activeTurn = command.commandId;
     try {
+      const attachments = command.body.attachments.length
+        ? await this.config.stageAttachments!(command.body.attachments)
+        : [];
+      if (this.shuttingDown || this.stopped || this.fault) throw new Error('HOST_STOPPING');
       await this.inbox.append({ type: 'dispatched', commandId: command.commandId });
       this.dispatched.add(command.commandId);
       await this.adapter.sendTurn({
         sessionId: this.config.session.sessionId,
         turnId: command.commandId,
         text: command.body.text,
+        attachments,
       });
     } catch (error) {
       await this.publish({

@@ -12,8 +12,8 @@ and resumes the saved native conversation under a new server-issued epoch.
 A stopped conversation cannot be reopened as a new conversation.
 
 The execution host supplies the working directory, provider installation,
-credentials, environment, shell setup, skills and MCP configuration. Provider
-settings changed during a session take effect when its host restarts. A cold
+credentials, environment, shell setup, skills and MCP configuration. Skills and MCP changes take effect when the host restarts. Confirmed model
+changes apply to the next turn and survive host restart. A cold
 provider startup can take up to two minutes before Console reports a startup
 failure. The saved session remains available for inspection after a failure;
 its initial prompt is not automatically sent again.
@@ -41,6 +41,58 @@ its initial prompt is not automatically sent again.
 - Room replay gaps stop automatic delivery with a visible error. Review room
   context before starting further work. The host cannot infer missing messages.
 
+## Context, models and attachments
+
+Reset starts a fresh native conversation under a new server-issued epoch. The
+transcript remains as history; earlier messages are not inserted into the new
+context. Reset requires an idle session with no queued turns or pending requests.
+Commands from the previous epoch cannot execute afterward. A crash between reset
+intent and durable completion leaves the reset unknown and blocks automatic resume.
+Review the outcome before replacing that session; recovery never retries reset.
+
+The model selector shows the native provider's model catalog and available options.
+The server and host reject unsupported selections and changes while work is pending.
+The host persists a selection only after the native operation succeeds. An uncertain
+model change stops further execution until recovery, without repeating the change.
+
+Compaction uses a native operation: Claude's `/compact` with a completed compaction
+boundary, Codex's `thread/compact/start` with turn completion, or OpenCode's
+`session.summarize` with native busy/idle completion. Console shows progress and the
+outcome. A timeout or interrupted completion remains unknown. Gemini CLI's current
+ACP command registry has no compaction operation. Cursor compaction is not exposed
+by this adapter. Neither receives a substitute summarization prompt.
+
+| Provider | Reset | Model selection | Native compaction | Attachments |
+| --- | --- | --- | --- | --- |
+| Claude Code | Yes | Native catalog and effort | When `/compact` is advertised | Images as bytes; other files staged |
+| Codex | Yes | Native catalog and reasoning effort | App-server compaction | Local images and staged file mentions |
+| OpenCode | Yes | Connected providers' models | Native session compaction | Staged file URLs |
+| Gemini CLI | Yes | ACP model catalog | Unavailable | Images/resources as bytes |
+| Cursor | Yes | ACP model catalog | Unavailable | Images as bytes; staged file references |
+
+Controls depend on the connected provider's reported support. A model can still
+reject an image or exhaust its account quota; those failures remain visible.
+
+Attach files with the picker, paste, or drag and drop. Uploads require session-owner
+authorization. The server stores bytes and returns durable, session-scoped references.
+Only the active authorized host can download them. The host checks length and hash,
+then writes private files on the execution machine before provider dispatch. Laptop
+paths are never sent as remote attachments. Upload retries retain their attachment
+identity; transfer retries cannot repeat a provider action.
+
+Limits are eight files per message and 10 MiB per file. PNG, JPEG, WebP, PDF, UTF-8
+text, Markdown, CSV, JSON and opaque binary files are accepted. Filenames cannot
+contain directory traversal or control characters. Files remain with the transcript;
+there is currently no automatic attachment retention policy.
+
+Native skills, MCP settings and credentials come from the execution host. Managed
+provider homes preserve user configuration and add Switch's configuration. OpenCode
+retains native JSONC settings and skill directories alongside managed skills.
+Relative configuration paths resolve on the execution host. Restart an idle host
+after editing skills or MCP; changing a laptop's configuration does not update an
+SSH machine. No credentials are copied from the laptop as part of file attachment
+transfer.
+
 ## Capability and deployment limits
 
 Gemini CLI does not support interactive questions through its current adapter;
@@ -62,7 +114,7 @@ not establish that an external host has these dependencies or credentials.
 
 Run provider crash and delivery tests with
 `pnpm --filter @switch-console/agent-providers test`. Run live provider checks with
-`SDK_HOST_LIVE=1 pnpm --filter @switch-console/agent-providers exec vitest run src/host/host.integration.test.ts`.
+`SDK_HOST_LIVE=1 SDK_CAPABILITIES_LIVE=1 pnpm --filter @switch-console/agent-providers exec vitest run src/host/host.integration.test.ts`.
 Live tests use the installed providers and their existing authentication.
 
 Backend session and migration tests use real PostgreSQL containers. Run

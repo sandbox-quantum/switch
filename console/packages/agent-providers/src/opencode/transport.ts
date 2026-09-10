@@ -1,4 +1,5 @@
 import { createOpencodeClient, type Event, type OpencodeClient } from '@opencode-ai/sdk/v2';
+import type { ModelChoice } from '@switch-console/shared/session-v1';
 import { ProviderSessionError, ProviderUnavailableError } from '../adapter';
 import type { OpencodeConfigFile, OpencodePermissionRule } from './config';
 import { type OpencodeSkill, startOpencodeServer } from './server';
@@ -17,6 +18,8 @@ export interface OpencodePromptInput {
 export interface OpencodeSessionTransport {
   readonly nativeSessionId: string;
   readonly events: AsyncIterable<OpencodeEvent>;
+  compact?(model: { providerID: string; modelID: string } | undefined): Promise<void>;
+  listModels?(): Promise<ModelChoice[]>;
   prompt(input: OpencodePromptInput): Promise<void>;
   abort(): Promise<void>;
   sessionStatus(): Promise<'busy' | 'idle' | 'unknown'>;
@@ -111,6 +114,38 @@ export function createHttpTransport(options: HttpTransportOptions): OpencodeTran
       return {
         nativeSessionId,
         events: subscription,
+        async compact(model) {
+          if (!model) {
+            const { data } = await client.session.messages<true>({
+              sessionID: nativeSessionId,
+              directory: input.cwd,
+            });
+            const last = [...data].reverse().find((entry) => entry.info.role === 'assistant');
+            if (last?.info.role === 'assistant')
+              model = { providerID: last.info.providerID, modelID: last.info.modelID };
+          }
+          if (!model) throw new Error('There is no completed conversation to compact.');
+          const response = await client.session.summarize<true>({
+            sessionID: nativeSessionId,
+            directory: input.cwd,
+            ...model,
+            auto: false,
+          });
+          if (response.data !== true)
+            throw new Error('OpenCode did not confirm native compaction.');
+        },
+        async listModels() {
+          const { data } = await client.provider.list<true>({ directory: input.cwd });
+          return data.all
+            .filter((provider) => data.connected.includes(provider.id))
+            .flatMap((provider) =>
+              Object.values(provider.models).map((model) => ({
+                id: `${provider.id}/${model.id}`,
+                label: `${provider.name}: ${model.name}`,
+                options: {},
+              }))
+            );
+        },
         async prompt(promptInput) {
           await client.session.promptAsync<true>({
             sessionID: nativeSessionId,

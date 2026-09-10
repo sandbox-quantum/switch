@@ -1,8 +1,9 @@
-import type { ClientCommand } from '@switch-console/shared/session-v1';
+import type { AttachmentUpload, ClientCommand } from '@switch-console/shared/session-v1';
 import { getAgentById } from '@main/core/agents/getAgentById';
 import { createRPCController } from '@shared/lib/ipc/rpc';
 import {
   fetchSdkSessions,
+  uploadSdkAttachment,
   fetchSdkSnapshot,
   fetchSdkEvents,
   fetchSdkCommandStatus,
@@ -16,6 +17,8 @@ async function sharedServer(serverId: string) {
   return server;
 }
 export const sdkHostController = createRPCController({
+  uploadAttachment: async (serverId: string, sessionId: string, file: AttachmentUpload) =>
+    uploadSdkAttachment(await sharedServer(serverId), sessionId, file),
   agentDiagnostics: sharedAgentDiagnostics,
   serverForAgent: async (agentId: string) => {
     const agent = await getAgentById(agentId);

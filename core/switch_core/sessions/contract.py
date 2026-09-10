@@ -193,6 +193,17 @@ class Request(_Model):
     expires_at: Timestamp | None
 
 
+class SessionModel(_Model):
+    id: Id
+    options: dict[str, str]
+
+
+class ModelChoice(_Model):
+    id: Id
+    label: str
+    options: dict[str, list[str]]
+
+
 class Session(_Model):
     session_id: Id
     agent_id: Id
@@ -203,6 +214,8 @@ class Session(_Model):
     connectivity: Literal["online", "offline"]
     capabilities: Capability
     pending_request_ids: list[Id]
+    models: list[ModelChoice] = Field(default_factory=list)
+    model: SessionModel | None = None
 
 
 # ── Event bodies ─────────────────────────────────────────────────────────────

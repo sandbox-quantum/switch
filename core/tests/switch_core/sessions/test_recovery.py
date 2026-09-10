@@ -262,3 +262,53 @@ async def test_reset_rejects_pending_questions(session_factory):
             user_id="owner",
             bridge_id=None,
         )
+
+
+@pytest.mark.asyncio
+async def test_model_catalog_validation_and_compaction_capability(session_factory):
+    service, epoch = await setup(session_factory)
+    snapshot = await service.snapshot("session-demo", "owner")
+    data = snapshot.session.model_dump(by_alias=True)
+    data.update(
+        status="ready",
+        models=[
+            {
+                "id": "model-demo",
+                "label": "Demo",
+                "options": {"effort": ["low", "high"]},
+            }
+        ],
+    )
+    data["capabilities"].update(modelChange=True, compact=False)
+    await service.ingest(
+        "agent-demo",
+        "host-demo",
+        host_event(epoch, 1, {"type": "session.upsert", "session": data}),
+    )
+    for body in (
+        {"type": "session.model.set", "modelId": "invented", "options": {}},
+        {
+            "type": "session.model.set",
+            "modelId": "model-demo",
+            "options": {"effort": "invented"},
+        },
+        {"type": "session.compact"},
+    ):
+        with pytest.raises(SessionError):
+            await service.submit(
+                command(epoch, "invalid", body), user_id="owner", bridge_id=None
+            )
+    result = await service.submit(
+        command(
+            epoch,
+            "valid-model",
+            {
+                "type": "session.model.set",
+                "modelId": "model-demo",
+                "options": {"effort": "high"},
+            },
+        ),
+        user_id="owner",
+        bridge_id=None,
+    )
+    assert result.status == "accepted"

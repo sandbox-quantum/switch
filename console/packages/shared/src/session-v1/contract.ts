@@ -68,6 +68,8 @@ export type Request = {
   content: RequestContent;
   expiresAt: string | null;
 };
+export type SessionModel = { id: string; options: Record<string, string> };
+export type ModelChoice = { id: string; label: string; options: Record<string, string[]> };
 export type Session = {
   sessionId: Id;
   agentId: Id;
@@ -78,6 +80,8 @@ export type Session = {
   connectivity: 'online' | 'offline';
   capabilities: Capability;
   pendingRequestIds: Id[];
+  models?: ModelChoice[];
+  model?: SessionModel | null;
 };
 export type HostBody =
   | { type: 'session.upsert'; session: Session }

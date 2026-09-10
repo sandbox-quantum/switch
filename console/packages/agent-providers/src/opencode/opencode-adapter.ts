@@ -50,14 +50,7 @@ export interface OpencodeAdapterOptions {
    * falling back to polling `session.status`.
    */
   admissionTimeoutMs?: number;
-  /**
-   * Skills to place in every session's isolated config home.
-   *
-   * The transport isolates `XDG_CONFIG_HOME` to keep the user's own MCP
-   * registrations out of a session, which hides their `skills/` directory with
-   * them. Anything the session must be able to load — the Switch room-workflow
-   * skill, for one — has to be supplied here or it is simply not there.
-   */
+  /** Managed skills added alongside the execution host's native configuration. */
   skills?: OpencodeSkill[];
   /** Replaces the spawned server; the unit tests drive the adapter through this. */
   transport?: OpencodeTransport;
@@ -90,6 +83,7 @@ interface SessionRecord {
   stopping: boolean;
   exited: boolean;
   activeTurnId?: string;
+  compaction?: { busySeen: boolean; resolve: () => void; reject: (error: Error) => void };
   /** An `idle` is only honored once OpenCode has confirmed the prompt with a `busy`. */
   awaitingBusy: boolean;
   admissionTimer?: ReturnType<typeof setTimeout>;
@@ -317,6 +311,36 @@ export class OpencodeAdapter implements ProviderAdapter {
     await record.transport.replyQuestion(requestId, toQuestionAnswers(answers));
   }
 
+  async canCompact(sessionId: string): Promise<boolean> {
+    return Boolean(this.require(sessionId).transport.compact);
+  }
+
+  async compactSession(sessionId: string): Promise<void> {
+    const record = this.require(sessionId);
+    if (record.activeTurnId || record.compaction) throw new Error('SESSION_BUSY');
+    if (!record.transport.compact) throw new Error('Native compaction is unavailable.');
+    let resolve!: () => void;
+    let reject!: (error: Error) => void;
+    const promise = new Promise<void>((done, fail) => {
+      resolve = done;
+      reject = fail;
+    });
+    const completion = { promise, resolve, reject };
+    void completion.promise.catch(() => {});
+    record.compaction = { ...completion, busySeen: false };
+    try {
+      await record.transport.compact(record.model);
+      await completion.promise;
+    } finally {
+      record.compaction = undefined;
+    }
+  }
+
+  async listModels(sessionId: string) {
+    const transport = this.require(sessionId).transport;
+    return transport.listModels ? transport.listModels() : [];
+  }
+
   async setModel(sessionId: string, model: ModelSelection): Promise<void> {
     const record = this.require(sessionId);
     record.model = parseModelId(model.id);
@@ -328,6 +352,7 @@ export class OpencodeAdapter implements ProviderAdapter {
       throw new ProviderSessionError('opencode', sessionId, 'unknown session');
     }
     record.stopping = true;
+    record.compaction?.reject(new Error('Native compaction was interrupted by session shutdown.'));
     await this.cancelPending(record);
     if (record.activeTurnId !== undefined) {
       this.completeTurn(record, record.activeTurnId, 'interrupted', 'session stopped');
@@ -367,6 +392,7 @@ export class OpencodeAdapter implements ProviderAdapter {
 
   private handleUnexpectedExit(record: SessionRecord, reason: string): void {
     if (record.stopping || record.exited) return;
+    record.compaction?.reject(new Error(reason));
     this.sessions.delete(record.sessionId);
     this.emit(record, { type: 'runtime.error', message: reason });
     if (record.activeTurnId !== undefined) {
@@ -481,12 +507,15 @@ export class OpencodeAdapter implements ProviderAdapter {
       return;
     }
     if (status === 'busy') {
+      if (record.compaction) record.compaction.busySeen = true;
       record.awaitingBusy = false;
       this.clearAdmissionTimer(record);
       this.emitState(record, 'running');
       return;
     }
     if (record.interrupting) return;
+    if (record.compaction && !record.compaction.busySeen) return;
+    record.compaction?.resolve();
     this.emitState(record, 'ready');
     if (record.activeTurnId === undefined || record.awaitingBusy) return;
     this.completeTurn(record, record.activeTurnId, 'completed', undefined, event);

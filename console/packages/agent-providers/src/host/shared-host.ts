@@ -10,6 +10,7 @@ import {
 import type { Session } from '@switch-console/shared/session-v1';
 import type { z } from 'zod';
 import type { ProviderAdapter, ProviderSessionStartInput } from '../adapter';
+import { stageAttachment, MAX_ATTACHMENT_BYTES } from './attachments';
 import { Journal } from './journal';
 import { SharedRoomInbox, type roomConnectionSchema } from './room-inbox';
 import { HostedSession } from './session-host';
@@ -293,6 +294,40 @@ export async function runSharedHost(
         session,
         input: options.input,
         epochAuthority: 'server',
+        stageAttachments: (attachments) =>
+          Promise.all(
+            attachments.map((attachment) =>
+              stageAttachment(options.root, attachment, async () => {
+                const url = `${base.href.replace(/\/$/, '')}/sessions${sessionPath}/attachments/${encodeURIComponent(attachment.attachmentId)}?host_id=${encodeURIComponent(hostLease.host_id)}&epoch=${encodeURIComponent(hostLease.epoch)}`;
+                const response = await fetch(url, {
+                  headers: { authorization: `Bearer ${options.token}` },
+                  signal: AbortSignal.any([executionSignal, AbortSignal.timeout(15000)]),
+                  redirect: 'error',
+                });
+                if (!response.ok || !response.body)
+                  throw new Error(`Attachment download failed (${response.status}).`);
+                const chunks: Uint8Array[] = [];
+                let size = 0;
+                const reader = response.body.getReader();
+                try {
+                  while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+                    size += value.byteLength;
+                    if (size > MAX_ATTACHMENT_BYTES || size > attachment.bytes)
+                      throw new Error('Attachment exceeds its declared size.');
+                    chunks.push(value);
+                  }
+                } finally {
+                  await reader.cancel();
+                }
+                return {
+                  data: Buffer.concat(chunks),
+                  sha256: response.headers.get('x-content-sha256') ?? '',
+                };
+              })
+            )
+          ),
         resetEpoch: () =>
           withLease(async () => {
             for (const event of host!.replay(delivery!.cursor).events)
@@ -387,7 +422,22 @@ export async function runSharedHost(
         if (command.sessionId !== session.sessionId)
           throw new Error('Switch returned a command for another session.');
         if (command.epoch !== hostLease.epoch) continue;
-        await host.command(command);
+        try {
+          if (command.body.type === 'session.compact') {
+            let finished = false;
+            const pending = host.command(command).finally(() => {
+              finished = true;
+            });
+            void pending.catch(() => {});
+            while (!finished) {
+              await flush();
+              await delay(250, undefined, { signal: executionSignal });
+            }
+            await pending;
+          } else await host.command(command);
+        } catch (error) {
+          await host.reject(command, error);
+        }
         await flush();
       }
       await delay(250, undefined, { signal: executionSignal });

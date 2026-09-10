@@ -1,6 +1,7 @@
+import hashlib
 from typing import Annotated
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Response
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -152,4 +153,27 @@ async def room_message(
         body.message_id,
         body.sequence,
         buffer,
+    )
+
+
+@router.get("/{session_id}/attachments/{attachment_id}")
+async def download_attachment(
+    session_id: str,
+    attachment_id: str,
+    host_id: str,
+    epoch: str,
+    agent: AuthenticatedAgent,
+    factory: Factory,
+) -> Response:
+    blob = await SessionAuthority(factory).attachment(
+        agent.id, session_id, host_id, epoch, attachment_id
+    )
+    return Response(
+        blob.data,
+        media_type=blob.content_type,
+        headers={
+            "X-Content-SHA256": hashlib.sha256(blob.data).hexdigest(),
+            "Cache-Control": "no-store",
+            "X-Content-Type-Options": "nosniff",
+        },
     )

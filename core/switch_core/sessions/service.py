@@ -19,14 +19,22 @@ from switch_core.db.models import (
     CollaborationBridge,
     ExternalUser,
     ExternalUserClaim,
+    MediaBlob,
     Room,
     SdkSession,
     SdkSessionCommand,
     SdkSessionEvent,
 )
+from switch_core.sessions.attachments import (
+    MAX_ATTACHMENTS,
+    attachment_metadata,
+    attachment_uri,
+    validate_attachment,
+)
 from switch_core.sessions.contract import (
     ApprovalContent,
     ApprovalResult,
+    Attachment,
     Command,
     CommandResult,
     CommandStatus,
@@ -41,6 +49,7 @@ from switch_core.sessions.contract import (
     ServerBody,
     ServerEvent,
     Session,
+    SessionCompact,
     SessionConnectivity,
     SessionModelSet,
     SessionReset,
@@ -518,10 +527,31 @@ class SessionAuthority:
             except ValueError as exc:
                 raise SessionError("INVALID_ANSWER", str(exc)) from exc
         elif isinstance(body, MessageSend):
-            if body.delivery != "queue" or body.attachments:
+            if body.delivery != "queue":
                 raise SessionError(
-                    "UNSUPPORTED_CAPABILITY", "Only queued text is supported."
+                    "UNSUPPORTED_CAPABILITY", "Only queued input is supported."
                 )
+            if len(body.attachments) > MAX_ATTACHMENTS or len(
+                {a.attachment_id for a in body.attachments}
+            ) != len(body.attachments):
+                raise SessionError(
+                    "INVALID_ATTACHMENT", "Use at most eight distinct attachments."
+                )
+            for attachment in body.attachments:
+                blob = await self._attachment(db, row.id, attachment.attachment_id)
+                if attachment_metadata(attachment.attachment_id, blob) != attachment:
+                    raise SessionError(
+                        "INVALID_ATTACHMENT",
+                        "Attachment metadata differs from the uploaded file.",
+                    )
+                if (
+                    attachment.mime_type
+                    not in snapshot.session.capabilities.attachment_mime_types
+                ):
+                    raise SessionError(
+                        "UNSUPPORTED_CAPABILITY",
+                        "This session cannot accept the attachment MIME type.",
+                    )
             if snapshot.session.status not in ("ready", "running"):
                 raise SessionError("HOST_OFFLINE", "The session is not ready.")
         elif isinstance(body, TurnInterrupt):
@@ -534,10 +564,12 @@ class SessionAuthority:
                 for turn in snapshot.turns
             ):
                 raise SessionError("TURN_NOT_ACTIVE", "The turn is no longer running.")
-        elif isinstance(body, (SessionReset, SessionModelSet)):
+        elif isinstance(body, (SessionReset, SessionModelSet, SessionCompact)):
             supported = (
                 snapshot.session.capabilities.reset
                 if isinstance(body, SessionReset)
+                else snapshot.session.capabilities.compact
+                if isinstance(body, SessionCompact)
                 else snapshot.session.capabilities.model_change
             )
             if not supported:
@@ -555,6 +587,17 @@ class SessionAuthority:
                 raise SessionError(
                     "SESSION_BUSY", "Finish or interrupt the current turn first."
                 )
+            if isinstance(body, SessionModelSet):
+                model = next(
+                    (m for m in snapshot.session.models if m.id == body.model_id), None
+                )
+                if model is None or any(
+                    value not in model.options.get(key, [])
+                    for key, value in body.options.items()
+                ):
+                    raise SessionError(
+                        "UNSUPPORTED_MODEL", "Choose an offered model and options."
+                    )
         elif isinstance(body, SessionStop):
             if snapshot.session.status == "stopped":
                 raise SessionError(
@@ -626,6 +669,71 @@ class SessionAuthority:
                     record.status = status.model_dump(by_alias=True)
                     await self._append(db, row, status)
             return pending
+
+    async def upload_attachment(
+        self,
+        session_id: str,
+        user_id: str,
+        attachment_id: str,
+        name: str,
+        mime_type: str,
+        data: bytes,
+    ) -> Attachment:
+        async with self._sessions() as db, db.begin():
+            row = await self._locked(db, session_id)
+            await self._owner(db, row, user_id)
+            try:
+                uri = attachment_uri(session_id, attachment_id)
+                validate_attachment(name, mime_type, data)
+            except ValueError as exc:
+                raise SessionError("INVALID_ATTACHMENT", str(exc)) from exc
+            blob = await db.scalar(select(MediaBlob).where(MediaBlob.uri == uri))
+            if blob is not None:
+                if (blob.filename, blob.content_type, blob.data) != (
+                    name,
+                    mime_type,
+                    data,
+                ):
+                    raise SessionError(
+                        "IDEMPOTENCY_CONFLICT", "Attachment ID has different content."
+                    )
+            else:
+                blob = MediaBlob(
+                    uri=uri,
+                    filename=name,
+                    content_type=mime_type,
+                    size=len(data),
+                    data=data,
+                )
+                db.add(blob)
+                await db.flush()
+            return attachment_metadata(attachment_id, blob)
+
+    async def attachment(
+        self,
+        agent_id: str,
+        session_id: str,
+        host_id: str,
+        epoch: str,
+        attachment_id: str,
+    ) -> MediaBlob:
+        async with self._sessions() as db, db.begin():
+            await self._host(db, agent_id, session_id, host_id, epoch)
+            return await self._attachment(db, session_id, attachment_id)
+
+    async def _attachment(
+        self, db: AsyncSession, session_id: str, attachment_id: str
+    ) -> MediaBlob:
+        try:
+            uri = attachment_uri(session_id, attachment_id)
+        except ValueError as exc:
+            raise SessionError("INVALID_ATTACHMENT", "Invalid attachment ID.") from exc
+        blob = await db.scalar(select(MediaBlob).where(MediaBlob.uri == uri))
+        if blob is None:
+            raise SessionError(
+                "NOT_FOUND", "Attachment does not belong to this session."
+            )
+        return blob
 
     async def list_sessions(self, user_id: str) -> list[Session]:
         async with self._sessions() as db:

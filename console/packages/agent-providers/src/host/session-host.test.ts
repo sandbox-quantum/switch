@@ -404,3 +404,152 @@ it.each([false, true])(
     expect(next.adapter.startSession).not.toHaveBeenCalled();
   }
 );
+
+it('validates native model choices and persists a confirmed choice across restart', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'sdk-model-test-'));
+  roots.push(root);
+  const fixture = setup('claude');
+  fixture.adapter.listModels = vi.fn(async () => [
+    { id: 'model-a', label: 'Model A', options: { effort: ['low', 'high'] } },
+  ]);
+  fixture.adapter.setModel = vi.fn(async () => {});
+  const host = await HostedSession.start(root, fixture.config, fixture.adapter);
+  hosts.push(host);
+  expect(host.snapshot().session.capabilities.modelChange).toBe(true);
+  const command: Command = {
+    ...message('model'),
+    body: {
+      type: 'session.model.set',
+      modelId: 'model-a',
+      options: { effort: 'high' },
+    },
+  };
+  await expect(
+    host.command({ ...command, body: { ...command.body, modelId: 'invented' } } as Command)
+  ).rejects.toThrow('UNSUPPORTED_MODEL');
+  await expect(
+    host.command({
+      ...command,
+      body: { ...command.body, options: { effort: 'invented' } },
+    } as Command)
+  ).rejects.toThrow('UNSUPPORTED_MODEL');
+  expect(fixture.adapter.setModel).not.toHaveBeenCalled();
+  expect((await host.command(command)).status).toBe('applied');
+  expect((await host.command(command)).status).toBe('applied');
+  expect(fixture.adapter.setModel).toHaveBeenCalledTimes(1);
+  expect(host.snapshot().session.model).toEqual({ id: 'model-a', options: { effort: 'high' } });
+  await host.shutdown();
+  const recovered = setup('claude');
+  hosts.push(await HostedSession.start(root, recovered.config, recovered.adapter));
+  expect(recovered.adapter.startSession).toHaveBeenCalledWith(
+    expect.objectContaining({
+      model: { id: 'model-a', options: { effort: 'high' } },
+      resume: { nativeSessionId: 'native' },
+    })
+  );
+});
+
+it('leaves a lost model acknowledgement unknown and does not retry it', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'sdk-model-test-'));
+  roots.push(root);
+  const fixture = setup('claude');
+  fixture.adapter.listModels = vi.fn(async () => [{ id: 'model-a', label: 'A', options: {} }]);
+  fixture.adapter.setModel = vi.fn(async () => {
+    throw new Error('Acknowledgement lost');
+  });
+  const host = await HostedSession.start(root, fixture.config, fixture.adapter);
+  hosts.push(host);
+  const command: Command = {
+    ...message('model'),
+    body: { type: 'session.model.set', modelId: 'model-a', options: {} },
+  };
+  expect((await host.command(command)).status).toBe('unknown');
+  expect((await host.command(command)).status).toBe('unknown');
+  expect(fixture.adapter.setModel).toHaveBeenCalledTimes(1);
+  expect(host.snapshot().session.model).toBeNull();
+});
+
+it('waits for native compaction and keeps history without sending a summarization prompt', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'sdk-compact-test-'));
+  roots.push(root);
+  const fixture = setup('claude');
+  let finish!: () => void;
+  fixture.adapter.compactSession = vi.fn(
+    () =>
+      new Promise<void>((resolve) => {
+        finish = resolve;
+      })
+  );
+  const host = await HostedSession.start(root, fixture.config, fixture.adapter);
+  hosts.push(host);
+  const command: Command = { ...message('compact'), body: { type: 'session.compact' } };
+  const applied = host.command(command);
+  await vi.waitFor(() => expect(fixture.adapter.compactSession).toHaveBeenCalledTimes(1));
+  expect(host.status('compact').status).toBe('accepted');
+  expect(host.snapshot().session.status).toBe('running');
+  expect(
+    host
+      .replay(0)
+      .events.some(
+        (event) => event.body.type === 'notice' && event.body.code === 'COMPACTION_STARTED'
+      )
+  ).toBe(true);
+  finish();
+  expect((await applied).status).toBe('applied');
+  expect(host.snapshot().session.status).toBe('ready');
+  expect(host.snapshot().session.epoch).toBe('epoch');
+  await host.command(command);
+  expect(fixture.adapter.compactSession).toHaveBeenCalledTimes(1);
+  expect(fixture.adapter.sendTurn).not.toHaveBeenCalled();
+  expect(fixture.adapter.interruptTurn).not.toHaveBeenCalled();
+});
+
+it('stages attachments before dispatch and never executes after shutdown during transfer', async () => {
+  const { adapter, config } = setup('codex');
+  let resolve!: (files: Array<{ path: string; mimeType: string }>) => void;
+  const promise = new Promise<Array<{ path: string; mimeType: string }>>((done) => {
+    resolve = done;
+  });
+  const transfer = { promise, resolve };
+  const root = await mkdtemp(join(tmpdir(), 'sdk-stage-stop-'));
+  roots.push(root);
+  const stageAttachments = vi.fn(() => transfer.promise);
+  const host = await HostedSession.start(root, { ...config, stageAttachments }, adapter);
+  const command = message('with-file');
+  if (command.body.type !== 'message.send') throw new Error('Expected message');
+  command.body.attachments = [
+    { attachmentId: randomUUID(), name: 'note.txt', mimeType: 'text/plain', bytes: 4 },
+  ];
+  await host.command(command);
+  await expect.poll(() => stageAttachments.mock.calls.length).toBe(1);
+  expect(adapter.sendTurn).not.toHaveBeenCalled();
+  await host.shutdown();
+  transfer.resolve([{ path: '/execution-host/note.txt', mimeType: 'text/plain' }]);
+  await expect
+    .poll(() => host.snapshot().turns.find((turn) => turn.turnId === command.commandId)?.status)
+    .toBe('error');
+  expect(adapter.sendTurn).not.toHaveBeenCalled();
+});
+
+it('delivers staged execution paths once and keeps durable attachment metadata', async () => {
+  const { adapter, config } = setup('codex');
+  const root = await mkdtemp(join(tmpdir(), 'sdk-stage-delivery-'));
+  roots.push(root);
+  const staged = [{ path: '/execution-host/note.txt', mimeType: 'text/plain' }];
+  const stageAttachments = vi.fn(async () => staged);
+  const host = await HostedSession.start(root, { ...config, stageAttachments }, adapter);
+  hosts.push(host);
+  const command = message('with-file');
+  if (command.body.type !== 'message.send') throw new Error('Expected message');
+  command.body.attachments = [
+    { attachmentId: randomUUID(), name: 'note.txt', mimeType: 'text/plain', bytes: 4 },
+  ];
+  await host.command(command);
+  await host.command(command);
+  await expect.poll(() => vi.mocked(adapter.sendTurn).mock.calls.length).toBe(1);
+  expect(vi.mocked(adapter.sendTurn).mock.calls[0]?.[0].attachments).toEqual(staged);
+  expect(stageAttachments).toHaveBeenCalledOnce();
+  expect(host.snapshot().items.find((item) => item.kind === 'user-message')?.attachments).toEqual(
+    command.body.attachments
+  );
+});

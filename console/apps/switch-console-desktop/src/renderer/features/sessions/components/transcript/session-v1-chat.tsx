@@ -1,9 +1,11 @@
 import type { Command, SessionChatClient } from '@switch-console/shared/session-v1';
 import { Loader2, Wrench } from 'lucide-react';
-import { useEffect, useState, useSyncExternalStore } from 'react';
+import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { Button } from '@renderer/lib/ui/button';
 import { MarkdownRenderer } from '@renderer/lib/ui/markdown-renderer';
 import { Textarea } from '@renderer/lib/ui/textarea';
+import { SessionAttachmentList, useSessionAttachments } from './session-attachments';
+import { SessionV1Controls } from './session-v1-controls';
 import { SessionV1Request } from './session-v1-request';
 
 /** Both remote and local-only transports feed the same contract-shaped view. */
@@ -24,6 +26,8 @@ export function SessionV1Chat({
     return () => client.dispose();
   }, [client]);
   const session = view.snapshot?.session;
+  const uploads = useSessionAttachments(client, session?.capabilities.attachmentMimeTypes ?? []);
+  const picker = useRef<HTMLInputElement>(null);
   const available =
     view.connected &&
     session?.connectivity === 'online' &&
@@ -47,13 +51,15 @@ export function SessionV1Chat({
     }
   };
   const send = async () => {
-    if (!available || sending || !draft.trim()) return;
+    if (!available || sending || uploads.blocked || (!draft.trim() && !uploads.attachments.length))
+      return;
     const commandId = pendingId ?? crypto.randomUUID();
     setPendingId(commandId);
     setSending(true);
     setSendError(null);
     try {
-      await client.send(draft.trim(), commandId);
+      await client.send(draft.trim(), commandId, uploads.attachments);
+      uploads.clear();
       setDraft('');
       setPendingId(null);
     } catch (error) {
@@ -67,7 +73,10 @@ export function SessionV1Chat({
     setSending(true);
     try {
       await client.reconcile();
-      if (pendingId) setDraft('');
+      if (pendingId) {
+        setDraft('');
+        uploads.clear();
+      }
       setPendingId(null);
       setSendError(null);
     } catch (error) {
@@ -134,6 +143,25 @@ export function SessionV1Chat({
           </span>
         </div>
       </div>
+      {session && (
+        <SessionV1Controls
+          key={`${session.epoch}:${JSON.stringify(session.model)}`}
+          session={session}
+          disabled={
+            !available ||
+            sending ||
+            client.hasPendingCommand() ||
+            session.status !== 'ready' ||
+            Boolean(
+              view.snapshot?.turns.some(
+                (turn) => turn.status === 'queued' || turn.status === 'running'
+              )
+            ) ||
+            session.pendingRequestIds.length > 0
+          }
+          execute={control}
+        />
+      )}
       {session && !session.capabilities.questions && (
         <div className="px-5 py-2 text-xs text-foreground-muted">
           This provider does not support interactive questions. Supply additional instructions in
@@ -241,7 +269,34 @@ export function SessionV1Chat({
             )}
           </div>
         )}
-        <div className="rounded-xl border border-border bg-background-1 p-2">
+        <div
+          className="rounded-xl border border-border bg-background-1 p-2"
+          onDragOver={(event) => {
+            if (event.dataTransfer.types.includes('Files')) event.preventDefault();
+          }}
+          onDrop={(event) => {
+            if (!event.dataTransfer.files.length) return;
+            event.preventDefault();
+            if (!sending && !pendingId) uploads.add(Array.from(event.dataTransfer.files));
+          }}
+          onPaste={(event) => {
+            if (!event.clipboardData.files.length) return;
+            event.preventDefault();
+            if (!sending && !pendingId) uploads.add(Array.from(event.clipboardData.files));
+          }}
+        >
+          <SessionAttachmentList uploads={uploads} disabled={sending || pendingId !== null} />
+          <input
+            ref={picker}
+            type="file"
+            multiple
+            className="hidden"
+            aria-label="Choose attachments"
+            onChange={(event) => {
+              uploads.add(Array.from(event.target.files ?? []));
+              event.target.value = '';
+            }}
+          />
           <Textarea
             aria-label="Message the agent"
             value={draft}
@@ -257,12 +312,27 @@ export function SessionV1Chat({
             className="min-h-16 border-0 bg-transparent shadow-none focus-visible:ring-0"
           />
           <div className="flex items-center justify-between px-1 pt-2">
+            {Boolean(session?.capabilities.attachmentMimeTypes.length) && (
+              <Button
+                size="sm"
+                variant="ghost"
+                disabled={sending || pendingId !== null}
+                onClick={() => picker.current?.click()}
+              >
+                Attach files
+              </Button>
+            )}
             <span className="text-tiny text-foreground-passive">
               Enter to send · Shift + Enter for a new line
             </span>
             <Button
               size="sm"
-              disabled={!available || sending || !draft.trim()}
+              disabled={
+                !available ||
+                sending ||
+                uploads.blocked ||
+                (!draft.trim() && !uploads.attachments.length)
+              }
               onClick={() => void send()}
             >
               {sending ? 'Sending…' : pendingId ? 'Retry message' : 'Send'}

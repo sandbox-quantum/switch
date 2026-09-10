@@ -593,3 +593,34 @@ describe('OpencodeAdapter mappings', () => {
     expect(() => parseModelId('big-pickle')).toThrow(/provider\/model/);
   });
 });
+
+describe('OpenCode native compaction', () => {
+  it('waits for native busy and idle after the HTTP acknowledgement', async () => {
+    const { adapter, session, recorder } = await setup();
+    session.compact = vi.fn(async () => {});
+    let completed = false;
+    const operation = adapter.compactSession('switch-session').then(() => {
+      completed = true;
+    });
+    session.push(sessionStatus(NATIVE, 'idle'));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(completed).toBe(false);
+    session.push(sessionStatus(NATIVE, 'busy'));
+    await recorder.waitFor('session.state.changed', (event) => event.status === 'running', 1_000);
+    expect(completed).toBe(false);
+    session.push(sessionStatus(NATIVE, 'idle'));
+    await operation;
+    expect(session.compact).toHaveBeenCalledOnce();
+    expect(recorder.ofType('turn.started')).toHaveLength(0);
+    await adapter.stopAll();
+  });
+
+  it('does not report success when stopped before native completion', async () => {
+    const { adapter, session } = await setup();
+    session.compact = vi.fn(async () => {});
+    const operation = adapter.compactSession('switch-session');
+    const outcome = expect(operation).rejects.toThrow('interrupted');
+    await adapter.stopAll();
+    await outcome;
+  });
+});

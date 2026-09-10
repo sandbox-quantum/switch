@@ -1301,3 +1301,27 @@ export async function submitSdkCommand(
     })
   ).json();
 }
+
+export async function uploadSdkAttachment(
+  server: SwitchServer,
+  sessionId: string,
+  file: {
+    attachmentId: string;
+    name: string;
+    mimeType: string;
+    data: string;
+  }
+): Promise<unknown> {
+  if (file.data.length > 14 * 1024 * 1024) throw new Error('Attachment exceeds 10 MiB.');
+  return (
+    await gatewayFetch(
+      server,
+      `/sessions/${encodeURIComponent(sessionId)}/attachments/${encodeURIComponent(file.attachmentId)}`,
+      {
+        authenticated: true,
+        method: 'PUT',
+        body: { name: file.name, mimeType: file.mimeType, data: file.data },
+      }
+    )
+  ).json();
+}
