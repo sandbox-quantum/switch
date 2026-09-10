@@ -1,6 +1,7 @@
 from switch_core.bridges.collaboration.adapter import RichContentFailed
 from switch_core.bridges.collaboration.session.outbound import SessionTurnActivity
-from switch_core.sessions.publication import SessionPublisher
+from switch_core.sessions import publication
+from switch_core.sessions.publication import SessionPublisher, _RecoveryBackoff
 
 from .test_authority import host_event, opened, setup
 from .test_publication import Platform
@@ -97,7 +98,9 @@ class FlakyActivityPlatform(ActivityPlatform):
         return await super().post_rich(channel, agent, content, thread)
 
 
-async def test_a_refused_post_is_retried_rather_than_marked_drawn(session_factory):
+async def test_a_refused_post_is_retried_once_its_backoff_elapses(
+    session_factory, monkeypatch
+):
     service, epoch = await setup(session_factory)
     await opened(service, epoch)
     activity_platform = FlakyActivityPlatform()
@@ -107,12 +110,20 @@ async def test_a_refused_post_is_retried_rather_than_marked_drawn(session_factor
         cards_for(session_factory, Platform()),
         SessionTurnActivity(activity_platform),
     )
+    clock = 0.0
+    monkeypatch.setattr(publication.time, "monotonic", lambda: clock)
 
     await publisher.publish_pending()
     assert activity_platform.posts == []
 
-    # Nothing about the turn changed since the refusal — a guard keyed only
-    # on the turn's own state would see this as already drawn and skip it.
+    # A cycle straight after the refusal is backed off, the same as a card's
+    # own recovery search — nothing about the turn changed since the refusal
+    # either, so a guard keyed only on its state would also have skipped it,
+    # but this must not retry even if the guard would have let it.
+    await publisher.publish_pending()
+    assert activity_platform.posts == []
+
+    clock += _RecoveryBackoff._MIN
     await publisher.publish_pending()
 
     assert len(activity_platform.posts) == 1

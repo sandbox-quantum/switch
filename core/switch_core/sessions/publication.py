@@ -191,14 +191,19 @@ class TurnActivityIncomplete(Exception):
     this exists only so `SessionPublisher` knows not to mark the session's
     sequence done — a turn whose draw was refused must be tried again next
     cycle rather than treated, by the guard or by the sequence dedupe, as
-    already showing what was asked.
+    already showing what was asked. `backed_off` is kept separate from
+    `turn_ids` for the same reason `PublicationIncomplete` keeps it separate
+    for cards: a turn waiting out its own retry backoff is not a fresh
+    failure, and logging it as one every cycle would bury the ones that are.
     """
 
-    def __init__(self, session_id: str, turn_ids: list[str]) -> None:
+    def __init__(self, session_id: str, turn_ids: list[str], backed_off: int) -> None:
         self.session_id = session_id
         self.turn_ids = turn_ids
+        self.backed_off = backed_off
         super().__init__(
-            f"Session {session_id}: {len(turn_ids)} turn(s) did not fully publish."
+            f"Session {session_id}: {len(turn_ids)} turn(s) did not fully publish "
+            f"and {backed_off} are waiting out a retry backoff."
         )
 
 
@@ -208,6 +213,8 @@ async def refresh_activity(
     session_id: str,
     activity: SessionTurnActivity,
     *,
+    retry_allowed: Callable[[str], bool] = _always_recover,
+    retry_succeeded: Callable[[str], None] = _ignore_recovery,
     redraw_needed: Callable[[str, str, tuple[str, tuple[int, ...]]], bool],
     redrawn: Callable[[str, str, tuple[str, tuple[int, ...]]], None],
 ) -> None:
@@ -224,6 +231,14 @@ async def refresh_activity(
     when `publish` reports it actually landed: a turn it refused is left out
     of the guard so the next cycle tries it again instead of reading "already
     drawn" for a state that was never shown.
+
+    `retry_allowed` bounds how often a turn whose last draw failed is tried
+    again, the same way `recovery_allowed` bounds card recovery: without it,
+    a channel that keeps refusing one turn — Slack rate-limited, a permission
+    revoked, the channel gone — gets tried again every cycle forever, and on
+    a turn whose stream already closed that means a brand new message every
+    cycle rather than one bounded duplicate, since a fresh attempt has no
+    anchor left to edit and opens fresh.
     """
     async with session_factory() as db:
         row = await db.get(SdkSession, session_id)
@@ -260,7 +275,12 @@ async def refresh_activity(
         agent_name = agent.name
         db.expunge_all()
     failed: list[str] = []
+    backed_off = 0
     for turn, items, channel_id, thread_id, state in publications:
+        token = f"{session_id}:{turn.turn_id}"
+        if not retry_allowed(token):
+            backed_off += 1
+            continue
         drawn = await activity.publish(
             items,
             turn,
@@ -270,11 +290,12 @@ async def refresh_activity(
             agent_name=agent_name,
         )
         if drawn:
+            retry_succeeded(token)
             redrawn(session_id, turn.turn_id, state)
         else:
             failed.append(turn.turn_id)
-    if failed:
-        raise TurnActivityIncomplete(session_id, failed)
+    if failed or backed_off:
+        raise TurnActivityIncomplete(session_id, failed, backed_off)
 
 
 class _RecoveryBackoff:
@@ -402,6 +423,7 @@ class SessionPublisher:
         self._recovery = _RecoveryBackoff()
         self._redraw = _RedrawGuard()
         self._turn_redraw = _TurnRedrawGuard()
+        self._activity_retry = _RecoveryBackoff()
         self._wake = asyncio.Event()
 
     def wake(self) -> None:
@@ -470,9 +492,36 @@ class SessionPublisher:
                         self._bridge_id,
                         session_id,
                         self._activity,
+                        retry_allowed=self._activity_retry.allowed,
+                        retry_succeeded=self._activity_retry.succeeded,
                         redraw_needed=self._turn_redraw.needed,
                         redrawn=self._turn_redraw.drawn,
                     )
+                except TurnActivityIncomplete as incomplete:
+                    ok = False
+                    if incomplete.turn_ids:
+                        logger.exception(
+                            "Session %s turn activity publication failed on "
+                            "bridge %s (%d failed, %d waiting on a retry "
+                            "backoff); will retry.",
+                            session_id,
+                            self._bridge_id,
+                            len(incomplete.turn_ids),
+                            incomplete.backed_off,
+                        )
+                    else:
+                        # Every one of these is a turn deliberately not
+                        # retried yet, not a new failure — logging it as one
+                        # would put a real broken-and-continuing signal in
+                        # the same stream as a wait that is working as
+                        # designed.
+                        logger.warning(
+                            "Session %s has %d turn(s) waiting out a retry "
+                            "backoff on bridge %s.",
+                            session_id,
+                            incomplete.backed_off,
+                            self._bridge_id,
+                        )
                 except Exception:
                     ok = False
                     logger.exception(

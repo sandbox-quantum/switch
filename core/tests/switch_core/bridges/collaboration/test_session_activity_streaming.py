@@ -109,8 +109,8 @@ async def _publish(
     turn: TurnUpsert,
     *,
     thread_root_id: str | None = TRIGGER,
-) -> None:
-    await activity.publish(
+) -> bool:
+    return await activity.publish(
         items,
         turn,
         session_id=SESSION,
@@ -425,6 +425,38 @@ async def test_an_append_slack_refused_is_sent_again_with_the_next_change() -> N
 
 
 # ── The end of the turn ──────────────────────────────────────────────────────
+
+
+async def test_a_refused_closing_append_does_not_reopen_a_stream_on_retry() -> None:
+    """A retry after the turn's last append is refused must not start a
+    second stream.
+
+    The stream this turn had is already closed by the time `publish` returns
+    False for it — `_extend` closes on `ended` whether or not the append it
+    was closing on landed — so a caller that retries finds no anchor left and
+    would otherwise open a fresh one just to close it again: one Slack
+    refusal turning into a new, near-empty message in the thread every retry,
+    forever, since the caller keeps retrying exactly because the draw is
+    incomplete.
+    """
+    client = FakeWebClient()
+    activity = SessionTurnActivity(_adapter(client))
+    await _publish(activity, [_item("call-1")], _turn("running"))
+
+    client.stream_error = "ratelimited"
+    drawn = await _publish(
+        activity, [_item("call-1", status="completed")], _turn("completed")
+    )
+    assert drawn is False
+    client.stream_error = None
+
+    retried = await _publish(
+        activity, [_item("call-1", status="completed")], _turn("completed")
+    )
+
+    assert retried is True
+    assert _methods(client).count("chat.startStream") == 1
+    assert len(client.posted) == 1
 
 
 async def test_the_stream_is_stopped_and_left_where_it_is() -> None:

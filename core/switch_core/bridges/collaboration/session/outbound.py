@@ -270,8 +270,23 @@ class SessionTurnActivity:
         means there is no anchor at all yet; a returned anchor paired with
         `False` means there is one, but it does not yet show what was asked —
         opening a stream can succeed while its first content is refused.
+
+        A stream is never opened for a turn that has already ended, even on
+        this, its first anchor: an ended turn's own last draw already closed
+        whatever stream it had, so this is either genuinely late — nothing is
+        streaming, there is only a final state to show — or it is a retry
+        after that close failed to land, and reopening a stream just to
+        immediately close it again is how one failed retry becomes a new
+        message in the thread every cycle. Either way `post_rich` already
+        carries the turn's final state whole, so there is nothing streaming
+        would add.
         """
-        if thread_root_id is not None and isinstance(self._adapter, SlackAdapter):
+        ended = turn.status in TURN_ENDED
+        if (
+            not ended
+            and thread_root_id is not None
+            and isinstance(self._adapter, SlackAdapter)
+        ):
             ref = await self._adapter.open_activity_stream(
                 channel_id, thread_root_id, agent_name
             )
@@ -283,7 +298,7 @@ class SessionTurnActivity:
                     turn,
                     session_id=session_id,
                     agent_name=agent_name,
-                    ended=turn.status in TURN_ENDED,
+                    ended=ended,
                 )
                 return anchor, drawn
 
