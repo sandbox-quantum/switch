@@ -80,12 +80,33 @@ def unbind_log_context(token: Token[LogContext]) -> None:
 
 
 @contextmanager
-def log_context(**fields: str | None) -> Iterator[None]:
-    token = bind_log_context(**fields)
+def _held(token: Token[LogContext]) -> Iterator[None]:
+    """Hold `token` for the block and restore what it replaced on the way out.
+
+    Not restored when the block is unwound by `GeneratorExit`. That is a frame
+    being *finalised* rather than resumed — a coroutine dropped while
+    suspended and later closed by the garbage collector — and the collector
+    runs it in whatever context it happens to be in, not the one the token
+    belongs to. `Token.reset` refuses to cross contexts, correctly: restoring
+    there would stamp this scope's fields onto an unrelated one. There is also
+    nothing left to restore, since the context the token belongs to is
+    unreachable, which is why the frame is being finalised at all.
+    """
+    finalising = False
     try:
         yield
+    except GeneratorExit:
+        finalising = True
+        raise
     finally:
-        unbind_log_context(token)
+        if not finalising:
+            unbind_log_context(token)
+
+
+@contextmanager
+def log_context(**fields: str | None) -> Iterator[None]:
+    with _held(bind_log_context(**fields)):
+        yield
 
 
 class LogContextFilter(logging.Filter):
