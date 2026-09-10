@@ -542,7 +542,12 @@ class SlackAdapter(CollaborationAdapter):
         return len(messages) > 1 and messages[1].get("ts") == ts
 
     async def tell_actor(
-        self, channel_id: str, actor_ref: str, thread_ref: str | None, text: str
+        self,
+        channel_id: str,
+        actor_ref: str,
+        actor_name: str,
+        thread_ref: str | None,
+        text: str,
     ) -> None:
         """Slack's ephemeral message: one person, in place, and not kept.
 
@@ -550,6 +555,10 @@ class SlackAdapter(CollaborationAdapter):
         only useful to whoever gave the answer, and only until they give
         another, so leaving nothing behind is the point rather than a
         limitation.
+
+        `actor_name` goes unused here, and that is what being private buys:
+        the only person who reads this is the one it is about, so it has
+        nobody to name.
 
         Ephemerals are not deliverable to someone who is not in the channel,
         and Slack says so rather than failing quietly. Nothing here can put

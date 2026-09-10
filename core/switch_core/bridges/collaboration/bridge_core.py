@@ -1152,12 +1152,16 @@ class BridgeCore:
         """Tell whoever answered that it did not land.
 
         The refusal is already in the log by the time this runs; this is the
-        half of it the person can see. Where the platform cannot say something
-        to one person, the base adapter logs and returns, so this is best
-        effort by design and never the thing that decides an answer.
+        half of it the person can see. How privately depends on the platform,
+        and a platform that cannot say it at all logs and returns, so this is
+        best effort by design and never the thing that decides an answer.
         """
         await self._adapter.tell_actor(
-            actor.channel_id, actor.sender_id, thread_ref, refused.told()
+            actor.channel_id,
+            actor.sender_id,
+            actor.sender_name,
+            thread_ref,
+            refused.told(),
         )
 
     async def _handle_session_demo(self, cmd: InboundCommand, room_id: str) -> bool:

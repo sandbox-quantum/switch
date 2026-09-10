@@ -232,22 +232,36 @@ def test_a_typed_answer_is_answered_back_in_the_thread_it_was_typed_in() -> None
 
     _run(bridge._handle_inbound_message(_typed("R42 9", root_id=CARD)))
 
-    assert [(actor, thread) for _, actor, thread, _ in bridge._adapter.told] == [
+    assert [(actor, thread) for _, actor, _, thread, _ in bridge._adapter.told] == [
         ("U1", CARD)
     ]
+
+
+def test_the_notice_carries_the_name_of_whoever_answered() -> None:
+    """An adapter with no private reply says it in the thread and has to name them.
+
+    Slack does not use it, so nothing about a Slack channel would notice this
+    going missing — and on the other four the notice would then be addressed
+    to nobody in a thread several people can be answering in.
+    """
+    bridge, _ = _bridge(_interactions(_post()))
+
+    _run(bridge._handle_inbound_message(_typed("R42 9", root_id=CARD)))
+
+    assert [name for _, _, name, _, _ in bridge._adapter.told] == ["someone"]
 
 
 def test_a_press_is_answered_back_in_the_channel() -> None:
     """A press says nothing about where in the channel it happened.
 
-    Only the person who pressed sees it either way, and the notice names the
-    card, which is the part that has to be right.
+    The notice names the card, which is the part that has to be right; where
+    a platform with no thread to put it in leaves it is that adapter's call.
     """
     bridge, _ = _bridge(_interactions(_post()))
 
     _run(bridge._handle_inbound_interaction(_press(value="made-up")))
 
-    assert [(actor, thread) for _, actor, thread, _ in bridge._adapter.told] == [
+    assert [(actor, thread) for _, actor, _, thread, _ in bridge._adapter.told] == [
         ("U1", None)
     ]
 
@@ -273,22 +287,93 @@ def test_the_message_still_reaches_the_room_after_a_notice() -> None:
 # ── What each platform does with it ──────────────────────────────────────────
 
 
-def test_a_platform_with_no_private_reply_logs_instead_of_posting(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
+def _no_private_reply() -> tuple[Any, list[tuple[str, str, str | None]]]:
     """The base every adapter inherits until it can say something to one person.
 
-    Saying it in the channel instead would put a failed answer in front of
-    everyone who was not answering, so the base says nothing there and leaves
-    the refusal in the log, where it already is.
+    Built on Telegram because it is the furthest from Slack of the four — no
+    per-message identity, no interactive controls at all — so what it inherits
+    is what the other three do too. `admin_message` is the platform's own
+    system-notice rendering and each of the four overrides it, so it is stood
+    in for here rather than reimplemented.
     """
+    posted: list[tuple[str, str, str | None]] = []
     adapter = TelegramAdapter.__new__(TelegramAdapter)
 
-    with caplog.at_level(logging.WARNING):
-        _run(adapter.tell_actor("C1", "U1", None, "Your answer did not land."))
+    async def _admin(
+        channel_id: str, content: str, thread_root_id: str | None = None, **_: Any
+    ) -> None:
+        posted.append((channel_id, content, thread_root_id))
 
+    adapter.admin_message = _admin  # type: ignore[method-assign,assignment]
+    return adapter, posted
+
+
+def test_a_platform_with_no_private_reply_says_it_in_the_thread() -> None:
+    """Everyone in the thread reads it, which beats the person waiting forever.
+
+    Addressed by name, because the thread under a card is somewhere several
+    people can be answering and an unaddressed notice tells none of them it
+    was theirs.
+    """
+    adapter, posted = _no_private_reply()
+
+    _run(adapter.tell_actor("C1", "U1", "someone", "C1:111", "did not land"))
+
+    assert posted == [("C1", "someone: did not land", "C1:111")]
+
+
+def test_a_platform_with_no_private_reply_and_no_thread_still_logs(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A press carries no thread, and the channel root is a wider audience.
+
+    Unreachable while the controls are inert everywhere this base runs, which
+    is the point: it is what stops a platform gaining buttons from quietly
+    starting to announce failed answers to the whole channel.
+    """
+    adapter, posted = _no_private_reply()
+
+    with caplog.at_level(logging.WARNING):
+        _run(adapter.tell_actor("C1", "U1", "someone", None, "did not land."))
+
+    assert posted == []
     assert "Telegram" in caplog.text
-    assert "Your answer did not land." in caplog.text
+    assert "did not land." in caplog.text
+
+
+def test_a_notice_in_a_thread_cannot_forge_markup() -> None:
+    """A refusal quotes the person's word back, and the reason quotes the host's.
+
+    Both land in a body the platform renders, so both go through the same
+    per-platform defusal a display name does.
+    """
+    adapter, posted = _no_private_reply()
+
+    _run(
+        adapter.tell_actor(
+            "C1", "U1", "@channel", "C1:111", "because '@here' is not an option"
+        )
+    )
+
+    assert "@channel" not in posted[0][1]
+    assert "@here" not in posted[0][1]
+
+
+def test_a_notice_that_cannot_be_posted_does_not_lose_the_message(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """This runs ahead of the relay, so raising costs the room the message."""
+    adapter, _ = _no_private_reply()
+
+    async def _explode(*_args: Any, **_kwargs: Any) -> None:
+        raise RuntimeError("channel_archived")
+
+    adapter.admin_message = _explode  # type: ignore[method-assign,assignment]
+
+    with caplog.at_level(logging.WARNING):
+        _run(adapter.tell_actor("C1", "U1", "someone", "C1:111", "did not land"))
+
+    assert "channel_archived" in caplog.text
 
 
 def test_slack_says_it_to_one_person_where_they_were() -> None:
@@ -302,7 +387,7 @@ def test_slack_says_it_to_one_person_where_they_were() -> None:
     adapter = SlackAdapter.__new__(SlackAdapter)
     adapter._web_client = _Web()  # type: ignore[assignment]
 
-    _run(adapter.tell_actor("C1", "U1", "C1:111.0", "did not land"))
+    _run(adapter.tell_actor("C1", "U1", "someone", "C1:111.0", "did not land"))
 
     assert calls == [
         {
@@ -325,7 +410,11 @@ def test_slack_escapes_what_the_host_put_in_the_reason() -> None:
     adapter = SlackAdapter.__new__(SlackAdapter)
     adapter._web_client = _Web()  # type: ignore[assignment]
 
-    _run(adapter.tell_actor("C1", "U1", None, "because '<@U9>' is not an option"))
+    _run(
+        adapter.tell_actor(
+            "C1", "U1", "someone", None, "because '<@U9>' is not an option"
+        )
+    )
 
     assert calls[0]["text"] == "because '&lt;@U9&gt;' is not an option"
 
@@ -343,6 +432,6 @@ def test_slack_failing_to_say_it_does_not_lose_the_message(
     adapter._web_client = _Web()  # type: ignore[assignment]
 
     with caplog.at_level(logging.WARNING):
-        _run(adapter.tell_actor("C1", "U1", None, "did not land"))
+        _run(adapter.tell_actor("C1", "U1", "someone", None, "did not land"))
 
     assert "user_not_in_channel" in caplog.text

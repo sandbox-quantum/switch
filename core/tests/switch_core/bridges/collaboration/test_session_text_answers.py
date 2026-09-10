@@ -287,12 +287,17 @@ class _Notices:
     """An adapter that only records what it was asked to say to one person."""
 
     def __init__(self) -> None:
-        self.told: list[tuple[str, str, str | None, str]] = []
+        self.told: list[tuple[str, str, str, str | None, str]] = []
 
     async def tell_actor(
-        self, channel_id: str, actor_ref: str, thread_ref: str | None, text: str
+        self,
+        channel_id: str,
+        actor_ref: str,
+        actor_name: str,
+        thread_ref: str | None,
+        text: str,
     ) -> None:
-        self.told.append((channel_id, actor_ref, thread_ref, text))
+        self.told.append((channel_id, actor_ref, actor_name, thread_ref, text))
 
 
 def _bridge(interactions: Any) -> tuple[Any, list[dict[str, str]]]:

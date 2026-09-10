@@ -912,33 +912,69 @@ class CollaborationAdapter(ABC):
         return False
 
     async def tell_actor(
-        self, channel_id: str, actor_ref: str, thread_ref: str | None, text: str
+        self,
+        channel_id: str,
+        actor_ref: str,
+        actor_name: str,
+        thread_ref: str | None,
+        text: str,
     ) -> None:
-        """Say something to one person in a channel that nobody else sees.
+        """Tell one person that the answer they gave a request card did not land.
 
-        Used when an answer someone gave a request card could not be applied.
-        Only they need to know, and a channel post saying so would put the
-        failure in front of everyone who was not answering.
+        Privately, where the platform has a private reply: only they need to
+        know, and a channel post saying so puts the failure in front of
+        everyone who was not answering.
 
-        `text` is plain words. An adapter whose platform renders markup escapes
-        it, the same way every other send on that platform does.
+        This base is a platform that has none, so it says it in the card's
+        thread instead. Everyone reading that thread sees a notice addressed to
+        somebody else, which costs less than the alternative it replaced:
+        silence, and one person waiting on a card that is never going to move.
 
-        Saying nothing is the answer whenever a platform has no private reply,
-        and this base is a platform that has none — the refusal is already in
-        the log, and that is where it stays. Only reachable on a platform that
-        posts request cards.
+        `text` is plain words, and `actor_name` is the display name of whoever
+        answered — needed only where the notice is not private, so that a
+        thread reading it can tell whose answer failed. Both are neutralised
+        with `escape_label_for_body`, which is the per-platform rule for
+        untrusted text going into a body: a refusal quotes back what the person
+        typed, and the reason for one quotes what the host called an option.
+
+        Nothing is said without a thread to say it in. A press carries none,
+        and the channel root is a wider audience than the card's thread — but
+        the controls that produce a press are inert on every platform that
+        reaches this base, so what that branch really guards is a platform
+        gaining buttons before it gains a private reply.
 
         An implementation must not raise. This runs on the inbound path of
         every message, ahead of the relay, so an exception out of it is not an
         unreported refusal but a message the room never sees."""
-        logger.warning(
-            "Cannot tell %s in %s that their answer did not land: %s has no way "
-            "to say something to one person in a channel. The notice was: %s",
-            actor_ref,
-            channel_id,
-            self.platform_name,
-            text,
+        if thread_ref is None:
+            logger.warning(
+                "Cannot tell %s in %s that their answer did not land: %s has no "
+                "way to say something to one person, and there is no thread to "
+                "say it in instead. The notice was: %s",
+                actor_ref,
+                channel_id,
+                self.platform_name,
+                text,
+            )
+            return
+        notice = (
+            f"{self.escape_label_for_body(actor_name)}: "
+            f"{self.escape_label_for_body(text)}"
         )
+        try:
+            await self.admin_message(channel_id, notice, thread_ref)
+        except Exception as e:
+            # Broad because this runs on the inbound path of every message: a
+            # notice that cannot be posted must not cost the room the message
+            # that triggered it.
+            logger.warning(
+                "Could not tell %s in %s that their answer did not land: %s. "
+                "The notice was: %s",
+                actor_ref,
+                channel_id,
+                e,
+                text,
+            )
 
     def set_agent_presentation_resolver(
         self, resolver: Callable[[str], Awaitable[AgentPresentation | None]]
