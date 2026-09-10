@@ -40,6 +40,19 @@ export type DeleteAgentOptions = {
    */
   deleteInSwitch: boolean;
   /**
+   * Also tear down what was provisioned on disk for this agent (its
+   * `.switch/agents/<name>.json` credentials, provider definition files, launch
+   * profile) and kill its sidecar on the host.
+   *
+   * Required with no default, because the right answer depends on who owns the
+   * on-disk state: an agent this Console created can carry its files out, but an
+   * agent merely loaded from a shared host (CHOO-2560) has credentials that
+   * belong to ANOTHER install — deleting them there is data loss on a
+   * colleague's machine. Plain remove must mirror attach's guarantee: nothing in
+   * the working directory is touched.
+   */
+  removeProvisionedFiles: boolean;
+  /**
    * Whether a person removed this agent or a server teardown swept it up.
    *
    * Required, because the same function serves both: wiping a managed server
@@ -157,9 +170,11 @@ async function removeProvisionedFiles(agent: Agent, location: Location): Promise
  *    caches the agent's Switch credentials in memory, so without an explicit
  *    stop it keeps heartbeating and polling notifications for an agent that
  *    no longer exists.
- * 4. The Switch credentials + definition file Switch Console provisioned on disk for
- *    THIS agent (local or remote), which a bare row delete would leave orphaned.
- *    Sibling agents' files in the same directory are untouched.
+ * 4. Only when `removeProvisionedFiles` is set: the Switch credentials +
+ *    definition file provisioned on disk for THIS agent (local or remote), and
+ *    its sidecar. A plain remove leaves the working directory and the host's
+ *    processes untouched — on a shared host they may belong to another install
+ *    (CHOO-2560). Sibling agents' files are never touched either way.
  *
  * The agent's location row is intentionally kept — locations are reusable
  * and other agents may still live there.
@@ -222,7 +237,7 @@ async function removeAgent(
 
   await setAutoSessionAgent(agentId, false);
 
-  if (agent && location) {
+  if (agent && location && options.removeProvisionedFiles) {
     await removeProvisionedFiles(agent, location).catch((error) => {
       log.warn('deleteAgent: failed to remove provisioned files', {
         agentId,

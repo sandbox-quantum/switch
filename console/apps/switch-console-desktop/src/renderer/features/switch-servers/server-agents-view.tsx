@@ -123,6 +123,11 @@ const AgentCard = observer(function AgentCard({
             {provider ? `${provider} · ` : ''}
             {sshHost ?? 'this computer'}
           </div>
+          {agent.ownerName && (
+            <div className="truncate text-xs text-foreground-tertiary-passive">
+              loaded · by {agent.ownerName}
+            </div>
+          )}
         </div>
       </div>
 

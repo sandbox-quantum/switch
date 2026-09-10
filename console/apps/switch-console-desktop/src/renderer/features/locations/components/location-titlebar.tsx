@@ -184,7 +184,16 @@ export const LocationTitlebar = observer(function LocationTitlebar() {
 
   return (
     <Titlebar
-      leftSlot={<AgentCrumb agent={agent} />}
+      leftSlot={
+        <div className="flex items-center gap-2">
+          <AgentCrumb agent={agent} />
+          {agent?.ownerName && (
+            <span className="text-xs text-foreground-tertiary-passive">
+              loaded · by {agent.ownerName}
+            </span>
+          )}
+        </div>
+      }
       rightSlot={
         <div className="mr-1 flex items-center gap-1.5">
           {mounted &&

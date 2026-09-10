@@ -1,8 +1,8 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "e828b0ec-bd6d-42b0-8062-5c258c38a323",
-  "prevId": "395a411a-8bb8-47cc-bb31-031ab4291c0a",
+  "id": "ce740e52-65ff-463a-8a1a-5a61accf558f",
+  "prevId": "e828b0ec-bd6d-42b0-8062-5c258c38a323",
   "tables": {
     "agents": {
       "name": "agents",
@@ -736,13 +736,6 @@
         },
         "status": {
           "name": "status",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "agent_session_id": {
-          "name": "agent_session_id",
           "type": "text",
           "primaryKey": false,
           "notNull": false,
