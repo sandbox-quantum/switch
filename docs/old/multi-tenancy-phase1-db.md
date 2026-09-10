@@ -10,15 +10,16 @@ and its reasoning below still describes that whole shape. What actually
 shipped is narrower: **the tenant model, per-tenant uniqueness and the
 composite foreign keys are built**, in the one migration this document
 describes. **Row-level security is not**: `require_tenant_id()`, the policy
-attached to each table, `db/rls_ddl.py`, and the isolation test under "Done
-when" were all split out into a later change, along with everything in
-"Setting the tenant" and "The bootstrap problem" below — the `tenant_session`
-/ `system_session` seam, the 107-call-site and 206-call-site migrations off
-the raw session, and the request-side wiring. None of that exists in the
-codebase yet. Read the sections below as the design those later changes
-implement, not as a description of what is running today; "What Phase 1 does
-not close" has been updated to say which gaps are this migration's and which
-belong to the deferred work.
+attached to each table, `db/rls_ddl.py` and the isolation test under "Done
+when" were all split out into a later change.
+**"Setting the tenant" has since been built** and that section now describes
+what was actually implemented, which differs from what it originally proposed —
+an event hook rather than a dependency at every call site, for reasons given
+there. The background half of it, the roughly 206 session sites outside the
+request path, is still outstanding. Read the remaining sections as the design
+those later changes implement rather than as a description of what is running
+today; "What Phase 1 does not close" says which gaps are this migration's and
+which belong to the deferred work.
 
 Postgres 16 everywhere — local Compose, the chart, and the test containers —
 and two things below need at least 15, so that is a floor, not an incidental
@@ -320,19 +321,44 @@ Phase 1 has one tenant, so membership resolution returns the single row and
 raises if there is more than one. Phase 2 adds tenant switching and an
 active-tenant claim; that is a change to one function.
 
-**The request seam has to move.** `get_session` is a FastAPI dependency that
-resolves *before* the one that authenticates the user, so there is no moment
-today where the principal is known and the session is not yet open. Endpoints
-therefore stop depending on `get_session` and depend on a `tenant_session` that
-composes it with the principal and issues the `set_config`. That is a
-mechanical edit at 107 call sites, and it puts the seam in every signature
-where a reader can see it. A test asserts no endpoint uses the raw session.
+**The set is issued by an event, not by a call.** This paragraph originally
+proposed replacing `get_session` with a `tenant_session` dependency at all 107
+endpoint call sites. What was built instead is a SQLAlchemy `after_begin` hook,
+registered at import, that reads the bound tenant and issues the `set_config`
+whenever a transaction opens.
+
+The hook is better for the reason the whole design exists: a dependency each
+endpoint must remember to use is a rule, and a rule gets forgotten. A call site
+that forgot is one of the four prior-art bugs. With the hook there is no site
+to forget, and no endpoint signature changed.
+
+It also turned out the call sites did not need to move at all. Constructing a
+session does no I/O — the transaction begins on the first query, inside the
+endpoint body, by which point every dependency including authentication has
+resolved. That reasoning is load-bearing, so it is pinned by a test asserting
+every route reaching `get_session` also reaches an authenticating dependency.
+
+Its real boundary, stated rather than overclaimed: no ORM session in this
+process can skip setting the tenant. Two things are not ORM sessions and do
+bypass it — the notify listener's raw asyncpg connection, which reads no scoped
+table, and Alembic's bare connection, which is deliberately global.
+
+**Resolution runs before the tenant exists, on a short-lived session.**
+Answering "which tenant does this caller belong to" is by definition unscoped.
+It happens on a session opened and closed inside the authenticating dependency,
+before the request's own session is touched. An earlier attempt held that
+second session open for the whole request; that both halved the connection pool
+and, because the `User` it returned belonged to a session nobody committed,
+silently discarded a password change. Resolution needs the subject id, not a
+`User` row — so it looks up only the membership, and the user is loaded from
+the session the endpoint actually commits.
 
 **Background work is not a short list.** There are roughly 206 places that open
 a session from the factory directly. They fall into three shapes — acting for a
-room, acting for a bridge, acting for the deployment — so they get two named
-helpers, `tenant_session(tenant_id)` and `system_session()`, and a test that
-the raw factory is not called anywhere else.
+room, acting for a bridge, acting for the deployment — so they get a named
+helper for each, and a test that the raw factory is not called anywhere else.
+Not yet done: those paths currently bind no tenant, which is harmless only
+while nothing enforces.
 
 **Writes fill the column automatically.** `tenant_id` gets a Python-side
 default reading the request's tenant, so ordinary ORM inserts need no change
