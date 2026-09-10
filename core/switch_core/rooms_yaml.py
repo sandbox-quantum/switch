@@ -332,14 +332,26 @@ class RoomYamlService:
     # ── Provision ───────────────────────────────────────────────────────────
 
     async def provision(
-        self, spec: RoomSpec, *, user_id: str, is_admin: bool
+        self,
+        spec: RoomSpec,
+        *,
+        user_id: str,
+        user_name: str,
+        is_admin: bool,
     ) -> ProvisionResult:
         bridge_id = await self._resolve_bridge_id(spec.bridge)
-        if spec.users and bridge_id is None:
-            raise ValueError(
-                "Cannot attach users to a room with no bridge "
-                "(users live on a collaboration bridge)"
-            )
+
+        # Always include the creating user so they're a member of the room
+        all_users = list(dict.fromkeys([user_name, *spec.users]))
+        if bridge_id is None and len(all_users) > 0:
+            # Without a bridge, users can't be invited — only warn if
+            # the template explicitly listed users beyond the creator
+            if spec.users:
+                raise ValueError(
+                    "Cannot attach users to a room with no bridge "
+                    "(users live on a collaboration bridge)"
+                )
+            all_users = []
 
         attached_ref_ids, inline_refs = await self._resolve_references(
             spec.references, user_id=user_id, is_admin=is_admin
@@ -351,7 +363,7 @@ class RoomYamlService:
             instructions=spec.instructions,
             channel_type=cast(ChannelType, spec.channel_type),
             agent_names=spec.agents or None,
-            user_names=spec.users or None,
+            user_names=all_users or None,
             bridge_id=bridge_id,
             created_by=user_id,
             owner_id=user_id,

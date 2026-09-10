@@ -400,7 +400,10 @@ async def create_room_from_yaml(
             inputs = None
         spec = rooms_yaml.parse(text, inputs=inputs)
         return await rooms_yaml.provision(
-            spec, user_id=user.id, is_admin=user.role == "admin"
+            spec,
+            user_id=user.id,
+            user_name=user.name,
+            is_admin=user.role == "admin",
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
