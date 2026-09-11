@@ -30,7 +30,7 @@ from dataclasses import dataclass
 import asyncpg
 import pytest
 import pytest_asyncio
-from sqlalchemy import text
+from sqlalchemy import insert, text
 from sqlalchemy.ext.asyncio import AsyncEngine
 from testcontainers.postgres import PostgresContainer
 
@@ -57,7 +57,7 @@ from switch_core.db.engine import (
     create_session_factory,
     create_unpooled_engine,
 )
-from switch_core.db.models import User
+from switch_core.db.models import TENANT_ZERO_ID, Tenant, User
 from switch_core.db.stores.agent_session_store import AgentSessionStore
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.api_key_store import ApiKeyStore
@@ -309,6 +309,21 @@ async def _admin_dsn(stack: StackInfo) -> str:
     )
 
 
+async def _seed_tenant_zero(engine: AsyncEngine) -> None:
+    """Insert the one tenant every scoped row's `tenant_id` default points at.
+
+    Needed right after schema creation, and again after every truncation:
+    `tenants` is in `Base.metadata.sorted_tables` like everything else, so
+    `_truncate_all` empties it along with the rest.
+    """
+    async with engine.begin() as conn:
+        await conn.execute(
+            insert(Tenant.__table__).values(
+                id=TENANT_ZERO_ID, slug="default", name="Default"
+            )
+        )
+
+
 async def _truncate_all(engine: AsyncEngine) -> None:
     """Reset row state between tests by truncating every mapped table at once.
 
@@ -320,6 +335,7 @@ async def _truncate_all(engine: AsyncEngine) -> None:
         return
     async with engine.begin() as conn:
         await conn.execute(text(f"TRUNCATE TABLE {tables} RESTART IDENTITY CASCADE"))
+    await _seed_tenant_zero(engine)
 
 
 @pytest_asyncio.fixture(scope="session", loop_scope="session")
@@ -343,6 +359,7 @@ async def session_env(switch_stack: StackInfo) -> AsyncIterator[SessionEnv]:
     # separately by `just migrate`, not here.
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+    await _seed_tenant_zero(engine)
 
     env = SessionEnv(
         config=config,
