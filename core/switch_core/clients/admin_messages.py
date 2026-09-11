@@ -15,6 +15,16 @@ from enum import StrEnum
 # human-readable default text, so a vanilla Matrix client still renders it.
 ADMIN_MARKER = "com.switch.admin"
 
+# Marker for a platform-sourced message (CHOO-2719). Unlike ADMIN_MARKER, a
+# platform message IS addressed to agents and expects action — the marker
+# tells the bridge to render it as the Switch app and lets resolve_sender
+# identify it as sender_kind="platform". Carried as a content field on a
+# plain m.room.message whose body is the human-readable default text.
+#
+# Value is a dict: {"on_behalf_of": "<name>"} when the platform is
+# impersonating a creator, or {} for a direct platform message.
+PLATFORM_MARKER = "com.switch.platform"
+
 
 class AdminMessageType(StrEnum):
     """The kind of admin/system message, carried in the marker so a bridge

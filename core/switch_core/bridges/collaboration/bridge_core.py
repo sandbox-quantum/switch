@@ -26,7 +26,11 @@ from switch_core.bridges.collaboration.models import (
     InboundUserJoin,
     OutboundAttachment,
 )
-from switch_core.clients.admin_messages import ADMIN_MARKER, AdminMessageType
+from switch_core.clients.admin_messages import (
+    ADMIN_MARKER,
+    PLATFORM_MARKER,
+    AdminMessageType,
+)
 from switch_core.clients.client_base import ClientBase, ClientConfig
 from switch_core.clients.mentions import mention_regex, strip_emphasis
 from switch_core.db.models import BridgeMessageMap, ExternalUser
@@ -1432,27 +1436,31 @@ class BridgeCore:
     ) -> None:
         event_content = event.content
         admin_marker = event_content.get(ADMIN_MARKER)
+        platform_marker = event_content.get(PLATFORM_MARKER)
         sender_name = event.sender_name
-        # An admin/system message renders natively per bridge (admin_message)
-        # rather than on behalf of its Matrix sender, so it needs no sender_name.
-        if sender_name is None and admin_marker is None:
+        # An admin/system or platform message renders natively per bridge
+        # (admin_message) rather than on behalf of its Matrix sender, so it
+        # needs no sender_name.
+        is_system = admin_marker is not None or platform_marker is not None
+        if sender_name is None and not is_system:
             logger.error(
                 "No sender_name in event from %s — skipping outbound", event.sender
             )
             return
 
         logger.debug(
-            "[BRIDGE-OUT] sending to channel=%s sender=%s admin=%s",
+            "[BRIDGE-OUT] sending to channel=%s sender=%s admin=%s platform=%s",
             channel_id,
             sender_name,
             admin_marker is not None,
+            platform_marker is not None,
         )
 
         thread_root_ref = await self._outbound_thread_root_ref(
             event_content, channel_id
         )
 
-        if admin_marker is not None:
+        if is_system:
             message_type = (
                 admin_marker.get("type") if isinstance(admin_marker, dict) else None
             )

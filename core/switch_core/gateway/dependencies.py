@@ -134,6 +134,7 @@ def get_room_yaml_service() -> RoomYamlService:
         external_user_store=_state["external_user_store"],
         room_role_store=protocol.room_role_store,
         session_factory=_state["session_factory"],
+        client_lifecycle=_state["client_lifecycle"],
     )
 
 

@@ -8,6 +8,7 @@ from switch_core.bridges.agent.commands import dispatch_admin_command
 from switch_core.bridges.agent.protocol.connections import ConnectionRegistry
 from switch_core.clients.admin_messages import (
     ADMIN_MARKER,
+    PLATFORM_MARKER,
     AdminMessageType,
     admin_extra_content,
 )
@@ -123,6 +124,39 @@ class AdminClient(ClientBase[ClientConfig]):
             format=format,
             thread_root_id=thread_root_id,
             extra_content=admin_extra_content(AdminMessageType.COMMAND_RESULT),
+        )
+
+    # ── Platform messages (CHOO-2719) ───────────────────────────────────────
+
+    async def send_platform_message(
+        self,
+        room_id: str,
+        body: str,
+        *,
+        thread_root_id: str | None = None,
+        on_behalf_of: str | None = None,
+    ) -> str | None:
+        """Send an addressed message as the Switch platform.
+
+        Unlike admin messages, platform messages carry no ADMIN_MARKER and ARE
+        addressed to agents — they expect a response. The PLATFORM_MARKER
+        identifies them as platform-sourced so the bridge renders them as the
+        Switch app and resolve_sender maps them to sender_kind="platform".
+
+        ``on_behalf_of``, when set, is the name of the user the platform is
+        impersonating (creator impersonation). The marker carries it so every
+        layer can distinguish a direct platform message from an impersonated
+        one.
+        """
+        marker_value: dict[str, object] = {}
+        if on_behalf_of is not None:
+            marker_value["on_behalf_of"] = on_behalf_of
+        return await self.send_message(
+            room_id,
+            body,
+            format="markdown",
+            thread_root_id=thread_root_id,
+            extra_content={PLATFORM_MARKER: marker_value},
         )
 
     # ── Admin notices ─────────────────────────────────────────────────────────
