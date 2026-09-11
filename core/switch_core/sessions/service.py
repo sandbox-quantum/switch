@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import time
 import uuid
 from datetime import UTC, datetime, timedelta
@@ -10,6 +11,7 @@ from typing import get_args
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from switch_core.addressing import can_address, parse_policy
 from switch_core.bridges.agent.protocol.connections import ConnectionRegistry
 from switch_core.bridges.agent.protocol.event_buffer import (
     CursorExpiredError,
@@ -28,6 +30,7 @@ from switch_core.db.models import (
     SdkSession,
     SdkSessionCommand,
     SdkSessionEvent,
+    SessionRequestPost,
     require_tenant_id,
 )
 from switch_core.db.session_scope import tenant_session
@@ -70,6 +73,8 @@ from switch_core.sessions.contract import (
 )
 from switch_core.sessions.projection import SessionProjection
 from switch_core.sessions.validation import validate_answer
+
+logger = logging.getLogger(__name__)
 
 LEASE_SECONDS = 30
 
@@ -839,10 +844,21 @@ class SessionAuthority:
                 if source is None:
                     raise SessionError("NOT_FOUND", "Request has no source command.")
                 origin = Command.model_validate(source.command).origin
-                if (origin.room_id, origin.thread_id) != (
+                # Cards may be threaded under a channel-level prompt, and their
+                # destination uses platform IDs rather than SDK message IDs.
+                post = await db.scalar(
+                    select(SessionRequestPost).where(
+                        SessionRequestPost.bridge_id == bridge_id,
+                        SessionRequestPost.session_id == row.id,
+                        SessionRequestPost.request_id == request.request_id,
+                        SessionRequestPost.epoch == row.epoch,
+                    )
+                )
+                expected_thread = post.thread_id if post else origin.thread_id
+                if (origin.room_id, expected_thread) != (
                     command.origin.room_id,
                     command.origin.thread_id,
-                ):
+                ) or (post is not None and post.room_id != origin.room_id):
                     raise SessionError(
                         "NOT_AUTHORIZED",
                         "Answer came from a different request destination.",
@@ -1128,12 +1144,14 @@ class SessionAuthority:
                 if room.bridge_id
                 else None
             )
-            origin = Origin(
-                surface=bridge.type if bridge else "switch-web",
-                actor_id=actor_id,
-                room_id=room_id,
-                thread_id=thread_id,
-                message_id=message_id,
+            origin = Origin.model_validate(
+                {
+                    "surface": bridge.type if bridge else "switch-web",
+                    "actorId": actor_id,
+                    "roomId": room_id,
+                    "threadId": thread_id,
+                    "messageId": message_id,
+                }
             )
             await self._authorize(
                 db,
@@ -1501,25 +1519,54 @@ class SessionAuthority:
                 raise SessionError(
                     "NOT_AUTHORIZED", "Callback destination does not match the bridge."
                 )
-            owner = await db.scalar(
-                select(ExternalUserClaim.user_id)
-                .join(
-                    ExternalUser,
-                    ExternalUser.id == ExternalUserClaim.external_user_id,
-                )
+            external_user_id = await db.scalar(
+                select(ExternalUser.id)
                 .join(Client, Client.id == ExternalUser.client_id)
-                .join(
-                    ClientRoom,
-                    ClientRoom.client_id == Client.id,
-                )
+                .join(ClientRoom, ClientRoom.client_id == Client.id)
                 .where(
                     ExternalUser.bridge_id == bridge_id,
                     Client.matrix_user_id == origin.actor_id,
                     ClientRoom.room_id == origin.room_id,
-                    ExternalUserClaim.user_id == agent.owner_id,
                 )
             )
-            if owner is None:
+            if external_user_id is None:
+                logger.warning(
+                    "Answer rejected for session %s: %s in room %s is not a "
+                    "Switch-tracked member of this bridge.",
+                    row.id,
+                    origin.actor_id,
+                    origin.room_id,
+                )
+                raise SessionError(
+                    "NOT_AUTHORIZED",
+                    "Room visibility does not grant permission to answer.",
+                )
+            claimants = list(
+                await db.scalars(
+                    select(ExternalUserClaim.user_id).where(
+                        ExternalUserClaim.external_user_id == external_user_id
+                    )
+                )
+            )
+            allowed = can_address(
+                parse_policy(agent.addressing_policy),
+                room_id=origin.room_id,
+                group_id=room.group_id,
+                sender_kind="user",
+                sender_id=external_user_id,
+                sender_user_ids=claimants,
+                sender_owner_user_id=None,
+                owner_user_id=agent.owner_id,
+            )
+            if not allowed:
+                logger.warning(
+                    "Answer rejected for session %s: %s in room %s is not "
+                    "admitted by agent %s's addressing policy.",
+                    row.id,
+                    origin.actor_id,
+                    origin.room_id,
+                    agent.name,
+                )
                 raise SessionError(
                     "NOT_AUTHORIZED",
                     "Room visibility does not grant permission to answer.",

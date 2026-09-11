@@ -102,6 +102,9 @@ def _bridge(*agents: SimpleNamespace) -> BridgeCore:
     bridge._bridge_tenant_id = "tenant-1"
     bridge._agent_store = _AgentStore({a.name: a for a in agents})  # type: ignore[assignment]
     bridge._session_factory = _Session  # type: ignore[assignment]
+    bridge._session_publisher = None
+    bridge._session_publication_task = None
+    bridge._session_interactions = None
     return bridge
 
 

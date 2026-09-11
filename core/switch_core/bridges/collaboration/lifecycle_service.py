@@ -22,6 +22,7 @@ from switch_core.db.stores.client_store import ClientStore
 from switch_core.db.stores.collaboration_bridge_store import CollaborationBridgeStore
 from switch_core.db.stores.external_user_store import ExternalUserStore
 from switch_core.db.stores.room_store import RoomStore
+from switch_core.db.stores.session_request_post_store import SessionRequestPostStore
 from switch_core.db.tenant_lookup import all_tenant_ids, tenant_of_collaboration_bridge
 from switch_core.provisioning import Provisioning
 from switch_core.tenant_context import current_tenant_id, no_tenant
@@ -59,6 +60,7 @@ class CollaborationBridgeLifecycleService:
         bridge_store: CollaborationBridgeStore,
         external_user_store: ExternalUserStore,
         bridge_message_map_store: BridgeMessageMapStore,
+        session_request_post_store: SessionRequestPostStore,
         room_store: RoomStore,
         agent_store: AgentStore,
         client_store: ClientStore,
@@ -72,6 +74,7 @@ class CollaborationBridgeLifecycleService:
         self._bridge_store = bridge_store
         self._external_user_store = external_user_store
         self._bridge_message_map_store = bridge_message_map_store
+        self._session_request_post_store = session_request_post_store
         self._room_store = room_store
         self._agent_store = agent_store
         self._client_store = client_store
@@ -114,6 +117,10 @@ class CollaborationBridgeLifecycleService:
 
     def get_registered_types(self) -> list[str]:
         return list(self._adapter_registry.keys())
+
+    async def refresh_sdk_session(self, session_id: str) -> None:
+        for bridge in self._bridges.values():
+            await bridge.refresh_sdk_session(session_id)
 
     def get_adapter(self, bridge_id: str) -> CollaborationAdapter | None:
         """The live adapter for a running bridge, or None if it isn't running.
@@ -505,6 +512,7 @@ class CollaborationBridgeLifecycleService:
             room_store=self._room_store,
             external_user_store=self._external_user_store,
             bridge_message_map_store=self._bridge_message_map_store,
+            session_request_post_store=self._session_request_post_store,
             agent_store=self._agent_store,
             client_store=self._client_store,
             room_service=self._room_service,
@@ -514,6 +522,7 @@ class CollaborationBridgeLifecycleService:
             matrix_server_name=self._config.matrix_server_name,
             bridge_client_matrix_user_id=bridge_client_record.matrix_user_id,
             max_attachment_bytes=self._config.agent_media_max_bytes,
+            session_demo_enabled=self._config.session_demo_enabled,
         )
 
         bridge_client = BridgeClient(

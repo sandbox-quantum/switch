@@ -96,6 +96,17 @@ async def test_migrations_match_the_models(migrated_url: str) -> None:
             await connection.run_sync(_upgrade_to_head)
         async with engine.connect() as connection:
             diff = await connection.run_sync(_diff)
+            # New publication storage must be protected in an upgraded database,
+            # not only in the metadata.create_all schema used by most tests.
+            protected = await connection.scalar(
+                text(
+                    "SELECT c.relrowsecurity AND EXISTS (SELECT 1 FROM pg_policy p "
+                    "WHERE p.polrelid = c.oid AND p.polname = 'tenant_isolation') "
+                    "FROM pg_class c WHERE c.oid = 'session_activity_posts'::regclass"
+                )
+            )
+            assert protected
+
     finally:
         await engine.dispose()
 

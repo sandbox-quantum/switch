@@ -4,7 +4,8 @@ import asyncio
 import logging
 from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
+from datetime import datetime
 from typing import ClassVar
 
 from switch_core.agent_display_name import defuse_label_markup
@@ -17,9 +18,20 @@ from switch_core.bridges.collaboration.models import (
     InboundAgentJoin,
     InboundAppJoin,
     InboundCommand,
+    InboundInteraction,
     InboundMessage,
     InboundUserJoin,
     OutboundAttachment,
+)
+from switch_core.bridges.collaboration.session.renderers import RequestReference
+from switch_core.bridges.collaboration.session.renderers.neutral import (
+    request_summary,
+    turn_summary,
+)
+from switch_core.sessions.contract import (
+    Item,
+    SnapshotRequest,
+    TurnUpsert,
 )
 
 logger = logging.getLogger(__name__)
@@ -98,6 +110,90 @@ class LiveRuntimeIndicator:
     started_at: float
 
 
+@dataclass(frozen=True)
+class TurnActivity:
+    """A turn's items and its own status, as `post_rich` / `update_rich` draw it.
+
+    Carries the contract types directly rather than a pre-rendered payload —
+    an adapter with a card of its own reads them to build one; the base,
+    which has none, reads them to build `turn_summary` instead. Neither has to
+    agree on a shape neither of them owns.
+
+    `elapsed_seconds` is not part of the contract — neither a turn nor an item
+    carries a timestamp — so it travels here instead, from whatever tracked
+    one against the session's own event log. `None` until a caller has one to
+    give. Running turns use it for the live clock; ended turns show the final duration.
+    """
+
+    items: list[Item]
+    turn: TurnUpsert
+    elapsed_seconds: float | None = None
+    tool_log: bool = False
+    status_only: bool = False
+    # Stable recovery marker for a reserved platform post, not an answer token.
+    publication_token: str | None = None
+
+
+@dataclass(frozen=True)
+class RequestCard:
+    """A request and how a platform refers back to it, as `post_rich` /
+    `update_rich` draw it. See `TurnActivity` for why the contract type
+    travels rather than a rendering of it.
+
+    `turn`/`items`/`elapsed_seconds` are set only once the request's own
+    turn is drawn with it rather than apart from it — a card whose turn has
+    not been folded in yet, or never will be, carries `turn=None` and draws
+    exactly as it always has. `turn` alone is the switch: `items` defaults
+    to empty rather than to `None`, so a turn that has emitted nothing yet
+    is a state this can represent and draw correctly, not one a caller can
+    accidentally leave unset and have silently dropped.
+    """
+
+    request: SnapshotRequest
+    reference: RequestReference
+    turn: TurnUpsert | None = None
+    items: list[Item] = field(default_factory=list)
+    elapsed_seconds: float | None = None
+
+    responder_external_id: str | None = None
+    # Presentation only: never changes the SDK request or its authorization.
+    unavailable_reason: str | None = None
+
+
+RichContent = TurnActivity | RequestCard
+
+
+class RichContentFailed(Exception):
+    """`post_rich` or `update_rich` could not draw its content on this platform.
+
+    Every implementation raises this — chaining the platform's own error as
+    `__cause__` where there is one, the way `SlackAdapter`'s does with
+    `SlackApiError` — so a caller has one thing to catch regardless of which
+    platform posted the content. Unlike `send_message` and `update_message`,
+    which report failure by return value or not at all, this seam raises on
+    both ends: a caller cannot forget to check what it did not ask to be told.
+
+    `text` is what the platform was attempting to show — the same string a
+    reader would have seen, whichever renderer produced it. A caller updating
+    a card, in particular, needs it: the existing "could not be updated, here
+    is the outcome" fallback reply is only honest if it names what the card
+    now can't, and it must do that without knowing how any given platform
+    drew it.
+    """
+
+    def __init__(self, message: str, *, text: str) -> None:
+        super().__init__(message)
+        self.text = text
+
+
+class RichContentThrottled(RichContentFailed):
+    """The platform asked us to wait before attempting another update."""
+
+    def __init__(self, *, retry_after: float, text: str) -> None:
+        super().__init__("Platform updates are rate limited.", text=text)
+        self.retry_after = retry_after
+
+
 class CollaborationAdapter(ABC):
     #: Whether this platform can create a channel from Switch at all.
     #:
@@ -155,6 +251,12 @@ class CollaborationAdapter(ABC):
         )
         self._on_user_joined: Callable[[InboundUserJoin], Awaitable[None]] | None = None
         self._on_app_joined: Callable[[InboundAppJoin], Awaitable[None]] | None = None
+        # Set by set_interaction_handler. Called when someone operates a control
+        # on a message this bridge posted. Left unset on a platform with no such
+        # controls, and on an adapter running without a bridge core behind it.
+        self._on_interaction: Callable[[InboundInteraction], Awaitable[None]] | None = (
+            None
+        )
         # Set by set_channel_migration_handler. Called with (old_id, new_id)
         # when the platform reissues a channel's id.
         self._on_channel_migrated: Callable[[str, str], Awaitable[None]] | None = None
@@ -406,6 +508,144 @@ class CollaborationAdapter(ABC):
     async def update_message(
         self, channel_id: str, message_ref: str, new_content: str
     ) -> None: ...
+
+    async def post_rich(
+        self,
+        channel_id: str,
+        agent_name: str,
+        content: RichContent,
+        thread_root_id: str | None = None,
+    ) -> str:
+        """Post a turn's activity or a request's card, in whatever form this
+        platform draws it.
+
+        This base has no card or activity renderer of its own, so it falls
+        back to `rich_fallback_text`. Override to draw a real one — the way
+        `SlackAdapter` does, choosing its own renderer by `content`'s type —
+        and this is never called.
+
+        Raises `RichContentFailed` on any failure — whether the platform
+        raised (Teams' `send_message` does, on any non-2xx status) or merely
+        returned `None` (Slack's does, on a caught `SlackApiError`). Unlike
+        `send_message`, whose other callers already handle a `None` ref, this
+        is a new seam and raises on both shapes of failure instead: a caller
+        here cannot forget to check what it did not ask to be told.
+        """
+        text = self.rich_fallback_text(content)
+        try:
+            ref = await self.send_message(channel_id, agent_name, text, thread_root_id)
+        except Exception as error:
+            raise RichContentFailed(
+                f"{self.platform_name} could not send the message in channel "
+                f"{channel_id}: {error}",
+                text=text,
+            ) from error
+        if ref is None:
+            raise RichContentFailed(
+                f"{self.platform_name} did not accept the message in channel "
+                f"{channel_id}.",
+                text=text,
+            )
+        return ref
+
+    async def update_rich(
+        self, channel_id: str, message_ref: str, content: RichContent
+    ) -> None:
+        """Redraw what `post_rich` posted, in place.
+
+        Falls back the same way `post_rich` does. Most adapters'
+        `update_message` swallows its own errors by design, for the
+        runtime-status paths that depend on that — but not all of them (Teams'
+        raises on any non-2xx status), so this catches broadly rather than
+        trusting the convention: whichever it does, a caller of `update_rich`
+        sees `RichContentFailed` or nothing.
+        """
+        text = self.rich_fallback_text(content)
+        try:
+            await self.update_message(channel_id, message_ref, text)
+        except Exception as error:
+            raise RichContentFailed(
+                f"{self.platform_name} could not update the message in "
+                f"channel {channel_id}: {error}",
+                text=text,
+            ) from error
+
+    def rich_fallback_text(self, content: RichContent) -> str:
+        """The neutral text form of `content`, for `post_rich` / `update_rich`'s
+        base and for any adapter that wants the same fallback rather than its
+        own.
+
+        A turn falls back to `turn_summary` — the last thing the agent said,
+        and the turn's own state. A request card has no neutral form yet:
+        there is no off-Slack request renderer to write one against, so
+        `request_summary` raises rather than guess at a shape (title, detail,
+        per-option or per-question lines, a footer) nobody has needed yet.
+        Implement that alongside the first one.
+
+        The result is ready to send as-is — `post_rich` and `update_rich` do
+        not run it through `translate_outbound` again. `_rich_escape` already
+        does, so the budget these renderers cut to is measured on the string
+        that actually reaches the wire rather than the one before that last
+        transform, which can expand it (Telegram's turns one `&` into five
+        characters). The turn's own state line skips both passes rather than
+        being measured through them: it is a handful of fixed words, never
+        host text and never Switch Markdown, so translating it is assumed to
+        be a no-op — the same assumption that already excuses it from escaping.
+        """
+        escape = self._rich_escape
+        if isinstance(content, TurnActivity):
+            return turn_summary(
+                content.items,
+                content.turn,
+                escape=escape,
+                limit=self.rich_fallback_limit(),
+            )
+        return request_summary(
+            content.request,
+            content.reference,
+            escape=escape,
+            limit=self.rich_fallback_limit(),
+        )
+
+    def _rich_escape(self, label: str) -> str:
+        """`rich_fallback_text`'s host text, neutralised and then rendered.
+
+        Composed so the one function `turn_summary` / `request_summary` cut
+        their budget against is the same pipeline `post_rich` / `update_rich`
+        actually sends: `escape_label_for_body` first, because that is what
+        keeps a display name or an assistant's words from forging markup;
+        `translate_outbound` after, because that is what turns Switch
+        Markdown into this platform's own and is the last thing to touch the
+        string before it goes on the wire.
+        """
+        return self.translate_outbound(self.escape_label_for_body(label))
+
+    def rich_fallback_limit(self) -> int:
+        """How many characters `rich_fallback_text` may spend on one message.
+
+        2000 by default — Discord's own limit, the tightest of the platforms
+        without a card renderer of their own today. A conservative
+        placeholder rather than a value read from each platform's real API
+        contract; override once a platform's actual limit is known.
+        """
+        return 2000
+
+    async def find_request_card(
+        self,
+        channel_id: str,
+        thread_root_id: str | None,
+        token: str,
+        created_at: datetime,
+    ) -> str | None:
+        """Search for a request card already on the platform, by its token.
+
+        `recover` calls this when a post's outcome is uncertain, so it can
+        bind the reservation to what is actually there instead of risking a
+        duplicate. `None` means either nothing was found or, as here, that
+        this platform has no way to look — a card recovers only where an
+        adapter can search for one, which today is only `SlackAdapter`.
+        """
+        return None
 
     @abstractmethod
     async def delete_message(self, channel_id: str, message_ref: str) -> None: ...
@@ -860,6 +1100,114 @@ class CollaborationAdapter(ABC):
         The symptom without it is one-way traffic — sends still arrive, because
         the platform forwards them, while nothing inbound matches a room again."""
         self._on_channel_migrated = handler
+
+    def set_interaction_handler(
+        self, handler: Callable[[InboundInteraction], Awaitable[None]]
+    ) -> None:
+        """Install the callback for a control on a posted message being operated.
+
+        A setter rather than another argument to `start` because only the
+        platforms with interactive message controls ever call it, and an adapter
+        that never does needs no change to go on working."""
+        self._on_interaction = handler
+
+    async def is_first_reply(
+        self, channel_id: str, root_ref: str, message_ref: str
+    ) -> bool:
+        """Whether `message_ref` is the first thing said under `root_ref`.
+
+        Asked when someone answers a request card with a word that names no
+        request — a bare "yes". That only counts as an answer while nothing
+        else has been said under the card, because once a thread has a
+        conversation in it a "yes" is as likely to be about the conversation.
+
+        Read from the platform each time rather than tracked here: two replies
+        arriving at once would both look like the first to anything counting
+        locally, and each would decide the request.
+
+        False is the answer whenever a platform cannot tell, and this base is a
+        platform that cannot. Refusing costs someone the retype of a handle;
+        accepting decides a permission from a word that was about something
+        else. Only reachable on a platform that posts request cards.
+
+        An implementation must not raise. This is asked on the inbound path of
+        every message, ahead of the relay, so an exception out of it is not a
+        refused answer but a message the room never sees."""
+        logger.warning(
+            "Cannot tell whether %s is the first reply under %s in %s, so it "
+            "does not answer the card there. %s posts request cards without a "
+            "way to read a thread back.",
+            message_ref,
+            root_ref,
+            channel_id,
+            self.platform_name,
+        )
+        return False
+
+    async def tell_actor(
+        self,
+        channel_id: str,
+        actor_ref: str,
+        actor_name: str,
+        thread_ref: str | None,
+        text: str,
+    ) -> None:
+        """Tell one person that the answer they gave a request card did not land.
+
+        Privately, where the platform has a private reply: only they need to
+        know, and a channel post saying so puts the failure in front of
+        everyone who was not answering.
+
+        This base is a platform that has none, so it says it in the card's
+        thread instead. Everyone reading that thread sees a notice addressed to
+        somebody else, which costs less than the alternative it replaced:
+        silence, and one person waiting on a card that is never going to move.
+
+        `text` is plain words, and `actor_name` is the display name of whoever
+        answered — needed only where the notice is not private, so that a
+        thread reading it can tell whose answer failed. Both are neutralised
+        with `escape_label_for_body`, which is the per-platform rule for
+        untrusted text going into a body: a refusal quotes back what the person
+        typed, and the reason for one quotes what the host called an option.
+
+        Nothing is said without a thread to say it in. A press carries none,
+        and the channel root is a wider audience than the card's thread — but
+        the controls that produce a press are inert on every platform that
+        reaches this base, so what that branch really guards is a platform
+        gaining buttons before it gains a private reply.
+
+        An implementation must not raise. This runs on the inbound path of
+        every message, ahead of the relay, so an exception out of it is not an
+        unreported refusal but a message the room never sees."""
+        if thread_ref is None:
+            logger.warning(
+                "Cannot tell %s in %s that their answer did not land: %s has no "
+                "way to say something to one person, and there is no thread to "
+                "say it in instead. The notice was: %s",
+                actor_ref,
+                channel_id,
+                self.platform_name,
+                text,
+            )
+            return
+        notice = (
+            f"{self.escape_label_for_body(actor_name)}: "
+            f"{self.escape_label_for_body(text)}"
+        )
+        try:
+            await self.admin_message(channel_id, notice, thread_ref)
+        except Exception as e:
+            # Broad because this runs on the inbound path of every message: a
+            # notice that cannot be posted must not cost the room the message
+            # that triggered it.
+            logger.warning(
+                "Could not tell %s in %s that their answer did not land: %s. "
+                "The notice was: %s",
+                actor_ref,
+                channel_id,
+                e,
+                text,
+            )
 
     def set_agent_presentation_resolver(
         self, resolver: Callable[[str], Awaitable[AgentPresentation | None]]

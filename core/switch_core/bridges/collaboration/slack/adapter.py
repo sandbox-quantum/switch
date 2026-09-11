@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import re
 import time
 import uuid
 from collections import OrderedDict
 from collections.abc import Awaitable, Callable
 from dataclasses import replace
+from datetime import datetime
 from typing import Any, ClassVar
 
 import httpx
@@ -21,6 +23,11 @@ from slack_sdk.web.async_client import AsyncWebClient
 from switch_core.bridges.collaboration.adapter import (
     CollaborationAdapter,
     LiveRuntimeIndicator,
+    RequestCard,
+    RichContent,
+    RichContentFailed,
+    RichContentThrottled,
+    TurnActivity,
 )
 from switch_core.bridges.collaboration.models import (
     Attachment,
@@ -31,14 +38,22 @@ from switch_core.bridges.collaboration.models import (
     InboundAgentJoin,
     InboundAppJoin,
     InboundCommand,
+    InboundInteraction,
     InboundMessage,
     InboundUserJoin,
     OutboundAttachment,
+)
+from switch_core.bridges.collaboration.session.renderers.slack import (
+    SlackMessage,
+    render_activity,
+    render_request,
+    render_turn_with_request,
 )
 from switch_core.bridges.collaboration.slack.agent_groups import (
     SlackAgentGroupDirectory,
 )
 from switch_core.bridges.collaboration.slack.avatar import on_slack_background
+from switch_core.bridges.collaboration.slack.mrkdwn import escape_mrkdwn, plain_text
 
 logger = logging.getLogger(__name__)
 
@@ -112,17 +127,6 @@ _WORKING_REACTION = "eyes"
 
 # Slack caps a task chunk's text; keep well inside it.
 _STREAM_STEP_MAX = 200
-
-
-def _plain(text: str) -> str:
-    """Strip Switch's markup for somewhere that renders none.
-
-    A task card's title is plain text, so markup passed into it arrives as
-    literal `_underscores_` and backticks rather than emphasis."""
-    text = re.sub(r"`([^`]*)`", r"\1", text)
-    text = re.sub(r"\*\*([^*]+)\*\*", r"\1", text)
-    text = re.sub(r"(?<!\w)[*_]([^*_]+)[*_](?!\w)", r"\1", text)
-    return text.strip()
 
 
 def _task_chunk(
@@ -299,6 +303,14 @@ class SlackAdapter(CollaborationAdapter):
         # pushed into it. A stream is what creates the session Slack renders.
         self._stream_ts: dict[tuple[str, str], str] = {}
         self._stream_step: dict[tuple[str, str], str] = {}
+        # (channel_id, thread_ts) -> the stream a session's turn activity is
+        # written into. Kept apart from `_stream_ts` because the two are
+        # different things wearing the same API: that one is an indicator the
+        # runtime-state path deletes when the turn ends, this one is the record
+        # of what the turn did and stays in the channel afterwards. A thread
+        # can only carry one stream, so a thread in here is one the session
+        # contract owns and the runtime-state path leaves alone.
+        self._activity_streams: dict[tuple[str, str], str] = {}
         # (channel_id, thread_ts) -> who asked. Streaming into a channel has to
         # name the person being replied to, which the runtime-state path does
         # not carry, so it is remembered from the message that started it.
@@ -430,6 +442,327 @@ class SlackAdapter(CollaborationAdapter):
                 "Failed to send message to Slack channel %s: %s", channel_id, e
             )
             return None
+
+    async def post_blocks(
+        self,
+        channel_id: str,
+        sender_name: str,
+        text: str,
+        blocks: list[dict[str, Any]],
+        thread_root_id: str | None,
+    ) -> str | None:
+        """Post a Block Kit message, for what plain text cannot carry.
+
+        Slack-only and deliberately not on `CollaborationAdapter`: blocks are
+        Slack's own shape, and the platforms that need something like them need
+        something different. `text` is what a notification and a client that
+        will not render the blocks are left with, so it has to stand alone.
+        """
+        if not self._web_client:
+            logger.error("Cannot post blocks: Slack client not connected")
+            return None
+
+        thread_ts = (
+            self._parse_message_ref(thread_root_id)[1]
+            if thread_root_id and ":" in thread_root_id
+            else thread_root_id
+        )
+        agent = await self.agent_rendering(sender_name)
+        try:
+            result = await self._web_client.chat_postMessage(
+                channel=channel_id,
+                text=text,
+                blocks=blocks,
+                username=agent.field_label,
+                icon_url=agent.icon_url,
+                thread_ts=thread_ts,
+                unfurl_links=False,
+                unfurl_media=False,
+            )
+            ts = result.get("ts", "")
+            if not ts:
+                raise RuntimeError(
+                    "Slack accepted a card without returning its message reference."
+                )
+            return f"{channel_id}:{ts}"
+        except SlackApiError as e:
+            logger.error("Failed to post blocks to Slack channel %s: %s", channel_id, e)
+            if e.response.get("error") in {
+                "internal_error",
+                "fatal_error",
+                "request_timeout",
+                "service_unavailable",
+            }:
+                raise
+            return None
+
+    async def find_request_card(
+        self,
+        channel_id: str,
+        thread_root_id: str | None,
+        token: str,
+        created_at: datetime,
+    ) -> str | None:
+        """Find a reserved request or activity post by its shared recovery marker."""
+        if self._web_client is None:
+            raise RuntimeError(
+                "Cannot recover a request card: Slack client not connected."
+            )
+        cursor = ""
+        while True:
+            arguments: dict[str, Any] = dict(
+                channel=channel_id,
+                oldest=str(created_at.timestamp()),
+                inclusive=True,
+                limit=100,
+                cursor=cursor,
+            )
+            if thread_root_id:
+                thread_ts = (
+                    self._parse_message_ref(thread_root_id)[1]
+                    if ":" in thread_root_id
+                    else thread_root_id
+                )
+                result = await self._web_client.conversations_replies(
+                    ts=thread_ts, **arguments
+                )
+            else:
+                result = await self._web_client.conversations_history(**arguments)
+            messages: list[dict[str, Any]] = result.get("messages") or []
+            for message in messages:
+                if not (
+                    (self._bot_user_id and message.get("user") == self._bot_user_id)
+                    or (self._bot_id and message.get("bot_id") == self._bot_id)
+                ):
+                    continue
+                if any(
+                    block.get("block_id") == f"switch-request:{token}"
+                    for block in message.get("blocks", [])
+                ):
+                    return f"{channel_id}:{message['ts']}"
+            metadata: dict[str, Any] = result.get("response_metadata") or {}
+            cursor = metadata.get("next_cursor", "")
+            if not cursor:
+                return None
+
+    async def update_blocks(
+        self,
+        channel_id: str,
+        message_ref: str,
+        text: str,
+        blocks: list[dict[str, Any]],
+    ) -> None:
+        """Replace an already posted Block Kit message in place.
+
+        Failure is raised rather than logged, unlike `update_message`. A caller
+        editing a card is replacing something a reader is acting on — a request
+        card left showing buttons for a request that has already settled invites
+        a press that cannot land — so it has to be able to say so instead.
+        """
+        if not self._web_client:
+            raise RuntimeError("Cannot update blocks: Slack client not connected.")
+        _, ts = self._parse_message_ref(message_ref)
+        if not ts:
+            raise ValueError(
+                f"Cannot update blocks: invalid message ref {message_ref}."
+            )
+        await self._web_client.chat_update(
+            channel=channel_id, ts=ts, text=text, blocks=blocks
+        )
+
+    async def post_rich(
+        self,
+        channel_id: str,
+        agent_name: str,
+        content: RichContent,
+        thread_root_id: str | None = None,
+    ) -> str:
+        """Post `content` as a Block Kit message: the activity block for a
+        turn, or the request card, whichever `content` is."""
+        message = self._render_rich(content)
+        ref = await self.post_blocks(
+            channel_id, agent_name, message.text, message.blocks, thread_root_id
+        )
+        if ref is None:
+            raise RichContentFailed(
+                f"Slack did not accept the message in channel {channel_id}.",
+                text=message.text,
+            )
+        return ref
+
+    async def update_rich(
+        self, channel_id: str, message_ref: str, content: RichContent
+    ) -> None:
+        """Redraw what `post_rich` posted, in place.
+
+        Chains `SlackApiError` as `RichContentFailed` rather than letting it
+        through raw, so a caller that no longer imports this module still
+        has one thing to catch.
+        """
+        remaining = getattr(self, "_rich_update_after", 0.0) - time.monotonic()
+        if remaining > 0:
+            raise RichContentThrottled(
+                retry_after=remaining, text="Waiting for Slack to allow updates."
+            )
+        responder_name = None
+        if isinstance(content, RequestCard) and content.responder_external_id:
+            user = await self._resolve_user_name(content.responder_external_id)
+            responder_name = user.display_name
+        message = self._render_rich(content, responder_name=responder_name)
+        try:
+            await self.update_blocks(
+                channel_id, message_ref, message.text, message.blocks
+            )
+        except SlackApiError as error:
+            if (
+                error.response.get("error") == "ratelimited"
+                or getattr(error.response, "status_code", None) == 429
+            ):
+                headers = getattr(error.response, "headers", {}) or {}
+                try:
+                    delay = float(
+                        headers.get("Retry-After", headers.get("retry-after", 30))
+                    )
+                    delay = max(1.0, delay) if math.isfinite(delay) else 30.0
+                except (ValueError, TypeError):
+                    delay = 30.0
+                self._rich_update_after = time.monotonic() + delay
+                raise RichContentThrottled(
+                    retry_after=delay, text=message.text
+                ) from error
+            raise RichContentFailed(
+                f"Slack could not update the message in channel {channel_id}: {error}",
+                text=message.text,
+            ) from error
+
+    def _render_rich(
+        self, content: RichContent, *, responder_name: str | None = None
+    ) -> SlackMessage:
+        if isinstance(content, TurnActivity):
+            message = render_activity(
+                content.items,
+                content.turn,
+                elapsed_seconds=content.elapsed_seconds,
+                tool_log=content.tool_log,
+                status_only=content.status_only,
+            )
+            if content.publication_token and message.blocks:
+                message.blocks[0]["block_id"] = (
+                    f"switch-request:{content.publication_token}"
+                )
+            return message
+        assert isinstance(content, RequestCard)
+        if content.turn is not None:
+            return render_turn_with_request(
+                content.items,
+                content.turn,
+                content.request,
+                content.reference,
+                elapsed_seconds=content.elapsed_seconds,
+            )
+        return render_request(
+            content.request,
+            content.reference,
+            responder_external_id=content.responder_external_id,
+            responder_name=responder_name,
+            unavailable_reason=content.unavailable_reason,
+        )
+
+    async def is_first_reply(
+        self, channel_id: str, root_ref: str, message_ref: str
+    ) -> bool:
+        """Whether this message is the first reply under a thread root.
+
+        Slack's message event names the thread but not the position in it, so
+        the thread itself is the only place the answer exists. `messages[0]` is
+        always the root, which makes `messages[1]` the first reply and two the
+        whole page worth fetching.
+        """
+        if not self._web_client:
+            logger.warning(
+                "Cannot read the thread under %s in %s: Slack client not "
+                "connected. Treating %s as not the first reply.",
+                root_ref,
+                channel_id,
+                message_ref,
+            )
+            return False
+        _, root_ts = self._parse_message_ref(root_ref)
+        _, ts = self._parse_message_ref(message_ref)
+        if not root_ts or not ts:
+            return False
+        try:
+            result = await self._web_client.conversations_replies(
+                channel=channel_id, ts=root_ts, limit=2
+            )
+        except Exception as e:
+            # Broad because this is on the inbound path of every message: a
+            # reset connection or a timed-out read comes out of the client as
+            # neither a SlackApiError nor anything else caught above here, and
+            # raising here loses the message rather than the answer.
+            logger.warning(
+                "Could not read the thread under %s in %s: %s. Treating %s as "
+                "not the first reply.",
+                root_ts,
+                channel_id,
+                e,
+                ts,
+            )
+            return False
+        messages = result.get("messages") or []
+        return len(messages) > 1 and messages[1].get("ts") == ts
+
+    async def tell_actor(
+        self,
+        channel_id: str,
+        actor_ref: str,
+        actor_name: str,
+        thread_ref: str | None,
+        text: str,
+    ) -> None:
+        """Slack's ephemeral message: one person, in place, and not kept.
+
+        It suits a notice about an answer that did not land. That notice is
+        only useful to whoever gave the answer, and only until they give
+        another, so leaving nothing behind is the point rather than a
+        limitation.
+
+        `actor_name` goes unused here, and that is what being private buys:
+        the only person who reads this is the one it is about, so it has
+        nobody to name.
+
+        Ephemerals are not deliverable to someone who is not in the channel,
+        and Slack says so rather than failing quietly. Nothing here can put
+        them there, so it is logged and left.
+        """
+        if not self._web_client:
+            logger.warning(
+                "Cannot tell %s in %s that their answer did not land: Slack "
+                "client not connected. The notice was: %s",
+                actor_ref,
+                channel_id,
+                text,
+            )
+            return
+        try:
+            await self._web_client.chat_postEphemeral(
+                channel=channel_id,
+                user=actor_ref,
+                text=escape_mrkdwn(text),
+                thread_ts=self._thread_ts_of(thread_ref),
+            )
+        except Exception as e:
+            # Broad for the same reason `is_first_reply` is: this runs on the
+            # inbound path of every message, so raising loses the message and
+            # not just the notice.
+            logger.warning(
+                "Could not tell %s in %s that their answer did not land: %s. "
+                "The notice was: %s",
+                actor_ref,
+                channel_id,
+                e,
+                text,
+            )
 
     def adapt_icon_url(self, raw: str | None, agent_name: str) -> str:
         # Overridden for Slack alone: it flattens a transparent avatar onto
@@ -657,6 +990,17 @@ class SlackAdapter(CollaborationAdapter):
         except SlackApiError as e:
             logger.error("Failed to update Slack message %s: %s", message_ref, e)
 
+    async def delete_activity_message(self, channel_id: str, message_ref: str) -> None:
+        """Confirm cleanup before marking a durable activity publication complete."""
+        if self._web_client is None:
+            raise RuntimeError("Slack client not connected")
+        _, ts = self._parse_message_ref(message_ref)
+        try:
+            await self._web_client.chat_delete(channel=channel_id, ts=ts)
+        except SlackApiError as error:
+            if error.response.get("error") != "message_not_found":
+                raise
+
     async def delete_message(self, channel_id: str, message_ref: str) -> None:
         if not self._web_client:
             logger.error("Cannot delete message: Slack client not connected")
@@ -865,7 +1209,12 @@ class SlackAdapter(CollaborationAdapter):
             )
 
     async def _mark_being_read(
-        self, channel_id: str, thread_ts: str | None, *, working: bool
+        self,
+        channel_id: str,
+        thread_ts: str | None,
+        *,
+        working: bool,
+        force: bool = False,
     ) -> None:
         """Put 👀 on the message an agent is working on, and take it off after.
 
@@ -878,7 +1227,7 @@ class SlackAdapter(CollaborationAdapter):
         if not ts or not self._web_client:
             return
         key = (channel_id, ts)
-        if working == (key in self._eyes):
+        if not force and working == (key in self._eyes):
             return
         if key in self._unmarkable:
             return
@@ -906,6 +1255,9 @@ class SlackAdapter(CollaborationAdapter):
                 self._unmarkable[key] = None
                 if len(self._unmarkable) > self._unmarkable_max:
                     self._unmarkable.popitem(last=False)
+                return
+            if force:
+                raise
             logger.warning(
                 "Could not %s the working reaction on %s in %s: %s",
                 "add" if working else "remove",
@@ -914,10 +1266,51 @@ class SlackAdapter(CollaborationAdapter):
                 error or e,
             )
 
+    async def mark_activity(
+        self, channel_id: str, message_ref: str, *, working: bool, force: bool = False
+    ) -> None:
+        """Public entry point onto `_mark_being_read`, for `SessionTurnActivity`.
+
+        Turn activity is not this adapter's own turn-tracking and has no
+        reason to reach into it, but the Slack edge cases `_mark_being_read`
+        already handles — a reaction already there, already gone, or a
+        message that no longer exists — do not change depending on who is
+        asking, so this reuses it rather than a second reaction mechanism.
+
+        `message_ref` can arrive as a bare ts or as `SessionTurnActivity`'s own
+        `"channel:ts"` composite (that is what `Origin.thread_id`/`message_id`
+        carry) — normalised the same way `_track_turn` normalises its own
+        thread root, so a caller does not have to know which shape it is
+        holding.
+
+        Sharing `_mark_being_read` means sharing its `_eyes` bookkeeping with
+        `_track_turn`, the runtime-state indicator's own caller, and `_eyes`
+        is keyed on the message alone — `(channel_id, ts)`, nothing about
+        which session or agent put it there. Two different agents with a
+        turn each in the same Slack thread are enough to collide on it: one
+        reporting runtime state, the other publishing turn activity, both
+        resolving to the same message. No connector today reports runtime
+        state for a session that also publishes turn activity, but that does
+        not rule this out — it only rules out one agent doing both to
+        itself. Known and unresolved rather than fixed: unifying the two into
+        one claim registry is more than this layering was meant to take on.
+        """
+        await self._mark_being_read(
+            channel_id, self._thread_ts_of(message_ref), working=working, force=force
+        )
+
     def _streaming(self, channel_id: str, thread_root_id: str | None) -> bool:
-        """Whether Slack is already drawing this turn's progress itself."""
+        """Whether Slack is already drawing this turn's progress itself.
+
+        Either driver counts. The posted status message exists to say something
+        is happening where Slack is not saying it, and a session's activity
+        stream says it just as well as the runtime-state card does.
+        """
         thread_ts = self._thread_ts_of(thread_root_id)
-        return bool(thread_ts) and (channel_id, thread_ts) in self._stream_ts
+        if not thread_ts:
+            return False
+        key = (channel_id, thread_ts)
+        return key in self._stream_ts or key in self._activity_streams
 
     # ── Native agent session ─────────────────────────────────────────────────
 
@@ -1109,6 +1502,17 @@ class SlackAdapter(CollaborationAdapter):
         if client is None:
             return
         key = (channel_id, thread_ts)
+        if key in self._activity_streams:
+            # One stream per thread, and the session contract's is the better
+            # of the two: it carries what the turn actually did rather than a
+            # single line of runtime state. Appending here would put those
+            # lines into its timeline, and closing here would end it early.
+            logger.debug(
+                _TRACE + "leaving %s on %s to the session contract's own stream",
+                agent_name,
+                thread_ts,
+            )
+            return
         open_ts = self._stream_ts.get(key)
 
         if not working:
@@ -1144,7 +1548,7 @@ class SlackAdapter(CollaborationAdapter):
                 logger.debug(_TRACE + "closed stream for %s on %s", agent_name, key[1])
             return
 
-        step = (_plain(detail or "") or "Working")[:_STREAM_STEP_MAX]
+        step = (plain_text(detail or "") or "Working")[:_STREAM_STEP_MAX]
         if open_ts is None:
             requester = self._thread_requester.get(key)
             if not requester:
@@ -1251,11 +1655,17 @@ class SlackAdapter(CollaborationAdapter):
         host sessions, and counting it as if it did took the card away from
         every agent in the workspace over one stale thread. The turn falls back
         to the posted status message, and the next one opens a fresh card.
+
+        An activity stream on the same thread is dropped with it. It is a
+        different message, but the only reason to hold the key is to write to
+        it, and a thread Slack says has nothing there is one nothing can be
+        written to.
         """
         if key is not None:
             self._stream_ts.pop(key, None)
             self._stream_step.pop(key, None)
             self._session_owner.pop(key, None)
+            self._activity_streams.pop(key, None)
         logger.debug(
             _TRACE + "card for %s is gone; forgetting it and carrying on", agent_name
         )
@@ -1841,17 +2251,9 @@ class SlackAdapter(CollaborationAdapter):
         from text these three replacements do not touch. The `@` the base class
         defuses is what closes that.
 
-        mrkdwn's emphasis characters (`*`, `_`, `~`, backtick) have no escape
-        sequence — Slack documents none — so a label containing them can still
-        unbalance the bold run it sits in. That is cosmetic; the markup a label
-        could forge is not, and this closes it."""
-        return (
-            super()
-            .escape_label_for_body(label)
-            .replace("&", "&amp;")
-            .replace("<", "&lt;")
-            .replace(">", "&gt;")
-        )
+        The three replacements themselves are `escape_mrkdwn`, shared with
+        anything else that writes mrkdwn for this workspace."""
+        return escape_mrkdwn(super().escape_label_for_body(label))
 
     def translate_inbound(self, raw_message: str) -> str:
         return self._translate_links_to_markdown(
@@ -1933,6 +2335,10 @@ class SlackAdapter(CollaborationAdapter):
             await self._handle_slash_command(req.payload)
             return
 
+        if req.type == "interactive":
+            await self._handle_interactive(req.payload)
+            return
+
         if req.type != "events_api":
             return
 
@@ -1949,6 +2355,50 @@ class SlackAdapter(CollaborationAdapter):
             await self._handle_member_joined_channel(event)
         elif event_type == "agent_session_stopped":
             await self._handle_session_stopped(event)
+
+    async def _handle_interactive(self, payload: dict[str, Any]) -> None:
+        """Someone operated a Block Kit control on one of our messages.
+
+        Only two things are read out of the payload: who Slack says acted, and
+        which control they operated. A button's `value` is the opaque token this
+        bridge minted when it posted the message, so a payload that was replayed
+        or hand-built names nothing its sender was not already looking at.
+
+        Slack sends one `block_actions` envelope per press, but the field is a
+        list, and a press this bridge did not put there is somebody else's.
+        """
+        if payload.get("type") != "block_actions":
+            return
+        if self._on_interaction is None:
+            return
+
+        user_id = str((payload.get("user") or {}).get("id", ""))
+        container = payload.get("container") or {}
+        channel_id = str(
+            (payload.get("channel") or {}).get("id", "")
+            or container.get("channel_id", "")
+        )
+        message_ts = str(container.get("message_ts", ""))
+        if not user_id or not channel_id:
+            logger.warning("Slack block_actions missing user or channel, skipping")
+            return
+
+        user = await self._resolve_user_name(user_id)
+        for action in payload.get("actions") or []:
+            action_id = str(action.get("action_id", ""))
+            value = str(action.get("value") or "")
+            if not action_id or not value:
+                continue
+            await self._on_interaction(
+                InboundInteraction(
+                    channel_id=channel_id,
+                    sender_id=user_id,
+                    sender_name=user.name,
+                    action_id=action_id,
+                    value=value,
+                    message_ref=f"{channel_id}:{message_ts}" if message_ts else None,
+                )
+            )
 
     async def _handle_member_joined_channel(self, event: dict[str, object]) -> None:
         user_id = str(event.get("user", ""))
@@ -2121,6 +2571,7 @@ class SlackAdapter(CollaborationAdapter):
                     attachments=attachments,
                     attachment_failures=attachment_failures,
                     self_mention_token=self._bot_user_id if self_mention else None,
+                    sender_is_app=bool(bot_id),
                 )
             )
 
