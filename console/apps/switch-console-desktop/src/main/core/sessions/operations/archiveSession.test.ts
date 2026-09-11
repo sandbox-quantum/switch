@@ -3,11 +3,13 @@ import { archiveSession } from './archiveSession';
 
 const mocks = vi.hoisted(() => ({
   selectLimit: vi.fn(),
+  stopSaved: vi.fn(),
   teardownSession: vi.fn(),
   updateSet: vi.fn(),
   updateWhere: vi.fn(),
 }));
 
+vi.mock('@main/core/sdk-host/stop-saved-session', () => ({ stopSavedSession: mocks.stopSaved }));
 vi.mock('@main/db/client', () => ({
   db: {
     select: () => ({
@@ -32,6 +34,7 @@ vi.mock('@main/core/sessions/session-runtime-manager', () => ({
 describe('archiveSession', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mocks.stopSaved.mockResolvedValue(undefined);
     mocks.updateSet.mockReturnValue({ where: mocks.updateWhere });
     mocks.updateWhere.mockResolvedValue(undefined);
   });
@@ -61,4 +64,12 @@ describe('archiveSession', () => {
     expect(mocks.teardownSession).toHaveBeenCalledWith('session-1', 'detach');
     expect(mocks.selectLimit).toHaveBeenCalledTimes(1);
   });
+});
+
+it('retains the session when execution cannot be confirmed stopped', async () => {
+  vi.clearAllMocks();
+  mocks.selectLimit.mockResolvedValueOnce([{ id: 'session-1', agentId: 'agent-1' }]);
+  mocks.stopSaved.mockRejectedValueOnce(new Error('Stop outcome unknown'));
+  await expect(archiveSession('session-1')).rejects.toThrow('Stop outcome unknown');
+  expect(mocks.teardownSession).not.toHaveBeenCalled();
 });

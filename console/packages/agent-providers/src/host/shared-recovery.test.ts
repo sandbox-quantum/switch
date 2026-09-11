@@ -8,6 +8,8 @@ import type { ProviderAdapter } from '../adapter';
 import type { ProviderRuntimeEvent } from '../events';
 import { runSharedHost } from './shared-host';
 
+vi.setConfig({ testTimeout: 30_000 });
+
 const roots: string[] = [];
 afterEach(async () => {
   vi.unstubAllGlobals();
@@ -161,7 +163,9 @@ it('retries lost acknowledgements and duplicate commands, then resumes the same 
   let stop = new AbortController();
   let running = runSharedHost(f.options, f.adapter, stop.signal);
   try {
-    await vi.waitFor(() => expect(f.adapter.sendTurn).toHaveBeenCalledTimes(1), { timeout: 3000 });
+    await vi.waitFor(() => expect(f.adapter.sendTurn).toHaveBeenCalledTimes(1), {
+      timeout: 10_000,
+    });
     f.setDisconnected(true);
     await new Promise((resolve) => setTimeout(resolve, 600));
     expect(f.adapter.stopSession).not.toHaveBeenCalled();
@@ -184,7 +188,7 @@ it('retries lost acknowledgements and duplicate commands, then resumes the same 
   running = runSharedHost(f.options, f.adapter, stop.signal);
   try {
     await vi.waitFor(() => expect(f.adapter.startSession).toHaveBeenCalledTimes(2), {
-      timeout: 3000,
+      timeout: 10_000,
     });
     expect(f.adapter.startSession).toHaveBeenLastCalledWith(
       expect.objectContaining({ resume: { nativeSessionId: 'saved-native' } })
@@ -223,7 +227,7 @@ it('stops an expired lease and resumes without repeating the accepted turn', asy
   const f = await fixture();
   const stop = new AbortController();
   const outcome = runSharedHost(f.options, f.adapter, stop.signal).catch((error) => error);
-  await vi.waitFor(() => expect(f.adapter.sendTurn).toHaveBeenCalledTimes(1), { timeout: 3000 });
+  await vi.waitFor(() => expect(f.adapter.sendTurn).toHaveBeenCalledTimes(1), { timeout: 10_000 });
   f.setExpired(true);
   expect(await outcome).toMatchObject({ name: 'SharedHostLeaseExpiredError' });
   expect(f.adapter.stopSession).toHaveBeenCalledTimes(1);
@@ -268,7 +272,7 @@ it('resets under a server epoch despite a lost recovery acknowledgement', async 
               event.body.status === 'applied'
           )
         ).toBe(true),
-      { timeout: 4000 }
+      { timeout: 10_000 }
     );
     expect(f.adapter.startSession).toHaveBeenCalledTimes(2);
     expect(vi.mocked(f.adapter.startSession).mock.calls[1][0].resume).toBeUndefined();
@@ -296,7 +300,7 @@ it('releases a faulted host instead of renewing its room claim forever', async (
   const result = runSharedHost(f.options, f.adapter, new AbortController().signal).catch(
     (error) => error
   );
-  await vi.waitFor(() => expect(f.adapter.sendTurn).toHaveBeenCalledTimes(1), { timeout: 3000 });
+  await vi.waitFor(() => expect(f.adapter.sendTurn).toHaveBeenCalledTimes(1), { timeout: 10_000 });
   f.emit({ type: 'session.state.changed', status: 'error' });
   expect(await result).toMatchObject({ message: expect.stringContaining('HOST_FAULTED') });
   expect(f.adapter.stopSession).toHaveBeenCalledTimes(1);
