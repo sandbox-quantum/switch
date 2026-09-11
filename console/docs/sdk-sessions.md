@@ -139,6 +139,11 @@ after editing skills or MCP; changing a laptop's configuration does not update a
 SSH machine. No credentials are copied from the laptop as part of file attachment
 transfer.
 
+Codex keeps the sandbox policy from its configuration on the execution host.
+Console's automatic approval setting changes approval prompts, not filesystem
+permissions. A read-only Codex sandbox remains read-only. Configure the intended
+workspace permissions in Codex and restart the host before using file tools.
+
 ## Capability and deployment limits
 
 Gemini CLI does not support interactive questions through its current adapter;
