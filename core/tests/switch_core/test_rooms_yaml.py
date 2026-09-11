@@ -76,10 +76,21 @@ class FakeRoomService:
         self,
         room_id: str,
         text: str,
+        *,
+        user_id: str | None = None,
+        user_name: str | None = None,
+        user_email: str | None = None,
     ) -> str | None:
         if self.kickoff_error is not None:
             raise self.kickoff_error
-        self.kickoffs.append({"room_id": room_id, "text": text})
+        self.kickoffs.append(
+            {
+                "room_id": room_id,
+                "text": text,
+                "user_id": user_id,
+                "user_name": user_name,
+            }
+        )
         return f"ev-{len(self.kickoffs)}"
 
     async def create_room(self, config: RoomCreateConfig) -> RoomCreateResult:
@@ -1178,6 +1189,8 @@ async def test_provision_kickoff_posts_as_admin(env):
         {
             "room_id": result.room_id,
             "text": "@claude-code.alice start on the brief.\n",
+            "user_id": env["user_id"],
+            "user_name": "alice",
         }
     ]
 

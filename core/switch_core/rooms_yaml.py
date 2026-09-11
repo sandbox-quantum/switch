@@ -471,7 +471,13 @@ class RoomYamlService:
             # Best-effort like references and docs: the room exists, so a
             # kickoff that cannot be posted is reported, not fatal.
             try:
-                await self._rooms.post_kickoff(room_id, kickoff)
+                await self._rooms.post_kickoff(
+                    room_id,
+                    kickoff,
+                    user_id=user_id,
+                    user_name=creator_name,
+                    user_email=creator_email,
+                )
             except Exception as e:
                 failures.append({"kind": "kickoff", "id": "kickoff", "error": str(e)})
 

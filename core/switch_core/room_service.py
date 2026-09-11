@@ -1139,18 +1139,51 @@ class RoomService:
         self,
         room_id: str,
         text: str,
+        *,
+        user_id: str | None = None,
+        user_name: str | None = None,
+        user_email: str | None = None,
     ) -> str | None:
         """Post a template's kickoff message into a just-created room.
 
-        Sent as the admin client (the platform bot account, e.g. "Agent Switch"
-        on Slack), not as the creating user's puppet. The kickoff is a platform
-        action — it dispatches work to agents the same way "set the channel
-        topic" does — and should not impersonate a human.
+        Adaptive sender: posts as the admin client ("Agent Switch") by
+        default, but falls back to the creator's puppet when any agent in
+        the room has a restricted addressing policy that would reject the
+        admin. This covers both open-policy agents (clean bot identity) and
+        owner-only agents (creator's identity, which is the owner).
         """
+        from switch_core.addressing import AddressingPolicy
+
         async with self._session_factory() as session:
             room = await self._room_store.get(session, room_id)
-        if room is None:
-            raise ValueError(f"Room not found: {room_id}")
+            if room is None:
+                raise ValueError(f"Room not found: {room_id}")
+            agent_ids = await self._room_store.get_agent_ids(session, room_id)
+            agents = [await self._agent_store.get(session, aid) for aid in agent_ids]
+
+        # Check if any agent has a restricted policy
+        needs_creator = any(
+            a
+            and a.addressing_policy
+            and not AddressingPolicy.model_validate(a.addressing_policy).is_open()
+            for a in agents
+        )
+
+        if needs_creator and room.bridge_id and user_id:
+            bridge_core = self._collab_lifecycle.get(room.bridge_id)
+            if bridge_core:
+                external_user = await bridge_core.resolve_switch_user(
+                    user_id, name=user_name, email=user_email
+                )
+                if external_user:
+                    return await bridge_core.post_as_user(
+                        external_user=external_user,
+                        room_id=room.id,
+                        matrix_room_id=room.matrix_room_id,
+                        text=text,
+                    )
+
+        # Default: post as admin client
         admin_clients = self._client_lifecycle.get_by_type("admin")
         if not admin_clients:
             logger.warning("No admin client available to post kickoff")
