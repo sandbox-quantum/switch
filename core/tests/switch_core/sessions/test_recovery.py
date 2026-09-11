@@ -5,7 +5,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from switch_core.db.models import SdkSession
+from switch_core.db.models import SdkSession, require_tenant_id
 from switch_core.sessions.service import SessionError
 from tests.switch_core.sessions.test_authority import (
     answer,
@@ -20,7 +20,7 @@ from tests.switch_core.sessions.test_authority import (
 async def test_expiry_does_not_grant_recovery(session_factory):
     service, epoch = await setup(session_factory)
     async with session_factory() as db, db.begin():
-        row = await db.get(SdkSession, "session-demo")
+        row = await db.get(SdkSession, (require_tenant_id(), "session-demo"))
         row.lease_expires_at = datetime.now(UTC) - timedelta(seconds=1)
     with pytest.raises(SessionError, match="previous execution"):
         await service.recover(

@@ -63,6 +63,7 @@ class ClientBaseKwargs[ConfigT: ClientConfig](TypedDict):
     """
 
     client_id: str
+    tenant_id: str
     matrix_user_id: str
     display_name: str
     session_factory: async_sessionmaker[AsyncSession]
@@ -78,6 +79,7 @@ class ClientBase[ConfigT: ClientConfig]:
         self,
         *,
         client_id: str,
+        tenant_id: str,
         matrix_user_id: str,
         display_name: str,
         session_factory: async_sessionmaker[AsyncSession],
@@ -86,6 +88,15 @@ class ClientBase[ConfigT: ClientConfig]:
         transport_factory: Callable[[ClientBase[ConfigT]], MessageTransport],
     ) -> None:
         self.client_id = client_id
+        # The tenant of this client's own row, carried rather than looked up.
+        # A client's task binds nothing on purpose and its handlers bind some
+        # *room's* tenant, so neither context answers "which tenant is this
+        # client" — but every caller that builds a client is holding the row
+        # that says, so the answer travels with the client instead of being
+        # asked of the database again on the far side. Required, not
+        # defaulted: a client that does not know its tenant cannot write a
+        # scoped row, and there is no sensible value to fall back to.
+        self.tenant_id = tenant_id
         self.matrix_user_id = matrix_user_id
         self.display_name = display_name
         self.session_factory = session_factory

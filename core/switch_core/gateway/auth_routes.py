@@ -23,6 +23,7 @@ from switch_core.gateway.dependencies import (
     get_config,
     get_external_user_store,
     get_session,
+    get_system_session,
     get_user_store,
 )
 from switch_core.gateway.schemas import (
@@ -84,10 +85,14 @@ async def get_version(
 async def login(
     req: LoginRequest,
     response: Response,
-    session: Annotated[AsyncSession, Depends(get_session)],
+    session: Annotated[AsyncSession, Depends(get_system_session)],
     user_store: Annotated[UserStore, Depends(get_user_store)],
     config: Annotated[SwitchConfig, Depends(get_config)],
 ) -> SessionUserResponse:
+    # `get_system_session`, not `get_session`: there is no caller to take a
+    # tenant from until this route decides there is one. It only ever reads
+    # `users`, which is global (a person is one account across tenants), so
+    # there is nothing here a tenant would scope even once policies land.
     if not config.gateway_password_login_enabled:
         raise HTTPException(status_code=403, detail="Password login is disabled")
 

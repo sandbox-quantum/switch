@@ -9,7 +9,10 @@ Closing Console leaves the host running. Reopen a session to read its saved
 transcript. **Interrupt** ends the active turn. **Stop session** ends the
 conversation. **Restart host** stops the current host, waits for process cleanup,
 and resumes the saved native conversation under a new server-issued epoch.
-A stopped conversation cannot be reopened as a new conversation.
+A stopped conversation cannot be reopened as a new conversation. Archiving or
+deleting a session waits for a confirmed server stop, including sessions that
+Console has discovered but never opened. If the stop outcome is unknown, the
+session remains available for inspection.
 
 The execution host supplies the working directory, provider installation,
 credentials, environment, shell setup, skills and MCP configuration. Skills and MCP changes take effect when the host restarts. Confirmed model
@@ -17,6 +20,14 @@ changes apply to the next turn and survive host restart. A cold
 provider startup can take up to two minutes before Console reports a startup
 failure. The saved session remains available for inspection after a failure;
 its initial prompt is not automatically sent again.
+
+## Server isolation
+
+SDK sessions, transcript events, commands and attachments are scoped to the
+authenticated tenant. PostgreSQL row-level security enforces this boundary.
+Session and attachment identifiers can be reused in different tenants without
+sharing data or command outcomes. Upgrading an existing SDK database derives
+each session’s tenant from its owning agent and preserves its history.
 
 ## Recovery guarantees
 

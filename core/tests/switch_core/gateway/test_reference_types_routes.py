@@ -25,6 +25,7 @@ from switch_core.gateway.dependencies import (
     get_config,
     get_resource_service,
     get_session,
+    get_session_factory,
     get_user_store,
 )
 from switch_core.gateway.references import (
@@ -135,6 +136,12 @@ def _app() -> FastAPI:
     app = FastAPI()
     app.include_router(router)
     app.dependency_overrides[get_session] = _stub_session
+    # get_current_user resolves the caller's tenant on a short-lived session it
+    # opens from the factory itself (see gateway/auth.py), so the
+    # anonymous-client test below reaches that dependency too and needs it
+    # stubbed. It is never called: a request with no cookie is refused
+    # before it is touched.
+    app.dependency_overrides[get_session_factory] = lambda: None
     app.dependency_overrides[get_user_store] = lambda: None
     app.dependency_overrides[get_config] = lambda: None
     app.dependency_overrides[get_resource_service] = lambda: None

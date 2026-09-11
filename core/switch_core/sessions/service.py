@@ -28,7 +28,9 @@ from switch_core.db.models import (
     SdkSession,
     SdkSessionCommand,
     SdkSessionEvent,
+    require_tenant_id,
 )
+from switch_core.db.session_scope import tenant_session
 from switch_core.sessions.attachments import (
     MAX_ATTACHMENTS,
     attachment_metadata,
@@ -95,7 +97,10 @@ class SessionAuthority:
         if session.agent_id != agent_id:
             raise SessionError("NOT_AUTHORIZED", "Session belongs to another agent.")
         session = session.model_copy(update={"room_ids": [], "retired": False})
-        async with self._sessions() as db, db.begin():
+        async with (
+            tenant_session(self._sessions, require_tenant_id()) as db,
+            db.begin(),
+        ):
             # The agent row also serializes the first lease, before a session row exists.
             agent = await db.scalar(
                 select(Agent).where(Agent.id == agent_id).with_for_update()
@@ -106,7 +111,10 @@ class SessionAuthority:
                 )
             row = await db.scalar(
                 select(SdkSession)
-                .where(SdkSession.id == session.session_id)
+                .where(
+                    SdkSession.tenant_id == require_tenant_id(),
+                    SdkSession.id == session.session_id,
+                )
                 .with_for_update()
             )
             now = await self._now(db)
@@ -175,7 +183,10 @@ class SessionAuthority:
     async def quiesce(
         self, agent_id: str, session_id: str, host_id: str, epoch: str
     ) -> None:
-        async with self._sessions() as db, db.begin():
+        async with (
+            tenant_session(self._sessions, require_tenant_id()) as db,
+            db.begin(),
+        ):
             row = await self._host_identity(db, agent_id, session_id, host_id, epoch)
             if row.recovery.get("quiesced"):
                 return
@@ -190,7 +201,10 @@ class SessionAuthority:
             )
 
     async def retire(self, session_id: str, user_id: str, epoch: str) -> Snapshot:
-        async with self._sessions() as db, db.begin():
+        async with (
+            tenant_session(self._sessions, require_tenant_id()) as db,
+            db.begin(),
+        ):
             row = await self._locked(db, session_id)
             await self._owner(db, row, user_id)
             if row.recovery.get("retired_epoch") == epoch:
@@ -266,7 +280,10 @@ class SessionAuthority:
                 )
         commands = (
             await db.scalars(
-                select(SdkSessionCommand).where(SdkSessionCommand.session_id == row.id)
+                select(SdkSessionCommand).where(
+                    SdkSessionCommand.tenant_id == row.tenant_id,
+                    SdkSessionCommand.session_id == row.id,
+                )
             )
         ).all()
         for command in commands:
@@ -291,7 +308,10 @@ class SessionAuthority:
         operation_id: str,
         through_host_sequence: int,
     ) -> Snapshot:
-        async with self._sessions() as db, db.begin():
+        async with (
+            tenant_session(self._sessions, require_tenant_id()) as db,
+            db.begin(),
+        ):
             row = await self._locked(db, session_id)
             if row.recovery.get("retired_epoch"):
                 raise SessionError(
@@ -356,7 +376,10 @@ class SessionAuthority:
     async def renew(
         self, agent_id: str, session_id: str, host_id: str, epoch: str
     ) -> None:
-        async with self._sessions() as db, db.begin():
+        async with (
+            tenant_session(self._sessions, require_tenant_id()) as db,
+            db.begin(),
+        ):
             row = await self._host(db, agent_id, session_id, host_id, epoch)
             row.lease_expires_at = (await self._now(db)) + timedelta(
                 seconds=LEASE_SECONDS
@@ -369,7 +392,10 @@ class SessionAuthority:
             event = parse_host_event(event.model_dump(by_alias=True))
         except ValueError as exc:
             raise SessionError("INVALID_EVENT", str(exc)) from exc
-        async with self._sessions() as db, db.begin():
+        async with (
+            tenant_session(self._sessions, require_tenant_id()) as db,
+            db.begin(),
+        ):
             if reconcile:
                 row = await self._host_identity(
                     db, agent_id, event.session_id, host_id, event.epoch
@@ -384,6 +410,7 @@ class SessionAuthority:
                 )
             previous = await db.scalar(
                 select(SdkSessionEvent).where(
+                    SdkSessionEvent.tenant_id == row.tenant_id,
                     SdkSessionEvent.session_id == row.id,
                     SdkSessionEvent.epoch == row.epoch,
                     SdkSessionEvent.host_sequence == event.host_sequence,
@@ -406,6 +433,7 @@ class SessionAuthority:
                 )
             if await db.scalar(
                 select(SdkSessionEvent).where(
+                    SdkSessionEvent.tenant_id == row.tenant_id,
                     SdkSessionEvent.session_id == row.id,
                     SdkSessionEvent.event_id == event.event_id,
                 )
@@ -447,7 +475,8 @@ class SessionAuthority:
             row.host_sequence = event.host_sequence
             if isinstance(event.body, CommandResult):
                 stored = await db.get(
-                    SdkSessionCommand, (row.id, event.body.command_id)
+                    SdkSessionCommand,
+                    (require_tenant_id(), row.id, event.body.command_id),
                 )
                 status = CommandStatus(
                     type="command.status",
@@ -467,7 +496,10 @@ class SessionAuthority:
     ) -> CommandStatus:
         if len(command.model_dump_json().encode("utf-8")) > 60 * 1024:
             raise SessionError("PAYLOAD_TOO_LARGE", "Command exceeds 60 KiB.")
-        async with self._sessions() as db, db.begin():
+        async with (
+            tenant_session(self._sessions, require_tenant_id()) as db,
+            db.begin(),
+        ):
             row = await self._locked(db, command.session_id)
             await self._authorize(db, row, command.origin, user_id, bridge_id)
             return await self._accept(db, row, command, bridge_id)
@@ -488,7 +520,10 @@ class SessionAuthority:
                 uuid.NAMESPACE_URL, f"switch-room:{agent_id}:{room_id}:{message_id}"
             )
         )
-        async with self._sessions() as db, db.begin():
+        async with (
+            tenant_session(self._sessions, require_tenant_id()) as db,
+            db.begin(),
+        ):
             agent = await db.scalar(
                 select(Agent).where(Agent.id == agent_id).with_for_update()
             )
@@ -504,8 +539,13 @@ class SessionAuthority:
                 )
             previous = await db.scalar(
                 select(SdkSessionCommand)
-                .join(SdkSession, SdkSession.id == SdkSessionCommand.session_id)
+                .join(
+                    SdkSession,
+                    (SdkSession.id == SdkSessionCommand.session_id)
+                    & (SdkSession.tenant_id == SdkSessionCommand.tenant_id),
+                )
                 .where(
+                    SdkSession.tenant_id == require_tenant_id(),
                     SdkSession.agent_id == agent_id,
                     SdkSessionCommand.command_id == command_id,
                 )
@@ -586,7 +626,10 @@ class SessionAuthority:
                             "At most eight attachments can be delivered per message."
                         )
                     source = await db.scalar(
-                        select(MediaBlob).where(MediaBlob.uri == reference.mxc)
+                        select(MediaBlob).where(
+                            MediaBlob.tenant_id == require_tenant_id(),
+                            MediaBlob.uri == reference.mxc,
+                        )
                     )
                     if source is None:
                         raise ValueError(
@@ -613,7 +656,10 @@ class SessionAuthority:
                     )
                     uri = attachment_uri(session_id, attachment_id)
                     blob = await db.scalar(
-                        select(MediaBlob).where(MediaBlob.uri == uri)
+                        select(MediaBlob).where(
+                            MediaBlob.tenant_id == require_tenant_id(),
+                            MediaBlob.uri == uri,
+                        )
                     )
                     if blob is None:
                         blob = MediaBlob(
@@ -667,7 +713,9 @@ class SessionAuthority:
     ) -> CommandStatus:
         if command.epoch != row.epoch:
             raise SessionError("STALE_EPOCH", "Session generation changed.")
-        previous = await db.get(SdkSessionCommand, (row.id, command.command_id))
+        previous = await db.get(
+            SdkSessionCommand, (require_tenant_id(), row.id, command.command_id)
+        )
         payload = command.model_dump(by_alias=True)
         if previous is not None:
             if self._command_identity(previous.command) != self._command_identity(
@@ -691,7 +739,9 @@ class SessionAuthority:
                 raise SessionError("REQUEST_CLOSED", "This request is no longer open.")
             if bridge_id is not None:
                 turn = next(t for t in snapshot.turns if t.turn_id == request.turn_id)
-                source = await db.get(SdkSessionCommand, (row.id, turn.command_id))
+                source = await db.get(
+                    SdkSessionCommand, (require_tenant_id(), row.id, turn.command_id)
+                )
                 if source is None:
                     raise SessionError("NOT_FOUND", "Request has no source command.")
                 origin = Command.model_validate(source.command).origin
@@ -834,7 +884,10 @@ class SessionAuthority:
     async def pending(
         self, agent_id: str, session_id: str, host_id: str, epoch: str
     ) -> list[Command]:
-        async with self._sessions() as db, db.begin():
+        async with (
+            tenant_session(self._sessions, require_tenant_id()) as db,
+            db.begin(),
+        ):
             row = await self._host(db, agent_id, session_id, host_id, epoch)
             snapshot = Snapshot.model_validate(row.snapshot)
             now = await self._now(db)
@@ -851,7 +904,12 @@ class SessionAuthority:
                         f"switch:request-timeout:{row.id}:{row.epoch}:{request.request_id}",
                     )
                 )
-                if await db.get(SdkSessionCommand, (row.id, command_id)) is not None:
+                if (
+                    await db.get(
+                        SdkSessionCommand, (require_tenant_id(), row.id, command_id)
+                    )
+                    is not None
+                ):
                     continue
                 body: TurnInterrupt | SessionStop = (
                     TurnInterrupt(type="turn.interrupt", turn_id=request.turn_id)
@@ -891,6 +949,7 @@ class SessionAuthority:
                 await db.scalars(
                     select(SdkSessionCommand)
                     .where(
+                        SdkSessionCommand.tenant_id == row.tenant_id,
                         SdkSessionCommand.session_id == row.id,
                         SdkSessionCommand.status["status"].astext.in_(
                             ["accepted", "dispatched"]
@@ -921,12 +980,16 @@ class SessionAuthority:
         message_id: str | None,
         connections: ConnectionRegistry,
     ) -> CommandStatus | None:
-        async with self._sessions() as db, db.begin():
+        async with (
+            tenant_session(self._sessions, require_tenant_id()) as db,
+            db.begin(),
+        ):
             candidates = list(
                 (
                     await db.scalars(
                         select(SdkSession)
                         .where(
+                            SdkSession.tenant_id == require_tenant_id(),
                             SdkSession.agent_id == agent_id,
                             SdkSession.connection_id.is_not(None),
                         )
@@ -987,7 +1050,9 @@ class SessionAuthority:
                     f"sdk-control:{agent_id}:{room_id}:{message_id}:{action}",
                 )
             )
-            previous = await db.get(SdkSessionCommand, (row.id, command_id))
+            previous = await db.get(
+                SdkSessionCommand, (require_tenant_id(), row.id, command_id)
+            )
             if previous is not None:
                 return CommandStatus.model_validate(previous.status)
             snapshot = Snapshot.model_validate(row.snapshot)
@@ -1032,7 +1097,10 @@ class SessionAuthority:
         connection_id: str,
         connections: ConnectionRegistry,
     ) -> list[str]:
-        async with self._sessions() as db, db.begin():
+        async with (
+            tenant_session(self._sessions, require_tenant_id()) as db,
+            db.begin(),
+        ):
             agent = await db.scalar(
                 select(Agent).where(Agent.id == agent_id).with_for_update()
             )
@@ -1051,6 +1119,7 @@ class SessionAuthority:
                 )
             previous = await db.scalar(
                 select(SdkSession.id).where(
+                    SdkSession.tenant_id == require_tenant_id(),
                     SdkSession.connection_id == connection_id,
                     SdkSession.id != session_id,
                 )
@@ -1087,7 +1156,10 @@ class SessionAuthority:
         mime_type: str,
         data: bytes,
     ) -> Attachment:
-        async with self._sessions() as db, db.begin():
+        async with (
+            tenant_session(self._sessions, require_tenant_id()) as db,
+            db.begin(),
+        ):
             row = await self._locked(db, session_id)
             await self._owner(db, row, user_id)
             try:
@@ -1095,7 +1167,11 @@ class SessionAuthority:
                 validate_attachment(name, mime_type, data)
             except ValueError as exc:
                 raise SessionError("INVALID_ATTACHMENT", str(exc)) from exc
-            blob = await db.scalar(select(MediaBlob).where(MediaBlob.uri == uri))
+            blob = await db.scalar(
+                select(MediaBlob).where(
+                    MediaBlob.tenant_id == require_tenant_id(), MediaBlob.uri == uri
+                )
+            )
             if blob is not None:
                 if (blob.filename, blob.content_type, blob.data) != (
                     name,
@@ -1127,7 +1203,10 @@ class SessionAuthority:
         epoch: str,
         attachment_id: str,
     ) -> MediaBlob:
-        async with self._sessions() as db, db.begin():
+        async with (
+            tenant_session(self._sessions, require_tenant_id()) as db,
+            db.begin(),
+        ):
             await self._host(db, agent_id, session_id, host_id, epoch)
             return await self._attachment(db, session_id, attachment_id)
 
@@ -1138,7 +1217,11 @@ class SessionAuthority:
             uri = attachment_uri(session_id, attachment_id)
         except ValueError as exc:
             raise SessionError("INVALID_ATTACHMENT", "Invalid attachment ID.") from exc
-        blob = await db.scalar(select(MediaBlob).where(MediaBlob.uri == uri))
+        blob = await db.scalar(
+            select(MediaBlob).where(
+                MediaBlob.tenant_id == require_tenant_id(), MediaBlob.uri == uri
+            )
+        )
         if blob is None:
             raise SessionError(
                 "NOT_FOUND", "Attachment does not belong to this session."
@@ -1153,12 +1236,15 @@ class SessionAuthority:
         return blob
 
     async def list_sessions(self, user_id: str) -> list[Session]:
-        async with self._sessions() as db:
+        async with tenant_session(self._sessions, require_tenant_id()) as db:
             rows = (
                 await db.scalars(
                     select(SdkSession)
                     .join(Agent, Agent.id == SdkSession.agent_id)
-                    .where(Agent.owner_id == user_id)
+                    .where(
+                        SdkSession.tenant_id == require_tenant_id(),
+                        Agent.owner_id == user_id,
+                    )
                     .order_by(SdkSession.id)
                 )
             ).all()
@@ -1176,16 +1262,18 @@ class SessionAuthority:
     async def command_status(
         self, session_id: str, command_id: str, user_id: str
     ) -> CommandStatus:
-        async with self._sessions() as db:
+        async with tenant_session(self._sessions, require_tenant_id()) as db:
             row = await self._locked(db, session_id)
             await self._owner(db, row, user_id)
-            command = await db.get(SdkSessionCommand, (session_id, command_id))
+            command = await db.get(
+                SdkSessionCommand, (require_tenant_id(), session_id, command_id)
+            )
             if command is None:
                 raise SessionError("NOT_FOUND", "Command not found.")
             return CommandStatus.model_validate(command.status)
 
     async def snapshot(self, session_id: str, user_id: str) -> Snapshot:
-        async with self._sessions() as db:
+        async with tenant_session(self._sessions, require_tenant_id()) as db:
             row = await self._locked(db, session_id)
             await self._owner(db, row, user_id)
             snapshot = Snapshot.model_validate(row.snapshot)
@@ -1202,7 +1290,10 @@ class SessionAuthority:
     async def events(
         self, session_id: str, user_id: str, after: int
     ) -> list[ServerEvent]:
-        async with self._sessions() as db, db.begin():
+        async with (
+            tenant_session(self._sessions, require_tenant_id()) as db,
+            db.begin(),
+        ):
             row = await self._locked(db, session_id)
             await self._owner(db, row, user_id)
             snapshot = Snapshot.model_validate(row.snapshot)
@@ -1221,6 +1312,7 @@ class SessionAuthority:
                 await db.scalars(
                     select(SdkSessionEvent)
                     .where(
+                        SdkSessionEvent.tenant_id == require_tenant_id(),
                         SdkSessionEvent.session_id == session_id,
                         SdkSessionEvent.sequence > after,
                     )
@@ -1240,7 +1332,11 @@ class SessionAuthority:
 
     async def _locked(self, db: AsyncSession, session_id: str) -> SdkSession:
         row = await db.scalar(
-            select(SdkSession).where(SdkSession.id == session_id).with_for_update()
+            select(SdkSession)
+            .where(
+                SdkSession.tenant_id == require_tenant_id(), SdkSession.id == session_id
+            )
+            .with_for_update()
         )
         if row is None:
             raise SessionError("NOT_FOUND", "Session not found.")
@@ -1389,7 +1485,9 @@ class SessionAuthority:
                 raise SessionError("NOT_AUTHORIZED", "Host session identity mismatch.")
         if isinstance(body, TurnUpsert):
             stored = (
-                await db.get(SdkSessionCommand, (row.id, body.command_id))
+                await db.get(
+                    SdkSessionCommand, (require_tenant_id(), row.id, body.command_id)
+                )
                 if body.command_id
                 else None
             )
@@ -1428,7 +1526,9 @@ class SessionAuthority:
             if turn is None:
                 raise SessionError("NOT_FOUND", "The event has no known turn.")
             if isinstance(body, ItemUpsert):
-                command = await db.get(SdkSessionCommand, (row.id, turn.command_id))
+                command = await db.get(
+                    SdkSessionCommand, (require_tenant_id(), row.id, turn.command_id)
+                )
                 if command is None:
                     raise SessionError("NOT_FOUND", "Unknown source command.")
                 expected = (
@@ -1474,7 +1574,9 @@ class SessionAuthority:
                         "NOT_AUTHORIZED",
                         "Settlement does not match the reserved command.",
                     )
-                stored = await db.get(SdkSessionCommand, (row.id, body.command_id))
+                stored = await db.get(
+                    SdkSessionCommand, (require_tenant_id(), row.id, body.command_id)
+                )
                 if stored is None:
                     raise SessionError("NOT_FOUND", "Unknown reserved command.")
                 answer = Command.model_validate(stored.command).body
@@ -1509,7 +1611,9 @@ class SessionAuthority:
                     "A closed request cannot contain an answer result.",
                 )
         if isinstance(body, CommandResult):
-            stored = await db.get(SdkSessionCommand, (row.id, body.command_id))
+            stored = await db.get(
+                SdkSessionCommand, (require_tenant_id(), row.id, body.command_id)
+            )
             if stored is None:
                 raise SessionError("NOT_FOUND", "Unknown command result.")
             previous_status = CommandStatus.model_validate(stored.status)

@@ -98,7 +98,12 @@ class PostgresProvisioning:
                 ClientRoom, {"client_id": client_id, "room_id": switch_room_id}
             )
 
-        if await self._invites.invite(user_id, room_id):
+        # By client id, not `user_id`: `clients.matrix_user_id` is unique per
+        # tenant, and every tenant's admin client carries the same one, so
+        # waking "the client for @switch-admin" would wake whichever tenant's
+        # transport last claimed the slot. `_resolve` above has already turned
+        # the handle into this tenant's client row.
+        if await self._invites.invite(client_id, room_id):
             return
         if existing is not None:
             return

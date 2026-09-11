@@ -1,18 +1,35 @@
-"""Seeding the deployment-wide agent-registration bootstrap key.
+"""Seeding the deployment-wide agent-registration bootstrap key, and the
+boot-time advisory lock that serialises it (and the migration) across
+concurrently-booting replicas.
 
 See `bridges/agent/test_registration_bootstrap.py` for what the key resolves
-to; this covers the seeding lifecycle itself: fresh install, in-place
-rotation, legacy migration, and that a deliberate revocation (deleting the
-key from the gateway's API Keys page) survives a restart instead of being
-silently recreated — including when the admin email changes underneath it.
+to; `TestSeedAgentRegistrationBootstrapKey` below covers the seeding lifecycle
+itself: fresh install, in-place rotation, legacy migration, and that a
+deliberate revocation (deleting the key from the gateway's API Keys page)
+survives a restart instead of being silently recreated — including when the
+admin email changes underneath it.
+
+`TestBootLock` covers `db/boot_lock.py` against the real Postgres instance
+`postgres_url` provides (not a mock — an advisory lock is a property of a real
+database session, not something a fake connection can stand in for): that the
+lock is actually held while its block runs and free again once it exits, that
+two overlapping acquisitions of it genuinely serialise rather than merely
+appearing to, that it is released even when the guarded body raises, and that
+`asyncio.to_thread` — which is how `main._migrate_and_grant` runs the
+synchronous `alembic_command.upgrade` from inside a coroutine — really does
+give that call a thread with no event loop of its own, since `env.py`'s own
+`asyncio.run` would raise otherwise.
 """
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 
 import pytest
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from sqlalchemy import text
+from sqlalchemy.engine import make_url
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from switch_core.bridges.agent.registration_bootstrap import (
     BOOTSTRAP_KEY_LABEL,
@@ -26,6 +43,7 @@ from switch_core.bridges.agent.registration_bootstrap import (
     RETIRED_KEY_TYPE,
 )
 from switch_core.config import SwitchConfig
+from switch_core.db.boot_lock import BOOT_LOCK_KEY, boot_lock
 from switch_core.db.models import Agent, ApiKey, Client, User
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.api_key_store import ApiKeyStore
@@ -46,6 +64,29 @@ def _config(token: str, *, admin_email: str = ADMIN_EMAIL) -> SwitchConfig:
         agent_registration_token=token,
         jwt_secret_key="test-jwt-secret",
         gateway_admin_email=admin_email,
+        gateway_admin_password="unused",
+    )
+
+
+def _config_for(postgres_url: str) -> SwitchConfig:
+    """A config whose `database_url` actually reaches `postgres_url`.
+
+    Unlike `_config` above, `boot_lock` opens a real connection with this —
+    `db_owner_user` is left unset, so it falls back to `database_url`, the
+    same rule `migrations/env.py` applies for the same reason (a fresh
+    deployment's runtime role may not exist yet).
+    """
+    url = make_url(postgres_url)
+    return SwitchConfig(
+        db_host=url.host or "localhost",
+        db_port=str(url.port),
+        db_user=url.username,
+        db_password=url.password,
+        db_name=url.database,
+        matrix_server_name="test",
+        agent_registration_token="unused",
+        jwt_secret_key="test-jwt-secret",
+        gateway_admin_email=ADMIN_EMAIL,
         gateway_admin_password="unused",
     )
 
@@ -617,3 +658,140 @@ class TestSeedAgentRegistrationBootstrapKey:
         async with session_factory() as session:
             found = await api_key_store.get_by_hash(session, _hash("dev-test-token"))
         assert found is None
+
+
+async def _try_lock_from_a_fresh_session(postgres_url: str) -> bool:
+    """Whether `BOOT_LOCK_KEY` is free, asked from a connection of its own.
+
+    `pg_try_advisory_lock` both answers the question and, if the answer is
+    yes, acquires the lock for the session that asked — so a caller getting
+    `True` back now holds it and must release it, exactly as a caller of
+    `boot_lock` itself would.
+    """
+    probe_engine = create_async_engine(postgres_url)
+    try:
+        async with probe_engine.connect() as probe:
+            return bool(
+                (
+                    await probe.execute(
+                        text("SELECT pg_try_advisory_lock(:key)"),
+                        {"key": BOOT_LOCK_KEY},
+                    )
+                ).scalar_one()
+            )
+    finally:
+        await probe_engine.dispose()
+
+
+async def _unlock_from_a_fresh_session(postgres_url: str) -> None:
+    """Undo `_try_lock_from_a_fresh_session`'s acquisition, on its own
+    connection — a session-level advisory lock is released by the session
+    that holds it, not by whichever session next asks about it."""
+    probe_engine = create_async_engine(postgres_url)
+    try:
+        async with probe_engine.connect() as probe:
+            await probe.execute(
+                text("SELECT pg_advisory_unlock(:key)"), {"key": BOOT_LOCK_KEY}
+            )
+    finally:
+        await probe_engine.dispose()
+
+
+class TestBootLock:
+    def test_the_key_cannot_collide_with_a_rooms_message_lock(self) -> None:
+        """Session-level and transaction-level advisory locks share one flat
+        namespace per database, and Switch takes a second one:
+        `db/stores/message_store.py` serialises a room's message sequence with
+        `pg_advisory_xact_lock(hashtext(room_id))`. A boot that collided with
+        it would block on an ordinary message write, and a message write on a
+        boot.
+
+        `hashtext` returns `integer`, so every key that lock can take lies in
+        the signed 32-bit range. Keeping `BOOT_LOCK_KEY` outside that range
+        separates the two by domain rather than by a list of values anyone has
+        thought to check, which is what makes it hold for a room id nobody has
+        created yet."""
+        assert abs(BOOT_LOCK_KEY) > 2**31
+
+    async def test_lock_is_held_during_the_block_and_released_after(
+        self, postgres_url: str
+    ) -> None:
+        config = _config_for(postgres_url)
+
+        async with boot_lock(config):
+            still_free = await _try_lock_from_a_fresh_session(postgres_url)
+            if still_free:
+                await _unlock_from_a_fresh_session(postgres_url)
+            assert still_free is False, (
+                "a second session was able to take BOOT_LOCK_KEY while "
+                "boot_lock's own block was still running — the lock was "
+                "never actually held"
+            )
+
+        now_free = await _try_lock_from_a_fresh_session(postgres_url)
+        assert now_free is True, "the lock was not released when the block exited"
+        await _unlock_from_a_fresh_session(postgres_url)
+
+    async def test_lock_is_released_even_when_the_guarded_body_raises(
+        self, postgres_url: str
+    ) -> None:
+        config = _config_for(postgres_url)
+
+        with pytest.raises(RuntimeError, match="boom"):
+            async with boot_lock(config):
+                raise RuntimeError("boom")
+
+        freed = await _try_lock_from_a_fresh_session(postgres_url)
+        assert freed is True, (
+            "the lock leaked after the guarded body raised — a stuck "
+            "advisory lock would wedge every future boot on this database"
+        )
+        await _unlock_from_a_fresh_session(postgres_url)
+
+    async def test_two_concurrent_callers_of_the_guarded_section_serialise(
+        self, postgres_url: str
+    ) -> None:
+        """Real overlap, not a stand-in for it: both callers are started
+        together with `asyncio.gather`, and each holds the lock across an
+        `await asyncio.sleep`, which is exactly the shape boot's own
+        critical sections have (a migration and a database round trip
+        respectively) — long enough that two callers *would* interleave if
+        the lock were not actually excluding one while the other runs.
+        """
+        config = _config_for(postgres_url)
+        events: list[str] = []
+
+        async def _guarded(label: str) -> None:
+            async with boot_lock(config):
+                events.append(f"{label}-start")
+                await asyncio.sleep(0.2)
+                events.append(f"{label}-end")
+
+        await asyncio.gather(_guarded("a"), _guarded("b"))
+
+        assert events in (
+            ["a-start", "a-end", "b-start", "b-end"],
+            ["b-start", "b-end", "a-start", "a-end"],
+        ), f"the two callers' work interleaved instead of serialising: {events}"
+
+    async def test_asyncio_to_thread_gives_alembic_a_thread_with_no_running_loop(
+        self,
+    ) -> None:
+        """`main._migrate_and_grant` runs the synchronous
+        `alembic_command.upgrade` — whose own `migrations/env.py` calls
+        `asyncio.run` internally to drive its async engine — via
+        `asyncio.to_thread`, from a coroutine that already has a running event
+        loop of its own. `asyncio.run` raises `RuntimeError` if it is called
+        while a loop is already running on its thread, so this only works
+        because a `to_thread` worker is a fresh OS thread with none — pinned
+        down directly here, independent of Alembic, rather than trusted.
+        """
+
+        def _sync_work_with_its_own_event_loop() -> int:
+            async def _inner() -> int:
+                return 42
+
+            return asyncio.run(_inner())
+
+        result = await asyncio.to_thread(_sync_work_with_its_own_event_loop)
+        assert result == 42

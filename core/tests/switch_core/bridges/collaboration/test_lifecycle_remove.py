@@ -11,7 +11,13 @@ from switch_core.bridges.collaboration.lifecycle_service import (
     CollaborationBridgeLifecycleService,
     _bridge_client_localpart,
 )
-from switch_core.db.models import Client, CollaborationBridge, ExternalUser, Room
+from switch_core.db.models import (
+    TENANT_ZERO_ID,
+    Client,
+    CollaborationBridge,
+    ExternalUser,
+    Room,
+)
 from switch_core.db.stores.client_store import ClientStore
 from switch_core.db.stores.collaboration_bridge_store import CollaborationBridgeStore
 from switch_core.db.stores.external_user_store import ExternalUserStore
@@ -246,9 +252,9 @@ async def test_a_starting_bridge_is_recorded_in_the_rooms_it_carries(
         elsewhere_id = await _make_bridged_room(session, bridge_id=other_bridge_id)
         await session.commit()
 
-    await service._record_bridge_memberships(bridge_id, client_id)
+    await service._record_bridge_memberships(bridge_id, TENANT_ZERO_ID, client_id)
     # Again, because a bridge starts more than once.
-    await service._record_bridge_memberships(bridge_id, client_id)
+    await service._record_bridge_memberships(bridge_id, TENANT_ZERO_ID, client_id)
 
     async with session_factory() as session:
         assert await RoomStore().get_client_ids(session, room_id) == [client_id]

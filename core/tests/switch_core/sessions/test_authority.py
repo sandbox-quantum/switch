@@ -20,6 +20,7 @@ from switch_core.db.models import (
     SdkSession,
     SdkSessionCommand,
     User,
+    require_tenant_id,
 )
 from switch_core.sessions.contract import (
     Command,
@@ -243,7 +244,12 @@ async def test_room_viewer_cannot_reserve_but_verified_owner_can(session_factory
     )
     assert result.status == "accepted"
     async with session_factory() as db:
-        assert await db.get(SdkSessionCommand, ("session-demo", "outsider")) is None
+        assert (
+            await db.get(
+                SdkSessionCommand, (require_tenant_id(), "session-demo", "outsider")
+            )
+            is None
+        )
 
 
 async def test_host_cannot_forge_a_settlement_and_replay_keeps_confirmed_actor(
@@ -322,7 +328,7 @@ async def test_expired_host_cannot_execute_or_renew_with_a_stale_lease(session_f
     assert conflict.value.code == "STALE_EPOCH"
 
     async with session_factory() as db, db.begin():
-        row = await db.get(SdkSession, "session-demo")
+        row = await db.get(SdkSession, (require_tenant_id(), "session-demo"))
         row.lease_expires_at = datetime.now(UTC) - timedelta(seconds=1)
     with pytest.raises(SessionError) as conflict:
         await service.renew("agent-demo", "session-demo", "host-demo", epoch)
@@ -388,7 +394,7 @@ async def test_owner_can_retire_expired_unknown_session_without_replay(session_f
     with pytest.raises(SessionError, match="active host"):
         await service.retire("session-demo", "owner", epoch)
     async with session_factory() as db, db.begin():
-        row = await db.get(SdkSession, "session-demo")
+        row = await db.get(SdkSession, (require_tenant_id(), "session-demo"))
         row.lease_expires_at = datetime.now(UTC) - timedelta(seconds=1)
     retired = await service.retire("session-demo", "owner", epoch)
     assert retired.session.retired
@@ -418,7 +424,7 @@ async def test_request_expiry_queues_one_cancellation_without_answering(
     assert initial.expires_at is not None
     assert datetime.fromisoformat(initial.expires_at) > datetime.now(UTC)
     async with session_factory() as db, db.begin():
-        row = await db.get(SdkSession, "session-demo")
+        row = await db.get(SdkSession, (require_tenant_id(), "session-demo"))
         snapshot = dict(row.snapshot)
         requests = [dict(request) for request in snapshot["requests"]]
         requests[0]["expiresAt"] = (
@@ -446,7 +452,7 @@ async def test_reserved_answer_is_not_cancelled_by_request_expiry(session_factor
     await opened(service, epoch)
     await service.submit(answer(epoch, "winner"), user_id="owner", bridge_id=None)
     async with session_factory() as db, db.begin():
-        row = await db.get(SdkSession, "session-demo")
+        row = await db.get(SdkSession, (require_tenant_id(), "session-demo"))
         snapshot = dict(row.snapshot)
         requests = [dict(request) for request in snapshot["requests"]]
         requests[0]["expiresAt"] = (

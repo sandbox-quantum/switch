@@ -93,6 +93,7 @@ class TestDeleteRoom:
         events: list[Any] = []
         room = SimpleNamespace(
             id="room-1",
+            tenant_id="room-tenant",
             matrix_room_id="!mx:switch.local",
             bridge_id="bridge-x",
             external_channel_id="chan-x",
@@ -116,6 +117,7 @@ class TestDeleteRoom:
         events: list[Any] = []
         room = SimpleNamespace(
             id="room-1",
+            tenant_id="room-tenant",
             matrix_room_id="!mx:switch.local",
             bridge_id=None,
             external_channel_id=None,
@@ -137,6 +139,7 @@ class TestDeleteRoom:
         events: list[Any] = []
         room = SimpleNamespace(
             id="room-1",
+            tenant_id="room-tenant",
             matrix_room_id="!mx:switch.local",
             bridge_id="bridge-gone",
             external_channel_id="chan-x",
@@ -158,6 +161,7 @@ class TestDeleteRoom:
         events: list[Any] = []
         room = SimpleNamespace(
             id="room-1",
+            tenant_id="room-tenant",
             matrix_room_id="!mx:switch.local",
             bridge_id=None,
             external_channel_id=None,

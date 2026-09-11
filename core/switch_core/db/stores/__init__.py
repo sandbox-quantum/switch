@@ -13,6 +13,7 @@ from switch_core.db.stores.room_link_store import RoomLinkStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.skill_store import SkillStore
 from switch_core.db.stores.task_store import TaskStore
+from switch_core.db.stores.tenant_store import TenantStore
 from switch_core.db.stores.user_store import UserStore
 
 __all__ = [
@@ -31,5 +32,6 @@ __all__ = [
     "RoomStore",
     "SkillStore",
     "TaskStore",
+    "TenantStore",
     "UserStore",
 ]
