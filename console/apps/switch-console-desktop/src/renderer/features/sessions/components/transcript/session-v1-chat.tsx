@@ -1,5 +1,5 @@
 import type { Command, SessionChatClient } from '@switch-console/shared/session-v1';
-import { Loader2, Wrench } from 'lucide-react';
+import { Loader2, Paperclip, Wrench } from 'lucide-react';
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { Button } from '@renderer/lib/ui/button';
 import { MarkdownRenderer } from '@renderer/lib/ui/markdown-renderer';
@@ -143,25 +143,6 @@ export function SessionV1Chat({
           </span>
         </div>
       </div>
-      {session && (
-        <SessionV1Controls
-          key={`${session.epoch}:${JSON.stringify(session.model)}`}
-          session={session}
-          disabled={
-            !available ||
-            sending ||
-            client.hasPendingCommand() ||
-            session.status !== 'ready' ||
-            Boolean(
-              view.snapshot?.turns.some(
-                (turn) => turn.status === 'queued' || turn.status === 'running'
-              )
-            ) ||
-            session.pendingRequestIds.length > 0
-          }
-          execute={control}
-        />
-      )}
       {session && !session.capabilities.questions && (
         <div className="px-5 py-2 text-xs text-foreground-muted">
           This provider does not support interactive questions. Supply additional instructions in
@@ -185,7 +166,9 @@ export function SessionV1Chat({
             <div key={item.itemId}>
               {item.kind === 'user-message' ? (
                 <div className="flex flex-col items-end gap-1">
-                  <span className="text-tiny text-foreground-passive">{item.origin?.surface}</span>
+                  <span className="ml-auto hidden text-tiny text-foreground-passive xl:inline">
+                    {item.origin?.surface}
+                  </span>
                   <div className="max-w-[85%] rounded-2xl bg-background-1 px-4 py-3 text-sm leading-relaxed break-words whitespace-pre-wrap">
                     {item.text}
                   </div>
@@ -311,22 +294,45 @@ export function SessionV1Chat({
             placeholder="Message the agent…"
             className="min-h-16 border-0 bg-transparent shadow-none focus-visible:ring-0"
           />
-          <div className="flex items-center justify-between px-1 pt-2">
+          <div className="flex flex-wrap items-center gap-1 px-1 pt-2">
+            {session && (
+              <SessionV1Controls
+                key={`${session.epoch}:${JSON.stringify(session.model)}`}
+                session={session}
+                disabled={
+                  !available ||
+                  sending ||
+                  client.hasPendingCommand() ||
+                  session.status !== 'ready' ||
+                  Boolean(
+                    view.snapshot?.turns.some(
+                      (turn) => turn.status === 'queued' || turn.status === 'running'
+                    )
+                  ) ||
+                  session.pendingRequestIds.length > 0
+                }
+                execute={control}
+              />
+            )}
+
             {Boolean(session?.capabilities.attachmentMimeTypes.length) && (
               <Button
                 size="sm"
                 variant="ghost"
                 disabled={sending || pendingId !== null}
+                aria-label="Attach files"
+                title="Attach files"
                 onClick={() => picker.current?.click()}
               >
-                Attach files
+                <Paperclip className="size-3.5" />
               </Button>
             )}
-            <span className="text-tiny text-foreground-passive">
+            <span className="ml-auto hidden text-tiny text-foreground-passive xl:inline">
               Enter to send · Shift + Enter for a new line
             </span>
             <Button
               size="sm"
+              className="ml-auto xl:ml-1"
               disabled={
                 !available ||
                 sending ||
