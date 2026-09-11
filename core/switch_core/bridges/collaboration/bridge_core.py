@@ -214,6 +214,10 @@ class BridgeCore:
     def adapter(self) -> CollaborationAdapter:
         return self._adapter
 
+    @property
+    def tenant_id(self) -> str:
+        return self._bridge_tenant_id
+
     def _traced(
         self, handler: Callable[[_InboundEventT], Awaitable[None]]
     ) -> Callable[[_InboundEventT], Awaitable[None]]:

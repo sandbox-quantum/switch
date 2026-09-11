@@ -122,6 +122,9 @@ class _NoBridges:
     def all_bridges(self) -> list:
         return []
 
+    def bridges_for_tenant(self, tenant_id: str) -> list:
+        return []
+
 
 @dataclass
 class StackInfo:
