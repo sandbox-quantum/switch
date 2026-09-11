@@ -364,6 +364,13 @@ class RoomYamlService:
                 "(users live on a collaboration bridge)"
             )
 
+        # Resolve gateway user names to their claimed bridge identities
+        resolved_users = (
+            await self._resolve_user_identities(spec.users, bridge_id, user_id)
+            if spec.users and bridge_id
+            else spec.users
+        )
+
         attached_ref_ids, inline_refs = await self._resolve_references(
             spec.references, user_id=user_id, is_admin=is_admin
         )
@@ -374,7 +381,7 @@ class RoomYamlService:
             instructions=spec.instructions,
             channel_type=cast(ChannelType, spec.channel_type),
             agent_names=spec.agents or None,
-            user_names=spec.users or None,
+            user_names=resolved_users or None,
             bridge_id=bridge_id,
             created_by=user_id,
             owner_id=user_id,
@@ -426,6 +433,46 @@ class RoomYamlService:
                 f"Ambiguous bridge name {bridge_name!r}: {len(matches)} bridges match"
             )
         return matches[0].id
+
+    async def _resolve_user_identities(
+        self,
+        user_names: list[str],
+        bridge_id: str | None,
+        acting_user_id: str,
+    ) -> list[str]:
+        """Resolve gateway user names to their claimed bridge identities.
+
+        When a user has claimed an identity on the target bridge (e.g.
+        "Admin" → "dantas.abel" on Slack), the bridge identity is used
+        instead. Users without a linked identity pass through unchanged
+        and are resolved by the bridge's own lookup.
+        """
+        if not bridge_id:
+            return user_names
+
+        # Build a map: gateway user name → claimed external username on this bridge
+        async with self._session_factory() as session:
+            from switch_core.db.stores.user_store import UserStore
+
+            user_store = UserStore()
+            all_users = await user_store.get_all(session)
+            name_to_id = {u.name: u.id for u in all_users}
+
+            resolved: list[str] = []
+            for name in user_names:
+                uid = name_to_id.get(name)
+                if uid is None:
+                    resolved.append(name)
+                    continue
+                claimed = await self._external_users.get_by_user(session, uid)
+                bridge_match = next(
+                    (c for c in claimed if c.bridge_id == bridge_id), None
+                )
+                if bridge_match:
+                    resolved.append(bridge_match.external_username)
+                else:
+                    resolved.append(name)
+        return resolved
 
     async def _resolve_references(
         self, entries: list[ExternalReferenceEntry], *, user_id: str, is_admin: bool
