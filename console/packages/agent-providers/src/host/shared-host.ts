@@ -440,7 +440,7 @@ export async function runSharedHost(
               `Room message ${event.messageId} was not submitted: ${error.message}`
             );
           }
-          await rooms!.acknowledge(event.sequence);
+          await rooms!.acknowledge(event);
         }
       }
       const commands = await request(`${sessionPath}/commands`, hostLease);

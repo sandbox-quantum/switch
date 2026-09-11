@@ -95,7 +95,12 @@ export interface SwitchEventStreamDeps {
    */
   onRoomRejected?: (info: { roomId: string; status: number; detail: string }) => void;
   /** Fired when the server reports missed events it cannot replay. */
-  onGap(info: { fromSequence: number; reason: string }): void;
+  onGap(info: {
+    fromSequence: number;
+    reason: string;
+    resumedAt?: number;
+    cursorReset?: boolean;
+  }): void | Promise<void>;
   /** Fired when another stream took this connection over, or it was closed. */
   onEvicted(reason: string): void;
   log: EventStreamLogger;
@@ -358,17 +363,25 @@ export class SwitchEventStream {
         });
         this.reportRooms(frame.data.rooms);
         return;
-      case 'gap':
+      case 'gap': {
         log.warn('SwitchEventStream: gap — events missed', {
           event: 'switch_stream_gap',
           fromSequence: frame.data.from_sequence,
           reason: frame.data.reason,
         });
-        onGap({
+        const resumedAt = frame.data.resumed_at;
+        if (resumedAt !== undefined && (!Number.isSafeInteger(resumedAt) || Number(resumedAt) < 0))
+          throw new Error('Switch returned an invalid gap resume cursor.');
+        await onGap({
           fromSequence: Number(frame.data.from_sequence ?? 0),
           reason: String(frame.data.reason ?? 'events were missed'),
+          ...(resumedAt === undefined
+            ? {}
+            : { resumedAt: Number(resumedAt), cursorReset: Number(resumedAt) < this.cursor }),
         });
+        if (resumedAt !== undefined) this.cursor = Number(resumedAt);
         return;
+      }
       case 'evicted':
         log.warn('SwitchEventStream: evicted', {
           event: 'switch_stream_evicted',

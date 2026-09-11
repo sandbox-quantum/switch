@@ -59,32 +59,52 @@ const storedReceivedSchema = receivedSchema.extend({
 });
 const recordSchema = z.discriminatedUnion('type', [
   storedReceivedSchema,
-  z.strictObject({ type: z.literal('ack'), sequence: z.number().int().positive() }),
+  z.strictObject({
+    type: z.literal('ack'),
+    sequence: z.number().int().positive(),
+    identity: z.string().min(1).optional(),
+  }),
+  z.strictObject({
+    type: z.literal('cursor'),
+    sequence: z.number().int().nonnegative(),
+    reset: z.boolean(),
+    gap: receivedSchema.shape.gap,
+  }),
   z.strictObject({ type: z.literal('rooms'), rooms: z.array(z.string()) }),
 ]);
 type Received = z.infer<typeof receivedSchema>;
+const identity = (event: Pick<Received, 'roomId' | 'messageId'>): string =>
+  JSON.stringify([event.roomId, event.messageId]);
 
 export class SharedRoomInbox {
-  private readonly received = new Map<number, Received>();
-  private readonly outstanding = new Map<number, Received>();
+  private readonly received = new Map<string, Received>();
+  private readonly outstanding = new Map<string, Received>();
+  private readonly sequences = new Map<number, string>();
   private rooms: string[] | null = null;
-  private cursor = 0;
-  /**
-   * Unaddressed room messages seen since the last delivery was journaled, and
-   * the gap the server last reported. Neither is carried across a restart: a
-   * restart resumes from `Math.max(startCursor, lastReceivedSequence)`, so the
-   * same unaddressed events stream again and the tally reaches the same number.
-   */
+  private cursor: number | null = null;
   private missed = 0;
-  private gap: z.infer<typeof receivedSchema>['gap'] = null;
+  private gap: Received['gap'] = null;
   private constructor(private readonly journal: Journal<z.infer<typeof recordSchema>>) {
     for (const record of journal.records) {
       if (record.type === 'received') {
-        this.received.set(record.sequence, record);
-        this.outstanding.set(record.sequence, record);
-        this.cursor = Math.max(this.cursor, record.sequence);
-      } else if (record.type === 'ack') this.outstanding.delete(record.sequence);
-      else this.rooms = record.rooms;
+        // Older journals carried restart evidence only on the next delivery.
+        if (record.gap && this.cursor !== null && record.sequence < this.cursor)
+          this.sequences.clear();
+        const key = identity(record);
+        this.received.set(key, record);
+        this.outstanding.set(key, record);
+        this.sequences.set(record.sequence, key);
+        this.cursor = record.sequence;
+        this.gap = null;
+      } else if (record.type === 'ack') {
+        const key = record.identity ?? this.sequences.get(record.sequence);
+        if (!key) throw new Error('Room inbox acknowledges an unknown delivery.');
+        this.outstanding.delete(key);
+      } else if (record.type === 'cursor') {
+        if (record.reset) this.sequences.clear();
+        this.cursor = record.sequence;
+        this.gap = record.gap;
+      } else this.rooms = record.rooms;
     }
   }
 
@@ -118,7 +138,7 @@ export class SharedRoomInbox {
     signal: AbortSignal,
     fail: (error: Error) => void
   ): Promise<void> {
-    const cursor = Math.max(connection.startCursor ?? 0, this.cursor);
+    const cursor = this.cursor ?? connection.startCursor;
     let rooms = this.rooms ?? connection.rooms;
     await new Promise<void>((resolve, reject) => {
       const aborted = () => reject(signal.reason);
@@ -128,7 +148,7 @@ export class SharedRoomInbox {
         connectionId: connection.connectionId,
         scope: 'single',
         filter: 'all',
-        startCursor: cursor || connection.startCursor,
+        startCursor: cursor,
         rooms,
         signal,
         log: console,
@@ -146,16 +166,16 @@ export class SharedRoomInbox {
             missed: this.missed,
             gap: this.gap,
           });
-          const previous = this.received.get(received.sequence);
-          if (previous) {
-            if (previous.roomId !== received.roomId || previous.messageId !== received.messageId)
-              throw new Error('Room delivery sequence changed identity.');
-            return;
-          }
+          const key = identity(received);
+          const previous = this.sequences.get(received.sequence);
+          if (previous && previous !== key)
+            throw new Error('Room delivery sequence changed identity.');
+          if (this.received.has(key)) return;
           await this.journal.append(received);
-          this.received.set(received.sequence, received);
-          this.outstanding.set(received.sequence, received);
-          this.cursor = Math.max(this.cursor, received.sequence);
+          this.received.set(key, received);
+          this.outstanding.set(key, received);
+          this.sequences.set(received.sequence, key);
+          this.cursor = received.sequence;
           this.missed = 0;
           this.gap = null;
         },
@@ -176,9 +196,23 @@ export class SharedRoomInbox {
         // A gap costs the agent context, not the connection: the stream keeps
         // serving from wherever it resumed, and the warning rides on the next
         // delivery so the agent reads the room before it answers.
-        onGap: (gap) => {
+        onGap: async (gap) => {
           console.warn(`Room delivery gap: ${gap.reason}. Read room context before continuing.`);
-          this.gap = { fromSequence: gap.fromSequence, reason: gap.reason };
+          const detail = { fromSequence: gap.fromSequence, reason: gap.reason };
+          if (gap.resumedAt !== undefined) {
+            await this.journal.append({
+              type: 'cursor',
+              sequence: gap.resumedAt,
+              reset: gap.cursorReset === true,
+              gap: detail,
+            });
+            this.cursor = gap.resumedAt;
+            if (gap.cursorReset) {
+              this.sequences.clear();
+              this.missed = 0;
+            }
+          }
+          this.gap = detail;
         },
         onEvicted: (reason) => {
           if (reason === 'heartbeat lapsed')
@@ -200,10 +234,11 @@ export class SharedRoomInbox {
     return [...this.outstanding.values()];
   }
 
-  async acknowledge(sequence: number): Promise<void> {
-    if (!this.received.has(sequence)) throw new Error('Cannot acknowledge an unknown room event.');
-    if (!this.outstanding.has(sequence)) return;
-    await this.journal.append({ type: 'ack', sequence });
-    this.outstanding.delete(sequence);
+  async acknowledge(event: Pick<Received, 'sequence' | 'roomId' | 'messageId'>): Promise<void> {
+    const key = identity(event);
+    if (!this.received.has(key)) throw new Error('Cannot acknowledge an unknown room event.');
+    if (!this.outstanding.has(key)) return;
+    await this.journal.append({ type: 'ack', sequence: event.sequence, identity: key });
+    this.outstanding.delete(key);
   }
 }

@@ -91,10 +91,12 @@ it('restores room bindings and outstanding deliveries without repeating acknowle
   const inbox = await SharedRoomInbox.open(root);
   expect(inbox.currentRooms()).toEqual(['room']);
   expect(inbox.pending().map((event) => event.messageId)).toEqual(['two']);
-  await inbox.acknowledge(2);
-  await inbox.acknowledge(2);
+  await inbox.acknowledge({ sequence: 2, roomId: 'room', messageId: 'two' });
+  await inbox.acknowledge({ sequence: 2, roomId: 'room', messageId: 'two' });
   expect((await SharedRoomInbox.open(root)).pending()).toEqual([]);
-  await expect(inbox.acknowledge(3)).rejects.toThrow('unknown room event');
+  await expect(
+    inbox.acknowledge({ sequence: 3, roomId: 'room', messageId: 'three' })
+  ).rejects.toThrow('unknown room event');
 });
 
 it('carries the unaddressed tally on the next delivery and starts counting again', async () => {
@@ -114,7 +116,7 @@ it('carries the unaddressed tally on the next delivery and starts counting again
 
 it('keeps streaming after a gap and warns on the next delivery instead', async () => {
   const { inbox, failures, stream } = await connected();
-  stream.onGap({ fromSequence: 7, reason: 'events aged out of the buffer' });
+  await stream.onGap({ fromSequence: 7, reason: 'events aged out of the buffer' });
   await stream.onEvent(message(9, true));
   expect(failures).toEqual([]);
   expect(inbox.pending()).toMatchObject([
@@ -138,4 +140,75 @@ it('reloads deliveries journaled before a tally was recorded', async () => {
     { sequence: 2, missed: 1, gap: null },
     { sequence: 3, missed: 0, gap: null },
   ]);
+});
+
+async function reconnect(root: string) {
+  const inbox = await SharedRoomInbox.open(root);
+  await inbox.connect(
+    credentials,
+    { connectionId: 'connection', rooms: ['room'], startCursor: 4 },
+    new AbortController().signal,
+    vi.fn()
+  );
+  return { inbox, stream: streams[streams.length - 1] };
+}
+
+it('preserves old pending identities across a server reset and host restart', async () => {
+  const { root, inbox, stream } = await connected();
+  for (const sequence of [1, 3, 4]) await stream.onEvent(message(sequence, true));
+  await inbox.acknowledge(inbox.pending()[2]);
+  await stream.onGap({ fromSequence: 0, resumedAt: 0, cursorReset: true, reason: 'buffer reset' });
+  const next = message(1, true);
+  if (!('message_id' in next.payload)) throw new Error('Expected a message');
+  next.payload.message_id = 'new-message-1';
+  await stream.onEvent(next);
+  await inbox.acknowledge(inbox.pending().find((event) => event.messageId === 'new-message-1')!);
+  const reopened = await reconnect(root);
+  expect(reopened.stream.startCursor).toBe(1);
+  expect(reopened.inbox.pending().map((event) => event.messageId)).toEqual([
+    'message-1',
+    'message-3',
+  ]);
+  await reopened.stream.onEvent(message(2, true));
+  await reopened.inbox.acknowledge(reopened.inbox.pending()[0]);
+  expect((await SharedRoomInbox.open(root)).pending().map((event) => event.messageId)).toEqual([
+    'message-3',
+    'message-2',
+  ]);
+});
+
+it('restores legacy restart evidence carried on a lower sequence delivery', async () => {
+  const { root } = await connected();
+  await writeFile(
+    join(root, 'room-inbox.jsonl'),
+    [
+      { type: 'received', sequence: 3, roomId: 'room', messageId: 'old-three' },
+      { type: 'ack', sequence: 3 },
+      { type: 'received', sequence: 4, roomId: 'room', messageId: 'old-four' },
+      { type: 'ack', sequence: 4 },
+      {
+        type: 'received',
+        sequence: 1,
+        roomId: 'room',
+        messageId: 'new-one',
+        missed: 0,
+        gap: { fromSequence: 0, reason: 'buffer reset' },
+      },
+      { type: 'ack', sequence: 1 },
+    ]
+      .map((record) => JSON.stringify(record) + '\n')
+      .join('')
+  );
+  const { inbox, stream } = await reconnect(root);
+  expect(stream.startCursor).toBe(1);
+  expect(inbox.pending()).toEqual([]);
+});
+
+it('retains a zero checkpoint and gap before the next message arrives', async () => {
+  const { root, stream } = await connected();
+  await stream.onGap({ fromSequence: 0, resumedAt: 0, cursorReset: true, reason: 'buffer reset' });
+  const next = await reconnect(root);
+  expect(next.stream.startCursor).toBe(0);
+  await next.stream.onEvent(message(1, true));
+  expect(next.inbox.pending()[0].gap?.reason).toBe('buffer reset');
 });

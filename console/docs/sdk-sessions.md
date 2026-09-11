@@ -46,6 +46,13 @@ be acknowledged without resubmitting it.
 
 ## Recovery guarantees
 
+A reported room-stream cursor reset is saved before delivery continues. Host
+restart uses the latest saved cursor, and room/message identities distinguish
+messages whose sequence numbers were reused after a server restart. Pending
+messages keep their server reservations. The current in-memory stream protocol
+only detects a server restart when the client cursor is ahead of the new buffer;
+it cannot identify a restart once the new buffer has passed that cursor.
+
 - Events, upload receipts, command states and room-message assignments are
   written to disk before their acknowledgement advances.
 - A lost upload acknowledgement is reconciled with the server. A duplicate
