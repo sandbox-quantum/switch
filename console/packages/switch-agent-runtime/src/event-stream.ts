@@ -193,16 +193,10 @@ export class SwitchEventStream {
     return true;
   }
 
-  /**
-   * Stop for good, because the server rejected who we say we are.
-   *
-   * A rotated or revoked token is not an outage: every reopen carries the same
-   * credential, so the backoff would run until the process ends while nothing
-   * is delivered and nobody is told. The connection is ended and the owner
-   * hears about it over the same callback an eviction uses, which is the path
-   * the hosts already turn into a terminal failure.
-   */
+  /** A rejected credential is not an outage: every reopen would carry the same
+   * token, so end both loops and tell the owner once. */
   private rejectCredentials(status: number, body: string): void {
+    if (this.halt.signal.aborted) return;
     const detail = body.slice(0, 500);
     this.deps.log.error('SwitchEventStream: the server rejected our credentials — stopping', {
       event: 'switch_stream_credentials_rejected',
@@ -439,6 +433,10 @@ export class SwitchEventStream {
           connection_id: connectionId,
           cursor: this.cursor,
         });
+        if (resp.status === 401 || resp.status === 403) {
+          this.rejectCredentials(resp.status, await resp.text());
+          return;
+        }
         if (resp.status === 404 || resp.status === 409) {
           // The server answered, so this is not an outage — but it is not a
           // beat that landed either: we are not attached, and only a reopen
