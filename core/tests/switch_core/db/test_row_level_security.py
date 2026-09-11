@@ -46,8 +46,6 @@ from switch_core.db.rls_ddl import (
     GLOBAL_TABLES,
     POLICY_NAME,
     REQUIRE_TENANT_FUNCTION_NAME,
-    create_policy_ddl,
-    enable_rls_ddl,
     scoped_tables,
     unscoped_tables,
 )
