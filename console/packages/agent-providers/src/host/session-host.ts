@@ -17,6 +17,7 @@ import type {
   Snapshot,
 } from '@switch-console/shared/session-v1';
 import { z } from 'zod';
+import { ProviderConversationUnavailableError } from '../adapter';
 import type { ProviderAdapter, ProviderSessionStartInput, TurnAttachment } from '../adapter';
 import type { UserInputAnswers } from '../events';
 import type { ProviderRuntimeEvent } from '../events';
@@ -64,6 +65,7 @@ export class HostedSession {
   private resetting = false;
   private resetPending = false;
   private decisionPending = false;
+  private decisionCode = 'RESET_OUTCOME_UNKNOWN';
   private readonly unsubscribe: () => void;
   private readonly timer: ReturnType<typeof setInterval>;
 
@@ -189,28 +191,10 @@ export class HostedSession {
           return host;
         }
         if (host.resetPending) {
-          host.decisionPending = true;
-          host.queue.length = 0;
-          host.activeTurn = null;
-          config.session.status = 'error';
-          config.session.capabilities = {
-            ...config.session.capabilities,
-            reset: true,
-            modelChange: false,
-            compact: false,
-            attachmentMimeTypes: [],
-          };
-          const undecided = host.replica.snapshot();
-          undecided.session = structuredClone(config.session);
-          host.replica = new SessionReplica(undecided);
-          await host.publish({ type: 'session.upsert', session: structuredClone(config.session) });
-          await host.publish({
-            type: 'notice',
-            level: 'error',
-            code: 'RESET_OUTCOME_UNKNOWN',
-            message:
-              'A reset was interrupted and its outcome is unknown. Start a fresh conversation to continue; earlier messages stay in the transcript.',
-          });
+          await host.awaitResetDecision(
+            'RESET_OUTCOME_UNKNOWN',
+            'A reset was interrupted and its outcome is unknown. Start a fresh conversation to continue; earlier messages stay in the transcript.'
+          );
           return host;
         }
         if (!host.nativeId)
@@ -232,10 +216,35 @@ export class HostedSession {
       await host.refreshModels();
       return host;
     } catch (error) {
+      if (error instanceof ProviderConversationUnavailableError && host.nativeId) {
+        await host.eventSerial;
+        await host.awaitResetDecision('NATIVE_CONVERSATION_UNAVAILABLE', error.message);
+        return host;
+      }
       await host.fail(error);
       await host.shutdown();
       throw error;
     }
+  }
+
+  private async awaitResetDecision(code: string, message: string): Promise<void> {
+    this.decisionPending = true;
+    this.decisionCode = code;
+    this.queue.length = 0;
+    this.activeTurn = null;
+    this.config.session.status = 'error';
+    this.config.session.capabilities = {
+      ...this.config.session.capabilities,
+      reset: true,
+      modelChange: false,
+      compact: false,
+      attachmentMimeTypes: [],
+    };
+    const snapshot = this.replica.snapshot();
+    snapshot.session = structuredClone(this.config.session);
+    this.replica = new SessionReplica(snapshot);
+    await this.publish({ type: 'session.upsert', session: structuredClone(this.config.session) });
+    await this.publish({ type: 'notice', level: 'error', code, message });
   }
 
   private async refreshModels(): Promise<void> {
@@ -287,11 +296,11 @@ export class HostedSession {
       type: 'notice',
       level: 'info',
       code: 'ROOM_BACKLOG_DELIVERED',
-      message: `${count} room message(s) received while the reset outcome was unresolved are now being delivered to the fresh conversation.`,
+      message: `${count} room message(s) received while the conversation needed an explicit reset are now being delivered to the fresh conversation.`,
     });
   }
 
-  /** An interrupted reset whose outcome only an explicit user decision can settle. */
+  /** A conversation that cannot continue without an explicit reset. */
   get resetDecisionPending(): boolean {
     return this.decisionPending;
   }
@@ -327,7 +336,7 @@ export class HostedSession {
     const body = command.body;
     if (this.decisionPending && body.type !== 'session.reset' && body.type !== 'session.stop')
       throw new Error(
-        'UNSUPPORTED_CAPABILITY: RESET_OUTCOME_UNKNOWN — start a fresh conversation first.'
+        `UNSUPPORTED_CAPABILITY: ${this.decisionCode} — start a fresh conversation first.`
       );
     if (body.type === 'message.send') {
       if (this.stopped) throw new Error('Session stop has been requested.');

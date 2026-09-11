@@ -105,6 +105,12 @@ unknown, history is retained, and held room messages are delivered to the fresh
 conversation through the server's normal reservations. No candidate conversation
 from the interrupted reset is resumed automatically.
 
+If Codex reports that the saved conversation has no rollout, the host also waits
+for an explicit fresh reset. Some Codex versions do not save a new conversation
+until its first turn. Switch retains the transcript and never creates a replacement
+conversation or repeats a previous action automatically. Other startup failures
+remain visible errors.
+
 The model selector shows the native provider's model catalog and available options.
 The server and host reject unsupported selections and changes while work is pending.
 The host persists a selection only after the native operation succeeds. An uncertain

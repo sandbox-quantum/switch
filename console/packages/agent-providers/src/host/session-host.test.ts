@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Command, Session } from '@switch-console/shared/session-v1';
 import { afterEach, expect, it, vi } from 'vitest';
-import type { ProviderAdapter } from '../adapter';
+import { ProviderConversationUnavailableError, type ProviderAdapter } from '../adapter';
 import type { ProviderRuntimeEvent } from '../events';
 import { HostedSession } from './session-host';
 
@@ -698,4 +698,46 @@ it('rejects unsupported native compaction without faulting the session', async (
     await host.shutdown();
     await rm(root, { recursive: true, force: true });
   }
+});
+
+it('requires an explicit fresh reset when the provider cannot resume the saved conversation', async () => {
+  const { host, root } = await start('codex');
+  await host.shutdown();
+  const next = setup('codex');
+  vi.mocked(next.adapter.startSession).mockRejectedValueOnce(
+    new ProviderConversationUnavailableError('codex', 'session', 'Saved conversation unavailable')
+  );
+  const recovered = await HostedSession.start(root, next.config, next.adapter);
+  hosts.push(recovered);
+  expect(recovered.resetDecisionPending).toBe(true);
+  expect(recovered.snapshot().session.status).toBe('error');
+  expect(next.adapter.startSession).toHaveBeenCalledTimes(1);
+  expect(next.adapter.startSession).toHaveBeenCalledWith(
+    expect.objectContaining({
+      resume: { nativeSessionId: 'native' },
+    })
+  );
+  await expect(
+    recovered.command({ ...message('held'), epoch: recovered.snapshot().session.epoch })
+  ).rejects.toThrow('NATIVE_CONVERSATION_UNAVAILABLE');
+  expect(next.adapter.sendTurn).not.toHaveBeenCalled();
+  const receipt = await recovered.command({
+    ...message('fresh'),
+    epoch: recovered.snapshot().session.epoch,
+    body: { type: 'session.reset' },
+  });
+  expect(receipt.status).toBe('applied');
+  expect(next.adapter.startSession).toHaveBeenCalledTimes(2);
+  expect(vi.mocked(next.adapter.startSession).mock.calls[1][0].resume).toBeUndefined();
+  expect(recovered.resetDecisionPending).toBe(false);
+});
+
+it('does not present authentication or transport failures as a missing conversation', async () => {
+  const { host, root } = await start('codex');
+  await host.shutdown();
+  const next = setup('codex');
+  vi.mocked(next.adapter.startSession).mockRejectedValueOnce(new Error('Authentication failed'));
+  await expect(HostedSession.start(root, next.config, next.adapter)).rejects.toThrow(
+    'Authentication failed'
+  );
 });

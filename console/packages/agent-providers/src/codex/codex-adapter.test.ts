@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { ProviderConversationUnavailableError } from '../adapter';
 import type { ProviderRuntimeEvent, ProviderRuntimeEventType } from '../events';
 import { FakeAppServer, type FakeJsonRpcMessage } from './fake-app-server';
 
@@ -81,6 +82,32 @@ describe('CodexAdapter', () => {
         server.send({ id: message.id, error: { code: -32000, message: 'no rollout found' } });
     });
     await expect(pending).rejects.toThrow('no rollout found');
+    expect(server.received.filter((message) => message.method === 'thread/start')).toHaveLength(0);
+    expect(adapter.hasSession('resume')).toBe(false);
+  });
+
+  it('classifies a missing saved rollout without starting another thread', async () => {
+    const adapter = createCodexAdapter();
+    const pending = adapter.startSession({
+      sessionId: 'resume',
+      cwd: '/work',
+      runtimeMode: 'approval-required',
+      env: { PATH: '/usr/bin' },
+      mcpServers: {},
+      resume: { nativeSessionId: 'missing' },
+    });
+    const server = servers.at(-1)!;
+    server.on('message', (message: FakeJsonRpcMessage) => {
+      if (message.method === 'thread/resume')
+        server.send({
+          id: message.id,
+          error: {
+            code: -32600,
+            message: 'no rollout found for thread id missing',
+          },
+        });
+    });
+    await expect(pending).rejects.toBeInstanceOf(ProviderConversationUnavailableError);
     expect(server.received.filter((message) => message.method === 'thread/start')).toHaveLength(0);
     expect(adapter.hasSession('resume')).toBe(false);
   });

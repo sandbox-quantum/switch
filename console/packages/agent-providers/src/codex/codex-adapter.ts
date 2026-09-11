@@ -7,6 +7,7 @@ import {
   type ProviderSendTurnInput,
   type ProviderSession,
   ProviderSessionError,
+  ProviderConversationUnavailableError,
   type ProviderSessionStartInput,
   type ProviderTurnStartResult,
   type RuntimeMode,
@@ -271,6 +272,18 @@ export class CodexAdapter implements ProviderAdapter {
     } catch (cause) {
       this.sessions.delete(input.sessionId);
       await client.dispose();
+      if (
+        input.resume &&
+        cause instanceof JsonRpcError &&
+        cause.code === -32600 &&
+        cause.message.startsWith('no rollout found for thread id ')
+      )
+        throw new ProviderConversationUnavailableError(
+          PROVIDER,
+          input.sessionId,
+          'The saved Codex conversation is unavailable. Start a fresh conversation to continue.',
+          { cause }
+        );
       throw new ProviderSessionError(
         PROVIDER,
         input.sessionId,
