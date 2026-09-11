@@ -208,6 +208,7 @@ class ModelChoice(_Model):
 
 class Session(_Model):
     room_ids: list[Id] = Field(default_factory=list)
+    retired: bool = False
     session_id: Id
     agent_id: Id
     provider: Provider

@@ -1,14 +1,17 @@
+import { stopSharedSession } from './stop-shared-session';
+export { stopSharedSession } from './stop-shared-session';
 import { deploySharedHost, runSharedHostCommand } from './shared-host-deployment';
 export { deploySharedHost } from './shared-host-deployment';
 import { randomUUID } from 'node:crypto';
 import { join, posix } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { sharedConfigSchema, type SharedHostConfig } from '@switch-console/agent-providers';
+import { CLAUDE_SKILL_CONTENT } from '@switch-console/plugins/agents/claude/skill';
 import { CODEX_SKILL_CONTENT } from '@switch-console/plugins/agents/codex/skill';
 import { CURSOR_SKILL_CONTENT } from '@switch-console/plugins/agents/cursor/skill';
 import { GEMINI_SKILL_CONTENT } from '@switch-console/plugins/agents/gemini/skill';
 import { SWITCH_AGENT_RUNTIME_PIN } from '@switch-console/plugins/distribution';
-import { commandStatusSchema, snapshotSchema } from '@switch-console/shared/session-v1';
+import { snapshotSchema } from '@switch-console/shared/session-v1';
 import { providerAdapterRegistry } from '@main/core/agent-runtime/impl/provider-adapter-registry';
 import type { AgentRuntimeProvider } from '@main/core/agent-runtime/types';
 import { agentLaunchSpecialization } from '@main/core/agents/agent-launch-config';
@@ -21,11 +24,7 @@ import { AGENT_ENV_VARS } from '@main/core/pty/pty-env';
 import { loadSessionWithAgent } from '@main/core/sessions/session-join';
 import { switchNotificationPoller } from '@main/core/switch-rooms/switch-notification-poller';
 import { switchRoomService } from '@main/core/switch-rooms/switch-room-service';
-import {
-  fetchSdkCommandStatus,
-  fetchSdkSnapshot,
-  submitSdkCommand,
-} from '@main/core/switch-servers/gateway-client';
+import { fetchSdkSnapshot, submitSdkCommand } from '@main/core/switch-servers/gateway-client';
 import { getServer } from '@main/core/switch-servers/servers-store';
 import { makePtyId } from '@shared/core/pty/ptyId';
 import type { Session } from '@shared/core/sessions/sessions';
@@ -289,11 +288,13 @@ export async function buildSharedHostConfig(
       codexConfig: profile?.files.map((file) => file.content).join('\n') ?? '',
       skill: provider === 'codex' ? CODEX_SKILL_CONTENT : '',
       context: [
-        provider === 'gemini'
-          ? GEMINI_SKILL_CONTENT
-          : provider === 'cursor'
-            ? CURSOR_SKILL_CONTENT
-            : '',
+        provider === 'claude'
+          ? CLAUDE_SKILL_CONTENT
+          : provider === 'gemini'
+            ? GEMINI_SKILL_CONTENT
+            : provider === 'cursor'
+              ? CURSOR_SKILL_CONTENT
+              : '',
         specialization.instructions,
       ]
         .filter(Boolean)
@@ -301,27 +302,4 @@ export async function buildSharedHostConfig(
     },
   };
   return config;
-}
-
-export async function stopSharedSession(server: SwitchServer, sessionId: string): Promise<void> {
-  const snapshot = snapshotSchema.parse(await fetchSdkSnapshot(server, sessionId));
-  if (snapshot.session.status === 'stopped') return;
-  const commandId = `stop-${snapshot.session.epoch}`;
-  await submitSdkCommand(server, {
-    contractVersion: 1,
-    sessionId: sessionId,
-    epoch: snapshot.session.epoch,
-    commandId,
-    body: { type: 'session.stop' },
-  });
-  for (let attempt = 0; attempt < 60; attempt++) {
-    const receipt = commandStatusSchema.parse(
-      await fetchSdkCommandStatus(server, sessionId, commandId)
-    );
-    if (receipt.status === 'applied') return;
-    if (receipt.status === 'unknown' || receipt.status === 'rejected')
-      throw new Error(receipt.message ?? `Stop ${receipt.status}.`);
-    await delay(500);
-  }
-  throw new Error('Stop delivery has not been confirmed. Check the session before retrying.');
 }

@@ -1,7 +1,7 @@
 import hashlib
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Response
+from fastapi import APIRouter, Depends, Request, Response
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -15,13 +15,14 @@ from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
 from switch_core.bridges.agent.protocol.service import ProtocolService
 from switch_core.db.models import Agent
 from switch_core.sessions.contract import (
+    MAX_EVENT_BYTES,
     Command,
     CommandStatus,
     HostEvent,
     Session,
     Snapshot,
 )
-from switch_core.sessions.service import SessionAuthority
+from switch_core.sessions.service import SessionAuthority, SessionError
 
 router = APIRouter(prefix="/sessions")
 Factory = Annotated[async_sessionmaker[AsyncSession], Depends(get_session_factory)]
@@ -51,9 +52,23 @@ async def renew(
     return {"leaseSeconds": 30}
 
 
+async def read_host_event(request: Request) -> HostEvent:
+    data = bytearray()
+    async for chunk in request.stream():
+        if len(data) + len(chunk) > MAX_EVENT_BYTES:
+            raise SessionError(
+                "PAYLOAD_TOO_LARGE", "Host events must not exceed 64 KiB."
+            )
+        data.extend(chunk)
+    try:
+        return HostEvent.model_validate_json(data)
+    except ValueError as exc:
+        raise SessionError("INVALID_EVENT", "Invalid host event.") from exc
+
+
 @router.post("/events")
 async def ingest(
-    body: HostEvent,
+    body: Annotated[HostEvent, Depends(read_host_event)],
     agent: AuthenticatedAgent,
     factory: Factory,
     host_id: str,
@@ -103,7 +118,7 @@ async def quiesce(
 
 @router.post("/reconcile")
 async def reconcile(
-    body: HostEvent,
+    body: Annotated[HostEvent, Depends(read_host_event)],
     agent: AuthenticatedAgent,
     factory: Factory,
     host_id: str,

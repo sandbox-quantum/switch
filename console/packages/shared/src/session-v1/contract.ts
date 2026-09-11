@@ -78,6 +78,7 @@ export type ModelChoice = {
 };
 export type Session = {
   roomIds?: Id[];
+  retired?: boolean;
   sessionId: Id;
   agentId: Id;
   provider: Provider;

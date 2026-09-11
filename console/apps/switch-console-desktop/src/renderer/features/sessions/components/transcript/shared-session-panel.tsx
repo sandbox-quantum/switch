@@ -31,7 +31,14 @@ export function SharedSessionPanel({ sessionId, agentId }: { sessionId: string; 
       </div>
     );
   return client ? (
-    <SessionV1Chat client={client} restartHost={() => rpc.sessions.restartAgent(sessionId)} />
+    <SessionV1Chat
+      client={client}
+      restartHost={() => rpc.sessions.restartAgent(sessionId)}
+      retireHost={async (epoch) => {
+        const serverId = await rpc.sdkHost.serverForAgent(agentId);
+        await rpc.sdkHost.retire(serverId, sessionId, epoch);
+      }}
+    />
   ) : (
     <div role="status" className="p-5">
       Connecting to session…

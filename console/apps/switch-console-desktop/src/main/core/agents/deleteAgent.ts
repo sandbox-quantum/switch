@@ -30,6 +30,7 @@ import { getAgentById } from './getAgentById';
 import { stopRemoteWatcher } from './remote-watcher';
 import { removeAgentLaunchProfile } from './remove-launch-profile';
 import { removeSwitchCredentials } from './remove-switch-settings';
+import { stopSharedAgentSessions } from './stop-shared-agent-sessions';
 import { agentSettingsRelativePath } from './switch-settings-paths';
 
 export type DeleteAgentOptions = {
@@ -210,6 +211,12 @@ async function removeAgent(
   location: Location | null,
   options: DeleteAgentOptions
 ): Promise<void> {
+  const terminate = options.removeProvisionedFiles || options.deleteInSwitch;
+  if (terminate && agent) {
+    if (location?.sshHost) await stopRemoteWatcher(agentId);
+    else await autoSessionWatcher.stopForAgent(agentId);
+    await stopSharedAgentSessions(agent);
+  }
   // Gateway cascade first: fail loud before touching local state so a failure
   // never leaves the row deleted but the Switch identity orphaned.
   if (options.deleteInSwitch && agent) {
@@ -220,11 +227,15 @@ async function removeAgent(
     .select({ id: sessions.id })
     .from(sessions)
     .where(eq(sessions.agentId, agentId));
-  await Promise.allSettled(
-    sessionRows.flatMap((row) => [
-      sessionRuntimeManager.teardownSession(row.id),
-      viewStateService.del(`session:${row.id}`),
-    ])
+  await Promise.all(
+    sessionRows.map(async (row) => {
+      const result = await sessionRuntimeManager.teardownSession(
+        row.id,
+        terminate ? 'terminate' : 'detach'
+      );
+      if (!result.success) throw new Error('Session cleanup failed; agent removal was cancelled.');
+      await viewStateService.del(`session:${row.id}`);
+    })
   );
 
   if (location && location.sshHost !== null) {

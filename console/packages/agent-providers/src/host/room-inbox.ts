@@ -52,7 +52,20 @@ const recordSchema = z.discriminatedUnion('type', [
 type Received = z.infer<typeof receivedSchema>;
 
 export class SharedRoomInbox {
-  private constructor(private readonly journal: Journal<z.infer<typeof recordSchema>>) {}
+  private readonly received = new Map<number, Received>();
+  private readonly outstanding = new Map<number, Received>();
+  private rooms: string[] | null = null;
+  private cursor = 0;
+  private constructor(private readonly journal: Journal<z.infer<typeof recordSchema>>) {
+    for (const record of journal.records) {
+      if (record.type === 'received') {
+        this.received.set(record.sequence, record);
+        this.outstanding.set(record.sequence, record);
+        this.cursor = Math.max(this.cursor, record.sequence);
+      } else if (record.type === 'ack') this.outstanding.delete(record.sequence);
+      else this.rooms = record.rooms;
+    }
+  }
 
   static async open(root: string): Promise<SharedRoomInbox> {
     return new SharedRoomInbox(
@@ -66,16 +79,8 @@ export class SharedRoomInbox {
     signal: AbortSignal,
     fail: (error: Error) => void
   ): Promise<void> {
-    const savedRooms = [...this.journal.records]
-      .reverse()
-      .find((record) => record.type === 'rooms');
-    const cursor = Math.max(
-      connection.startCursor ?? 0,
-      ...this.journal.records
-        .filter((record) => record.type === 'received')
-        .map((record) => record.sequence)
-    );
-    let rooms = savedRooms?.rooms ?? connection.rooms;
+    const cursor = Math.max(connection.startCursor ?? 0, this.cursor);
+    let rooms = this.rooms ?? connection.rooms;
     await new Promise<void>((resolve, reject) => {
       const aborted = () => reject(signal.reason);
       signal.addEventListener('abort', aborted, { once: true });
@@ -97,21 +102,23 @@ export class SharedRoomInbox {
             roomId: event.room_id,
             messageId,
           });
-          const previous = this.journal.records.find(
-            (record) => record.type === 'received' && record.sequence === received.sequence
-          );
+          const previous = this.received.get(received.sequence);
           if (previous) {
             if (JSON.stringify(previous) !== JSON.stringify(received))
               throw new Error('Room delivery sequence changed identity.');
             return;
           }
           await this.journal.append(received);
+          this.received.set(received.sequence, received);
+          this.outstanding.set(received.sequence, received);
+          this.cursor = Math.max(this.cursor, received.sequence);
         },
         onRooms: (next) => {
           void (async () => {
-            if (!savedRooms || JSON.stringify(next) !== JSON.stringify(rooms)) {
+            if (this.rooms === null || JSON.stringify(next) !== JSON.stringify(rooms)) {
               await this.journal.append({ type: 'rooms', rooms: next });
               rooms = next;
+              this.rooms = [...next];
             }
             signal.removeEventListener('abort', aborted);
             resolve();
@@ -135,23 +142,17 @@ export class SharedRoomInbox {
   }
 
   currentRooms(): string[] {
-    const record = [...this.journal.records].reverse().find((record) => record.type === 'rooms');
-    return record?.rooms ?? [];
+    return [...(this.rooms ?? [])];
   }
 
   pending(): Received[] {
-    const acknowledged = new Set(
-      this.journal.records
-        .filter((record) => record.type === 'ack')
-        .map((record) => record.sequence)
-    );
-    return this.journal.records.filter(
-      (record): record is Received =>
-        record.type === 'received' && !acknowledged.has(record.sequence)
-    );
+    return [...this.outstanding.values()];
   }
 
   async acknowledge(sequence: number): Promise<void> {
+    if (!this.received.has(sequence)) throw new Error('Cannot acknowledge an unknown room event.');
+    if (!this.outstanding.has(sequence)) return;
     await this.journal.append({ type: 'ack', sequence });
+    this.outstanding.delete(sequence);
   }
 }

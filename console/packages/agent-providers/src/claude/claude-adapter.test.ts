@@ -138,6 +138,23 @@ describe('ClaudeAdapter session lifecycle', () => {
     });
   });
 
+  it('disables only the duplicate Switch connector when the host supplies its server', async () => {
+    const sdk = createFakeSdk();
+    const adapter = new ClaudeAdapter({ query: sdk.query, claudeExecutablePath: '/bin/claude' });
+    await adapter.startSession(
+      startInput({
+        mcpServers: { switch: { transport: 'stdio', command: 'node', args: ['server.mjs'] } },
+      })
+    );
+    expect(sdk.options().settings).toEqual({
+      enabledPlugins: { 'switch-connector@switch-plugins': false },
+    });
+    expect(sdk.options().settingSources).toBeUndefined();
+    const native = createFakeSdk();
+    await new ClaudeAdapter({ query: native.query }).startSession(startInput());
+    expect(native.options().settings).toBeUndefined();
+  });
+
   it('runs as a named agent definition, and as none when the caller names none', async () => {
     const sdk = createFakeSdk();
     const adapter = new ClaudeAdapter({ query: sdk.query, claudeExecutablePath: '/bin/claude' });
@@ -648,6 +665,7 @@ describe('ClaudeAdapter approvals', () => {
     const { sdk } = await startSession();
     const entry = sdk.options().hooks?.PreToolUse?.find((group) => group.matcher?.includes('Bash'));
     expect(entry).toBeDefined();
+    expect(entry!.matcher?.split('|')).toContain('Agent');
     const decision = await entry!.hooks[0](
       { hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: {} } as never,
       undefined,

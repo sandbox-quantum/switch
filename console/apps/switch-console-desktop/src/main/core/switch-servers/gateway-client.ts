@@ -1325,3 +1325,17 @@ export async function uploadSdkAttachment(
     )
   ).json();
 }
+
+export async function retireSdkSession(
+  server: SwitchServer,
+  sessionId: string,
+  epoch: string
+): Promise<unknown> {
+  return (
+    await gatewayFetch(server, `/sessions/${encodeURIComponent(sessionId)}/retire`, {
+      authenticated: true,
+      method: 'POST',
+      body: { epoch },
+    })
+  ).json();
+}

@@ -104,6 +104,8 @@ async def test_attachment_upload_download_authorization_and_idempotency(
         ("CON.txt", "text/plain", b"text"),
         ("empty.txt", "text/plain", b""),
         ("fake.png", "image/png", b"not an image"),
+        ("hidden.bin", "application/octet-stream", b"\x89PNG\r\n\x1a\nbytes"),
+        ("image.png", "application/octet-stream", b"bytes"),
         ("bad.txt", "text/plain", b"\xff"),
         ("file", "application/unsupported", b"text"),
         ("large", "application/octet-stream", b"x" * (10 * 1024 * 1024 + 1)),

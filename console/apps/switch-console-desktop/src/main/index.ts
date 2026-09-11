@@ -206,6 +206,12 @@ void app.whenReady().then(async () => {
   // then start the auto_session watchers — the watcher's "is a session already
   // attending this room?" check relies on those connections being present.
   void Promise.all([agentHookReady, dependenciesReady, migrationReady]).then(async () => {
+    try {
+      bridgeAgentEventsToRenderer();
+      await initializeRemoteDiscovery();
+    } catch (e) {
+      log.error('Failed to initialise remote session discovery at startup:', e);
+    }
     // Must precede the remote watchers: they gate on host reachability, and
     // starting them first would let every agent on a known-down host attempt a
     // connect before the persisted state is loaded.
@@ -228,12 +234,6 @@ void app.whenReady().then(async () => {
       await initializeRemoteWatchers();
     } catch (e) {
       log.error('Failed to initialise remote watchers at startup:', e);
-    }
-    try {
-      bridgeAgentEventsToRenderer();
-      await initializeRemoteDiscovery();
-    } catch (e) {
-      log.error('Failed to initialise remote session discovery at startup:', e);
     }
   });
 

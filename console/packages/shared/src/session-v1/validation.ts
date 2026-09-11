@@ -22,7 +22,7 @@ const origin = z.strictObject({
   threadId: id.nullable(),
   messageId: id.nullable(),
 });
-const capabilities = z.strictObject({
+const capabilities = z.object({
   input: z.enum(['queue', 'steer']),
   approvals: z.boolean(),
   questions: z.boolean(),
@@ -98,8 +98,9 @@ const request = z.strictObject({
   ]),
   expiresAt: timestamp.nullable(),
 });
-export const sessionSchema = z.strictObject({
+export const sessionSchema = z.object({
   roomIds: z.array(id).optional(),
+  retired: z.boolean().optional(),
   sessionId: id,
   agentId: id,
   provider: z.enum(['claude', 'codex', 'opencode', 'gemini', 'cursor']),
@@ -192,7 +193,7 @@ export const serverEventSchema: z.ZodType<ServerEvent> = z.strictObject({
     }),
   ]),
 });
-export const snapshotSchema: z.ZodType<Snapshot> = z.strictObject({
+export const snapshotSchema: z.ZodType<Snapshot> = z.object({
   contractVersion: z.literal(1),
   throughSequence: counter,
   session: sessionSchema,

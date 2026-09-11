@@ -43,6 +43,19 @@ its initial prompt is not automatically sent again.
 - Room replay gaps stop automatic delivery with a visible error. Review room
   context before starting further work. The host cannot infer missing messages.
 
+An owner can retire an unrecoverable session after its server lease expires. This
+permanently fences the old epoch and disables recovery. Unconfirmed commands stay
+unknown, pending requests are interrupted, and the transcript remains readable.
+Retirement does not claim that an unreachable provider process stopped. Create a
+separate session only after reviewing possible external effects of uncertain work.
+
+Console discovers sessions for newly onboarded agents as well as saved agents.
+Discovery isolates failed sessions and shows a retryable sidebar error. Additive
+session metadata is accepted across versions; invalid required fields still fail.
+Adopted sessions do not launch providers. Open their location and select the session
+to load its transcript. Existing older Console binaries need an update to receive
+these discovery fixes.
+
 ## Context, models and attachments
 
 Reset starts a fresh native conversation under a new server-issued epoch. The

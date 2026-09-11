@@ -377,3 +377,33 @@ async def test_cancellation_cannot_be_confirmed_as_approval(session_factory):
     assert request.result.outcome == "cancelled"
     assert request.result.result is None
     assert request.decided_by.actor_id == "owner"
+
+
+@pytest.mark.asyncio
+async def test_owner_can_retire_expired_unknown_session_without_replay(session_factory):
+    service, epoch = await setup(session_factory)
+    await opened(service, epoch)
+    with pytest.raises(SessionError, match="owner"):
+        await service.retire("session-demo", "outsider", epoch)
+    with pytest.raises(SessionError, match="active host"):
+        await service.retire("session-demo", "owner", epoch)
+    async with session_factory() as db, db.begin():
+        row = await db.get(SdkSession, "session-demo")
+        row.lease_expires_at = datetime.now(UTC) - timedelta(seconds=1)
+    retired = await service.retire("session-demo", "owner", epoch)
+    assert retired.session.retired
+    assert retired.session.epoch != epoch
+    assert retired.session.connectivity == "offline"
+    assert retired.session.status == "error"
+    assert retired.session.pending_request_ids == []
+    assert all(request.state == "closed" for request in retired.requests)
+    assert any(status.status == "unknown" for status in retired.command_statuses)
+    assert retired.turns
+    assert retired.requests
+    assert await service.retire("session-demo", "owner", epoch) == retired
+    with pytest.raises(SessionError, match="cannot resume"):
+        await service.recover(
+            "agent-demo", "session-demo", "host-demo", epoch, "recover-retired", 0
+        )
+    with pytest.raises(SessionError):
+        await service.renew("agent-demo", "session-demo", "host-demo", epoch)

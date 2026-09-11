@@ -100,67 +100,54 @@ it('retains sessions on connection loss and excludes other agents and stopped se
   expect(mocks.create).not.toHaveBeenCalled();
 });
 
-it('refreshes room associations for sessions that already exist in Console', async () => {
+it('refreshes existing room associations from the list without fetching transcripts', async () => {
   mocks.rows = [{ id: 'shared' }];
-  mocks.list.mockResolvedValue([session]);
-  mocks.snapshot.mockResolvedValue({
-    contractVersion: 1,
-    throughSequence: 1,
-    session,
-    turns: [],
-    requests: [],
-    commandStatuses: [],
-    nextPageToken: null,
-    items: [
-      {
-        itemId: 'input',
-        turnId: 'turn',
-        revision: 1,
-        kind: 'user-message',
-        status: 'completed',
-        title: '',
-        text: 'Hello',
-        attachments: [],
-        origin: {
-          surface: 'switch-web',
-          actorId: 'actor',
-          roomId: 'room',
-          threadId: null,
-          messageId: 'message',
-        },
-      },
-    ],
-  });
+  mocks.list.mockResolvedValue([{ ...session, roomIds: ['room'] }]);
   await tick();
   expect(mocks.create).not.toHaveBeenCalled();
+  expect(mocks.snapshot).not.toHaveBeenCalled();
   expect(mocks.mirror).toHaveBeenCalledWith(
     expect.objectContaining({ sessionId: 'shared' }),
     'room',
     'agent'
   );
+  mocks.list.mockResolvedValue([{ ...session, roomIds: [] }]);
+  await tick();
+  expect(mocks.clear).toHaveBeenCalledWith('shared');
 });
 
-it('uses authoritative room bindings and clears an explicitly detached room', async () => {
-  mocks.rows = [{ id: 'shared' }];
-  mocks.list.mockResolvedValue([session]);
-  const snapshot = {
+it('adopts healthy sessions despite additive fields, an invalid entry and a failed snapshot', async () => {
+  mocks.list.mockResolvedValue([
+    { ...session, sessionId: 'broken' },
+    { ...session, status: 'invalid' },
+    {
+      ...session,
+      sessionId: 'healthy',
+      futureField: true,
+      capabilities: { ...session.capabilities, futureCapability: true },
+    },
+  ]);
+  mocks.snapshot.mockRejectedValueOnce(new Error('Snapshot 500')).mockResolvedValueOnce({
     contractVersion: 1,
-    throughSequence: 1,
-    session: { ...session, roomIds: ['room'] },
+    throughSequence: 0,
+    session: { ...session, sessionId: 'healthy', futureField: true },
     turns: [],
+    items: [],
     requests: [],
     commandStatuses: [],
     nextPageToken: null,
-    items: [],
-  };
-  mocks.snapshot.mockResolvedValue(snapshot);
+    futureField: true,
+  });
   await tick();
-  expect(mocks.mirror).toHaveBeenCalledWith(
-    expect.objectContaining({ sessionId: 'shared' }),
-    'room',
-    'agent'
+  expect(mocks.create).toHaveBeenCalledTimes(1);
+  expect(mocks.create).toHaveBeenCalledWith(
+    expect.objectContaining({ id: 'healthy', startSource: 'adopted' })
   );
-  mocks.snapshot.mockResolvedValue({ ...snapshot, session: { ...session, roomIds: [] } });
+  expect(mocks.provision).not.toHaveBeenCalled();
+  expect(remoteSessionReconciler.errors()).toEqual([
+    { agentId: 'local', message: expect.stringContaining('2 SDK session(s)') },
+  ]);
+  mocks.list.mockResolvedValue([{ ...session, roomIds: [] }]);
   await tick();
-  expect(mocks.clear).toHaveBeenCalledWith('shared');
+  expect(remoteSessionReconciler.errors()).toEqual([]);
 });

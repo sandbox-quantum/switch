@@ -15,26 +15,22 @@ import { provisionSessionRuntime } from '../session-builder';
 import { sessionRuntimeManager } from '../session-runtime-manager';
 import { mapSessionRowToSession } from '../utils/utils';
 
-/**
- * Eager create (decision A): inserts the session row and immediately provisions
- * the runtime in the location dir, then spawns the agent. Every session runs in
- * the directory resolved via session → agent → location.
- */
 export async function createSession(
   params: CreateSessionParams
 ): Promise<Result<CreateSessionSuccess, CreateSessionError>> {
   const agent = await getAgentById(params.agentId);
   if (!agent) return err({ type: 'agent-not-found' });
 
-  const location = locationManager.getLocation(agent.locationId);
-  if (!location) return err({ type: 'agent-not-found' });
+  const adopted = params.startSource === 'adopted';
+  const location = adopted ? null : locationManager.getLocation(agent.locationId);
+  if (!adopted && !location) return err({ type: 'agent-not-found' });
 
   if (!providerAdapterRegistry.supports(agent.providerId))
     return err({
       type: 'spawn-failed',
       message: 'SDK sessions support Claude Code, Codex, OpenCode, Gemini CLI and Cursor.',
     });
-  if (process.platform === 'win32' && location.transport.kind !== 'ssh')
+  if (!adopted && process.platform === 'win32' && location?.transport.kind !== 'ssh')
     return err({
       type: 'spawn-failed',
       message: 'SDK sessions require a POSIX execution host. Select an SSH host.',
@@ -72,17 +68,18 @@ export async function createSession(
 
   const session = mapSessionRowToSession(row, agent.providerId, agent.name);
 
+  if (adopted) return ok({ session });
+  if (!location) return err({ type: 'agent-not-found' });
   try {
     const built = await provisionSessionRuntime(session, location);
     await sessionRuntimeManager.registerSession(session.id, built, location.ctx);
 
-    if (params.startSource !== 'adopted')
-      await built.agent.start(
-        session,
-        params.initialSize,
-        params.attach === false,
-        params.initialPrompt
-      );
+    await built.agent.start(
+      session,
+      params.initialSize,
+      params.attach === false,
+      params.initialPrompt
+    );
   } catch (e) {
     await db.update(sessions).set({ status: 'review' }).where(eq(sessions.id, session.id));
     return err({ type: 'spawn-failed', message: e instanceof Error ? e.message : String(e) });

@@ -37,6 +37,18 @@ class SubmitCommand(BaseModel):
     body: CommandBody
 
 
+class RetireSession(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    epoch: str = Field(min_length=1)
+
+
+@router.post("/{session_id}/retire")
+async def retire(
+    session_id: str, body: RetireSession, user: CurrentUser, factory: Factory
+) -> Snapshot:
+    return await SessionAuthority(factory).retire(session_id, user.id, body.epoch)
+
+
 @router.get("")
 async def list_sessions(user: CurrentUser, factory: Factory) -> list[Session]:
     return await SessionAuthority(factory).list_sessions(user.id)
