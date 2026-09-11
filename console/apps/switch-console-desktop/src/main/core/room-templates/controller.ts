@@ -124,7 +124,12 @@ export const roomTemplatesController = createRPCController({
     const allAgents = extractStringList(room?.agents);
     const allUsers = extractStringList(room?.users);
     const paramSpecs = extractParams(doc.params);
-    const kickoff = room && typeof room.kickoff === 'string' ? room.kickoff : null;
+    const kickoff = typeof doc.kickoff === 'string' ? doc.kickoff : null;
+    if (room && typeof room.kickoff === 'string') {
+      warnings.push(
+        '`kickoff:` belongs at the top level, beside `room:` — inside `room:` the server ignores it.'
+      );
+    }
     const bridge =
       room && typeof room.bridge === 'string' && !hasInterpolation(room.bridge)
         ? room.bridge

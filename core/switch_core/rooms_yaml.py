@@ -227,8 +227,6 @@ class RoomSpec(BaseModel):
     roles: list[RoleSpec] = []
     references: list[ExternalReferenceEntry] = []
     docs: list[DocSpec] = []
-    # Message posted to the room after creation to kick off work.
-    kickoff: str | None = None
 
 
 class TemplateDocument(BaseModel):
@@ -236,6 +234,7 @@ class TemplateDocument(BaseModel):
 
     room: RoomSpec
     params: dict[str, ParamSpec] | None = None
+    kickoff: str | None = None
 
 
 class ProvisionResult(BaseModel):
@@ -295,8 +294,8 @@ class RoomYamlService:
         text: str,
         inputs: dict[str, Any] | None = None,
         builtins: dict[str, str] | None = None,
-    ) -> RoomSpec:
-        """Parse a YAML template into a ``RoomSpec``.
+    ) -> tuple[RoomSpec, str | None]:
+        """Parse a YAML template into a ``RoomSpec`` and optional kickoff message.
 
         ``builtins`` are server-injected variables (e.g. ``{creator}``) that
         are always available for interpolation alongside user-supplied
@@ -311,7 +310,7 @@ class RoomYamlService:
         if not isinstance(data, dict) or "room" not in data:
             raise ValueError("YAML must have a single top-level 'room:' mapping")
 
-        allowed_keys = {"room", "params", "version"}
+        allowed_keys = {"room", "params", "version", "kickoff"}
         extra = set(data) - allowed_keys
         if extra:
             raise ValueError(f"Unknown top-level key(s): {', '.join(sorted(extra))}")
@@ -346,13 +345,23 @@ class RoomYamlService:
 
         if values:
             room_data = interpolate(data["room"], values)
+            kickoff_raw = data.get("kickoff")
+            kickoff = (
+                interpolate(kickoff_raw, values)
+                if isinstance(kickoff_raw, str)
+                else None
+            )
         else:
             room_data = data["room"]
+            kickoff = (
+                data.get("kickoff") if isinstance(data.get("kickoff"), str) else None
+            )
 
         try:
-            return RoomSpec.model_validate(room_data)
+            spec = RoomSpec.model_validate(room_data)
         except ValidationError as e:
             raise ValueError(f"Invalid room spec: {e}") from e
+        return spec, kickoff
 
     async def builtins_for(
         self, *, user_id: str, name: str, email: str, text: str
@@ -415,6 +424,7 @@ class RoomYamlService:
         *,
         user_id: str,
         is_admin: bool,
+        kickoff: str | None = None,
         creator_name: str | None = None,
         creator_email: str | None = None,
     ) -> ProvisionResult:
@@ -457,13 +467,13 @@ class RoomYamlService:
             room_id, spec.docs, user_id=user_id, failures=failures
         )
 
-        if spec.kickoff:
+        if kickoff:
             # Best-effort like references and docs: the room exists, so a
             # kickoff that cannot be posted is reported, not fatal.
             try:
                 await self._rooms.post_kickoff(
                     room_id,
-                    spec.kickoff,
+                    kickoff,
                     user_id=user_id,
                     user_name=creator_name,
                     user_email=creator_email,

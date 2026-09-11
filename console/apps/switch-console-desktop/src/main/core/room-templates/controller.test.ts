@@ -197,8 +197,8 @@ describe('roomTemplatesController.parse — kickoff and creator', () => {
         '  bridge: "Slack"',
         '  agents: ["{coder}", "helper"]',
         '  users: ["{$creator}", "bob"]',
-        '  kickoff: |',
-        '    @{coder} start on the brief.',
+        'kickoff: |',
+        '  @{coder} start on the brief.',
       ].join('\n'),
     });
     expect(result.kickoff).toBe('@{coder} start on the brief.\n');
@@ -206,6 +206,14 @@ describe('roomTemplatesController.parse — kickoff and creator', () => {
     expect(result.users).toEqual(['{$creator}', 'bob']);
     expect(result.hardcodedUsers).toEqual(['bob']);
     expect(result.usesCreator).toBe(true);
+  });
+
+  it('warns about the stale room-level kickoff form and ignores it', () => {
+    const result = roomTemplatesController.parse({
+      yamlText: ['room:', '  name: n', '  description: d', '  kickoff: go'].join('\n'),
+    });
+    expect(result.kickoff).toBeNull();
+    expect(result.warnings.some((w) => w.includes('kickoff'))).toBe(true);
   });
 
   it('defaults kickoff/bridge to null and usesCreator to false', () => {

@@ -13,10 +13,11 @@
 #                invites whoever instantiates the template into the room.
 #                Other builtins: {$creator_email}, {$date}, {$timestamp}.
 #
-#   kickoff:     Posted into the room as the creating user once provisioning
-#                completes. Agents only start working when a message
-#                addresses them, so mention them here — this is what turns a
-#                provisioned room into running work.
+#   kickoff:     Top-level key beside room: and params:. Posted into the room
+#                as the creating user once provisioning completes. Agents
+#                only start working when a message addresses them, so
+#                mention them here — this is what turns a provisioned room
+#                into running work.
 params:
   task_name:
     type: string
@@ -45,12 +46,12 @@ room:
 
     Brief:
     {brief}
-  kickoff: |
-    @{coder_agent} @{reviewer_agent} — kicking off {task_name}.
+kickoff: |
+  @{coder_agent} @{reviewer_agent} — kicking off {task_name}.
 
-    @{coder_agent}: read the brief in the room instructions and start
-    implementing. Post your plan here before your first commit.
+  @{coder_agent}: read the brief in the room instructions and start
+  implementing. Post your plan here before your first commit.
 
-    @{reviewer_agent}: drive the acceptance loop. Review every hand-off
-    against the brief's Acceptance section and push back until every item is
-    met, then ping {$creator} to confirm and close.
+  @{reviewer_agent}: drive the acceptance loop. Review every hand-off
+  against the brief's Acceptance section and push back until every item is
+  met, then ping {$creator} to confirm and close.
