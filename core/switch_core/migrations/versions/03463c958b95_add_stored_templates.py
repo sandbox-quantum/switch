@@ -6,6 +6,7 @@ Create Date: 2026-09-11 00:00:00.000000
 
 """
 
+import json
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -34,6 +35,8 @@ def upgrade() -> None:
         sa.Column("kind", sa.Text(), nullable=False),
         sa.Column("definition", sa.Text(), nullable=False),
         sa.Column("creator", sa.Text(), nullable=False),
+        sa.Column("repo_url", sa.Text(), nullable=True),
+        sa.Column("sources", sa.JSON(), nullable=True),
         sa.Column(
             "is_bundled",
             sa.Boolean(),
@@ -54,11 +57,25 @@ def upgrade() -> None:
         ),
     )
 
+    switch_expert_sources = [
+        {"url": "https://docs.flintai.dev", "label": "Switch documentation"},
+        {
+            "url": "https://docs.flintai.dev/getting-started",
+            "label": "Getting started guide",
+        },
+        {
+            "url": "https://docs.flintai.dev/working-in-switch",
+            "label": "Working in Switch",
+        },
+    ]
+
     op.execute(
         sa.text(
             """
-            INSERT INTO stored_templates (id, name, description, kind, definition, creator, is_bundled)
-            VALUES (:id, :name, :description, :kind, :definition, :creator, true)
+            INSERT INTO stored_templates
+                (id, name, description, kind, definition, creator, repo_url, sources, is_bundled)
+            VALUES
+                (:id, :name, :description, :kind, :definition, :creator, :repo_url, :sources, true)
             """
         ).bindparams(
             id=SWITCH_EXPERT_ID,
@@ -67,6 +84,8 @@ def upgrade() -> None:
             kind="agent",
             definition=_load_persona(),
             creator="Switch",
+            repo_url="https://github.com/sandbox-quantum/switch",
+            sources=json.dumps(switch_expert_sources),
         )
     )
 

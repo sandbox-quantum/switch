@@ -1583,6 +1583,8 @@ class StoredTemplate(Base):
     kind: Mapped[str] = mapped_column(Text, nullable=False)
     definition: Mapped[str] = mapped_column(Text, nullable=False)
     creator: Mapped[str] = mapped_column(Text, nullable=False)
+    repo_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    sources: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     is_bundled: Mapped[bool] = mapped_column(
         Boolean, server_default="false", nullable=False
     )

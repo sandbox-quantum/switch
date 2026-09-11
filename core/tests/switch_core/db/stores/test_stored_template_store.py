@@ -93,6 +93,71 @@ class TestStoredTemplateStore:
             assert len(rooms) == 1
             assert rooms[0].name == "Room One"
 
+    async def test_repo_url_and_sources(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        store = StoredTemplateStore()
+        async with session_factory() as session:
+            sources = [
+                {"url": "https://docs.example.com", "label": "Docs"},
+                {"url": "https://api.example.com", "label": "API ref"},
+            ]
+            t = await store.create(
+                session,
+                StoredTemplate(
+                    name="Expert With Repo",
+                    description="Has repo and sources",
+                    kind="agent",
+                    definition="# persona",
+                    creator="tester",
+                    repo_url="https://github.com/org/repo",
+                    sources=sources,
+                ),
+            )
+            await session.commit()
+
+            fetched = await store.get(session, t.id)
+            assert fetched is not None
+            assert fetched.repo_url == "https://github.com/org/repo"
+            assert fetched.sources == sources
+
+    async def test_two_templates_different_repos(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        store = StoredTemplateStore()
+        async with session_factory() as session:
+            await store.create(
+                session,
+                StoredTemplate(
+                    name="Expert A",
+                    description="Uses repo A",
+                    kind="agent",
+                    definition="# persona A",
+                    creator="tester",
+                    repo_url="https://github.com/org/repo-a",
+                    sources=[{"url": "https://docs-a.example.com", "label": "A docs"}],
+                ),
+            )
+            await store.create(
+                session,
+                StoredTemplate(
+                    name="Expert B",
+                    description="Uses repo B",
+                    kind="agent",
+                    definition="# persona B",
+                    creator="tester",
+                    repo_url="https://github.com/org/repo-b",
+                    sources=[{"url": "https://docs-b.example.com", "label": "B docs"}],
+                ),
+            )
+            await session.commit()
+
+            result = await store.list_all(session, kind="agent")
+            assert len(result) == 2
+            repos = {t.name: t.repo_url for t in result}
+            assert repos["Expert A"] == "https://github.com/org/repo-a"
+            assert repos["Expert B"] == "https://github.com/org/repo-b"
+
     async def test_get_nonexistent_returns_none(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:

@@ -1011,12 +1011,19 @@ class PackageMemberRemoveResponse(BaseModel):
 # ── Templates ────────────────────────────────────────────────────────────────
 
 
+class SourceEntry(BaseModel):
+    url: str
+    label: str
+
+
 class StoredTemplateSummary(BaseModel):
     id: str
     name: str
     description: str
     kind: str
     creator: str
+    repo_url: str | None
+    sources: list[SourceEntry] | None
     is_bundled: bool
     created_at: str
 
@@ -1028,5 +1035,7 @@ class StoredTemplateDetail(BaseModel):
     kind: str
     definition: str
     creator: str
+    repo_url: str | None
+    sources: list[SourceEntry] | None
     is_bundled: bool
     created_at: str

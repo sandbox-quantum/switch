@@ -28,10 +28,16 @@ function TemplateCard({ template, onUse }: { template: StoredTemplateSummary; on
         <Bot className="size-5 shrink-0 text-foreground-muted" />
         <h3 className="truncate font-medium text-foreground">{template.name}</h3>
       </div>
-      <p className="mb-3 line-clamp-3 flex-1 text-sm text-foreground-muted">
-        {template.description}
-      </p>
-      <div className="flex items-center justify-between">
+      <p className="mb-2 line-clamp-2 text-sm text-foreground-muted">{template.description}</p>
+      {template.repoUrl && (
+        <p className="mb-1 truncate text-xs text-foreground-muted">Repo: {template.repoUrl}</p>
+      )}
+      {template.sources && template.sources.length > 0 && (
+        <p className="mb-1 truncate text-xs text-foreground-muted">
+          {template.sources.length} source{template.sources.length > 1 ? 's' : ''}
+        </p>
+      )}
+      <div className="mt-auto flex items-center justify-between pt-2">
         <span className="text-xs text-foreground-muted">by {template.creator}</span>
         <Button size="sm" variant="outline" onClick={onUse}>
           Use

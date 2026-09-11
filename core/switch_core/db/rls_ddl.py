@@ -118,7 +118,9 @@ POLICY_NAME = "tenant_isolation"
 # switch, and a flag that needs to vary per customer is a new scoped table
 # rather than a nullable column here. Alembic's `alembic_version` needs no
 # entry: Alembic owns that table and never registers it on this metadata.
-GLOBAL_TABLES = frozenset({"users", "oidc_identities", "feature_flags"})
+GLOBAL_TABLES = frozenset(
+    {"users", "oidc_identities", "feature_flags", "stored_templates"}
+)
 
 
 class UnscopedTableError(RuntimeError):

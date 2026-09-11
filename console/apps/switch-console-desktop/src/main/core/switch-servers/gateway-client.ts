@@ -1052,12 +1052,19 @@ export type TemplateProvisionResult = {
 
 // ── Stored templates ────────────────────────────────────────────────────────
 
+export type SourceEntry = {
+  url: string;
+  label: string;
+};
+
 export type StoredTemplateSummary = {
   id: string;
   name: string;
   description: string;
   kind: string;
   creator: string;
+  repoUrl: string | null;
+  sources: SourceEntry[] | null;
   isBundled: boolean;
 };
 
@@ -1079,6 +1086,8 @@ export async function fetchTemplates(
     description: string;
     kind: string;
     creator: string;
+    repo_url: string | null;
+    sources: SourceEntry[] | null;
     is_bundled: boolean;
   }>;
   return json.map((t) => ({
@@ -1087,6 +1096,8 @@ export async function fetchTemplates(
     description: t.description,
     kind: t.kind,
     creator: t.creator,
+    repoUrl: t.repo_url,
+    sources: t.sources,
     isBundled: t.is_bundled,
   }));
 }
@@ -1105,6 +1116,8 @@ export async function fetchTemplateDetail(
     kind: string;
     definition: string;
     creator: string;
+    repo_url: string | null;
+    sources: SourceEntry[] | null;
     is_bundled: boolean;
   };
   return {
@@ -1114,6 +1127,8 @@ export async function fetchTemplateDetail(
     kind: t.kind,
     definition: t.definition,
     creator: t.creator,
+    repoUrl: t.repo_url,
+    sources: t.sources,
     isBundled: t.is_bundled,
   };
 }

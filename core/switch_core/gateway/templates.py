@@ -29,6 +29,8 @@ async def list_templates(
             description=t.description,
             kind=t.kind,
             creator=t.creator,
+            repo_url=t.repo_url,
+            sources=t.sources,
             is_bundled=t.is_bundled,
             created_at=str(t.created_at),
         )
@@ -52,6 +54,8 @@ async def get_template(
         kind=template.kind,
         definition=template.definition,
         creator=template.creator,
+        repo_url=template.repo_url,
+        sources=template.sources,
         is_bundled=template.is_bundled,
         created_at=str(template.created_at),
     )
