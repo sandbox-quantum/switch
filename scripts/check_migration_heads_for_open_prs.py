@@ -65,6 +65,18 @@ VERSIONS_DIR = REPO_ROOT / "core" / "switch_core" / "migrations" / "versions"
 VERSIONS_PATH = "core/switch_core/migrations/versions"
 STATUS_CONTEXT = "migration-heads-on-merge"
 
+# Everything below reaches a `git` or `gh` argument list, and the two values
+# that a pull request's author controls — the repository slug from the
+# environment and the tracked path from `git ls-tree` — are checked against
+# these before they get there. Nothing runs through a shell, so this is not
+# about metavariables; it is about a leading dash, which `git` would read as
+# an option rather than a path, and about keeping the reachable surface to
+# files that could actually be migrations.
+SAFE_REPO_RE = re.compile(r"\A[A-Za-z0-9._-]+/[A-Za-z0-9._-]+\Z")
+SAFE_VERSION_PATH_RE = re.compile(
+    rf"\A{re.escape(VERSIONS_PATH)}/[A-Za-z0-9._-]+\.py\Z"
+)
+
 # Matches the two assignments Alembic's revision template generates, with or
 # without the type annotation it has carried across template versions
 # (`revision = ...`, `revision: str = ...`, `down_revision: str | None = ...`,
@@ -164,7 +176,7 @@ def fetch_pr_revisions(pr_number: int) -> list[RevisionFile]:
     )
     revisions = []
     for path in listing.stdout.splitlines():
-        if not path:
+        if not SAFE_VERSION_PATH_RE.match(path):
             continue
         content = run("git", "show", f"FETCH_HEAD:{path}")
         revisions.append(parse_revision_file(Path(path).name, content.stdout))
@@ -243,6 +255,8 @@ def check_pr(
 
 def main() -> int:
     repo = os.environ["GITHUB_REPOSITORY"]
+    if not SAFE_REPO_RE.match(repo):
+        raise ValueError(f"GITHUB_REPOSITORY is not an owner/name slug: {repo!r}")
     run_url = os.environ["RUN_URL"]
     prs = open_prs_touching_migrations(repo)
     if not prs:
