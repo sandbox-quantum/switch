@@ -63,6 +63,7 @@ export class HostedSession {
   private stopped = false;
   private resetting = false;
   private resetPending = false;
+  private decisionPending = false;
   private readonly unsubscribe: () => void;
   private readonly timer: ReturnType<typeof setInterval>;
 
@@ -187,10 +188,31 @@ export class HostedSession {
           host.unsubscribe();
           return host;
         }
-        if (host.resetPending)
-          throw new Error(
-            'RESET_OUTCOME_UNKNOWN: reset was interrupted. Automatic recovery cannot choose a conversation.'
-          );
+        if (host.resetPending) {
+          host.decisionPending = true;
+          host.queue.length = 0;
+          host.activeTurn = null;
+          config.session.status = 'error';
+          config.session.capabilities = {
+            ...config.session.capabilities,
+            reset: true,
+            modelChange: false,
+            compact: false,
+            attachmentMimeTypes: [],
+          };
+          const undecided = host.replica.snapshot();
+          undecided.session = structuredClone(config.session);
+          host.replica = new SessionReplica(undecided);
+          await host.publish({ type: 'session.upsert', session: structuredClone(config.session) });
+          await host.publish({
+            type: 'notice',
+            level: 'error',
+            code: 'RESET_OUTCOME_UNKNOWN',
+            message:
+              'A reset was interrupted and its outcome is unknown. Start a fresh conversation to continue; earlier messages stay in the transcript.',
+          });
+          return host;
+        }
         if (!host.nativeId)
           throw new Error('Cannot recover a session without its native provider ID.');
         if (config.epochAuthority !== 'server') config.session.epoch = randomUUID();
@@ -260,6 +282,20 @@ export class HostedSession {
     return this.publish({ type: 'notice', level: 'error', code: 'ROOM_DELIVERY_FAILED', message });
   }
 
+  roomBacklogDelivered(count: number): Promise<void> {
+    return this.publish({
+      type: 'notice',
+      level: 'info',
+      code: 'ROOM_BACKLOG_DELIVERED',
+      message: `${count} room message(s) received while the reset outcome was unresolved are now being delivered to the fresh conversation.`,
+    });
+  }
+
+  /** An interrupted reset whose outcome only an explicit user decision can settle. */
+  get resetDecisionPending(): boolean {
+    return this.decisionPending;
+  }
+
   snapshot(): Snapshot {
     return this.replica.snapshot();
   }
@@ -289,6 +325,10 @@ export class HostedSession {
     if (this.fault) throw this.fault;
     if (command.epoch !== session.epoch) throw new Error('STALE_EPOCH');
     const body = command.body;
+    if (this.decisionPending && body.type !== 'session.reset' && body.type !== 'session.stop')
+      throw new Error(
+        'UNSUPPORTED_CAPABILITY: RESET_OUTCOME_UNKNOWN — start a fresh conversation first.'
+      );
     if (body.type === 'message.send') {
       if (this.stopped) throw new Error('Session stop has been requested.');
       if (body.delivery !== 'queue')
@@ -321,10 +361,12 @@ export class HostedSession {
       body.type === 'session.model.set' ||
       body.type === 'session.compact'
     ) {
+      const decisionReset =
+        this.decisionPending && body.type === 'session.reset' && session.status === 'error';
       if (
         this.activeTurn ||
         this.queue.length ||
-        session.status !== 'ready' ||
+        (session.status !== 'ready' && !decisionReset) ||
         this.snapshot().requests.some((r) => r.state === 'open' || r.state === 'submitting')
       )
         throw new Error('SESSION_BUSY: finish or interrupt the current turn first.');
@@ -463,7 +505,8 @@ export class HostedSession {
         this.resetPending = true;
         this.resetting = true;
         try {
-          await this.adapter.stopSession(session.sessionId);
+          if (this.adapter.hasSession(session.sessionId))
+            await this.adapter.stopSession(session.sessionId);
           await this.eventSerial;
           const epoch = this.config.resetEpoch ? await this.config.resetEpoch() : randomUUID();
           this.config.session.epoch = epoch;
@@ -482,6 +525,7 @@ export class HostedSession {
           await this.eventSerial;
           await this.inbox.append({ type: 'reset-completed' });
           this.resetPending = false;
+          this.decisionPending = false;
           await this.refreshModels();
           await this.publish({
             type: 'notice',
@@ -514,7 +558,15 @@ export class HostedSession {
             status: 'interrupted',
           });
         this.queue.length = 0;
-        await this.adapter.stopSession(session.sessionId);
+        if (this.adapter.hasSession(session.sessionId))
+          await this.adapter.stopSession(session.sessionId);
+        else {
+          this.config.session.status = 'stopped';
+          await this.publish({
+            type: 'session.upsert',
+            session: structuredClone(this.config.session),
+          });
+        }
       } else await this.answer(command);
       await this.publish({
         type: 'command.status',

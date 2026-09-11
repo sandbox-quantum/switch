@@ -912,7 +912,10 @@ class SessionAuthority:
                     "UNSUPPORTED_CAPABILITY", "Session control is unavailable."
                 )
             if (
-                snapshot.session.status != "ready"
+                snapshot.session.status
+                not in (
+                    ("ready", "error") if isinstance(body, SessionReset) else ("ready",)
+                )
                 or any(turn.status in ("queued", "running") for turn in snapshot.turns)
                 or any(
                     request.state in ("open", "submitting")

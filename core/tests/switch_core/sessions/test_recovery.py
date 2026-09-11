@@ -325,3 +325,79 @@ async def test_model_catalog_validation_and_compaction_capability(session_factor
         bridge_id=None,
     )
     assert result.status == "accepted"
+
+
+@pytest.mark.asyncio
+async def test_error_session_allows_only_explicit_reset_control(session_factory):
+    service, epoch = await setup(session_factory)
+    snapshot = await service.snapshot("session-demo", "owner")
+    failed = snapshot.session.model_copy(
+        update={
+            "status": "error",
+            "capabilities": snapshot.session.capabilities.model_copy(
+                update={"reset": True, "compact": True}
+            ),
+        }
+    )
+    await service.ingest(
+        "agent-demo",
+        "host-demo",
+        host_event(
+            epoch,
+            1,
+            {
+                "type": "session.upsert",
+                "session": failed.model_dump(by_alias=True),
+            },
+        ),
+    )
+    reset = command(epoch, "fresh-reset", {"type": "session.reset"})
+    with pytest.raises(SessionError):
+        await service.submit(reset, user_id="outsider", bridge_id=None)
+    compact = await service.submit(
+        command(epoch, "compact-error", {"type": "session.compact"}),
+        user_id="owner",
+        bridge_id=None,
+    )
+    assert (compact.status, compact.code) == ("rejected", "SESSION_BUSY")
+    receipt = await service.submit(reset, user_id="owner", bridge_id=None)
+    assert receipt.status == "accepted"
+    assert await service.pending("agent-demo", "session-demo", "host-demo", epoch) == [
+        reset
+    ]
+
+
+@pytest.mark.asyncio
+async def test_error_reset_cannot_displace_active_work(session_factory):
+    service, epoch = await setup(session_factory)
+    await opened(service, epoch)
+    snapshot = await service.snapshot("session-demo", "owner")
+    failed = snapshot.session.model_copy(
+        update={
+            "status": "error",
+            "capabilities": snapshot.session.capabilities.model_copy(
+                update={"reset": True}
+            ),
+        }
+    )
+    await service.ingest(
+        "agent-demo",
+        "host-demo",
+        host_event(
+            epoch,
+            3,
+            {
+                "type": "session.upsert",
+                "session": failed.model_dump(by_alias=True),
+            },
+        ),
+    )
+    receipt = await service.submit(
+        command(epoch, "busy-error-reset", {"type": "session.reset"}),
+        user_id="owner",
+        bridge_id=None,
+    )
+    assert (receipt.status, receipt.code) == ("rejected", "SESSION_BUSY")
+    after = await service.snapshot("session-demo", "owner")
+    assert after.requests[0].state == "open"
+    assert after.turns[0].status == "running"

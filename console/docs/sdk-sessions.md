@@ -73,7 +73,8 @@ be acknowledged without resubmitting it.
   queues an interrupt (or a stop when interrupt is unsupported), without granting
   approval. Already-reserved answers are not cancelled by this timer. A callback
   whose outcome is uncertain is not invoked again.
-- Room replay gaps stop automatic delivery with a visible error. If the server
+- Room replay gaps and unaddressed-message counts are included in the next
+  delivered prompt so the agent can read room context. If the server
   has lost the evidence needed to verify a received message, the host retains
   its unacknowledged journal entry and stops. Review room context before
   starting further work; automatic recovery cannot reconstruct lost evidence.
@@ -98,7 +99,11 @@ transcript remains as history; earlier messages are not inserted into the new
 context. Reset requires an idle session with no queued turns or pending requests.
 Commands from the previous epoch cannot execute afterward. A crash between reset
 intent and durable completion leaves the reset unknown and blocks automatic resume.
-Review the outcome before replacing that session; recovery never retries reset.
+Recovery never retries that reset. When the host requests a decision, choose
+**Start a fresh conversation** to submit a new reset. The original outcome stays
+unknown, history is retained, and held room messages are delivered to the fresh
+conversation through the server's normal reservations. No candidate conversation
+from the interrupted reset is resumed automatically.
 
 The model selector shows the native provider's model catalog and available options.
 The server and host reject unsupported selections and changes while work is pending.

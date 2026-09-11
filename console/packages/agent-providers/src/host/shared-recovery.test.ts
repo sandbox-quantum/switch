@@ -359,6 +359,141 @@ it('retains an unverified room event when server replay evidence is unavailable'
   ]);
 });
 
+it('holds room messages while a reset outcome is undecided and delivers them after the decision', async () => {
+  const f = await fixture();
+  f.options.session.capabilities.reset = true;
+  const line = (value: unknown) => JSON.stringify(value) + '\n';
+  await writeFile(
+    join(f.root, 'shared-state.jsonl'),
+    line({
+      type: 'identity',
+      session: f.options.session,
+      apiUrl: 'http://127.0.0.1/agent',
+      cwd: f.root,
+      operationId: randomUUID(),
+    }) +
+      line({
+        type: 'lease',
+        sourceBase: 0,
+        snapshot: {
+          contractVersion: 1,
+          throughSequence: 1,
+          session: { ...f.options.session, epoch: 'epoch-1' },
+          turns: [],
+          items: [],
+          requests: [],
+          commandStatuses: [],
+          nextPageToken: null,
+        },
+      })
+  );
+  await writeFile(
+    join(f.root, 'events.jsonl'),
+    line({
+      contractVersion: 1,
+      eventId: randomUUID(),
+      sessionId: 'session',
+      sequence: 1,
+      occurredAt: new Date().toISOString(),
+      body: {
+        type: 'session.upsert',
+        session: { ...f.options.session, epoch: 'epoch-1', status: 'ready' },
+      },
+    })
+  );
+  await writeFile(
+    join(f.root, 'inbox.jsonl'),
+    line({ type: 'native', nativeSessionId: 'saved-native' }) + line({ type: 'reset-started' })
+  );
+  await writeFile(
+    join(f.root, 'room-inbox.jsonl'),
+    line({ type: 'received', sequence: 1, roomId: 'room', messageId: 'message' })
+  );
+  vi.spyOn(SharedRoomInbox.prototype, 'connect').mockResolvedValue(undefined);
+  const submitted: Array<{ messageId: string; announced: boolean }> = [];
+  let decision: Command | null = null;
+  const original = f.fetchMock.getMockImplementation()!;
+  let recoveries = 0;
+  f.fetchMock.mockImplementation(async (url, options) => {
+    const path = new URL(url).pathname;
+    if (path.endsWith('/recover')) {
+      const response = await original(url, options);
+      recoveries += 1;
+      if (recoveries === 1) return response;
+      const body = (await response.json()) as Snapshot;
+      return Response.json({ ...body, session: { ...body.session, epoch: 'epoch-3' } });
+    }
+    if (path.endsWith('/commands')) return Response.json(decision ? [decision] : []);
+    if (path.endsWith('/room-message')) {
+      submitted.push({
+        messageId: JSON.parse(options.body as string).message_id,
+        announced: f.events.some(
+          (event) => event.body.type === 'notice' && event.body.code === 'ROOM_BACKLOG_DELIVERED'
+        ),
+      });
+      return Response.json({
+        type: 'command.status',
+        commandId: 'room',
+        status: 'applied',
+        code: null,
+        message: null,
+      });
+    }
+    return original(url, options);
+  });
+  const stop = new AbortController();
+  const running = runSharedHost(
+    { ...f.options, roomConnection: { connectionId: 'connection', rooms: ['room'] } },
+    f.adapter,
+    stop.signal
+  );
+  try {
+    await vi.waitFor(
+      () =>
+        expect(
+          f.events.some(
+            (event) => event.body.type === 'notice' && event.body.code === 'RESET_OUTCOME_UNKNOWN'
+          )
+        ).toBe(true),
+      { timeout: 10_000 }
+    );
+    expect(f.adapter.startSession).not.toHaveBeenCalled();
+    expect(f.adapter.stopSession).not.toHaveBeenCalled();
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    expect(submitted).toEqual([]);
+    decision = {
+      ...f.command,
+      commandId: 'decided-reset',
+      epoch: 'epoch-2',
+      body: { type: 'session.reset' },
+    };
+    await vi.waitFor(() => expect(submitted).toHaveLength(1), { timeout: 10_000 });
+    expect(submitted[0]).toEqual({ messageId: 'message', announced: true });
+    expect(f.adapter.startSession).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(f.adapter.startSession).mock.calls[0][0].resume).toBeUndefined();
+    expect(
+      f.events.filter(
+        (event) => event.body.type === 'notice' && event.body.code === 'ROOM_BACKLOG_DELIVERED'
+      )
+    ).toHaveLength(1);
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    expect(submitted).toHaveLength(1);
+  } finally {
+    stop.abort();
+    await running;
+  }
+});
+
+it('reports a startup failure rather than the cleanup of an unstarted provider', async () => {
+  const f = await fixture();
+  vi.mocked(f.adapter.startSession).mockRejectedValue(new Error('Provider launch failed'));
+  vi.mocked(f.adapter.stopSession).mockRejectedValue(new Error('Unknown session'));
+  await expect(runSharedHost(f.options, f.adapter, new AbortController().signal)).rejects.toThrow(
+    'Provider launch failed'
+  );
+  expect(f.adapter.stopSession).not.toHaveBeenCalled();
+});
+
 it('reconciles a journal whose saved state belongs to an earlier generation', async () => {
   const f = await fixture();
   const line = (value: unknown) => JSON.stringify(value) + '\n';
@@ -427,9 +562,11 @@ it('reconciles a journal whose saved state belongs to an earlier generation', as
           event.body.type === 'notice' && event.body.code === 'PRIOR_GENERATION_STATE_SKIPPED'
       )
     ).toBe(true);
-    expect(
-      f.events.some((event) => event.body.type === 'session.upsert' && event.epoch === 'epoch-2')
-    ).toBe(true);
+    await vi.waitFor(() =>
+      expect(
+        f.events.some((event) => event.body.type === 'session.upsert' && event.epoch === 'epoch-2')
+      ).toBe(true)
+    );
   } finally {
     stop.abort();
     await running;
