@@ -13,6 +13,14 @@ Written against `main` at `514d5ba4` (the template registry). Every claim about
 current behaviour was checked against the code, and the file it lives in is
 cited so a reader can confirm it rather than trust it.
 
+- [Scope](#scope)
+- [The SOP, and the one place Switch appears in it](#the-sop-and-the-one-place-switch-appears-in-it)
+- [Mapping the SOP onto rooms](#mapping-the-sop-onto-rooms)
+- [The war-room template](#the-war-room-template)
+- [The responder agent](#the-responder-agent)
+- [Gaps](#gaps)
+- [What to build first](#what-to-build-first)
+
 ## Scope
 
 The subject is a specific SOP: a lightweight, post-launch, business-hours
@@ -135,9 +143,9 @@ Everything that would otherwise fragment the war room. In particular:
   message that asked for them.
 
 Switch threads bridge natively to Mattermost and to Telegram forum topics. On a
-Slack-bridged room — which this is — a threaded reply shows in the channel as a
-reply count under the original post, so **anything the room must not miss goes at
-the root**. That is not a Switch limitation to work around; it is a rule for
+Slack-bridged room — which a war room under this SOP is — a threaded reply shows
+in the channel as a reply count under the original post, so **anything the room
+must not miss goes at the root**. That is not a Switch limitation to work around; it is a rule for
 whoever writes in the room, agent or human. The responder agent's standing
 instructions should say so, and the template's `instructions` field is where
 that lives.
@@ -936,3 +944,296 @@ Under that rule the room *is* the audit log: every action the agent took has a
 message above it from the person who asked. Relax the rule and the attribution
 hole in G15 becomes a real one. The rule belongs in the room instructions, where
 the template puts it, and in the agent's own configuration.
+
+## Gaps
+
+Eighteen, grouped by what they block. Each names what is missing, why it matters
+for this SOP specifically, and a ticket to file. Sizes are rough: **S** is days,
+**M** is a sprint, **L** is a project.
+
+Read G1 first. It is the one the SOP itself has flagged and nobody has answered.
+
+### A. Knowing who is on call
+
+**G1 — Switch has no concept of duty, and cannot learn one.**
+There is no rotation, schedule, team or on-call anything in the codebase. The
+tenant membership role field exists but is documented as recording a value that
+nothing yet reads. The SOP's own comment thread asks "how will Switch pull in
+who's on-call from PagerDuty?" and answers itself with the right idea — a mention
+group whose membership auto-rotates. Switch cannot consume that either:
+`add_users_to_room` resolves individual usernames against the people the bridge
+has already seen, and there is no call anywhere that expands a Slack user group
+into its members. Note the asymmetry — Switch *creates* a Slack user group per
+agent, so `@<agent>` works, but it never sets that group's membership and cannot
+read anyone else's.
+
+Until this is closed, "invite the on-call engineers" is a human action, and the
+template's invitee list is hard-coded or empty.
+
+> **Proposed ticket:** *Resolve a platform group to room members* — accept a
+> bridge group handle wherever `user_names` is accepted, expand it through the
+> platform (Slack user groups, Discord roles, Mattermost groups) at the moment
+> of use, and add the members. Deliberately no schedule in Switch: the rotation
+> stays in PagerDuty, which syncs the group. **M**
+
+> **Proposed follow-up:** *Room escalation target* — a room-level setting naming
+> who to reach when an agent cannot be brought online or nobody has responded,
+> resolvable to a group. Feeds G13. **S**
+
+### B. Making the template usable
+
+**G2 — The registry cannot instantiate what it stores.**
+`POST /rooms/from-yaml` provisions from a document in the request body. The
+registry stores documents. Nothing joins them: there is no "instantiate template
+`<id>` with these inputs". Using a registered template today means fetching its
+content and posting it back, which makes the registry a filing cabinet rather
+than a feature.
+
+> **Proposed ticket:** *Instantiate a stored template by id* —
+> `POST /templates/{id}/instantiate` taking `inputs`, resolving the stored
+> content and provisioning through the existing path. **S**
+
+**G3 — The dashboard cannot supply parameter inputs.**
+The create-from-YAML page posts raw YAML with no `inputs` field, so from the UI
+only a template whose every parameter has a default can be used. A template
+built for per-incident particulars has no useful defaults. Parameters are
+therefore reachable only from an API client — which, for a feature whose whole
+point is that a human instantiates it, is the same as unreachable.
+
+> **Proposed ticket:** *Parameter form for template instantiation* — render the
+> declared `params:` as a form (using `description`, which is currently stored
+> and never displayed), collect values, post the JSON body form. **S**
+
+**G4 — A parameter cannot hold a list.**
+`ParamSpec.type` is `string`, `number`, `boolean` or `enum`. A room's `agents:`
+and `users:` are lists, so a variable-length membership cannot be parameterised
+at all: `"alice,bob"` interpolates into one username that resolves to nobody. For
+an incident template whose responders differ every time, this is the difference
+between a template that works and one that has to be edited before each use.
+
+> **Proposed ticket:** *List-typed template parameters* — add a `list` parameter
+> type whose whole-field substitution splices into the surrounding list rather
+> than stringifying. **M**
+
+**G9 — A template cannot set aliases, links, group or join events.**
+`RoomCreateConfig` carries `aliases`, `linked_rooms`, `group_id`, `package_ids`
+and `join_event_listeners`; the template provisioner populates none of them. The
+first three land with group templates. `join_event_listeners` lands nowhere, and
+it is the one this SOP most wants: without it the responder cannot greet an
+arriving responder and tell them the state, which is the highest-value automation
+a war room has.
+
+> **Proposed ticket:** *Land group templates* — merge
+> `origin/work/group-templates`: `group:`/`rooms:`/`links:`, per-room `aliases:`,
+> and dict-key interpolation. **M**
+
+> **Proposed ticket:** *`join_event_listeners` in a room template* — a per-agent
+> opt-in in the room spec. **S**
+
+**G10 — Omitting `bridge:` silently means "the default bridge", and breaks
+`users:`.**
+The field's own comment says to omit it for an internal-only room. That is wrong:
+omitting it falls through to the instance default bridge. And the guard that
+rejects `users:` on an unbridged room tests the template's own resolved bridge
+id, so a template with `users:` and no `bridge:` is refused even though the room
+would have been bridged. Two authoring traps in one field.
+
+> **Proposed ticket:** *Fix `bridge:` omission semantics in a room template* —
+> resolve the default bridge before the `users:` guard, and add an explicit
+> `internal_only:` key so "no channel" is stated rather than inferred. **S**
+
+**G-trap — a mistyped placeholder ships.**
+Not a gap so much as a hazard worth writing down: a `{word}` that no parameter
+declares is left verbatim, on purpose, so JSON braces in document content
+survive. A typo in a placeholder name therefore does not error — it appears in
+the created room. The linter catches some of this; the registry blocks only three
+findings and treats the rest as advice. Lint before registering, and read the
+output.
+
+### C. Getting the room made at all
+
+**G5 — No agent can instantiate a template, and no one can from a channel.**
+The agent operation surface has fifty-odd operations and none of them touch
+templates. The in-room command set has twenty commands and none of them creates a
+room. So the responder agent cannot open a war room when asked, and an on-call
+engineer in Slack cannot declare an incident from the channel they are already
+in. Both are exactly the moments this feature exists for.
+
+> **Proposed ticket:** *`create_room_from_yaml` agent operation* — land the
+> operation already written on `origin/work/group-templates`, extended to take a
+> template id (needs G2). **S**
+
+> **Proposed ticket:** *`!declare-incident` in-room command* — instantiate a
+> configured template from a bridged channel with positional inputs, and post
+> the new room's link back. **M**
+
+**G6 — There is no inbound alert ingress.**
+Nothing in Switch listens for an external event. No webhook endpoint, no
+signature verification, no mapping from a payload to an action. So the SOP's
+promise — "Switch will auto-create a dedicated channel on declaration" — cannot
+be kept by Switch alone; something outside has to hold a credential and call the
+API. That is workable and probably correct for a first version, but it should be
+a decision rather than a discovery.
+
+> **Proposed ticket:** *Incident intake webhook* — a signed inbound endpoint that
+> maps an alerting payload to a template instantiation, with the field mapping
+> configured per source. Depends on G2. **L**
+
+**G7 — There is no scheduler.**
+No cron, no timers, no deferred actions. An agent cannot ask to be woken. The
+SOP's hourly and four-hourly update cadence therefore lives in an external
+scheduled workflow that mentions the agent — which works, and is the right
+short-term answer, but has to be created per incident and nobody will remember to
+delete it.
+
+> **Proposed ticket:** *Scheduled room actions* — a room-scoped recurring
+> trigger that posts a message or addresses an agent, created with the room and
+> disposed of with it. **L**
+
+**G8 — There is no relay between rooms.**
+Linked rooms are metadata: a pointer with a label. There is no mechanism that
+mirrors a message from one room into another. The SOP wants situation reports to
+land in both the alert channel and the stakeholder channel, and the source
+document asks directly whether that can be automated. Today an agent can read
+another room without connecting to it, but posting requires connecting, which
+means leaving the war room mid-incident. That is not a workaround anyone should
+adopt.
+
+> **Proposed ticket:** *Mirror a message to a linked room* — an operation that
+> posts to a room the agent is a member of without moving its connection,
+> attributed and marked as a mirror. **M**
+
+### D. The shared agent
+
+**G11 — There is no provisionable service account.**
+The recommendation in this document rests on owning the responder with a
+non-person, non-admin user. Switch has exactly one shared-owner construct — the
+synthetic bootstrap account — and it cannot be logged into, so nobody can manage
+its agents or reveal their credentials, and credential reveal has no admin
+bypass. The alternatives are to own the responder with a real person (defeats the
+purpose) or with the Admin account (hands it a global bypass over every room and
+resource). **This is the gap the whole responder design depends on.**
+
+> **Proposed ticket:** *Service accounts* — a non-interactive user that can own
+> agents and resources, with authentication a team can hold jointly, and no
+> admin role. **M**
+
+> **Proposed ticket:** *Transfer agent ownership* — an owner-or-admin endpoint
+> setting `owner_id`. There is none today, so an agent registered under the wrong
+> account stays there. **S**
+
+**G12 — The gateway's addressing-policy editor silently deletes owner rules.**
+The React editor models only the four id-shaped dimensions and drops the symbolic
+`owner` / `owner_agents` rules on save. Since every agent is created owner-only,
+opening one in the dashboard and saving any change converts it to a policy that
+admits nobody — and the agent then answers every request with a refusal. Switch
+Console's editor is correct. This is a live bug and it will be hit by exactly the
+person trying to widen a responder's policy.
+
+> **Proposed ticket:** *Preserve symbolic rules in the gateway policy editor* —
+> represent `owner` and `owner_agents`, round-trip them, and warn when a saved
+> policy admits nobody. **S**
+
+**G13 — The offline nudge names the owner, not whoever can act.**
+When an `auto_session` agent is addressed with nothing to start it, the room is
+told to go and wake the owner. For a shared responder that is a service account
+nobody watches, or a person who is not on call. The wording is right for a
+personal agent and wrong for a shared one, and there is no way to override it.
+
+> **Proposed ticket:** *Escalation target for an offline shared agent* — when an
+> agent has no personal owner, address the nudge to the room's escalation target
+> (see G1's follow-up) instead of to `owner_id`. **S**
+
+**G14 — One credential per agent; no rotation, no per-holder revocation.**
+One agent, one API key row. No rotation endpoint — the only rotation is
+re-registration with overwrite, which breaks every holder simultaneously. Reveal
+is strict owner equality with no admin bypass. A shared agent therefore has a
+credential that cannot be issued per person, cannot be revoked per person, and
+cannot be recovered by anyone but its owner.
+
+> **Proposed ticket:** *Per-holder agent credentials* — several named,
+> independently revocable keys per agent, each attributable, with a rotation
+> endpoint that does not break the others. **M**
+
+**G15 — Nothing records which human drove a session.**
+No actor field on connections, sessions, runtime state, leases or messages. A
+shared agent's actions are attributable to the agent and to nobody else. The
+mitigation in this design is the rule that the agent acts only on a written
+request in the room — which makes the transcript the audit log — but that is a
+convention, and conventions are not enforcement.
+
+> **Proposed ticket:** *Record the operator behind a session* — capture an actor
+> on session registration and carry it onto messages the session sends. **M**
+
+**G16 — A role lease is held per agent, globally.**
+Unique on the agent, not on the room and not on the session. One agent can hold
+one role across the whole instance, so a shared agent in two concurrent incidents
+can be the scribe in only one. And two sessions of the same agent assuming the
+same role is an idempotent re-assume, so roles arbitrate nothing between them.
+
+> **Proposed ticket:** *Scope a role lease to (agent, room)* — allow one agent to
+> hold a role in each of several rooms, and decide explicitly what two sessions
+> of one agent assuming one role should mean. **M**
+
+**G17 — Role eligibility is declared and unused; humans cannot hold roles.**
+`RoomRole.eligibility` exists, is documented as a forward-looking hook, and is
+read by nothing — any room member may assume any role. And roles are assumable
+only by agents, so "incident commander" cannot be a role at all.
+
+> **Proposed ticket:** *Enforce role eligibility* — implement the declared field
+> so a role can be restricted. **S**
+
+> **Proposed ticket:** *Human-holdable roles* — let a person claim a room role
+> from the bridged channel, so `@incident-commander` reaches a human. **L**
+
+### E. Closing the incident out
+
+**G18 — There is no transcript export.**
+The postmortem is written from the room, but there is no endpoint that produces a
+room's history: the gateway exposes a room's *configuration* as YAML and nothing
+else, and reading messages is an agent-only operation. In practice the responder
+agent can page back through the room and post a timeline as an attachment, which
+is good enough — so this is the cheapest gap on the list and the least urgent.
+
+> **Proposed ticket:** *Export a room transcript* — a downloadable, paginated
+> history export for a room a user can read. **S**
+
+## What to build first
+
+Nothing on that list blocks a first incident. Two things are worth being explicit
+about:
+
+**Usable on day one, with no Switch change at all.** Write the template, register
+it, and have one person instantiate it through the API when an incident is
+declared, pasting the incident's particulars as inputs. Invite responders by
+hand. Put the update cadence in a scheduled Slack workflow that mentions the
+responder. Register the responder agent, widen its addressing policy through the
+API — not the dashboard, see G12 — and run its watcher on an always-on host. That
+is a working SOP on Switch, with two manual steps.
+
+**The order to remove the manual steps in**, by value per unit of work:
+
+1. **G2 + G3 — instantiate a stored template, with a form.** Two small changes
+   that together turn the registry from a filing cabinet into the feature. Until
+   these land, every other template improvement is invisible to the people who
+   would use it. Start here.
+2. **G11 — a service account.** Small in scope, and the recommendation for the
+   responder agent is unsound without it. Every day it is missing is a day the
+   responder is either one person's agent or an admin.
+3. **G12 — the policy editor bug.** A few hours' work, and it will otherwise be
+   discovered by someone widening the responder's policy during an incident.
+4. **G1 — resolve a platform group to room members.** The largest single
+   reduction in manual work: it turns "invite the on-call engineers" from a
+   human step into a template line, and it is the question the SOP has been
+   asking. Deliberately without building a rotation in Switch.
+5. **G5 — declare an incident from the channel.** Once the template instantiates
+   cleanly, letting an engineer trigger it from Slack removes the last manual
+   step in the critical path.
+6. **G9 — group templates, and join-event listeners.** The postmortem room, the
+   links, the `@responder` alias, and the ability to greet an arrival. All
+   quality, none of it blocking.
+7. Everything else, as it starts to hurt.
+
+The honest summary: **Switch can host this SOP today, badly, with two manual
+steps and one unsafe compromise on agent ownership. Items 1 to 3 make it
+respectable, and they are small. Item 4 is the one the team actually asked for.**
