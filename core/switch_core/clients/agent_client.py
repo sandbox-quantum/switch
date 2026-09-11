@@ -808,7 +808,7 @@ class AgentClient(ClientBase[ClientConfig]):
         if matrix_room_id in self._room_meta:
             return self._room_meta[matrix_room_id]
 
-        async with self.session_factory() as session:
+        async with tenant_session(self.session_factory, self.tenant_id) as session:
             room = await self._room_store.get_by_matrix_room_id(session, matrix_room_id)
             if room is None:
                 logger.error("Room not found for matrix room ID: %s", matrix_room_id)

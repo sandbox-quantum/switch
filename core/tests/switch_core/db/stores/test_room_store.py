@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import uuid
 
+import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from switch_core.db.models import Room, Tenant
+from switch_core.db.models import Room, Tenant, TenantNotBoundError
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.room_store import RoomStore
 
@@ -63,3 +64,46 @@ class TestGetByMatrixRoomIdMultiTenant:
             result = await store.get_by_matrix_room_id(verify, shared_matrix_room_id)
             assert result is not None
             assert result.id == other_id
+
+
+class TestGetByMatrixRoomIdRequiresATenant:
+    """No caller left reaches `get_by_matrix_room_id` with nothing bound
+    (CHOO-2623): `PostgresTransport` and the two `ClientBase` subclasses carry
+    their own tenant, and `PostgresProvisioning` is only ever invoked from
+    inside a `tenant_scope` bound to the room it acts on. An unfiltered
+    fallback for "nothing bound" therefore has no legitimate caller left to
+    serve — only a forgotten bind, which two tenants sharing a
+    `matrix_room_id` turn into `MultipleResultsFound` instead of `Room | None`.
+    Refusing outright, the same as `ClientStore.get_by_matrix_user_id`, turns
+    that into a clear, immediate error instead.
+    """
+
+    @pytest.mark.no_ambient_tenant
+    async def test_raises_rather_than_matching_two_tenants_rooms(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        store = RoomStore()
+        tenant_a = f"tenant-{uuid.uuid4().hex[:8]}"
+        tenant_b = f"tenant-{uuid.uuid4().hex[:8]}"
+        shared_matrix_room_id = "!shared-unbound:switch.local"
+
+        async with session_factory() as session:
+            session.add_all(
+                [
+                    Tenant(id=tenant_a, slug=tenant_a, name=tenant_a),
+                    Tenant(id=tenant_b, slug=tenant_b, name=tenant_b),
+                ]
+            )
+            await session.commit()
+
+        async with tenant_session(session_factory, tenant_a) as session:
+            await _make_room(session, shared_matrix_room_id)
+            await session.commit()
+
+        async with tenant_session(session_factory, tenant_b) as session:
+            await _make_room(session, shared_matrix_room_id)
+            await session.commit()
+
+        async with session_factory() as verify:
+            with pytest.raises(TenantNotBoundError):
+                await store.get_by_matrix_room_id(verify, shared_matrix_room_id)

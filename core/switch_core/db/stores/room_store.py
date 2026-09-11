@@ -11,9 +11,9 @@ from switch_core.db.models import (
     ClientRoom,
     Room,
     RoomGroup,
+    require_tenant_id,
     room_agents,
 )
-from switch_core.tenant_context import current_tenant_id
 
 
 class RoomStore:
@@ -52,27 +52,28 @@ class RoomStore:
     async def get_by_matrix_room_id(
         self, session: AsyncSession, matrix_room_id: str
     ) -> Room | None:
-        """Resolve a room by its Matrix room id, scoped to the bound tenant
-        when one is bound.
+        """Resolve a room by its Matrix room id within the bound tenant.
 
+        Scoped explicitly rather than left to row-level security:
         `matrix_room_id` is unique per tenant
-        (`uq_rooms_tenant_matrix_room_id`), not globally, so a caller that
-        already knows its tenant must not match another tenant's room of the
-        same transport id — that read is filtered explicitly here rather than
-        left to row-level security, which is inert against the owner
-        connection every environment uses today.
-
-        A caller with nothing bound gets the unfiltered search instead of an
-        error: `_resolve_room_and_tenant` (`transport/postgres.py`) is exactly
-        this lookup used to discover *which* tenant a transport-side id
-        belongs to, deliberately with no tenant bound yet, and forcing one
-        would make that bootstrap impossible.
+        (`uq_rooms_tenant_matrix_room_id`), not globally, so the moment a
+        second tenant has a room bound to the same transport id, an unfiltered
+        read here matches both rows and raises `MultipleResultsFound` out of
+        every inbound-event path that resolves a room this way (provisioning,
+        the Postgres transport, admin commands). Every caller that reaches
+        this by now already knows its tenant — `PostgresTransport` and the
+        two `ClientBase` subclasses carry it on the row they were built from,
+        and `PostgresProvisioning` is only ever called from `room_service`
+        inside a `tenant_scope` bound to the room it is acting on — so there
+        is no bootstrap case left that needs an unfiltered fallback, the same
+        as `ClientStore.get_by_matrix_user_id`.
         """
-        conditions = [Room.matrix_room_id == matrix_room_id]
-        tenant_id = current_tenant_id()
-        if tenant_id is not None:
-            conditions.append(Room.tenant_id == tenant_id)
-        result = await session.execute(select(Room).where(*conditions))
+        result = await session.execute(
+            select(Room).where(
+                Room.tenant_id == require_tenant_id(),
+                Room.matrix_room_id == matrix_room_id,
+            )
+        )
         return result.scalar_one_or_none()
 
     async def get_all(
