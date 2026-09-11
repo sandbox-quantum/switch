@@ -115,6 +115,75 @@ async def test_a_turn_addressed_at_the_root_threads_under_its_own_message(
     assert thread == "trigger-message-1"
 
 
+async def test_a_reply_inside_an_existing_thread_reacts_to_the_reply_not_the_root(
+    session_factory, monkeypatch
+):
+    """A command answered inside an existing thread threads its activity
+    under that thread's root — posting needs somewhere to go — but the
+    message that actually asked is the reply itself, which can be a
+    different message from whatever the thread was originally about. The two
+    are carried separately rather than the root standing in for both.
+    """
+    service, epoch = await setup(session_factory)
+    reply = Command(
+        contract_version=1,
+        command_id="message-demo",
+        session_id="session-demo",
+        epoch=epoch,
+        origin={
+            "surface": "console",
+            "actorId": "owner",
+            "roomId": "room-demo",
+            "threadId": "thread-root-1",
+            "messageId": "reply-message-1",
+        },
+        body={
+            "type": "message.send",
+            "text": "Run tests",
+            "attachments": [],
+            "delivery": "queue",
+        },
+    )
+    await service.submit(reply, user_id="owner", bridge_id=None)
+    await service.ingest(
+        "agent-demo",
+        "host-demo",
+        host_event(
+            epoch,
+            1,
+            {
+                "type": "turn.upsert",
+                "turnId": "turn-demo",
+                "status": "running",
+                "commandId": "message-demo",
+            },
+        ),
+    )
+    activity_platform = ActivityPlatform()
+    activity = SessionTurnActivity(activity_platform)
+    calls = []
+    original_publish = activity.publish
+
+    async def _capture(*args, **kwargs):
+        calls.append(kwargs)
+        return await original_publish(*args, **kwargs)
+
+    monkeypatch.setattr(activity, "publish", _capture)
+    publisher = SessionPublisher(
+        session_factory,
+        "bridge",
+        cards_for(session_factory, Platform()),
+        activity,
+    )
+
+    await publisher.publish_pending()
+
+    assert len(activity_platform.posts) == 1
+    _, _, thread = activity_platform.posts[0]
+    assert thread == "thread-root-1"
+    assert calls[0]["asked_on"] == "reply-message-1"
+
+
 async def test_only_the_latest_turn_is_redrawn_by_a_freshly_started_publisher(
     session_factory,
 ):
