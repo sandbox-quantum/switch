@@ -24,8 +24,8 @@ export function createMainWindow(): BrowserWindow {
       contextIsolation: true,
       // Required for ESM preload scripts (.mjs)
       sandbox: false,
-      // __dirname resolves to out/main/ at runtime; preload is at out/preload/index.mjs
-      preload: join(__dirname, '../preload/index.mjs'),
+      // import.meta.dirname resolves to out/main/ at runtime; preload is at out/preload/index.mjs
+      preload: join(import.meta.dirname, '../preload/index.mjs'),
       // Enables the embedded room view's <webview> (CHOO-1674). Guests are
       // constrained in the will-attach-webview handler below, which is what
       // actually keeps this from widening the app's attack surface.
@@ -105,7 +105,7 @@ export function createMainWindow(): BrowserWindow {
  * preload the app ships. Anything else is dropped.
  */
 function constrainEmbeddedWebviews(window: BrowserWindow): void {
-  const guestPreload = join(__dirname, '../preload/mattermost-guest.mjs');
+  const guestPreload = join(import.meta.dirname, '../preload/mattermost-guest.mjs');
 
   window.webContents.on('will-attach-webview', (event, webPreferences, params) => {
     // Never honour a preload named in markup — pin it to the one we ship.

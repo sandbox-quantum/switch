@@ -52,7 +52,7 @@ from switch_core.gateway.schemas import (
     RoomUsersRequest,
 )
 from switch_core.room_service import RoleSpec, RoomCreateConfig, RoomService
-from switch_core.rooms_yaml import ProvisionResult, RoomYamlService
+from switch_core.rooms_yaml import ProvisionResult, RoomYamlService, TemplateDocument
 
 logger = logging.getLogger(__name__)
 
@@ -408,6 +408,14 @@ async def create_room_from_yaml(
         raise HTTPException(status_code=403, detail=str(e)) from e
     except BridgeOperationError as e:
         raise HTTPException(status_code=502, detail=str(e)) from e
+
+
+@router.get("/template-schema")
+async def get_template_schema(
+    _user: Annotated[User, Depends(get_current_user)],
+) -> dict:
+    """Return the JSON Schema describing a valid room template document."""
+    return TemplateDocument.model_json_schema()
 
 
 @router.get("/{room_id}/yaml")
