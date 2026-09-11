@@ -39,4 +39,10 @@ def test_the_unauthenticated_allowlist_has_not_grown() -> None:
         "/oauth",
         "/gateway",
         "/deeplink",
+        # Workspace installs of the distributed messaging apps: the OAuth
+        # callback and the platforms' event webhooks. Public because the
+        # callers are Slack and a browser mid-redirect, neither of which holds
+        # a credential of ours. Nothing under it discloses a version, and each
+        # route checks the platform's signature before it acts.
+        "/messaging",
     }

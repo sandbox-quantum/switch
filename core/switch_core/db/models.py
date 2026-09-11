@@ -1018,6 +1018,133 @@ class CollaborationBridge(TenantScoped, Base):
     )
 
 
+# ── Messaging Installs ─────────────────────────────────────────────────────────
+
+
+class MessagingInstall(TenantScoped, Base):
+    """A tenant's installation of the Switch app into one external workspace.
+
+    The difference from `collaboration_bridges` is who supplied the
+    credential. A bridge holds a token an operator pasted in, from an app that
+    operator registered; an install holds a token *we* were granted, for our
+    app, by whoever clicked Add to Slack. Both end up driving the same adapter,
+    so this table records only what the install added: which workspace, whose
+    token, and what it may do.
+
+    **`(platform, external_workspace_id)` is unique across the whole
+    deployment, not per tenant**, and that is the single most important line
+    here. Inbound events arrive over one public endpoint carrying a workspace
+    id and no tenant, so a workspace claimed by two tenants is a message with
+    two possible destinations and no way to choose — which is the failure this
+    whole phase exists to make unrepresentable. The database decides it rather
+    than a read-then-insert in application code, because the check and the
+    write cannot be made atomic from outside.
+
+    That constraint is also the one place a tenant learns something about
+    another: claiming a workspace somebody else already claimed fails, and the
+    failure says so. It is the right answer — the alternative is a silent
+    second claim — and what it discloses is that *some* tenant holds a
+    workspace the caller was already able to name.
+
+    `bridge_id` is nullable because the install row is written before anything
+    is built on it, and because removing a bridge should not force the
+    credential to be thrown away and re-granted. A null there means the
+    install is recorded and not yet serving.
+
+    `encrypted_bot_token` uses the same key as every other credential this
+    schema stores (`crypto.encrypt_token` over the configured secret), so it
+    is protected against a stolen dump and not against a compromised process.
+    A per-tenant key is a stronger boundary and a later decision.
+
+    `scopes` is the platform's own spelling of what was granted, stored
+    verbatim rather than parsed into a list — a scope string that means
+    nothing to us is still the thing to show an operator asking why a call was
+    refused.
+    """
+
+    __tablename__ = "messaging_installs"
+    __table_args__ = (
+        UniqueConstraint(
+            "platform",
+            "external_workspace_id",
+            name="uq_messaging_installs_workspace",
+        ),
+        UniqueConstraint("id", "tenant_id", name="uq_messaging_installs_id_tenant"),
+        ForeignKeyConstraint(
+            ["tenant_id", "bridge_id"],
+            ["collaboration_bridges.tenant_id", "collaboration_bridges.id"],
+            name="fk_messaging_installs_bridge",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
+    platform: Mapped[str] = mapped_column(Text, nullable=False)
+    external_workspace_id: Mapped[str] = mapped_column(Text, nullable=False)
+    encrypted_bot_token: Mapped[str] = mapped_column(Text, nullable=False)
+    scopes: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False)
+    installed_by_user_id: Mapped[str] = mapped_column(
+        Text, ForeignKey("users.id"), nullable=False
+    )
+    bridge_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    installed_at: Mapped[str] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class MessagingInstallState(TenantScoped, Base):
+    """One in-flight install: minted when the flow starts, burnt when it lands.
+
+    An install is two requests with a trip through the platform in between. The
+    first is an authenticated operator asking to install; the second is a
+    browser arriving back at a public endpoint from the platform, carrying an
+    authorization code and a `state` we chose. Nothing else ties the two
+    together, so `state` has to carry the whole of what the second request may
+    not be trusted to assert: which tenant, and on whose behalf.
+
+    **The row is not what carries the tenant across.** The `state` parameter is
+    a signed token naming the tenant, so the callback binds a tenant it can
+    verify without reading anything first. That is the point of the design:
+    every other unauthenticated entry point resolves its tenant through a
+    `SECURITY DEFINER` lookup, and this one does not have to, so it does not —
+    the closed list in `db/tenant_lookup.py` stays as short as it is. What this
+    row adds is the one property a signature cannot have: **single use.** A
+    signed token is valid until it expires and a captured one can be replayed;
+    the redemption below happens once because `consumed_at` is set in the same
+    statement that checks it is null.
+
+    Which makes the failure this prevents worth naming. Replaying a captured
+    state completes an install of the attacker's own workspace against the
+    victim's tenant — that workspace's messages then arrive in the victim's
+    rooms, which is message injection, not a leak. Single use and a short
+    expiry are what close it.
+
+    Redemption is a scoped write like any other, run after the signature has
+    bound the tenant, so row-level security is a second check on the first: a
+    token whose signed tenant disagrees with the row's finds no row at all.
+
+    The two timestamps are both needed and mean different things. `expires_at`
+    is a bound on how long the platform's round trip may take; `consumed_at`
+    is the fact of redemption, kept rather than deleted so an operator asking
+    why a link stopped working can see it was used rather than lost.
+    """
+
+    __tablename__ = "messaging_install_states"
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
+    platform: Mapped[str] = mapped_column(Text, nullable=False)
+    created_by_user_id: Mapped[str] = mapped_column(
+        Text, ForeignKey("users.id"), nullable=False
+    )
+    created_at: Mapped[str] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    expires_at: Mapped[str] = mapped_column(DateTime(timezone=True), nullable=False)
+    consumed_at: Mapped[str | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+
 # ── Server-Side Connectors ────────────────────────────────────────────────────
 
 

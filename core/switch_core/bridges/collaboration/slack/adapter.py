@@ -8,10 +8,11 @@ import uuid
 from collections import OrderedDict
 from collections.abc import Awaitable, Callable
 from dataclasses import replace
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Literal
 
 import httpx
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
+from pydantic.json_schema import SkipJsonSchema
 from slack_sdk.errors import SlackApiError
 from slack_sdk.socket_mode.aiohttp import SocketModeClient
 from slack_sdk.socket_mode.request import SocketModeRequest
@@ -196,7 +197,29 @@ class SlackUser(BaseModel):
 
 class SlackConnectionConfig(BridgeConnectionConfig):
     bot_token: str
-    app_token: str
+    #: How inbound events reach this bridge, which is decided by which Slack
+    #: app the token came from and is not an operator's preference.
+    #:
+    #: An app the operator registered themselves uses Socket Mode: Switch dials
+    #: out and needs no inbound route. The distributed app cannot — Slack does
+    #: not permit Socket Mode for it — so its events arrive as signed HTTP
+    #: posts to a public endpoint, and there is no app-level token at all.
+    #:
+    #: Hidden from the registration form because it is not a question an
+    #: operator filling that form can be asked: reaching the form at all means
+    #: Socket Mode, and the webhook value is written by the install flow.
+    event_delivery: SkipJsonSchema[Literal["socket_mode", "webhook"]] = "socket_mode"
+    #: Required under Socket Mode and meaningless without it, which the
+    #: validator below enforces rather than leaving to be discovered.
+    app_token: str | None = Field(
+        default=None,
+        title="App-level token",
+        description=(
+            "The xapp-… token with the connections:write scope, from the app's "
+            "Basic Information page. Required: it is what opens the connection "
+            "Slack delivers events down."
+        ),
+    )
     workspace_id: str
     # The descriptions are not decoration: both registration forms build
     # themselves from this schema, so what is written here is the only
@@ -220,6 +243,28 @@ class SlackConnectionConfig(BridgeConnectionConfig):
             "Agent; without that, the posted message is used instead."
         ),
     )
+
+    @model_validator(mode="after")
+    def _app_token_matches_delivery(self) -> SlackConnectionConfig:
+        """Refuse the two states that would look configured and receive nothing.
+
+        A Socket Mode bridge with no app token opens no connection, so it
+        sends fine and never hears a word back — the exact shape of failure
+        that reads as "Slack is quiet today" for a week. An app token on a
+        webhook bridge is the opposite mistake: a credential for a mechanism
+        this bridge does not use, which will be read as evidence that it does.
+        """
+        if self.event_delivery == "socket_mode" and not self.app_token:
+            raise ValueError(
+                "app_token is required: without it Switch opens no Socket Mode "
+                "connection and this bridge would receive no Slack events at all."
+            )
+        if self.event_delivery == "webhook" and self.app_token:
+            raise ValueError(
+                "app_token must be empty for a bridge whose events arrive over "
+                "HTTP; the distributed Slack app has no app-level token."
+            )
+        return self
 
 
 class SlackAdapter(CollaborationAdapter):
@@ -362,15 +407,28 @@ class SlackAdapter(CollaborationAdapter):
             auth.get("team", ""),
         )
 
-        self._socket_client = SocketModeClient(
-            app_token=self._config.app_token,
-            web_client=self._web_client,
-        )
-        self._socket_client.socket_mode_request_listeners.append(
-            self._handle_socket_event  # type: ignore[arg-type]
-        )
-        await self._socket_client.connect()
-        logger.info("Slack Socket Mode connected")
+        if self._config.event_delivery == "webhook":
+            # Nothing to connect: events are posted to the public endpoint,
+            # which verifies them and calls dispatch_event below. Said out loud
+            # because a bridge that opens no connection and logs nothing is
+            # indistinguishable from one that failed to.
+            logger.info(
+                "Slack adapter listening over HTTP; events arrive at the "
+                "messaging install endpoint rather than over Socket Mode"
+            )
+        else:
+            # Narrowing for the type checker; the config validator is what
+            # actually guarantees it.
+            assert self._config.app_token is not None
+            self._socket_client = SocketModeClient(
+                app_token=self._config.app_token,
+                web_client=self._web_client,
+            )
+            self._socket_client.socket_mode_request_listeners.append(
+                self._handle_socket_event  # type: ignore[arg-type]
+            )
+            await self._socket_client.connect()
+            logger.info("Slack Socket Mode connected")
         logger.debug(
             _TRACE + "build carries agent sessions; config agent_sessions=%s",
             self._config.agent_sessions,
@@ -1920,7 +1978,7 @@ class SlackAdapter(CollaborationAdapter):
 
         return re.sub(r"@([A-Za-z0-9][A-Za-z0-9._-]*)", _replace, content)
 
-    # ── Socket Mode event handling ───────────────────────────────────────────
+    # ── Event handling ───────────────────────────────────────────────────────
 
     async def _handle_socket_event(
         self, client: SocketModeClient, req: SocketModeRequest
@@ -1928,15 +1986,32 @@ class SlackAdapter(CollaborationAdapter):
         await client.send_socket_mode_response(
             SocketModeResponse(envelope_id=req.envelope_id)
         )
+        await self.dispatch_event(envelope_type=req.type, payload=req.payload)
 
-        if req.type == "slash_commands":
-            await self._handle_slash_command(req.payload)
+    async def dispatch_event(
+        self, *, envelope_type: str, payload: dict[str, Any]
+    ) -> None:
+        """Route one Slack event, whichever transport carried it.
+
+        Socket Mode hands over an envelope type and a payload; the public
+        webhook parses the same two out of the request it has already proved
+        genuine. Everything after that point is identical, so it is written
+        once — a dispatch that differed by transport is how the two delivery
+        modes would drift into behaving differently for the same event.
+
+        Acknowledgement is *not* here, because the two transports acknowledge
+        incompatibly: Socket Mode replies on the socket before dispatching,
+        while HTTP acknowledges by returning 200 to the post. Both must do it
+        promptly and neither can do it for the other.
+        """
+        if envelope_type == "slash_commands":
+            await self._handle_slash_command(payload)
             return
 
-        if req.type != "events_api":
+        if envelope_type != "events_api":
             return
 
-        event = req.payload.get("event", {})
+        event = payload.get("event", {})
         event_type = event.get("type")
         event_subtype = event.get("subtype")
 

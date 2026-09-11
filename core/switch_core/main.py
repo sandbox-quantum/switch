@@ -49,6 +49,11 @@ from switch_core.bridges.collaboration.discord.adapter import (
     DiscordAdapter,
     DiscordConnectionConfig,
 )
+from switch_core.bridges.collaboration.install import MessagingInstallerRegistry
+from switch_core.bridges.collaboration.install_routes import (
+    create_messaging_install_router,
+)
+from switch_core.bridges.collaboration.install_service import MessagingInstallService
 from switch_core.bridges.collaboration.lifecycle_service import (
     CollaborationBridgeLifecycleService,
 )
@@ -60,6 +65,7 @@ from switch_core.bridges.collaboration.slack.adapter import (
     SlackAdapter,
     SlackConnectionConfig,
 )
+from switch_core.bridges.collaboration.slack.install import SlackAppInstaller
 from switch_core.bridges.collaboration.teams.adapter import (
     TeamsAdapter,
     TeamsConnectionConfig,
@@ -99,6 +105,7 @@ from switch_core.db.stores.document_store import DocumentStore
 from switch_core.db.stores.external_user_store import ExternalUserStore
 from switch_core.db.stores.media_store import MediaStore
 from switch_core.db.stores.message_store import MessageStore
+from switch_core.db.stores.messaging_install_store import MessagingInstallStore
 from switch_core.db.stores.package_store import PackageStore
 from switch_core.db.stores.reference_store import ReferenceStore
 from switch_core.db.stores.reference_type_store import ReferenceTypeStore
@@ -471,6 +478,36 @@ async def run(config: SwitchConfig) -> None:
         "opencode", OpenCodeConnector, OpenCodeConnectionConfig
     )
 
+    # ── Messaging app installs ──────────────────────────────────────────────
+    # Registration is the feature flag. An installer exists for a platform when
+    # this deployment holds that platform's app credentials, and the whole
+    # install surface refuses when none does — a deployment that registered no
+    # app cannot half-offer the button. Config validation has already required
+    # the three Slack values all together and a public origin with them.
+    installers = MessagingInstallerRegistry()
+    if config.slack_app_client_id:
+        assert config.slack_app_client_secret is not None
+        assert config.slack_app_signing_secret is not None
+        installers.register(
+            SlackAppInstaller(
+                client_id=config.slack_app_client_id,
+                client_secret=config.slack_app_client_secret,
+                signing_secret=config.slack_app_signing_secret,
+            )
+        )
+
+    install_service: MessagingInstallService | None = None
+    if installers.platforms():
+        assert config.gateway_public_url is not None
+        install_service = MessagingInstallService(
+            session_factory=session_factory,
+            store=MessagingInstallStore(),
+            installers=installers,
+            lifecycle=collab_lifecycle,
+            public_origin=config.gateway_public_url,
+            secret=config.jwt_secret_key,
+        )
+
     # ── Gateway app ───────────────────────────────────────────────────────────
     gateway_app = create_gateway_app(
         agent_store=agent_store,
@@ -489,6 +526,7 @@ async def run(config: SwitchConfig) -> None:
         api_key_store=api_key_store,
         resource_service=resource_service,
         protocol=protocol,
+        install_service=install_service,
         config=config,
     )
 
@@ -509,6 +547,15 @@ async def run(config: SwitchConfig) -> None:
     @agent_bridge_app.get("/health")
     async def health_check() -> JSONResponse:
         return JSONResponse({"status": "ok"})
+
+    # Mounted on the agent-bridge app, not inside /gateway: this is the leg a
+    # platform and a customer's browser reach, and /gateway is neither routed
+    # here from outside nor reachable without a cookie they do not have.
+    if install_service is not None:
+        agent_bridge_app.include_router(
+            create_messaging_install_router(install_service),
+            tags=["messaging-installs"],
+        )
 
     agent_bridge_app.mount("/gateway", gateway_app)
 

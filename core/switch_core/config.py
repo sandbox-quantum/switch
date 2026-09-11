@@ -164,6 +164,22 @@ class SwitchConfig(BaseSettings):
     # unset, the raw `switchdash://` deeplink is posted as-is.
     gateway_public_url: str | None = None
 
+    # Credentials of the distributed Slack app *we* registered — the one a
+    # customer installs by clicking a button, as opposed to the app an operator
+    # registers themselves and pastes tokens for. See
+    # `docs/old/bridges/SLACK_DISTRIBUTED_APP.md`.
+    #
+    # Setting all three is what enables workspace installs at all: there is no
+    # separate on/off switch, because an app with no credentials is not an app.
+    # Setting some is a mistake and is refused at startup.
+    #
+    # The signing secret is the one that must never be treated as optional in
+    # spirit: it is the whole of what distinguishes a Slack event from a post by
+    # anyone who learned the URL.
+    slack_app_client_id: str | None = None
+    slack_app_client_secret: str | None = None
+    slack_app_signing_secret: str | None = None
+
     # Upper bound on a single attachment an agent may post to a room (and that
     # a collaboration bridge will relay out). Uploads over this raise instead
     # of being truncated or silently dropped.
@@ -360,6 +376,34 @@ class SwitchConfig(BaseSettings):
                 "Partial gateway OIDC config: set all of "
                 "GATEWAY_OIDC_ISSUER_URL / GATEWAY_OIDC_CLIENT_ID / "
                 "GATEWAY_OIDC_CLIENT_SECRET, or none of them."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_slack_app(self) -> "SwitchConfig":
+        required = (
+            self.slack_app_client_id,
+            self.slack_app_client_secret,
+            self.slack_app_signing_secret,
+        )
+        set_count = sum(1 for value in required if value)
+        if 0 < set_count < len(required):
+            raise ValueError(
+                "Partial distributed Slack app config: set all of "
+                "SLACK_APP_CLIENT_ID / SLACK_APP_CLIENT_SECRET / "
+                "SLACK_APP_SIGNING_SECRET, or none of them."
+            )
+        # The redirect URI and the events URL are both built from the public
+        # origin, and Slack checks the redirect matches the one registered with
+        # the app. Without the origin they would be built against nothing, so a
+        # deployment configured to offer installs and unable to name itself is
+        # a startup error rather than a broken button.
+        if set_count and not self.gateway_public_url:
+            raise ValueError(
+                "A distributed Slack app is configured but GATEWAY_PUBLIC_URL "
+                "is not. The install redirect and the events endpoint are built "
+                "from it, and Slack rejects a redirect that does not match the "
+                "one registered with the app."
             )
         return self
 

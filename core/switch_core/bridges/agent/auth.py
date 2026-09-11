@@ -12,6 +12,9 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 
 from switch_core.bridges.agent.api_key_cache import ApiKeyCache
 from switch_core.bridges.agent.registration_bootstrap import REGISTRATION_KEY_TYPES
+from switch_core.bridges.collaboration.install import (
+    PUBLIC_PATH_PREFIX as MESSAGING_INSTALL_PREFIX,
+)
 from switch_core.db.models import Agent, ApiKey
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.agent_store import AgentStore
@@ -37,6 +40,11 @@ PUBLIC_PATH_PREFIXES: tuple[str, ...] = (
     # Public switchdash:// deeplink HTTP redirect — followed by whoever clicks
     # the "Open in Switch Console" link in an external channel, so no bearer token.
     "/deeplink",
+    # Workspace installs of the distributed messaging apps: the OAuth callback
+    # and the platforms' event webhooks. Unauthenticated by nature — an inbound
+    # Slack event carries no credential of ours — so each route proves its own
+    # origin from the platform's signature before it does anything else.
+    MESSAGING_INSTALL_PREFIX,
 )
 
 

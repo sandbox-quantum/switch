@@ -46,6 +46,8 @@ from switch_core.db.rls_ddl import (
     GLOBAL_TABLES,
     POLICY_NAME,
     REQUIRE_TENANT_FUNCTION_NAME,
+    create_policy_ddl,
+    enable_rls_ddl,
     scoped_tables,
     unscoped_tables,
 )
@@ -54,6 +56,19 @@ from switch_core.db.stores.room_group_store import RoomGroupStore
 from tests.conftest import RLSHarness
 
 _RLS_REVISION = "265ed188ad6f"
+
+# Tables added after `265ed188ad6f`, and the revision that gave each one its
+# policy. That revision froze the list of tables as it stood then, so a table
+# added later is legitimately absent from it and its policy has to be
+# installed by the revision that adds the table. Naming it here is what keeps
+# the comparison below exact: the alternative is loosening it to "the
+# migration's list is a subset", which passes just as happily for a table that
+# has a policy from `create_all` and none in any migration at all — a
+# deployment with an unprotected table and a green suite.
+_POLICIED_SINCE = {
+    "messaging_installs": "c8a4e21f6d30",
+    "messaging_install_states": "d3f6b0c95a17",
+}
 
 
 async def _make_tenant(owner: async_sessionmaker, tenant_id: str) -> None:
@@ -328,8 +343,8 @@ def _expected_predicate(tenant_column: str) -> str:
     )
 
 
-def _migration_module() -> ModuleType:
-    """The `265ed188ad6f` revision module, loaded through Alembic.
+def _revision_module(revision: str) -> ModuleType:
+    """One revision module, loaded through Alembic.
 
     Alembic's own loader, rather than an `importlib` call on a path, so this
     finds the file the same way a deployment would and fails the same way if
@@ -338,8 +353,12 @@ def _migration_module() -> ModuleType:
     core = Path(switch_core.__file__).resolve().parents[1]
     config = Config(str(core / "alembic.ini"))
     config.set_main_option("script_location", str(core / "switch_core" / "migrations"))
-    revision = ScriptDirectory.from_config(config).get_revision(_RLS_REVISION)
-    return revision.module
+    return ScriptDirectory.from_config(config).get_revision(revision).module
+
+
+def _migration_module() -> ModuleType:
+    """The revision that installed the policies."""
+    return _revision_module(_RLS_REVISION)
 
 
 class TestCatalogueCoverage:
@@ -417,15 +436,49 @@ class TestCatalogueCoverage:
         A deliberate divergence is still expressible — it just has to be a
         new migration, which is the point.
         """
-        from_models = scoped_tables(Base.metadata)
+        from_models = {
+            table: column
+            for table, column in scoped_tables(Base.metadata).items()
+            if table not in _POLICIED_SINCE
+        }
         from_migration = dict(_migration_module().SCOPED_TABLES)
 
         assert from_migration == from_models, (
             "the frozen SCOPED_TABLES in migration 265ed188ad6f no longer "
             "matches the models: only in the migration "
             f"{sorted(set(from_migration) - set(from_models))}, only in the "
-            f"models {sorted(set(from_models) - set(from_migration))}"
+            f"models {sorted(set(from_models) - set(from_migration))}. A table "
+            "added since that revision is expected to be absent from it — name "
+            "it, and the revision that installs its policy, in _POLICIED_SINCE."
         )
+
+    async def test_a_table_added_since_gets_its_policy_from_its_own_revision(
+        self,
+    ) -> None:
+        """The other half of `_POLICIED_SINCE`, and the half that bites.
+
+        Excusing a table from the frozen list is only safe if some revision
+        really does enable row-level security on it and create the same
+        policy. Without this, an entry in `_POLICIED_SINCE` is just a way to
+        turn the test above green while shipping a table that `create_all`
+        protects and Alembic does not.
+
+        Compared against `db/rls_ddl.py`'s builders rather than against a
+        literal, so a revision that installed a policy with a loosened
+        predicate — or enabled nothing at all — is a failure here.
+        """
+        scoped = scoped_tables(Base.metadata)
+        for table, revision in _POLICIED_SINCE.items():
+            module = _revision_module(revision)
+            assert module.ENABLE_RLS == enable_rls_ddl(table), (
+                f"revision {revision} does not enable row-level security on "
+                f"{table} the way db/rls_ddl.py does."
+            )
+            assert module.CREATE_POLICY == create_policy_ddl(table, scoped[table]), (
+                f"revision {revision} would install a different "
+                f"{POLICY_NAME!r} policy on {table} from the one "
+                "db/rls_ddl.py builds."
+            )
 
     async def test_global_tables_carry_no_policy(
         self, session_factory: async_sessionmaker
