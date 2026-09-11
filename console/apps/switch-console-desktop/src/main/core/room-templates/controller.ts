@@ -20,6 +20,14 @@ export type ParsedTemplate = {
   hardcodedAgents: string[];
   /** Hardcoded users — editable in the form. */
   hardcodedUsers: string[];
+  /** All users from the template, interpolated entries included. */
+  users: string[];
+  /** The bridge the template names — null when unset or interpolated. */
+  bridge: string | null;
+  /** Message the server posts as the creating user after the room exists. */
+  kickoff: string | null;
+  /** Whether the template references the `{$creator}` builtin anywhere. */
+  usesCreator: boolean;
   warnings: string[];
 };
 
@@ -76,6 +84,8 @@ function parseYaml(yamlText: string): Record<string, unknown> {
 
 const hasInterpolation = (s: string) => /\{[^}]+\}/.test(s);
 
+const usesCreator = (s: string) => /\{\$creator(_email)?\}/.test(s);
+
 function extractStringList(raw: unknown): string[] {
   if (!Array.isArray(raw)) return [];
   return raw.filter((a): a is string => typeof a === 'string');
@@ -109,6 +119,11 @@ export const roomTemplatesController = createRPCController({
     const allAgents = extractStringList(room?.agents);
     const allUsers = extractStringList(room?.users);
     const paramSpecs = extractParams(doc.params);
+    const kickoff = room && typeof room.kickoff === 'string' ? room.kickoff : null;
+    const bridge =
+      room && typeof room.bridge === 'string' && !hasInterpolation(room.bridge)
+        ? room.bridge
+        : null;
 
     if (!room) {
       warnings.push('Template has no "room:" block — the server may reject it.');
@@ -120,6 +135,10 @@ export const roomTemplatesController = createRPCController({
       agents: allAgents,
       hardcodedAgents: allAgents.filter((a) => !hasInterpolation(a)),
       hardcodedUsers: allUsers.filter((u) => !hasInterpolation(u)),
+      users: allUsers,
+      bridge,
+      kickoff,
+      usesCreator: usesCreator(params.yamlText),
       warnings,
     };
   },

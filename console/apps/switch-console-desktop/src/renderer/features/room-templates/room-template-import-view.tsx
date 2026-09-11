@@ -17,13 +17,14 @@ import { Button } from '@renderer/lib/ui/button';
 import { Field, FieldGroup, FieldLabel } from '@renderer/lib/ui/field';
 import { Input } from '@renderer/lib/ui/input';
 import { Textarea } from '@renderer/lib/ui/textarea';
+import type { LinkedIdentity, RemoteBridge } from '@shared/core/switch-servers/switch-servers';
 import { RpcError } from '@shared/lib/ipc/rpc-error';
 
 type Step = 'source' | 'inputs' | 'creating';
 
-/** Interpolate `{param}` patterns in a string with current form values. */
+/** Interpolate `{param}` and `{$builtin}` patterns with current form values. */
 function interpolate(template: string, values: Record<string, string | number | boolean>): string {
-  return template.replace(/\{(\w+)\}/g, (match, key: string) => {
+  return template.replace(/\{(\$?\w+)\}/g, (match, key: string) => {
     const val = values[key];
     return val !== undefined && val !== '' ? String(val) : match;
   });
@@ -299,52 +300,110 @@ function SummaryPanel({
   parsed,
   values,
   sourceName,
+  creatorIdentity,
+  bridgeName,
 }: {
   parsed: ParsedTemplate;
   values: Record<string, string | number | boolean>;
   sourceName: string | null;
+  /** How the signed-in user resolves on the template's bridge, or null. */
+  creatorIdentity: string | null;
+  /** The bridge the room will land on, when known. */
+  bridgeName: string | null;
 }) {
-  const roomNamePreview = parsed.roomName ? interpolate(parsed.roomName, values) : null;
+  const preview = (s: string) => interpolate(s, { ...values, $creator: creatorIdentity ?? 'you' });
+  const roomNamePreview = parsed.roomName ? preview(parsed.roomName) : null;
 
   // Agent names with interpolation applied
-  const agentPreviews = parsed.agents
-    .map((a) => interpolate(a, values))
-    .filter((a) => !a.includes('{'));
+  const agentPreviews = parsed.agents.map(preview).filter((a) => !a.includes('{'));
+  const userPreviews = parsed.users.map(preview).filter((u) => !u.includes('{'));
+  const kickoffPreview = parsed.kickoff ? preview(parsed.kickoff) : null;
+
+  const steps: React.ReactNode[] = [];
+  if (roomNamePreview) {
+    steps.push(
+      <span>
+        Room <strong>{roomNamePreview}</strong>
+        {bridgeName ? (
+          <>
+            {' '}
+            with its channel on <strong>{bridgeName}</strong>
+          </>
+        ) : null}
+      </span>
+    );
+  }
+  steps.push(<span>Instructions filled with your inputs</span>);
+  for (const agent of agentPreviews) {
+    steps.push(
+      <span>
+        Agent <strong>{agent}</strong> added as member
+      </span>
+    );
+  }
+  for (const user of userPreviews) {
+    steps.push(
+      <span>
+        {creatorIdentity !== null && user === creatorIdentity ? (
+          <>
+            <strong>You</strong> invited as <strong>{user}</strong>
+          </>
+        ) : (
+          <>
+            <strong>{user}</strong> invited to the channel
+          </>
+        )}
+      </span>
+    );
+  }
+  if (kickoffPreview) {
+    steps.push(<span>A kickoff message, posted as you, starts the agents</span>);
+  }
 
   return (
     <div className="flex flex-col gap-6">
       <div className="rounded-lg border border-border p-5">
         <h3 className="mb-3 text-sm font-semibold">What this creates</h3>
         <ol className="space-y-2 text-sm">
-          {roomNamePreview && (
-            <li className="flex items-start gap-2">
+          {steps.map((step, i) => (
+            <li key={i} className="flex items-start gap-2">
               <span className="flex size-5 shrink-0 items-center justify-center rounded border border-border text-xs">
-                1
+                {i + 1}
               </span>
-              <span>
-                Room <strong>{roomNamePreview}</strong>
-              </span>
-            </li>
-          )}
-          <li className="flex items-start gap-2">
-            <span className="flex size-5 shrink-0 items-center justify-center rounded border border-border text-xs">
-              {roomNamePreview ? 2 : 1}
-            </span>
-            <span>Instructions filled with your inputs</span>
-          </li>
-          {agentPreviews.map((agent, i) => (
-            <li key={agent} className="flex items-start gap-2">
-              <span className="flex size-5 shrink-0 items-center justify-center rounded border border-border text-xs">
-                {(roomNamePreview ? 3 : 2) + i}
-              </span>
-              <span>
-                <strong>{agent}</strong> added as member
-              </span>
+              {step}
             </li>
           ))}
         </ol>
         <p className="mt-3 text-xs text-foreground-muted">Nothing else. One room, from one file.</p>
       </div>
+
+      {parsed.usesCreator && (
+        <div className="rounded-lg border border-border p-4">
+          <h4 className="mb-1 text-xs font-semibold text-foreground-muted">You in this room</h4>
+          {creatorIdentity ? (
+            <p className="text-sm">
+              The server knows you{bridgeName ? ` on ${bridgeName}` : ''} as{' '}
+              <strong>{creatorIdentity}</strong> <Check className="inline size-3" />
+            </p>
+          ) : (
+            <p className="text-sm text-amber-500">
+              This template includes you, but you haven't linked your messaging account on this
+              server. The server will try to match your account name; if that fails you won't be
+              invited and the kickoff can't be posted. Link your account under the server's
+              Identities settings first.
+            </p>
+          )}
+        </div>
+      )}
+
+      {kickoffPreview && (
+        <div className="rounded-lg border border-border p-4">
+          <h4 className="mb-1 text-xs font-semibold text-foreground-muted">Kickoff message</h4>
+          <pre className="max-h-40 overflow-y-auto text-xs whitespace-pre-wrap text-foreground-muted">
+            {kickoffPreview}
+          </pre>
+        </div>
+      )}
 
       <div className="rounded-lg border border-border p-4">
         <h4 className="mb-1 text-xs font-semibold text-foreground-muted">Template source</h4>
@@ -368,6 +427,7 @@ function EditableNameList({
   onChange,
   knownNames,
   nameKind,
+  missingLabel = 'not found',
 }: {
   label: string;
   helperText: string;
@@ -375,6 +435,7 @@ function EditableNameList({
   onChange: (items: string[]) => void;
   knownNames: string[];
   nameKind: string;
+  missingLabel?: string;
 }) {
   if (items.length === 0) return null;
   return (
@@ -397,7 +458,7 @@ function EditableNameList({
                       exists <Check className="inline size-3" />
                     </>
                   ) : (
-                    'not found'
+                    missingLabel
                   )}
                 </span>
               </div>
@@ -434,6 +495,9 @@ function InputsStep({
   onEditedAgentsChange,
   editedUsers,
   onEditedUsersChange,
+  knownUserNames,
+  creatorIdentity,
+  bridgeName,
 }: {
   parsed: ParsedTemplate;
   values: Record<string, string | number | boolean>;
@@ -448,6 +512,9 @@ function InputsStep({
   onEditedAgentsChange: (agents: string[]) => void;
   editedUsers: string[];
   onEditedUsersChange: (users: string[]) => void;
+  knownUserNames: string[];
+  creatorIdentity: string | null;
+  bridgeName: string | null;
 }) {
   const handleChange = useCallback(
     (name: string, value: string | number | boolean) => {
@@ -486,11 +553,12 @@ function InputsStep({
           />
           <EditableNameList
             label="Users"
-            helperText="Pre-configured users from the template."
+            helperText="Pre-configured users from the template. Names the server hasn't seen yet are still looked up in the platform's directory when the room is created."
             items={editedUsers}
             onChange={onEditedUsersChange}
-            knownNames={[]}
+            knownNames={knownUserNames}
             nameKind="user"
+            missingLabel="not seen yet"
           />
         </FieldGroup>
         <div className="flex flex-col gap-2 pt-2">
@@ -505,7 +573,13 @@ function InputsStep({
 
       {/* Right: summary */}
       <div className="hidden w-80 shrink-0 lg:block">
-        <SummaryPanel parsed={parsed} values={values} sourceName={sourceName} />
+        <SummaryPanel
+          parsed={parsed}
+          values={values}
+          sourceName={sourceName}
+          creatorIdentity={creatorIdentity}
+          bridgeName={bridgeName}
+        />
       </div>
     </div>
   );
@@ -539,13 +613,46 @@ const TemplateImportPanel = observer(function TemplateImportPanel() {
   const [templateSchema, setTemplateSchema] = useState<Record<string, unknown> | null>(null);
   const [editedAgents, setEditedAgents] = useState<string[]>([]);
   const [editedUsers, setEditedUsers] = useState<string[]>([]);
+  const [bridges, setBridges] = useState<RemoteBridge[]>([]);
+  const [myIdentities, setMyIdentities] = useState<LinkedIdentity[]>([]);
+  const [knownUserNames, setKnownUserNames] = useState<string[]>([]);
 
   useEffect(() => {
     rpc.switchServers
       .fetchTemplateSchema(serverId)
       .then(setTemplateSchema)
       .catch(() => {});
+    rpc.switchServers
+      .listRemoteBridges(serverId)
+      .then(setBridges)
+      .catch(() => {});
+    rpc.switchServers
+      .listMyIdentities(serverId)
+      .then(setMyIdentities)
+      .catch(() => {});
+    rpc.switchServers
+      .listRemoteExternalUsers(serverId)
+      .then((users) => setKnownUserNames(users.map((u) => u.username)))
+      .catch(() => {});
   }, [serverId]);
+
+  // The bridge the room will land on: the one the template names, else the
+  // server's default — which is what the server itself falls back to.
+  const templateBridge = useMemo(() => {
+    if (parsed?.bridge) {
+      return bridges.find((b) => b.displayName === parsed.bridge) ?? null;
+    }
+    return bridges.find((b) => b.isDefault) ?? (bridges.length === 1 ? bridges[0] : null);
+  }, [bridges, parsed]);
+
+  // How the signed-in user resolves on that bridge — what `{$creator}`
+  // becomes, and whether the kickoff can be posted as them.
+  const creatorIdentity = useMemo(() => {
+    if (templateBridge) {
+      return myIdentities.find((i) => i.bridgeId === templateBridge.id)?.externalUsername ?? null;
+    }
+    return myIdentities[0]?.externalUsername ?? null;
+  }, [myIdentities, templateBridge]);
 
   const validateInputs = useCallback((): boolean => {
     if (!parsed) return false;
@@ -590,15 +697,17 @@ const TemplateImportPanel = observer(function TemplateImportPanel() {
           }
         }
 
-        // Rewrite YAML with the user's edited agents/users lists
+        // Rewrite YAML with the user's edited agents/users lists. Entries
+        // still carrying `{...}` (params and `{$creator}`) are not editable
+        // in the form and must survive the rewrite for the server to resolve.
         const interpolatedAgents = t.agents.filter((a) => /\{[^}]+\}/.test(a));
         const finalAgents = [...interpolatedAgents, ...editedAgents];
-        const interpolatedUsers =
-          (t as ParsedTemplate).hardcodedUsers.length > 0 ? editedUsers : [];
+        const interpolatedUsers = t.users.filter((u) => /\{[^}]+\}/.test(u));
+        const finalUsers = [...interpolatedUsers, ...editedUsers];
         const finalYaml = await rpc.roomTemplates.rewriteYaml({
           yamlText,
           agents: finalAgents,
-          users: interpolatedUsers,
+          users: finalUsers,
         });
 
         const result = await rpc.switchServers.createRoomFromTemplate(serverId, finalYaml, inputs);
@@ -717,6 +826,9 @@ const TemplateImportPanel = observer(function TemplateImportPanel() {
             onEditedAgentsChange={setEditedAgents}
             editedUsers={editedUsers}
             onEditedUsersChange={setEditedUsers}
+            knownUserNames={knownUserNames}
+            creatorIdentity={creatorIdentity}
+            bridgeName={templateBridge?.displayName ?? parsed.bridge}
           />
         </>
       )}

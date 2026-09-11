@@ -183,3 +183,45 @@ params:
     expect(result.params).toHaveLength(1);
   });
 });
+
+describe('roomTemplatesController.parse — kickoff and creator', () => {
+  it('extracts kickoff, bridge, users, and the creator flag', () => {
+    const result = roomTemplatesController.parse({
+      yamlText: [
+        'params:',
+        '  coder:',
+        '    type: string',
+        'room:',
+        '  name: "Work: {task}"',
+        '  description: d',
+        '  bridge: "Slack"',
+        '  agents: ["{coder}", "helper"]',
+        '  users: ["{$creator}", "bob"]',
+        '  kickoff: |',
+        '    @{coder} start on the brief.',
+      ].join('\n'),
+    });
+    expect(result.kickoff).toBe('@{coder} start on the brief.\n');
+    expect(result.bridge).toBe('Slack');
+    expect(result.users).toEqual(['{$creator}', 'bob']);
+    expect(result.hardcodedUsers).toEqual(['bob']);
+    expect(result.usesCreator).toBe(true);
+  });
+
+  it('defaults kickoff/bridge to null and usesCreator to false', () => {
+    const result = roomTemplatesController.parse({
+      yamlText: 'room:\n  name: n\n  description: d\n',
+    });
+    expect(result.kickoff).toBeNull();
+    expect(result.bridge).toBeNull();
+    expect(result.users).toEqual([]);
+    expect(result.usesCreator).toBe(false);
+  });
+
+  it('treats an interpolated bridge name as unknown', () => {
+    const result = roomTemplatesController.parse({
+      yamlText: 'room:\n  name: n\n  description: d\n  bridge: "{which}"\n',
+    });
+    expect(result.bridge).toBeNull();
+  });
+});
