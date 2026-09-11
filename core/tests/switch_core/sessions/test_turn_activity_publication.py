@@ -1,5 +1,5 @@
 from switch_core.bridges.collaboration.adapter import RichContentFailed
-from switch_core.bridges.collaboration.session.contract import HostEvent
+from switch_core.bridges.collaboration.session.contract import Command, HostEvent
 from switch_core.bridges.collaboration.session.outbound import SessionTurnActivity
 from switch_core.sessions import publication
 from switch_core.sessions.publication import (
@@ -53,6 +53,66 @@ async def test_a_running_turn_is_published_for_a_real_session(session_factory):
     assert content.turn.status == "running"
     assert activity_platform.edits == []
     assert content.elapsed_seconds is None
+    # opened()'s command has neither a thread nor a message id, so there is
+    # nothing to thread under — posts at the channel root, as before.
+    assert thread is None
+
+
+async def test_a_turn_addressed_at_the_root_threads_under_its_own_message(
+    session_factory,
+):
+    """A command with no thread of its own still has the message that
+    triggered it — activity now threads under that message instead of
+    posting beside it at the channel root.
+    """
+    service, epoch = await setup(session_factory)
+    message = Command(
+        contract_version=1,
+        command_id="message-demo",
+        session_id="session-demo",
+        epoch=epoch,
+        origin={
+            "surface": "console",
+            "actorId": "owner",
+            "roomId": "room-demo",
+            "threadId": None,
+            "messageId": "trigger-message-1",
+        },
+        body={
+            "type": "message.send",
+            "text": "Run tests",
+            "attachments": [],
+            "delivery": "queue",
+        },
+    )
+    await service.submit(message, user_id="owner", bridge_id=None)
+    await service.ingest(
+        "agent-demo",
+        "host-demo",
+        host_event(
+            epoch,
+            1,
+            {
+                "type": "turn.upsert",
+                "turnId": "turn-demo",
+                "status": "running",
+                "commandId": "message-demo",
+            },
+        ),
+    )
+    activity_platform = ActivityPlatform()
+    publisher = SessionPublisher(
+        session_factory,
+        "bridge",
+        cards_for(session_factory, Platform()),
+        SessionTurnActivity(activity_platform),
+    )
+
+    await publisher.publish_pending()
+
+    assert len(activity_platform.posts) == 1
+    _, _, thread = activity_platform.posts[0]
+    assert thread == "trigger-message-1"
 
 
 async def test_only_the_latest_turn_is_redrawn_by_a_freshly_started_publisher(

@@ -1202,6 +1202,19 @@ class SlackAdapter(CollaborationAdapter):
                 error or e,
             )
 
+    async def mark_activity(
+        self, channel_id: str, message_ref: str, *, working: bool
+    ) -> None:
+        """Public entry point onto `_mark_being_read`, for `SessionTurnActivity`.
+
+        Turn activity is not this adapter's own turn-tracking and has no
+        reason to reach into it, but the Slack edge cases `_mark_being_read`
+        already handles — a reaction already there, already gone, or a
+        message that no longer exists — do not change depending on who is
+        asking, so this reuses it rather than a second reaction mechanism.
+        """
+        await self._mark_being_read(channel_id, message_ref, working=working)
+
     def _streaming(self, channel_id: str, thread_root_id: str | None) -> bool:
         """Whether Slack is already drawing this turn's progress itself.
 

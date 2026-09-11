@@ -27,7 +27,6 @@ them can reach a limit.
 from __future__ import annotations
 
 import hashlib
-import json
 from dataclasses import dataclass
 from typing import Any
 
@@ -122,18 +121,7 @@ _MAX_PLAN_TASK_DETAILS = 200
 # whole as well as a message at a time.
 _MAX_TEXT = 39000
 
-# A streamed turn's budgets. Slack caps a `task_update` chunk at 256
-# characters and rejects the whole append that carries one over it, so the cap
-# is measured on the serialised chunk rather than on any one value inside it —
-# the id comes from the host too, and three values each inside their own budget
-# can still be over the one Slack applies.
-_MAX_TASK_CHUNK = 256
 _MAX_TASK_ID = 64
-_MAX_TASK_TITLE = 110
-_MAX_TASK_DETAILS = 60
-# `chat.startStream` documents 12,000 characters of markdown, and a message is
-# appended whole rather than in pieces, so one has to fit inside that alone.
-_MAX_STREAM_MESSAGE = 11000
 
 # Slack's three task states against the contract's four. `declined` is not an
 # error — the call did what it was told, and what it was told was no — but
@@ -988,82 +976,6 @@ def _rich_text(text: str) -> dict[str, Any]:
     }
 
 
-# ── Activity, streamed ───────────────────────────────────────────────────────
-#
-# The same turn, where Slack will draw it itself. A streamed message renders a
-# tool call as a task card in a timeline that is collapsed by default, which is
-# the disclosure a context block was only ever standing in for: the prose is
-# what a channel reads, and the steps are there for whoever wants them.
-#
-# What it costs is that a stream is append-only. A task card is the exception —
-# an update carrying an id Slack has already seen moves that card — so the
-# steps can be revised in place, and that is why they are keyed on the item's
-# own id. Text is not: it cannot be unsaid, so a message is appended when it is
-# finished rather than while it is still being written. The blocks above stay
-# as the fallback for every thread Slack will not stream into, and they are all
-# the other platforms have.
-
-
-def stream_task_chunk(item: Item) -> dict[str, Any]:
-    """One tool call as a card in Slack's timeline.
-
-    Keyed on the item's own id, which is the whole of why the timeline
-    accumulates: Slack merges an update into the card already carrying that id,
-    so an item revised as it runs moves its own card instead of adding another.
-    A constant here — which is what the runtime-state path uses, having only
-    ever one step to show — collapses a turn's work into a single card
-    overwriting itself.
-
-    Plain text, and escaped, for the same two reasons the plan block's cards
-    are: a card renders no markup, and a tool call titled `Ran <!here>` is a
-    host-written string that would otherwise notify the channel.
-    """
-    title = plain_text(item.title) if item.title else ""
-    if item.status == "declined":
-        # `error` is the closest of Slack's three states, and it is not what
-        # happened: a declined call was refused rather than broken. The glyph
-        # says which, and matches what the fallback renderer shows.
-        title = f"{_ACTIVITY['declined']} {title}".strip()
-    chunk: dict[str, Any] = {
-        "type": "task_update",
-        "id": _task_id(item.item_id),
-        "title": _fit(title, _MAX_TASK_TITLE) or "(untitled)",
-        "status": _TASK_STATUS[item.status],
-    }
-    details = _fit(plain_text(item.text), _MAX_TASK_DETAILS) if item.text else ""
-    if details:
-        chunk["details"] = details
-    return _within_chunk(chunk, title)
-
-
-def stream_message_chunk(item: Item) -> dict[str, Any]:
-    """One thing the agent said, as markdown in the stream.
-
-    Markdown rather than mrkdwn, so the emphasis is `**` and nothing is escaped
-    the way a section's text is: a `markdown_text` chunk is a message body and
-    the characters Slack's own syntax is built from do not carry there.
-    """
-    body = (
-        _truncate(item.text, _MAX_STREAM_MESSAGE) if item.text else "_(nothing said)_"
-    )
-    return {"type": "markdown_text", "text": f"{body}\n\n"}
-
-
-def stream_state_chunk(
-    items: list[Item], turn: TurnUpsert, *, elapsed_seconds: float | None = None
-) -> dict[str, Any]:
-    """Where the turn got to, appended once the turn has stopped.
-
-    The last thing in the stream, and the reason the stream is not deleted when
-    it closes. A step the host never finished stays unfinished — Slack's own
-    card is marked done on the way out on the grounds that it is about to
-    vanish, and this one is not going to — so the count is what tells a reader
-    those lines have stopped moving.
-    """
-    state = turn_state(items, turn, elapsed_seconds=elapsed_seconds)
-    return {"type": "markdown_text", "text": f"_{state}_"}
-
-
 def _task_id(item_id: str) -> str:
     """The card Slack should merge an update into.
 
@@ -1075,31 +987,6 @@ def _task_id(item_id: str) -> str:
     if len(item_id) <= _MAX_TASK_ID:
         return item_id
     return hashlib.sha256(item_id.encode()).hexdigest()[:_MAX_TASK_ID]
-
-
-def _within_chunk(chunk: dict[str, Any], title: str) -> dict[str, Any]:
-    """Bring a task chunk inside the size Slack accepts.
-
-    Slack rejects the append rather than the chunk, so one oversized step takes
-    every step sent with it — and the steps are what the timeline is for. The
-    detail goes first, being the part a reader can do without, and then the
-    title is cut down to whatever the id has left it.
-
-    The cut is made on the unescaped title rather than the one in the chunk,
-    because slicing an escaped string can leave half an entity behind and put a
-    literal `&am` in front of the reader.
-    """
-    over = len(json.dumps(chunk, ensure_ascii=False)) - _MAX_TASK_CHUNK
-    if over <= 0:
-        return chunk
-    if "details" in chunk:
-        chunk = {key: value for key, value in chunk.items() if key != "details"}
-        over = len(json.dumps(chunk, ensure_ascii=False)) - _MAX_TASK_CHUNK
-        if over <= 0:
-            return chunk
-    room = max(len(str(chunk["title"])) - over, 1)
-    chunk["title"] = _fit(title, room) or "(untitled)"
-    return chunk
 
 
 def _context(text: str) -> dict[str, Any]:

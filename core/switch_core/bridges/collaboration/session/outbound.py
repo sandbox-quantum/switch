@@ -6,10 +6,8 @@ moves open → submitting → resolved or closed and the channel carries one
 message per request rather than a running commentary. **Turn activity** is not
 addressed to anyone — it is what the agent said and did, and it is read rather
 than answered — but it changes for the same reason, so it gets the same
-treatment: one message per turn, ending on the turn's final state. In a thread
-it is a stream and the tool calls are cards in its timeline; at the channel
-root, where a stream cannot exist, it is a Block Kit message rewritten in place
-and the tool calls are the cards of a `plan` block.
+treatment: one message per turn, ending on the turn's final state, a Block Kit
+message rewritten in place with the tool calls as the cards of a `plan` block.
 
 What differs is what is remembered. A card's message is a row, because an
 answer typed tomorrow has to find it; a turn's is held in memory for as long as
@@ -26,19 +24,16 @@ and this module never asks. `RichContentFailed` is the one error either can
 raise, on any platform, so the edit-failure fallback below is not Slack-shaped
 either.
 
-Streaming is the one thing here that still is. It has no equivalent on any
-other platform (`SlackAdapter.open_activity_stream` and its two companions
-are not on the port at all), so `SessionTurnActivity` keeps one deliberate,
-permanent `isinstance(self._adapter, SlackAdapter)` gate around attempting
-it — not a temporary seam waiting for a second platform, unlike the demo's
-own gate in `bridge_core.py`. Off Slack, or wherever Slack cannot open a
-stream, a threaded turn is a threaded post instead, edited the same way an
-unthreaded one is.
+A turn always goes in a thread, never at the channel root: one already
+addressed inside a thread stays there, and one addressed at the channel root
+now threads under that same triggering message instead of posting beside it —
+see `SessionTurnActivity` for the `:eyes:` reaction that goes with it. A
+command with nothing to thread under falls back to the channel root, same as
+always.
 """
 
 from __future__ import annotations
 
-import json
 import logging
 import secrets
 from collections import OrderedDict
@@ -60,11 +55,6 @@ from switch_core.db.stores.session_request_post_store import SessionRequestPostS
 from .contract import TURN_ENDED, Item, SnapshotRequest, TurnUpsert
 from .form import posted_form
 from .renderers import RequestReference
-from .renderers.slack import (
-    stream_message_chunk,
-    stream_state_chunk,
-    stream_task_chunk,
-)
 
 logger = logging.getLogger(__name__)
 
@@ -90,21 +80,18 @@ _MAX_ANCHORS = 512
 
 @dataclass
 class _Anchor:
-    """The message a turn is being kept in, and how it is being kept there.
+    """The message a turn is being kept in.
 
-    `sent` is what separates the two ways of keeping it. `None` is a Block Kit
-    message, rewritten whole on every change. A dict is an open stream, which
-    can only be added to, so it records what each item last resolved to and the
-    next change sends the difference.
-
-    That dict is not "what is on screen". An item whose text was revised after
-    it was streamed is recorded too, because a stream cannot unsay it and the
-    record is what stops the same complaint being logged on every change after.
+    `thread_root_id` is not where the message itself lives — `channel_id` and
+    `message_ref` already say that — it is what the `:eyes:` reaction goes on
+    and comes off of, which is the thread's own root rather than the turn's
+    message inside it, and the only reason this is kept once the message has
+    been posted.
     """
 
     channel_id: str
     message_ref: str
-    sent: dict[str, str] | None
+    thread_root_id: str | None
 
 
 def _violates(error: IntegrityError, constraint: str) -> bool:
@@ -141,27 +128,24 @@ class CardAlreadyPosted(CardNotPosted):
 class SessionTurnActivity:
     """A turn's work, shown in a channel and kept in step as it runs.
 
-    One message per turn, whichever way it is drawn, because a turn is a report
-    and reposting one is a running commentary: a reader scrolling a channel
-    would find six versions of the same turn and no way to tell which is
-    current. The message is the anchor every later change goes to, and the last
-    change is the turn's final state.
+    One message per turn, because a turn is a report and reposting one is a
+    running commentary: a reader scrolling a channel would find six versions
+    of the same turn and no way to tell which is current. The message is the
+    anchor every later change goes to via `post_rich` / `update_rich`,
+    rewritten whole on every change — a Block Kit message with the tool calls
+    as the cards of a `plan` block on Slack, the neutral turn summary
+    anywhere else — and the last change is the turn's final state.
 
-    There are two ways to draw it, and which one a turn gets follows from where
-    the caller put it. **Streamed**, in a thread: the tool calls become task
-    cards in a timeline Slack collapses until a reader wants it. **Posted**, at
-    the channel root or in a thread Slack could not stream to: one message via
-    `post_rich` / `update_rich`, rewritten whole on every change — a Block Kit
-    message with the tool calls as the cards of a `plan` block on Slack, the
-    neutral turn summary anywhere else.
-
-    That streaming exists at all is Slack's constraint, not a preference, and
-    it is Slack's alone: it needs the person recorded on the thread and an app
-    declared as an Agent, and it is not on the port `post_rich` sits on, so no
-    other adapter has one to offer. Where a thread is asked for but streaming
-    is unavailable — the adapter is not Slack, or Slack could not open one —
-    the turn is posted there and edited in place instead, the same as at the
-    channel root. That one *is* a fallback, and it says so in the log.
+    Always in a thread, never at the channel root: a turn already addressed
+    inside a thread stays there, and one addressed at the channel root now
+    threads under that same triggering message rather than posting beside it
+    — the caller resolves which before this ever sees it (`refresh_activity`).
+    On Slack, whichever message ends up as that thread's root gets a `:eyes:`
+    reaction for as long as the turn runs, the same signal the old
+    runtime-state indicator put on a message being handled — added once the
+    turn's own message first posts, taken off once the turn ends. Best
+    effort and Slack-only: a reaction is not on the port, and losing one is
+    not worth failing a turn's own draw over.
 
     Still not a card, which is the difference in how failure is handled here. A
     card has buttons, so one left showing a stale state invites a press that
@@ -217,7 +201,7 @@ class SessionTurnActivity:
         ended = turn.status in TURN_ENDED
 
         if anchor is None:
-            begun = await self._begin(
+            anchor = await self._begin(
                 items,
                 turn,
                 session_id=session_id,
@@ -226,10 +210,11 @@ class SessionTurnActivity:
                 agent_name=agent_name,
                 elapsed_seconds=elapsed_seconds,
             )
-            if begun is None:
+            if anchor is None:
                 return False
-            anchor, drawn = begun
-        elif anchor.sent is None:
+            drawn = True
+            await self._mark_thread(anchor, working=True)
+        else:
             drawn = await self._edit(
                 anchor,
                 items,
@@ -238,21 +223,12 @@ class SessionTurnActivity:
                 ended=ended,
                 elapsed_seconds=elapsed_seconds,
             )
-        else:
-            drawn = await self._extend(
-                anchor,
-                items,
-                turn,
-                session_id=session_id,
-                agent_name=agent_name,
-                ended=ended,
-                elapsed_seconds=elapsed_seconds,
-            )
 
         if ended:
+            await self._mark_thread(anchor, working=False)
             return drawn
         self._anchors[key] = anchor
-        self._forget_the_oldest()
+        await self._forget_the_oldest()
         return drawn
 
     async def _begin(
@@ -265,53 +241,14 @@ class SessionTurnActivity:
         thread_root_id: str | None,
         agent_name: str,
         elapsed_seconds: float | None,
-    ) -> tuple[_Anchor, bool] | None:
-        """Start the turn where the caller put it, drawn how that place allows.
+    ) -> _Anchor | None:
+        """Post the turn where the caller put it: in a thread, or the channel
+        root if there was nothing to thread under.
 
-        A stream is attempted only in a thread, and only on Slack — the one
-        adapter that has one to offer; see the module docstring for why that
-        gate is deliberate and permanent rather than a seam waiting for a
-        second platform. Everywhere else, and wherever Slack could not open
-        one, the turn is posted through `post_rich` instead, threaded or not.
-
-        Either way the platform can refuse it, and then the channel is told
-        rather than left with a turn that silently never appeared. `None`
-        means there is no anchor at all yet; a returned anchor paired with
-        `False` means there is one, but it does not yet show what was asked —
-        opening a stream can succeed while its first content is refused.
-
-        A stream is never opened for a turn that has already ended, even on
-        this, its first anchor: an ended turn's own last draw already closed
-        whatever stream it had, so this is either genuinely late — nothing is
-        streaming, there is only a final state to show — or it is a retry
-        after that close failed to land, and reopening a stream just to
-        immediately close it again is how one failed retry becomes a new
-        message in the thread every cycle. Either way `post_rich` already
-        carries the turn's final state whole, so there is nothing streaming
-        would add.
+        The platform can refuse it, and then the channel is told rather than
+        left with a turn that silently never appeared, and `None` says so to
+        the caller.
         """
-        ended = turn.status in TURN_ENDED
-        if (
-            not ended
-            and thread_root_id is not None
-            and isinstance(self._adapter, SlackAdapter)
-        ):
-            ref = await self._adapter.open_activity_stream(
-                channel_id, thread_root_id, agent_name
-            )
-            if ref is not None:
-                anchor = _Anchor(channel_id=channel_id, message_ref=ref, sent={})
-                drawn = await self._extend(
-                    anchor,
-                    items,
-                    turn,
-                    session_id=session_id,
-                    agent_name=agent_name,
-                    ended=ended,
-                    elapsed_seconds=elapsed_seconds,
-                )
-                return anchor, drawn
-
         try:
             posted = await self._adapter.post_rich(
                 channel_id,
@@ -330,7 +267,9 @@ class SessionTurnActivity:
                 error,
             )
             return None
-        return _Anchor(channel_id=channel_id, message_ref=posted, sent=None), True
+        return _Anchor(
+            channel_id=channel_id, message_ref=posted, thread_root_id=thread_root_id
+        )
 
     async def _edit(
         self,
@@ -365,126 +304,44 @@ class SessionTurnActivity:
             return False
         return True
 
-    async def _extend(
-        self,
-        anchor: _Anchor,
-        items: list[Item],
-        turn: TurnUpsert,
-        *,
-        session_id: str,
-        agent_name: str,
-        ended: bool,
-        elapsed_seconds: float | None,
-    ) -> bool:
-        """Send the stream whatever has changed since the last time.
+    async def _mark_thread(self, anchor: _Anchor, *, working: bool) -> None:
+        """Put `:eyes:` on the thread this turn's message lives in, or take
+        it off.
 
-        Nothing is recorded as sent until Slack has taken it, so an append it
-        refuses is tried again on the next change rather than dropped — which
-        is the difference between a stream that skips a step and one that is a
-        step behind.
-
-        The stream is closed whether or not the last append landed. Nothing
-        more is coming for an ended turn, and a stream left open goes on
-        showing the channel a turn in progress.
+        On the thread's own root, not the turn's message — the root is what a
+        reader scanning the channel sees without opening the thread, which is
+        the whole point of a reaction rather than the message inside it. Slack
+        only, and best effort: neither reacting nor removing a reaction is on
+        the port, and losing one is not worth failing a turn's own draw over.
         """
-        sent = anchor.sent
-        if sent is None:
-            raise ValueError("This turn is not being streamed.")
-        if not isinstance(self._adapter, SlackAdapter):
-            # Unreachable: a streaming anchor (`sent` is a dict, not None) is
-            # only ever created in `_begin`, behind the same isinstance check.
-            raise TypeError("A streaming anchor can only come from a Slack adapter.")
-        chunks, pending = self._difference(sent, items, turn, session_id=session_id)
-        if ended:
-            chunks.append(
-                stream_state_chunk(items, turn, elapsed_seconds=elapsed_seconds)
+        if anchor.thread_root_id is None or not isinstance(self._adapter, SlackAdapter):
+            return
+        try:
+            await self._adapter.mark_activity(
+                anchor.channel_id, anchor.thread_root_id, working=working
             )
-        drawn = True
-        if chunks:
-            pushed = await self._adapter.append_activity_stream(
-                anchor.channel_id, anchor.message_ref, chunks, agent_name=agent_name
+        except Exception:
+            logger.warning(
+                "Could not %s the activity reaction on %s in %s.",
+                "add" if working else "remove",
+                anchor.thread_root_id,
+                anchor.channel_id,
+                exc_info=True,
             )
-            if pushed:
-                sent.update(pending)
-            else:
-                drawn = False
-                logger.error(
-                    "Slack would not take %s change(s) to turn %s of session %s "
-                    "in channel %s. %s",
-                    len(chunks),
-                    turn.turn_id,
-                    session_id,
-                    anchor.channel_id,
-                    "The turn has ended, so the channel is left without them."
-                    if ended
-                    else "They will be sent again with the next change.",
-                )
-        if ended:
-            await self._adapter.close_activity_stream(
-                anchor.channel_id, anchor.message_ref, agent_name=agent_name
-            )
-        return drawn
 
-    def _difference(
-        self,
-        sent: dict[str, str],
-        items: list[Item],
-        turn: TurnUpsert,
-        *,
-        session_id: str,
-    ) -> tuple[list[dict[str, object]], dict[str, str]]:
-        """The chunks this stream has not had yet, in the order they happened.
-
-        A tool call is sent every time it changes, because Slack merges an
-        update into the card already carrying its id. A message is sent once
-        and only once it has finished: a stream can move a card but it cannot
-        unsay a sentence, so appending a revision would leave both on screen.
-        Which is why an unfinished message waits — a half-written paragraph
-        appended now is one that can never be corrected.
-
-        A person's message is never sent at all — only the agent's own words
-        are the conversation here, the same choice `render_activity` makes
-        for the posted form of a turn.
-        """
-        chunks: list[dict[str, object]] = []
-        pending: dict[str, str] = {}
-        for item in items:
-            if item.kind == "user-message":
-                continue
-            if item.kind == "tool-activity":
-                chunk = stream_task_chunk(item)
-            elif item.status == "in-progress":
-                continue
-            else:
-                chunk = stream_message_chunk(item)
-            signature = json.dumps(chunk, sort_keys=True, ensure_ascii=False)
-            if sent.get(item.item_id) == signature:
-                continue
-            if item.kind != "tool-activity" and item.item_id in sent:
-                logger.warning(
-                    "Item %s of turn %s in session %s was revised after it was "
-                    "streamed, and a stream cannot unsay what it has said, so "
-                    "the channel is left showing the earlier text.",
-                    item.item_id,
-                    turn.turn_id,
-                    session_id,
-                )
-                sent[item.item_id] = signature
-                continue
-            chunks.append(chunk)
-            pending[item.item_id] = signature
-        return chunks, pending
-
-    def _forget_the_oldest(self) -> None:
+    async def _forget_the_oldest(self) -> None:
         """Keep the anchors bounded by dropping the least recently published.
 
         A turn that stops without ever saying so holds its anchor for the life
         of the process, and the ids come from outside, so without a bound this
         grows for as long as the bridge runs. Dropping one costs a reposted
-        turn rather than a lost one, and it says which turn it will happen to.
+        turn rather than a lost one, and it says which turn it will happen to
+        — and, on Slack, a thread left showing `:eyes:` for a turn nothing
+        here is tracking any more, since forgetting the anchor is the only
+        record of where that reaction went.
         """
         while len(self._anchors) > _MAX_ANCHORS:
-            (session_id, turn_id), _ = self._anchors.popitem(last=False)
+            (session_id, turn_id), anchor = self._anchors.popitem(last=False)
             logger.warning(
                 "Holding activity anchors for more than %s turns, so turn %s of "
                 "session %s is being forgotten: if it changes again it will be "
@@ -493,6 +350,7 @@ class SessionTurnActivity:
                 turn_id,
                 session_id,
             )
+            await self._mark_thread(anchor, working=False)
 
 
 class SessionRequestCards:

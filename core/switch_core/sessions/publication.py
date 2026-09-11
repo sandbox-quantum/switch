@@ -409,12 +409,18 @@ async def refresh_activity(
                 if turn.status in TURN_ENDED
                 else None
             )
+            # A turn is never shown at the channel root any more: one already
+            # in a thread stays there, and one addressed at the root now
+            # threads under that same message rather than posting beside it —
+            # see SessionTurnActivity for why. A command with neither is one
+            # nothing here can thread under, and posts at the root as before.
+            thread_root_id = origin.thread_id or origin.message_id
             publications.append(
                 (
                     turn,
                     items,
                     room.external_channel_id,
-                    origin.thread_id,
+                    thread_root_id,
                     state,
                     elapsed_seconds,
                 )

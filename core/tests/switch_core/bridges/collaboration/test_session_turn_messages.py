@@ -95,14 +95,15 @@ async def _publish(
     *,
     session_id: str = SESSION,
     channel_id: str = CHANNEL,
+    thread_root_id: str | None = None,
     elapsed_seconds: float | None = None,
-) -> None:
-    await activity.publish(
+) -> bool:
+    return await activity.publish(
         items,
         turn,
         session_id=session_id,
         channel_id=channel_id,
-        thread_root_id=None,
+        thread_root_id=thread_root_id,
         agent_name="agent-demo",
         elapsed_seconds=elapsed_seconds,
     )
@@ -263,3 +264,82 @@ async def test_more_live_turns_than_are_held_forgets_the_oldest_and_says_so(
     assert "turn turn-one" in caplog.text
     assert len(client.posted) == 4
     assert client.updated == []
+
+
+async def test_forgetting_an_anchor_also_clears_its_threads_eyes(
+    monkeypatch: Any,
+) -> None:
+    """Forgetting an anchor is the only record of where its `:eyes:` went —
+    without clearing it here, an evicted turn's thread is left showing the
+    reaction forever, since nothing else is tracking that turn any more.
+    """
+    monkeypatch.setattr(outbound, "_MAX_ANCHORS", 1)
+    client = FakeWebClient()
+    activity = SessionTurnActivity(_adapter(client))
+
+    await _publish(activity, [_item()], _turn("running"), thread_root_id="parent-1")
+    await _publish(
+        activity,
+        [_item("turn-two")],
+        _turn("running", "turn-two"),
+        thread_root_id="parent-2",
+    )
+
+    assert client.reactions == [
+        ("add", "parent-1", "eyes"),
+        ("add", "parent-2", "eyes"),
+        ("remove", "parent-1", "eyes"),
+    ]
+
+
+# ── The thread's own :eyes: ───────────────────────────────────────────────────
+
+
+async def test_a_threaded_turn_reacts_to_the_thread_and_clears_it_at_the_end() -> None:
+    """The same signal the old runtime-state indicator put on a message being
+    handled, now tied to a turn's own lifecycle: on once the turn's message
+    posts, off once the turn ends."""
+    client = FakeWebClient()
+    activity = SessionTurnActivity(_adapter(client))
+
+    await _publish(activity, [_item()], _turn("running"), thread_root_id="parent-1")
+    assert client.reactions == [("add", "parent-1", "eyes")]
+
+    await _publish(activity, [_item()], _turn("completed"), thread_root_id="parent-1")
+    assert client.reactions == [
+        ("add", "parent-1", "eyes"),
+        ("remove", "parent-1", "eyes"),
+    ]
+
+
+async def test_a_turn_at_the_channel_root_reacts_to_nothing() -> None:
+    """No thread root means no message to put `:eyes:` on."""
+    client = FakeWebClient()
+    activity = SessionTurnActivity(_adapter(client))
+
+    await _publish(activity, [_item()], _turn("running"), thread_root_id=None)
+    await _publish(activity, [_item()], _turn("completed"), thread_root_id=None)
+
+    assert client.reactions == []
+
+
+async def test_a_reaction_failure_does_not_fail_the_turns_own_draw(
+    caplog: Any,
+) -> None:
+    """Best effort: a reaction is not on the port, and losing one is not worth
+    failing what the turn itself is trying to show. `_mark_being_read` (the
+    mechanism this reuses) already absorbs a Slack refusal and logs its own
+    warning without raising, so this is really confirming that reuse holds —
+    not a second layer of handling for the same failure."""
+    client = FakeWebClient()
+    client.reaction_error = "internal_error"
+    activity = SessionTurnActivity(_adapter(client))
+
+    with caplog.at_level(logging.WARNING):
+        drawn = await _publish(
+            activity, [_item()], _turn("running"), thread_root_id="parent-1"
+        )
+
+    assert drawn is True
+    assert len(client.posted) == 1
+    assert "Could not add the working reaction on parent-1 in C1" in caplog.text
