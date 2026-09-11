@@ -255,8 +255,13 @@ class SessionTurnActivity:
             return await self._adapter.post_rich(channel, agent, content, thread)
         delivery = record.data.get(slot)
         if delivery:
-            if delivery.get("ref"):
-                return delivery["ref"]
+            saved_ref = delivery.get("ref")
+            if saved_ref:
+                if not isinstance(saved_ref, str):
+                    raise ValueError(
+                        "Activity journal message reference must be a string."
+                    )
+                return saved_ref
             ref = await self._adapter.find_request_card(
                 delivery["channel"],
                 delivery["thread"],
