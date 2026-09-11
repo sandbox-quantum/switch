@@ -1161,12 +1161,21 @@ class RoomService:
             agent_ids = await self._room_store.get_agent_ids(session, room_id)
             agents = [await self._agent_store.get(session, aid) for aid in agent_ids]
 
-        # Check if any agent has a restricted policy
+        # Check if any agent has a policy that would reject a non-owner
+        # sender. A policy is effectively open when it has no rules, or when
+        # any rule has users: '*' (accepts any user sender including the
+        # admin bot). Only policies that restrict users to a specific list
+        # or rely solely on owner/owner_agents need the creator fallback.
+        def _accepts_any_user(policy_dict: dict | None) -> bool:
+            if not policy_dict:
+                return True  # no policy = open
+            policy = AddressingPolicy.model_validate(policy_dict)
+            if policy.is_open():
+                return True
+            return any(rule.users == "*" for rule in policy.rules)
+
         needs_creator = any(
-            a
-            and a.addressing_policy
-            and not AddressingPolicy.model_validate(a.addressing_policy).is_open()
-            for a in agents
+            a and not _accepts_any_user(a.addressing_policy) for a in agents
         )
 
         if needs_creator and room.bridge_id and user_id:
