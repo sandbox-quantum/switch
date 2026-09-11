@@ -349,7 +349,7 @@ def render_approval(
     content = _approval(request)
     prompt = f"*{_HEADINGS[request.state]}*"
     if content.detail:
-        prompt += f"\n{_fit(content.detail, _MAX_DETAIL)}"
+        prompt += f"\n> {_fit(content.detail, _MAX_DETAIL)}"
     command = content.title.replace("```", "``\u200b`")
     prompt += f"\n```\n{_fit(command, _MAX_TITLE)}\n```"
 
