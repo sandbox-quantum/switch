@@ -5,6 +5,11 @@ Gemini CLI and Cursor. Local sessions and sessions reached through SSH use the
 same host. SSH, ProxyCommand and ProxyJump carry deployment and management
 requests. They do not carry the lifetime of the provider process.
 
+Configured subagents receive their own Console agent row before their room
+watcher starts, so their sessions can be discovered and controlled under the
+child identity. Existing credentials and provider definitions remain on the
+execution machine.
+
 Closing Console leaves the host running. Reopen a session to read its saved
 transcript. **Interrupt** ends the active turn. **Stop session** ends the
 conversation. **Restart host** stops the current host, waits for process cleanup,
@@ -46,7 +51,8 @@ each session’s tenant from its owning agent and preserves its history.
   before recovery. The transcript reconnects without resending commands.
 - A new command sent with an old epoch receives a durable rejection. Retrying
   a previously recorded command returns its original outcome without executing
-  it again.
+  it again. Command IDs are immutable: a new attempt after rejection uses a
+  new ID, which Console creates when the user submits again.
 - A command dispatched before a crash can have an unknown outcome. Recovery
   marks affected work unknown or interrupted. It does not repeat the action or
   report success without evidence. Use **Check command status** when available. If the server confirms an unknown

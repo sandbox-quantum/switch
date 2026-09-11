@@ -138,6 +138,7 @@ function notOpenMessage(agentName: string | undefined): string {
 }
 
 export class SessionService implements Hookable<SessionLifecycleHooks> {
+  private readonly _provisions = new Map<string, Promise<ProvisionResult>>();
   private readonly _hooks = new HookCore<SessionLifecycleHooks>((name, e) =>
     log.error(`SessionService: ${String(name)} hook error`, e)
   );
@@ -186,7 +187,16 @@ export class SessionService implements Hookable<SessionLifecycleHooks> {
     trigger: SessionProvisionTrigger = 'initial'
   ): Promise<Result<ProvisionResult, ProvisionSessionError>> {
     try {
-      const result = await this._provision(sessionId);
+      let pending = this._provisions.get(sessionId);
+      if (!pending) {
+        pending = this._provision(sessionId);
+        this._provisions.set(sessionId, pending);
+        void pending.then(
+          () => this._provisions.delete(sessionId),
+          () => this._provisions.delete(sessionId)
+        );
+      }
+      const result = await pending;
       reportProvisionRetry(sessionId, trigger, 'success');
       return ok(result);
     } catch (error) {
