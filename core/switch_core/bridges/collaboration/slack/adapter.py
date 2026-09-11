@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import re
 import time
 import uuid
@@ -25,6 +26,7 @@ from switch_core.bridges.collaboration.adapter import (
     RequestCard,
     RichContent,
     RichContentFailed,
+    RichContentThrottled,
     TurnActivity,
 )
 from switch_core.bridges.collaboration.models import (
@@ -597,6 +599,11 @@ class SlackAdapter(CollaborationAdapter):
         through raw, so a caller that no longer imports this module still
         has one thing to catch.
         """
+        remaining = getattr(self, "_rich_update_after", 0.0) - time.monotonic()
+        if remaining > 0:
+            raise RichContentThrottled(
+                retry_after=remaining, text="Waiting for Slack to allow updates."
+            )
         responder_name = None
         if isinstance(content, RequestCard) and content.responder_external_id:
             user = await self._resolve_user_name(content.responder_external_id)
@@ -607,6 +614,22 @@ class SlackAdapter(CollaborationAdapter):
                 channel_id, message_ref, message.text, message.blocks
             )
         except SlackApiError as error:
+            if (
+                error.response.get("error") == "ratelimited"
+                or getattr(error.response, "status_code", None) == 429
+            ):
+                headers = getattr(error.response, "headers", {}) or {}
+                try:
+                    delay = float(
+                        headers.get("Retry-After", headers.get("retry-after", 30))
+                    )
+                    delay = max(1.0, delay) if math.isfinite(delay) else 30.0
+                except (ValueError, TypeError):
+                    delay = 30.0
+                self._rich_update_after = time.monotonic() + delay
+                raise RichContentThrottled(
+                    retry_after=delay, text=message.text
+                ) from error
             raise RichContentFailed(
                 f"Slack could not update the message in channel {channel_id}: {error}",
                 text=message.text,

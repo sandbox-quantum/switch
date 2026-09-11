@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from switch_core.bridges.collaboration.adapter import RichContentThrottled
 from switch_core.bridges.collaboration.session.outbound import (
     SessionRequestCards,
     SessionTurnActivity,
@@ -36,6 +37,10 @@ logger = logging.getLogger(__name__)
 
 def _always_recover(_token: str) -> bool:
     return True
+
+
+def _ignore_delay(_token: str, _delay: float) -> None:
+    return None
 
 
 def _ignore_recovery(_token: str) -> None:
@@ -220,6 +225,8 @@ async def refresh_cards(
                     ),
                 )
                 refreshed(post.token, state)
+        except RichContentThrottled:
+            backed_off += 1
         except Exception as error:
             # One request's card failing must not stop its siblings from
             # being tried: a session can have several open requests, and a
@@ -381,6 +388,7 @@ async def refresh_activity(
     *,
     retry_allowed: Callable[[str], bool] = _always_recover,
     retry_succeeded: Callable[[str], None] = _ignore_recovery,
+    retry_delayed: Callable[[str, float], None] = _ignore_delay,
     redraw_needed: Callable[[str, str, tuple[str, tuple[int, ...]]], bool],
     redrawn: Callable[[str, str, tuple[str, tuple[int, ...]]], None],
     already_held_back: Callable[[str, str], bool],
@@ -570,6 +578,10 @@ async def refresh_activity(
                 agent_name=agent_name,
                 elapsed_seconds=elapsed_seconds,
             )
+        except RichContentThrottled as error:
+            retry_delayed(token, error.retry_after)
+            backed_off += 1
+            continue
         except Exception:
             logger.exception("Could not recover activity for turn %s", turn.turn_id)
             failed.append(turn.turn_id)
@@ -599,7 +611,8 @@ class _RecoveryBackoff:
     _MIN = 5.0
     _MAX = 600.0  # 10 minutes
 
-    def __init__(self) -> None:
+    def __init__(self, *, max_interval: float = _MAX) -> None:
+        self._max_interval = max_interval
         self._next_attempt: dict[str, float] = {}
         self._interval: dict[str, float] = {}
 
@@ -609,8 +622,12 @@ class _RecoveryBackoff:
             return False
         interval = self._interval.get(token, self._MIN)
         self._next_attempt[token] = now + interval
-        self._interval[token] = min(interval * 2, self._MAX)
+        self._interval[token] = min(interval * 2, self._max_interval)
         return True
+
+    def delay(self, token: str, seconds: float) -> None:
+        self._next_attempt[token] = time.monotonic() + seconds
+        self._interval.pop(token, None)
 
     def succeeded(self, token: str) -> None:
         self._next_attempt.pop(token, None)
@@ -738,7 +755,7 @@ class SessionPublisher:
         self._recovery = _RecoveryBackoff()
         self._redraw = _RedrawGuard()
         self._turn_redraw = _TurnRedrawGuard()
-        self._activity_retry = _RecoveryBackoff()
+        self._activity_retry = _RecoveryBackoff(max_interval=30.0)
         self._activity_seen: set[str] = set()
         self._clock_sessions: set[str] = set()
         self._activity_held_back = _PermanentlyHeldBack()
@@ -825,6 +842,7 @@ class SessionPublisher:
                         self._activity,
                         retry_allowed=self._activity_retry.allowed,
                         retry_succeeded=self._activity_retry.succeeded,
+                        retry_delayed=self._activity_retry.delay,
                         redraw_needed=self._turn_redraw.needed,
                         redrawn=self._turn_redraw.drawn,
                         already_held_back=self._activity_held_back.contains,

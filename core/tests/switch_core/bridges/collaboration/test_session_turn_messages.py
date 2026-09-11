@@ -6,14 +6,8 @@ with versions of the same turn and no way to tell which one is current. So the
 message is posted once and edited afterwards, and the last edit is the state
 the turn ended in.
 
-Which needs an anchor: the message a later edit goes to. It is held in memory
-for as long as the turn is running, and that is deliberate — see
-`SessionTurnActivity`. What is tested here is that one turn keeps one message,
-that two turns do not share one, and that a failure to edit does not lose the
-message the next change needs.
-
-No database: nothing resolves against an activity message, so unlike a card it
-writes no row.
+These tests exercise the in-memory demo publisher. Production activity uses a
+publication journal, covered separately by test_activity_durability.py.
 """
 
 from __future__ import annotations

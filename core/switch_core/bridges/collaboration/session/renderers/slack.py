@@ -109,7 +109,7 @@ _MAX_ACTIVITY_LINES = 12
 # per step inside it, expanded by whoever wants the steps. That is the
 # disclosure the context block was only ever standing in for, and unlike a
 # stream it is an ordinary message block — so it goes wherever the turn goes,
-# beside the prompt that started it rather than in a thread under it.
+# in the thread under the prompt that started it.
 #
 # Slack caps a plan at 50 tasks and rejects the block over it, taking the whole
 # post with it, so a long turn keeps its newest end and the header says what it
@@ -119,6 +119,9 @@ _MAX_PLAN_TASKS = 50
 _MAX_PLAN_TITLE = 150
 _MAX_PLAN_TASK_TITLE = 200
 _MAX_PLAN_TASK_DETAILS = 200
+# A local display budget, not a claimed Slack rich_text protocol limit.
+# Preserve the decision/answer before spending the remainder on context.
+_MAX_RESOLVED_DETAILS = 2800
 # `chat.postMessage` takes 40,000 characters of `text`, and twenty messages each
 # inside their own budget is more than that, so the fallback is bounded as a
 # whole as well as a message at a time.
@@ -303,6 +306,8 @@ def render_request(
                     {"type": "user", "user_id": responder_external_id},
                 ]
             )
+        # Every rich-text leaf contributes to the same display budget. Allocate
+        # the answer first so a long command/description cannot erase it.
         detail_blocks: list[dict[str, Any]] = []
         if isinstance(content, ApprovalContent):
             detail_blocks.append(
@@ -312,6 +317,19 @@ def render_request(
                         {"type": "text", "text": _truncate(content.title, _MAX_TITLE)}
                     ],
                 }
+            )
+        command_size = sum(
+            len(element.get("text", ""))
+            for block in detail_blocks
+            for element in block["elements"]
+        )
+        text_size = sum(len(element.get("text", "")) for element in details)
+        overflow = max(0, command_size + text_size - _MAX_RESOLVED_DETAILS)
+        if overflow and details:
+            # The leading context is optional; keep the answer and actor at the end.
+            context = details[0]
+            context["text"] = _truncate(
+                context.get("text", ""), max(0, len(context.get("text", "")) - overflow)
             )
         detail_blocks.append({"type": "rich_text_section", "elements": details})
         message = SlackMessage(
@@ -949,6 +967,9 @@ def render_activity(
         state = turn_state(items, turn, elapsed_seconds=elapsed_seconds)
         if turn.status in TURN_ENDED:
             title = state if elapsed_seconds is not None else f"{state} {title}"
+        hidden = max(0, count - _MAX_PLAN_TASKS)
+        if hidden:
+            title += f" · {hidden} earlier not shown"
         if did and turn.status not in TURN_ENDED:
             current = next(
                 (item for item in reversed(did) if item.status == "in-progress"), None

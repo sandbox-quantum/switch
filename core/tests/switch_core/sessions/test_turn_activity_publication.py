@@ -1073,3 +1073,40 @@ async def test_running_timer_refreshes_without_new_sdk_events(
     assert len(platform.posts) == 1
     assert len(platform.edits) == 1
     assert platform.edits[0][2].elapsed_seconds >= platform.posts[0][1].elapsed_seconds
+
+
+async def test_rate_limited_activity_retries_at_platform_deadline(
+    session_factory, monkeypatch
+):
+    from unittest.mock import AsyncMock
+
+    from switch_core.bridges.collaboration.adapter import RichContentThrottled
+
+    service, epoch = await setup(session_factory)
+    await opened(service, epoch)
+    platform = ActivityPlatform()
+    publisher = SessionPublisher(
+        session_factory,
+        "bridge",
+        cards_for(session_factory, Platform()),
+        SessionTurnActivity(platform),
+    )
+    clock = [100.0]
+    monkeypatch.setattr(
+        publication, "time", SimpleNamespace(monotonic=lambda: clock[0])
+    )
+    await publisher.publish_pending()
+    update = AsyncMock(
+        side_effect=[RichContentThrottled(retry_after=17, text="Working"), None]
+    )
+    monkeypatch.setattr(platform, "update_rich", update)
+    clock[0] = 105
+    await publisher.publish_pending()
+    assert update.await_count == 1
+    clock[0] = 121
+    await publisher.publish_pending()
+    assert update.await_count == 1
+    clock[0] = 122
+    await publisher.publish_pending()
+    assert update.await_count == 2
+    assert len(platform.posts) == 1

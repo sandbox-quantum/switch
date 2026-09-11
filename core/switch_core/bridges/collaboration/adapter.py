@@ -122,7 +122,7 @@ class TurnActivity:
     `elapsed_seconds` is not part of the contract — neither a turn nor an item
     carries a timestamp — so it travels here instead, from whatever tracked
     one against the session's own event log. `None` until a caller has one to
-    give, which is only once the turn has ended.
+    give. Running turns use it for the live clock; ended turns show the final duration.
     """
 
     items: list[Item]
@@ -184,6 +184,14 @@ class RichContentFailed(Exception):
     def __init__(self, message: str, *, text: str) -> None:
         super().__init__(message)
         self.text = text
+
+
+class RichContentThrottled(RichContentFailed):
+    """The platform asked us to wait before attempting another update."""
+
+    def __init__(self, *, retry_after: float, text: str) -> None:
+        super().__init__("Platform updates are rate limited.", text=text)
+        self.retry_after = retry_after
 
 
 class CollaborationAdapter(ABC):

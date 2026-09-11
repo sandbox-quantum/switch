@@ -48,6 +48,7 @@ from switch_core.bridges.collaboration.adapter import (
     CollaborationAdapter,
     RequestCard,
     RichContentFailed,
+    RichContentThrottled,
     TurnActivity,
 )
 from switch_core.bridges.collaboration.slack.adapter import SlackAdapter
@@ -195,8 +196,17 @@ class SessionTurnActivity:
             return await draw()
         key = (session_id, turn.command_id or turn.turn_id)
         async with self._journal.open(*key) as record:
-            if record.data.get("completed"):
+            if (
+                record.data.get("completed")
+                and record.data.get("turn_id") == turn.turn_id
+            ):
                 return True
+            # A provisional delivery result is not the SDK turn's final state.
+            # Reuse its receipt when that same command gains a real turn ID.
+            if record.data.get("turn_id") != turn.turn_id:
+                record.data.pop("completed", None)
+                record.data.pop("ended", None)
+            record.data["turn_id"] = turn.turn_id
             token = self._record.set(record)
             try:
                 saved = record.data.get("anchor")
@@ -314,7 +324,7 @@ class SessionTurnActivity:
         items = [item for item in items if item.kind == "tool-activity"]
         # Reuse the receipt message when an accepted command gains an SDK turn ID.
         key = (session_id, turn.command_id or turn.turn_id)
-        anchor = self._anchors.pop(key, None)
+        anchor = self._anchors.get(key)
         ended = turn.status in TURN_ENDED
 
         if anchor is None:
@@ -330,6 +340,7 @@ class SessionTurnActivity:
             )
             if anchor is None:
                 return False
+            self._anchors[key] = anchor
             await self._save_anchor(anchor)
             drawn = (
                 await self._edit(
@@ -373,10 +384,15 @@ class SessionTurnActivity:
                 record.data["ended"] = True
                 await record.save()
             await self._release_thread(key, anchor)
-            if not drawn:
+            if not drawn or turn.turn_id.startswith("pending:"):
                 self._anchors[key] = anchor
+                self._anchors.move_to_end(key)
+                await self._forget_the_oldest()
+            else:
+                self._anchors.pop(key, None)
             return drawn
         self._anchors[key] = anchor
+        self._anchors.move_to_end(key)
         await self._forget_the_oldest()
         return drawn
 
@@ -457,6 +473,8 @@ class SessionTurnActivity:
                     status_only=self._slack_activity and turn.status not in TURN_ENDED,
                 ),
             )
+        except RichContentThrottled:
+            raise
         except RichContentFailed as error:
             logger.error(
                 "Could not update the activity for turn %s of session %s in "
@@ -495,6 +513,8 @@ class SessionTurnActivity:
                 await self._adapter.update_rich(
                     anchor.channel_id, anchor.log_ref, content
                 )
+        except RichContentThrottled:
+            raise
         except RichContentFailed:
             logger.exception("Could not update tool log for turn %s", turn.turn_id)
             return False
@@ -586,23 +606,17 @@ class SessionTurnActivity:
             )
 
     async def _forget_the_oldest(self) -> None:
-        """Keep the anchors bounded by dropping the least recently published.
+        """Bound the in-memory cache, retaining durable message references.
 
-        A turn that stops without ever saying so holds its anchor for the life
-        of the process, and the ids come from outside, so without a bound this
-        grows for as long as the bridge runs. Dropping one costs a reposted
-        turn rather than a lost one, and it says which turn it will happen to
-        — and, on Slack, a thread left showing `:eyes:` for a turn nothing
-        here is tracking any more, since forgetting the anchor is the only
-        record of where that reaction went.
+        Production publishers reload evicted anchors from the journal. Only
+        the demo path loses an anchor when it is evicted.
         """
         while len(self._anchors) > _MAX_ANCHORS:
             key, anchor = self._anchors.popitem(last=False)
             session_id, turn_id = key
             logger.warning(
-                "Holding activity anchors for more than %s turns, so turn %s of "
-                "session %s is being forgotten: if it changes again it will be "
-                "posted afresh rather than edited in place.",
+                "Evicting activity cache entry after %s turns: turn %s of session %s. "
+                "Durable publishers retain the message references in the journal.",
                 _MAX_ANCHORS,
                 turn_id,
                 session_id,
@@ -884,6 +898,8 @@ class SessionRequestCards:
                     unavailable_reason=unavailable_reason,
                 ),
             )
+        except RichContentThrottled:
+            raise
         except RichContentFailed as error:
             logger.error(
                 "Could not update the card for request %s in channel %s: %s. "

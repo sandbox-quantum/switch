@@ -281,3 +281,94 @@ async def test_definite_post_rejection_can_be_retried(session_factory, monkeypat
         assert not await publish(activity(session_factory, platform))
     assert await publish(activity(session_factory, platform))
     assert platform.post_count == 2
+
+
+@pytest.mark.parametrize("restart", [False, True])
+@pytest.mark.parametrize("real_status", ["running", "completed"])
+async def test_provisional_error_receipt_becomes_real_turn_in_place(
+    session_factory, restart, real_status
+):
+    await setup(session_factory)
+    platform = ActivitySlack()
+    renderer = activity(session_factory, platform)
+    provisional = _turn("error").model_copy(
+        update={"turn_id": "pending:message-demo", "command_id": "message-demo"}
+    )
+    await renderer.publish(
+        [],
+        provisional,
+        session_id="session-demo",
+        channel_id="channel-demo",
+        thread_root_id="channel-demo:root",
+        asked_on="channel-demo:question",
+        agent_name="Agent",
+        elapsed_seconds=None,
+    )
+    if restart:
+        renderer = activity(session_factory, platform)
+    await publish(renderer, real_status, tools=False)
+    assert platform.post_count == 1
+    assert set(platform.messages) == {"channel-demo:1"}
+    assert "errored" not in platform.messages["channel-demo:1"].text.lower()
+    assert platform.edit_refs[-1] == "channel-demo:1"
+
+
+@pytest.mark.parametrize("pending_status", ["accepted", "unknown", "rejected"])
+async def test_pending_command_cannot_hide_recorded_completion_or_replay_stale_error(
+    session_factory, pending_status
+):
+    from switch_core.db.models import SdkSessionCommand
+
+    from .test_authority import command, host_event
+
+    service, epoch = await setup(session_factory)
+    await opened(service, epoch)
+    platform = ActivitySlack()
+    await publish(activity(session_factory, platform))
+    await service.ingest(
+        "agent-demo",
+        "host-demo",
+        host_event(
+            epoch,
+            3,
+            {
+                "type": "turn.upsert",
+                "turnId": "turn-demo",
+                "commandId": "message-demo",
+                "status": "completed",
+            },
+        ),
+    )
+    await service.submit(
+        command(
+            epoch,
+            "pending-command",
+            {
+                "type": "message.send",
+                "text": "Later message",
+                "attachments": [],
+                "delivery": "queue",
+            },
+            actor="@owner:example.test",
+            surface="slack",
+        ),
+        user_id=None,
+        bridge_id="bridge",
+    )
+    async with session_factory() as db:
+        row = await db.get(
+            SdkSessionCommand, (require_tenant_id(), "session-demo", "pending-command")
+        )
+        row.status = {**row.status, "status": pending_status}
+        await db.commit()
+    for _ in range(2):
+        publisher = SessionPublisher(
+            session_factory,
+            "bridge",
+            cards_for(session_factory, Platform()),
+            activity(session_factory, platform),
+        )
+        await publisher.publish_pending()
+    assert "channel-demo:1" not in platform.messages  # Old running status was removed.
+    assert "channel-demo:2" in platform.messages  # Existing log became the completion.
+    assert platform.post_count == (3 if pending_status == "accepted" else 2)
