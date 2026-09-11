@@ -54,9 +54,6 @@ export const SETTINGS_DEFAULTS = {
     relaxCorsForLocalhost: false,
     profiles: DEFAULT_BROWSER_PROFILES,
   },
-  remote: {
-    maxAttachedSessionsPerHost: 4,
-  },
   onboarding: {
     showChecklist: true,
   },
