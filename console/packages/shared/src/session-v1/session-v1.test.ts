@@ -336,3 +336,21 @@ it('validates the bridge question and activity recordings with the SDK reader', 
     for (const event of events) replica.apply(event);
   }
 });
+
+it('releases the composer after a durable stale-epoch rejection', async () => {
+  const wire = transport();
+  const client = new SessionChatClient('session-demo', wire.api);
+  await client.connect();
+  vi.mocked(wire.api.submit).mockResolvedValueOnce({
+    ...wire.receipt,
+    status: 'rejected',
+    code: 'STALE_EPOCH',
+    message: 'Session generation changed',
+  });
+  await expect(client.send('Hello', 'send')).rejects.toThrow('Session generation changed');
+  expect(client.hasPendingCommand()).toBe(false);
+  wire.receipt.commandId = 'new-send';
+  await client.send('Revised message', 'new-send');
+  expect(wire.api.submit).toHaveBeenCalledTimes(2);
+  client.dispose();
+});

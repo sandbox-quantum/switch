@@ -223,12 +223,19 @@ async def test_reset_authorization_busy_state_and_epoch_reconciliation(session_f
     assert (
         await service.command_status("session-demo", "reset-demo", "owner")
     ).status == "applied"
-    with pytest.raises(SessionError, match="generation changed"):
-        await service.submit(
-            command(epoch, "stale-reset", {"type": "session.reset"}),
-            user_id="owner",
-            bridge_id=None,
+    rejected = await service.submit(
+        command(epoch, "stale-reset", {"type": "session.reset"}),
+        user_id="owner",
+        bridge_id=None,
+    )
+    assert rejected.status == "rejected"
+    assert rejected.code == "STALE_EPOCH"
+    assert (
+        await service.pending(
+            "agent-demo", "session-demo", "host-demo", recovered.session.epoch
         )
+        == []
+    )
 
 
 @pytest.mark.asyncio

@@ -44,6 +44,9 @@ each session’s tenant from its owning agent and preserves its history.
 - A transport disconnect does not mean that execution stopped. The host can
   continue while its lease remains valid. Loss of the lease stops execution
   before recovery. The transcript reconnects without resending commands.
+- A new command sent with an old epoch receives a durable rejection. Retrying
+  a previously recorded command returns its original outcome without executing
+  it again.
 - A command dispatched before a crash can have an unknown outcome. Recovery
   marks affected work unknown or interrupted. It does not repeat the action or
   report success without evidence. Use **Check command status** when available. If the server confirms an unknown

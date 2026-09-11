@@ -462,3 +462,50 @@ async def test_reserved_answer_is_not_cancelled_by_request_expiry(session_factor
         row.snapshot = snapshot
     commands = await service.pending("agent-demo", "session-demo", "host-demo", epoch)
     assert not any(command.body.type == "turn.interrupt" for command in commands)
+
+
+async def test_stale_command_has_a_durable_rejection_and_never_executes(
+    session_factory,
+):
+    service, epoch = await setup(session_factory)
+    message = command(
+        "old-epoch",
+        "stale-message",
+        {
+            "type": "message.send",
+            "text": "Once",
+            "attachments": [],
+            "delivery": "queue",
+        },
+    )
+    receipt = await service.submit(message, user_id="owner", bridge_id=None)
+    assert receipt.status == "rejected"
+    assert receipt.code == "STALE_EPOCH"
+    assert (
+        await service.command_status("session-demo", "stale-message", "owner")
+        == receipt
+    )
+    assert await service.submit(message, user_id="owner", bridge_id=None) == receipt
+    assert await service.pending("agent-demo", "session-demo", "host-demo", epoch) == []
+
+
+async def test_old_epoch_retry_returns_original_outcome_after_recovery(session_factory):
+    service, epoch = await setup(session_factory)
+    message = command(
+        epoch,
+        "accepted-before-recovery",
+        {
+            "type": "message.send",
+            "text": "Once",
+            "attachments": [],
+            "delivery": "queue",
+        },
+    )
+    await service.submit(message, user_id="owner", bridge_id=None)
+    await service.quiesce("agent-demo", "session-demo", "host-demo", epoch)
+    await service.recover(
+        "agent-demo", "session-demo", "host-demo", epoch, "recovery", 0
+    )
+    receipt = await service.command_status("session-demo", message.command_id, "owner")
+    assert receipt.status == "unknown"
+    assert await service.submit(message, user_id="owner", bridge_id=None) == receipt

@@ -32,7 +32,7 @@ const capabilities = z.object({
   modelChange: z.boolean(),
   attachmentMimeTypes: z.array(z.string()),
 });
-const attachment = z.strictObject({
+export const attachmentSchema = z.strictObject({
   attachmentId: id,
   name: z.string(),
   mimeType: z.string(),
@@ -51,7 +51,7 @@ const item = z.strictObject({
   status: z.enum(['in-progress', 'completed', 'failed', 'declined']),
   title: z.string(),
   text: z.string(),
-  attachments: z.array(attachment),
+  attachments: z.array(attachmentSchema),
   origin: origin.nullable(),
 });
 const option = z.strictObject({
@@ -218,7 +218,7 @@ export const commandSchema: z.ZodType<Command> = z.strictObject({
     z.strictObject({
       type: z.literal('message.send'),
       text: z.string(),
-      attachments: z.array(attachment),
+      attachments: z.array(attachmentSchema),
       delivery: z.enum(['queue', 'steer']),
     }),
     z.strictObject({

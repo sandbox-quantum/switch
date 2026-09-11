@@ -711,8 +711,6 @@ class SessionAuthority:
     async def _accept(
         self, db: AsyncSession, row: SdkSession, command: Command, bridge_id: str | None
     ) -> CommandStatus:
-        if command.epoch != row.epoch:
-            raise SessionError("STALE_EPOCH", "Session generation changed.")
         previous = await db.get(
             SdkSessionCommand, (require_tenant_id(), row.id, command.command_id)
         )
@@ -726,6 +724,26 @@ class SessionAuthority:
                     "Command ID has different content or origin.",
                 )
             return CommandStatus.model_validate(previous.status)
+        if command.epoch != row.epoch:
+            status = CommandStatus(
+                type="command.status",
+                command_id=command.command_id,
+                status="rejected",
+                code="STALE_EPOCH",
+                message="Session generation changed. Review the session before sending again.",
+            )
+            snapshot = Snapshot.model_validate(row.snapshot)
+            db.add(
+                SdkSessionCommand(
+                    session_id=row.id,
+                    command_id=command.command_id,
+                    accepted_sequence=snapshot.through_sequence + 1,
+                    command=payload,
+                    status=status.model_dump(by_alias=True),
+                )
+            )
+            await self._append(db, row, status)
+            return status
         if row.lease_expires_at <= (await self._now(db)):
             raise SessionError("HOST_OFFLINE", "The session host is offline.")
         snapshot = Snapshot.model_validate(row.snapshot)
