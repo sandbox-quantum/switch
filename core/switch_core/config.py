@@ -9,6 +9,12 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 # A Postgres time value: a bare count of milliseconds, or a count with a unit.
 _PG_INTERVAL_RE = re.compile(r"^\d+\s*(us|ms|s|min|h|d)?$")
 
+# An unquoted Postgres identifier, and a conservative one: real role names are
+# always this shape in practice, so anything outside it is a misconfiguration
+# worth catching at startup rather than at the first `GRANT`. The 63-character
+# cap matches Postgres's own `NAMEDATALEN` limit.
+_DB_ROLE_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,62}$")
+
 
 class SwitchConfig(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="")
@@ -265,6 +271,24 @@ class SwitchConfig(BaseSettings):
                 )
         if not self.tenant_id.strip():
             raise ValueError("TENANT_ID must not be empty.")
+        return self
+
+    @model_validator(mode="after")
+    def _validate_db_user(self) -> "SwitchConfig":
+        # `db_user` is the runtime role name, and `db/runtime_role.py` builds
+        # `GRANT`/`ALTER DEFAULT PRIVILEGES` DDL by interpolating it (quoted
+        # through Postgres's own `quote_ident`, which is what makes that safe
+        # against injection). This is a second, independent layer: a role name
+        # outside the shape every real one takes is far more likely a typo or
+        # a stray character from a copied connection string than an intended
+        # identifier, and rejecting it here turns that into a startup error
+        # instead of a `GRANT` that quietly names a role nobody meant.
+        if not _DB_ROLE_RE.match(self.db_user):
+            raise ValueError(
+                "DB_USER must be a plain identifier (letters, digits, "
+                "underscore, not starting with a digit, 63 characters or "
+                f"fewer), got {self.db_user!r}."
+            )
         return self
 
     @model_validator(mode="after")

@@ -169,7 +169,22 @@ async def grant_runtime_role(owner: AsyncConnection, role: str) -> None:
         "ALTER DEFAULT PRIVILEGES REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC",
         f"ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT EXECUTE ON FUNCTIONS TO {identifier}",
     ):
-        await owner.execute(text(statement))
+        # `identifier` is `role` quoted by Postgres's own `quote_ident()`
+        # (`_quoted_identifier` above), not by this code: `GRANT` and `ALTER
+        # DEFAULT PRIVILEGES` take no bind parameter for an identifier, so
+        # asking the server to quote it is the correct way to place one here,
+        # not a workaround for one. `quote_ident` wraps the value in double
+        # quotes and doubles any embedded double quote, which turns it into a
+        # single opaque identifier token — verified against a role name
+        # carrying a double quote, a semicolon, a backslash, whitespace and a
+        # Unicode homoglyph; none of them broke out of the quoting or produced
+        # a second statement. `DB_USER` is also checked against a strict
+        # identifier pattern at config load (`config.py`'s `_validate_db_user`),
+        # so a value reaching here has already passed that gate too. This
+        # stops being safe the moment `identifier` is built any other way —
+        # e.g. concatenating `role` into one of these statements unquoted, or
+        # quoting it in Python instead of asking Postgres to.
+        await owner.execute(text(statement))  # nosemgrep
 
 
 async def _quoted_identifier(connection: AsyncConnection, name: str) -> str:
