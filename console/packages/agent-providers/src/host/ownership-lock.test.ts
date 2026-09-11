@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { afterEach, expect, it } from 'vitest';
-import { replaceOwner, withOwnershipLock } from './ownership-lock';
+import { releaseOwner, replaceOwner, withOwnershipLock } from './ownership-lock';
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -82,4 +82,16 @@ it('serializes competing replacement owners after an interrupted recovery', asyn
   expect(entries).toHaveLength(16);
   for (let index = 0; index < entries.length; index += 2)
     expect(entries[index + 1]).toBe(entries[index].replace('start-', 'end-'));
+});
+
+it('late cleanup cannot delete a replacement owner, even with the same PID', async () => {
+  const root = await rootDirectory();
+  const path = join(root, 'shared-owner.lock');
+  const old = { pid: process.pid, token: 'old' };
+  const current = { pid: process.pid, token: 'current' };
+  await replaceOwner(path, current);
+  await releaseOwner(root, path, old);
+  expect(JSON.parse(await readFile(path, 'utf8'))).toEqual(current);
+  await releaseOwner(root, path, current);
+  await expect(readFile(path)).rejects.toMatchObject({ code: 'ENOENT' });
 });

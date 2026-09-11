@@ -9,7 +9,13 @@ export interface OpencodePermissionRule {
 }
 
 export type OpencodeMcpEntry =
-  | { type: 'local'; command: string[]; enabled: true; environment?: Record<string, string> }
+  | {
+      type: 'local';
+      command: string[];
+      enabled: true;
+      timeout: number;
+      environment?: Record<string, string>;
+    }
   | { type: 'remote'; url: string; enabled: true; headers?: Record<string, string> };
 
 export interface OpencodeConfigFile {
@@ -114,6 +120,7 @@ export function mcpConfigFor(
       spec.transport === 'stdio'
         ? {
             type: 'local',
+            timeout: 60000,
             command: [spec.command, ...spec.args],
             enabled: true,
             ...(spec.env ? { environment: spec.env } : {}),

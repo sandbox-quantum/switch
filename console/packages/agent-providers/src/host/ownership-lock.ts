@@ -91,3 +91,14 @@ export async function withOwnershipLock<T>(root: string, action: () => Promise<T
 export async function replaceOwner(path: string, value: unknown): Promise<void> {
   await save(path, value, true);
 }
+
+export async function releaseOwner(root: string, path: string, owner: unknown): Promise<void> {
+  await withOwnershipLock(root, async () => {
+    try {
+      const current = JSON.parse(await readFile(path, 'utf8'));
+      if (JSON.stringify(current) === JSON.stringify(owner)) await unlink(path);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    }
+  });
+}

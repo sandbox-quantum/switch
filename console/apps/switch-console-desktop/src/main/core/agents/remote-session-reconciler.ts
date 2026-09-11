@@ -55,12 +55,23 @@ class RemoteSessionReconciler {
         if (
           session.agentId !== agent.switchAgentId ||
           session.status === 'stopped' ||
-          local.has(session.sessionId) ||
           this.deleted.has(session.sessionId)
         )
           continue;
         const snapshot = snapshotSchema.parse(await fetchSdkSnapshot(server, session.sessionId));
-        const roomId = snapshot.items.find((item) => item.origin?.roomId)?.origin?.roomId ?? null;
+        const roomId =
+          [...snapshot.items].reverse().find((item) => item.origin?.roomId)?.origin?.roomId ?? null;
+        if (roomId)
+          switchRoomService.mirrorRemoteSessionRoom(
+            {
+              sessionId: session.sessionId,
+              providerId: agent.providerId,
+              ptyId: makePtyId(agent.providerId, session.sessionId),
+            },
+            roomId,
+            agent.switchAgentId
+          );
+        if (local.has(session.sessionId)) continue;
         const result = await sessionService.createSession({
           id: session.sessionId,
           agentId,

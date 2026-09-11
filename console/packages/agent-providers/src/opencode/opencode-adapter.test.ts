@@ -575,7 +575,13 @@ describe('OpencodeAdapter mappings', () => {
         remote: { transport: 'http', url: 'https://example.test/mcp', headers: { A: '1' } },
       })
     ).toEqual({
-      local: { type: 'local', command: ['node', 's.mjs'], enabled: true, environment: { A: '1' } },
+      local: {
+        type: 'local',
+        command: ['node', 's.mjs'],
+        enabled: true,
+        timeout: 60000,
+        environment: { A: '1' },
+      },
       remote: {
         type: 'remote',
         url: 'https://example.test/mcp',

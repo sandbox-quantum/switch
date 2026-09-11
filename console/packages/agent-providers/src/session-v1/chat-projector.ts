@@ -2,7 +2,7 @@ import type { HostBody, Item, Origin, Session } from '@switch-console/shared/ses
 import type { ProviderRuntimeEvent } from '../events';
 
 type TurnContext = { commandId: string | null; origin: Origin | null };
-type BufferedItem = { item: Item; emittedAt: number; dirty: boolean };
+type BufferedItem = { item: Item; emittedAt: number; dirty: boolean; parts: number };
 
 /** Projects chat and tool summaries only. The host owns sequencing and durable publication. */
 export class ChatProjector {
@@ -72,12 +72,17 @@ export class ChatProjector {
           revision: previous?.item.revision ?? 0,
           kind,
           status: event.item.status === 'in_progress' ? 'in-progress' : event.item.status,
-          title: event.item.title,
+          title: event.item.title.slice(0, 4096),
           text: kind === 'tool-activity' ? '' : (event.item.text ?? previous?.item.text ?? ''),
           attachments: [],
           origin: kind === 'user-message' ? context.origin : null,
         };
-        const buffered = { item, emittedAt: previous?.emittedAt ?? -Infinity, dirty: true };
+        const buffered = {
+          item,
+          emittedAt: previous?.emittedAt ?? -Infinity,
+          dirty: true,
+          parts: previous?.parts ?? 1,
+        };
         this.items.set(key, buffered);
         return this.emitItem(buffered, now, event.type === 'item.completed');
       }
@@ -108,7 +113,17 @@ export class ChatProjector {
     buffer.item.revision += 1;
     buffer.emittedAt = now;
     buffer.dirty = false;
-    return [{ type: 'item.upsert', item: structuredClone(buffer.item) }];
+    const characters = Array.from(buffer.item.text);
+    const count = Math.max(1, Math.ceil(characters.length / 4096), buffer.parts);
+    buffer.parts = count;
+    return Array.from({ length: count }, (_, index) => ({
+      type: 'item.upsert' as const,
+      item: {
+        ...structuredClone(buffer.item),
+        itemId: index === 0 ? buffer.item.itemId : `${buffer.item.itemId}:part:${index}`,
+        text: characters.slice(index * 4096, (index + 1) * 4096).join(''),
+      },
+    }));
   }
 
   private context(turnId: string): TurnContext {

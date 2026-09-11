@@ -64,12 +64,13 @@ export async function createSession(
     const built = await provisionSessionRuntime(session, location);
     await sessionRuntimeManager.registerSession(session.id, built, location.ctx);
 
-    await built.agent.start(
-      session,
-      params.initialSize,
-      params.attach === false,
-      params.initialPrompt
-    );
+    if (params.startSource !== 'adopted')
+      await built.agent.start(
+        session,
+        params.initialSize,
+        params.attach === false,
+        params.initialPrompt
+      );
   } catch (e) {
     return err({ type: 'spawn-failed', message: e instanceof Error ? e.message : String(e) });
   }

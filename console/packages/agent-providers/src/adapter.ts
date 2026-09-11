@@ -17,6 +17,7 @@ export interface StdioMcpServerSpec {
   command: string;
   args: string[];
   env?: Record<string, string>;
+  envVars?: string[];
 }
 
 export interface HttpMcpServerSpec {

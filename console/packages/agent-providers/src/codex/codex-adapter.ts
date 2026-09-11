@@ -107,17 +107,16 @@ interface CodexSessionState {
 
 interface ThreadModeConfig {
   approvalPolicy: CodexAskForApproval;
-  sandbox: CodexSandboxMode;
 }
 
 function threadModeConfig(mode: RuntimeMode): ThreadModeConfig {
   switch (mode) {
     case 'approval-required':
-      return { approvalPolicy: 'untrusted', sandbox: 'workspace-write' };
+      return { approvalPolicy: 'untrusted' };
     case 'auto-accept-edits':
-      return { approvalPolicy: 'on-request', sandbox: 'workspace-write' };
+      return { approvalPolicy: 'on-request' };
     case 'full-access':
-      return { approvalPolicy: 'never', sandbox: 'danger-full-access' };
+      return { approvalPolicy: 'never' };
   }
 }
 
@@ -264,7 +263,6 @@ export class CodexAdapter implements ProviderAdapter {
       const config = {
         cwd: input.cwd,
         approvalPolicy: mode.approvalPolicy,
-        sandbox: mode.sandbox,
         approvalsReviewer: 'user' as const,
         ...(input.model?.id ? { model: input.model.id } : {}),
         ...(input.systemContext ? { developerInstructions: input.systemContext } : {}),

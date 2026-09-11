@@ -323,6 +323,11 @@ export class HostedSession {
       )
         throw new Error('UNSUPPORTED_CAPABILITY: reset needs a generation authority.');
       if (
+        body.type === 'session.compact' &&
+        (!session.capabilities.compact || !this.adapter.compactSession)
+      )
+        throw new Error('UNSUPPORTED_CAPABILITY: native compaction is unavailable.');
+      if (
         body.type === 'session.model.set' &&
         (!session.capabilities.modelChange || !this.adapter.setModel)
       )

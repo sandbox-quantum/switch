@@ -21,6 +21,7 @@ const mcp = z.discriminatedUnion('transport', [
     command: z.string(),
     args: z.array(z.string()),
     env: env.optional(),
+    envVars: z.array(z.string()).optional(),
   }),
   z.object({ transport: z.literal('http'), url: z.string(), headers: env.optional() }),
 ]);

@@ -7,6 +7,7 @@ const mocks = vi.hoisted(() => ({
   create: vi.fn(async () => ({ success: true })),
   provision: vi.fn(async () => ({ success: true })),
   error: vi.fn(),
+  mirror: vi.fn(),
   rows: [] as { id: string }[],
 }));
 vi.mock('./getAgentById', () => ({
@@ -29,7 +30,7 @@ vi.mock('@main/core/sessions/session-service', () => ({
   sessionService: { createSession: mocks.create, provisionSession: mocks.provision },
 }));
 vi.mock('@main/core/switch-rooms/switch-room-service', () => ({
-  switchRoomService: { mirrorRemoteSessionRoom: vi.fn() },
+  switchRoomService: { mirrorRemoteSessionRoom: mocks.mirror },
 }));
 vi.mock('@main/db/client', () => ({
   db: { select: () => ({ from: () => ({ where: async () => mocks.rows }) }) },
@@ -96,4 +97,44 @@ it('retains sessions on connection loss and excludes other agents and stopped se
   ]);
   await tick();
   expect(mocks.create).not.toHaveBeenCalled();
+});
+
+it('refreshes room associations for sessions that already exist in Console', async () => {
+  mocks.rows = [{ id: 'shared' }];
+  mocks.list.mockResolvedValue([session]);
+  mocks.snapshot.mockResolvedValue({
+    contractVersion: 1,
+    throughSequence: 1,
+    session,
+    turns: [],
+    requests: [],
+    commandStatuses: [],
+    nextPageToken: null,
+    items: [
+      {
+        itemId: 'input',
+        turnId: 'turn',
+        revision: 1,
+        kind: 'user-message',
+        status: 'completed',
+        title: '',
+        text: 'Hello',
+        attachments: [],
+        origin: {
+          surface: 'switch-web',
+          actorId: 'actor',
+          roomId: 'room',
+          threadId: null,
+          messageId: 'message',
+        },
+      },
+    ],
+  });
+  await tick();
+  expect(mocks.create).not.toHaveBeenCalled();
+  expect(mocks.mirror).toHaveBeenCalledWith(
+    expect.objectContaining({ sessionId: 'shared' }),
+    'room',
+    'agent'
+  );
 });

@@ -435,9 +435,9 @@ class SessionAuthority:
                 else None
             )
             if (
-                bridge is None
-                or bridge.type not in get_args(Surface)
-                or entry.event.bridge_id != bridge.id
+                (bridge is not None and bridge.type not in get_args(Surface))
+                or entry.event.bridge_id != (bridge.id if bridge else None)
+                or (room.bridge_id is not None and bridge is None)
             ):
                 raise SessionError(
                     "NOT_AUTHORIZED", "The room event has no verified platform origin."
@@ -454,7 +454,7 @@ class SessionAuthority:
                 origin=Origin.model_validate(
                     {
                         "actorId": payload.sender,
-                        "surface": bridge.type,
+                        "surface": bridge.type if bridge else "switch-web",
                         "roomId": room_id,
                         "threadId": payload.thread_id,
                         "messageId": payload.message_id,
@@ -462,14 +462,14 @@ class SessionAuthority:
                 ),
                 body=MessageSend(
                     type="message.send",
-                    text=f"[Switch] {payload.sender_name} addressed you in room {room_id} (message_id {message_id}):\n{payload.body}",
+                    text=f"[Switch] {payload.sender_name} addressed you in room {room_id} (message_id {message_id}, thread_id {payload.thread_id or 'none'}):\n{payload.body}",
                     attachments=[],
                     delivery="queue",
                 ),
             )
             if len(command.model_dump_json().encode("utf-8")) > 60 * 1024:
                 raise SessionError("PAYLOAD_TOO_LARGE", "Command exceeds 60 KiB.")
-            return await self._accept(db, row, command, bridge.id)
+            return await self._accept(db, row, command, bridge.id if bridge else None)
 
     async def _accept(
         self, db: AsyncSession, row: SdkSession, command: Command, bridge_id: str | None
@@ -937,7 +937,10 @@ class SessionAuthority:
             body=body,
         )
         projection = SessionProjection(snapshot)
-        projection.apply(event)
+        try:
+            projection.apply(event)
+        except ValueError as exc:
+            raise SessionError("INVALID_EVENT", str(exc)) from exc
         row.snapshot = projection.snapshot.model_dump(by_alias=True)
         db.add(
             SdkSessionEvent(

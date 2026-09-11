@@ -587,3 +587,18 @@ it('updates attachment support after a confirmed native model change', async () 
   });
   expect(host.snapshot().session.capabilities.attachmentMimeTypes).toContain('image/png');
 });
+
+it('rejects unsupported native compaction without faulting the session', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'unsupported-compact-'));
+  const { adapter, config } = setup('claude');
+  const host = await HostedSession.start(root, config, adapter);
+  try {
+    await expect(
+      host.command({ ...message('unsupported-compact'), body: { type: 'session.compact' } })
+    ).rejects.toThrow('UNSUPPORTED_CAPABILITY');
+    expect(host.snapshot().session.status).toBe('ready');
+  } finally {
+    await host.shutdown();
+    await rm(root, { recursive: true, force: true });
+  }
+});

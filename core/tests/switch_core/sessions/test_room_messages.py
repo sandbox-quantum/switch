@@ -6,7 +6,7 @@ import pytest
 
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
 from switch_core.bridges.agent.protocol.types import AgentEvent, MessagePayload
-from switch_core.db.models import ClientRoom
+from switch_core.db.models import ClientRoom, Room
 from switch_core.sessions.service import SessionError
 from tests.switch_core.sessions.test_authority import setup
 
@@ -96,3 +96,29 @@ async def test_two_sessions_cannot_execute_the_same_room_delivery(session_factor
     assert len([result for result in results if not isinstance(result, Exception)]) == 1
     error = next(result for result in results if isinstance(result, SessionError))
     assert error.code == "ROOM_MESSAGE_RESERVED"
+
+
+@pytest.mark.asyncio
+async def test_internal_room_admission_preserves_thread_context(session_factory):
+    service, epoch = await setup(session_factory)
+    async with session_factory() as db, db.begin():
+        room = await db.get(Room, "room-demo")
+        room.bridge_id = None
+    message = event().model_copy(update={"bridge_id": None})
+    message.payload.thread_id = "thread-demo"
+    buffer = EventBuffer()
+    sequence = buffer.enqueue("agent-demo", "room-demo", message)
+    result = await service.submit_room_message(
+        "agent-demo",
+        "session-demo",
+        "host-demo",
+        epoch,
+        "room-demo",
+        "message",
+        sequence,
+        buffer,
+    )
+    assert result.status == "accepted"
+    pending = await service.pending("agent-demo", "session-demo", "host-demo", epoch)
+    assert pending[0].origin.surface == "switch-web"
+    assert "thread_id thread-demo" in pending[0].body.text

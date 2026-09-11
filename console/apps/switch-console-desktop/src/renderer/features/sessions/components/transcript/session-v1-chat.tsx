@@ -98,7 +98,12 @@ export function SessionV1Chat({
             <Button
               size="sm"
               variant="outline"
-              disabled={sending}
+              disabled={
+                sending ||
+                client.hasPendingCommand() ||
+                Boolean(runningTurn) ||
+                Boolean(session?.pendingRequestIds.length)
+              }
               onClick={() => {
                 setSending(true);
                 setSendError(null);

@@ -167,10 +167,10 @@ export async function runSharedHost(
     return parsed;
   };
   const finish = async () => {
-    if (starting)
-      throw new Error(
-        'FENCING_REQUIRED: provider startup failed before shutdown could be confirmed.'
-      );
+    if (starting) {
+      await adapter.stopSession(options.session.sessionId);
+      starting = false;
+    }
     await stopExecution();
     if (host && delivery)
       for (const event of host.replay(delivery.cursor).events) await delivery.capture(event);

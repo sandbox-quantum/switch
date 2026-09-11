@@ -7,7 +7,7 @@ import { Journal } from './journal';
 export const roomConnectionSchema = z.strictObject({
   connectionId: z.string().min(1),
   rooms: z.array(z.string().min(1)),
-  startCursor: z.number().int().nonnegative(),
+  startCursor: z.number().int().nonnegative().optional(),
 });
 const receivedSchema = z.strictObject({
   type: z.literal('received'),
@@ -41,7 +41,7 @@ export class SharedRoomInbox {
       .reverse()
       .find((record) => record.type === 'rooms');
     const cursor = Math.max(
-      connection.startCursor,
+      connection.startCursor ?? 0,
       ...this.journal.records
         .filter((record) => record.type === 'received')
         .map((record) => record.sequence)
@@ -55,7 +55,7 @@ export class SharedRoomInbox {
         connectionId: connection.connectionId,
         scope: 'single',
         filter: 'addressed',
-        startCursor: cursor,
+        startCursor: cursor || connection.startCursor,
         rooms,
         signal,
         log: console,
