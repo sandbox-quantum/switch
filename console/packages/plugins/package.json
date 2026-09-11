@@ -52,7 +52,7 @@
   },
   "dependencies": {
     "@switch-console/core": "workspace:*",
-    "smol-toml": "^1.6.0",
+    "smol-toml": "^1.8.0",
     "zod": "^4.4.3"
   },
   "devDependencies": {

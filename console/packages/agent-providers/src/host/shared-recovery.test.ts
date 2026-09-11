@@ -11,6 +11,7 @@ import { runSharedHost } from './shared-host';
 const roots: string[] = [];
 afterEach(async () => {
   vi.unstubAllGlobals();
+  vi.restoreAllMocks();
   for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true });
 });
 async function fixture() {
@@ -127,6 +128,7 @@ async function fixture() {
   vi.stubGlobal('fetch', fetchMock);
   return {
     root,
+    emit,
     command,
     adapter,
     events,
@@ -287,4 +289,36 @@ it('resets under a server epoch despite a lost recovery acknowledgement', async 
     stop.abort();
     await running;
   }
+});
+
+it('releases a faulted host instead of renewing its room claim forever', async () => {
+  const f = await fixture();
+  const result = runSharedHost(f.options, f.adapter, new AbortController().signal).catch(
+    (error) => error
+  );
+  await vi.waitFor(() => expect(f.adapter.sendTurn).toHaveBeenCalledTimes(1), { timeout: 3000 });
+  f.emit({ type: 'session.state.changed', status: 'error' });
+  expect(await result).toMatchObject({ message: expect.stringContaining('HOST_FAULTED') });
+  expect(f.adapter.stopSession).toHaveBeenCalledTimes(1);
+  expect(f.fetchMock.mock.calls.some(([url]) => url.endsWith('/quiesce'))).toBe(true);
+  expect(
+    f.events.some(
+      (event) => event.body.type === 'session.upsert' && event.body.session.status === 'error'
+    )
+  ).toBe(true);
+});
+
+it('bounds unavailable-server startup before any provider execution', async () => {
+  const f = await fixture();
+  let now = 0;
+  vi.spyOn(performance, 'now').mockImplementation(() => now);
+  f.fetchMock.mockImplementation(async () => {
+    now = 31000;
+    throw new TypeError('Unreachable');
+  });
+  await expect(runSharedHost(f.options, f.adapter, new AbortController().signal)).rejects.toThrow(
+    'HOST_START_TIMEOUT'
+  );
+  expect(f.adapter.startSession).not.toHaveBeenCalled();
+  expect(f.fetchMock).toHaveBeenCalledTimes(1);
 });

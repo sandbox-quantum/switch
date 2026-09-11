@@ -40,7 +40,7 @@
     "@sandboxaq/switch-agent-runtime": "workspace:*",
     "@switch-console/shared": "workspace:*",
     "jsonc-parser": "3.3.1",
-    "smol-toml": "^1.6.1",
+    "smol-toml": "^1.8.0",
     "zod": "^4.4.3"
   },
   "devDependencies": {

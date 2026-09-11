@@ -65,7 +65,7 @@ export async function runSharedHost(
   let delivery: SharedDelivery | null = null;
   let failure: unknown = null;
   let starting = false;
-  let deadline = Infinity;
+  let deadline = performance.now() + 30000;
   let lease = state.latest('lease');
   let heartbeat: Promise<void> = Promise.resolve();
   let shutdown: Promise<void> | null = null;
@@ -112,7 +112,12 @@ export async function runSharedHost(
     let disconnected = false;
     while (true) {
       executionSignal.throwIfAborted();
-      if (performance.now() >= deadline) throw new SharedHostLeaseExpiredError();
+      if (performance.now() >= deadline) {
+        if (lease) throw new SharedHostLeaseExpiredError();
+        throw new Error(
+          'HOST_START_TIMEOUT: Switch did not grant a session lease within 30 seconds. Check the server address and connectivity.'
+        );
+      }
       try {
         const result = await requestOnce(path, body, executionSignal);
         if (disconnected) console.info('Shared host connection restored.');
@@ -390,6 +395,10 @@ export async function runSharedHost(
         }
       }
       if (host.snapshot().session.status === 'stopped') break;
+      if (host.snapshot().session.status === 'error')
+        throw new Error(
+          'HOST_FAULTED: Provider execution failed. The room connection is closing; inspect the transcript before recovery.'
+        );
       if (
         host.snapshot().session.status === 'ready' ||
         host.snapshot().session.status === 'running'
@@ -429,7 +438,12 @@ export async function runSharedHost(
       if (!Array.isArray(commands)) throw new Error('Switch returned an invalid command batch.');
       for (const value of commands) {
         executionSignal.throwIfAborted();
-        if (performance.now() >= deadline) throw new SharedHostLeaseExpiredError();
+        if (performance.now() >= deadline) {
+          if (lease) throw new SharedHostLeaseExpiredError();
+          throw new Error(
+            'HOST_START_TIMEOUT: Switch did not grant a session lease within 30 seconds. Check the server address and connectivity.'
+          );
+        }
         const command = commandSchema.parse(value);
         if (command.sessionId !== session.sessionId)
           throw new Error('Switch returned a command for another session.');

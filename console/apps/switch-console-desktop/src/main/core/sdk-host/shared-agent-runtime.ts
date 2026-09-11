@@ -69,7 +69,7 @@ export class SharedAgentRuntime implements AgentRuntimeProvider {
       throw new Error('Link this agent to a Switch server before starting a session.');
     this.server = await getServer(agent.serverId);
     if (!this.server) throw new Error('The agent’s Switch server is missing.');
-    const intended = switchNotificationPoller.takeSharedIntent(session.id, agent.switchAgentId);
+    const intended = switchNotificationPoller.getSharedIntent(session.id, agent.switchAgentId);
     const config = await buildSharedHostConfig(session, this.params, this.transport, intended);
     const previousEpoch = restart
       ? snapshotSchema.parse(await fetchSdkSnapshot(this.server, session.id)).session.epoch
@@ -90,7 +90,19 @@ export class SharedAgentRuntime implements AgentRuntimeProvider {
     const created = JSON.parse(launched.stdout).created === true;
     let snapshot;
     const deadline = Date.now() + 120000;
+    let nextFailureCheck = 0;
     while (Date.now() < deadline) {
+      if (Date.now() >= nextFailureCheck) {
+        const result = await ctx.exec('node', [
+          '-e',
+          "const fs=require('node:fs');try{console.log(fs.readFileSync(process.argv[1],'utf8'))}catch(e){if(e.code!=='ENOENT')throw e;console.log('null')}",
+          posix.join(root, 'supervisor', 'failure.json'),
+        ]);
+        const failure: unknown = JSON.parse(result.stdout);
+        if (failure && typeof failure === 'object' && 'message' in failure)
+          throw new Error(`Shared SDK host failed: ${String(failure.message)}`);
+        nextFailureCheck = Date.now() + 2000;
+      }
       try {
         snapshot = snapshotSchema.parse(await fetchSdkSnapshot(this.server, session.id));
         if (
@@ -121,6 +133,7 @@ export class SharedAgentRuntime implements AgentRuntimeProvider {
     if (intended.rooms[0])
       switchRoomService.setSessionRoom(roomContext, intended.rooms[0], agent.switchAgentId, null);
     else await switchRoomService.restoreConnection(roomContext);
+    switchNotificationPoller.clearSharedIntent(session.id);
     if (created && initialPrompt?.trim())
       await submitSdkCommand(this.server, {
         contractVersion: 1,

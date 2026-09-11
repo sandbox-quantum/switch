@@ -6,8 +6,10 @@ import { fetchSdkSessions, fetchSdkSnapshot } from '@main/core/switch-servers/ga
 import { getServer } from '@main/core/switch-servers/servers-store';
 import { db } from '@main/db/client';
 import { sessions } from '@main/db/schema';
+import { events } from '@main/lib/events';
 import { log } from '@main/lib/logger';
 import { makePtyId } from '@shared/core/pty/ptyId';
+import { sessionStatusUpdatedChannel } from '@shared/core/sessions/sessionEvents';
 import { getAgentById } from './getAgentById';
 
 /** Discover server-owned sessions on either execution transport without starting providers. */
@@ -62,20 +64,30 @@ class RemoteSessionReconciler {
           'The server returned an incompatible session list. Update Console and server together.'
         );
       const failures: string[] = [];
-      const local = new Set(
+      const local = new Map(
         (
-          await db.select({ id: sessions.id }).from(sessions).where(eq(sessions.agentId, agentId))
-        ).map((row) => row.id)
+          await db
+            .select({ id: sessions.id, status: sessions.status })
+            .from(sessions)
+            .where(eq(sessions.agentId, agentId))
+        ).map((row) => [row.id, row.status])
       );
       for (const value of remote) {
         try {
           const session = sessionSchema.parse(value);
-          if (
-            session.agentId !== agent.switchAgentId ||
-            session.status === 'stopped' ||
-            this.deleted.has(session.sessionId)
-          )
+          if (session.agentId !== agent.switchAgentId || this.deleted.has(session.sessionId))
             continue;
+          if (
+            local.has(session.sessionId) &&
+            (session.status === 'stopped' || session.status === 'error' || session.retired)
+          ) {
+            const status = session.status === 'stopped' ? 'cancelled' : 'review';
+            if (local.get(session.sessionId) !== status) {
+              await sessionService.updateSessionStatus(session.sessionId, status);
+              events.emit(sessionStatusUpdatedChannel, { sessionId: session.sessionId, status });
+            }
+          }
+          if (session.status === 'stopped') continue;
           let roomId = session.roomIds?.[0] ?? null;
           if (session.roomIds === undefined && !local.has(session.sessionId)) {
             const snapshot = snapshotSchema.parse(

@@ -407,3 +407,52 @@ async def test_owner_can_retire_expired_unknown_session_without_replay(session_f
         )
     with pytest.raises(SessionError):
         await service.renew("agent-demo", "session-demo", "host-demo", epoch)
+
+
+async def test_request_expiry_queues_one_cancellation_without_answering(
+    session_factory,
+):
+    service, epoch = await setup(session_factory)
+    await opened(service, epoch)
+    initial = (await service.snapshot("session-demo", "owner")).requests[0]
+    assert initial.expires_at is not None
+    assert datetime.fromisoformat(initial.expires_at) > datetime.now(UTC)
+    async with session_factory() as db, db.begin():
+        row = await db.get(SdkSession, "session-demo")
+        snapshot = dict(row.snapshot)
+        requests = [dict(request) for request in snapshot["requests"]]
+        requests[0]["expiresAt"] = (
+            datetime.now(UTC) - timedelta(seconds=1)
+        ).isoformat()
+        snapshot["requests"] = requests
+        row.snapshot = snapshot
+    first = await service.pending("agent-demo", "session-demo", "host-demo", epoch)
+    second = await service.pending("agent-demo", "session-demo", "host-demo", epoch)
+    cancellation = [
+        command for command in first if command.body.type == "turn.interrupt"
+    ]
+    assert len(cancellation) == 1
+    assert cancellation[0].command_id in [command.command_id for command in second]
+    assert cancellation[0].origin.actor_id == "switch-session-authority"
+    snapshot = await service.snapshot("session-demo", "owner")
+    assert snapshot.requests[0].state == "open"
+    assert snapshot.requests[0].result is None
+    with pytest.raises(SessionError, match="expired"):
+        await service.submit(answer(epoch, "too-late"), user_id="owner", bridge_id=None)
+
+
+async def test_reserved_answer_is_not_cancelled_by_request_expiry(session_factory):
+    service, epoch = await setup(session_factory)
+    await opened(service, epoch)
+    await service.submit(answer(epoch, "winner"), user_id="owner", bridge_id=None)
+    async with session_factory() as db, db.begin():
+        row = await db.get(SdkSession, "session-demo")
+        snapshot = dict(row.snapshot)
+        requests = [dict(request) for request in snapshot["requests"]]
+        requests[0]["expiresAt"] = (
+            datetime.now(UTC) - timedelta(seconds=1)
+        ).isoformat()
+        snapshot["requests"] = requests
+        row.snapshot = snapshot
+    commands = await service.pending("agent-demo", "session-demo", "host-demo", epoch)
+    assert not any(command.body.type == "turn.interrupt" for command in commands)

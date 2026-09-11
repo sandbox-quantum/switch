@@ -430,6 +430,19 @@ class SessionAuthority:
                         )
                     }
                 )
+            elif isinstance(body, RequestOpened):
+                deadline = (await self._now(db)) + timedelta(minutes=30)
+                if body.request.expires_at:
+                    deadline = min(
+                        deadline, datetime.fromisoformat(body.request.expires_at)
+                    )
+                body = body.model_copy(
+                    update={
+                        "request": body.request.model_copy(
+                            update={"expires_at": deadline.isoformat()}
+                        )
+                    }
+                )
             await self._append(db, row, body, event)
             row.host_sequence = event.host_sequence
             if isinstance(event.body, CommandResult):
@@ -823,6 +836,57 @@ class SessionAuthority:
     ) -> list[Command]:
         async with self._sessions() as db, db.begin():
             row = await self._host(db, agent_id, session_id, host_id, epoch)
+            snapshot = Snapshot.model_validate(row.snapshot)
+            now = await self._now(db)
+            for request in snapshot.requests:
+                if (
+                    request.state != "open"
+                    or not request.expires_at
+                    or datetime.fromisoformat(request.expires_at) > now
+                ):
+                    continue
+                command_id = str(
+                    uuid.uuid5(
+                        uuid.NAMESPACE_URL,
+                        f"switch:request-timeout:{row.id}:{row.epoch}:{request.request_id}",
+                    )
+                )
+                if await db.get(SdkSessionCommand, (row.id, command_id)) is not None:
+                    continue
+                body: TurnInterrupt | SessionStop = (
+                    TurnInterrupt(type="turn.interrupt", turn_id=request.turn_id)
+                    if snapshot.session.capabilities.interrupt
+                    else SessionStop(type="session.stop")
+                )
+                await self._accept(
+                    db,
+                    row,
+                    Command(
+                        contract_version=1,
+                        session_id=row.id,
+                        epoch=row.epoch,
+                        command_id=command_id,
+                        origin=Origin(
+                            surface="switch-web",
+                            actor_id="switch-session-authority",
+                            room_id=None,
+                            thread_id=None,
+                            message_id=None,
+                        ),
+                        body=body,
+                    ),
+                    None,
+                )
+                await self._append(
+                    db,
+                    row,
+                    Notice(
+                        type="notice",
+                        level="warning",
+                        code="REQUEST_EXPIRED",
+                        message="The request expired without an answer. Execution cancellation was queued; no approval was granted.",
+                    ),
+                )
             records = (
                 await db.scalars(
                     select(SdkSessionCommand)
@@ -880,6 +944,11 @@ class SessionAuthority:
                 and room_id in connection.rooms
             ]
             if not live:
+                if candidates:
+                    raise SessionError(
+                        "HOST_OFFLINE",
+                        "No live SDK session is connected to this room. The command was not queued.",
+                    )
                 return None
             if len(live) != 1:
                 raise SessionError(

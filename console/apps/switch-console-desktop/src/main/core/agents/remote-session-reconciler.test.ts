@@ -9,6 +9,8 @@ const mocks = vi.hoisted(() => ({
   error: vi.fn(),
   mirror: vi.fn(),
   clear: vi.fn(),
+  updateStatus: vi.fn(),
+  emit: vi.fn(),
   rows: [] as { id: string }[],
 }));
 vi.mock('./getAgentById', () => ({
@@ -28,7 +30,11 @@ vi.mock('@main/core/switch-servers/gateway-client', () => ({
   fetchSdkSnapshot: mocks.snapshot,
 }));
 vi.mock('@main/core/sessions/session-service', () => ({
-  sessionService: { createSession: mocks.create, provisionSession: mocks.provision },
+  sessionService: {
+    createSession: mocks.create,
+    provisionSession: mocks.provision,
+    updateSessionStatus: mocks.updateStatus,
+  },
 }));
 vi.mock('@main/core/switch-rooms/switch-room-service', () => ({
   switchRoomService: { mirrorRemoteSessionRoom: mocks.mirror, clearSession: mocks.clear },
@@ -37,6 +43,7 @@ vi.mock('@main/db/client', () => ({
   db: { select: () => ({ from: () => ({ where: async () => mocks.rows }) }) },
 }));
 vi.mock('@main/db/schema', () => ({ sessions: { id: 'id', agentId: 'agentId' } }));
+vi.mock('@main/lib/events', () => ({ events: { emit: mocks.emit } }));
 vi.mock('@main/lib/logger', () => ({ log: { error: mocks.error } }));
 
 const session = {
@@ -150,4 +157,16 @@ it('adopts healthy sessions despite additive fields, an invalid entry and a fail
   mocks.list.mockResolvedValue([{ ...session, roomIds: [] }]);
   await tick();
   expect(remoteSessionReconciler.errors()).toEqual([]);
+});
+
+it('marks a stopped host cancelled without claiming its work completed', async () => {
+  mocks.rows = [{ id: 'shared' }];
+  mocks.list.mockResolvedValue([{ ...session, status: 'stopped', roomIds: ['room'] }]);
+  await tick();
+  expect(mocks.updateStatus).toHaveBeenCalledWith('shared', 'cancelled');
+  expect(mocks.emit).toHaveBeenCalledWith(expect.anything(), {
+    sessionId: 'shared',
+    status: 'cancelled',
+  });
+  expect(mocks.create).not.toHaveBeenCalled();
 });

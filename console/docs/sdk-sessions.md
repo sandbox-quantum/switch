@@ -39,7 +39,10 @@ its initial prompt is not automatically sent again.
   outcome, **Acknowledge unknown outcome and clear draft** releases the composer
   without resending the action or changing its recorded outcome.
 - Pending approvals and questions remain subject to the server's first-answer
-  arbitration. A callback whose outcome is uncertain is not invoked again.
+  arbitration. Unanswered requests expire after at most 30 minutes. The server
+  queues an interrupt (or a stop when interrupt is unsupported), without granting
+  approval. Already-reserved answers are not cancelled by this timer. A callback
+  whose outcome is uncertain is not invoked again.
 - Room replay gaps stop automatic delivery with a visible error. Review room
   context before starting further work. The host cannot infer missing messages.
 
@@ -125,7 +128,7 @@ operation. Process-group fencing and automatic host replacement require POSIX;
 unsupported Windows recovery fails explicitly. The supervisor survives Console
 closure and worker crashes, but it is not an operating-system boot service.
 
-A remote host needs Node, the selected provider, its own provider authentication,
+A remote host needs Node 20.3 or newer, the selected provider, its own provider authentication,
 and network access to Switch and the provider. Local SSH fixture coverage does
 not establish that an external host has these dependencies or credentials.
 

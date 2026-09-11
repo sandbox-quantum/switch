@@ -292,7 +292,7 @@ async def test_room_binding_is_authorized_and_control_delivery_is_durable(
         == []
     )
     assert (await service.snapshot("session-demo", "owner")).session.room_ids == []
-    assert (
+    with pytest.raises(SessionError, match="command was not queued"):
         await service.submit_room_control(
             "agent-demo",
             "room-demo",
@@ -301,8 +301,6 @@ async def test_room_binding_is_authorized_and_control_delivery_is_durable(
             "next-message",
             connections,
         )
-        is None
-    )
 
 
 @pytest.mark.asyncio
