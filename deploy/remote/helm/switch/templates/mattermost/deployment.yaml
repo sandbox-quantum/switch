@@ -39,10 +39,10 @@ spec:
             - name: POSTGRES_PASSWORD
               valueFrom:
                 secretKeyRef:
-                  name: {{ include "switch.postgresSecretName" . }}
-                  key: {{ include "switch.postgresSecretKey" . }}
+                  name: {{ include "switch.mattermostDbSecretName" . }}
+                  key: {{ include "switch.mattermostDbSecretKey" . }}
             - name: MM_SQLSETTINGS_DATASOURCE
-              value: "postgres://{{ include "switch.postgresSuperUser" . }}:$(POSTGRES_PASSWORD)@{{ include "switch.postgresHost" . }}:{{ include "switch.postgresPort" . }}/mattermost?sslmode={{ .Values.postgresql.sslMode }}{{ if include "switch.dbCaBundleConfigMap" . }}&sslrootcert={{ include "switch.dbCaBundlePath" . }}{{ end }}"
+              value: "postgres://{{ include "switch.mattermostDbUser" . }}:$(POSTGRES_PASSWORD)@{{ include "switch.postgresHost" . }}:{{ include "switch.postgresPort" . }}/mattermost?sslmode={{ .Values.postgresql.sslMode }}{{ if include "switch.dbCaBundleConfigMap" . }}&sslrootcert={{ include "switch.dbCaBundlePath" . }}{{ end }}"
             - name: MM_SERVICESETTINGS_SITEURL
               value: {{ .Values.mattermost.siteUrl | default "" | quote }}
             - name: MM_SERVICESETTINGS_ENABLELOCALMODE

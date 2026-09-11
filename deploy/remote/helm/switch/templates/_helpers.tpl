@@ -94,11 +94,15 @@ two modes stay in lockstep.
 {{/*
 The bootstrapped Postgres superuser: "postgres" in managed mode (the account
 POSTGRES_USER creates on the StatefulSet below), or postgresql.external.username
-in existing mode. This is the identity Mattermost connects as — it owns its
-own "mattermost" database and runs no row-level security, so it has nothing to
-be restricted from there — and the identity the managed StatefulSet and its
-initdb scripts bootstrap and administer with. Distinct from switch.postgresUser
-below, which is DB_USER: the restricted role the RLS policies apply to.
+in existing mode. The identity the managed StatefulSet, its initdb scripts and
+the create-runtime-role Job bootstrap and administer with. Distinct from
+switch.postgresUser below, which is DB_USER: the restricted role the RLS
+policies apply to.
+
+In managed mode those two are genuinely different accounts. In existing mode
+they are the same value, because the chart does not manage that database and
+has only the one username to go on — so this helper is *not* what Mattermost
+should connect as there; see switch.mattermostDbUser.
 */}}
 {{- define "switch.postgresSuperUser" -}}
 {{- if eq .Values.postgresql.mode "existing" -}}
@@ -208,6 +212,66 @@ callers must fall back to those directly rather than through this helper.
 
 {{- define "switch.postgresOwnerSecretKey" -}}
 {{- .Values.postgresql.owner.existingSecretKey | default "DB_OWNER_PASSWORD" -}}
+{{- end }}
+
+{{/*
+The credentials Mattermost connects to its own "mattermost" database with,
+and the reason they are not switch.postgresUser's.
+
+Mattermost creates and migrates its own schema, so it needs an account with
+rights in that database. The runtime role has none: it is granted CRUD on the
+tables switch-core's own migration created, in switch-core's own database, and
+nothing anywhere else. There is no isolation argument for restricting
+Mattermost either — its schema carries no row-level security and no tenant
+column — so the administrative account is simply the right one.
+
+In managed mode that is the bootstrapped superuser, unchanged: initdb creates
+the "mattermost" database as "postgres" and postgresql.owner.username does not
+move it, so this deliberately does not follow that value there.
+
+Existing mode is the case this exists for. switch.postgresSuperUser and
+switch.postgresUser both resolve to postgresql.external.username there, so the
+moment an operator repoints external.username at a restricted role — which is
+exactly what docs/old/rds-migration.md asks them to do — Mattermost would
+follow it onto a role with no rights in its database and fail to start. When an
+owner is configured, use it; when one is not, this is a deployment that has not
+split its roles yet and external.username is still the administrative account,
+which is the behaviour it has always had.
+
+The three helpers below share one condition, so it is written once and the
+other two ask it. It answers with a non-empty string or nothing, which is what
+`if` reads — deliberately not "true"/"false", since an `include` returning the
+string "false" is still truthy and inviting a reader to compare against it
+would be inviting a bug.
+*/}}
+{{- define "switch.mattermostUsesOwner" -}}
+{{- if and (eq .Values.postgresql.mode "existing") .Values.postgresql.owner.username -}}
+owner
+{{- end -}}
+{{- end }}
+
+{{- define "switch.mattermostDbUser" -}}
+{{- if include "switch.mattermostUsesOwner" . -}}
+{{- .Values.postgresql.owner.username -}}
+{{- else -}}
+{{- include "switch.postgresSuperUser" . -}}
+{{- end -}}
+{{- end }}
+
+{{- define "switch.mattermostDbSecretName" -}}
+{{- if include "switch.mattermostUsesOwner" . -}}
+{{- include "switch.postgresOwnerSecretName" . -}}
+{{- else -}}
+{{- include "switch.postgresSecretName" . -}}
+{{- end -}}
+{{- end }}
+
+{{- define "switch.mattermostDbSecretKey" -}}
+{{- if include "switch.mattermostUsesOwner" . -}}
+{{- include "switch.postgresOwnerSecretKey" . -}}
+{{- else -}}
+{{- include "switch.postgresSecretKey" . -}}
+{{- end -}}
 {{- end }}
 
 {{/*
