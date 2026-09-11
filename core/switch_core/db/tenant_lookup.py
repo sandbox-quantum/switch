@@ -128,7 +128,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 from dataclasses import dataclass
 
-from sqlalchemy import DDL, MetaData, event, text
+from sqlalchemy import DDL, MetaData, TextClause, event, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.tenant_context import no_tenant
@@ -312,6 +312,38 @@ def attach_tenant_lookups(metadata: MetaData) -> None:
 
 # ── Calling them ──────────────────────────────────────────────────────────────
 
+# One `text()` per lookup, written out rather than assembled from `lookup.name`
+# at call time: the seven names are fixed and known here, so there is nothing
+# for a call site to build. The assertion below is what keeps this dict from
+# quietly falling behind `TENANT_LOOKUPS` — an eighth lookup with no entry
+# here fails at import, not with a `KeyError` on whatever request reaches it
+# first.
+_LOOKUP_STATEMENTS: dict[str, TextClause] = {
+    "all_tenant_ids": text("SELECT tenant_id FROM all_tenant_ids() AS tenant_id"),
+    "tenants_of_user": text(
+        "SELECT tenant_id FROM tenants_of_user(:argument) AS tenant_id"
+    ),
+    "tenant_of_api_key": text(
+        "SELECT tenant_id FROM tenant_of_api_key(:argument) AS tenant_id"
+    ),
+    "tenant_of_agent_oauth_client": text(
+        "SELECT tenant_id FROM tenant_of_agent_oauth_client(:argument) AS tenant_id"
+    ),
+    "tenant_of_room": text(
+        "SELECT tenant_id FROM tenant_of_room(:argument) AS tenant_id"
+    ),
+    "tenant_of_collaboration_bridge": text(
+        "SELECT tenant_id FROM tenant_of_collaboration_bridge(:argument) AS tenant_id"
+    ),
+    "tenant_of_server_connector": text(
+        "SELECT tenant_id FROM tenant_of_server_connector(:argument) AS tenant_id"
+    ),
+}
+
+assert _LOOKUP_STATEMENTS.keys() == TENANT_LOOKUPS_BY_NAME.keys(), (
+    "_LOOKUP_STATEMENTS must carry exactly the names in TENANT_LOOKUPS"
+)
+
 
 async def _call(
     session_factory: async_sessionmaker[AsyncSession],
@@ -327,15 +359,11 @@ async def _call(
     is what enforces that now rather than an allowlist.
     """
     parameters: dict[str, object] = {}
-    call = f"{lookup.name}()"
     if lookup.parameter is not None:
         parameters["argument"] = argument
-        call = f"{lookup.name}(:argument)"
     with no_tenant():
         async with session_factory() as session:
-            result = await session.execute(
-                text(f"SELECT tenant_id FROM {call} AS tenant_id"), parameters
-            )
+            result = await session.execute(_LOOKUP_STATEMENTS[lookup.name], parameters)
             return [row[0] for row in result]
 
 
