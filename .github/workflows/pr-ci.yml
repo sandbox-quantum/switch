@@ -24,6 +24,7 @@ name: PR CI
 
 on:
   pull_request:
+  workflow_dispatch:
   push:
     branches: [main]
 
@@ -52,6 +53,7 @@ jobs:
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
       - name: Filter paths
+        if: ${{ github.event_name != 'workflow_dispatch' }}
         id: filter
         uses: dorny/paths-filter@d1c1ffe0248fe513906c8e24db8ea791d46f8590 # v3
         with:
@@ -93,7 +95,7 @@ jobs:
   backend:
     name: Backend (core)
     needs: changes
-    if: ${{ needs.changes.outputs.backend == 'true' || github.event_name == 'push' }}
+    if: ${{ needs.changes.outputs.backend == 'true' || github.event_name == 'push' || github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -127,7 +129,7 @@ jobs:
   console:
     name: Switch Console
     needs: changes
-    if: ${{ needs.changes.outputs.console == 'true' || github.event_name == 'push' }}
+    if: ${{ needs.changes.outputs.console == 'true' || github.event_name == 'push' || github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -193,7 +195,7 @@ jobs:
     # or Node toolchain, which is why this is its own small job rather than a
     # step inside the backend or console trees.
     needs: changes
-    if: ${{ needs.changes.outputs.artifacts == 'true' || github.event_name == 'push' }}
+    if: ${{ needs.changes.outputs.artifacts == 'true' || github.event_name == 'push' || github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -214,7 +216,7 @@ jobs:
   gateway:
     name: Gateway UI
     needs: changes
-    if: ${{ needs.changes.outputs.gateway == 'true' || github.event_name == 'push' }}
+    if: ${{ needs.changes.outputs.gateway == 'true' || github.event_name == 'push' || github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-latest
     defaults:
       run:
