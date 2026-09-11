@@ -9,6 +9,7 @@ from switch_core.authz import Principal, require
 from switch_core.db.models import RoomGroup, User
 from switch_core.db.stores.room_group_store import RoomGroupStore
 from switch_core.db.stores.room_store import RoomStore
+from switch_core.db.stores.user_store import UserStore
 from switch_core.gateway.auth import get_current_user
 from switch_core.gateway.dependencies import (
     get_room_group_store,
@@ -115,7 +116,7 @@ async def assign_rooms_to_group(
     if await room_group_store.get(session, group_id) is None:
         raise HTTPException(status_code=404, detail="Room group not found")
 
-    principal = Principal(user.id, user.role == "admin")
+    principal = Principal(user.id, await UserStore().administers(session, user))
     forbidden: list[str] = []
     allowed: list[str] = []
     for room_id in req.room_ids:

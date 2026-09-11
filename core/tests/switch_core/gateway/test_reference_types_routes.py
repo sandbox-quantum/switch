@@ -142,7 +142,12 @@ def _app() -> FastAPI:
     # stubbed. It is never called: a request with no cookie is refused
     # before it is touched.
     app.dependency_overrides[get_session_factory] = lambda: None
-    app.dependency_overrides[get_user_store] = lambda: None
+    # A real store, not `None`: authorizing now reads `UserStore.administers`
+    # before the route reaches the resource service. With no tenant bound —
+    # this app never runs `get_current_user`'s `tenant_scope` — that resolves
+    # from the operator bit alone without touching the stubbed session, so a
+    # real instance is safe here and a bare `None` no longer is.
+    app.dependency_overrides[get_user_store] = lambda: UserStore()
     app.dependency_overrides[get_config] = lambda: None
     app.dependency_overrides[get_resource_service] = lambda: None
     return app
@@ -352,7 +357,9 @@ class TestReferenceTypeCrudRoutes:
                 _create_request("notion"), session, svc, _USER_STORE, alice
             )
 
-            response = await delete_reference_type("notion", session, svc, alice)
+            response = await delete_reference_type(
+                "notion", session, svc, _USER_STORE, alice
+            )
 
             assert response.deleted_type == "notion"
             assert (
@@ -386,7 +393,7 @@ class TestReferenceTypeCrudRoutes:
             )
 
             with pytest.raises(HTTPException) as exc:
-                await delete_reference_type("notion", session, svc, alice)
+                await delete_reference_type("notion", session, svc, _USER_STORE, alice)
 
             assert exc.value.status_code == 409
             assert "cannot be deleted" in exc.value.detail

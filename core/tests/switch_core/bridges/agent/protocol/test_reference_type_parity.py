@@ -5,10 +5,10 @@ pins them to the same answer for the same principal: a filter added to one and
 not the other is a drift bug that no other test would catch.
 
 `ProtocolService.__init__` takes 17 required collaborators, so the service is
-built with `object.__new__` and the three attributes this method touches, per
+built with `object.__new__` and the four attributes this method touches, per
 `test_agent_detail_mcp_tools.py`. `_resolve_acting_identity` loads the owner
-with `session.get(User, ...)` on the live session rather than through
-`user_store`, so no `user_store` is needed here.
+with `session.get(User, ...)` on the live session, then reads
+`user_store.administers` for the owner's tenant-scoped admin bit.
 """
 
 from __future__ import annotations
@@ -52,6 +52,7 @@ def _protocol_service(
     svc.session_factory = session_factory  # type: ignore[attr-defined]
     svc.agent_store = AgentStore()  # type: ignore[attr-defined]
     svc.resource_service = resource_service  # type: ignore[attr-defined]
+    svc.user_store = _USER_STORE  # type: ignore[attr-defined]
     return svc
 
 

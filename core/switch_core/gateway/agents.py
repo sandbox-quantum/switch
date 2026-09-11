@@ -79,7 +79,10 @@ async def delete_agent_by_name(
     if agent is None:
         raise HTTPException(status_code=404, detail=f"Agent not found: {agent_name}")
     try:
-        require_manage(Principal(user.id, user.role == "admin"), agent.owner_id)
+        require_manage(
+            Principal(user.id, await UserStore().administers(session, user)),
+            agent.owner_id,
+        )
     except PermissionError:
         raise HTTPException(
             status_code=403,
@@ -106,7 +109,10 @@ async def delete_agent(
     if agent is None:
         raise HTTPException(status_code=404, detail=f"Agent not found: {agent_id}")
     try:
-        require_manage(Principal(user.id, user.role == "admin"), agent.owner_id)
+        require_manage(
+            Principal(user.id, await UserStore().administers(session, user)),
+            agent.owner_id,
+        )
     except PermissionError:
         raise HTTPException(
             status_code=403,
@@ -216,7 +222,10 @@ async def register_known_subagents(
             status_code=404, detail=f"Parent agent not found: {req.parent_agent_id}"
         )
     try:
-        require_manage(Principal(user.id, user.role == "admin"), parent.owner_id)
+        require_manage(
+            Principal(user.id, await UserStore().administers(session, user)),
+            parent.owner_id,
+        )
     except PermissionError as exc:
         raise HTTPException(
             status_code=403,
@@ -317,7 +326,10 @@ async def update_agent_options(
         raise HTTPException(status_code=404, detail=f"Agent not found: {agent_id}")
 
     try:
-        require_manage(Principal(user.id, user.role == "admin"), agent.owner_id)
+        require_manage(
+            Principal(user.id, await UserStore().administers(session, user)),
+            agent.owner_id,
+        )
     except PermissionError:
         raise HTTPException(
             status_code=403,
@@ -370,7 +382,10 @@ async def update_agent_icon(
         raise HTTPException(status_code=404, detail=f"Agent not found: {agent_id}")
 
     try:
-        require_manage(Principal(user.id, user.role == "admin"), agent.owner_id)
+        require_manage(
+            Principal(user.id, await UserStore().administers(session, user)),
+            agent.owner_id,
+        )
     except PermissionError:
         raise HTTPException(
             status_code=403,
@@ -420,7 +435,10 @@ async def update_agent_display_name(
         raise HTTPException(status_code=404, detail=f"Agent not found: {agent_id}")
 
     try:
-        require_manage(Principal(user.id, user.role == "admin"), agent.owner_id)
+        require_manage(
+            Principal(user.id, await UserStore().administers(session, user)),
+            agent.owner_id,
+        )
     except PermissionError:
         raise HTTPException(
             status_code=403,
@@ -509,7 +527,10 @@ async def update_addressing_policy(
         raise HTTPException(status_code=404, detail=f"Agent not found: {agent_id}")
 
     try:
-        require_manage(Principal(user.id, user.role == "admin"), agent.owner_id)
+        require_manage(
+            Principal(user.id, await UserStore().administers(session, user)),
+            agent.owner_id,
+        )
     except PermissionError:
         raise HTTPException(
             status_code=403,

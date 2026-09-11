@@ -164,7 +164,10 @@ async def _load_for_management(
             status_code=404, detail=f"Template not found: {template_id}"
         )
     try:
-        require_manage(Principal(user.id, user.role == "admin"), template.owner_id)
+        require_manage(
+            Principal(user.id, await UserStore().administers(session, user)),
+            template.owner_id,
+        )
     except PermissionError as e:
         raise HTTPException(status_code=403, detail=str(e)) from e
     return template

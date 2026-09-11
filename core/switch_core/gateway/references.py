@@ -167,7 +167,7 @@ async def list_reference_types(
     user: Annotated[User, Depends(get_current_user)],
 ) -> list[ReferenceTypeInfo]:
     views = await resource_service.list_reference_types_for_principal(
-        session, user_id=user.id, is_admin=user.role == "admin"
+        session, user_id=user.id, is_admin=await user_store.administers(session, user)
     )
     owners = await _owner_names(
         session, user_store, {v.owner_id for v in views if v.owner_id is not None}
@@ -186,7 +186,7 @@ async def list_owned_reference_types(
     user: Annotated[User, Depends(get_current_user)],
 ) -> list[ReferenceTypeDetail]:
     rows = await resource_service.list_owned_reference_types(
-        session, user_id=user.id, is_admin=user.role == "admin"
+        session, user_id=user.id, is_admin=await user_store.administers(session, user)
     )
     owners = await _owner_names(session, user_store, {e.row.owner_id for e in rows})
     return [_type_to_detail(e, owners.get(e.row.owner_id)) for e in rows]
@@ -235,7 +235,7 @@ async def patch_reference_type(
             session,
             type,
             user_id=user.id,
-            is_admin=user.role == "admin",
+            is_admin=await user_store.administers(session, user),
             display_name=req.display_name,
             instructions=req.instructions,
             value_hint=req.value_hint,
@@ -259,11 +259,15 @@ async def delete_reference_type(
     type: str,
     session: Annotated[AsyncSession, Depends(get_session)],
     resource_service: Annotated[ResourceService, Depends(get_resource_service)],
+    user_store: Annotated[UserStore, Depends(get_user_store)],
     user: Annotated[User, Depends(get_current_user)],
 ) -> ReferenceTypeDeleteResponse:
     try:
         await resource_service.delete_reference_type(
-            session, type, user_id=user.id, is_admin=user.role == "admin"
+            session,
+            type,
+            user_id=user.id,
+            is_admin=await user_store.administers(session, user),
         )
     except ReferenceTypeInUseError as e:
         raise HTTPException(status_code=409, detail=str(e)) from e
@@ -298,7 +302,7 @@ async def create_reference(
         ref = await resource_service.create_reference(
             session,
             owner_id=user.id,
-            is_admin=user.role == "admin",
+            is_admin=await user_store.administers(session, user),
             read_visibility=req.read_visibility,
             write_visibility=req.write_visibility,
             type=req.type,
@@ -323,7 +327,10 @@ async def get_reference(
 ) -> ReferenceDetail:
     try:
         ref = await resource_service.get_reference_for_user(
-            session, reference_id, user.id, is_admin=user.role == "admin"
+            session,
+            reference_id,
+            user.id,
+            is_admin=await user_store.administers(session, user),
         )
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
@@ -346,7 +353,7 @@ async def patch_reference(
             session,
             reference_id,
             user_id=user.id,
-            is_admin=user.role == "admin",
+            is_admin=await user_store.administers(session, user),
             name=req.name,
             description=req.description,
             instructions=req.instructions,
@@ -367,6 +374,7 @@ async def delete_reference(
     reference_id: str,
     session: Annotated[AsyncSession, Depends(get_session)],
     resource_service: Annotated[ResourceService, Depends(get_resource_service)],
+    user_store: Annotated[UserStore, Depends(get_user_store)],
     user: Annotated[User, Depends(get_current_user)],
 ) -> ReferenceDeleteResponse:
     affected_packages = await resource_service.list_packages_for_reference(
@@ -377,7 +385,7 @@ async def delete_reference(
             session,
             reference_id,
             user_id=user.id,
-            is_admin=user.role == "admin",
+            is_admin=await user_store.administers(session, user),
         )
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
@@ -396,11 +404,15 @@ async def list_rooms_for_reference(
     reference_id: str,
     session: Annotated[AsyncSession, Depends(get_session)],
     resource_service: Annotated[ResourceService, Depends(get_resource_service)],
+    user_store: Annotated[UserStore, Depends(get_user_store)],
     user: Annotated[User, Depends(get_current_user)],
 ) -> list[ResourceRoom]:
     try:
         await resource_service.get_reference_for_user(
-            session, reference_id, user.id, is_admin=user.role == "admin"
+            session,
+            reference_id,
+            user.id,
+            is_admin=await user_store.administers(session, user),
         )
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
@@ -436,12 +448,13 @@ async def attach_reference_to_room(
 ) -> ReferenceDetail:
     await require_room_access(session, room_store, room_id, user, "write")
     try:
+        is_admin = await user_store.administers(session, user)
         await resource_service.attach_reference_to_room(
             session,
             room_id,
             reference_id,
             user_id=user.id,
-            is_admin=user.role == "admin",
+            is_admin=is_admin,
         )
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
@@ -449,7 +462,7 @@ async def attach_reference_to_room(
         raise HTTPException(status_code=403, detail=str(e)) from e
     await session.commit()
     ref = await resource_service.get_reference_for_user(
-        session, reference_id, user.id, is_admin=user.role == "admin"
+        session, reference_id, user.id, is_admin=is_admin
     )
     return await _enrich_one(session, ref, resource_service, user_store)
 

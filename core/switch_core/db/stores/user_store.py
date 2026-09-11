@@ -6,12 +6,14 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from switch_core.authz import administers_tenant
 from switch_core.db.models import (
     OidcIdentity,
     TenantMember,
     User,
     require_tenant_id,
 )
+from switch_core.tenant_context import current_tenant_id
 
 logger = logging.getLogger(__name__)
 
@@ -297,3 +299,33 @@ class UserStore:
     async def get_all(self, session: AsyncSession) -> list[User]:
         result = await session.execute(select(User))
         return list(result.scalars().all())
+
+    async def tenant_role(
+        self, session: AsyncSession, tenant_id: str, user_id: str
+    ) -> str | None:
+        """`user_id`'s membership role in `tenant_id`, or None if not a member.
+
+        `TenantMember` is addressed by its whole primary key, so this is a
+        plain `session.get` rather than a query — same shape as
+        `ensure_membership`'s write.
+        """
+        membership = await session.get(TenantMember, (tenant_id, user_id))
+        return membership.role if membership is not None else None
+
+    async def administers(self, session: AsyncSession, user: User) -> bool:
+        """Whether `user` may administer the tenant bound to `session`'s
+        context — the operator bypass, or an owner/admin membership in it.
+
+        See `authz.administers_tenant`, which this composes with a read of the
+        one membership row that can answer "in *this* tenant". No tenant bound
+        answers with the operator bit alone: every gateway request binds one
+        by the time this is reachable, and nothing here should insist on a
+        precondition that authentication already enforces.
+        """
+        tenant_id = current_tenant_id()
+        role = (
+            None
+            if tenant_id is None
+            else await self.tenant_role(session, tenant_id, user.id)
+        )
+        return administers_tenant(is_operator=user.role == "admin", tenant_role=role)

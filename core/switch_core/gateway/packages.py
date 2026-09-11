@@ -143,7 +143,10 @@ async def get_package(
 ) -> PackageDetail:
     try:
         pkg = await resource_service.get_package_for_user(
-            session, package_id, user.id, is_admin=user.role == "admin"
+            session,
+            package_id,
+            user.id,
+            is_admin=await UserStore().administers(session, user),
         )
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
@@ -166,7 +169,7 @@ async def patch_package(
             session,
             package_id,
             user_id=user.id,
-            is_admin=user.role == "admin",
+            is_admin=await UserStore().administers(session, user),
             name=req.name,
             description=req.description,
             instructions=req.instructions,
@@ -193,7 +196,7 @@ async def delete_package(
             session,
             package_id,
             user_id=user.id,
-            is_admin=user.role == "admin",
+            is_admin=await UserStore().administers(session, user),
         )
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
@@ -212,7 +215,10 @@ async def list_rooms_for_package(
 ) -> list[ResourceRoom]:
     try:
         await resource_service.get_package_for_user(
-            session, package_id, user.id, is_admin=user.role == "admin"
+            session,
+            package_id,
+            user.id,
+            is_admin=await UserStore().administers(session, user),
         )
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
@@ -235,7 +241,10 @@ async def list_package_references(
 ) -> list[ReferenceDetail]:
     try:
         await resource_service.get_package_for_user(
-            session, package_id, user.id, is_admin=user.role == "admin"
+            session,
+            package_id,
+            user.id,
+            is_admin=await UserStore().administers(session, user),
         )
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
@@ -259,7 +268,7 @@ async def add_reference_to_package(
             package_id,
             reference_id,
             user_id=user.id,
-            is_admin=user.role == "admin",
+            is_admin=await UserStore().administers(session, user),
         )
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
@@ -282,7 +291,7 @@ async def remove_reference_from_package(
             package_id,
             reference_id,
             user_id=user.id,
-            is_admin=user.role == "admin",
+            is_admin=await UserStore().administers(session, user),
         )
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
@@ -308,7 +317,10 @@ async def list_package_documents(
 ) -> list[DocumentSummary]:
     try:
         await resource_service.get_package_for_user(
-            session, package_id, user.id, is_admin=user.role == "admin"
+            session,
+            package_id,
+            user.id,
+            is_admin=await UserStore().administers(session, user),
         )
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
@@ -334,7 +346,7 @@ async def add_document_to_package(
             package_id,
             document_id,
             user_id=user.id,
-            is_admin=user.role == "admin",
+            is_admin=await UserStore().administers(session, user),
         )
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
@@ -357,7 +369,7 @@ async def remove_document_from_package(
             package_id,
             document_id,
             user_id=user.id,
-            is_admin=user.role == "admin",
+            is_admin=await UserStore().administers(session, user),
         )
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
@@ -406,7 +418,7 @@ async def attach_package_to_room(
             room_id,
             package_id,
             user_id=user.id,
-            is_admin=user.role == "admin",
+            is_admin=await UserStore().administers(session, user),
         )
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
@@ -414,7 +426,10 @@ async def attach_package_to_room(
         raise HTTPException(status_code=403, detail=str(e)) from e
     await session.commit()
     pkg = await resource_service.get_package_for_user(
-        session, package_id, user.id, is_admin=user.role == "admin"
+        session,
+        package_id,
+        user.id,
+        is_admin=await UserStore().administers(session, user),
     )
     return await _enrich_one(session, pkg, resource_service, user_store)
 

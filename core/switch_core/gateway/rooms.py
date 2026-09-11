@@ -72,7 +72,11 @@ async def _require_room(
     if room is None:
         raise HTTPException(status_code=404, detail="Room not found")
     try:
-        require(Principal(user.id, user.role == "admin"), action, room)
+        require(
+            Principal(user.id, await UserStore().administers(session, user)),
+            action,
+            room,
+        )
     except PermissionError as e:
         raise HTTPException(status_code=403, detail=str(e)) from e
     return room
@@ -244,7 +248,7 @@ async def list_rooms(
     rooms = await room_store.list_readable(
         session,
         user.id,
-        is_admin=user.role == "admin",
+        is_admin=await user_store.administers(session, user),
         include_archived=include_archived,
     )
 
@@ -371,7 +375,9 @@ async def create_room(
 @router.post("/from-yaml", status_code=201)
 async def create_room_from_yaml(
     request: Request,
+    session: Annotated[AsyncSession, Depends(get_session)],
     rooms_yaml: Annotated[RoomYamlService, Depends(get_room_yaml_service)],
+    user_store: Annotated[UserStore, Depends(get_user_store)],
     user: Annotated[User, Depends(get_current_user)],
 ) -> ProvisionResult:
     """Provision a single room and its attachments from a YAML spec.
@@ -400,7 +406,7 @@ async def create_room_from_yaml(
             inputs = None
         spec = rooms_yaml.parse(text, inputs=inputs)
         return await rooms_yaml.provision(
-            spec, user_id=user.id, is_admin=user.role == "admin"
+            spec, user_id=user.id, is_admin=await user_store.administers(session, user)
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
@@ -847,9 +853,10 @@ async def bulk_delete_rooms(
     session: Annotated[AsyncSession, Depends(get_session)],
     room_service: Annotated[RoomService, Depends(get_room_service)],
     room_store: Annotated[RoomStore, Depends(get_room_store)],
+    user_store: Annotated[UserStore, Depends(get_user_store)],
     user: Annotated[User, Depends(get_current_user)],
 ) -> BulkDeleteResponse:
-    principal = Principal(user.id, user.role == "admin")
+    principal = Principal(user.id, await user_store.administers(session, user))
     deleted = 0
     for room_id in req.room_ids:
         room = await room_store.get(session, room_id)
@@ -872,12 +879,13 @@ async def bulk_archive_rooms(
     session: Annotated[AsyncSession, Depends(get_session)],
     room_service: Annotated[RoomService, Depends(get_room_service)],
     room_store: Annotated[RoomStore, Depends(get_room_store)],
+    user_store: Annotated[UserStore, Depends(get_user_store)],
     user: Annotated[User, Depends(get_current_user)],
 ) -> BulkArchiveResponse:
     """Archive or unarchive many rooms at once. Each room is authorized
     individually with the same `write` check as the single archive endpoint;
     rooms the caller cannot write (or that no longer exist) are skipped."""
-    principal = Principal(user.id, user.role == "admin")
+    principal = Principal(user.id, await user_store.administers(session, user))
     updated = 0
     for room_id in req.room_ids:
         room = await room_store.get(session, room_id)

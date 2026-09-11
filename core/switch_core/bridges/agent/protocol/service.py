@@ -2267,13 +2267,9 @@ class ProtocolService:
         )
 
         async with self.session_factory() as session:
-            agent = await self.agent_store.get(session, agent_id)
-            if agent is None:
-                raise ValueError(f"Unknown agent: {agent_id}")
-            owner_is_admin = False
-            if agent.owner_id is not None:
-                owner = await session.get(User, agent.owner_id)
-                owner_is_admin = owner is not None and owner.role == "admin"
+            agent, _owner_id, owner_is_admin = await self._resolve_acting_identity(
+                session, agent_id
+            )
             group_id = await self._resolve_group_name(session, group_name)
         if (reference_ids or package_ids) and agent.owner_id is None:
             raise ValueError(
@@ -2422,6 +2418,13 @@ class ProtocolService:
 
         Returns ``(agent, owner_id, owner_is_admin)``. Used by moderation
         methods that perform resource-access checks on the agent's behalf.
+
+        ``owner_is_admin`` is the owner's tenant-scoped administrative bit
+        (``UserStore.administers``), not the global operator flag alone: the
+        agent must not gain more than its owner holds in the tenant this
+        request is bound to. `session` is already scoped there by the time an
+        agent-bridge request reaches this method, so the read is the owner's
+        membership in the same tenant the agent itself belongs to.
         """
         agent = await self.agent_store.get(session, agent_id)
         if agent is None:
@@ -2429,7 +2432,9 @@ class ProtocolService:
         owner_is_admin = False
         if agent.owner_id is not None:
             owner = await session.get(User, agent.owner_id)
-            owner_is_admin = owner is not None and owner.role == "admin"
+            owner_is_admin = owner is not None and await self.user_store.administers(
+                session, owner
+            )
         return agent, agent.owner_id, owner_is_admin
 
     async def _require_room_action(
