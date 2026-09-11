@@ -24,7 +24,8 @@ import { mergeSwitchApiEndpoint } from './write-switch-settings';
 async function propagateLocal(
   dir: string,
   apiEndpoint: string,
-  relativePath: string
+  relativePath: string,
+  switchAgentId: string | null
 ): Promise<boolean> {
   const settingsPath = path.join(dir, relativePath);
 
@@ -38,6 +39,11 @@ async function propagateLocal(
     if (code !== 'ENOENT' && code !== 'ENOTDIR') throw error;
   }
 
+  if (relativePath === SWITCH_SETTINGS_RELATIVE_PATH) {
+    if (!switchAgentId || existingRaw === null) return false;
+    const legacy = JSON.parse(existingRaw) as { env?: { SWITCH_AGENT_ID?: string } } | null;
+    if (legacy?.env?.SWITCH_AGENT_ID !== switchAgentId) return false;
+  }
   const merged = mergeSwitchApiEndpoint(existingRaw, apiEndpoint);
   if (merged === null) {
     if (existingRaw !== null && relativePath !== SWITCH_SETTINGS_RELATIVE_PATH)
@@ -56,7 +62,8 @@ async function propagateRemote(
   sshHost: string,
   remoteRepoDir: string,
   apiEndpoint: string,
-  relativePath: string
+  relativePath: string,
+  switchAgentId: string | null
 ): Promise<boolean> {
   const proxy = await ensureSshConnected(sshConnectionIdForHost(sshHost), sshHost);
   const fs = new SshFileSystem(proxy, remoteRepoDir);
@@ -72,6 +79,11 @@ async function propagateRemote(
       }
     }
 
+    if (relativePath === SWITCH_SETTINGS_RELATIVE_PATH) {
+      if (!switchAgentId || existingRaw === null) return false;
+      const legacy = JSON.parse(existingRaw) as { env?: { SWITCH_AGENT_ID?: string } } | null;
+      if (legacy?.env?.SWITCH_AGENT_ID !== switchAgentId) return false;
+    }
     const merged = mergeSwitchApiEndpoint(existingRaw, apiEndpoint);
     if (merged === null) {
       if (existingRaw !== null && relativePath !== SWITCH_SETTINGS_RELATIVE_PATH)
@@ -104,8 +116,14 @@ async function propagateToAgent(
       SWITCH_SETTINGS_RELATIVE_PATH,
     ]) {
       updated = isRemote
-        ? await propagateRemote(sshHost, location.dir, apiEndpoint, relativePath)
-        : await propagateLocal(location.dir, apiEndpoint, relativePath);
+        ? await propagateRemote(
+            sshHost,
+            location.dir,
+            apiEndpoint,
+            relativePath,
+            agent.switchAgentId
+          )
+        : await propagateLocal(location.dir, apiEndpoint, relativePath, agent.switchAgentId);
       if (updated) break;
     }
 

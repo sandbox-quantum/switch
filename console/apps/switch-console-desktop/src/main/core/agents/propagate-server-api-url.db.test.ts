@@ -93,6 +93,7 @@ describe('propagateServerApiUrl', () => {
       id: 'agent-1',
       locationId: 'loc-1',
       name: 'provisioned-agent',
+      switchAgentId: 'switch-agent-1',
       providerId: 'claude',
       apiEndpoint: 'https://old-api.example.com',
       serverId: 'pilot',
@@ -146,16 +147,14 @@ describe('propagateServerApiUrl', () => {
       await fixture.db
         .insert(locations)
         .values({ id: 'named-location', name: 'Local', sshHost: '', dir });
-      await fixture.db
-        .insert(agents)
-        .values({
-          id: 'named-agent',
-          locationId: 'named-location',
-          name: 'named-agent',
-          providerId,
-          serverId: 'pilot',
-          apiEndpoint: env.SWITCH_API_ENDPOINT,
-        });
+      await fixture.db.insert(agents).values({
+        id: 'named-agent',
+        locationId: 'named-location',
+        name: 'named-agent',
+        providerId,
+        serverId: 'pilot',
+        apiEndpoint: env.SWITCH_API_ENDPOINT,
+      });
       expect(await propagateServerApiUrl('pilot', 'https://new-api.example.com')).toMatchObject([
         { agentId: 'named-agent', outcome: 'updated' },
       ]);
@@ -181,20 +180,53 @@ describe('propagateServerApiUrl', () => {
     await fixture.db
       .insert(locations)
       .values({ id: 'broken-location', name: 'Local', sshHost: '', dir });
-    await fixture.db
-      .insert(agents)
-      .values({
-        id: 'broken-agent',
-        locationId: 'broken-location',
-        name: 'broken-agent',
-        providerId: 'codex',
-        serverId: 'pilot',
-      });
+    await fixture.db.insert(agents).values({
+      id: 'broken-agent',
+      locationId: 'broken-location',
+      name: 'broken-agent',
+      providerId: 'codex',
+      serverId: 'pilot',
+    });
     expect(await propagateServerApiUrl('pilot', 'https://new-api.example.com')).toMatchObject([
       { agentId: 'broken-agent', outcome: 'failed', error: expect.stringContaining('invalid') },
     ]);
     expect(await nodeFs.readFile(file, 'utf8')).toBe('{');
     expect((await readEnv(dir)).SWITCH_API_ENDPOINT).toBe('https://old-api.example.com');
+  });
+
+  it('does not rewrite a legacy file owned by another agent in the same directory', async () => {
+    const dir = path.join(tmpRoot, 'shared-location');
+    await writeSettings(dir, {
+      env: {
+        SWITCH_API_ENDPOINT: 'https://other-api.example.com',
+        SWITCH_AGENT_ID: 'agent-b-identity',
+      },
+    });
+    await fixture.db
+      .insert(locations)
+      .values({ id: 'shared-location', name: 'Local', sshHost: '', dir });
+    await fixture.db.insert(agents).values([
+      {
+        id: 'agent-a',
+        locationId: 'shared-location',
+        name: 'agent-a',
+        providerId: 'codex',
+        serverId: 'pilot',
+        switchAgentId: 'agent-a-identity',
+      },
+      {
+        id: 'agent-b',
+        locationId: 'shared-location',
+        name: 'agent-b',
+        providerId: 'claude',
+        serverId: 'other',
+        switchAgentId: 'agent-b-identity',
+      },
+    ]);
+    expect(await propagateServerApiUrl('pilot', 'https://new-api.example.com')).toMatchObject([
+      { agentId: 'agent-a', outcome: 'not-provisioned' },
+    ]);
+    expect((await readEnv(dir)).SWITCH_API_ENDPOINT).toBe('https://other-api.example.com');
   });
 
   it('reports an unprovisioned agent as not-provisioned without writing a file', async () => {
