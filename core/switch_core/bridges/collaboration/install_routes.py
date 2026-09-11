@@ -1,4 +1,10 @@
-"""The public half of an install: the callback the platform redirects back to.
+"""The public half of an install: the OAuth callback, and the events after it.
+
+Everything here is unauthenticated in the sense that matters — no caller holds
+a credential of ours. A browser mid-redirect proves itself with a state we
+signed; a platform posting an event proves itself with a signature over the
+raw body. Neither is a session, and nothing here may assume a tenant before it
+has established one.
 
 Mounted on the agent-bridge app rather than inside `/gateway`, because this is
 the leg the outside world reaches. `/gateway` is not routed here from the
@@ -12,6 +18,9 @@ the gateway is on a private hostname and the callback is not. So the outcome is
 rendered here, in one self-contained page, on the origin the browser already
 reached. It is deliberately plain; when there is a place to send people, this
 becomes a redirect and the page becomes its fallback.
+
+The event routes answer nobody who reads English, so they answer in status
+codes and say the rest in the log.
 """
 
 from __future__ import annotations
@@ -19,16 +28,23 @@ from __future__ import annotations
 import html
 import logging
 
-from fastapi import APIRouter, Query
-from starlette.responses import HTMLResponse
+from fastapi import APIRouter, BackgroundTasks, Query, Request, Response
+from starlette.responses import HTMLResponse, PlainTextResponse
 
 from switch_core.bridges.collaboration.install import (
     PUBLIC_PATH_PREFIX,
+    InboundWebhook,
     MessagingInstallError,
+    WebhookAuthenticityError,
+    WebhookEndpoint,
+    WebhookPayloadError,
 )
 from switch_core.bridges.collaboration.install_service import (
     InstallPlatformMismatch,
     MessagingInstallService,
+    WebhookBridgeUnavailable,
+    WebhookTarget,
+    WebhookWorkspaceUnknown,
 )
 from switch_core.bridges.collaboration.install_state import InstallStateError
 from switch_core.db.stores.messaging_install_store import (
@@ -141,5 +157,114 @@ def create_messaging_install_router(
             ),
             status=200,
         )
+
+    async def _deliver(target: WebhookTarget, event: InboundWebhook) -> None:
+        """Handle one event after the platform has been answered.
+
+        Its own wrapper so a failure is logged here rather than raised into the
+        server's background-task machinery, where it would surface — if at all
+        — as an unattributed traceback with nothing in it naming the bridge.
+        """
+        try:
+            await service.deliver(target, event)
+        except Exception:
+            logger.exception(
+                "Failed to handle a %s event for bridge %s (tenant %s)",
+                event.envelope_type,
+                target.bridge_id,
+                target.tenant_id,
+            )
+
+    async def _inbound(
+        platform: str,
+        endpoint: WebhookEndpoint,
+        request: Request,
+        background: BackgroundTasks,
+    ) -> Response:
+        """One verified event, from any of a platform's three inbound URLs.
+
+        The status codes are read by the platform, not by a person, and they
+        are chosen for what it does with them. Slack retries a 5xx and gives up
+        on a 4xx, and counts failures against the app as a whole — so a
+        permanent condition must not look transient, and a transient one must
+        not look permanent.
+        """
+        body = await request.body()
+        try:
+            event = service.authenticate(
+                platform=platform,
+                endpoint=endpoint,
+                headers=dict(request.headers),
+                body=body,
+            )
+        except MessagingInstallError:
+            # No app registered for this platform, so nothing here could have
+            # signed anything. Not found rather than an explanation: the caller
+            # is unauthenticated and learns only that there is nothing here.
+            return Response(status_code=404)
+        except WebhookAuthenticityError as failure:
+            logger.warning("Refused an unverified %s webhook: %s", platform, failure)
+            return Response(status_code=401)
+        except WebhookPayloadError as failure:
+            # Verified, so this really is the platform sending something this
+            # build cannot read. Worth an error rather than a shrug — it is how
+            # a platform's change to its own payloads first becomes visible.
+            logger.error("Could not read a verified %s webhook: %s", platform, failure)
+            return Response(status_code=400)
+
+        if event.handshake is not None:
+            logger.info("Answered a %s URL verification", platform)
+            return PlainTextResponse(event.handshake)
+
+        try:
+            target = await service.resolve(platform=platform, event=event)
+        except WebhookPayloadError as failure:
+            logger.error(
+                "A verified %s event named no workspace: %s", platform, failure
+            )
+            return Response(status_code=400)
+        except WebhookWorkspaceUnknown as failure:
+            logger.warning("Dropped a %s event: %s", platform, failure)
+            return Response(status_code=404)
+        except WebhookBridgeUnavailable as failure:
+            # Deliberately a 503: the platform retrying is the right behaviour
+            # while a bridge restarts, and a 200 here would drop a real message
+            # on the floor and report that it had been handled.
+            logger.error("Could not deliver a %s event: %s", platform, failure)
+            return Response(status_code=503)
+
+        # Answered first, handled after. The platform's deadline is short and
+        # what happens next is not bounded by it — a turn can take minutes —
+        # so acknowledging on the way out is what keeps a slow room from
+        # becoming a retried, duplicated one.
+        background.add_task(_deliver, target, event)
+        return Response(status_code=200)
+
+    @router.post("/{platform}/events")
+    async def events(
+        platform: str, request: Request, background: BackgroundTasks
+    ) -> Response:
+        return await _inbound(platform, "events", request, background)
+
+    @router.post("/{platform}/interactive")
+    async def interactive(
+        platform: str, request: Request, background: BackgroundTasks
+    ) -> Response:
+        """Interactions with a message this app posted.
+
+        Routed like any other event and, on Slack today, handled by nothing:
+        the app declares an interactivity URL because features it does use
+        require one, and its stop button arrives as an ordinary event instead.
+        The route exists because the URL is declared — a declared URL that 404s
+        counts against the app — and because the alternative is deciding here,
+        rather than in the adapter, what a platform's interactions mean.
+        """
+        return await _inbound(platform, "interactive", request, background)
+
+    @router.post("/{platform}/commands")
+    async def commands(
+        platform: str, request: Request, background: BackgroundTasks
+    ) -> Response:
+        return await _inbound(platform, "commands", request, background)
 
     return router

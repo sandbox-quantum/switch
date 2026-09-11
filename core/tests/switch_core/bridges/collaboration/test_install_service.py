@@ -22,9 +22,11 @@ import pytest
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from switch_core.bridges.collaboration.install import (
+    InboundWebhook,
     InstallGrant,
     MessagingAppInstaller,
     MessagingInstallerRegistry,
+    WebhookEndpoint,
 )
 from switch_core.bridges.collaboration.install_service import (
     InstallPlatformMismatch,
@@ -80,6 +82,11 @@ class _FakeInstaller(MessagingAppInstaller):
 
     def verify_webhook(self, *, headers: Mapping[str, str], body: bytes) -> None:
         return None
+
+    def parse_webhook(
+        self, *, endpoint: WebhookEndpoint, body: bytes
+    ) -> InboundWebhook:
+        return InboundWebhook(envelope_type=endpoint, payload={}, handshake=None)
 
     def workspace_of_event(self, payload: Mapping[str, object]) -> str:
         return self.workspace_id
