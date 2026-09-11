@@ -46,6 +46,13 @@ be acknowledged without resubmitting it.
 
 ## Recovery guarantees
 
+A reported room-stream cursor reset is saved before delivery continues. Host
+restart uses the latest saved cursor, and room/message identities distinguish
+messages whose sequence numbers were reused after a server restart. Pending
+messages keep their server reservations. The current in-memory stream protocol
+only detects a server restart when the client cursor is ahead of the new buffer;
+it cannot identify a restart once the new buffer has passed that cursor.
+
 - Events, upload receipts, command states and room-message assignments are
   written to disk before their acknowledgement advances.
 - A lost upload acknowledgement is reconciled with the server. A duplicate
@@ -73,7 +80,8 @@ be acknowledged without resubmitting it.
   queues an interrupt (or a stop when interrupt is unsupported), without granting
   approval. Already-reserved answers are not cancelled by this timer. A callback
   whose outcome is uncertain is not invoked again.
-- Room replay gaps stop automatic delivery with a visible error. If the server
+- Room replay gaps and unaddressed-message counts are included in the next
+  delivered prompt so the agent can read room context. If the server
   has lost the evidence needed to verify a received message, the host retains
   its unacknowledged journal entry and stops. Review room context before
   starting further work; automatic recovery cannot reconstruct lost evidence.
@@ -98,7 +106,17 @@ transcript remains as history; earlier messages are not inserted into the new
 context. Reset requires an idle session with no queued turns or pending requests.
 Commands from the previous epoch cannot execute afterward. A crash between reset
 intent and durable completion leaves the reset unknown and blocks automatic resume.
-Review the outcome before replacing that session; recovery never retries reset.
+Recovery never retries that reset. When the host requests a decision, choose
+**Start a fresh conversation** to submit a new reset. The original outcome stays
+unknown, history is retained, and held room messages are delivered to the fresh
+conversation through the server's normal reservations. No candidate conversation
+from the interrupted reset is resumed automatically.
+
+If Codex reports that the saved conversation has no rollout, the host also waits
+for an explicit fresh reset. Some Codex versions do not save a new conversation
+until its first turn. Switch retains the transcript and never creates a replacement
+conversation or repeats a previous action automatically. Other startup failures
+remain visible errors.
 
 The model selector shows the native provider's model catalog and available options.
 The server and host reject unsupported selections and changes while work is pending.

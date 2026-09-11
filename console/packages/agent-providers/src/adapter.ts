@@ -145,6 +145,8 @@ export class ProviderSessionError extends Error {
   }
 }
 
+export class ProviderConversationUnavailableError extends ProviderSessionError {}
+
 export class ProviderUnavailableError extends Error {
   constructor(
     readonly provider: ProviderKind,

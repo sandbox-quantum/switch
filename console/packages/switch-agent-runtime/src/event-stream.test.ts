@@ -398,3 +398,66 @@ it('replays from an explicitly saved zero cursor instead of starting at head', a
     abort.abort();
   }
 });
+
+function resetFrames(url: string): Response {
+  if (!url.includes('/events')) return Response.json({});
+  return new Response(
+    new ReadableStream({
+      start(controller) {
+        controller.enqueue(
+          new TextEncoder().encode(
+            'event: gap\ndata: {"from_sequence":0,"resumed_at":0,"reason":"buffer reset"}\n\n' +
+              'id: 1\nevent: message\ndata: {"type":"message","room_id":"room","sequence":1}\n\n'
+          )
+        );
+      },
+    })
+  );
+}
+
+it('waits for durable reset checkpoint before advancing the cursor or delivering', async () => {
+  let finish!: () => void;
+  const saved = new Promise<void>((resolve) => {
+    finish = resolve;
+  });
+  const onGap = vi.fn(() => saved);
+  const onEvent = vi.fn();
+  const { stream, abort } = makeStream(
+    vi.fn(async (url: string) => resetFrames(url)),
+    { rooms: ['room'], startCursor: 4, onGap, onEvent }
+  );
+  try {
+    await vi.waitFor(() => expect(onGap).toHaveBeenCalledOnce());
+    expect(onGap).toHaveBeenCalledWith({
+      fromSequence: 0,
+      resumedAt: 0,
+      cursorReset: true,
+      reason: 'buffer reset',
+    });
+    expect(stream.position).toBe(4);
+    expect(onEvent).not.toHaveBeenCalled();
+    finish();
+    await vi.waitFor(() => expect(stream.position).toBe(1));
+    expect(onEvent).toHaveBeenCalledOnce();
+  } finally {
+    abort.abort();
+  }
+});
+
+it('does not advance or deliver when persisting the reset checkpoint fails', async () => {
+  const onGap = vi.fn(async () => {
+    throw new Error('journal unavailable');
+  });
+  const onEvent = vi.fn();
+  const { stream, abort } = makeStream(
+    vi.fn(async (url: string) => resetFrames(url)),
+    { rooms: ['room'], startCursor: 4, onGap, onEvent }
+  );
+  try {
+    await vi.waitFor(() => expect(onGap).toHaveBeenCalledOnce());
+    expect(stream.position).toBe(4);
+    expect(onEvent).not.toHaveBeenCalled();
+  } finally {
+    abort.abort();
+  }
+});

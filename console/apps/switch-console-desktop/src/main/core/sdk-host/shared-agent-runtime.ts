@@ -42,6 +42,23 @@ import { makePtyId } from '@shared/core/pty/ptyId';
 import type { Session } from '@shared/core/sessions/sessions';
 import type { SwitchServer } from '@shared/core/switch-servers/switch-servers';
 
+/** A host that stopped on an interrupted reset is online and waits for the user's explicit reset. */
+function awaitingResetDecision(snapshot: Snapshot): boolean {
+  return (
+    snapshot.session.status === 'error' &&
+    snapshot.session.capabilities.reset === true &&
+    !snapshot.turns.some((turn) => turn.status === 'queued' || turn.status === 'running') &&
+    !snapshot.requests.some((request) => request.state === 'open' || request.state === 'submitting')
+  );
+}
+
+function launchSettled(snapshot: Snapshot): boolean {
+  return (
+    ['ready', 'running', 'stopped'].includes(snapshot.session.status) ||
+    awaitingResetDecision(snapshot)
+  );
+}
+
 export class SharedAgentRuntime implements AgentRuntimeProvider {
   private server: SwitchServer | null = null;
   private starting: Promise<void> | null = null;
@@ -120,7 +137,7 @@ export class SharedAgentRuntime implements AgentRuntimeProvider {
         if (
           snapshot.session.epoch !== previousEpoch &&
           snapshot.session.connectivity === 'online' &&
-          ['ready', 'running', 'stopped'].includes(snapshot.session.status)
+          launchSettled(snapshot)
         )
           break;
       } catch (error) {
@@ -132,7 +149,7 @@ export class SharedAgentRuntime implements AgentRuntimeProvider {
       !snapshot ||
       snapshot.session.epoch === previousEpoch ||
       snapshot.session.connectivity !== 'online' ||
-      !['ready', 'running', 'stopped'].includes(snapshot.session.status)
+      !launchSettled(snapshot)
     )
       throw new Error(
         `Shared SDK host did not become ready. Inspect ${root}/supervisor.log on the execution host.`
@@ -146,7 +163,8 @@ export class SharedAgentRuntime implements AgentRuntimeProvider {
       switchRoomService.setSessionRoom(roomContext, intended.rooms[0], agent.switchAgentId, null);
     else await switchRoomService.restoreConnection(roomContext);
     switchNotificationPoller.clearSharedIntent(session.id);
-    await this.deliverInitialPrompt(session, initialPrompt, snapshot, server);
+    if (!awaitingResetDecision(snapshot))
+      await this.deliverInitialPrompt(session, initialPrompt, snapshot, server);
   }
 
   private async deliverInitialPrompt(

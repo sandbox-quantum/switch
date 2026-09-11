@@ -178,6 +178,32 @@ export function SessionV1Chat({
           </p>
         </div>
       )}
+      {session?.status === 'error' && !session.retired && session.capabilities.reset && (
+        <div role="alert" className="border-b border-border px-5 py-3 text-sm">
+          <p>This session cannot continue its conversation.</p>
+          <p>
+            You can start a fresh conversation and retain this history. Earlier unknown actions
+            remain unknown and will not be repeated automatically. Queued room messages will be
+            delivered to the fresh conversation.
+          </p>
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={
+              !view.connected ||
+              session.connectivity !== 'online' ||
+              sending ||
+              client.hasPendingCommand() ||
+              Boolean(runningTurn) ||
+              Boolean(view.snapshot?.turns.some((turn) => turn.status === 'queued')) ||
+              Boolean(session.pendingRequestIds.length)
+            }
+            onClick={() => void control({ type: 'session.reset' })}
+          >
+            Start a fresh conversation
+          </Button>
+        </div>
+      )}
       {session?.retired && (
         <div role="status" className="px-5 py-3 text-sm">
           This session was retired. Its history is retained; prior uncertain actions remain unknown.

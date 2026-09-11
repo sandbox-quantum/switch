@@ -65,3 +65,48 @@ it.skipIf(process.platform === 'win32')(
     }
   }
 );
+
+it('waits for confirmed exit after a transient permission error during group teardown', async () => {
+  const gone = Object.assign(new Error('Process exited'), { code: 'ESRCH' });
+  const denied = Object.assign(new Error('Permission denied'), { code: 'EPERM' });
+  const kill = vi
+    .spyOn(process, 'kill')
+    .mockImplementationOnce(() => {
+      throw gone;
+    })
+    .mockReturnValueOnce(true)
+    .mockReturnValueOnce(true)
+    .mockImplementationOnce(() => {
+      throw denied;
+    })
+    .mockImplementationOnce(() => {
+      throw gone;
+    });
+  try {
+    await expect(fenceDeadOwner(12345, 12345)).resolves.toBeUndefined();
+    expect(kill).toHaveBeenCalledTimes(5);
+  } finally {
+    kill.mockRestore();
+  }
+});
+
+it('does not assume a group is gone when permission stays denied', async () => {
+  const gone = Object.assign(new Error('Process exited'), { code: 'ESRCH' });
+  const denied = Object.assign(new Error('Permission denied'), { code: 'EPERM' });
+  const kill = vi
+    .spyOn(process, 'kill')
+    .mockImplementationOnce(() => {
+      throw gone;
+    })
+    .mockReturnValueOnce(true)
+    .mockReturnValueOnce(true)
+    .mockImplementation(() => {
+      throw denied;
+    });
+  try {
+    const result = expect(fenceDeadOwner(12345, 12345)).rejects.toThrow('has not exited');
+    await result;
+  } finally {
+    kill.mockRestore();
+  }
+}, 10000);

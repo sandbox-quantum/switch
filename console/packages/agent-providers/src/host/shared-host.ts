@@ -173,8 +173,9 @@ export async function runSharedHost(
   };
   const finish = async () => {
     if (starting) {
-      await adapter.stopSession(options.session.sessionId);
       starting = false;
+      if (adapter.hasSession(options.session.sessionId))
+        await adapter.stopSession(options.session.sessionId);
     }
     await stopExecution();
     if (host && delivery)
@@ -382,6 +383,7 @@ export async function runSharedHost(
       await upload(false);
     };
     let roomBinding: string | null = null;
+    let heldForDecision = false;
     while (!executionSignal.aborted) {
       await flush();
       if (rooms && options.roomConnection) {
@@ -395,10 +397,19 @@ export async function runSharedHost(
         }
       }
       if (host.snapshot().session.status === 'stopped') break;
-      if (host.snapshot().session.status === 'error')
+      if (host.snapshot().session.status === 'error' && !host.resetDecisionPending)
         throw new Error(
           'HOST_FAULTED: Provider execution failed. The room connection is closing; inspect the transcript before recovery.'
         );
+      if (host.resetDecisionPending) heldForDecision = true;
+      else if (heldForDecision) {
+        heldForDecision = false;
+        const held = rooms?.pending().length ?? 0;
+        if (held) {
+          await host.roomBacklogDelivered(held);
+          await flush();
+        }
+      }
       if (
         host.snapshot().session.status === 'ready' ||
         host.snapshot().session.status === 'running'
@@ -429,7 +440,7 @@ export async function runSharedHost(
               `Room message ${event.messageId} was not submitted: ${error.message}`
             );
           }
-          await rooms!.acknowledge(event.sequence);
+          await rooms!.acknowledge(event);
         }
       }
       const commands = await request(`${sessionPath}/commands`, hostLease);
@@ -474,7 +485,9 @@ export async function runSharedHost(
     try {
       await finish();
     } catch (error) {
-      failure = error;
+      if (failure)
+        console.warn('Shared host cleanup failed after an earlier error:', String(error));
+      failure ??= error;
     }
     executionSignal.removeEventListener('abort', onAbort);
   }

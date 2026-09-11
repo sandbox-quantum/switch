@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Command, Session } from '@switch-console/shared/session-v1';
 import { afterEach, expect, it, vi } from 'vitest';
-import type { ProviderAdapter } from '../adapter';
+import { ProviderConversationUnavailableError, type ProviderAdapter } from '../adapter';
 import type { ProviderRuntimeEvent } from '../events';
 import { HostedSession } from './session-host';
 
@@ -386,24 +386,121 @@ it('rejects reset with queued work or a pending native request', async () => {
   expect(host.snapshot().requests[0].state).toBe('open');
 });
 
+const interrupted: Command = { ...message('interrupted-reset'), body: { type: 'session.reset' } };
+async function undecided(nativeRecorded: boolean) {
+  const { host, root } = await start('claude');
+  await host.shutdown();
+  const line = (value: unknown) => JSON.stringify(value) + '\n';
+  await appendFile(
+    join(root, 'inbox.jsonl'),
+    line({ type: 'accepted', command: interrupted }) +
+      line({ type: 'dispatched', commandId: 'interrupted-reset' }) +
+      line({ type: 'reset-started' }) +
+      (nativeRecorded ? line({ type: 'native', nativeSessionId: 'possibly-created' }) : '')
+  );
+  const next = setup('claude');
+  const config = { ...next.config, stageAttachments: async () => [] };
+  const resumed = await HostedSession.start(root, config, next.adapter);
+  hosts.push(resumed);
+  return { ...next, root, host: resumed };
+}
+
 it.each([false, true])(
-  'does not recover an uncertain reset (native ID recorded: %s)',
+  'opens an uncertain reset for an explicit decision (native ID recorded: %s)',
   async (nativeRecorded) => {
-    const { host, root } = await start('claude');
-    await host.shutdown();
-    await appendFile(join(root, 'inbox.jsonl'), JSON.stringify({ type: 'reset-started' }) + '\n');
-    if (nativeRecorded)
-      await appendFile(
-        join(root, 'inbox.jsonl'),
-        JSON.stringify({ type: 'native', nativeSessionId: 'possibly-created' }) + '\n'
-      );
-    const next = setup('claude');
-    await expect(HostedSession.start(root, next.config, next.adapter)).rejects.toThrow(
-      'RESET_OUTCOME_UNKNOWN'
-    );
-    expect(next.adapter.startSession).not.toHaveBeenCalled();
+    const { host, adapter } = await undecided(nativeRecorded);
+    expect(adapter.startSession).not.toHaveBeenCalled();
+    expect(host.resetDecisionPending).toBe(true);
+    expect(host.snapshot().session.status).toBe('error');
+    expect(host.snapshot().session.capabilities).toMatchObject({
+      reset: true,
+      modelChange: false,
+      compact: false,
+      attachmentMimeTypes: [],
+    });
+    expect(
+      host
+        .replay(0)
+        .events.filter(
+          (event) => event.body.type === 'notice' && event.body.code === 'RESET_OUTCOME_UNKNOWN'
+        )
+    ).toHaveLength(1);
+    expect(host.status('interrupted-reset')).toMatchObject({
+      status: 'unknown',
+      code: 'HOST_RESTARTED',
+    });
   }
 );
+
+it('rejects other commands while the reset outcome is undecided', async () => {
+  const { host, adapter } = await undecided(true);
+  const blocked = message('blocked');
+  const error = await host.command(blocked).catch((reason: unknown) => reason);
+  expect(String(error)).toContain('UNSUPPORTED_CAPABILITY: RESET_OUTCOME_UNKNOWN');
+  await host.reject(blocked, error);
+  expect(host.status('blocked')).toMatchObject({ status: 'rejected', code: 'COMMAND_REJECTED' });
+  await expect(
+    host.command({ ...message('compact'), body: { type: 'session.compact' } })
+  ).rejects.toThrow('UNSUPPORTED_CAPABILITY: RESET_OUTCOME_UNKNOWN');
+  expect(adapter.sendTurn).not.toHaveBeenCalled();
+  expect(host.snapshot().session.status).toBe('error');
+  expect(
+    host
+      .replay(0)
+      .events.some((event) => event.body.type === 'notice' && event.body.code === 'HOST_ERROR')
+  ).toBe(false);
+});
+
+it('starts a fresh conversation when the user decides an uncertain reset', async () => {
+  const { host, adapter } = await undecided(true);
+  const reset: Command = { ...message('decided-reset'), body: { type: 'session.reset' } };
+  expect((await host.command(reset)).status).toBe('applied');
+  expect(adapter.stopSession).not.toHaveBeenCalled();
+  expect(adapter.startSession).toHaveBeenCalledOnce();
+  expect(vi.mocked(adapter.startSession).mock.calls[0][0].resume).toBeUndefined();
+  await vi.waitFor(() => expect(host.snapshot().session.status).toBe('ready'));
+  expect(host.resetDecisionPending).toBe(false);
+  expect(host.snapshot().session.capabilities.attachmentMimeTypes.length).toBeGreaterThan(0);
+  expect(host.status('interrupted-reset')).toMatchObject({
+    status: 'unknown',
+    code: 'HOST_RESTARTED',
+  });
+  expect(
+    host
+      .replay(0)
+      .events.some((event) => event.body.type === 'notice' && event.body.code === 'CONTEXT_RESET')
+  ).toBe(true);
+  const fresh = { ...message('after-decision'), epoch: host.snapshot().session.epoch };
+  expect((await host.command(fresh)).status).toBe('applied');
+});
+
+it('stops an undecided session without touching an unstarted provider', async () => {
+  const { host, adapter, root } = await undecided(false);
+  expect((await host.command({ ...message('stop'), body: { type: 'session.stop' } })).status).toBe(
+    'applied'
+  );
+  expect(adapter.stopSession).not.toHaveBeenCalled();
+  expect(host.snapshot().session.status).toBe('stopped');
+  await host.shutdown();
+  const next = setup('claude');
+  const resumed = await HostedSession.start(root, next.config, next.adapter);
+  hosts.push(resumed);
+  expect(resumed.snapshot().session.status).toBe('stopped');
+  expect(next.adapter.startSession).not.toHaveBeenCalled();
+});
+
+it('resumes an ordinary interrupted session without a reset decision', async () => {
+  const { host, root } = await start('claude');
+  await host.shutdown();
+  const next = setup('claude');
+  const resumed = await HostedSession.start(root, next.config, next.adapter);
+  hosts.push(resumed);
+  expect(next.adapter.startSession).toHaveBeenCalledWith(
+    expect.objectContaining({ resume: { nativeSessionId: 'native' } })
+  );
+  expect(resumed.resetDecisionPending).toBe(false);
+  await vi.waitFor(() => expect(resumed.snapshot().session.status).toBe('ready'));
+});
 
 it('validates native model choices and persists a confirmed choice across restart', async () => {
   const root = await mkdtemp(join(tmpdir(), 'sdk-model-test-'));
@@ -601,4 +698,46 @@ it('rejects unsupported native compaction without faulting the session', async (
     await host.shutdown();
     await rm(root, { recursive: true, force: true });
   }
+});
+
+it('requires an explicit fresh reset when the provider cannot resume the saved conversation', async () => {
+  const { host, root } = await start('codex');
+  await host.shutdown();
+  const next = setup('codex');
+  vi.mocked(next.adapter.startSession).mockRejectedValueOnce(
+    new ProviderConversationUnavailableError('codex', 'session', 'Saved conversation unavailable')
+  );
+  const recovered = await HostedSession.start(root, next.config, next.adapter);
+  hosts.push(recovered);
+  expect(recovered.resetDecisionPending).toBe(true);
+  expect(recovered.snapshot().session.status).toBe('error');
+  expect(next.adapter.startSession).toHaveBeenCalledTimes(1);
+  expect(next.adapter.startSession).toHaveBeenCalledWith(
+    expect.objectContaining({
+      resume: { nativeSessionId: 'native' },
+    })
+  );
+  await expect(
+    recovered.command({ ...message('held'), epoch: recovered.snapshot().session.epoch })
+  ).rejects.toThrow('NATIVE_CONVERSATION_UNAVAILABLE');
+  expect(next.adapter.sendTurn).not.toHaveBeenCalled();
+  const receipt = await recovered.command({
+    ...message('fresh'),
+    epoch: recovered.snapshot().session.epoch,
+    body: { type: 'session.reset' },
+  });
+  expect(receipt.status).toBe('applied');
+  expect(next.adapter.startSession).toHaveBeenCalledTimes(2);
+  expect(vi.mocked(next.adapter.startSession).mock.calls[1][0].resume).toBeUndefined();
+  expect(recovered.resetDecisionPending).toBe(false);
+});
+
+it('does not present authentication or transport failures as a missing conversation', async () => {
+  const { host, root } = await start('codex');
+  await host.shutdown();
+  const next = setup('codex');
+  vi.mocked(next.adapter.startSession).mockRejectedValueOnce(new Error('Authentication failed'));
+  await expect(HostedSession.start(root, next.config, next.adapter)).rejects.toThrow(
+    'Authentication failed'
+  );
 });

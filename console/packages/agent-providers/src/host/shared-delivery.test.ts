@@ -1,8 +1,9 @@
-import { randomUUID } from 'node:crypto';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { createHash, randomUUID } from 'node:crypto';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { ServerEvent, Session } from '@switch-console/shared/session-v1';
+import { parseHostEvent } from '@switch-console/shared/session-v1';
+import type { HostEvent, ServerEvent, Session } from '@switch-console/shared/session-v1';
 import { afterEach, expect, it } from 'vitest';
 import { SharedDelivery } from './shared-delivery';
 
@@ -10,7 +11,44 @@ const roots: string[] = [];
 afterEach(async () => {
   for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true });
 });
-const session = { sessionId: 'session', epoch: 'epoch' } as Session;
+const generation = (epoch: string): Session => ({
+  sessionId: 'session',
+  agentId: 'agent',
+  hostId: 'host',
+  provider: 'claude',
+  epoch,
+  status: 'ready',
+  connectivity: 'online',
+  pendingRequestIds: [],
+  capabilities: {
+    input: 'queue',
+    approvals: true,
+    questions: true,
+    interrupt: true,
+    reset: true,
+    compact: false,
+    modelChange: false,
+    attachmentMimeTypes: [],
+  },
+});
+const session = generation('epoch');
+const next = generation('next');
+const saved = (sourceSequence: number, hostSequence: number, body: HostEvent['body']) =>
+  JSON.stringify({
+    type: 'event',
+    sourceSequence,
+    event: {
+      contractVersion: 1,
+      eventId: randomUUID(),
+      sessionId: session.sessionId,
+      epoch: next.epoch,
+      hostSequence,
+      occurredAt: new Date().toISOString(),
+      body,
+    },
+  }) + '\n';
+const deliveryPath = (root: string, epoch: string) =>
+  join(root, `delivery-${createHash('sha256').update(epoch).digest('hex')}.jsonl`);
 const event = (sequence: number): ServerEvent => ({
   contractVersion: 1,
   sessionId: session.sessionId,
@@ -55,4 +93,122 @@ it('persists filtered source events without allocating upload positions', async 
   await next.capture(event(3));
   expect(next.pending()[0]).toMatchObject({ epoch: 'next', hostSequence: 1 });
   expect((await SharedDelivery.load(root, session)).cursor).toBe(2);
+});
+
+it('replaces prior-generation session state with a notice at its upload position', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'shared-delivery-'));
+  roots.push(root);
+  const delivery = await SharedDelivery.load(root, next);
+  await delivery.capture({
+    ...event(1),
+    body: { type: 'session.upsert', session: { ...session, status: 'error' } },
+  });
+  expect(delivery.cursor).toBe(1);
+  expect(delivery.pending()[0]).toMatchObject({
+    epoch: next.epoch,
+    hostSequence: 1,
+    body: {
+      type: 'notice',
+      level: 'info',
+      code: 'PRIOR_GENERATION_STATE_SKIPPED',
+      message: `Session state from generation ${session.epoch} was not replayed into generation ${next.epoch}.`,
+    },
+  });
+  await delivery.capture({ ...event(2), body: { type: 'session.upsert', session: next } });
+  await delivery.capture(event(3));
+  expect(delivery.pending().map((pending) => pending.body.type)).toEqual([
+    'notice',
+    'session.upsert',
+    'notice',
+  ]);
+  for (const pending of delivery.pending()) expect(parseHostEvent(pending)).toEqual(pending);
+});
+
+it('reopens a journal holding prior-generation state without losing the events behind it', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'shared-delivery-'));
+  roots.push(root);
+  await writeFile(
+    deliveryPath(root, next.epoch),
+    saved(160, 1, { type: 'session.upsert', session: { ...session, status: 'error' } }) +
+      saved(161, 2, {
+        type: 'notice',
+        level: 'error',
+        code: 'HOST_ERROR',
+        message: 'Reset failed',
+      }) +
+      saved(162, 3, {
+        type: 'command.result',
+        commandId: 'reset',
+        status: 'unknown',
+        code: null,
+        message: null,
+      })
+  );
+  const delivery = await SharedDelivery.load(root, next, 159);
+  const pending = delivery.pending();
+  expect(pending).toHaveLength(3);
+  expect(pending[0]).toMatchObject({
+    hostSequence: 1,
+    body: { type: 'notice', code: 'PRIOR_GENERATION_STATE_SKIPPED' },
+  });
+  expect(pending.map((event) => event.body.type)).toEqual(['notice', 'notice', 'command.result']);
+  for (const event of pending) expect(parseHostEvent(event)).toEqual(event);
+  expect(delivery.cursor).toBe(162);
+  expect(delivery.throughHostSequence).toBe(3);
+});
+
+it('records a substitution so the acknowledgement of its notice survives a reopen', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'shared-delivery-'));
+  roots.push(root);
+  await writeFile(
+    deliveryPath(root, next.epoch),
+    saved(160, 1, { type: 'session.upsert', session: { ...session, status: 'error' } }) +
+      saved(161, 2, {
+        type: 'command.result',
+        commandId: 'reset',
+        status: 'unknown',
+        code: null,
+        message: null,
+      })
+  );
+  const first = await SharedDelivery.load(root, next, 159);
+  expect(first.pending()[0]).toMatchObject({
+    hostSequence: 1,
+    body: { type: 'notice', code: 'PRIOR_GENERATION_STATE_SKIPPED' },
+  });
+  await first.acknowledge(2);
+  const reopened = await SharedDelivery.load(root, next, 159);
+  expect(reopened.pending()).toHaveLength(0);
+  expect(reopened.throughHostSequence).toBe(2);
+  const lines = (await readFile(deliveryPath(root, next.epoch), 'utf8')).trim().split('\n');
+  expect(lines.filter((line) => line.includes('"substituted"'))).toHaveLength(1);
+});
+
+it('refuses a legacy journal that acknowledges prior-generation state without a record', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'shared-delivery-'));
+  roots.push(root);
+  await writeFile(
+    deliveryPath(root, next.epoch),
+    saved(160, 1, { type: 'session.upsert', session: { ...session, status: 'error' } }) +
+      JSON.stringify({ type: 'ack', sequence: 1 }) +
+      '\n'
+  );
+  await expect(SharedDelivery.load(root, next, 159)).rejects.toThrow(
+    'without a substitution record'
+  );
+});
+
+it('refuses a journal whose saved envelope belongs elsewhere', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'shared-delivery-'));
+  roots.push(root);
+  const body: HostEvent['body'] = {
+    type: 'session.upsert',
+    session: { ...session, status: 'error' },
+  };
+  await writeFile(deliveryPath(root, next.epoch), saved(1, 1, body).replace(next.epoch, 'other'));
+  await expect(SharedDelivery.load(root, next)).rejects.toThrow('invalid event identity');
+  await writeFile(deliveryPath(root, next.epoch), saved(1, 2, body));
+  await expect(SharedDelivery.load(root, next)).rejects.toThrow('invalid event identity');
+  await writeFile(deliveryPath(root, next.epoch), saved(2, 1, body));
+  await expect(SharedDelivery.load(root, next)).rejects.toThrow('gap in its source cursor');
 });
