@@ -22,7 +22,7 @@ from switch_core.gateway.dependencies import (
     get_session_factory,
     get_user_store,
 )
-from switch_core.logging_context import bind_log_context, unbind_log_context
+from switch_core.logging_context import log_context
 from switch_core.tenant_context import tenant_scope
 
 logger = logging.getLogger(__name__)
@@ -223,16 +223,12 @@ async def get_current_user(
 
     tenant_id = await _resolve_tenant_id(session_factory, user_store, user_id)
 
-    with tenant_scope(tenant_id):
-        log_token = bind_log_context(user_id=user_id, tenant_id=tenant_id)
-        try:
-            user = await user_store.get(session, user_id)
-            if user is None:
-                # Deleted between the two reads; rare, and still not a 500.
-                raise HTTPException(status_code=401, detail="User not found")
-            yield user
-        finally:
-            unbind_log_context(log_token)
+    with tenant_scope(tenant_id), log_context(user_id=user_id, tenant_id=tenant_id):
+        user = await user_store.get(session, user_id)
+        if user is None:
+            # Deleted between the two reads; rare, and still not a 500.
+            raise HTTPException(status_code=401, detail="User not found")
+        yield user
 
 
 async def require_admin(

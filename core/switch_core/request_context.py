@@ -17,7 +17,7 @@ from uuid import uuid4
 
 from starlette.types import ASGIApp, Receive, Scope, Send
 
-from switch_core.logging_context import bind_log_context, unbind_log_context
+from switch_core.logging_context import log_context
 
 _REQUEST_ID_HEADER = b"x-request-id"
 # An id from a caller is untrusted input that ends up in every log line for the
@@ -34,11 +34,8 @@ class RequestContextMiddleware:
             await self.app(scope, receive, send)
             return
 
-        token = bind_log_context(request_id=_request_id(scope))
-        try:
+        with log_context(request_id=_request_id(scope)):
             await self.app(scope, receive, send)
-        finally:
-            unbind_log_context(token)
 
 
 def _request_id(scope: Scope) -> str:

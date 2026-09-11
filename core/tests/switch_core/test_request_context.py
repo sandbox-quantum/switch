@@ -1,7 +1,11 @@
+import contextvars
+from collections.abc import Coroutine, Generator
+from typing import Any
+
 import pytest
 from starlette.types import Receive, Scope, Send
 
-from switch_core.logging_context import LogContext, current_log_context
+from switch_core.logging_context import LogContext, current_log_context, log_context
 from switch_core.request_context import RequestContextMiddleware
 
 
@@ -88,6 +92,40 @@ async def test_the_context_is_unbound_when_the_app_raises() -> None:
         await RequestContextMiddleware(_Failing())(_scope([]), _receive, _send)
 
     assert current_log_context().request_id is None
+
+
+class _Suspend:
+    """An await that suspends once, so a coroutine can be left mid-scope with
+    no event loop in sight."""
+
+    def __await__(self) -> Generator[None, None, None]:
+        yield
+
+
+def _drive_then_finalise_elsewhere(coro: Coroutine[Any, Any, None]) -> None:
+    """Enter the scope inside its own context, then close from this one —
+    what the garbage collector does to a coroutine dropped while suspended."""
+    contextvars.copy_context().run(coro.send, None)
+    coro.close()
+
+
+async def test_the_context_survives_being_closed_from_another_context() -> None:
+    """A downstream app dropped while suspended and finalised by the garbage
+    collector must not raise trying to restore the request-id token from the
+    wrong context."""
+
+    class _Hanging:
+        async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+            await _Suspend()
+
+    mw = RequestContextMiddleware(_Hanging())
+
+    with log_context(request_id="caller"):
+        _drive_then_finalise_elsewhere(mw(_scope([]), _receive, _send))
+        assert current_log_context().request_id == "caller", (
+            "finalising a dropped downstream coroutine leaked its log "
+            "context into the collector's context"
+        )
 
 
 async def test_lifespan_traffic_is_passed_through_untouched() -> None:
