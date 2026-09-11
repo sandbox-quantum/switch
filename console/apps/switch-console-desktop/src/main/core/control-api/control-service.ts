@@ -119,60 +119,6 @@ class ControlService implements IInitializable, IDisposable {
         sendJson(res, 200, { ok: true });
       }
     );
-
-    this.server.route('POST', '/agents/:agentId/sidecar/restart', async (_req, res, params) => {
-      const agent = await getAgentById(params['agentId']!);
-      if (!agent) {
-        sendJson(res, 404, { error: 'agent not found' });
-        return;
-      }
-      try {
-        const { sidecarController } = await import('@main/core/sidecar/controller');
-        const status = await sidecarController.restart(agent.id);
-        sendJson(res, 200, { status });
-      } catch (err) {
-        log.warn('ControlService: sidecar restart failed', {
-          agentId: agent.id,
-          error: String(err),
-        });
-        sendJson(res, 500, { error: 'sidecar-restart-failed' });
-      }
-    });
-
-    this.server.route('POST', '/agents/:agentId/sidecar/stop', async (_req, res, params) => {
-      const agent = await getAgentById(params['agentId']!);
-      if (!agent) {
-        sendJson(res, 404, { error: 'agent not found' });
-        return;
-      }
-      try {
-        const { sidecarController } = await import('@main/core/sidecar/controller');
-        const status = await sidecarController.stop(agent.id);
-        sendJson(res, 200, { status });
-      } catch (err) {
-        log.warn('ControlService: sidecar stop failed', { agentId: agent.id, error: String(err) });
-        sendJson(res, 500, { error: 'sidecar-stop-failed' });
-      }
-    });
-
-    this.server.route('GET', '/agents/:agentId/sidecar/status', async (_req, res, params) => {
-      const agent = await getAgentById(params['agentId']!);
-      if (!agent) {
-        sendJson(res, 404, { error: 'agent not found' });
-        return;
-      }
-      try {
-        const { sidecarController } = await import('@main/core/sidecar/controller');
-        const status = await sidecarController.getStatus(agent.id);
-        sendJson(res, 200, { status });
-      } catch (err) {
-        log.warn('ControlService: sidecar status failed', {
-          agentId: agent.id,
-          error: String(err),
-        });
-        sendJson(res, 500, { error: 'sidecar-status-failed' });
-      }
-    });
   }
 
   private tokenFilePath(): string {

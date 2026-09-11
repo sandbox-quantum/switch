@@ -1,0 +1,386 @@
+import { readFile } from 'node:fs/promises';
+import path from 'node:path';
+import type { Harness } from './harness.ts';
+import { sleep, type MattermostPost } from './mattermost-client.ts';
+
+/**
+ * The scenarios. Each one drives the full path
+ *
+ *     Mattermost channel -> Switch room -> Switch Console session -> agent -> room
+ *
+ * by posting as a human and waiting on what the agent's bot posts back. Nothing
+ * here talks to Switch Console directly: if a scenario passes, a real operator
+ * doing the same thing by hand would have seen the same result.
+ *
+ * A scenario **never throws past its own boundary** — a failure is a
+ * `{ ok: false }` result carrying the transcript it did see, so one broken
+ * behaviour does not hide the other three.
+ */
+
+export interface ScenarioResult {
+  name: string;
+  ok: boolean;
+  details: string;
+  transcript: MattermostPost[];
+  durationMs: number;
+}
+
+export type Scenario = (harness: Harness) => Promise<ScenarioResult>;
+
+/** How long a scenario waits for the agent to say something. */
+const REPLY_DEADLINE_MS = Number(process.env.SWITCH_E2E_REPLY_TIMEOUT_MS ?? 5 * 60_000);
+
+/**
+ * Phrases Switch itself posts **as the agent's own bot** when there is no live
+ * session — the onboarding notice, and the command handlers' refusals.
+ *
+ * They have to be recognised rather than treated as agent output, because they
+ * are indistinguishable from it by author: verified against a live server, the
+ * "I'm not online in this room" notice arrives from the agent's bot account, not
+ * from the Switch Admin bot. A scenario that accepts any bot post therefore
+ * passes with no session running at all — which is exactly the silent-green
+ * failure this harness exists to rule out.
+ */
+const NO_SESSION_MARKERS = [
+  "i'm not online in this room",
+  "i don't have a session connected to this room",
+  "isn't reporting as live",
+  'no active session in this room',
+  "i can't be interrupted",
+  'this isn’t supported for me',
+  "my session wasn't started from switch console",
+  'open switch console to bring me online',
+];
+
+/** Whether a post is one of Switch's own no-session notices rather than agent output. */
+export function isNoSessionNotice(post: MattermostPost): boolean {
+  const text = post.message.toLowerCase();
+  return NO_SESSION_MARKERS.some((marker) => text.includes(marker));
+}
+
+/**
+ * Switch's own running commentary, posted **as the agent's bot** while a session
+ * works: the activity ticker, the "needs your input" ping, the acknowledgement
+ * of a control command.
+ *
+ * They have to be told apart from agent output for the same reason as the
+ * no-session notices — the author is identical. A runtime status message is not evidence that an agent performed a task.
+ */
+const RUNTIME_STATUS_MARKERS = [
+  '_working on it…_',
+  '✓ done ·',
+  '✓ input received',
+  'needs your input.',
+  'starting a session to handle this',
+  'interrupted my current turn',
+];
+
+/** Whether a post is Switch narrating the session rather than the agent speaking. */
+export function isRuntimeStatusPost(post: MattermostPost): boolean {
+  const text = post.message.toLowerCase();
+  return RUNTIME_STATUS_MARKERS.some((marker) => text.includes(marker));
+}
+
+/**
+ * Turn a no-session notice into the failure it is. Every scenario funnels its
+ * "the agent said nothing useful" path through here so the report names the
+ * cause — no session — instead of a bare timeout.
+ */
+function assertNotNoSession(posts: MattermostPost[]): void {
+  const notice = posts.find(isNoSessionNotice);
+  if (notice) {
+    throw new Error(
+      `No live Switch Console session for this agent — Switch answered on its behalf: ` +
+        `«${notice.message.replace(/\s+/g, ' ').slice(0, 200)}»`
+    );
+  }
+}
+
+/** The marker the agent is asked to echo — distinctive enough to grep a channel for. */
+export const OK_MARKER = 'SWITCH_E2E_OK';
+
+/**
+ * Wrap a scenario body so it always resolves to a result. An exception becomes
+ * `ok: false` with the message as `details`; the transcript collected so far is
+ * whatever the body managed to record.
+ */
+async function scenario(
+  name: string,
+  body: (record: (posts: MattermostPost[]) => void) => Promise<string>
+): Promise<ScenarioResult> {
+  const started = Date.now();
+  let transcript: MattermostPost[] = [];
+  const record = (posts: MattermostPost[]): void => {
+    const seen = new Set(transcript.map((post) => post.id));
+    transcript = [...transcript, ...posts.filter((post) => !seen.has(post.id))].sort(
+      (a, b) => a.create_at - b.create_at
+    );
+  };
+
+  try {
+    const details = await body(record);
+    return { name, ok: true, details, transcript, durationMs: Date.now() - started };
+  } catch (error) {
+    return {
+      name,
+      ok: false,
+      details: error instanceof Error ? error.message : String(error),
+      transcript,
+      durationMs: Date.now() - started,
+    };
+  }
+}
+
+/** Post `@agent <text>` and return the moment just before it was posted. */
+async function ask(harness: Harness, text: string): Promise<number> {
+  const sinceMs = Date.now() - 1;
+  await harness.mattermost.post({
+    channelId: harness.channel.id,
+    message: `@${harness.agent.name} ${text}`,
+  });
+  return sinceMs;
+}
+
+/** Wait for a bot post matching `predicate`, or throw with the transcript. */
+async function expectBotPost(
+  harness: Harness,
+  params: {
+    since: number;
+    predicate: (post: MattermostPost) => boolean;
+    describe: string;
+    deadlineMs?: number;
+    record: (posts: MattermostPost[]) => void;
+  }
+): Promise<MattermostPost> {
+  const { match, transcript } = await harness.mattermost.waitForPost({
+    channelId: harness.channel.id,
+    fromUserId: harness.bot.id,
+    // Neither a no-session notice nor Switch's activity commentary is ever a
+    // match, however permissive the caller's predicate — both are Switch
+    // talking on the bot's account, not the agent.
+    predicate: (post) =>
+      !isNoSessionNotice(post) && !isRuntimeStatusPost(post) && params.predicate(post),
+    sinceMs: params.since,
+    deadlineMs: params.deadlineMs ?? REPLY_DEADLINE_MS,
+  });
+  params.record(transcript);
+  if (!match) {
+    assertNotNoSession(transcript);
+    throw new Error(
+      `Timed out waiting for ${params.describe}. Channel said: ${summarise(transcript)}`
+    );
+  }
+  return match;
+}
+
+function summarise(posts: MattermostPost[]): string {
+  if (posts.length === 0) return '(nothing at all — no session ever replied)';
+  return posts.map((post) => `«${post.message.replace(/\s+/g, ' ').slice(0, 160)}»`).join(' | ');
+}
+
+function lower(post: MattermostPost): string {
+  return post.message.toLowerCase();
+}
+
+// ── greet ────────────────────────────────────────────────────────────────────
+
+/**
+ * The smoke test: does an addressed message reach a session at all, and does its
+ * answer come back into the channel as the agent's bot?
+ *
+ * Everything else assumes this passes. A failure here means either no session is
+ * running for the agent, or nothing is relaying the room's events into it.
+ */
+export const greet: Scenario = (harness) =>
+  scenario('greet', async (record) => {
+    const since = await ask(harness, `reply with exactly ${OK_MARKER} and nothing else`);
+    const match = await expectBotPost(harness, {
+      since,
+      record,
+      predicate: (post) => post.message.includes(OK_MARKER),
+      describe: `a reply containing ${OK_MARKER}`,
+    });
+    return `bot replied in post ${match.id}`;
+  });
+
+// ── question ─────────────────────────────────────────────────────────────────
+
+const CHOICES = ['red', 'green', 'blue'] as const;
+const CHOSEN = 'green';
+
+/**
+ * A two-turn exchange: the agent asks a clarifying question, the human answers
+ * in the channel, and the agent uses the answer.
+ *
+ * This is the round trip a one-shot reply cannot fake — it only passes if the
+ * session is still alive and still connected to the room when the second message
+ * arrives, which is the thing an injected-prompt runtime most easily gets wrong.
+ */
+export const question: Scenario = (harness) =>
+  scenario('question', async (record) => {
+    const prose = harness.env.questionMode === 'prose';
+    const since = await ask(
+      harness,
+      prose
+        ? 'before answering, ask me one clarifying multiple-choice question as an ordinary ' +
+            `message: "Which color?", listing exactly the options ${CHOICES.join(', ')}. ` +
+            'Wait for my answer, then reply with the single word I chose.'
+        : 'before answering, ask me one clarifying multiple-choice question using your ' +
+            'ask-the-user tool (the question tool, not a plain message): "Which color?" with ' +
+            `exactly the options ${CHOICES.join(', ')}. Then reply with the single word I chose.`
+    );
+
+    const asked = await expectBotPost(harness, {
+      since,
+      record,
+      // The console relays a native question into the room as a numbered list;
+      // a plain-prose question also lists the three options, so the numbering is
+      // what proves the relay path was taken — and is exactly what cannot be
+      // required of a provider that offers SDK sessions no such tool.
+      predicate: (post) =>
+        CHOICES.every((choice) => lower(post).includes(choice)) &&
+        (prose || /\b2\.\s/.test(post.message)),
+      describe: prose
+        ? `a question listing the options ${CHOICES.join('/')}`
+        : `a relayed question numbering the options ${CHOICES.join('/')}`,
+    });
+
+    // By number where the relay is what reads the answer; by word where the
+    // agent itself is. The relay's acknowledgement names the choice too, so the
+    // agent's own reply must be told apart from it either way.
+    const answeredAt = await ask(harness, prose ? CHOSEN : '2');
+    const answer = await expectBotPost(harness, {
+      since: answeredAt,
+      record,
+      predicate: (post) =>
+        lower(post).includes(CHOSEN) && !post.message.trimStart().startsWith('✅'),
+      describe: `a reply naming my choice '${CHOSEN}'`,
+    });
+
+    return `asked in ${asked.id}, answered in ${answer.id}`;
+  });
+
+// ── approval ─────────────────────────────────────────────────────────────────
+
+const APPROVAL_HINTS = ['approve', 'approval', 'permission', 'allow', 'permit', 'proceed'];
+
+/**
+ * A tool call the agent is not pre-authorised to make: the session must surface
+ * the permission request into the room, take `1` (allow) from the channel, and
+ * then actually run the command.
+ *
+ * Requires the agent's session to be running WITHOUT auto-approve. Note that an
+ * OpenCode agent's registered profile declares no `pre_invocation_mediation`, so
+ * the prompt does not come from Switch mediating the call — it comes from the
+ * console runtime relaying OpenCode's own permission request into the room. This
+ * is the scenario most tightly coupled to that runtime.
+ */
+export const approval: Scenario = (harness) =>
+  scenario('approval', async (record) => {
+    const file = `approved-${harness.runId}.txt`;
+    const since = await ask(
+      harness,
+      `run the shell command \`echo ${OK_MARKER} > ${file}\` and then reply with the single word done`
+    );
+
+    const prompt = await expectBotPost(harness, {
+      since,
+      record,
+      predicate: (post) =>
+        APPROVAL_HINTS.some((hint) => lower(post).includes(hint)) ||
+        /(^|\n)\s*1[.)]/.test(post.message),
+      describe: 'an approval prompt for the shell command',
+    });
+
+    const approvedAt = await ask(harness, '1');
+    const done = await expectBotPost(harness, {
+      since: approvedAt,
+      record,
+      predicate: (post) => lower(post).includes('done'),
+      describe: "a 'done' reply after the command was approved",
+    });
+
+    return `prompted in ${prompt.id}, completed in ${done.id}`;
+  });
+
+// ── interrupt ────────────────────────────────────────────────────────────────
+
+/** Only the command's exact marker proves execution began. */
+export function isStartMarker(text: string): boolean {
+  return text === 'SWITCH_INTERRUPT_STARTED';
+}
+
+async function markerContents(file: string): Promise<string | null> {
+  try {
+    return await readFile(file, 'utf8');
+  } catch (error) {
+    if (error instanceof Error && 'code' in error && error.code === 'ENOENT') return null;
+    throw error;
+  }
+}
+
+/** A real local command must start and then be cancelled before its final write. */
+export const interrupt: Scenario = (harness) =>
+  scenario('interrupt', async (record) => {
+    const dir = harness.env.agentRepoDir;
+    if (!dir)
+      throw new Error('The interrupt scenario requires SWITCH_E2E_AGENT_DIR on this machine.');
+    const stem = `interrupt-${harness.runId}-${Date.now()}`;
+    const startedFile = path.join(dir, `${stem}-started.txt`);
+    const finishedFile = path.join(dir, `${stem}-finished.txt`);
+    const command = `printf SWITCH_INTERRUPT_STARTED > ${stem}-started.txt; sleep 90; printf SWITCH_INTERRUPT_FINISHED > ${stem}-finished.txt`;
+    const since = await ask(
+      harness,
+      `Run this exact shell command for a bounded cancellation test: \`${command}\`. Wait for completion before replying. Do not create these files with another tool.`
+    );
+    await expectBotPost(harness, {
+      since,
+      record,
+      predicate: (post) => APPROVAL_HINTS.some((hint) => lower(post).includes(hint)),
+      describe: 'permission to run the cancellation command',
+    });
+    await ask(harness, '1');
+    const deadline = Date.now() + 60_000;
+    while (!isStartMarker((await markerContents(startedFile)) ?? '')) {
+      if (Date.now() > deadline)
+        throw new Error('The cancellation command did not write its start marker.');
+      await sleep(500);
+    }
+    const startedAt = Date.now();
+    await harness.mattermost.post({
+      channelId: harness.channel.id,
+      message: `!interrupt @${harness.agent.name}`,
+    });
+    // Wait beyond the command's complete lifetime; an un-cancelled sleep must finish.
+    while (Date.now() - startedAt < 95_000) {
+      if ((await markerContents(finishedFile)) !== null)
+        throw new Error('The interrupted command wrote its completion marker.');
+      await sleep(1_000);
+    }
+    const posts = await harness.mattermost.postsSince(harness.channel.id, since);
+    record(posts);
+    assertNotNoSession(posts);
+    if ((await markerContents(finishedFile)) !== null)
+      throw new Error('The interrupted command completed.');
+    return 'command start confirmed; completion marker absent after 95s';
+  });
+
+export const SCENARIOS: Scenario[] = [greet, question, approval, interrupt];
+
+/** Fixed-width summary of a run, printed at the end of the suite. */
+export function formatResultsTable(results: ScenarioResult[]): string {
+  const nameWidth = Math.max(8, ...results.map((result) => result.name.length));
+  const rows = results.map((result) => {
+    const status = result.ok ? 'PASS' : 'FAIL';
+    const seconds = `${(result.durationMs / 1000).toFixed(1)}s`.padStart(7);
+    return `  ${result.name.padEnd(nameWidth)}  ${status}  ${seconds}  ${result.details}`;
+  });
+  const passed = results.filter((result) => result.ok).length;
+  return [
+    '',
+    `Scenario results (${passed}/${results.length} passed)`,
+    `  ${'scenario'.padEnd(nameWidth)}  ────  ─────── details`,
+    ...rows,
+    '',
+  ].join('\n');
+}

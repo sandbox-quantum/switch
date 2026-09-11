@@ -195,6 +195,9 @@ export const AddAgentModal = observer(function AddAgentModal({
     launchProfileConfigRef.current = config;
   }, []);
 
+  // Drive the agent through its provider's own server rather than a terminal.
+  // Held in state rather than a ref: the switch has to render what it holds.
+
   const trimmedRemoteDir = canonicalDir(remoteRepoDir);
   const dir = isRemoteRun ? trimmedRemoteDir : pickState.path;
 

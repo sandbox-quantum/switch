@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import io
 import logging
 import re
@@ -68,27 +69,49 @@ _ZERO_WIDTH_SPACE = "\u200b"
 
 
 class _WebhookIdentity:
-    """The username one send posts under, across every webhook call it makes.
-
-    Discord validates a webhook username server-side and answers one it
-    dislikes with a 400. The exact rule is Discord's and is not pinned by
-    anything in this tree, so rather than guess at a blocklist the send is
-    attempted and a refusal falls back to the identifier, which the platform
-    has always accepted.
-
-    The refusal is remembered for the rest of the send because a send is
-    several webhook calls — one per chunk, plus any truncation notice — and
-    re-offering a name Discord has already refused doubles every one of them
-    and repeats the same warning per part. Held per send rather than per agent
-    so a name is re-offered on the next message: the refusal may have been
-    about something Discord has since changed its mind on, and a process-long
-    latch would hide a rename until the next restart.
-    """
+    """Keep one accepted identity across chunks and attachment retries."""
 
     def __init__(self, label: str, identifier: str) -> None:
         self._label = label
         self._identifier = identifier
-        self._refused = False
+        self._fallback = (
+            identifier
+            if self._valid_name(identifier)
+            else f"Switch agent {hashlib.sha256(identifier.encode()).hexdigest()[:12]}"
+        )
+        self._refused = not self._valid_name(label)
+        if self._refused:
+            logger.warning(
+                "Discord cannot use display name %r for agent %r; posting as %r instead",
+                label[:160],
+                identifier[:160],
+                self._fallback,
+            )
+
+    @staticmethod
+    def _valid_name(name: str) -> bool:
+        return (
+            1 <= len(name) <= 80
+            and bool(name.strip())
+            and not re.search(r"discord|clyde", name, re.IGNORECASE)
+        )
+
+    def _fallback_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
+        if self._fallback == self._identifier:
+            return payload
+        if "embed" in payload or "embeds" in payload:
+            raise ValueError(
+                "Webhook identity disclosure requires a payload without embeds"
+            )
+        disclosure = discord.Embed()
+        disclosure.set_footer(
+            text=f"Agent: {self._identifier[:512]} — Discord requires a different sender name."
+        )
+        return {
+            **payload,
+            "embeds": [disclosure],
+            "suppress_embeds": False,
+        }
 
     async def send(self, webhook: discord.Webhook, payload: dict[str, Any]) -> Any:
         """Post `payload`, which must survive being sent twice."""
@@ -102,21 +125,25 @@ class _WebhookIdentity:
         For the attachment path alone: an attempt reads the `discord.File` it
         was handed, so a retry that reused it would upload nothing."""
         if self._refused:
-            return await webhook.send(username=self._identifier, **build_payload())
+            return await webhook.send(
+                username=self._fallback, **self._fallback_payload(build_payload())
+            )
         try:
             return await webhook.send(username=self._label, **build_payload())
         except discord.HTTPException as e:
-            if e.status != 400 or self._label == self._identifier:
+            if e.status != 400 or self._label == self._fallback:
                 raise
             self._refused = True
             logger.warning(
                 "Discord refused the display name %r as a webhook username (%s); "
                 "posting as %r instead",
-                self._label,
+                self._label[:160],
                 e,
-                self._identifier,
+                self._fallback,
             )
-            return await webhook.send(username=self._identifier, **build_payload())
+            return await webhook.send(
+                username=self._fallback, **self._fallback_payload(build_payload())
+            )
 
 
 class DiscordConnectionConfig(BridgeConnectionConfig):

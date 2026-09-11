@@ -1,6 +1,5 @@
 import type { IDisposable } from '@switch-console/shared';
 import { action, computed, makeObservable, observable, reaction, runInAction } from 'mobx';
-import { getLocationManagerStore } from '@renderer/features/locations/stores/location-selectors';
 import { makeFileLinkHandlers } from '@renderer/features/sessions/stores/file-link-handlers';
 import { events, rpc } from '@renderer/lib/ipc';
 import { PtySession } from '@renderer/lib/pty/pty-session';
@@ -15,7 +14,6 @@ import {
 import { makeAgentPtySessionId } from '@shared/core/pty/ptySessionId';
 import {
   sessionAgentStatusChangedChannel,
-  sessionAttachmentChangedChannel,
   sessionChangedChannel,
 } from '@shared/core/sessions/sessionEvents';
 import { type Session } from '@shared/core/sessions/sessions';
@@ -23,9 +21,6 @@ import { type Session } from '@shared/core/sessions/sessions';
 export const DEHYDRATE_RETRY_DELAY_MS = 500;
 
 type HydrationState = 'stopped' | 'starting' | 'running' | 'stopping';
-
-/** Mirrors the main-process attachment pool's view of a remote terminal. */
-export type AttachState = 'detached' | 'attaching' | 'attached' | 'failed';
 
 /**
  * Renderer-side handle for a session's single agent: its status store, its PTY
@@ -37,7 +32,6 @@ export class SessionAgentStore implements IDisposable {
   private offAgentStatusChanged: (() => void) | null = null;
   private offSessionExited: (() => void) | null = null;
   private offSessionChanges: (() => void) | null = null;
-  private offAttachmentChanged: (() => void) | null = null;
   private readonly _disposeReaction: () => void;
 
   /** Data layer: the session record loaded from the main process (1:1 with this store). */
@@ -46,13 +40,6 @@ export class SessionAgentStore implements IDisposable {
   agent: AgentStatusStore | null = null;
   /** The agent's PTY session — created alongside the record, connected lazily. */
   pty: PtySession | null = null;
-  /**
-   * Whether this session's terminal is open, for remote sessions. Owned by the
-   * main-process attachment pool and pushed here; `detached` is a normal
-   * resting state, not an error — the agent keeps running on its VM.
-   */
-  attachment: AttachState = 'detached';
-
   // Hydration lifecycle: desired-vs-actual for the agent PTY, with the same
   // stale-flip handling and dehydrate retry the old reconciler had.
   private hydrationDesired = false;
@@ -68,7 +55,6 @@ export class SessionAgentStore implements IDisposable {
     makeObservable(this, {
       agent: observable,
       pty: observable,
-      attachment: observable,
       sessionStatus: computed,
     });
 
@@ -102,37 +88,6 @@ export class SessionAgentStore implements IDisposable {
     this.offAgentStatusChanged = this.listenToAgentStatusChanged();
     this.offSessionExited = this.listenToSessionExited();
     this.offSessionChanges = this.listenToSessionChanges();
-    this.offAttachmentChanged = this.listenToAttachmentChanged();
-  }
-
-  /**
-   * Remote sessions are attached by the main-process pool when the user focuses
-   * them, and only a few per host at a time. Provisioning one must therefore
-   * not open its terminal — that eagerness is what put a whole host's worth of
-   * channels on a single SSH transport.
-   */
-  private get attachmentIsPoolManaged(): boolean {
-    return getLocationManagerStore().locations.get(this.locationId)?.data?.sshHost != null;
-  }
-
-  private listenToAttachmentChanged(): () => void {
-    return events.on(sessionAttachmentChangedChannel, (payload) => {
-      if (payload.sessionId !== this.sessionId) return;
-      runInAction(() => {
-        this.attachment = payload.state;
-      });
-
-      if (payload.state === 'attached') {
-        // Explicit: PtySession connects itself via onBecomeObserved, which only
-        // fires on the unobserved -> observed edge. After a dispose the terminal
-        // pane is usually still mounted and observing, so it would never re-fire.
-        void this.pty?.connect();
-        return;
-      }
-      if (payload.state === 'detached' || payload.state === 'failed') {
-        this.pty?.dispose();
-      }
-    });
   }
 
   private adopt(session: Session | undefined): void {
@@ -213,17 +168,8 @@ export class SessionAgentStore implements IDisposable {
 
   // --- Hydration lifecycle -------------------------------------------------
 
-  /**
-   * Keep the agent PTY hydrated while the session view is provisioned.
-   *
-   * Local sessions only: their agent process is this app's to run, and it must
-   * be live for keystroke injection to reach it. A remote agent runs on its VM
-   * regardless, so its terminal is opened on focus by the attachment pool
-   * instead — see `attachmentIsPoolManaged`.
-   */
   setHydrationDesired(desired: boolean): void {
     if (this.hydrationDisposed) return;
-    if (this.attachmentIsPoolManaged) return;
     this.hydrationDesired = desired;
     if (desired) this.clearDehydrateRetry();
     this.reconcileHydration();
@@ -308,8 +254,6 @@ export class SessionAgentStore implements IDisposable {
     this.offSessionExited = null;
     this.offSessionChanges?.();
     this.offSessionChanges = null;
-    this.offAttachmentChanged?.();
-    this.offAttachmentChanged = null;
     this.pty?.destroy();
   }
 }

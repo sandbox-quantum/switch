@@ -69,8 +69,8 @@ class TestHandlerThreads:
 
 
 class TestDispatchPopulatesThreadId:
-    """The command's own Matrix event id is injected as the CommandEvent thread
-    root at dispatch (it is not part of the event content)."""
+    """The command's own event id and its thread root are injected into the
+    CommandEvent at dispatch (neither is part of the event content)."""
 
     @staticmethod
     async def _dispatch(
@@ -105,6 +105,7 @@ class TestDispatchPopulatesThreadId:
             {"command": "status", "args": "", "user_id": "u1", "user_name": "louisa"},
             "$the-command-event",
         )
+        assert event.message_id == "$the-command-event"
         assert event.thread_id == "$the-command-event"
 
     async def test_in_thread_command_uses_relation_root(self) -> None:
@@ -124,4 +125,5 @@ class TestDispatchPopulatesThreadId:
             "$the-command-event",
             thread_root_id="$matrix-thread-root",
         )
+        assert event.message_id == "$the-command-event"
         assert event.thread_id == "$matrix-thread-root"

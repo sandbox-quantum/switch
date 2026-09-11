@@ -1,0 +1,415 @@
+import { stopSharedSession } from './stop-shared-session';
+export { stopSharedSession } from './stop-shared-session';
+import { isCommandNotFound, reconcileInitialPrompt } from './initial-prompt';
+import { deploySharedHost, runSharedHostCommand } from './shared-host-deployment';
+export { deploySharedHost } from './shared-host-deployment';
+import { randomUUID } from 'node:crypto';
+import { join, posix } from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
+import { sharedConfigSchema, type SharedHostConfig } from '@switch-console/agent-providers';
+import { CLAUDE_SKILL_CONTENT } from '@switch-console/plugins/agents/claude/skill';
+import { CODEX_SKILL_CONTENT } from '@switch-console/plugins/agents/codex/skill';
+import { CURSOR_SKILL_CONTENT } from '@switch-console/plugins/agents/cursor/skill';
+import { GEMINI_SKILL_CONTENT } from '@switch-console/plugins/agents/gemini/skill';
+import { SWITCH_AGENT_RUNTIME_PIN } from '@switch-console/plugins/distribution';
+import {
+  commandStatusSchema,
+  snapshotSchema,
+  type Snapshot,
+} from '@switch-console/shared/session-v1';
+import { providerAdapterRegistry } from '@main/core/agent-runtime/impl/provider-adapter-registry';
+import type { AgentRuntimeProvider } from '@main/core/agent-runtime/types';
+import { agentLaunchSpecialization } from '@main/core/agents/agent-launch-config';
+import { getAgentById } from '@main/core/agents/getAgentById';
+import { agentSettingsRelativePath } from '@main/core/agents/switch-settings-paths';
+import { hostDependencyStore } from '@main/core/dependencies/host-dependency-store';
+import type { LocationTransport } from '@main/core/locations/location-transport';
+import { getPlugin } from '@main/core/providers/plugin-registry';
+import { AGENT_ENV_VARS } from '@main/core/pty/pty-env';
+import { setInitialPromptDelivery } from '@main/core/sessions/operations/set-initial-prompt-delivery';
+import { loadSessionWithAgent } from '@main/core/sessions/session-join';
+import { switchNotificationPoller } from '@main/core/switch-rooms/switch-notification-poller';
+import { switchRoomService } from '@main/core/switch-rooms/switch-room-service';
+import {
+  fetchSdkCommandStatus,
+  fetchSdkSnapshot,
+  GatewayError,
+  submitSdkCommand,
+} from '@main/core/switch-servers/gateway-client';
+import { getServer } from '@main/core/switch-servers/servers-store';
+import { log } from '@main/lib/logger';
+import { makePtyId } from '@shared/core/pty/ptyId';
+import type { Session } from '@shared/core/sessions/sessions';
+import type { SwitchServer } from '@shared/core/switch-servers/switch-servers';
+
+/** A host that stopped on an interrupted reset is online and waits for the user's explicit reset. */
+function awaitingResetDecision(snapshot: Snapshot): boolean {
+  return (
+    snapshot.session.status === 'error' &&
+    snapshot.session.capabilities.reset === true &&
+    !snapshot.turns.some((turn) => turn.status === 'queued' || turn.status === 'running') &&
+    !snapshot.requests.some((request) => request.state === 'open' || request.state === 'submitting')
+  );
+}
+
+function launchSettled(snapshot: Snapshot): boolean {
+  return (
+    ['ready', 'running', 'stopped'].includes(snapshot.session.status) ||
+    awaitingResetDecision(snapshot)
+  );
+}
+
+export class SharedAgentRuntime implements AgentRuntimeProvider {
+  private server: SwitchServer | null = null;
+  private starting: Promise<void> | null = null;
+  constructor(
+    private readonly transport: LocationTransport,
+    private readonly params: {
+      sessionId: string;
+      sessionPath: string;
+      sessionEnvVars: Record<string, string>;
+      shellSetup?: string;
+    }
+  ) {}
+
+  async start(
+    session: Session,
+    _size?: { cols: number; rows: number },
+    isResuming?: boolean,
+    initialPrompt?: string
+  ): Promise<void> {
+    if (this.starting) return this.starting;
+    this.starting = this.open(session, initialPrompt, isResuming ?? false, false);
+    try {
+      await this.starting;
+    } finally {
+      this.starting = null;
+    }
+  }
+
+  private async open(
+    session: Session,
+    initialPrompt: string | undefined,
+    isResuming: boolean,
+    restart: boolean
+  ): Promise<void> {
+    const agent = await getAgentById(session.agentId);
+    if (!agent?.switchAgentId || !agent.serverId)
+      throw new Error('Link this agent to a Switch server before starting a session.');
+    this.server = await getServer(agent.serverId);
+    if (!this.server) throw new Error('The agent’s Switch server is missing.');
+    const server = this.server;
+    const intended = switchNotificationPoller.getSharedIntent(session.id, agent.switchAgentId);
+    const config = await buildSharedHostConfig(session, this.params, this.transport, intended);
+    const previousEpoch = restart
+      ? snapshotSchema.parse(await fetchSdkSnapshot(this.server, session.id)).session.epoch
+      : null;
+    const { ctx, root, entrypoint } = await deploySharedHost(
+      this.transport,
+      this.params.sessionPath,
+      session.id,
+      false
+    );
+    await runSharedHostCommand(
+      this.transport,
+      { ctx, root, entrypoint },
+      config,
+      restart ? '--restart' : '--ensure',
+      isResuming
+    );
+    let snapshot;
+    const deadline = Date.now() + 120000;
+    let nextFailureCheck = 0;
+    while (Date.now() < deadline) {
+      if (Date.now() >= nextFailureCheck) {
+        const result = await ctx.exec('node', [
+          '-e',
+          "const fs=require('node:fs');try{console.log(fs.readFileSync(process.argv[1],'utf8'))}catch(e){if(e.code!=='ENOENT')throw e;console.log('null')}",
+          posix.join(root, 'supervisor', 'failure.json'),
+        ]);
+        const failure: unknown = JSON.parse(result.stdout);
+        if (failure && typeof failure === 'object' && 'message' in failure)
+          throw new Error(`Shared SDK host failed: ${String(failure.message)}`);
+        nextFailureCheck = Date.now() + 2000;
+      }
+      try {
+        snapshot = snapshotSchema.parse(await fetchSdkSnapshot(this.server, session.id));
+        if (
+          snapshot.session.epoch !== previousEpoch &&
+          snapshot.session.connectivity === 'online' &&
+          launchSettled(snapshot)
+        )
+          break;
+      } catch (error) {
+        if (Date.now() + 500 >= deadline) throw error;
+      }
+      await delay(500);
+    }
+    if (
+      !snapshot ||
+      snapshot.session.epoch === previousEpoch ||
+      snapshot.session.connectivity !== 'online' ||
+      !launchSettled(snapshot)
+    )
+      throw new Error(
+        `Shared SDK host did not become ready. Inspect ${root}/supervisor.log on the execution host.`
+      );
+    const roomContext = {
+      sessionId: session.id,
+      providerId: session.providerId,
+      ptyId: makePtyId(session.providerId, session.id),
+    };
+    if (intended.rooms[0])
+      switchRoomService.setSessionRoom(roomContext, intended.rooms[0], agent.switchAgentId, null);
+    else await switchRoomService.restoreConnection(roomContext);
+    switchNotificationPoller.clearSharedIntent(session.id);
+    if (!awaitingResetDecision(snapshot))
+      await this.deliverInitialPrompt(session, initialPrompt, snapshot, server);
+  }
+
+  private async deliverInitialPrompt(
+    session: Session,
+    initialPrompt: string | undefined,
+    snapshot: Snapshot,
+    server: SwitchServer
+  ): Promise<void> {
+    const epoch = snapshot.session.epoch;
+    const saved = (await loadSessionWithAgent(session.id))?.row.config;
+    const prompt = (saved?.initialPrompt ?? initialPrompt)?.trim();
+    if (!prompt) return;
+    const outcome = await reconcileInitialPrompt({
+      prompt,
+      epoch,
+      record: saved?.initialPromptDelivery,
+      legacyCommandId: `initial-${session.id}`,
+      hasPriorActivity: snapshot.turns.length > 0 || snapshot.items.length > 0,
+      lookup: async (commandId) => {
+        try {
+          const status = commandStatusSchema.parse(
+            await fetchSdkCommandStatus(server, session.id, commandId)
+          );
+          return {
+            recorded: true,
+            status: status.status,
+            code: status.code,
+            message: status.message,
+          };
+        } catch (error) {
+          if (error instanceof GatewayError && isCommandNotFound(error)) return { recorded: false };
+          throw error;
+        }
+      },
+      persist: (record) => setInitialPromptDelivery(session.id, record),
+      submit: async (commandId, commandEpoch) => {
+        const receipt = commandStatusSchema.parse(
+          await submitSdkCommand(server, {
+            contractVersion: 1,
+            sessionId: session.id,
+            epoch: commandEpoch,
+            commandId,
+            body: {
+              type: 'message.send',
+              text: prompt,
+              attachments: [],
+              delivery: 'queue',
+            },
+          })
+        );
+        return {
+          recorded: true,
+          status: receipt.status,
+          code: receipt.code,
+          message: receipt.message,
+        };
+      },
+      newCommandId: () => randomUUID(),
+      now: () => new Date().toISOString(),
+    });
+    // An undelivered prompt leaves the session open and usable, so it is
+    // reported rather than fatal.
+    if (outcome.action === 'unresolved')
+      log.warn('Initial prompt delivery is unresolved', {
+        event: 'sdk_host.initial_prompt',
+        stage: 'unresolved',
+        sessionId: session.id,
+        commandId: outcome.record.commandId,
+        reason: outcome.record.reason,
+      });
+    if (outcome.action === 'rejected')
+      log.error('Initial prompt was rejected', {
+        event: 'sdk_host.initial_prompt',
+        stage: 'rejected',
+        sessionId: session.id,
+        commandId: outcome.record.commandId,
+        errorCode: outcome.record.code,
+        detail: outcome.record.message,
+      });
+  }
+
+  async restart(session: Session): Promise<void> {
+    await this.resolveServer();
+    const snapshot = snapshotSchema.parse(await fetchSdkSnapshot(this.server!, session.id));
+    if (snapshot.session.status === 'stopped')
+      throw new Error(
+        'This session was stopped. Create a new session to start another conversation.'
+      );
+    await this.open(session, undefined, true, true);
+  }
+
+  async dehydrate(): Promise<void> {}
+  async detach(): Promise<void> {}
+  async destroy(): Promise<void> {
+    await this.stop();
+  }
+  async stop(): Promise<void> {
+    if (this.starting) await this.starting;
+    await this.resolveServer();
+    await stopSharedSession(this.server!, this.params.sessionId);
+  }
+  private async resolveServer(): Promise<void> {
+    if (this.server) return;
+    const session = await loadSessionWithAgent(this.params.sessionId);
+    this.server = session?.serverId ? await getServer(session.serverId) : null;
+    if (!this.server) throw new Error('The session’s Switch server is missing.');
+  }
+}
+
+export async function buildSharedHostConfig(
+  session: Pick<
+    Session,
+    'id' | 'agentId' | 'providerId' | 'agentName' | 'providerSessionId' | 'autoApprove'
+  >,
+  params: { sessionPath: string; sessionEnvVars: Record<string, string>; shellSetup?: string },
+  transport: LocationTransport,
+  intended: { rooms: string[]; startCursor?: number }
+): Promise<SharedHostConfig> {
+  const agent = await getAgentById(session.agentId);
+  if (!agent?.switchAgentId) throw new Error('Link the agent to Switch before launching its host.');
+  const specialization = (await agentLaunchSpecialization(session.agentId)) ?? {};
+  if (!providerAdapterRegistry.supports(session.providerId))
+    throw new Error(
+      'SDK sessions support Claude Code, Codex, OpenCode, Gemini and Cursor. Choose one of these providers.'
+    );
+  if (transport.kind !== 'ssh' && process.platform === 'win32')
+    throw new Error(
+      'Persistent SDK sessions require a POSIX execution host. Configure an SSH host for Windows Console.'
+    );
+  const provider = sharedConfigSchema.shape.start.shape.provider.parse(session.providerId);
+  const selection = await hostDependencyStore.getSelection(
+    transport.kind === 'ssh' ? transport.connectionId : 'local',
+    provider
+  );
+  const binaryPath =
+    selection?.kind === 'pinned'
+      ? selection.realpath
+      : selection?.kind === 'path'
+        ? selection.path
+        : selection?.kind === 'cli'
+          ? selection.command
+          : undefined;
+  const capabilities = providerAdapterRegistry.get(provider).capabilities;
+  const slug = session.agentName ?? agent.name ?? agent.id;
+  const profile =
+    provider === 'codex'
+      ? getPlugin(provider).behavior.mcp?.launchProfile?.({
+          slug,
+          workingDir: params.sessionPath,
+          values: specialization,
+        })
+      : undefined;
+  const optionKey = provider === 'opencode' ? 'variant' : 'effort';
+  const optionValue = specialization[optionKey];
+  const config: SharedHostConfig = {
+    session: {
+      sessionId: session.id,
+      agentId: agent.switchAgentId,
+      hostId: randomUUID(),
+      epoch: randomUUID(),
+      provider,
+      status: 'starting',
+      connectivity: 'online',
+      pendingRequestIds: [],
+      capabilities: {
+        input: 'queue',
+        approvals: capabilities.approvals,
+        questions: capabilities.userInput,
+        interrupt: true,
+        reset: true,
+        compact: false,
+        modelChange: false,
+        attachmentMimeTypes: [],
+      },
+    },
+    start: {
+      provider,
+      input: {
+        sessionId: session.id,
+        cwd: params.sessionPath,
+        runtimeMode:
+          (session.autoApprove ?? agent.autoApprove) ? 'full-access' : 'approval-required',
+        env: params.sessionEnvVars,
+        mcpServers: {},
+        ...(session.providerSessionId
+          ? { resume: { nativeSessionId: session.providerSessionId } }
+          : {}),
+        ...(specialization.model
+          ? {
+              model: {
+                id: specialization.model,
+                ...(optionValue ? { options: { [optionKey]: optionValue } } : {}),
+              },
+            }
+          : {}),
+      },
+    },
+    roomConnection: {
+      connectionId: randomUUID(),
+      rooms: intended.rooms,
+      startCursor: intended.startCursor,
+    },
+    execution: {
+      credentialsPath: (transport.kind === 'ssh' ? posix.join : join)(
+        params.sessionPath,
+        agentSettingsRelativePath(slug)
+      ),
+      inheritEnv: [
+        ...AGENT_ENV_VARS,
+        'PATH',
+        'HOME',
+        'USER',
+        'SHELL',
+        'TMPDIR',
+        'LANG',
+        'TERM',
+        'SSH_AUTH_SOCK',
+        'GEMINI_CLI_HOME',
+      ],
+      mcpRuntime: SWITCH_AGENT_RUNTIME_PIN,
+      ...(binaryPath ? { binaryPath } : {}),
+      ...(params.shellSetup ? { shellSetup: params.shellSetup } : {}),
+      ...(getPlugin(provider).behavior.repoAgents
+        ? {
+            agentDefinition: {
+              name: slug,
+              path: getPlugin(provider).behavior.repoAgents!.definitionPath(slug),
+            },
+          }
+        : {}),
+      codexConfig: profile?.files.map((file) => file.content).join('\n') ?? '',
+      skill: provider === 'codex' ? CODEX_SKILL_CONTENT : '',
+      context: [
+        provider === 'claude'
+          ? CLAUDE_SKILL_CONTENT
+          : provider === 'gemini'
+            ? GEMINI_SKILL_CONTENT
+            : provider === 'cursor'
+              ? CURSOR_SKILL_CONTENT
+              : '',
+        specialization.instructions,
+      ]
+        .filter(Boolean)
+        .join('\n\n'),
+    },
+  };
+  return config;
+}

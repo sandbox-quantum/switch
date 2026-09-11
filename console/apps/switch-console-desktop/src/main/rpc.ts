@@ -11,11 +11,11 @@ import { providersController } from './core/providers/controller';
 import { ptyController } from './core/pty/controller';
 import { remoteHostsController } from './core/remote-hosts/controller';
 import { resourceMonitorController } from './core/resource-monitor/controller';
+import { sdkHostController } from './core/sdk-host/controller';
 import { searchController } from './core/search/controller';
 import { sessionController } from './core/sessions/controller';
 import { appSettingsController } from './core/settings/controller';
 import { providerSettingsController } from './core/settings/provider-settings-controller';
-import { sidecarController } from './core/sidecar/controller';
 import { switchRoomsController } from './core/switch-rooms/controller';
 import { switchServersController } from './core/switch-servers/controller';
 import { switchSetupController } from './core/switch-setup/controller';
@@ -24,6 +24,7 @@ import { updateController } from './core/updates/controller';
 import { viewStateController } from './core/view-state/controller';
 
 export const rpcRouter = createRPCRouter({
+  sdkHost: sdkHostController,
   providers: providersController,
   agents: agentsController,
   app: appController,
@@ -44,7 +45,6 @@ export const rpcRouter = createRPCRouter({
   localSwitchServer: localSwitchServerController,
   remoteSwitchServer: remoteSwitchServerController,
   remoteHosts: remoteHostsController,
-  sidecar: sidecarController,
   telemetry: telemetryController,
   fs: createRPCNamespace({
     watch: filesController,

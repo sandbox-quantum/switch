@@ -1,6 +1,5 @@
 import { locationManager } from '@main/core/locations/location-manager';
 import { getLocationById } from '@main/core/locations/store';
-import { ensureSessionAttachable } from '@main/core/sessions/operations/ensureSessionAttachable';
 import { hydrateSession } from '@main/core/sessions/operations/hydrateSession';
 import { formatProvisionSessionError } from '@main/core/sessions/provision-session-error';
 import { loadSessionWithAgent } from '@main/core/sessions/session-join';
@@ -8,32 +7,12 @@ import { sessionService } from '@main/core/sessions/session-service';
 import { log } from '@main/lib/logger';
 import { switchRoomService } from './switch-room-service';
 
-/**
- * Bring back every session that was connected to a Switch room before the last
- * shutdown, so it receives and responds to room events without the user opening
- * its terminal. Sessions whose row or location no longer exist are pruned.
- *
- * How far to go depends on where the session runs:
- *
- * - **Local**: the agent process is this app's to run, and keystroke injection
- *   requires a live TUI, so the session is hydrated — PTY and all.
- * - **Remote**: the agent lives in a tmux pane on the VM and the on-VM sidecar's
- *   watcher starts it and injects room messages there (`TmuxInjectionSink`), all
- *   without this app. Only the sidecar and its shared hook-event relay are
- *   ensured, which is what feeds status, room membership and notifications back.
- *   No PTY is opened: it would be a terminal nobody is looking at, holding a
- *   channel on a transport every other session on that host shares. One host
- *   with 51 such sessions saturated its tunnel badly enough to wedge the
- *   connection in a loop. The terminal is opened on demand when the session is
- *   actually viewed.
- */
 export async function restoreSwitchRoomSessions(): Promise<void> {
   const sessionIds = await switchRoomService.listPersistedSessionIds();
   if (sessionIds.length === 0) return;
 
   const stale: string[] = [];
   let launched = 0;
-  let attachable = 0;
   let orphaned = 0;
 
   for (const sessionId of sessionIds) {
@@ -89,12 +68,8 @@ export async function restoreSwitchRoomSessions(): Promise<void> {
         });
         continue;
       }
-      if (await ensureSessionAttachable(sessionId)) {
-        attachable += 1;
-      } else {
-        await hydrateSession(sessionId);
-        launched += 1;
-      }
+      await hydrateSession(sessionId);
+      launched += 1;
     } catch (error) {
       log.warn('restoreSwitchRoomSessions: failed to launch room-connected session', {
         sessionId,
@@ -106,10 +81,7 @@ export async function restoreSwitchRoomSessions(): Promise<void> {
   if (stale.length > 0) await switchRoomService.prunePersisted(stale);
 
   log.info('restoreSwitchRoomSessions: restored room-connected sessions at startup', {
-    // `launched` spawned an agent locally; `attachable` only ensured the remote
-    // sidecar + relay, leaving the terminal to be opened on demand.
     launched,
-    attachable,
     pruned: stale.length,
     orphaned,
   });

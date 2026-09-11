@@ -3,6 +3,7 @@ import type { AgentProviderId } from '@shared/core/providers/agent-provider-regi
 import type { AgentStatus } from '@shared/core/providers/agentEvents';
 import type { SessionStartSource, UiEntryPoint } from '@shared/core/telemetry/reporting';
 import type { TerminalShellId } from '@shared/core/terminals/terminal-settings';
+import type { InitialPromptDelivery } from './session-config';
 
 export const MAX_SESSION_TITLE_LENGTH = 100;
 
@@ -34,14 +35,9 @@ export type Session = {
   status: SessionLifecycleStatus;
   /** ISO timestamp: when lifecycle status last changed (current status entered). */
   statusChangedAt: string;
-  /** Provider-native session id captured at runtime for resume. */
-  agentSessionId: string | null;
-  /**
-   * Provider-native chat id stored in the session's `config` JSON (e.g. the
-   * Codex rollout / Droid UUID) used to resume the correct chat. Distinct from
-   * `agentSessionId`, which is the `agent_session_id` column.
-   */
+  /** Native conversation imported from an earlier session, when available. */
   providerSessionId?: string;
+  initialPromptDelivery?: InitialPromptDelivery;
   agentStatus?: AgentStatus | null;
   agentStatusSeen?: boolean;
   isInitialSession: boolean | null;

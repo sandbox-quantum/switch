@@ -1,13 +1,10 @@
 import { ok, type Result } from '@switch-console/shared';
-import { remoteAttachmentPool } from '@main/core/agent-runtime/attachment/production-remote-attachment-pool';
-import { isAttachableRuntime } from '@main/core/agent-runtime/attachment/types';
 import type { AgentRuntimeProvider } from '@main/core/agent-runtime/types';
 import type { IExecutionContext } from '@main/core/execution-context/types';
 import {
   locationRuntimeRegistry,
   type TeardownMode,
 } from '@main/core/locations/location-runtime-registry';
-import { killTmuxSession, makeAgentTmuxSessionName } from '@main/core/pty/tmux-session-name';
 import type { SessionRuntimeResult } from '@main/core/sessions/session-builder';
 import { LifecycleMap } from '@main/lib/lifecycle-map';
 import { log } from '@main/lib/logger';
@@ -41,12 +38,6 @@ async function executeTeardown(
   await locationRuntimeRegistry.release(locationId, mode);
 }
 
-async function cleanupDetachedSessions(sessionId: string, ctx: IExecutionContext): Promise<void> {
-  // The agent pane is keyed on the shared session id, so all clients converge
-  // on one tmux session.
-  await killTmuxSession(ctx, makeAgentTmuxSessionName(sessionId));
-}
-
 class SessionRuntimeManager {
   private readonly _lifecycle = new LifecycleMap<
     StoredSession,
@@ -55,7 +46,6 @@ class SessionRuntimeManager {
   >({
     postTeardown: (sessionId, stored) => {
       this._sessionsByLocation.get(stored.locationId)?.delete(sessionId);
-      remoteAttachmentPool.unregister(sessionId);
     },
   });
   private readonly _sessionsByLocation = new Map<string, Set<string>>();
@@ -81,28 +71,18 @@ class SessionRuntimeManager {
     const byLocation = this._sessionsByLocation.get(result.locationId) ?? new Set<string>();
     byLocation.add(sessionId);
     this._sessionsByLocation.set(result.locationId, byLocation);
-
-    // Remote runtimes are attachment-capped per host; local ones have no shared
-    // transport to protect and are never pooled.
-    if (isAttachableRuntime(result.agent)) remoteAttachmentPool.register(result.agent);
   }
 
   async teardownSession(
     sessionId: string,
     mode: TeardownMode = 'terminate'
   ): Promise<Result<void, TeardownSessionError>> {
-    const result = this._lifecycle.teardown(sessionId, async ({ agent, locationId, ctx }) => {
+    const result = this._lifecycle.teardown(sessionId, async ({ agent, locationId }) => {
       try {
         await withTimeout(executeTeardown(agent, locationId, mode), SESSION_TIMEOUT_MS);
         return ok();
       } catch (e) {
         log.error('SessionManager: failed to teardown session', { sessionId, error: String(e) });
-        await cleanupDetachedSessions(sessionId, ctx).catch((cleanupError) => {
-          log.warn('SessionManager: fallback cleanup failed', {
-            sessionId,
-            error: String(cleanupError),
-          });
-        });
         return { success: false as const, error: toTeardownError(e) };
       }
     });

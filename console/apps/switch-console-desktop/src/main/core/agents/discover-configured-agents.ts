@@ -6,14 +6,12 @@ import {
   isValidProviderId,
   type AgentProviderId,
 } from '@shared/core/providers/agent-provider-registry';
-import type { AgentLaunchSpec } from '../../../sidecar/agent-launch-spec';
-import { sidecarLaunchSpecRelPath } from '../../../sidecar/sidecar-paths';
 import { resolveWorkspaceFsFor } from './agent-workspace-fs';
 import { getLocationAgentsOnServer } from './getAgents';
 import { SWITCH_AGENTS_DIR_RELATIVE } from './switch-settings-paths';
 
 /** How an agent's provider was inferred, so the UI can say whether to trust it. */
-export type ProviderSource = 'launch-spec' | 'definition' | 'unknown';
+export type ProviderSource = 'definition' | 'unknown';
 
 /**
  * An agent already configured in a working directory, found by its
@@ -68,29 +66,6 @@ function parseCredentialIdentity(raw: string | null, name: string): CredentialId
   const apiEndpoint = asNonEmptyString(env.SWITCH_API_ENDPOINT);
   if (!switchAgentId || !apiEndpoint) return null;
   return { switchAgentId, apiEndpoint };
-}
-
-/**
- * The provider named by the agent's sidecar launch spec — what actually spawns
- * its sessions on a remote host, so the most authoritative signal available.
- * Absent for an agent that has never run remotely.
- */
-async function providerFromLaunchSpec(
-  workspaceFs: PluginFs,
-  name: string
-): Promise<AgentProviderId | null> {
-  const raw = await workspaceFs.read(sidecarLaunchSpecRelPath(name));
-  if (raw === null) return null;
-  try {
-    const spec = JSON.parse(raw) as Partial<AgentLaunchSpec>;
-    return isValidProviderId(spec.providerId) ? spec.providerId : null;
-  } catch (error) {
-    log.warn('discoverConfiguredAgents: unparseable launch spec', {
-      name,
-      error: error instanceof Error ? error.message : String(error),
-    });
-    return null;
-  }
 }
 
 /**
@@ -171,14 +146,8 @@ export async function discoverConfiguredAgents(params: {
       );
       if (!identity) continue;
 
-      const fromSpec = await providerFromLaunchSpec(workspace.fs, name);
-      const fromDefinition = owners.get(name) ?? null;
-      const providerId = fromSpec ?? fromDefinition;
-      const providerSource: ProviderSource = fromSpec
-        ? 'launch-spec'
-        : fromDefinition
-          ? 'definition'
-          : 'unknown';
+      const providerId = owners.get(name) ?? null;
+      const providerSource: ProviderSource = providerId ? 'definition' : 'unknown';
 
       discovered.push({
         name,

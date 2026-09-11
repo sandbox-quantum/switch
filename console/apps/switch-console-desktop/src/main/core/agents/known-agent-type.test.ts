@@ -33,7 +33,7 @@ describe('knownAgentTypeForProvider', () => {
     // Only the types in KNOWN_AGENTS exist server-side, so anything else
     // registers as a type it is not. That is a disclosed fallback, never a
     // silent one.
-    for (const id of ['grok', 'gemini', 'cursor', 'droid'] as const) {
+    for (const id of ['grok', 'droid'] as const) {
       vi.clearAllMocks();
       expect(knownAgentTypeForProvider(id)).toBe('claude-code');
       expect(log.warn).toHaveBeenCalledWith(
@@ -42,4 +42,12 @@ describe('knownAgentTypeForProvider', () => {
       );
     }
   });
+});
+
+it('registers Gemini under its own gateway type', () => {
+  expect(knownAgentTypeForProvider('gemini')).toBe('gemini');
+});
+
+it('maps Cursor to its own backend profile', () => {
+  expect(knownAgentTypeForProvider('cursor')).toBe('cursor');
 });

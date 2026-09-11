@@ -7,6 +7,8 @@ const mocks = vi.hoisted(() => ({
   getLocation: vi.fn(),
   insert: vi.fn(),
   deleteFn: vi.fn(),
+  update: vi.fn(),
+  set: vi.fn(),
   provisionSessionRuntime: vi.fn(),
   registerSession: vi.fn(),
   startSession: vi.fn(),
@@ -24,6 +26,7 @@ vi.mock('@main/db/client', () => ({
   db: {
     insert: mocks.insert,
     delete: mocks.deleteFn,
+    update: mocks.update,
   },
 }));
 
@@ -43,7 +46,6 @@ function makeSessionRow(values: Partial<SessionRow>): SessionRow {
     config: values.config ?? null,
     shellId: values.shellId ?? 'system',
     status: values.status ?? 'in_progress',
-    agentSessionId: values.agentSessionId ?? null,
     agentStatus: values.agentStatus ?? null,
     agentStatusSeen: values.agentStatusSeen ?? 1,
     isInitialSession: values.isInitialSession ?? false,
@@ -65,6 +67,8 @@ function setupInsertMock(options: { conflict?: boolean } = {}) {
     }),
   });
   mocks.deleteFn.mockReturnValue({ where: () => Promise.resolve() });
+  mocks.update.mockReturnValue({ set: mocks.set });
+  mocks.set.mockReturnValue({ where: async () => {} });
 }
 
 const baseParams = {
@@ -108,11 +112,23 @@ describe('createSession', () => {
     expect(mocks.startSession).toHaveBeenCalledTimes(1);
   });
 
-  it('rolls back the session row and returns spawn-failed when provisioning throws', async () => {
+  it('adopts a session at a closed location without provisioning or launching it', async () => {
+    mocks.getLocation.mockReturnValue(undefined);
+    const result = await createSession({ ...baseParams, startSource: 'adopted', attach: false });
+    expect(result.success).toBe(true);
+    expect(mocks.insert).toHaveBeenCalledTimes(1);
+    expect(mocks.getLocation).not.toHaveBeenCalled();
+    expect(mocks.provisionSessionRuntime).not.toHaveBeenCalled();
+    expect(mocks.registerSession).not.toHaveBeenCalled();
+    expect(mocks.startSession).not.toHaveBeenCalled();
+  });
+
+  it('preserves the session row after a failed launch so recovery cannot create another conversation', async () => {
     mocks.provisionSessionRuntime.mockRejectedValue(new Error('boom'));
     const result = await createSession(baseParams);
     expect(result).toEqual({ success: false, error: { type: 'spawn-failed', message: 'boom' } });
-    expect(mocks.deleteFn).toHaveBeenCalledTimes(1);
+    expect(mocks.deleteFn).not.toHaveBeenCalled();
+    expect(mocks.set).toHaveBeenCalledWith({ status: 'review' });
   });
 
   it('returns already-exists when the id is taken, without provisioning or rollback', async () => {

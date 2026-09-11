@@ -1,0 +1,743 @@
+import { randomUUID } from 'node:crypto';
+import { appendFile, mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import type { Command, Session } from '@switch-console/shared/session-v1';
+import { afterEach, expect, it, vi } from 'vitest';
+import { ProviderConversationUnavailableError, type ProviderAdapter } from '../adapter';
+import type { ProviderRuntimeEvent } from '../events';
+import { HostedSession } from './session-host';
+
+const roots: string[] = [];
+const hosts: HostedSession[] = [];
+afterEach(async () => {
+  for (const host of hosts.splice(0)) await host.shutdown();
+  for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true });
+});
+function setup(provider: Session['provider']) {
+  let listener: (event: ProviderRuntimeEvent) => void = () => {};
+  let live = false;
+  const emit = (event: Record<string, unknown>) =>
+    listener({
+      ...event,
+      provider,
+      sessionId: 'session',
+      eventId: randomUUID(),
+      createdAt: new Date().toISOString(),
+    } as ProviderRuntimeEvent);
+  const adapter: ProviderAdapter = {
+    provider,
+    capabilities: {
+      resume: true,
+      steering: false,
+      approvals: true,
+      userInput: true,
+      modelSwitchInSession: false,
+    },
+    startSession: vi.fn(async () => {
+      live = true;
+      emit({ type: 'session.state.changed', status: 'ready' });
+      return { provider, sessionId: 'session', nativeSessionId: 'native' };
+    }),
+    sendTurn: vi.fn(async (input) => {
+      emit({ type: 'turn.started', turnId: input.turnId });
+      return { turnId: input.turnId };
+    }),
+    interruptTurn: vi.fn(async () => {}),
+    respondToRequest: vi.fn(async () => {}),
+    respondToUserInput: vi.fn(async () => {}),
+    stopSession: vi.fn(async () => {
+      live = false;
+      emit({ type: 'session.exited', reason: 'Stopped' });
+    }),
+    stopAll: vi.fn(async () => {}),
+    hasSession: () => live,
+    subscribe: (fn) => {
+      listener = fn;
+      return () => {
+        listener = () => {};
+      };
+    },
+  };
+  const config = {
+    session: {
+      sessionId: 'session',
+      agentId: 'agent',
+      hostId: 'host',
+      epoch: 'epoch',
+      provider,
+      status: 'starting',
+      connectivity: 'online',
+      pendingRequestIds: [],
+      capabilities: {
+        input: 'queue',
+        approvals: true,
+        questions: true,
+        interrupt: true,
+        reset: true,
+        compact: false,
+        modelChange: false,
+        attachmentMimeTypes: [],
+      },
+    } as Session,
+    input: {
+      sessionId: 'session',
+      cwd: tmpdir(),
+      runtimeMode: 'approval-required' as const,
+      env: {},
+      mcpServers: {},
+    },
+  };
+  return { adapter, config, emit };
+}
+function message(commandId: string): Command {
+  return {
+    contractVersion: 1,
+    commandId,
+    sessionId: 'session',
+    epoch: 'epoch',
+    origin: { actorId: 'user', surface: 'console', roomId: null, threadId: null, messageId: null },
+    body: {
+      type: 'message.send',
+      delivery: 'queue',
+      text: 'Hello',
+      attachments: [],
+    },
+  };
+}
+async function start(provider: Session['provider']) {
+  const root = await mkdtemp(join(tmpdir(), 'sdk-host-test-'));
+  roots.push(root);
+  const fixture = setup(provider);
+  const host = await HostedSession.start(root, fixture.config, fixture.adapter);
+  hosts.push(host);
+  await vi.waitFor(() => expect(host.snapshot().session.status).toBe('ready'));
+  return { ...fixture, root, host };
+}
+it.each(['claude', 'codex', 'opencode', 'gemini', 'cursor'] as const)(
+  'serializes and deduplicates %s commands across recovery',
+  async (provider) => {
+    const { root, host, adapter } = await start(provider);
+    const command = message('first');
+    expect((await host.command(command)).status).toBe('applied');
+    await host.command(structuredClone(command));
+    await host.command(message('second'));
+    await vi.waitFor(() => expect(adapter.sendTurn).toHaveBeenCalledTimes(1));
+    await expect(
+      host.command({ ...command, body: { ...command.body, text: 'Changed' } } as Command)
+    ).rejects.toThrow('IDEMPOTENCY_CONFLICT');
+    await host.shutdown();
+    const recovered = setup(provider);
+    const next = await HostedSession.start(root, recovered.config, recovered.adapter);
+    hosts.push(next);
+    expect(recovered.adapter.startSession).toHaveBeenCalledWith(
+      expect.objectContaining({ resume: { nativeSessionId: 'native' } })
+    );
+    expect(next.snapshot().items.filter((item) => item.kind === 'user-message')).toHaveLength(2);
+    expect(next.snapshot().turns.every((turn) => turn.status === 'interrupted')).toBe(true);
+    expect(recovered.adapter.sendTurn).not.toHaveBeenCalled();
+    expect((await next.command(command)).status).toBe('applied');
+    await expect(next.command(message('third'))).rejects.toThrow('STALE_EPOCH');
+  }
+);
+it('keeps an explicitly stopped session stopped across restart', async () => {
+  const { root, host } = await start('claude');
+  await host.command({ ...message('stop'), body: { type: 'session.stop' } });
+  await vi.waitFor(() => expect(host.snapshot().session.status).toBe('stopped'));
+  await host.shutdown();
+  const fixture = setup('claude');
+  const recovered = await HostedSession.start(root, fixture.config, fixture.adapter);
+  hosts.push(recovered);
+  expect(recovered.snapshot().session.status).toBe('stopped');
+  expect(fixture.adapter.startSession).not.toHaveBeenCalled();
+});
+it('keeps a failed callback outcome unknown and never retries the answer', async () => {
+  const { host, adapter, emit } = await start('claude');
+  await host.command(message('turn'));
+  emit({
+    type: 'request.opened',
+    turnId: 'turn',
+    requestId: 'permission',
+    requestType: 'tool_approval',
+    title: 'Write file',
+    options: [{ decision: 'accept', label: 'Allow once' }],
+  });
+  await vi.waitFor(() => expect(host.snapshot().requests[0]?.state).toBe('open'));
+  vi.mocked(adapter.respondToRequest).mockRejectedValueOnce(new Error('Provider exited'));
+  const answer: Command = {
+    ...message('answer'),
+    body: {
+      type: 'request.answer',
+      requestId: 'permission',
+      expectedRevision: 1,
+      answer: { kind: 'approval', optionId: '0' },
+    },
+  };
+  expect((await host.command(answer)).status).toBe('unknown');
+  expect(host.snapshot().requests[0]).toMatchObject({
+    state: 'closed',
+    result: { outcome: 'provider-error' },
+  });
+  expect((await host.command(answer)).status).toBe('unknown');
+  expect(adapter.respondToRequest).toHaveBeenCalledTimes(1);
+  await expect(host.command({ ...answer, commandId: 'another-answer' })).rejects.toThrow(
+    'REQUEST_CLOSED'
+  );
+});
+it('settles unanswered questions when the provider exits', async () => {
+  const { host, emit } = await start('cursor');
+  await host.command(message('turn'));
+  emit({
+    type: 'user-input.requested',
+    turnId: 'turn',
+    requestId: 'question',
+    questions: [
+      {
+        id: 'color',
+        question: 'Choose a color',
+        options: [{ label: 'Blue', value: 'blue' }],
+        multiSelect: false,
+        allowCustomAnswer: false,
+      },
+    ],
+  });
+  await vi.waitFor(() => expect(host.snapshot().requests[0]?.state).toBe('open'));
+  emit({ type: 'session.exited', reason: 'Disconnected' });
+  await vi.waitFor(() => expect(host.snapshot().requests[0]?.state).toBe('closed'));
+  expect(host.snapshot().session.pendingRequestIds).toEqual([]);
+});
+it('rejects oversized input before persisting or dispatching a turn', async () => {
+  const { host, adapter } = await start('claude');
+  const command = message('large');
+  if (command.body.type !== 'message.send') throw new Error('Expected message');
+  command.body.text = 'x'.repeat(64 * 1024);
+  await expect(host.command(command)).rejects.toThrow('PAYLOAD_TOO_LARGE');
+  expect(host.snapshot().turns).toEqual([]);
+  expect(host.snapshot().commandStatuses).toEqual([]);
+  expect(adapter.sendTurn).not.toHaveBeenCalled();
+});
+
+it.each(['accept', 'decline', 'cancel'] as const)(
+  'settles %s once and retains the deciding actor',
+  async (decision) => {
+    const { host, adapter, emit } = await start('claude');
+    await host.command(message('turn'));
+    emit({
+      type: 'request.opened',
+      turnId: 'turn',
+      requestId: 'permission',
+      requestType: 'tool_approval',
+      title: 'Write file',
+      options: [{ decision, label: decision }],
+    });
+    await vi.waitFor(() => expect(host.snapshot().requests[0]?.state).toBe('open'));
+    const answer: Command = {
+      ...message('answer'),
+      body: {
+        type: 'request.answer',
+        requestId: 'permission',
+        expectedRevision: 1,
+        answer: { kind: 'approval', optionId: '0' },
+      },
+    };
+    const results = await Promise.allSettled([
+      host.command(answer),
+      host.command(structuredClone(answer)),
+      host.command({ ...answer, commandId: 'competing-answer' }),
+    ]);
+    expect(results.map((r) => r.status)).toEqual(['fulfilled', 'fulfilled', 'rejected']);
+    expect(adapter.respondToRequest).toHaveBeenCalledExactlyOnceWith(
+      'session',
+      'permission',
+      decision
+    );
+    expect(host.snapshot().requests[0]).toMatchObject({
+      state: decision === 'cancel' ? 'closed' : 'resolved',
+      result: {
+        outcome: decision === 'cancel' ? 'cancelled' : 'answered',
+        result: decision === 'cancel' ? null : { kind: 'approval', optionId: '0' },
+      },
+      decidedBy: { actorId: 'user', surface: 'console', commandId: 'answer' },
+    });
+    expect(host.snapshot().requests[0]).not.toHaveProperty('audience');
+    expect(host.snapshot().items[0]).not.toHaveProperty('audience');
+  }
+);
+
+it('rejects host publication claims before dispatching a command', async () => {
+  const { host, adapter } = await start('claude');
+  const command = message('turn');
+  expect(() =>
+    host.command({
+      ...command,
+      body: { ...command.body, audience: { kind: 'room', roomId: 'room', threadId: null } },
+    } as unknown as Command)
+  ).toThrow();
+  expect(adapter.sendTurn).not.toHaveBeenCalled();
+  expect(host.snapshot().commandStatuses).toEqual([]);
+});
+
+it('records uncertain interrupt delivery and never sends it twice', async () => {
+  const { host, adapter } = await start('codex');
+  await host.command(message('turn'));
+  await vi.waitFor(() => expect(adapter.sendTurn).toHaveBeenCalledOnce());
+  vi.mocked(adapter.interruptTurn).mockRejectedValue(new Error('Connection lost after send'));
+  const interrupt: Command = {
+    ...message('interrupt'),
+    body: { type: 'turn.interrupt', turnId: 'turn' },
+  };
+  expect((await host.command(interrupt)).status).toBe('unknown');
+  expect((await host.command(interrupt)).status).toBe('unknown');
+  expect(adapter.interruptTurn).toHaveBeenCalledOnce();
+});
+
+it('rejects a completed turn interrupt without ending the host', async () => {
+  const { host, adapter } = await start('codex');
+  expect(
+    (
+      await host.command({
+        ...message('interrupt'),
+        body: { type: 'turn.interrupt', turnId: 'finished' },
+      })
+    ).status
+  ).toBe('rejected');
+  expect(adapter.interruptTurn).not.toHaveBeenCalled();
+  expect((await host.command(message('next'))).status).toBe('applied');
+});
+
+it('keeps a stop with uncertain cleanup stopped on recovery', async () => {
+  const { host, root, adapter } = await start('codex');
+  vi.mocked(adapter.stopSession).mockRejectedValueOnce(new Error('Cleanup acknowledgement lost'));
+  const stop: Command = { ...message('stop'), body: { type: 'session.stop' } };
+  expect((await host.command(stop)).status).toBe('unknown');
+  expect((await host.command(stop)).status).toBe('unknown');
+  expect(adapter.stopSession).toHaveBeenCalledOnce();
+  await host.shutdown();
+  const recovered = setup('codex');
+  const resumed = await HostedSession.start(root, recovered.config, recovered.adapter);
+  hosts.push(resumed);
+  expect(resumed.snapshot().session.status).toBe('stopped');
+  expect(recovered.adapter.startSession).not.toHaveBeenCalled();
+});
+
+it('stops active and queued turns without dispatching the queue during cleanup', async () => {
+  const { host, adapter, emit } = await start('codex');
+  await host.command(message('active'));
+  await host.command(message('queued'));
+  await vi.waitFor(() => expect(adapter.sendTurn).toHaveBeenCalledOnce());
+  vi.mocked(adapter.stopSession).mockImplementationOnce(async () => {
+    emit({ type: 'turn.completed', turnId: 'active', outcome: 'interrupted' });
+    emit({ type: 'session.exited', reason: 'Stopped' });
+  });
+  expect((await host.command({ ...message('stop'), body: { type: 'session.stop' } })).status).toBe(
+    'applied'
+  );
+  await vi.waitFor(() => expect(host.snapshot().session.status).toBe('stopped'));
+  expect(host.snapshot().turns.map((turn) => turn.status)).toEqual(['interrupted', 'interrupted']);
+  expect(adapter.sendTurn).toHaveBeenCalledOnce();
+});
+
+it('resets into a new epoch and native conversation while retaining history', async () => {
+  const { host, adapter, emit, root } = await start('claude');
+  await host.command(message('old-turn'));
+  await vi.waitFor(() => expect(host.snapshot().turns[0]?.status).toBe('running'));
+  emit({ type: 'turn.completed', turnId: 'old-turn', outcome: 'completed' });
+  await vi.waitFor(() => expect(host.snapshot().turns[0]?.status).toBe('completed'));
+  vi.mocked(adapter.startSession).mockImplementationOnce(async () => {
+    emit({ type: 'session.state.changed', status: 'ready' });
+    return { provider: 'claude', sessionId: 'session', nativeSessionId: 'fresh-native' };
+  });
+  const command = { ...message('reset'), body: { type: 'session.reset' as const } };
+  expect((await host.command(command)).status).toBe('applied');
+  expect(host.snapshot().session.epoch).not.toBe('epoch');
+  expect(host.snapshot().items[0].text).toBe('Hello');
+  expect(vi.mocked(adapter.startSession).mock.calls[1][0].resume).toBeUndefined();
+  expect((await host.command(command)).status).toBe('applied');
+  expect(adapter.startSession).toHaveBeenCalledTimes(2);
+  await expect(host.command(message('stale'))).rejects.toThrow('STALE_EPOCH');
+  await host.shutdown();
+  const next = setup('claude');
+  hosts.push(await HostedSession.start(root, next.config, next.adapter));
+  expect(next.adapter.startSession).toHaveBeenCalledWith(
+    expect.objectContaining({
+      resume: { nativeSessionId: 'fresh-native' },
+    })
+  );
+});
+
+it('rejects reset with queued work or a pending native request', async () => {
+  const { host, adapter, emit } = await start('claude');
+  await host.command(message('active'));
+  await host.command(message('queued'));
+  emit({
+    type: 'request.opened',
+    turnId: 'active',
+    requestId: 'permission',
+    requestType: 'tool_approval',
+    title: 'Run command',
+    options: [{ decision: 'accept', label: 'Allow' }],
+  });
+  await vi.waitFor(() => expect(host.snapshot().requests).toHaveLength(1));
+  await expect(
+    host.command({ ...message('reset'), body: { type: 'session.reset' } })
+  ).rejects.toThrow('SESSION_BUSY');
+  expect(adapter.stopSession).not.toHaveBeenCalled();
+  expect(host.snapshot().session.epoch).toBe('epoch');
+  expect(host.snapshot().requests[0].state).toBe('open');
+});
+
+const interrupted: Command = { ...message('interrupted-reset'), body: { type: 'session.reset' } };
+async function undecided(nativeRecorded: boolean) {
+  const { host, root } = await start('claude');
+  await host.shutdown();
+  const line = (value: unknown) => JSON.stringify(value) + '\n';
+  await appendFile(
+    join(root, 'inbox.jsonl'),
+    line({ type: 'accepted', command: interrupted }) +
+      line({ type: 'dispatched', commandId: 'interrupted-reset' }) +
+      line({ type: 'reset-started' }) +
+      (nativeRecorded ? line({ type: 'native', nativeSessionId: 'possibly-created' }) : '')
+  );
+  const next = setup('claude');
+  const config = { ...next.config, stageAttachments: async () => [] };
+  const resumed = await HostedSession.start(root, config, next.adapter);
+  hosts.push(resumed);
+  return { ...next, root, host: resumed };
+}
+
+it.each([false, true])(
+  'opens an uncertain reset for an explicit decision (native ID recorded: %s)',
+  async (nativeRecorded) => {
+    const { host, adapter } = await undecided(nativeRecorded);
+    expect(adapter.startSession).not.toHaveBeenCalled();
+    expect(host.resetDecisionPending).toBe(true);
+    expect(host.snapshot().session.status).toBe('error');
+    expect(host.snapshot().session.capabilities).toMatchObject({
+      reset: true,
+      modelChange: false,
+      compact: false,
+      attachmentMimeTypes: [],
+    });
+    expect(
+      host
+        .replay(0)
+        .events.filter(
+          (event) => event.body.type === 'notice' && event.body.code === 'RESET_OUTCOME_UNKNOWN'
+        )
+    ).toHaveLength(1);
+    expect(host.status('interrupted-reset')).toMatchObject({
+      status: 'unknown',
+      code: 'HOST_RESTARTED',
+    });
+  }
+);
+
+it('rejects other commands while the reset outcome is undecided', async () => {
+  const { host, adapter } = await undecided(true);
+  const blocked = message('blocked');
+  const error = await host.command(blocked).catch((reason: unknown) => reason);
+  expect(String(error)).toContain('UNSUPPORTED_CAPABILITY: RESET_OUTCOME_UNKNOWN');
+  await host.reject(blocked, error);
+  expect(host.status('blocked')).toMatchObject({ status: 'rejected', code: 'COMMAND_REJECTED' });
+  await expect(
+    host.command({ ...message('compact'), body: { type: 'session.compact' } })
+  ).rejects.toThrow('UNSUPPORTED_CAPABILITY: RESET_OUTCOME_UNKNOWN');
+  expect(adapter.sendTurn).not.toHaveBeenCalled();
+  expect(host.snapshot().session.status).toBe('error');
+  expect(
+    host
+      .replay(0)
+      .events.some((event) => event.body.type === 'notice' && event.body.code === 'HOST_ERROR')
+  ).toBe(false);
+});
+
+it('starts a fresh conversation when the user decides an uncertain reset', async () => {
+  const { host, adapter } = await undecided(true);
+  const reset: Command = { ...message('decided-reset'), body: { type: 'session.reset' } };
+  expect((await host.command(reset)).status).toBe('applied');
+  expect(adapter.stopSession).not.toHaveBeenCalled();
+  expect(adapter.startSession).toHaveBeenCalledOnce();
+  expect(vi.mocked(adapter.startSession).mock.calls[0][0].resume).toBeUndefined();
+  await vi.waitFor(() => expect(host.snapshot().session.status).toBe('ready'));
+  expect(host.resetDecisionPending).toBe(false);
+  expect(host.snapshot().session.capabilities.attachmentMimeTypes.length).toBeGreaterThan(0);
+  expect(host.status('interrupted-reset')).toMatchObject({
+    status: 'unknown',
+    code: 'HOST_RESTARTED',
+  });
+  expect(
+    host
+      .replay(0)
+      .events.some((event) => event.body.type === 'notice' && event.body.code === 'CONTEXT_RESET')
+  ).toBe(true);
+  const fresh = { ...message('after-decision'), epoch: host.snapshot().session.epoch };
+  expect((await host.command(fresh)).status).toBe('applied');
+});
+
+it('stops an undecided session without touching an unstarted provider', async () => {
+  const { host, adapter, root } = await undecided(false);
+  expect((await host.command({ ...message('stop'), body: { type: 'session.stop' } })).status).toBe(
+    'applied'
+  );
+  expect(adapter.stopSession).not.toHaveBeenCalled();
+  expect(host.snapshot().session.status).toBe('stopped');
+  await host.shutdown();
+  const next = setup('claude');
+  const resumed = await HostedSession.start(root, next.config, next.adapter);
+  hosts.push(resumed);
+  expect(resumed.snapshot().session.status).toBe('stopped');
+  expect(next.adapter.startSession).not.toHaveBeenCalled();
+});
+
+it('resumes an ordinary interrupted session without a reset decision', async () => {
+  const { host, root } = await start('claude');
+  await host.shutdown();
+  const next = setup('claude');
+  const resumed = await HostedSession.start(root, next.config, next.adapter);
+  hosts.push(resumed);
+  expect(next.adapter.startSession).toHaveBeenCalledWith(
+    expect.objectContaining({ resume: { nativeSessionId: 'native' } })
+  );
+  expect(resumed.resetDecisionPending).toBe(false);
+  await vi.waitFor(() => expect(resumed.snapshot().session.status).toBe('ready'));
+});
+
+it('validates native model choices and persists a confirmed choice across restart', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'sdk-model-test-'));
+  roots.push(root);
+  const fixture = setup('claude');
+  fixture.adapter.listModels = vi.fn(async () => [
+    { id: 'model-a', label: 'Model A', options: { effort: ['low', 'high'] } },
+  ]);
+  fixture.adapter.setModel = vi.fn(async () => {});
+  const host = await HostedSession.start(root, fixture.config, fixture.adapter);
+  hosts.push(host);
+  expect(host.snapshot().session.capabilities.modelChange).toBe(true);
+  const command: Command = {
+    ...message('model'),
+    body: {
+      type: 'session.model.set',
+      modelId: 'model-a',
+      options: { effort: 'high' },
+    },
+  };
+  await expect(
+    host.command({ ...command, body: { ...command.body, modelId: 'invented' } } as Command)
+  ).rejects.toThrow('UNSUPPORTED_MODEL');
+  await expect(
+    host.command({
+      ...command,
+      body: { ...command.body, options: { effort: 'invented' } },
+    } as Command)
+  ).rejects.toThrow('UNSUPPORTED_MODEL');
+  expect(fixture.adapter.setModel).not.toHaveBeenCalled();
+  expect((await host.command(command)).status).toBe('applied');
+  expect((await host.command(command)).status).toBe('applied');
+  expect(fixture.adapter.setModel).toHaveBeenCalledTimes(1);
+  expect(host.snapshot().session.model).toEqual({ id: 'model-a', options: { effort: 'high' } });
+  await host.shutdown();
+  const recovered = setup('claude');
+  hosts.push(await HostedSession.start(root, recovered.config, recovered.adapter));
+  expect(recovered.adapter.startSession).toHaveBeenCalledWith(
+    expect.objectContaining({
+      model: { id: 'model-a', options: { effort: 'high' } },
+      resume: { nativeSessionId: 'native' },
+    })
+  );
+});
+
+it('leaves a lost model acknowledgement unknown and does not retry it', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'sdk-model-test-'));
+  roots.push(root);
+  const fixture = setup('claude');
+  fixture.adapter.listModels = vi.fn(async () => [{ id: 'model-a', label: 'A', options: {} }]);
+  fixture.adapter.setModel = vi.fn(async () => {
+    throw new Error('Acknowledgement lost');
+  });
+  const host = await HostedSession.start(root, fixture.config, fixture.adapter);
+  hosts.push(host);
+  const command: Command = {
+    ...message('model'),
+    body: { type: 'session.model.set', modelId: 'model-a', options: {} },
+  };
+  expect((await host.command(command)).status).toBe('unknown');
+  expect((await host.command(command)).status).toBe('unknown');
+  expect(fixture.adapter.setModel).toHaveBeenCalledTimes(1);
+  expect(host.snapshot().session.model).toBeNull();
+});
+
+it('waits for native compaction and keeps history without sending a summarization prompt', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'sdk-compact-test-'));
+  roots.push(root);
+  const fixture = setup('claude');
+  let finish!: () => void;
+  fixture.adapter.compactSession = vi.fn(
+    () =>
+      new Promise<void>((resolve) => {
+        finish = resolve;
+      })
+  );
+  const host = await HostedSession.start(root, fixture.config, fixture.adapter);
+  hosts.push(host);
+  const command: Command = { ...message('compact'), body: { type: 'session.compact' } };
+  const applied = host.command(command);
+  await vi.waitFor(() => expect(fixture.adapter.compactSession).toHaveBeenCalledTimes(1));
+  expect(host.status('compact').status).toBe('accepted');
+  expect(host.snapshot().session.status).toBe('running');
+  expect(
+    host
+      .replay(0)
+      .events.some(
+        (event) => event.body.type === 'notice' && event.body.code === 'COMPACTION_STARTED'
+      )
+  ).toBe(true);
+  finish();
+  expect((await applied).status).toBe('applied');
+  expect(host.snapshot().session.status).toBe('ready');
+  expect(host.snapshot().session.epoch).toBe('epoch');
+  await host.command(command);
+  expect(fixture.adapter.compactSession).toHaveBeenCalledTimes(1);
+  expect(fixture.adapter.sendTurn).not.toHaveBeenCalled();
+  expect(fixture.adapter.interruptTurn).not.toHaveBeenCalled();
+});
+
+it('stages attachments before dispatch and never executes after shutdown during transfer', async () => {
+  const { adapter, config } = setup('codex');
+  let resolve!: (files: Array<{ path: string; mimeType: string }>) => void;
+  const promise = new Promise<Array<{ path: string; mimeType: string }>>((done) => {
+    resolve = done;
+  });
+  const transfer = { promise, resolve };
+  const root = await mkdtemp(join(tmpdir(), 'sdk-stage-stop-'));
+  roots.push(root);
+  const stageAttachments = vi.fn(() => transfer.promise);
+  const host = await HostedSession.start(root, { ...config, stageAttachments }, adapter);
+  const command = message('with-file');
+  if (command.body.type !== 'message.send') throw new Error('Expected message');
+  command.body.attachments = [
+    { attachmentId: randomUUID(), name: 'note.txt', mimeType: 'text/plain', bytes: 4 },
+  ];
+  await host.command(command);
+  await expect.poll(() => stageAttachments.mock.calls.length).toBe(1);
+  expect(adapter.sendTurn).not.toHaveBeenCalled();
+  await host.shutdown();
+  transfer.resolve([{ path: '/execution-host/note.txt', mimeType: 'text/plain' }]);
+  await expect
+    .poll(() => host.snapshot().turns.find((turn) => turn.turnId === command.commandId)?.status)
+    .toBe('error');
+  expect(adapter.sendTurn).not.toHaveBeenCalled();
+});
+
+it('delivers staged execution paths once and keeps durable attachment metadata', async () => {
+  const { adapter, config } = setup('codex');
+  const root = await mkdtemp(join(tmpdir(), 'sdk-stage-delivery-'));
+  roots.push(root);
+  const staged = [{ path: '/execution-host/note.txt', mimeType: 'text/plain' }];
+  const stageAttachments = vi.fn(async () => staged);
+  const host = await HostedSession.start(root, { ...config, stageAttachments }, adapter);
+  hosts.push(host);
+  const command = message('with-file');
+  if (command.body.type !== 'message.send') throw new Error('Expected message');
+  command.body.attachments = [
+    { attachmentId: randomUUID(), name: 'note.txt', mimeType: 'text/plain', bytes: 4 },
+  ];
+  await host.command(command);
+  await host.command(command);
+  await expect.poll(() => vi.mocked(adapter.sendTurn).mock.calls.length).toBe(1);
+  expect(vi.mocked(adapter.sendTurn).mock.calls[0]?.[0].attachments).toEqual(staged);
+  expect(stageAttachments).toHaveBeenCalledOnce();
+  expect(host.snapshot().items.find((item) => item.kind === 'user-message')?.attachments).toEqual(
+    command.body.attachments
+  );
+});
+
+it('updates attachment support after a confirmed native model change', async () => {
+  const { adapter, config } = setup('opencode');
+  adapter.listModels = vi.fn(async () => [
+    { id: 'text', label: 'Text', options: {}, imageInput: false },
+    { id: 'vision', label: 'Vision', options: {}, imageInput: true },
+  ]);
+  adapter.setModel = vi.fn(async () => {});
+  const root = await mkdtemp(join(tmpdir(), 'sdk-model-images-'));
+  roots.push(root);
+  const host = await HostedSession.start(
+    root,
+    {
+      ...config,
+      input: { ...config.input, model: { id: 'text' } },
+      stageAttachments: async () => [],
+    },
+    adapter
+  );
+  hosts.push(host);
+  expect(host.snapshot().session.capabilities.attachmentMimeTypes).not.toContain('image/png');
+  const image = message('image');
+  if (image.body.type !== 'message.send') throw new Error('Expected message');
+  image.body.attachments = [
+    { attachmentId: randomUUID(), name: 'image.png', mimeType: 'image/png', bytes: 10 },
+  ];
+  await expect(host.command(image)).rejects.toThrow('attachment type');
+  expect(adapter.sendTurn).not.toHaveBeenCalled();
+  await host.command({
+    ...message('vision'),
+    body: { type: 'session.model.set', modelId: 'vision', options: {} },
+  });
+  expect(host.snapshot().session.capabilities.attachmentMimeTypes).toContain('image/png');
+});
+
+it('rejects unsupported native compaction without faulting the session', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'unsupported-compact-'));
+  const { adapter, config } = setup('claude');
+  const host = await HostedSession.start(root, config, adapter);
+  try {
+    await expect(
+      host.command({ ...message('unsupported-compact'), body: { type: 'session.compact' } })
+    ).rejects.toThrow('UNSUPPORTED_CAPABILITY');
+    expect(host.snapshot().session.status).toBe('ready');
+  } finally {
+    await host.shutdown();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+it('requires an explicit fresh reset when the provider cannot resume the saved conversation', async () => {
+  const { host, root } = await start('codex');
+  await host.shutdown();
+  const next = setup('codex');
+  vi.mocked(next.adapter.startSession).mockRejectedValueOnce(
+    new ProviderConversationUnavailableError('codex', 'session', 'Saved conversation unavailable')
+  );
+  const recovered = await HostedSession.start(root, next.config, next.adapter);
+  hosts.push(recovered);
+  expect(recovered.resetDecisionPending).toBe(true);
+  expect(recovered.snapshot().session.status).toBe('error');
+  expect(next.adapter.startSession).toHaveBeenCalledTimes(1);
+  expect(next.adapter.startSession).toHaveBeenCalledWith(
+    expect.objectContaining({
+      resume: { nativeSessionId: 'native' },
+    })
+  );
+  await expect(
+    recovered.command({ ...message('held'), epoch: recovered.snapshot().session.epoch })
+  ).rejects.toThrow('NATIVE_CONVERSATION_UNAVAILABLE');
+  expect(next.adapter.sendTurn).not.toHaveBeenCalled();
+  const receipt = await recovered.command({
+    ...message('fresh'),
+    epoch: recovered.snapshot().session.epoch,
+    body: { type: 'session.reset' },
+  });
+  expect(receipt.status).toBe('applied');
+  expect(next.adapter.startSession).toHaveBeenCalledTimes(2);
+  expect(vi.mocked(next.adapter.startSession).mock.calls[1][0].resume).toBeUndefined();
+  expect(recovered.resetDecisionPending).toBe(false);
+});
+
+it('does not present authentication or transport failures as a missing conversation', async () => {
+  const { host, root } = await start('codex');
+  await host.shutdown();
+  const next = setup('codex');
+  vi.mocked(next.adapter.startSession).mockRejectedValueOnce(new Error('Authentication failed'));
+  await expect(HostedSession.start(root, next.config, next.adapter)).rejects.toThrow(
+    'Authentication failed'
+  );
+});

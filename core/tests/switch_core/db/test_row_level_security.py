@@ -328,7 +328,7 @@ def _expected_predicate(tenant_column: str) -> str:
     )
 
 
-def _migration_module() -> ModuleType:
+def _migration_module(revision_id: str) -> ModuleType:
     """The `265ed188ad6f` revision module, loaded through Alembic.
 
     Alembic's own loader, rather than an `importlib` call on a path, so this
@@ -338,7 +338,7 @@ def _migration_module() -> ModuleType:
     core = Path(switch_core.__file__).resolve().parents[1]
     config = Config(str(core / "alembic.ini"))
     config.set_main_option("script_location", str(core / "switch_core" / "migrations"))
-    revision = ScriptDirectory.from_config(config).get_revision(_RLS_REVISION)
+    revision = ScriptDirectory.from_config(config).get_revision(revision_id)
     return revision.module
 
 
@@ -412,16 +412,19 @@ class TestCatalogueCoverage:
         cost of a frozen copy is that it can silently fall behind: a table
         added to the models gets a policy from `create_all`, so every test in
         this file still passes, while a real deployment built by Alembic has
-        none. Nothing compared the two before this; they agree at 38 today.
+        none. The combined migration inventories must account for every table.
 
         A deliberate divergence is still expressible — it just has to be a
         new migration, which is the point.
         """
         from_models = scoped_tables(Base.metadata)
-        from_migration = dict(_migration_module().SCOPED_TABLES)
+        from_migration = dict(_migration_module(_RLS_REVISION).SCOPED_TABLES)
+        from_migration.update(
+            {table: "tenant_id" for table in _migration_module("c83f6e0a4129").TABLES}
+        )
 
         assert from_migration == from_models, (
-            "the frozen SCOPED_TABLES in migration 265ed188ad6f no longer "
+            "the frozen table inventories in the scoping migrations no longer "
             "matches the models: only in the migration "
             f"{sorted(set(from_migration) - set(from_models))}, only in the "
             f"models {sorted(set(from_models) - set(from_migration))}"

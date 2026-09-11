@@ -1,4 +1,5 @@
 import uuid
+from datetime import datetime
 
 from sqlalchemy import (
     DDL,
@@ -12,6 +13,7 @@ from sqlalchemy import (
     Index,
     Integer,
     LargeBinary,
+    PrimaryKeyConstraint,
     Table,
     Text,
     UniqueConstraint,
@@ -1551,11 +1553,26 @@ class MediaBlob(TenantScoped, Base):
     """
 
     __tablename__ = "media_blobs"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "uri", name="uq_media_blobs_tenant_uri"),
+        ForeignKeyConstraint(
+            ["tenant_id", "sdk_session_id"],
+            ["sdk_sessions.tenant_id", "sdk_sessions.id"],
+            name="fk_media_blobs_sdk_session",
+            ondelete="CASCADE",
+        ),
+    )
 
     id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
-    uri: Mapped[str] = mapped_column(Text, unique=True, nullable=False)
+    uri: Mapped[str] = mapped_column(Text, nullable=False)
     content_type: Mapped[str | None] = mapped_column(Text, nullable=True)
     filename: Mapped[str | None] = mapped_column(Text, nullable=True)
+    sha256: Mapped[str | None] = mapped_column(Text, nullable=True)
+    sdk_session_id: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+        index=True,
+    )
     size: Mapped[int] = mapped_column(BigInteger, nullable=False)
     data: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
     created_at: Mapped[str] = mapped_column(
@@ -1581,6 +1598,86 @@ event.listen(
     "before_drop",
     DDL(DROP_NOTIFY_TRIGGER).execute_if(dialect="postgresql"),
 )
+
+
+class SdkSession(TenantScoped, Base):
+    __tablename__ = "sdk_sessions"
+    __table_args__ = (
+        PrimaryKeyConstraint("tenant_id", "id"),
+        UniqueConstraint("id", "tenant_id", name="uq_sdk_sessions_id_tenant"),
+        UniqueConstraint(
+            "tenant_id", "connection_id", name="uq_sdk_sessions_connection_id"
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "agent_id"],
+            ["agents.tenant_id", "agents.id"],
+            name="fk_sdk_sessions_agent",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(Text, nullable=False)
+    agent_id: Mapped[str] = mapped_column(Text, nullable=False)
+    connection_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    host_id: Mapped[str] = mapped_column(Text, nullable=False)
+    epoch: Mapped[str] = mapped_column(Text, nullable=False)
+    lease_expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    snapshot: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    host_sequence: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+
+    recovery: Mapped[dict] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default="{}"
+    )
+
+
+class SdkSessionEvent(TenantScoped, Base):
+    __tablename__ = "sdk_session_events"
+    __table_args__ = (
+        PrimaryKeyConstraint("tenant_id", "session_id", "sequence"),
+        UniqueConstraint(
+            "tenant_id",
+            "session_id",
+            "epoch",
+            "host_sequence",
+            name="uq_sdk_event_host_sequence",
+        ),
+        UniqueConstraint("tenant_id", "session_id", "event_id", name="uq_sdk_event_id"),
+        ForeignKeyConstraint(
+            ["tenant_id", "session_id"],
+            ["sdk_sessions.tenant_id", "sdk_sessions.id"],
+            name="fk_sdk_session_events_session",
+            ondelete="CASCADE",
+        ),
+    )
+
+    session_id: Mapped[str] = mapped_column(Text, nullable=False)
+    sequence: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    epoch: Mapped[str] = mapped_column(Text, nullable=False)
+    event_id: Mapped[str] = mapped_column(Text, nullable=False)
+    host_sequence: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    host_event: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    event: Mapped[dict] = mapped_column(JSONB, nullable=False)
+
+
+class SdkSessionCommand(TenantScoped, Base):
+    __tablename__ = "sdk_session_commands"
+    __table_args__ = (
+        PrimaryKeyConstraint("tenant_id", "session_id", "command_id"),
+        ForeignKeyConstraint(
+            ["tenant_id", "session_id"],
+            ["sdk_sessions.tenant_id", "sdk_sessions.id"],
+            name="fk_sdk_session_commands_session",
+            ondelete="CASCADE",
+        ),
+    )
+
+    session_id: Mapped[str] = mapped_column(Text, nullable=False)
+    command_id: Mapped[str] = mapped_column(Text, nullable=False)
+    accepted_sequence: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    command: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    status: Mapped[dict] = mapped_column(JSONB, nullable=False)
+
 
 # Same reasoning as the notify trigger above: `create_all` has to build the
 # row-level-security policies too, or the isolation test would pass against a

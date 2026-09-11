@@ -51,6 +51,7 @@ vi.mock('./remove-switch-settings', () => ({
   removeSwitchCredentials: h.removeSwitchCredentials,
 }));
 vi.mock('./agent-events', () => ({ agentEvents: { _emit: vi.fn() } }));
+vi.mock('./stop-shared-agent-sessions', () => ({ stopSharedAgentSessions: vi.fn(async () => {}) }));
 vi.mock('./remote-watcher', () => ({ stopRemoteWatcher: vi.fn(async () => {}) }));
 vi.mock('./connect-remote-agent', () => ({ connectRemoteAgent: vi.fn() }));
 vi.mock('@main/core/agent-runtime/impl/remote-sidecar-launcher', () => ({
@@ -80,7 +81,7 @@ vi.mock('@main/core/view-state/view-state-service', () => ({
   viewStateService: { del: vi.fn(async () => {}) },
 }));
 vi.mock('../sessions/session-runtime-manager', () => ({
-  sessionRuntimeManager: { teardownSession: vi.fn(async () => {}) },
+  sessionRuntimeManager: { teardownSession: vi.fn(async () => ({ success: true })) },
 }));
 vi.mock('@main/lib/logger', () => ({ log: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } }));
 vi.mock('@main/db/schema', () => ({ agents: {}, sessions: {} }));

@@ -6,7 +6,9 @@ export const sessionCreatedChannel = defineEvent<{ session: Session }>('session:
 
 export const sessionChangedChannel = defineEvent<{
   sessionId: string;
-  changes: Partial<Pick<Session, 'lastInteractedAt' | 'title' | 'providerSessionId'>>;
+  changes: Partial<
+    Pick<Session, 'lastInteractedAt' | 'title' | 'providerSessionId' | 'initialPromptDelivery'>
+  >;
 }>('session:changed');
 
 export const sessionAgentStatusChangedChannel = defineEvent<{
@@ -82,17 +84,3 @@ export const sessionProvisionedChannel = defineEvent<{
   locationId: string;
   sshConnectionId?: string;
 }>('session:provisioned');
-
-/**
- * A remote session's terminal was attached or detached.
- *
- * Attachment is bounded per host and owned by the main process, so the renderer
- * is told rather than asked. `detached` is a normal resting state, not an
- * error — the agent keeps running on the VM and keeps reporting status.
- */
-export const sessionAttachmentChangedChannel = defineEvent<{
-  sessionId: string;
-  state: 'detached' | 'attaching' | 'attached' | 'failed';
-  hostKey: string;
-  reason?: 'focus' | 'user' | 'startup' | 'adopt' | 'reconnect';
-}>('session:attachment-changed');

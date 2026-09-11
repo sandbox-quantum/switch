@@ -538,7 +538,7 @@ class PostgresTransport:
         """
         uri = f"switch-media://{uuid.uuid4().hex}"
         # This client's tenant, not whatever a caller happens to have bound.
-        # `media_blobs` is scoped, and the uri is opaque and globally unique,
+        # `media_blobs` is scoped, and the uri is opaque,
         # so an unguessable identifier is not an isolation boundary and the
         # row has to name a tenant that means something. It is the same answer
         # a room's tenant would give — a client is only in rooms of its own —
