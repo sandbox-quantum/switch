@@ -39,6 +39,7 @@ class _AgentStore:
 
 def _bridge(agents: dict[str, SimpleNamespace]) -> BridgeCore:
     bridge = BridgeCore.__new__(BridgeCore)
+    bridge._bridge_tenant_id = "tenant-1"
     bridge._agent_store = _AgentStore(agents)  # type: ignore[assignment]
     bridge._session_factory = _Session  # type: ignore[assignment]
     return bridge

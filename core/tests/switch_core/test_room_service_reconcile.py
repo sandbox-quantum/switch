@@ -91,7 +91,9 @@ class TestReconcileRoomClients:
     async def test_backfills_missing_admin_into_existing_room(self) -> None:
         # A room created before the admin client existed: it has the other
         # system clients but not the admin. Reconcile invites + records it.
-        room = SimpleNamespace(id="room-1", matrix_room_id="!mx:switch.local")
+        room = SimpleNamespace(
+            id="room-1", tenant_id="tenant-1", matrix_room_id="!mx:switch.local"
+        )
         svc, room_store, matrix = _build_service(
             rooms=[room],
             client_ids_by_room={"room-1": ["resource-mgr", "observe"]},
@@ -104,7 +106,9 @@ class TestReconcileRoomClients:
         assert room_store.added == [("admin-client", "room-1")]
 
     async def test_skips_room_that_already_has_the_admin(self) -> None:
-        room = SimpleNamespace(id="room-1", matrix_room_id="!mx:switch.local")
+        room = SimpleNamespace(
+            id="room-1", tenant_id="tenant-1", matrix_room_id="!mx:switch.local"
+        )
         svc, room_store, matrix = _build_service(
             rooms=[room],
             client_ids_by_room={"room-1": ["admin-client"]},
@@ -118,8 +122,14 @@ class TestReconcileRoomClients:
 
     async def test_covers_archived_rooms_too(self) -> None:
         rooms = [
-            SimpleNamespace(id="live", matrix_room_id="!live:switch.local"),
-            SimpleNamespace(id="archived", matrix_room_id="!arch:switch.local"),
+            SimpleNamespace(
+                id="live", tenant_id="tenant-1", matrix_room_id="!live:switch.local"
+            ),
+            SimpleNamespace(
+                id="archived",
+                tenant_id="tenant-1",
+                matrix_room_id="!arch:switch.local",
+            ),
         ]
         svc, room_store, matrix = _build_service(
             rooms=rooms,
@@ -135,7 +145,9 @@ class TestReconcileRoomClients:
         assert ("admin-client", "archived") in room_store.added
 
     async def test_no_running_system_clients_is_a_noop(self) -> None:
-        room = SimpleNamespace(id="room-1", matrix_room_id="!mx:switch.local")
+        room = SimpleNamespace(
+            id="room-1", tenant_id="tenant-1", matrix_room_id="!mx:switch.local"
+        )
         svc, room_store, matrix = _build_service(
             rooms=[room],
             client_ids_by_room={"room-1": []},
@@ -151,7 +163,9 @@ class TestReconcileRoomClients:
         # `add_agents_to_room` writes the membership row, invites, then records
         # `room_clients`. A crash in that window leaves the member with no
         # `room_clients` row, which is exactly what is repaired here.
-        room = SimpleNamespace(id="room-1", matrix_room_id="!mx:switch.local")
+        room = SimpleNamespace(
+            id="room-1", tenant_id="tenant-1", matrix_room_id="!mx:switch.local"
+        )
         svc, room_store, matrix = _build_service(
             rooms=[room],
             client_ids_by_room={"room-1": []},
@@ -165,7 +179,9 @@ class TestReconcileRoomClients:
         assert room_store.added == [("agent-client", "room-1")]
 
     async def test_an_agent_already_recorded_is_left_alone(self) -> None:
-        room = SimpleNamespace(id="room-1", matrix_room_id="!mx:switch.local")
+        room = SimpleNamespace(
+            id="room-1", tenant_id="tenant-1", matrix_room_id="!mx:switch.local"
+        )
         svc, room_store, matrix = _build_service(
             rooms=[room],
             client_ids_by_room={"room-1": ["agent-client"]},

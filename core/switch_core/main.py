@@ -14,6 +14,7 @@ import uvicorn
 from alembic import command as alembic_command
 from alembic.config import Config as AlembicConfig
 from fastapi.responses import JSONResponse
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.bridges.agent.app import create_agent_bridge_app
 from switch_core.bridges.agent.protocol.connections import (
@@ -74,7 +75,8 @@ from switch_core.db.engine import (
     create_session_factory,
     create_unpooled_engine,
 )
-from switch_core.db.models import ApiKey, User
+from switch_core.db.models import TENANT_ZERO_ID, ApiKey, User
+from switch_core.db.session_scope import unscoped_session
 from switch_core.db.stores.agent_session_store import AgentSessionStore
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.api_key_store import ApiKeyStore
@@ -103,6 +105,7 @@ from switch_core.messages.notify import MessageListener
 from switch_core.provisioning import Provisioning
 from switch_core.provisioning.postgres import PostgresProvisioning
 from switch_core.room_service import RoomService
+from switch_core.tenant_context import no_tenant
 from switch_core.transport.ephemeral import EphemeralBus
 from switch_core.transport.invites import InviteBus
 from switch_core.version import switch_core_version
@@ -121,12 +124,17 @@ _CONNECTION_SWEEP_INTERVAL = 2.0
 
 
 async def _runtime_state_sweep_loop(protocol: ProtocolService) -> None:
-    while True:
-        await asyncio.sleep(_RUNTIME_STATE_SWEEP_INTERVAL)
-        try:
-            await protocol.sweep_runtime_states()
-        except Exception:
-            logger.exception("Runtime-state sweep failed")
+    # `no_tenant` for the reason every other long-lived task does it: a task
+    # keeps the context of whoever created it, and nothing in here may depend
+    # on that. Boot binds nothing today, so this changes no behaviour — it
+    # removes the dependency on boot continuing not to.
+    with no_tenant():
+        while True:
+            await asyncio.sleep(_RUNTIME_STATE_SWEEP_INTERVAL)
+            try:
+                await protocol.sweep_runtime_states()
+            except Exception:
+                logger.exception("Runtime-state sweep failed")
 
 
 async def _connection_sweep_loop(protocol: ProtocolService) -> None:
@@ -475,11 +483,15 @@ async def run(config: SwitchConfig) -> None:
 
 
 async def _seed_admin_user(
-    session_factory: object,
+    session_factory: async_sessionmaker[AsyncSession],
     user_store: UserStore,
     config: SwitchConfig,
 ) -> None:
-    async with session_factory() as session:  # type: ignore[operator]
+    # Cross-tenant by necessity: this runs before any request has ever bound
+    # one. The admin User row itself is global (db/models.py); UserStore.create
+    # gives it a tenant_members row via its own tenant-zero fallback since
+    # nothing is bound here to join instead.
+    async with unscoped_session(session_factory) as session:
         existing = await user_store.get_by_email(session, config.gateway_admin_email)
         if existing is not None:
             logger.info("Admin user already exists: %s", config.gateway_admin_email)
@@ -497,7 +509,7 @@ async def _seed_admin_user(
 
 
 async def _seed_agent_registration_bootstrap_key(
-    session_factory: object,
+    session_factory: async_sessionmaker[AsyncSession],
     user_store: UserStore,
     api_key_store: ApiKeyStore,
     agent_store: AgentStore,
@@ -522,7 +534,11 @@ async def _seed_agent_registration_bootstrap_key(
     already exists under the old one, which would collide on the unique
     ``key_hash`` and fail the whole boot.
     """
-    async with session_factory() as session:  # type: ignore[operator]
+    # Cross-tenant by necessity, same as _seed_admin_user: no tenant exists
+    # yet to bind. The ApiKey row created below names tenant zero explicitly
+    # rather than leaning on the model default's fallback to it, so this
+    # keeps working once that fallback is removed.
+    async with unscoped_session(session_factory) as session:
         admin = await user_store.get_by_email(session, config.gateway_admin_email)
         if admin is None:
             raise RuntimeError(
@@ -676,6 +692,7 @@ async def _seed_agent_registration_bootstrap_key(
             )
         else:
             bootstrap_key = ApiKey(
+                tenant_id=TENANT_ZERO_ID,
                 user_id=admin.id,
                 key_hash=token_hash,
                 encrypted_key=encrypted_key,

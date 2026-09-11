@@ -3,9 +3,13 @@ that reads or writes it for a real request."""
 
 from __future__ import annotations
 
+import asyncio
+
 from switch_core.tenant_context import (
     bind_tenant_id,
+    clear_tenant_id,
     current_tenant_id,
+    no_tenant,
     tenant_scope,
     unbind_tenant_id,
 )
@@ -49,3 +53,63 @@ class TestTenantScope:
         except ValueError:
             pass
         assert current_tenant_id() is None
+
+
+class TestNoTenant:
+    """The unbind side. It is what makes "nothing is ambient" enforceable
+    rather than aspirational: a long-lived task enters it before doing
+    anything, so a unit of work inside that forgets to bind reads nothing
+    instead of reading whoever created the task."""
+
+    def test_it_unbinds_for_the_block_and_restores_after(self) -> None:
+        with tenant_scope("tenant-a"):
+            with no_tenant():
+                assert current_tenant_id() is None
+            assert current_tenant_id() == "tenant-a"
+
+    def test_it_is_a_no_op_when_nothing_was_bound(self) -> None:
+        with no_tenant():
+            assert current_tenant_id() is None
+        assert current_tenant_id() is None
+
+    def test_it_restores_even_if_the_block_raises(self) -> None:
+        with tenant_scope("tenant-a"):
+            try:
+                with no_tenant():
+                    raise ValueError("boom")
+            except ValueError:
+                pass
+            assert current_tenant_id() == "tenant-a"
+
+    def test_a_binding_inside_it_still_works_and_still_releases(self) -> None:
+        """The shape every converted task takes: unbind for the lifetime,
+        bind per unit of work, and be back to nothing between them."""
+        with tenant_scope("creator"):
+            with no_tenant():
+                with tenant_scope("the-row-s-tenant"):
+                    assert current_tenant_id() == "the-row-s-tenant"
+                assert current_tenant_id() is None
+            assert current_tenant_id() == "creator"
+
+    async def test_a_task_created_inside_it_inherits_nothing(self) -> None:
+        """Why it is entered at the top of a task body rather than around the
+        `create_task` call: what a task snapshots is its creator's context, so
+        the unbinding has to be inside the task to cover anything the task
+        itself spawns."""
+        seen: list[str | None] = []
+
+        async def _child() -> None:
+            seen.append(current_tenant_id())
+
+        with tenant_scope("creator"):
+            with no_tenant():
+                await asyncio.create_task(_child())
+
+        assert seen == [None]
+
+    def test_clear_tenant_id_returns_a_token_that_restores(self) -> None:
+        with tenant_scope("tenant-a"):
+            token = clear_tenant_id()
+            assert current_tenant_id() is None
+            unbind_tenant_id(token)
+            assert current_tenant_id() == "tenant-a"

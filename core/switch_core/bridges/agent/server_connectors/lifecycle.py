@@ -14,6 +14,7 @@ from switch_core.bridges.agent.server_connectors.base import (
 from switch_core.bridges.agent.server_connectors.core import ConnectorCore
 from switch_core.crypto import decrypt_token, encrypt_token
 from switch_core.db.models import ApiKey, ServerConnector
+from switch_core.db.session_scope import unscoped_session
 from switch_core.db.stores.api_key_store import ApiKeyStore
 from switch_core.db.stores.server_connector_store import ServerConnectorStore
 
@@ -50,7 +51,12 @@ class ServerSideConnectorLifecycleService:
         self._config_registry[type_name] = config_cls
 
     async def start_all(self) -> None:
-        async with self._session_factory() as session:
+        # Every tenant's active connectors in one pass — unscoped by nature,
+        # same reasoning as CollaborationBridgeLifecycleService.start_all.
+        # Nothing is bound around `start`: it reads the connector's own row
+        # and hands that row's tenant to the core, which binds it per unit of
+        # work rather than once for the poll loop's life.
+        async with unscoped_session(self._session_factory) as session:
             connectors = await self._connector_store.get_active(session)
 
         logger.info("Starting %d server-side connectors", len(connectors))
@@ -110,7 +116,10 @@ class ServerSideConnectorLifecycleService:
         return record
 
     async def start(self, connector_id: str) -> None:
-        async with self._session_factory() as session:
+        # Unscoped: the read that answers which tenant this connector is in,
+        # reached both from boot with nothing bound and from an HTTP request
+        # whose tenant is the caller's, not necessarily the connector's.
+        async with unscoped_session(self._session_factory) as session:
             record = await self._connector_store.get(session, connector_id)
             if record is None:
                 raise ValueError(f"Connector not found: {connector_id}")
@@ -132,6 +141,7 @@ class ServerSideConnectorLifecycleService:
 
         core = ConnectorCore(
             connector_id=connector_id,
+            connector_tenant_id=record.tenant_id,
             connector_type=record.type,
             connector=connector,
             registration_token=registration_token,

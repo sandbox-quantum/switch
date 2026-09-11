@@ -15,7 +15,9 @@ decide what happens when nothing is bound — callers do, deliberately:
   has no tenant and must not be given one it invented.
 - `db/models.py`'s `TenantScoped` default treats "nothing bound" as tenant
   zero, because the background call sites that still write through it have
-  not been converted to bind one yet.
+  not been converted to bind one yet — and because the long-lived tasks now
+  unbind deliberately (`no_tenant` below), "nothing bound" is the ordinary
+  state there rather than an accident.
 
 Neither of those fallbacks lives here. A `current_tenant_id()` that quietly
 substituted a default would make both of those call sites indistinguishable
@@ -48,10 +50,44 @@ def unbind_tenant_id(token: Token[str | None]) -> None:
     _current_tenant_id.reset(token)
 
 
+def clear_tenant_id() -> Token[str | None]:
+    """Unbind whatever tenant is bound, returning a token to restore it with.
+
+    Distinct from never having bound one only in that it can be undone. What
+    the reader sees is the same: `current_tenant_id()` is `None` and the
+    `after_begin` hook issues no `set_config`.
+    """
+    return _current_tenant_id.set(None)
+
+
 @contextmanager
 def tenant_scope(tenant_id: str) -> Iterator[None]:
     """Bind `tenant_id` for the duration of the block."""
     token = bind_tenant_id(tenant_id)
+    try:
+        yield
+    finally:
+        unbind_tenant_id(token)
+
+
+@contextmanager
+def no_tenant() -> Iterator[None]:
+    """Unbind for the duration of the block, whatever was bound going in.
+
+    Two uses, and they are the same idea from both ends:
+
+    - a lookup that must span tenants (which tenant is this room in? which
+      rooms is this client a member of?) must not inherit a caller's tenant,
+      or it silently narrows to it;
+    - a long-lived background task must not inherit the context of whatever
+      created it. An `asyncio.Task` snapshots the contextvars of its creator,
+      so a bridge restarted from an HTTP request would otherwise run its whole
+      life under the requesting user's tenant. Entering this at the top of the
+      task body makes the task ambient-free, so every unit of work inside it
+      has to bind the tenant of the row it is acting on — and one that forgets
+      reads nothing rather than reading the wrong tenant.
+    """
+    token = clear_tenant_id()
     try:
         yield
     finally:

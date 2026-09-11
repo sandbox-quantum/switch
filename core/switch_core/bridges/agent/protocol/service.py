@@ -72,6 +72,7 @@ from switch_core.db.models import (
     Tool,
     User,
 )
+from switch_core.db.session_scope import unscoped_session
 from switch_core.db.stores.agent_runtime_state_store import (
     IDLE as RUNTIME_STATE_IDLE,
 )
@@ -474,7 +475,12 @@ class ProtocolService:
         the source of truth, that guess would confirm itself forever.
         """
         token_hash = hashlib.sha256(registration_token.encode()).hexdigest()
-        async with self.session_factory() as session:
+        # Resolving a credential is unscoped by definition — `key_hash` is one
+        # of the two columns deliberately left globally unique for exactly
+        # this reason — and it is the read that *produces* the tenant bound
+        # below. Answering it under a tenant would make it either a tautology
+        # or a false "invalid token".
+        async with unscoped_session(self.session_factory) as session:
             key = await self.api_key_store.get_by_hash(session, token_hash)
             if key is None or key.type not in REGISTRATION_KEY_TYPES:
                 raise PermissionError("Invalid registration token")
@@ -1561,35 +1567,54 @@ class ProtocolService:
         one on the next update, the visible effect was the status message being
         deleted and recreated on every refresh rather than edited in place.
         """
-        async with self.session_factory() as session:
+        # This sweep spans every tenant by nature — it is the one place that
+        # decides whether *any* stale row anywhere needs resetting — so the
+        # initial read is unscoped. Everything done *with* a row then happens
+        # inside that row's own tenant, including the emit at the end: the
+        # clear event goes out to a bridge, which resolves a mention handle
+        # and posts a message, and those are writes in the row's tenant like
+        # any other. Closing the binding after the upsert and leaving the tail
+        # outside it would put exactly the visible half of the work back on
+        # whatever was ambient.
+        async with unscoped_session(self.session_factory) as session:
             rows = await self.agent_runtime_state_store.get_active(session)
         for row in rows:
             if self.connections.has_session_in(row.agent_id, row.room_id):
                 continue
-            async with self.session_factory() as session:
-                live = await self.agent_session_store.get_live_agent_ids(
-                    session, [row.agent_id], row.room_id
-                )
-            if row.agent_id in live:
-                continue
-            async with self.session_factory() as session:
-                agent = await self.agent_store.get(session, row.agent_id)
-                room = await self.room_store.get(session, row.room_id)
-                if agent is None or room is None:
-                    continue
-                await self.agent_runtime_state_store.upsert(
-                    session, row.agent_id, row.room_id, RUNTIME_STATE_IDLE
-                )
-                await session.commit()
-            await self._emit_runtime_state(
-                agent_id=agent.id,
-                agent_name=agent.name,
-                matrix_room_id=room.matrix_room_id,
-                room_id=room.id,
-                state=RUNTIME_STATE_IDLE,
-                mention_handle=await self._mention_handle_for(agent, room.bridge_id),
-                thread_id=None,
+            with tenant_scope(row.tenant_id):
+                await self._sweep_one_runtime_state(row.agent_id, row.room_id)
+
+    async def _sweep_one_runtime_state(self, agent_id: str, room_id: str) -> None:
+        """One stale row's worth of the sweep, under its tenant.
+
+        Split out so the binding is the whole body rather than a prefix of it:
+        an early `return` here cannot accidentally leave later work outside
+        the scope the way an early `continue` in the loop could.
+        """
+        async with self.session_factory() as session:
+            live = await self.agent_session_store.get_live_agent_ids(
+                session, [agent_id], room_id
             )
+        if agent_id in live:
+            return
+        async with self.session_factory() as session:
+            agent = await self.agent_store.get(session, agent_id)
+            room = await self.room_store.get(session, room_id)
+            if agent is None or room is None:
+                return
+            await self.agent_runtime_state_store.upsert(
+                session, agent_id, room_id, RUNTIME_STATE_IDLE
+            )
+            await session.commit()
+        await self._emit_runtime_state(
+            agent_id=agent.id,
+            agent_name=agent.name,
+            matrix_room_id=room.matrix_room_id,
+            room_id=room.id,
+            state=RUNTIME_STATE_IDLE,
+            mention_handle=await self._mention_handle_for(agent, room.bridge_id),
+            thread_id=None,
+        )
 
     async def _mention_handle_for(
         self, agent: Agent, bridge_id: str | None

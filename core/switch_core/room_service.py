@@ -30,10 +30,12 @@ from switch_core.bridges.collaboration.models import (
 from switch_core.bridges.resource.service import ResourceService
 from switch_core.clients.client_lifecycle_service import ClientLifecycleService
 from switch_core.db.models import Room, RoomGroup, RoomRole
+from switch_core.db.session_scope import tenant_session, unscoped_session
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.collaboration_bridge_store import CollaborationBridgeStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.provisioning import Provisioning
+from switch_core.tenant_context import tenant_scope
 
 if TYPE_CHECKING:
     from switch_core.bridges.collaboration.bridge_core import BridgeCore
@@ -538,7 +540,7 @@ class RoomService:
 
             if bridge_core and external_channel_id:
                 bridge_core.add_room_mapping(
-                    room.id, matrix_room_id, external_channel_id
+                    room.id, matrix_room_id, external_channel_id, room.tenant_id
                 )
         finally:
             if bridge_core and external_channel_id:
@@ -649,18 +651,23 @@ class RoomService:
 
             client_ids = await self._room_store.get_client_ids(session, room_id)
 
-        for client_id in client_ids:
-            client = self._client_lifecycle.get(client_id)
-            if client:
-                await self._matrix_admin.kick_user(
-                    room.matrix_room_id, client.matrix_user_id
-                )
+        # `kick_user` and the delete below both write rows scoped to this
+        # room's tenant (a membership removal, then the room itself), so both
+        # bind it — one scope for the whole unit of work rather than one per
+        # session opened along the way.
+        with tenant_scope(room.tenant_id):
+            for client_id in client_ids:
+                client = self._client_lifecycle.get(client_id)
+                if client:
+                    await self._matrix_admin.kick_user(
+                        room.matrix_room_id, client.matrix_user_id
+                    )
 
-        await self._matrix_admin.delete_room(room.matrix_room_id)
+            await self._matrix_admin.delete_room(room.matrix_room_id)
 
-        async with self._session_factory() as session:
-            await self._room_store.delete(session, room_id)
-            await session.commit()
+            async with self._session_factory() as session:
+                await self._room_store.delete(session, room_id)
+                await session.commit()
 
         if bridge_id:
             bridge_core = self._collab_lifecycle.get(bridge_id)
@@ -722,21 +729,27 @@ class RoomService:
 
         agent_clients = self._resolve_agent_clients(new_agent_ids)
 
-        async with self._session_factory() as session:
-            await self._room_store.add_agents(
-                session,
-                room.id,
-                new_agent_ids,
-                join_event_listeners={aid for aid in new_agent_ids if aid in listeners},
-            )
-            await session.commit()
+        # One binding for the whole membership change: the two writes below
+        # and the invite between them (which itself writes a membership row
+        # and an arrival message) all belong to this room's tenant.
+        with tenant_scope(room.tenant_id):
+            async with self._session_factory() as session:
+                await self._room_store.add_agents(
+                    session,
+                    room.id,
+                    new_agent_ids,
+                    join_event_listeners={
+                        aid for aid in new_agent_ids if aid in listeners
+                    },
+                )
+                await session.commit()
 
-        await self._invite_clients(room.matrix_room_id, agent_clients)
+            await self._invite_clients(room.matrix_room_id, agent_clients)
 
-        async with self._session_factory() as session:
-            for client_id in agent_clients:
-                await self._room_store.add_client(session, client_id, room.id)
-            await session.commit()
+            async with self._session_factory() as session:
+                for client_id in agent_clients:
+                    await self._room_store.add_client(session, client_id, room.id)
+                await session.commit()
 
         if room.bridge_id and room.external_channel_id:
             bridge_core = self._collab_lifecycle.get(room.bridge_id)
@@ -756,16 +769,41 @@ class RoomService:
 
         agent_clients = self._resolve_agent_clients(agent_ids)
 
-        for matrix_user_id in agent_clients.values():
-            await self._matrix_admin.kick_user(room.matrix_room_id, matrix_user_id)
+        with tenant_scope(room.tenant_id):
+            for matrix_user_id in agent_clients.values():
+                await self._matrix_admin.kick_user(room.matrix_room_id, matrix_user_id)
 
-        async with self._session_factory() as session:
-            for client_id in agent_clients:
-                await self._room_store.remove_client(session, client_id, room_id)
-            await self._room_store.remove_agents(session, room_id, agent_ids)
-            await session.commit()
+            async with self._session_factory() as session:
+                for client_id in agent_clients:
+                    await self._room_store.remove_client(session, client_id, room_id)
+                await self._room_store.remove_agents(session, room_id, agent_ids)
+                await session.commit()
 
         logger.info("Removed %d agents from room %s", len(agent_ids), room_id)
+
+    async def _load_room(self, room_id: str) -> Room:
+        """A room row, read on the caller's session.
+
+        Deliberately *not* unscoped, even though its callers go on to bind the
+        tenant it returns. Every entry point here is a request or an inbound
+        event that already has a tenant bound and has already authorised the
+        caller against this room, so an unscoped read followed by
+        `tenant_session(room.tenant_id)` would be a confused deputy: read a
+        row from any tenant, then act as that tenant. Reading it scoped keeps
+        the elevation impossible rather than merely unreachable — under
+        policies a room the caller may not see is `Room not found`, which is
+        the correct answer.
+
+        Nothing is cached: no caller here holds a room for longer than a call.
+        """
+        async with self._session_factory() as session:
+            room = await self._room_store.get(session, room_id)
+        if room is None:
+            raise ValueError(f"Room not found: {room_id}")
+        return room
+
+    async def _room_tenant(self, room_id: str) -> str:
+        return (await self._load_room(room_id)).tenant_id
 
     async def update_room(
         self,
@@ -778,7 +816,8 @@ class RoomService:
         read_visibility: str | None = None,
         write_visibility: str | None = None,
     ) -> None:
-        async with self._session_factory() as session:
+        tenant_id = await self._room_tenant(room_id)
+        async with tenant_session(self._session_factory, tenant_id) as session:
             if read_visibility is not None or write_visibility is not None:
                 room = await self._room_store.get(session, room_id)
                 if room is None:
@@ -811,10 +850,8 @@ class RoomService:
         does not exist or an agent is not a member of it."""
         if not settings:
             return
-        async with self._session_factory() as session:
-            room = await self._room_store.get(session, room_id)
-            if room is None:
-                raise ValueError(f"Room not found: {room_id}")
+        tenant_id = await self._room_tenant(room_id)
+        async with tenant_session(self._session_factory, tenant_id) as session:
             for agent_id, value in settings.items():
                 await self._room_store.set_receives_join_events(
                     session, room_id, agent_id, value
@@ -824,14 +861,16 @@ class RoomService:
     async def update_protection_config(
         self, room_id: str, config: dict[str, object]
     ) -> None:
-        async with self._session_factory() as session:
+        tenant_id = await self._room_tenant(room_id)
+        async with tenant_session(self._session_factory, tenant_id) as session:
             await self._room_store.update_protection_config(session, room_id, config)
             await session.commit()
 
     async def update_observe_config(
         self, room_id: str, config: dict[str, object]
     ) -> None:
-        async with self._session_factory() as session:
+        tenant_id = await self._room_tenant(room_id)
+        async with tenant_session(self._session_factory, tenant_id) as session:
             await self._room_store.update_observe_config(session, room_id, config)
             await session.commit()
 
@@ -840,7 +879,8 @@ class RoomService:
 
         Raises ValueError if the room does not exist.
         """
-        async with self._session_factory() as session:
+        tenant_id = await self._room_tenant(room_id)
+        async with tenant_session(self._session_factory, tenant_id) as session:
             await self._room_store.set_archived(session, room_id, archived)
             await session.commit()
 
@@ -903,7 +943,7 @@ class RoomService:
                 room.name, room.description
             )
 
-        async with self._session_factory() as session:
+        async with tenant_session(self._session_factory, room.tenant_id) as session:
             await self._room_store.update_bridge(
                 session,
                 room_id,
@@ -915,7 +955,7 @@ class RoomService:
 
         if bridge_core and external_channel_id:
             bridge_core.add_room_mapping(
-                room.id, room.matrix_room_id, external_channel_id
+                room.id, room.matrix_room_id, external_channel_id, room.tenant_id
             )
             await self._ensure_channel_capture(
                 bridge_core, external_channel_id, channel_type
@@ -931,6 +971,7 @@ class RoomService:
 
             bridge_id = room.bridge_id
 
+        async with tenant_session(self._session_factory, room.tenant_id) as session:
             await self._room_store.clear_bridge(session, room_id)
             await session.commit()
 
@@ -1008,62 +1049,69 @@ class RoomService:
                 channel_type=resolved_channel_type,
             )
 
-        # Guard the new channel until its mapping is registered, so the bot's
-        # auto-join does not spawn a duplicate room (CHOO-1660).
-        new_bridge.begin_provisioning(external_channel_id)
-        try:
-            async with self._session_factory() as session:
-                await self._room_store.update_bridge(
-                    session,
+        # One binding for everything from here on: the bridge-column update,
+        # and the invite/kick below, both write rows scoped to this room's
+        # tenant.
+        with tenant_scope(room.tenant_id):
+            # Guard the new channel until its mapping is registered, so the
+            # bot's auto-join does not spawn a duplicate room (CHOO-1660).
+            new_bridge.begin_provisioning(external_channel_id)
+            try:
+                async with self._session_factory() as session:
+                    await self._room_store.update_bridge(
+                        session,
+                        room_id,
+                        bridge_id=bridge_id,
+                        channel_type=resolved_channel_type,
+                        external_channel_id=external_channel_id,
+                    )
+                    await session.commit()
+
+                new_bridge.add_room_mapping(
+                    room_id, matrix_room_id, external_channel_id, room.tenant_id
+                )
+            finally:
+                new_bridge.end_provisioning(external_channel_id)
+
+            await self._ensure_channel_capture(
+                new_bridge, external_channel_id, resolved_channel_type
+            )
+            await self._matrix_admin.invite_to_room(
+                matrix_room_id, new_bridge._bridge_client_matrix_user_id
+            )
+
+            if resolved_channel_type not in ("direct", "group"):
+                agent_names = await self._resolve_ids_to_names(agent_ids)
+                await new_bridge.adapter.add_agents_to_channel(
+                    external_channel_id, agent_names
+                )
+                logger.warning(
+                    "Room %s moved to bridge %s: re-added %d agent(s) to channel "
+                    "%s, but human users were NOT carried over (identities are "
+                    "bridge-specific) — re-invite them to the new channel manually.",
                     room_id,
-                    bridge_id=bridge_id,
-                    channel_type=resolved_channel_type,
-                    external_channel_id=external_channel_id,
+                    bridge_id,
+                    len(agent_names),
+                    external_channel_id,
                 )
-                await session.commit()
 
-            new_bridge.add_room_mapping(room_id, matrix_room_id, external_channel_id)
-        finally:
-            new_bridge.end_provisioning(external_channel_id)
-
-        await self._ensure_channel_capture(
-            new_bridge, external_channel_id, resolved_channel_type
-        )
-        await self._matrix_admin.invite_to_room(
-            matrix_room_id, new_bridge._bridge_client_matrix_user_id
-        )
-
-        if resolved_channel_type not in ("direct", "group"):
-            agent_names = await self._resolve_ids_to_names(agent_ids)
-            await new_bridge.adapter.add_agents_to_channel(
-                external_channel_id, agent_names
-            )
-            logger.warning(
-                "Room %s moved to bridge %s: re-added %d agent(s) to channel "
-                "%s, but human users were NOT carried over (identities are "
-                "bridge-specific) — re-invite them to the new channel manually.",
-                room_id,
-                bridge_id,
-                len(agent_names),
-                external_channel_id,
-            )
-
-        if old_bridge_id:
-            old_bridge = self._collab_lifecycle.get(old_bridge_id)
-            if old_bridge is not None:
-                old_bridge.remove_room_mapping(room_id, matrix_room_id)
-                await self._matrix_admin.kick_user(
-                    matrix_room_id, old_bridge._bridge_client_matrix_user_id
+            if old_bridge_id:
+                old_bridge = self._collab_lifecycle.get(old_bridge_id)
+                if old_bridge is not None:
+                    old_bridge.remove_room_mapping(room_id, matrix_room_id)
+                    await self._matrix_admin.kick_user(
+                        matrix_room_id, old_bridge._bridge_client_matrix_user_id
+                    )
+                logger.warning(
+                    "Room %s moved from bridge %s to %s; old external channel %s "
+                    "left in place on its platform (no adapter teardown) and is "
+                    "no longer synced — archive or delete it manually if "
+                    "desired.",
+                    room_id,
+                    old_bridge_id,
+                    bridge_id,
+                    old_external_channel_id,
                 )
-            logger.warning(
-                "Room %s moved from bridge %s to %s; old external channel %s "
-                "left in place on its platform (no adapter teardown) and is no "
-                "longer synced — archive or delete it manually if desired.",
-                room_id,
-                old_bridge_id,
-                bridge_id,
-                old_external_channel_id,
-            )
 
         logger.info(
             "Changed bridge for room %s: %s -> %s (new channel %s)",
@@ -1115,33 +1163,41 @@ class RoomService:
         DB membership is only recorded where it is missing.
         """
         system_clients = self._resolve_system_clients()
-        async with self._session_factory() as session:
+        # Every tenant's rooms in one pass at startup, so this read is
+        # unscoped by nature; each room's own tenant is bound only around
+        # reconciling that one room, not the whole fan-out.
+        async with unscoped_session(self._session_factory) as session:
             rooms = await self._room_store.get_all(session, include_archived=True)
         for room in rooms:
-            async with self._session_factory() as session:
-                existing = set(await self._room_store.get_client_ids(session, room.id))
-                expected = await self._room_store.get_member_agent_clients(
-                    session, room.id
+            with tenant_scope(room.tenant_id):
+                async with self._session_factory() as session:
+                    existing = set(
+                        await self._room_store.get_client_ids(session, room.id)
+                    )
+                    expected = await self._room_store.get_member_agent_clients(
+                        session, room.id
+                    )
+                expected.update(system_clients)
+                missing = {
+                    cid: uid for cid, uid in expected.items() if cid not in existing
+                }
+                if not missing:
+                    continue
+                await self._invite_clients(room.matrix_room_id, missing)
+                async with self._session_factory() as session:
+                    for client_id in missing:
+                        await self._room_store.add_client(session, client_id, room.id)
+                    await session.commit()
+                logger.info(
+                    "Reconciled %d client(s) into room %s", len(missing), room.id
                 )
-            expected.update(system_clients)
-            missing = {cid: uid for cid, uid in expected.items() if cid not in existing}
-            if not missing:
-                continue
-            await self._invite_clients(room.matrix_room_id, missing)
-            async with self._session_factory() as session:
-                for client_id in missing:
-                    await self._room_store.add_client(session, client_id, room.id)
-                await session.commit()
-            logger.info("Reconciled %d client(s) into room %s", len(missing), room.id)
 
     async def ensure_client_in_room(self, room_id: str, client_id: str) -> None:
         """Invite a single running client to the room (it auto-joins) and record
         its membership. Idempotent — safe to call repeatedly, e.g. on every
         bridged message from an external user's puppet."""
-        async with self._session_factory() as session:
-            room = await self._room_store.get(session, room_id)
-            if room is None:
-                raise ValueError(f"Room not found: {room_id}")
+        room = await self._load_room(room_id)
+        async with tenant_session(self._session_factory, room.tenant_id) as session:
             already_member = client_id in await self._room_store.get_client_ids(
                 session, room_id
             )
@@ -1150,11 +1206,16 @@ class RoomService:
         if client is None:
             raise ValueError(f"No running client: {client_id}")
 
-        await self._matrix_admin.invite_to_room(
-            room.matrix_room_id, client.matrix_user_id
-        )
+        # The invite itself writes a membership row and an arrival message
+        # scoped to this room's tenant (PostgresProvisioning.invite_to_room),
+        # so it is bound here alongside the membership record below rather
+        # than left to whatever tenant happened to already be ambient.
+        with tenant_scope(room.tenant_id):
+            await self._matrix_admin.invite_to_room(
+                room.matrix_room_id, client.matrix_user_id
+            )
 
-        if not already_member:
-            async with self._session_factory() as session:
-                await self._room_store.add_client(session, client_id, room_id)
-                await session.commit()
+            if not already_member:
+                async with self._session_factory() as session:
+                    await self._room_store.add_client(session, client_id, room_id)
+                    await session.commit()

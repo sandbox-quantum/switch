@@ -91,14 +91,18 @@ TENANT_ZERO_ID = "00000000-0000-0000-0000-000000000000"
 def _tenant_id_default() -> str:
     """The tenant a new scoped row lands in when nothing tells it otherwise.
 
-    Prefers the tenant bound to the current request/session context; falls
-    back to tenant zero only when nothing is bound. The fallback is still
-    load-bearing: the ~206 background call sites that open a session from the
-    factory directly (`docs/old/multi-tenancy-phase1-db.md`, "Setting the
-    tenant") bind no tenant at all today, and removing this fallback before
-    they are converted — and before the row-level-security policies land to
-    make an unscoped write fail loudly instead — would break every one of
-    them. Remove it once both have shipped.
+    Prefers the tenant bound to the current unit of work; falls back to tenant
+    zero only when nothing is bound. The fallback is still load-bearing, and
+    now for a sharper reason than before: the long-lived background tasks
+    deliberately bind *nothing* for their lifetime
+    (`switch_core.tenant_context.no_tenant`), so a write reached from one that
+    did not bind the row's tenant lands here rather than on someone else's
+    tenant. That is the right failure while there is one tenant and no policy
+    to raise instead. It is the wrong one the day there are two — a write that
+    should have been refused becomes a write into tenant zero — so this goes
+    when row-level security lands, not before, and the raw-session inventory
+    in `tests/switch_core/db/test_unscoped_session_allowlist.py` is what
+    tracks how much is still relying on it.
     """
     return current_tenant_id() or TENANT_ZERO_ID
 

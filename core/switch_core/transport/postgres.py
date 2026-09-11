@@ -42,8 +42,10 @@ from typing import TYPE_CHECKING, Any
 
 from switch_core.attachments import ATTACHMENT_GROUP_KEY
 from switch_core.db.models import ClientRoom, MediaBlob, Message, MessageAttachment
+from switch_core.db.session_scope import tenant_session, unscoped_session
 from switch_core.messages.recorded_types import EPHEMERAL
 from switch_core.messages.row import attachments_in, text_field, thread_root_of
+from switch_core.tenant_context import no_tenant, tenant_scope
 from switch_core.transport.content import media_content, message_content
 from switch_core.transport.ephemeral import EphemeralBus
 from switch_core.transport.invites import InviteBus
@@ -139,6 +141,14 @@ class PostgresTransport:
         # A room's transport id never changes, so this only grows and never
         # goes stale.
         self._room_ids: dict[str, str] = {}
+        # Switch room id -> the tenant that room belongs to. Populated by the
+        # same lookup that fills `_room_ids`, from the same row — a room's
+        # tenant is as immutable as its transport id, unlike this client's own
+        # tenant, which is not: a client can be in rooms of different
+        # tenants, so nothing here is ever read as "this transport's tenant".
+        # Each unit of work (one delivery, one send) binds the room it is
+        # actually for.
+        self._room_tenants: dict[str, str] = {}
 
     # ── Session ───────────────────────────────────────────────────────────────
 
@@ -197,7 +207,16 @@ class PostgresTransport:
         and a redelivered message is indistinguishable to a reader from a new
         one. Overlapping wake-ups collapse into one more pass instead, which
         also bounds this client to one outstanding read.
+
+        `no_tenant` because this is a task and a task keeps its creator's
+        context. `receive_forever` is itself reached from a task that unbound
+        already, so this changes nothing today — it means the loop stays
+        ambient-free if it is ever created from somewhere else.
         """
+        with no_tenant():
+            await self._deliver_forever_unbound()
+
+    async def _deliver_forever_unbound(self) -> None:
         while True:
             await self._wake.wait()
             self._wake.clear()
@@ -262,15 +281,16 @@ class PostgresTransport:
         noticed keeps every guard downstream in play, and covers whatever else
         depended on hearing its own join.
         """
-        async with self._session_factory() as session:
-            room_id = await self._resolve_room(session, transport_room_id)
-            if room_id in self._cursors:
-                return
-            self._cursors[room_id] = (
-                from_seq
-                if from_seq is not None
-                else await self._message_store.head_seq(session, room_id)
-            )
+        room_id, tenant_id = await self._resolve_room_and_tenant(transport_room_id)
+        if room_id in self._cursors:
+            return
+        if from_seq is not None:
+            self._cursors[room_id] = from_seq
+        else:
+            async with tenant_session(self._session_factory, tenant_id) as session:
+                self._cursors[room_id] = await self._message_store.head_seq(
+                    session, room_id
+                )
         self._watching[room_id] = transport_room_id
         self._listener.subscribe(room_id, self._on_room_advanced)
         self._ephemeral.subscribe(transport_room_id, self._on_ephemeral)
@@ -328,24 +348,35 @@ class PostgresTransport:
         transport_room_id = self._watching.get(room_id)
         if transport_room_id is None:
             return
-        while True:
-            async with self._session_factory() as session:
-                rows = await self._message_store.list_for_room(
-                    session,
-                    room_id,
-                    after_seq=self._cursors[room_id],
-                    limit=_DELIVERY_PAGE,
-                )
-                attachments = await self._message_store.attachments_for(
-                    session, [row.id for row in rows]
-                )
-            if not rows:
-                return
-            for row in rows:
-                self._cursors[room_id] = row.seq
-                await self._deliver(transport_room_id, row, attachments.get(row.id, []))
-            if len(rows) < _DELIVERY_PAGE:
-                return
+        # `_watch` cannot have set up delivery for this room without already
+        # resolving it, which is what fills this in — see `_resolve_room`.
+        tenant_id = self._room_tenants[room_id]
+        # Bound for the read *and* the delivery below: a handler (posting to a
+        # bridge, gating a command) opens its own sessions rather than reusing
+        # this one, and those still need the room's tenant. The contextvar
+        # covers them because they run in this same task, not because they
+        # share a session with the read.
+        with tenant_scope(tenant_id):
+            while True:
+                async with self._session_factory() as session:
+                    rows = await self._message_store.list_for_room(
+                        session,
+                        room_id,
+                        after_seq=self._cursors[room_id],
+                        limit=_DELIVERY_PAGE,
+                    )
+                    attachments = await self._message_store.attachments_for(
+                        session, [row.id for row in rows]
+                    )
+                if not rows:
+                    return
+                for row in rows:
+                    self._cursors[room_id] = row.seq
+                    await self._deliver(
+                        transport_room_id, row, attachments.get(row.id, [])
+                    )
+                if len(rows) < _DELIVERY_PAGE:
+                    return
 
     async def _deliver(
         self,
@@ -462,8 +493,8 @@ class PostgresTransport:
             )
             return result
 
-        async with self._session_factory() as session:
-            room_id = await self._resolve_room(session, transport_room_id)
+        room_id, tenant_id = await self._resolve_room_and_tenant(transport_room_id)
+        async with tenant_session(self._session_factory, tenant_id) as session:
             message = Message(
                 room_id=room_id,
                 transport_event_id=result.event_id,
@@ -534,8 +565,8 @@ class PostgresTransport:
         Scoped to the room, so an id from elsewhere cannot be read through it —
         the caller is resolving a thread root supplied by an agent.
         """
-        async with self._session_factory() as session:
-            switch_room_id = await self._resolve_room(session, room_id)
+        switch_room_id, tenant_id = await self._resolve_room_and_tenant(room_id)
+        async with tenant_session(self._session_factory, tenant_id) as session:
             rows = await self._message_store.list_by_transport_event_ids(
                 session, switch_room_id, [event_id]
             )
@@ -572,8 +603,8 @@ class PostgresTransport:
         reads, with no later join able to repair it. So the row is written
         once and the subscription is taken whenever it is missing.
         """
-        async with self._session_factory() as session:
-            switch_room_id = await self._resolve_room(session, room_id)
+        switch_room_id, tenant_id = await self._resolve_room_and_tenant(room_id)
+        async with tenant_session(self._session_factory, tenant_id) as session:
             existing = await session.get(
                 ClientRoom, {"client_id": self.client_id, "room_id": switch_room_id}
             )
@@ -608,8 +639,21 @@ class PostgresTransport:
         return True
 
     async def joined_rooms(self) -> list[str]:
-        """The transport-side ids of this client's rooms."""
-        async with self._session_factory() as session:
+        """The transport-side ids of this client's rooms.
+
+        Unscoped, and that is the point rather than an oversight. This runs
+        once, at the top of `receive_forever`, in a task that binds nothing —
+        so a tenant here could only come from whatever created the task, and
+        answering "which rooms is this client in" under a guessed tenant
+        returns a *subset* with no error to say so. The failure would be
+        silent and total: the client watches the rooms it was allowed to see
+        and is simply deaf in the rest, forever, with nothing in the log.
+
+        The key it reads by is `clients.id`, which is globally unique, so
+        there is nothing for a tenant to disambiguate. Each room that comes
+        back is then watched under its own tenant, resolved from its own row.
+        """
+        async with unscoped_session(self._session_factory) as session:
             rooms = await self._room_store.get_for_client(session, self.client_id)
         return [room.matrix_room_id for room in rooms if room.matrix_room_id]
 
@@ -620,6 +664,16 @@ class PostgresTransport:
     # ── Internals ─────────────────────────────────────────────────────────────
 
     async def _resolve_room(self, session: AsyncSession, transport_room_id: str) -> str:
+        """The Switch room id for `transport_room_id`, resolved and cached.
+
+        Takes the caller's session, for callers that are going on to use it.
+        The read itself is tenant-agnostic in the only sense that matters:
+        `rooms.matrix_room_id` is unique per tenant, not globally, so a caller
+        that hands in a session bound to the wrong tenant gets "not a Switch
+        room" rather than another tenant's row. `_resolve_room_and_tenant` is
+        the entry point for a caller that does not yet know which tenant to
+        bind, and it is the one used everywhere the answer is in doubt.
+        """
         cached = self._room_ids.get(transport_room_id)
         if cached is not None:
             return cached
@@ -627,7 +681,23 @@ class PostgresTransport:
         if room is None:
             raise TransportError(f"{transport_room_id} is not a Switch room")
         self._room_ids[transport_room_id] = room.id
+        self._room_tenants[room.id] = room.tenant_id
         return room.id
+
+    async def _resolve_room_and_tenant(self, transport_room_id: str) -> tuple[str, str]:
+        """The Switch room id and tenant for a transport-side id.
+
+        Deliberately unscoped on a cache miss: this is the lookup that decides
+        *which* tenant the caller is about to bind, so inheriting one would
+        make it either a tautology or a false negative. Once cached, resolving
+        costs nothing: no session, no query, no round trip.
+        """
+        cached = self._room_ids.get(transport_room_id)
+        if cached is not None:
+            return cached, self._room_tenants[cached]
+        async with unscoped_session(self._session_factory) as session:
+            room_id = await self._resolve_room(session, transport_room_id)
+        return room_id, self._room_tenants[room_id]
 
 
 def to_inbound(
