@@ -25,6 +25,7 @@ from switch_core.db.models import (
     ClientRoom,
     CollaborationBridge,
     ExternalUser,
+    ExternalUserClaim,
     Reference,
     ReferenceType,
     Room,
@@ -68,6 +69,30 @@ class FakeRoomService:
     ) -> None:
         self._sf = session_factory
         self._agents = agent_store
+        self.kickoffs: list[dict[str, str | None]] = []
+        self.kickoff_error: Exception | None = None
+
+    async def post_kickoff(
+        self,
+        room_id: str,
+        text: str,
+        *,
+        user_id: str,
+        user_name: str | None,
+        user_email: str | None,
+    ) -> str:
+        if self.kickoff_error is not None:
+            raise self.kickoff_error
+        self.kickoffs.append(
+            {
+                "room_id": room_id,
+                "text": text,
+                "user_id": user_id,
+                "user_name": user_name,
+                "user_email": user_email,
+            }
+        )
+        return f"ev-{len(self.kickoffs)}"
 
     async def create_room(self, config: RoomCreateConfig) -> RoomCreateResult:
         async with self._sf() as session:
@@ -156,8 +181,9 @@ async def env(session_factory: async_sessionmaker[AsyncSession]):
         session_factory=session_factory,
     )
     agent_store = AgentStore()
+    fake_rooms = FakeRoomService(session_factory, agent_store)
     svc = RoomYamlService(
-        room_service=FakeRoomService(session_factory, agent_store),  # type: ignore[arg-type]
+        room_service=fake_rooms,  # type: ignore[arg-type]
         resource_service=resource_service,
         room_store=RoomStore(),
         agent_store=agent_store,
@@ -178,6 +204,7 @@ async def env(session_factory: async_sessionmaker[AsyncSession]):
 
     return {
         "svc": svc,
+        "rooms": fake_rooms,
         "resource_service": resource_service,
         "session_factory": session_factory,
         "user_id": user_id,
@@ -1080,3 +1107,198 @@ async def test_endpoint_json_body(env):
     with pytest.raises(HTTPException) as exc_info:
         await create_room_from_yaml(request, svc, user)
     assert exc_info.value.status_code == 400
+
+
+# ── kickoff ─────────────────────────────────────────────────────────────────
+
+
+KICKOFF_TEMPLATE = """
+params:
+  coder:
+    type: string
+room:
+  name: "Kickoff room"
+  description: "d"
+  agents: ["{coder}"]
+  kickoff: |
+    @{coder} start on the brief.
+"""
+
+
+@pytest.mark.asyncio
+async def test_provision_kickoff_posts_as_creator(env):
+    """A template kickoff is handed to the room service with the creator's
+    identity, after interpolation."""
+    svc = _svc(env)
+    spec = svc.parse(KICKOFF_TEMPLATE, inputs={"coder": "claude-code.alice"})
+    result = await svc.provision(
+        spec,
+        user_id=env["user_id"],
+        is_admin=False,
+        creator_name="alice",
+        creator_email="alice@example.com",
+    )
+    assert result.failed_attachments == []
+    assert env["rooms"].kickoffs == [
+        {
+            "room_id": result.room_id,
+            "text": "@claude-code.alice start on the brief.\n",
+            "user_id": env["user_id"],
+            "user_name": "alice",
+            "user_email": "alice@example.com",
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_provision_kickoff_failure_is_reported_not_fatal(env):
+    """A kickoff that cannot be posted lands in failed_attachments; the room
+    still provisions."""
+    env["rooms"].kickoff_error = ValueError("the room's bridge is not running")
+    svc = _svc(env)
+    spec = svc.parse(KICKOFF_TEMPLATE, inputs={"coder": "claude-code.alice"})
+    result = await svc.provision(spec, user_id=env["user_id"], is_admin=False)
+    assert result.room_id
+    assert result.failed_attachments == [
+        {
+            "kind": "kickoff",
+            "id": "kickoff",
+            "error": "the room's bridge is not running",
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_provision_without_kickoff_posts_nothing(env):
+    svc = _svc(env)
+    spec = svc.parse("room:\n  name: quiet\n  description: d\n")
+    await svc.provision(spec, user_id=env["user_id"], is_admin=False)
+    assert env["rooms"].kickoffs == []
+
+
+# ── builtins_for ────────────────────────────────────────────────────────────
+
+
+async def _seed_bridge_with_claim(
+    session_factory,
+    *,
+    display_name: str,
+    is_default: bool,
+    claimed_by: str | None,
+    external_username: str,
+) -> str:
+    """A bridge, an external user on it, and optionally a claim. Returns the
+    bridge id."""
+    async with session_factory() as session:
+        bridge_client = Client(
+            matrix_user_id=f"@bridge-{display_name.lower()}:test.local",
+            display_name=display_name,
+            type="collaboration_bridge",
+        )
+        user_client = Client(
+            matrix_user_id=f"@{external_username}-{display_name.lower()}:test.local",
+            display_name=external_username,
+            type="external_user",
+        )
+        session.add_all([bridge_client, user_client])
+        await session.flush()
+        bridge = CollaborationBridge(
+            type="slack",
+            display_name=display_name,
+            client_id=bridge_client.id,
+            status="active",
+            is_default=is_default,
+        )
+        session.add(bridge)
+        await session.flush()
+        ext = ExternalUser(
+            bridge_id=bridge.id,
+            external_user_id=f"U-{external_username}",
+            external_username=external_username,
+            client_id=user_client.id,
+        )
+        session.add(ext)
+        await session.flush()
+        if claimed_by is not None:
+            session.add(ExternalUserClaim(external_user_id=ext.id, user_id=claimed_by))
+        await session.commit()
+        return bridge.id
+
+
+@pytest.mark.asyncio
+async def test_builtins_creator_falls_back_to_gateway_name(env):
+    """No bridge at all: $creator is the gateway account name."""
+    builtins = await _svc(env).builtins_for(
+        user_id=env["user_id"],
+        name="alice",
+        email="alice@example.com",
+        text="room:\n  name: n\n  description: d\n",
+    )
+    assert builtins["$creator"] == "alice"
+    assert builtins["$creator_email"] == "alice@example.com"
+    assert "$date" in builtins and "$timestamp" in builtins
+
+
+@pytest.mark.asyncio
+async def test_builtins_creator_uses_claimed_identity_on_default_bridge(env):
+    """A claim on the template's (default) bridge wins over the gateway name."""
+    await _seed_bridge_with_claim(
+        env["session_factory"],
+        display_name="Slack",
+        is_default=True,
+        claimed_by=env["user_id"],
+        external_username="abel.dantas",
+    )
+    builtins = await _svc(env).builtins_for(
+        user_id=env["user_id"],
+        name="alice",
+        email="alice@example.com",
+        text="room:\n  name: n\n  description: d\n",
+    )
+    assert builtins["$creator"] == "abel.dantas"
+
+
+@pytest.mark.asyncio
+async def test_builtins_creator_ignores_unclaimed_identity(env):
+    """An external user nobody claimed does not become $creator."""
+    await _seed_bridge_with_claim(
+        env["session_factory"],
+        display_name="Slack",
+        is_default=True,
+        claimed_by=None,
+        external_username="abel.dantas",
+    )
+    builtins = await _svc(env).builtins_for(
+        user_id=env["user_id"],
+        name="alice",
+        email="alice@example.com",
+        text="room:\n  name: n\n  description: d\n",
+    )
+    assert builtins["$creator"] == "alice"
+
+
+@pytest.mark.asyncio
+async def test_builtins_creator_resolves_named_bridge(env):
+    """A template naming a non-default bridge resolves the claim on THAT
+    bridge."""
+    await _seed_bridge_with_claim(
+        env["session_factory"],
+        display_name="Mattermost",
+        is_default=True,
+        claimed_by=env["user_id"],
+        external_username="abel.mm",
+    )
+    await _seed_bridge_with_claim(
+        env["session_factory"],
+        display_name="Slack",
+        is_default=False,
+        claimed_by=env["user_id"],
+        external_username="abel.slack",
+    )
+    builtins = await _svc(env).builtins_for(
+        user_id=env["user_id"],
+        name="alice",
+        email="alice@example.com",
+        text='room:\n  name: n\n  description: d\n  bridge: "Slack"\n',
+    )
+    assert builtins["$creator"] == "abel.slack"

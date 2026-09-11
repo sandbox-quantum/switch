@@ -40,12 +40,6 @@ class Provisioning(Protocol):
         """Discard a room. Callers remove the other members first."""
         ...
 
-    async def send_message(
-        self, room_id: str, body: str, *, format: str = "markdown"
-    ) -> str | None:
-        """Post a text message to a room. Returns the event id, or None."""
-        ...
-
     async def close(self) -> None:
         """Release whatever the implementation holds open."""
         ...

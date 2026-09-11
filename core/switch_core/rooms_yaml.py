@@ -22,6 +22,8 @@ from __future__ import annotations
 
 import logging
 import re
+import time
+from datetime import date
 from typing import TYPE_CHECKING, Any, Literal, cast
 
 import yaml
@@ -348,6 +350,59 @@ class RoomYamlService:
         except ValidationError as e:
             raise ValueError(f"Invalid room spec: {e}") from e
 
+    async def builtins_for(
+        self, *, user_id: str, name: str, email: str, text: str
+    ) -> dict[str, str]:
+        """The server-injected ``{$...}`` variables for one create call.
+
+        ``$creator`` is the name the creator goes by on the template's bridge
+        when they have linked (claimed) an identity there — the name that
+        ``users:`` resolution and channel invites understand. Without a claim
+        it falls back to the gateway account name, which member resolution
+        then tries to match against the bridge itself.
+        """
+        creator = name
+        bridge_id = await self._peek_bridge_id(text)
+        if bridge_id is not None:
+            async with self._session_factory() as session:
+                claimed = await self._external_users.get_by_user(session, user_id)
+            for ext in claimed:
+                if ext.bridge_id == bridge_id:
+                    creator = ext.external_username
+                    break
+        return {
+            "$creator": creator,
+            "$creator_email": email,
+            "$date": str(date.today()),
+            "$timestamp": str(int(time.time())),
+        }
+
+    async def _peek_bridge_id(self, text: str) -> str | None:
+        """The bridge the template will land on, read before interpolation.
+
+        Best-effort: an unparseable template, an interpolated bridge name, or
+        an unknown bridge all answer None — parse/provision fails loudly later
+        when it matters. A template naming no bridge lands on the default one,
+        same as provisioning."""
+        try:
+            data = yaml.safe_load(text)
+        except yaml.YAMLError:
+            return None
+        if not isinstance(data, dict):
+            return None
+        room = data.get("room")
+        if not isinstance(room, dict):
+            return None
+        bridge = room.get("bridge")
+        if bridge is not None and (
+            not isinstance(bridge, str) or PLACEHOLDER_RE.search(bridge)
+        ):
+            return None
+        try:
+            return await self._resolve_bridge_id(bridge)
+        except ValueError:
+            return None
+
     # ── Provision ───────────────────────────────────────────────────────────
 
     async def provision(
@@ -356,6 +411,8 @@ class RoomYamlService:
         *,
         user_id: str,
         is_admin: bool,
+        creator_name: str | None = None,
+        creator_email: str | None = None,
     ) -> ProvisionResult:
         bridge_id = await self._resolve_bridge_id(spec.bridge)
         if spec.users and bridge_id is None:
@@ -363,13 +420,6 @@ class RoomYamlService:
                 "Cannot attach users to a room with no bridge "
                 "(users live on a collaboration bridge)"
             )
-
-        # Resolve gateway user names to their claimed bridge identities
-        resolved_users = (
-            await self._resolve_user_identities(spec.users, bridge_id, user_id)
-            if spec.users and bridge_id
-            else spec.users
-        )
 
         attached_ref_ids, inline_refs = await self._resolve_references(
             spec.references, user_id=user_id, is_admin=is_admin
@@ -381,7 +431,7 @@ class RoomYamlService:
             instructions=spec.instructions,
             channel_type=cast(ChannelType, spec.channel_type),
             agent_names=spec.agents or None,
-            user_names=resolved_users or None,
+            user_names=spec.users or None,
             bridge_id=bridge_id,
             created_by=user_id,
             owner_id=user_id,
@@ -404,9 +454,18 @@ class RoomYamlService:
         )
 
         if spec.kickoff:
-            await self._rooms._matrix_admin.send_message(
-                result.room.matrix_room_id, spec.kickoff, format="markdown"
-            )
+            # Best-effort like references and docs: the room exists, so a
+            # kickoff that cannot be posted is reported, not fatal.
+            try:
+                await self._rooms.post_kickoff(
+                    room_id,
+                    spec.kickoff,
+                    user_id=user_id,
+                    user_name=creator_name,
+                    user_email=creator_email,
+                )
+            except Exception as e:
+                failures.append({"kind": "kickoff", "id": "kickoff", "error": str(e)})
 
         return ProvisionResult(
             room_id=room_id,
@@ -433,46 +492,6 @@ class RoomYamlService:
                 f"Ambiguous bridge name {bridge_name!r}: {len(matches)} bridges match"
             )
         return matches[0].id
-
-    async def _resolve_user_identities(
-        self,
-        user_names: list[str],
-        bridge_id: str | None,
-        acting_user_id: str,
-    ) -> list[str]:
-        """Resolve gateway user names to their claimed bridge identities.
-
-        When a user has claimed an identity on the target bridge (e.g.
-        "Admin" → "dantas.abel" on Slack), the bridge identity is used
-        instead. Users without a linked identity pass through unchanged
-        and are resolved by the bridge's own lookup.
-        """
-        if not bridge_id:
-            return user_names
-
-        # Build a map: gateway user name → claimed external username on this bridge
-        async with self._session_factory() as session:
-            from switch_core.db.stores.user_store import UserStore
-
-            user_store = UserStore()
-            all_users = await user_store.get_all(session)
-            name_to_id = {u.name: u.id for u in all_users}
-
-            resolved: list[str] = []
-            for name in user_names:
-                uid = name_to_id.get(name)
-                if uid is None:
-                    resolved.append(name)
-                    continue
-                claimed = await self._external_users.get_by_user(session, uid)
-                bridge_match = next(
-                    (c for c in claimed if c.bridge_id == bridge_id), None
-                )
-                if bridge_match:
-                    resolved.append(bridge_match.external_username)
-                else:
-                    resolved.append(name)
-        return resolved
 
     async def _resolve_references(
         self, entries: list[ExternalReferenceEntry], *, user_id: str, is_admin: bool

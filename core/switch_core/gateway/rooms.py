@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import json
 import logging
-import time
-from datetime import date
 from typing import Annotated, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
@@ -400,20 +398,16 @@ async def create_room_from_yaml(
         else:
             text = (await request.body()).decode("utf-8")
             inputs = None
-        spec = rooms_yaml.parse(
-            text,
-            inputs=inputs,
-            builtins={
-                "$creator": user.name,
-                "$creator_email": user.email,
-                "$date": str(date.today()),
-                "$timestamp": str(int(time.time())),
-            },
+        builtins = await rooms_yaml.builtins_for(
+            user_id=user.id, name=user.name, email=user.email, text=text
         )
+        spec = rooms_yaml.parse(text, inputs=inputs, builtins=builtins)
         return await rooms_yaml.provision(
             spec,
             user_id=user.id,
             is_admin=user.role == "admin",
+            creator_name=user.name,
+            creator_email=user.email,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e

@@ -138,36 +138,6 @@ class PostgresProvisioning:
         this has none.
         """
 
-    async def send_message(
-        self, room_id: str, body: str, *, format: str = "markdown"
-    ) -> str | None:
-        """Post a system message into a room.
-
-        ``room_id`` is the transport room id (consistent with the other
-        Provisioning methods); it is resolved to the Switch room id for
-        the Message row.
-        """
-        event_id = f"sw_{uuid.uuid4().hex}"
-        async with self._session_factory() as session:
-            room = await self._room_store.get_by_matrix_room_id(session, room_id)
-            if room is None:
-                return None
-            msg = Message(
-                room_id=room.id,
-                transport_event_id=event_id,
-                sender_id="system",
-                sender_client_id=None,
-                sender_name="System",
-                event_type="m.room.message",
-                msgtype="m.text",
-                body=body,
-                formatted_body=body if format == "markdown" else None,
-                content={"msgtype": "m.text", "body": body},
-            )
-            await self._message_store.create(session, msg, [])
-            await session.commit()
-        return event_id
-
     async def close(self) -> None:
         """Nothing held open."""
 

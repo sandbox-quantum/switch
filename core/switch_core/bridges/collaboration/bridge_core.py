@@ -73,6 +73,13 @@ PUPPET_JOIN_TIMEOUT = 30.0
 # parts that arrived, flagged as incomplete (see _schedule_outbound_group_flush).
 OUTBOUND_GROUP_TIMEOUT_SECONDS = 5.0
 
+# Marks a puppet-sent event as originating in Switch rather than relayed in
+# from the platform. The outbound relay skips puppet senders — their messages
+# came FROM the platform, and echoing them back would duplicate — and this is
+# the exception: `post_as_user` sends on a person's behalf from the Switch
+# side, so the platform has not seen the message yet and must receive it.
+SWITCH_ORIGINATED_MARKER = "com.switch.switch_originated"
+
 
 @dataclass
 class _PendingOutboundGroup:
@@ -974,7 +981,10 @@ class BridgeCore:
 
         When the DB lookup misses, falls back to a proactive platform directory
         search so that users who exist on the platform but have never messaged
-        through Switch can still be resolved.
+        through Switch can still be resolved. A directory hit is persisted (an
+        ``ExternalUser`` row and its puppet), so every later step that reads
+        the database — room membership, addressing, export — sees the same
+        person this resolution found.
         """
         async with self._session_factory() as session:
             users = await self._external_user_store.get_by_bridge(
@@ -987,19 +997,28 @@ class BridgeCore:
             if ext_id:
                 resolved[name] = ext_id
             else:
-                # Proactive platform lookup — search by name or email
+                # Proactive platform lookup — exact match on username or
+                # email only. A lone search RESULT is deliberately not
+                # accepted as a match: a fuzzy directory hit resolves to a
+                # real person, and being wrong invites a stranger into a
+                # private channel.
                 try:
                     results = await self.adapter.search_directory_users(name)
-                    # Exact match on username or email first
                     match = next(
-                        (r for r in results if r.username == name or r.email == name),
+                        (
+                            r
+                            for r in results
+                            if r.username == name
+                            or (r.email is not None and r.email.lower() == name.lower())
+                        ),
                         None,
                     )
-                    # If no exact match but exactly one result, use it
-                    if match is None and len(results) == 1:
-                        match = results[0]
                     if match:
-                        resolved[name] = match.external_user_id
+                        ext = await self.ensure_external_user(
+                            external_user_id=match.external_user_id,
+                            external_username=match.username,
+                        )
+                        resolved[name] = ext.external_user_id
                         continue
                 except (NotImplementedError, RuntimeError):
                     pass
@@ -1020,23 +1039,98 @@ class BridgeCore:
         matrix_room_id: str,
         user_names: list[str],
     ) -> None:
-        """For each known external user matching one of `user_names` on this
-        bridge, ensure a running puppet client exists and is joined to the
-        Matrix room. Names without an existing ExternalUser row are skipped
-        — they will be picked up by the on_user_joined callback (when the
-        adapter sees them join externally) or by the lazy inbound-message
-        path."""
-        async with self._session_factory() as session:
-            users = await self._external_user_store.get_by_bridge_and_names(
-                session, self._bridge_id, user_names
-            )
-        for ext_user in users:
+        """For each resolvable name in `user_names`, ensure a running puppet
+        client exists and is joined to the Matrix room.
+
+        Resolution goes through `resolve_external_user_id_map`, the same
+        answer the channel-invite path uses — a person the platform directory
+        can find is added here too, not only names Switch has already seen.
+        Unresolvable names are skipped (logged by the resolver) — they will be
+        picked up by the on_user_joined callback (when the adapter sees them
+        join externally) or by the lazy inbound-message path."""
+        resolved = await self.resolve_external_user_id_map(user_names)
+        for ext_id in resolved.values():
+            async with self._session_factory() as session:
+                ext_user = await self._external_user_store.get_by_external_id(
+                    session, self._bridge_id, ext_id
+                )
+            if ext_user is None:
+                logger.error(
+                    "External user %s resolved on bridge %s but has no record",
+                    ext_id,
+                    self._bridge_id,
+                )
+                continue
             await self._ensure_user_in_matrix_room(
                 external_user_id=ext_user.external_user_id,
                 external_username=ext_user.external_username,
                 room_id=room_id,
                 matrix_room_id=matrix_room_id,
             )
+
+    async def resolve_switch_user(
+        self, user_id: str, *, name: str | None, email: str | None
+    ) -> ExternalUser | None:
+        """The platform identity a Switch user goes by on this bridge.
+
+        A claimed identity wins — the user linked it themselves. Otherwise
+        the gateway account's name and email are matched against the bridge's
+        known users and platform directory, which persists a hit, so a match
+        found once stays found.
+        """
+        async with self._session_factory() as session:
+            claimed = await self._external_user_store.get_by_user(session, user_id)
+        for ext in claimed:
+            if ext.bridge_id == self._bridge_id:
+                return ext
+        for candidate in (name, email):
+            if not candidate:
+                continue
+            resolved = await self.resolve_external_user_id_map([candidate])
+            if candidate not in resolved:
+                continue
+            async with self._session_factory() as session:
+                row = await self._external_user_store.get_by_external_id(
+                    session, self._bridge_id, resolved[candidate]
+                )
+            if row is not None:
+                return row
+        return None
+
+    async def post_as_user(
+        self,
+        *,
+        external_user: ExternalUser,
+        room_id: str,
+        matrix_room_id: str,
+        text: str,
+    ) -> str:
+        """Post a message into a room as this external user's puppet.
+
+        The message takes the same path as one the person typed on the
+        platform, so it is relayed outward and can address agents — unlike a
+        Switch-generated notice, which never addresses anyone. Raises when
+        the puppet cannot be brought up and joined, or the send fails."""
+        puppet = await self._ensure_user_in_matrix_room(
+            external_user_id=external_user.external_user_id,
+            external_username=external_user.external_username,
+            room_id=room_id,
+            matrix_room_id=matrix_room_id,
+        )
+        if puppet is None:
+            raise ValueError(
+                f"Could not join {external_user.external_username!r} to the room "
+                "to post as them"
+            )
+        event_id = await puppet.send_message(
+            matrix_room_id,
+            text,
+            format="markdown",
+            extra_content={SWITCH_ORIGINATED_MARKER: True},
+        )
+        if event_id is None:
+            raise ValueError(f"Posting as {external_user.external_username!r} failed")
+        return event_id
 
     async def _ensure_user_in_matrix_room(
         self,
@@ -1310,7 +1404,10 @@ class BridgeCore:
             room.room_id,
             event.body[:80] if event.body else "",
         )
-        if event.sender in self._puppet_matrix_ids:
+        if (
+            event.sender in self._puppet_matrix_ids
+            and SWITCH_ORIGINATED_MARKER not in event.content
+        ):
             logger.debug("[BRIDGE-OUT] skipping puppet message from %s", event.sender)
             return
         if event.sender == self._bridge_client_matrix_user_id:
