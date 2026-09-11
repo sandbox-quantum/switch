@@ -2,9 +2,11 @@
 
 Connects a Discord server (**guild**) to Switch. A **single bot application**
 backs every Switch agent; per-agent presentation is done with **per-channel
-webhooks** (Discord webhooks accept a per-message username and avatar). Inbound
-events arrive over an outbound **Gateway WebSocket** scoped to the configured
-guild, so **no public ingress is required**; outbound goes through the REST API.
+webhooks** (Discord webhooks accept a per-message username and avatar), the
+username carrying the agent's display name or its identifier when it has none.
+Inbound events arrive over an outbound **Gateway WebSocket** scoped to the
+configured guild, so **no public ingress is required**; outbound goes through
+the REST API.
 
 Rooms are provisioned **lazily**: Discord has no "app invited to channel" signal
 (the bot sees every channel its permissions allow), so a channel's Switch room is
@@ -87,10 +89,11 @@ the first bridged message.
 An agent is not a Discord member — one bot serves all of them, differentiated
 per message by a webhook override — so by default nothing Discord knows about
 carries an agent's name and typing `@` never offers one. With this on, each
-agent gets a **mentionable role named exactly after it**, so `@flint-tracker`
-completes in the composer and arrives as a real pill. The role is empty and
-carries no permissions: mentioning it notifies nobody, and Switch resolves the
-mention back to the agent's name on the way in.
+agent gets a **mentionable role named exactly after its identifier** — the
+lowercase name, not the agent's display name — so `@flint-tracker` completes in
+the composer and arrives as a real pill. The role is empty and carries no
+permissions: mentioning it notifies nobody, and Switch resolves the mention back
+to the agent's name on the way in.
 
 Roles are provisioned for every existing agent when the bridge starts, and for
 each new agent as it registers. Two limits are worth knowing before you turn it
@@ -100,12 +103,13 @@ on:
   one warning naming it, and the bridge stops trying — agents stay addressable
   by typing their name.
 - **A role carries no metadata**, so there is nowhere to record that a role
-  belongs to Switch. An agent's role is therefore the one whose name matches it
-  **exactly**. Two consequences: a role you created by hand for an agent is
-  adopted rather than duplicated (which is how to use this on a server where
-  the bot may not manage roles), and when an agent is deleted its role is only
-  deleted if **nobody holds it** — one with members is left in place, and the
-  bridge says so.
+  belongs to Switch. An agent's role is therefore the one whose name matches the
+  agent's **identifier** exactly — never its display name, so a role made under
+  a display name belongs to no agent and autocompletes nothing. Two
+  consequences: a role you created by hand for an agent is adopted rather than
+  duplicated (which is how to use this on a server where the bot may not manage
+  roles), and when an agent is deleted its role is only deleted if **nobody
+  holds it** — one with members is left in place, and the bridge says so.
 
 Renaming an agent leaves its old role behind; delete it by hand.
 

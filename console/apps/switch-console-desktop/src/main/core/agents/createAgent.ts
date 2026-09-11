@@ -16,6 +16,7 @@ export async function createAgent(params: CreateAgentParams): Promise<Agent> {
       apiEndpoint: params.apiEndpoint,
       serverId: params.serverId,
       autoApprove: params.autoApprove,
+      ownerName: params.ownerName ?? null,
       providerConfig: params.providerConfig ?? null,
       updatedAt: sql`CURRENT_TIMESTAMP`,
     })

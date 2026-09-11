@@ -69,6 +69,11 @@ class RoomSummary(BaseModel):
 
 
 class RoomDetail(RoomSummary):
+    transport_room_id: str
+    # Deprecated alias of `transport_room_id`, sent for the compatibility
+    # window. Connectors are installed copies and only update when someone
+    # clicks Update, so both names are carried until the shipped ones have
+    # moved. Same value in both; nothing dereferences either.
     matrix_room_id: str
     external_channel_id: str | None
     instructions: str | None
@@ -646,6 +651,11 @@ class CreateUserRequest(BaseModel):
     email: str
     password: str
     role: str = "user"
+
+
+class ChangePasswordRequest(BaseModel):
+    current_password: str
+    new_password: str = Field(min_length=8)
 
 
 class AuthConfigResponse(BaseModel):

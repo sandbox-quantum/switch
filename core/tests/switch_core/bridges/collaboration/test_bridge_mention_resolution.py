@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import functools
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
@@ -64,6 +65,7 @@ def _loading_bridge(adapter: SlackAdapter, users: list[SimpleNamespace]) -> Any:
     return SimpleNamespace(
         _adapter=adapter,
         _bridge_id=BRIDGE_ID,
+        _bridge_tenant_id="tenant-1",
         _session_factory=_session_factory(),
         _external_user_store=SimpleNamespace(get_by_bridge=_get_by_bridge),
         _client_store=SimpleNamespace(get=_get_client),
@@ -138,6 +140,7 @@ async def test_new_puppet_is_mentionable_without_waiting_for_a_restart() -> None
         _adapter=adapter,
         _bridge_id=BRIDGE_ID,
         _bridge_type="slack",
+        _bridge_tenant_id="tenant-1",
         _session_factory=_session_factory(),
         _puppet_locks={},
         _user_puppets={},
@@ -145,6 +148,9 @@ async def test_new_puppet_is_mentionable_without_waiting_for_a_restart() -> None
         _agent_store=SimpleNamespace(get_by_name=_get_by_name),
         _client_lifecycle=SimpleNamespace(create_and_start=_create_and_start),
         _external_user_store=SimpleNamespace(create=_create),
+    )
+    bridge._create_puppet_locked = functools.partial(
+        BridgeCore._create_puppet_locked, bridge
     )
 
     await BridgeCore._create_puppet(bridge, "U789", "new.person")

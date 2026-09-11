@@ -181,9 +181,16 @@ def gateway_login() -> httpx.Client:
 
     Bridge administration is admin-gated, so we log in as the seeded gateway
     admin (cookie-based JWT) and drive the same authorized endpoints the
-    dashboard uses — there is no unauthenticated bridge-admin surface. The
-    login sets the switch_auth cookie on the client, which every subsequent
-    gateway call carries.
+    dashboard uses — there is no unauthenticated bridge-admin surface.
+
+    The session cookie is then carried by hand rather than left to the cookie
+    jar. A deployment served over HTTPS mints it with the Secure flag, and this
+    job reaches switch-core over plain HTTP on its in-cluster address, so a
+    conforming client accepts the cookie at login and declines to send it back:
+    the login succeeds and every call after it is anonymous. Replaying the value
+    as a header discloses nothing the login did not — the admin password crossed
+    the same hop a moment earlier — and leaves the Secure flag doing its real
+    job for browsers.
     """
     client = httpx.Client(base_url=SWITCH_URL, timeout=10)
     resp = client.post(
@@ -196,6 +203,15 @@ def gateway_login() -> httpx.Client:
             f"{GATEWAY_ADMIN_EMAIL}: {resp.status_code} {resp.text}"
         )
         sys.exit(1)
+    token = resp.cookies.get("switch_auth")
+    if token is None:
+        print(
+            "ERROR: The Switch gateway accepted the login as "
+            f"{GATEWAY_ADMIN_EMAIL} but issued no switch_auth cookie, so the "
+            "setup calls that follow cannot be authenticated."
+        )
+        sys.exit(1)
+    client.headers["Cookie"] = f"switch_auth={token}"
     return client
 
 

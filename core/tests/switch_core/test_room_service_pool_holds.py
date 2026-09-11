@@ -79,7 +79,7 @@ class _RunningClients:
     def get(self, client_id: str) -> Any:
         return self._by_id.get(client_id)
 
-    def get_by_type(self, client_type: str) -> list[Any]:
+    def get_by_type(self, client_type: str, tenant_id: str) -> list[Any]:
         return []
 
 
@@ -111,7 +111,6 @@ async def _seed(
                 matrix_user_id=f"@a{i}:test",
                 display_name=f"a{i}",
                 type="agent",
-                password="x",
             )
             session.add_all([key, client])
             await session.flush()

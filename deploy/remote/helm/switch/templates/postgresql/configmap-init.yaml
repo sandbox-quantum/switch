@@ -8,6 +8,43 @@ metadata:
 data:
   02-create-mattermost-db.sh: |
     #!/bin/bash
-    psql -U postgres -tc "SELECT 1 FROM pg_database WHERE datname='mattermost'" | grep -q 1 || \
-      psql -U postgres -c "CREATE DATABASE mattermost;"
+    psql -U {{ include "switch.postgresSuperUser" . }} -tc "SELECT 1 FROM pg_database WHERE datname='mattermost'" | grep -q 1 || \
+      psql -U {{ include "switch.postgresSuperUser" . }} -c "CREATE DATABASE mattermost;"
+  # /docker-entrypoint-initdb.d only runs once, against a brand-new PGDATA —
+  # Postgres never reruns it on a volume that already holds a cluster. So this
+  # is the fresh-install half of creating the runtime role switch-core
+  # connects to as DB_USER; templates/switch-core/create-runtime-role-job.yaml
+  # is the other half, for a managed deployment upgrading from before this
+  # file existed, where initdb never runs again to create it.
+  #
+  # No grants here, and no ALTER ROLE for an existing role: on a fresh volume
+  # there is nothing yet to grant — the tables this role needs access to don't
+  # exist until Alembic creates them — and switch-core issues the grants
+  # itself at boot, from the owner connection, immediately after that
+  # migration (core/switch_core/db/runtime_role.py::grant_runtime_role).
+  #
+  # The role's password is deliberately the bootstrapped superuser's own
+  # ($POSTGRES_PASSWORD, already in this container's environment): see
+  # postgresql.managed.runtimeUsername in values.yaml for why that is not a
+  # second secret to manage.
+  #
+  # No `set` line, deliberately. A ConfigMap volume mounts its files without
+  # the executable bit, so the Postgres entrypoint *sources* this rather than
+  # running it, and any shell option set here outlives the script and governs
+  # the rest of the entrypoint. That entrypoint runs `set -Eeo pipefail` and
+  # carries a standing note that it cannot add `-u` until every unset variable
+  # it reads has been dealt with — so a `set -euo pipefail` here would impose
+  # exactly the option its author has ruled out, on their shell, from a file
+  # they never see. `-e` and `pipefail` are already in force for the same
+  # reason, and `psql -v ON_ERROR_STOP=1` is what actually makes a failing
+  # statement fail the boot.
+  03-create-runtime-role.sh: |
+    #!/bin/bash
+    psql -v ON_ERROR_STOP=1 -U {{ include "switch.postgresSuperUser" . }} -d postgres \
+      -v role="{{ include "switch.postgresUser" . }}" \
+      -v pw="$POSTGRES_PASSWORD" <<'SQL'
+    SELECT format('CREATE ROLE %I LOGIN PASSWORD %L NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS', :'role', :'pw')
+    WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = :'role')
+    \gexec
+    SQL
 {{- end }}

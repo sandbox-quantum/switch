@@ -186,6 +186,10 @@ export type RemoteAgentSummary = {
   ownerId: string | null;
   ownerName: string | null;
   knownAgentType: string | null;
+  /** The agent's known-agent options, including `repo_dir` when the server
+   * recorded one. Null for agents registered before the field existed or when
+   * the server omits it. */
+  knownAgentOptions: Record<string, unknown> | null;
   /** Who may address the agent, or null when it is open to everyone. On the
    * summary as well as the detail, so "which of these agents answers only its
    * owner" is one list read rather than a read per agent. Null also for a
@@ -196,6 +200,10 @@ export type RemoteAgentSummary = {
    * name-derived avatar instead, so the fallback can change without every
    * agent needing rewriting. */
   iconUrl: string | null;
+  /** The human label chat platforms render the agent under, or null when it has
+   * none and is shown under `name`. Presentation only — `name` remains the key
+   * rooms, sessions and lookups are routed by. */
+  displayName: string | null;
   createdAt: string;
 };
 
@@ -715,6 +723,10 @@ export type ProvisionAgentResult =
    * missing too. Produced by the add-agent path, which checks before minting
    * (CHOO-1416). */
   | { kind: 'directory-missing'; sshHost: string; inspection: RemoteDirInspection }
+  /** The working directory already holds credentials for this name on the SAME
+   * server, but the agent is unknown to this install — a colleague's agent.
+   * Refused before minting to avoid destroying their token (CHOO-2560). */
+  | { kind: 'already-configured' }
   | RegisterIdentityFailure;
 
 /**

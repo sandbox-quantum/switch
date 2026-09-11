@@ -10,15 +10,29 @@ from switch_core.db import (
     models as _models,  # noqa: F401 — registers tables with Base.metadata
 )
 from switch_core.db.base import Base
+from switch_core.logging_config import logging_is_configured
 
 config = context.config
-if config.config_file_name is not None:
+# Run from the CLI this is the only logging there is. Run in-process from the
+# server, logging is already set up and applying the ini would install a second
+# root handler, doubling every line the server goes on to emit.
+if config.config_file_name is not None and not logging_is_configured():
     fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 target_metadata = Base.metadata
 
 switch_config = SwitchConfig()  # type: ignore[call-arg]
-config.set_main_option("sqlalchemy.url", switch_config.database_url)
+# The owner's connection where one is configured, and only there. A migration
+# is DDL and the runtime role deliberately cannot run DDL — see
+# `SwitchConfig.db_owner_user`. Falling back to the runtime connection keeps
+# `alembic` on the command line working against a database whose owner *is*
+# the configured user, which is what a developer pointing it at a scratch
+# instance has; where the two roles differ, the runtime one produces a
+# permission error naming the statement it could not run, which is the right
+# failure rather than a silent half-migration.
+config.set_main_option(
+    "sqlalchemy.url", switch_config.owner_database_url or switch_config.database_url
+)
 
 
 def run_migrations_offline() -> None:

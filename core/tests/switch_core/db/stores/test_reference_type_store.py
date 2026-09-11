@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import uuid
+
 import pytest
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from switch_core.db.models import Reference, ReferenceType, User
+from switch_core.db.models import Reference, ReferenceType, Tenant, User
+from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.reference_store import ReferenceStore
 from switch_core.db.stores.reference_type_store import ReferenceTypeStore
 
@@ -250,3 +253,223 @@ class TestReferenceTypeStore:
             assert await store.count_references_of_type(session, "notion") == 2
             assert await store.count_references_of_type(session, "github") == 1
             assert await store.count_references_of_type(session, "unused") == 0
+
+
+class TestReferenceTypesAreScopedToTheBoundTenant:
+    """Reads and writes both, because half of either is worse than neither.
+
+    Every method here used to hardcode tenant zero or filter on nothing at
+    all, each marked `TODO(next PR)`. Left half-done, a context-aware write
+    puts a row where a tenant-zero read can never find it, and an unfiltered
+    read serves one customer's type slugs — and their instructions — to
+    another. These run on the owner connection, where no policy bites, so
+    what they assert is the store's own filtering rather than the database's.
+    """
+
+    async def test_a_write_lands_in_the_bound_tenant(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """The write under test happens on a session opened with
+        `tenant_session(other)`, not on the tenant-zero session `ada` and the
+        `other` tenant row are arranged on with `tenant_scope(other)` layered
+        over it afterwards. `set_config` runs once, at `after_begin`, so by
+        the time this session's first flush stamped its transaction with
+        tenant zero, entering `tenant_scope(other)` around the create would
+        only rebind the contextvar — the transaction, and so the row's own
+        `with check`, would still see tenant zero. Opening a fresh session
+        inside the binding stamps its transaction with `other` from the
+        start.
+        """
+        other = f"tenant-{uuid.uuid4().hex[:8]}"
+        store = ReferenceTypeStore()
+        async with session_factory() as session:
+            session.add(Tenant(id=other, slug=other, name=other))
+            ada = await _make_user(session, "ada")
+            await session.commit()
+
+        async with tenant_session(session_factory, other) as other_session:
+            created = await store.create(other_session, _type("notion", ada.id))
+            await other_session.commit()
+
+        assert created.tenant_id == other
+
+    async def test_a_read_does_not_see_another_tenants_type(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """`other`'s type is written on a session opened with
+        `tenant_session(other)` rather than on the tenant-zero session used
+        to arrange `other` itself, with `tenant_scope(other)` entered around
+        just the create. The stamp that fixes what a transaction's rows are
+        checked against is set once, when it begins, so rebinding the
+        contextvar over an already-open transaction changes nothing the
+        database can see — the row would land under whatever tenant the
+        session's first statement stamped it with, not `other`. The read
+        assertions below run on a fresh tenant-zero session, matching what a
+        request bound to tenant zero would actually see.
+        """
+        other = f"tenant-{uuid.uuid4().hex[:8]}"
+        store = ReferenceTypeStore()
+        async with session_factory() as session:
+            session.add(Tenant(id=other, slug=other, name=other))
+            ada = await _make_user(session, "ada")
+            await session.commit()
+
+        async with tenant_session(session_factory, other) as other_session:
+            await store.create(
+                other_session, _type("notion", ada.id, read_visibility="public")
+            )
+            await other_session.commit()
+
+        async with session_factory() as session:
+            # Bound to tenant zero, which `session_factory` binds by default.
+            assert await store.get(session, "notion") is None
+            assert await store.get_many(session, ["notion"]) == []
+            assert await store.list_all(session) == []
+            assert await store.list_for_user(session, None) == []
+            assert await store.list_for_user(session, ada.id) == []
+
+    async def test_the_same_slug_is_two_independent_types(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """The collision the per-tenant primary key exists for, through the
+        store: two customers both call something `notion`, and editing or
+        deleting one leaves the other alone.
+
+        Tenant zero's row is created and deleted through ordinary sessions
+        from `session_factory`, which binds tenant zero for the whole test.
+        `other`'s row is created, updated and read back each through its own
+        session opened with `tenant_session(other)` — never by entering
+        `tenant_scope(other)` on a session already carrying tenant zero's
+        stamp. `set_config` is issued once, when a transaction begins, so a
+        session whose transaction already began under tenant zero keeps
+        telling the database it is tenant zero no matter what the contextvar
+        is rebound to afterwards; only opening the session inside the new
+        binding moves it.
+        """
+        other = f"tenant-{uuid.uuid4().hex[:8]}"
+        store = ReferenceTypeStore()
+
+        async with session_factory() as session:
+            session.add(Tenant(id=other, slug=other, name=other))
+            ada = await _make_user(session, "ada")
+            await session.commit()
+
+        async with session_factory() as session:
+            await store.create(session, _type("notion", ada.id))
+            await session.commit()
+
+        async with tenant_session(session_factory, other) as other_session:
+            await store.create(other_session, _type("notion", ada.id))
+            await other_session.commit()
+
+        async with tenant_session(session_factory, other) as other_session:
+            await store.update_fields(other_session, "notion", display_name="Theirs")
+            await other_session.commit()
+
+        async with session_factory() as session:
+            mine = await store.get(session, "notion")
+        assert mine is not None and mine.display_name == "Notion"
+
+        async with session_factory() as session:
+            await store.delete(session, "notion")
+            await session.commit()
+
+        async with tenant_session(session_factory, other) as other_session:
+            theirs = await store.get(other_session, "notion")
+        assert theirs is not None and theirs.display_name == "Theirs"
+
+    async def test_a_duplicate_slug_clashes_cleanly_when_another_tenant_has_it_too(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """A clash in the second tenant is a `ValueError`, not a 500.
+
+        `create` reports "already exists" by looking the clashing row up
+        *inside* its `IntegrityError` handler, and that lookup is a
+        `scalar_one_or_none()`. The slug is only unique per tenant, so the
+        moment two tenants hold the same one an unfiltered lookup matches two
+        rows and raises `MultipleResultsFound` from inside the handler —
+        which the gateway has no `except` for, so a 400 the caller can act on
+        (`gateway/references.py` maps `ValueError` to one) becomes a 500. The
+        filter on the row's own tenant is what keeps it single-valued, and
+        this is the arrangement that tells the two apart: the same slug in
+        tenant zero *and* in the tenant doing the create.
+
+        The other tenant's rows are all created and read through one session
+        opened with `tenant_session(other)`, not by entering
+        `tenant_scope(other)` around statements on the session already open
+        for tenant zero's row above. `set_config` is issued once, when a
+        transaction begins — that session's transaction was already stamped
+        with tenant zero by its first statement, so rebinding the contextvar
+        afterwards would not move what Postgres was told; every following
+        statement would still run under tenant zero, and the write meant to
+        land under `other` would clash with itself instead of with the row
+        this test is actually arranging a clash against. Opening a fresh
+        session inside `tenant_session(other)` stamps its transaction with
+        `other` from the first statement on.
+        """
+        other = f"tenant-{uuid.uuid4().hex[:8]}"
+        store = ReferenceTypeStore()
+        async with session_factory() as session:
+            session.add(Tenant(id=other, slug=other, name=other))
+            ada = await _make_user(session, "ada")
+            await session.flush()
+            await store.create(session, _type("notion", ada.id))
+            await session.commit()
+
+        async with tenant_session(session_factory, other) as other_session:
+            await store.create(other_session, _type("notion", ada.id))
+            await other_session.commit()
+
+            with pytest.raises(
+                ValueError, match="Reference type 'notion' already exists"
+            ):
+                await store.create(other_session, _type("notion", ada.id))
+
+            # The savepoint means the caller's transaction survives it,
+            # and neither tenant's row was disturbed.
+            await store.create(other_session, _type("linear", ada.id))
+            await other_session.commit()
+            assert {rt.type for rt in await store.list_all(other_session)} == {
+                "notion",
+                "linear",
+            }
+
+        async with session_factory() as session:
+            assert {rt.type for rt in await store.list_all(session)} == {"notion"}
+
+    async def test_counting_references_ignores_another_tenants(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """This count decides whether a type may be deleted; another
+        customer's references must not veto it.
+
+        The other tenant's type and reference are created on a session opened
+        with `tenant_session(other)`, separate from the session tenant zero's
+        row is arranged on. Entering `tenant_scope(other)` around statements
+        on that same session would rebind the contextvar without moving what
+        the transaction was stamped with at `after_begin` — the two would
+        disagree from the second statement on. The two counts are read back
+        the same way: each through its own session, opened inside the
+        binding it is asserting about, rather than by toggling `tenant_scope`
+        on one shared session between the two assertions.
+        """
+        other = f"tenant-{uuid.uuid4().hex[:8]}"
+        store = ReferenceTypeStore()
+        references = ReferenceStore()
+        async with session_factory() as session:
+            session.add(Tenant(id=other, slug=other, name=other))
+            ada = await _make_user(session, "ada")
+            await session.flush()
+            await store.create(session, _type("notion", ada.id))
+            await session.commit()
+
+        async with tenant_session(session_factory, other) as other_session:
+            await store.create(other_session, _type("notion", ada.id))
+            await references.create(other_session, _reference("notion", ada.id))
+            await other_session.commit()
+
+        async with session_factory() as session:
+            assert await store.count_references_of_type(session, "notion") == 0
+
+        async with tenant_session(session_factory, other) as other_session:
+            assert await store.count_references_of_type(other_session, "notion") == 1

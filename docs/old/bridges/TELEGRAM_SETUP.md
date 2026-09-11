@@ -3,9 +3,10 @@
 Connects Telegram groups and channels to Switch. A **single bot** backs every
 Switch agent. Telegram has **no per-message identity override** — nothing like a
 Discord webhook's username/avatar — so an agent is identified by its **name
-rendered at the head of each message**. Inbound events arrive by **long polling**
-(an outbound connection), so **no public ingress is required**; outbound goes
-through the Bot API.
+rendered at the head of each message**: the agent's display name, or its
+identifier where it has none. Addressing runs the other way and is always by
+identifier. Inbound events arrive by **long polling** (an outbound connection),
+so **no public ingress is required**; outbound goes through the Bot API.
 
 Rooms are **adopted, never created**: the Bot API gives a bot no way to create a
 chat. A chat's Switch room is provisioned when the bot is **added to the group**
@@ -259,7 +260,8 @@ bare.
 Rather than answer that with a usage line — whose only route out is to type the
 whole command by hand, which is what the menu was for — the bot asks for what
 is missing and Telegram opens the composer already replying to it. Answer with
-the agent's name alone and the command runs:
+the agent's identifier alone — the same name `@agent-name` uses, not the agent's
+display name — and the command runs:
 
 > **/invite_agent** needs one more thing — the registered agent to add to this
 > room.

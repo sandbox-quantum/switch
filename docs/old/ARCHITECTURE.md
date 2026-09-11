@@ -118,10 +118,18 @@ The relational schema is defined in
 
 - **User** — a human principal; `role == "admin"` is a global authorization
   bypass. **ExternalUser** maps a platform identity (Slack/etc.) to a puppet.
-- **Agent** — a registered AI agent, owned by a User. An agent inherits exactly
-  its owner's permissions. **AgentSession** / **AgentRuntimeState** track a live
+- **Agent** — a registered AI agent, owned by a User. Its `name` is a lowercase
+  identifier and the routing key everything addresses it by (mentions, Matrix
+  handle, per-platform handles), while the optional `display_name` is
+  presentation only and falls back to `name`. An agent inherits exactly its
+  owner's permissions. **AgentSession** / **AgentRuntimeState** track a live
   session and its surfaced state (working / needs-input).
-- **ApiKey** — a hashed credential, of type `"agent"` or `"registration"`.
+- **ApiKey** — a hashed credential, of type `"agent"`, `"registration"`
+  (minted by, and owned by, a single user), or `"bootstrap"` (the
+  deployment-wide key seeded from `AGENT_REGISTRATION_TOKEN`; agents it
+  registers are owned by a dedicated non-admin account rather than the admin
+  it is filed under — see
+  [`bridges/agent/registration_bootstrap.py`](../core/switch_core/bridges/agent/registration_bootstrap.py)).
 - **Client** / **ClientRoom** — the Matrix client backing each participant and
   its room memberships.
 - **Room** — a Matrix room plus Switch metadata (channel type, bridge link,
@@ -153,7 +161,8 @@ The relational schema is defined in
 ### 4.1 Agent registration & connection
 
 1. An agent calls `POST /agents` with a **registration token** (an `ApiKey` of
-   type `"registration"`) and receives its own `{id, api_key}`
+   type `"registration"` or `"bootstrap"`) and receives its own `{id,
+   api_key}`
    ([`bridges/agent/api/handlers.py`](../core/switch_core/bridges/agent/api/handlers.py)).
    Known-agent types (e.g. `claude-code`) register via `POST /agents/register-known`.
 2. All later calls present the agent API key as a `Bearer` token. The

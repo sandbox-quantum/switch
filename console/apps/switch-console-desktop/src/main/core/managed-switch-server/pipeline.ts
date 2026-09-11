@@ -23,6 +23,7 @@ import { buildEnvFile } from './env-file';
 import { apiUrlFor, gatewayUrlFor } from './free-port';
 import { waitForHealth } from './health';
 import type { ServerHost } from './host/types';
+import { crossesMatrixBoundary, runBackfill } from './matrix-migration';
 import { clearPorts, resolvePorts } from './ports';
 import { clearSecrets, loadOrCreateSecrets } from './secrets';
 
@@ -132,6 +133,53 @@ async function refuseDowngrade(
  * tree on every start instead of pulled, and tagged {@link CHECKOUT_IMAGE_TAG}
  * so nothing downstream mistakes them for a release.
  */
+/**
+ * Move a stack past the last version that can read a Matrix homeserver, copying
+ * its history first.
+ *
+ * Not optional and not skippable. The next version deletes the transport, the
+ * backfill and Tuwunel, so a stack that crosses without copying loses every
+ * message sent before Switch moved to the Postgres store — silently, during an
+ * update nobody asked to be a migration. A failed copy therefore fails the
+ * start: the stack stays on the version it is on, which is where it can still
+ * be fixed, and trying again is free because the copy skips what it has
+ * already done.
+ *
+ * Returns null when there is nothing to do: no boundary crossed, no readable
+ * deployed version, or a dev checkout build (which carries no comparable
+ * version, and whose data is not somebody's install).
+ */
+async function migrateOffMatrix(
+  host: ServerHost,
+  checkoutRoot: string | null,
+  onMessage: (message: string) => void,
+  onLog: (line: string) => void
+): Promise<StartLocalServerResult | null> {
+  if (checkoutRoot !== null) return null;
+  const deployed = await readDeployedVersion(host);
+  if (deployed.kind !== 'deployed' || deployed.version === CHECKOUT_IMAGE_TAG) return null;
+  if (!crossesMatrixBoundary(deployed.version, COMPATIBLE_SWITCH_VERSION)) return null;
+
+  log.info(
+    `managed-switch-server: ${host.label} is crossing the Matrix boundary ` +
+      `(${deployed.version} → ${COMPATIBLE_SWITCH_VERSION}); backfilling first`
+  );
+  // Bring the stack up as it stands. The backfill reads the homeserver and the
+  // database, and this is the last moment both are still here.
+  onMessage('Starting the current version to copy your room history…');
+  await composeUp(host, onLog, false);
+
+  onMessage('Copying room history out of the message server…');
+  const backfill = await runBackfill(host, onLog);
+  if (backfill.ok) return null;
+  return {
+    kind: 'matrix-migration-failed',
+    deployed: deployed.version,
+    expected: COMPATIBLE_SWITCH_VERSION,
+    detail: backfill.detail,
+  };
+}
+
 export async function startStack(opts: StartStackOptions): Promise<StartLocalServerResult> {
   const { host, ref, serverName, onMessage, onLog, signal, checkoutRoot } = opts;
 
@@ -143,6 +191,13 @@ export async function startStack(opts: StartStackOptions): Promise<StartLocalSer
   onMessage('Checking the deployed version…');
   const downgrade = await refuseDowngrade(host, checkoutRoot);
   if (downgrade) return downgrade;
+
+  // Copy the homeserver's history across before the upgrade removes the only
+  // thing that can read it. Runs against the stack as currently deployed, so
+  // it must happen before the compose file and `.env` are re-materialised for
+  // the new version — those are what would take Tuwunel away.
+  const migration = await migrateOffMatrix(host, checkoutRoot, onMessage, onLog);
+  if (migration) return migration;
 
   onMessage('Preparing configuration…');
   await host.writeFile(COMPOSE_FILE_NAME, bundledComposeYaml());

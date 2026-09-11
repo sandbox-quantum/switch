@@ -60,13 +60,13 @@
 artifacts:
   switch-core:
     description: The backend service, and the gateway API it serves.
-    version: 0.23.0
+    version: 0.26.0
     declared_in: core/pyproject.toml
     published_as: switch-core
 
   switch-console:
     description: The desktop app.
-    version: 0.32.0
+    version: 0.34.0
     declared_in: console/apps/switch-console-desktop/package.json
     # Which switch-core release this app build bundles and pulls for
     # local-server mode. DELIBERATELY NOT switch-core's version above.
@@ -78,7 +78,7 @@ artifacts:
     # main. This moves only when Switch Console is ready to bundle that release —
     # in lockstep with the bundled compose.
     pins:
-      switch-core: 0.23.0
+      switch-core: 0.25.0
 
   agent-runtime:
     description: The Switch protocol client and MCP runtime, published to a registry.
@@ -127,12 +127,12 @@ artifacts:
 
   switch-connector:
     description: The Claude Code connector plugin.
-    version: 0.9.12
+    version: 0.9.14
     declared_in: connectors/claude-code-plugin/.claude-plugin/plugin.json
 
   switch-connector-codex:
     description: The Codex connector plugin.
-    version: 0.3.13
+    version: 0.3.15
     declared_in: connectors/codex-plugin/.codex-plugin/plugin.json
 
   switch-connector-opencode:
@@ -140,7 +140,7 @@ artifacts:
       The OpenCode connector. Unlike the other two it is written by Switch
       Console rather than installed from the marketplace, because OpenCode has
       no plugin marketplace to install it from.
-    version: 0.1.8
+    version: 0.1.10
     declared_in: connectors/opencode-plugin/package.json
 
 contracts:
@@ -169,8 +169,8 @@ contracts:
       names, profiles, and environment variables — which Switch Console's
       local-server mode drives.
     artifacts:
-      switch-console: { speaks: 1, accepts: 1 }
-      compose: { speaks: 1, accepts: 1 }
+      switch-console: { speaks: 2, accepts: 1 }
+      compose: { speaks: 2, accepts: 1 }
 
   sidecar-control:
     description: >-

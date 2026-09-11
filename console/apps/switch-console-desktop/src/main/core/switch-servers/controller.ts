@@ -769,6 +769,8 @@ export const switchServersController = createRPCController({
       repoDir: params.dir,
       autoSession: params.autoSession,
       iconUrl: agentAvatarUrlForName(params.name),
+      // This flow asks for a name and nothing else, so there is no label to send.
+      displayName: null,
       // Provisioning writes `.claude/settings.local.json` — this is the Claude
       // Code path by construction, not a fallback.
       agentType: knownAgentTypeForProvider('claude'),
@@ -825,6 +827,8 @@ export const switchServersController = createRPCController({
       repoDir: params.remoteRepoDir,
       autoSession: params.autoSession,
       iconUrl: agentAvatarUrlForName(params.name),
+      // As locally: a name is all this flow collects.
+      displayName: null,
       // Remote provisioning likewise writes `.claude/settings.local.json`.
       agentType: knownAgentTypeForProvider('claude'),
     });

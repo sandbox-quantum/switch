@@ -11,9 +11,17 @@ from starlette.responses import Response
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from switch_core.bridges.agent.api_key_cache import ApiKeyCache
+from switch_core.bridges.agent.registration_bootstrap import REGISTRATION_KEY_TYPES
 from switch_core.db.models import Agent, ApiKey
+from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.api_key_store import ApiKeyStore
+from switch_core.db.tenant_lookup import (
+    tenant_of_agent_oauth_client,
+    tenant_of_api_key,
+)
+from switch_core.logging_context import bind_log_context, unbind_log_context
+from switch_core.tenant_context import tenant_scope
 
 logger = logging.getLogger(__name__)
 
@@ -71,14 +79,32 @@ class BearerAuthMiddleware:
        Used by agent-bridge HTTP endpoints and MCP.
     2. OIDC token — validated against the configured issuer, mapped to an
        agent via the ``oauth_client_id`` field on Agent.
-    3. Registration token — an ApiKey row of type ``"registration"`` that
-       has no associated agent. Used by the registration endpoint
+    3. Registration token — an ApiKey row of type ``"registration"`` or
+       ``"bootstrap"`` (see ``registration_bootstrap.py``) that has no
+       associated agent. Used by the registration endpoint
        (``POST /agents``). Sets ``scope["api_key"]`` so downstream
        handlers can validate it again.
 
     Public paths (see ``PUBLIC_PATH_PREFIXES``) bypass authentication
     entirely. The MCP path also requires an agent — registration tokens
     are not enough to open an MCP session.
+
+    This is where a request's tenant gets bound (see
+    ``switch_core.tenant_context``), for all three credentials — registration
+    tokens included, since the request one of those carries is the request
+    that *creates* the rows every later request is authenticated against.
+
+    A middleware rather than a FastAPI dependency: this class runs ahead of
+    routing and dependency injection entirely, so there is no ordering
+    question about whether a downstream ``get_session`` might query before the
+    tenant is known — it cannot, since it does not run until after
+    ``self.app(...)`` is called below. The lookups that resolve the credential
+    itself (``_resolve_api_key``, ``_try_oidc``) run ahead of that, on
+    sessions of their own, and each is in two steps: the credential's *tenant*
+    comes from one of the seven ``SECURITY DEFINER`` lookups that are the
+    whole exemption from row-level security (``db/tenant_lookup.py``), and the
+    row itself is then read with that tenant bound, subject to the same
+    policies as everything else.
     """
 
     def __init__(
@@ -131,17 +157,39 @@ class BearerAuthMiddleware:
         if agent is not None:
             scope["agent"] = agent
             scope["agent_id"] = agent.id
-            await self.app(scope, receive, send)
+            # api_key.tenant_id is the source of truth (docs/old/
+            # multi-tenancy-phase1-db.md, "Setting the tenant"); the OIDC
+            # path resolves straight to an Agent with no ApiKey row, so it
+            # falls back to the agent's own tenant.
+            tenant_id = api_key.tenant_id if api_key is not None else agent.tenant_id
+            with tenant_scope(tenant_id):
+                log_token = bind_log_context(agent_id=agent.id, tenant_id=tenant_id)
+                try:
+                    await self.app(scope, receive, send)
+                finally:
+                    unbind_log_context(log_token)
             return
 
         # Registration token: pass through (handler validates again). MCP rejects.
         if (
             api_key is not None
-            and api_key.type == "registration"
+            and api_key.type in REGISTRATION_KEY_TYPES
             and not path.startswith("/mcp")
         ):
             scope["api_key"] = api_key
-            await self.app(scope, receive, send)
+            # The endpoints this reaches *insert* the `api_keys` and `agents`
+            # rows a later request will be authenticated against, and the
+            # branch above then treats `api_keys.tenant_id` as the source of
+            # truth. Registering with no tenant bound would land those rows in
+            # tenant zero by fallback and make that wrong answer permanent and
+            # self-confirming — so bind the token's own tenant here, exactly
+            # as an agent key does.
+            with tenant_scope(api_key.tenant_id):
+                log_token = bind_log_context(tenant_id=api_key.tenant_id)
+                try:
+                    await self.app(scope, receive, send)
+                finally:
+                    unbind_log_context(log_token)
             return
 
         response = Response("Invalid credentials", status_code=401)
@@ -165,7 +213,23 @@ class BearerAuthMiddleware:
         if cached is not None:
             return cached
 
-        async with self._session_factory() as session:
+        # Two steps, because a credential's tenant has to be known before its
+        # row can be read. `api_keys` is scoped like everything else, so a
+        # session with nothing bound reads nothing from it — this used to be a
+        # single unbound read, and under the restricted runtime role it failed
+        # on every request that missed the cache. The hash is resolved to a
+        # tenant through the `SECURITY DEFINER` exemption
+        # (`db/tenant_lookup.py`), which answers with a tenant id and nothing
+        # else, and the row itself is then read the ordinary scoped way.
+        #
+        # An unknown token resolves to no tenant and stops here, without a
+        # second round trip — which is also the shape that matters for load,
+        # since an unauthenticated flood never reaches the second query.
+        tenant_id = await tenant_of_api_key(self._session_factory, token_hash)
+        if tenant_id is None:
+            return None, None
+
+        async with tenant_session(self._session_factory, tenant_id) as session:
             found = await self._api_key_store.get_with_agent_by_hash(
                 session, token_hash
             )
@@ -193,7 +257,15 @@ class BearerAuthMiddleware:
             logger.warning("OIDC token has no azp or client_id claim")
             return None
 
-        async with self._session_factory() as session:
+        # Same two steps as `_resolve_api_key`, for the same reason: `agents`
+        # is scoped, and this is the read that decides which agent — and so
+        # which tenant — is asking. `oauth_client_id` carries no unique index,
+        # so the lookup refuses rather than picking when two tenants have
+        # registered an agent under the same one.
+        tenant_id = await tenant_of_agent_oauth_client(self._session_factory, client_id)
+        if tenant_id is None:
+            return None
+        async with tenant_session(self._session_factory, tenant_id) as session:
             return await self._agent_store.get_by_oauth_client_id(session, client_id)
 
 

@@ -79,6 +79,13 @@ export class LocationManagerStore {
     const locationIdsWithAgents = new Set(agents.map((a) => a.locationId));
     const toMount: string[] = [];
     runInAction(() => {
+      // Drop locations whose last agent was removed since the previous load,
+      // but skip any mid-onboarding placeholder — it has no DB agent yet.
+      for (const id of this.locations.keys()) {
+        if (!locationIdsWithAgents.has(id) && !this.pendingCreationIds.has(id)) {
+          this.locations.delete(id);
+        }
+      }
       for (const loc of rawLocations) {
         if (!locationIdsWithAgents.has(loc.id)) continue;
         if (this.locations.has(loc.id)) continue;
@@ -297,6 +304,9 @@ export class LocationManagerStore {
           rpc.agents.deleteAgent({
             agentId: agent.id,
             deleteInSwitch: false,
+            // Removing a location forgets it here; files on disk (possibly a
+            // shared host's) stay put.
+            removeProvisionedFiles: false,
             trigger: 'user',
           })
         )
@@ -318,7 +328,7 @@ export class LocationManagerStore {
   async removeAgent(
     locationId: string,
     agentId: string,
-    options: { deleteInSwitch: boolean }
+    options: { deleteInSwitch: boolean; removeProvisionedFiles: boolean }
   ): Promise<void> {
     // A directory is a flat container of independent agents (CHOO-1440), so
     // deleting one must remove only that agent — its siblings, and the location
@@ -341,6 +351,7 @@ export class LocationManagerStore {
       await rpc.agents.deleteAgent({
         agentId,
         deleteInSwitch: options.deleteInSwitch,
+        removeProvisionedFiles: options.removeProvisionedFiles,
         trigger: 'user',
       });
       // Reconcile against the source of truth (also corrects the optimistic guess).

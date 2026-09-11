@@ -64,7 +64,6 @@ class _FakeClientLifecycle:
                 matrix_user_id=f"@{display_name}:test",
                 display_name=display_name,
                 type=client_type,
-                password="x",
             )
             session.add(client)
             await session.commit()
@@ -129,7 +128,6 @@ async def _seed_agent(
                 matrix_user_id=f"@{name}:test",
                 display_name=name,
                 type="agent",
-                password="x",
             )
             session.add(client)
             await session.flush()
@@ -221,16 +219,24 @@ class TestResolutionHitsAndMisses:
         second_key, second_agent = await mw._resolve_api_key("tok")
 
         assert first_agent is not None
-        assert after_miss == 1
-        assert counting.opened == 1, "the second resolution must be answered in memory"
+        # Two round trips, not one: the hash resolves to a tenant through the
+        # exemption (db/tenant_lookup.py) on its own session before the
+        # api_keys row — scoped like everything else — can be read on a
+        # second, tenant-bound one.
+        assert after_miss == 2
+        assert counting.opened == 2, "the second resolution must be answered in memory"
         assert second_agent is not None
         assert second_agent.id == first_agent.id
         assert second_key is not None and first_key is not None
         assert second_key.id == first_key.id
 
-    async def test_one_checkout_resolves_key_and_agent_together(
+    async def test_a_resolution_costs_two_round_trips_tenant_then_row(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
+        # api_keys is tenant-scoped, so its row cannot be read before its
+        # tenant is known: one round trip to tenant_of_api_key, then one more
+        # on a tenant_session to read the row itself. What the cache above
+        # saves is these two round trips, not one.
         await _seed_agent(session_factory, "tok")
         counting = _CountingSessionFactory(session_factory)
         counting.opened = 0
@@ -238,6 +244,20 @@ class TestResolutionHitsAndMisses:
 
         await mw._resolve_api_key("tok")
 
+        assert counting.opened == 2
+
+    async def test_an_unknown_token_costs_exactly_one_round_trip(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        # A hash that names no tenant stops at tenant_of_api_key: there is no
+        # tenant to open the second, row-reading session under. This is the
+        # load-shape that matters — an unauthenticated flood never reaches
+        # the second query.
+        counting = _CountingSessionFactory(session_factory)
+        cache = ApiKeyCache(ttl_seconds=5, max_entries=8)
+        mw = _middleware(counting, cache)
+
+        assert await mw._resolve_api_key("nope") == (None, None)
         assert counting.opened == 1
 
     async def test_an_unknown_token_is_never_cached(
@@ -276,7 +296,9 @@ class TestResolutionHitsAndMisses:
 
         assert key is not None and key.type == "registration"
         assert agent is None
-        assert counting.opened == 2
+        # Two round trips per call: the row exists and names a tenant, so
+        # both the tenant lookup and the scoped read happen every time.
+        assert counting.opened == 4
         assert cache.get(_hash("reg")) is None
 
     async def test_an_agent_key_with_no_agent_is_not_cached(
@@ -293,7 +315,7 @@ class TestResolutionHitsAndMisses:
 
         assert key is not None
         assert agent is None
-        assert counting.opened == 2
+        assert counting.opened == 4
         assert cache.get(_hash("orphan")) is None
 
     async def test_a_disabled_cache_reads_every_time(
@@ -307,7 +329,7 @@ class TestResolutionHitsAndMisses:
         await mw._resolve_api_key("tok")
         await mw._resolve_api_key("tok")
 
-        assert counting.opened == 2
+        assert counting.opened == 4
 
     async def test_an_expired_entry_reads_again(
         self,
@@ -327,7 +349,7 @@ class TestResolutionHitsAndMisses:
         now[0] = 1006.0
         await mw._resolve_api_key("tok")
 
-        assert counting.opened == 2
+        assert counting.opened == 4
 
 
 class TestInvalidation:
@@ -413,11 +435,7 @@ _CONFIG_KWARGS = dict(
     db_user="postgres",
     db_password="pw",
     db_name="switch",
-    matrix_server="http://tuwunel:8008",
     matrix_server_name="switch.local",
-    matrix_admin_user="admin",
-    matrix_admin_password="pw",
-    matrix_registration_shared_secret="secret",
     agent_registration_token="token",
     jwt_secret_key="jwt",
     gateway_admin_email="admin@example.com",

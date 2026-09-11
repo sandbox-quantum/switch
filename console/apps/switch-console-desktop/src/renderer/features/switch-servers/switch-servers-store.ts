@@ -33,10 +33,23 @@ export class SwitchServersStore {
   /** Server ids with an auth-config fetch in flight, so several recovery
    * signals arriving at once collapse into a single request. */
   private readonly authConfigInFlight = new Set<string>();
-  /** Server ids whose last gateway read failed. The page shows a single
-   * "cannot reach" state for these: with the gateway down there is nothing to
-   * sign into, so a sign-in form would be a dead end dressed up as a choice. */
-  readonly unreachable = new Set<string>();
+  /** Server ids whose last connection-status read failed. Authoritative for
+   * page-level reachability whenever a status read has ever run for that
+   * server: {@link isUnreachable} defers to this over
+   * {@link authConfigUnreachable} so a hiccup on the sign-in-options endpoint
+   * cannot evict a server whose status just came back fine. */
+  readonly statusUnreachable = new Set<string>();
+  /**
+   * Server ids whose last auth-config read failed. Decisive for page-level
+   * reachability only before any status read has ever run for that server —
+   * once one has, {@link isUnreachable} never looks at this again, since a
+   * server can be perfectly reachable while only its sign-in-options endpoint
+   * stays broken. It does not stop mattering there: {@link
+   * authConfigCheckFailed} exposes it separately so the sign-in panel can
+   * disclose a persistently failing check instead of silently reusing a
+   * cached answer forever.
+   */
+  readonly authConfigUnreachable = new Set<string>();
 
   loadingServers = false;
   /** Whether the list has been read at least once. Until it has, an empty
@@ -85,9 +98,36 @@ export class SwitchServersStore {
     return this.statuses.get(serverId)?.connected ?? false;
   }
 
-  /** Whether the last read of this server's gateway failed to reach it. */
+  /**
+   * Whether this server counts as unreachable for the page. Once a status
+   * read has ever run for it, status is the sole authority — a signed-in
+   * server whose sign-in-options endpoint hiccups must not lose its signed-in
+   * view over that. Before status has ever answered, an auth-config failure
+   * is the only signal available, so it decides instead.
+   */
   isUnreachable(serverId: string): boolean {
-    return this.unreachable.has(serverId);
+    if (this.statuses.has(serverId)) return this.statusUnreachable.has(serverId);
+    return this.authConfigUnreachable.has(serverId);
+  }
+
+  /**
+   * Whether the last sign-in-options read failed, regardless of what
+   * {@link isUnreachable} says. A server can be fully reachable — status
+   * fine, maybe even signed in — while its sign-in-options endpoint stays
+   * persistently broken; that failure never gates the page, so this is the
+   * only place it is visible. The sign-in panel reads it to disclose that the
+   * options on screen might be out of date rather than silently offering a
+   * cached answer forever.
+   */
+  authConfigCheckFailed(serverId: string): boolean {
+    return this.authConfigUnreachable.has(serverId);
+  }
+
+  /** Whether a sign-in-options read is in flight right now. The sign-in panel
+   * reads this alongside {@link authConfigCheckFailed} so a fresh retry does
+   * not get reported as a failure while it is still running. */
+  authConfigChecking(serverId: string): boolean {
+    return this.authConfigInFlight.has(serverId);
   }
 
   async init(): Promise<void> {
@@ -160,11 +200,27 @@ export class SwitchServersStore {
   }
 
   /**
-   * The server page's manual re-check. Covers both what the status card reads
-   * and what the sign-in panel needs — refreshing only the status leaves a page
-   * that never got its auth config stuck on "Checking sign-in options…".
+   * A manual, explicit re-check: the server page's header button and the
+   * unreachable card's own Retry click. Covers both what the status card
+   * reads and what the sign-in panel needs — refreshing only the status
+   * leaves a page that never got its auth config stuck on "Checking sign-in
+   * options…", and a click is a single bounded request, so it can afford the
+   * full check even where the automatic probe below cannot.
    */
   async refreshServer(serverId: string): Promise<void> {
+    await Promise.all([this.refreshStatus(serverId), this.refreshAuthConfig(serverId)]);
+  }
+
+  /**
+   * The unreachable card's automatic 10-second timer. Only connectivity is
+   * worth re-checking on a fixed interval; sign-in options keep the
+   * once-cached behavior of {@link ensureAuthConfig} so a genuine outage does
+   * not turn into two doomed round trips on every tick, forever — the panel's
+   * own {@link authConfigCheckFailed} disclosure, plus the card's manual
+   * Retry button, are what re-drive a persistently broken sign-in-options
+   * endpoint instead.
+   */
+  async retryConnection(serverId: string): Promise<void> {
     await Promise.all([this.refreshStatus(serverId), this.ensureAuthConfig(serverId)]);
   }
 
@@ -176,7 +232,7 @@ export class SwitchServersStore {
       const status = await rpc.switchServers.getConnectionStatus(serverId);
       runInAction(() => {
         this.statuses.set(serverId, status);
-        this.unreachable.delete(serverId);
+        this.statusUnreachable.delete(serverId);
       });
     } catch (cause) {
       // An unreachable server is a real, displayable state — record it as
@@ -187,7 +243,7 @@ export class SwitchServersStore {
       console.warn(`[switch-servers] could not read status for ${serverId}`, cause);
       runInAction(() => {
         this.statuses.set(serverId, { serverId, connected: false, user: null });
-        this.unreachable.add(serverId);
+        this.statusUnreachable.add(serverId);
       });
     } finally {
       runInAction(() => {
@@ -209,12 +265,40 @@ export class SwitchServersStore {
       this.authConfigWanted.add(serverId);
     });
     if (this.authConfigs.has(serverId)) return;
+    await this.fetchAuthConfig(serverId);
+  }
+
+  /**
+   * Re-fetch a server's login methods even though one is already cached — for
+   * the manual refresh path, where the cached answer is exactly what might be
+   * wrong (an operator turning on OIDC after Console cached password-only). A
+   * failed refresh leaves the stale config in place rather than clearing it,
+   * and {@link isUnreachable} does not let this failure alone evict a server
+   * whose connection status is fine — but the staleness itself is not
+   * silent: {@link authConfigCheckFailed} discloses it to the sign-in panel,
+   * which is the one place still showing what this fetch returned.
+   */
+  async refreshAuthConfig(serverId: string): Promise<void> {
+    runInAction(() => {
+      this.authConfigWanted.add(serverId);
+    });
+    await this.fetchAuthConfig(serverId);
+  }
+
+  private async fetchAuthConfig(serverId: string): Promise<void> {
     if (this.authConfigInFlight.has(serverId)) return;
     // The gateway of a server on an unreachable host cannot answer, and the
     // host-unreachable surface already states why — don't paint the global
     // error banner with a doomed fetch (CHOO-1780). The host un-blocking is
-    // itself a recovery signal, so this is a skip, not a giving up.
-    if (this.isHostBlocked(serverId)) return;
+    // itself a recovery signal, so this is a skip, not a giving up — and a
+    // failure recorded before the host went down does not belong to this
+    // skip, so it does not survive it either.
+    if (this.isHostBlocked(serverId)) {
+      runInAction(() => {
+        this.authConfigUnreachable.delete(serverId);
+      });
+      return;
+    }
     runInAction(() => {
       this.authConfigInFlight.add(serverId);
     });
@@ -222,7 +306,7 @@ export class SwitchServersStore {
       const config = await rpc.switchServers.getAuthConfig(serverId);
       runInAction(() => {
         this.authConfigs.set(serverId, config);
-        this.unreachable.delete(serverId);
+        this.authConfigUnreachable.delete(serverId);
       });
     } catch (cause) {
       // Not the error banner: the raw text is our own IPC method name wrapped
@@ -231,7 +315,7 @@ export class SwitchServersStore {
       // reached, and the detail stays in the console for us.
       console.warn(`[switch-servers] could not read auth config for ${serverId}`, cause);
       runInAction(() => {
-        this.unreachable.add(serverId);
+        this.authConfigUnreachable.add(serverId);
       });
     } finally {
       runInAction(() => {
@@ -339,7 +423,8 @@ export class SwitchServersStore {
         this.statuses.delete(serverId);
         this.authConfigs.delete(serverId);
         this.authConfigWanted.delete(serverId);
-        this.unreachable.delete(serverId);
+        this.statusUnreachable.delete(serverId);
+        this.authConfigUnreachable.delete(serverId);
       });
       // The removed id also sits in the server view's saved params, where it
       // outlives the record and would be read back — as a page for a server

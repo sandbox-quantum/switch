@@ -19,11 +19,7 @@ def _kwargs(**overrides: object) -> dict[str, object]:
         db_user="u",
         db_password="p",
         db_name="d",
-        matrix_server="http://m",
         matrix_server_name="m",
-        matrix_admin_user="a",
-        matrix_admin_password="p",
-        matrix_registration_shared_secret="s",
         agent_registration_token="t",
         jwt_secret_key="secret",
         gateway_admin_email="a@b.c",
@@ -42,6 +38,8 @@ class TestGatewayOidcConfig:
         assert config.gateway_oidc_enabled is False
         # Password login is on by default.
         assert config.gateway_password_login_enabled is True
+        # Opting out of the verified-email check must be deliberate.
+        assert config.gateway_oidc_require_email_verified is True
 
     def test_enabled_when_all_three_set(self) -> None:
         config = SwitchConfig(

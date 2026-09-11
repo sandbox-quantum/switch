@@ -1,7 +1,7 @@
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from switch_core.db.models import Client
+from switch_core.db.models import Client, require_tenant_id
 
 
 class ClientStore:
@@ -15,8 +15,21 @@ class ClientStore:
     async def get_by_matrix_user_id(
         self, session: AsyncSession, matrix_user_id: str
     ) -> Client | None:
+        """Resolve a client by its Matrix user id within the bound tenant.
+
+        Scoped explicitly rather than left to row-level security:
+        `matrix_user_id` is unique per tenant
+        (`uq_clients_tenant_matrix_user_id`), not globally, so the moment a
+        second tenant has a client with the same puppet id, an unfiltered read
+        here matches both rows and raises `MultipleResultsFound` out of
+        message routing and provisioning, which resolve the sending client
+        from an inbound event this way.
+        """
         result = await session.execute(
-            select(Client).where(Client.matrix_user_id == matrix_user_id)
+            select(Client).where(
+                Client.tenant_id == require_tenant_id(),
+                Client.matrix_user_id == matrix_user_id,
+            )
         )
         return result.scalar_one_or_none()
 
@@ -36,23 +49,3 @@ class ClientStore:
         if client:
             await session.delete(client)
             await session.flush()
-
-    async def update_state(
-        self,
-        session: AsyncSession,
-        client_id: str,
-        *,
-        access_token: str | None = None,
-        device_id: str | None = None,
-        next_batch_token: str | None = None,
-    ) -> None:
-        client = await session.get(Client, client_id)
-        if client is None:
-            return
-        if access_token is not None:
-            client.access_token = access_token
-        if device_id is not None:
-            client.device_id = device_id
-        if next_batch_token is not None:
-            client.next_batch_token = next_batch_token
-        await session.flush()

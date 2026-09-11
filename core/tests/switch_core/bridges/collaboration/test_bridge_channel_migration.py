@@ -60,6 +60,8 @@ class _Session:
 def _make_bridge(rooms: dict[str, SimpleNamespace]) -> BridgeCore:
     bridge = BridgeCore.__new__(BridgeCore)
     bridge._bridge_id = "bridge-1"
+    bridge._bridge_tenant_id = "tenant-1"
+    bridge._room_tenants = {}
     bridge._channel_locks = {}
     bridge._channel_to_room = {}
     bridge._room_to_channel = {}
@@ -70,7 +72,9 @@ def _make_bridge(rooms: dict[str, SimpleNamespace]) -> BridgeCore:
 
 
 def _room(room_id: str = "room-uuid") -> SimpleNamespace:
-    return SimpleNamespace(id=room_id, matrix_room_id=f"!{room_id}:switch.local")
+    return SimpleNamespace(
+        id=room_id, tenant_id="tenant-1", matrix_room_id=f"!{room_id}:switch.local"
+    )
 
 
 def test_the_handler_is_installed_before_the_adapter_starts() -> None:
@@ -84,7 +88,7 @@ def test_the_handler_is_installed_before_the_adapter_starts() -> None:
         def set_channel_migration_handler(self, handler: Any) -> None:
             installed.append(handler)
 
-        def set_agent_icon_resolver(self, resolver: Any) -> None:
+        def set_agent_presentation_resolver(self, resolver: Any) -> None:
             # Not what this test is about; present so the stub satisfies what
             # `start` installs on its adapter.
             return None

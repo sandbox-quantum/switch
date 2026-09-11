@@ -20,6 +20,7 @@ from switch_core.bridges.agent.protocol.types import (
 from switch_core.db.models import Client, User
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.api_key_store import ApiKeyStore
+from switch_core.db.stores.user_store import UserStore
 
 PROFILE = IntegrationProfile(
     connection_model="session_passive",
@@ -48,7 +49,6 @@ class FakeClientLifecycle:
                 matrix_user_id=f"@{display_name}:test",
                 display_name=display_name,
                 type=client_type,
-                password="x",
             )
             session.add(client)
             await session.commit()
@@ -70,6 +70,7 @@ def make_service(
     svc.session_factory = session_factory  # type: ignore[attr-defined]
     svc.agent_store = AgentStore()  # type: ignore[attr-defined]
     svc.api_key_store = ApiKeyStore()  # type: ignore[attr-defined]
+    svc.user_store = UserStore()  # type: ignore[attr-defined]
     svc.api_key_cache = ApiKeyCache(ttl_seconds=5.0, max_entries=8)  # type: ignore[attr-defined]
     svc.client_lifecycle = FakeClientLifecycle(session_factory)  # type: ignore[attr-defined]
     svc.collab_lifecycle = NoBridges()  # type: ignore[attr-defined]

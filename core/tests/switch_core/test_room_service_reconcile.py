@@ -3,6 +3,9 @@ from __future__ import annotations
 from types import SimpleNamespace
 from typing import Any
 
+import pytest
+
+from switch_core import room_service as room_service_module
 from switch_core.room_service import RoomService
 
 
@@ -47,13 +50,24 @@ class _FakeRoomStore:
 
 
 class _FakeClientLifecycle:
-    """Resolves system clients by type, mirroring the real lookup."""
+    """Resolves system clients by type *and tenant*, mirroring the real lookup.
+
+    The tenant is not decoration. The real registry is process-wide and holds
+    one system client per tenant, so a lookup by type alone hands another
+    tenant's client to this room — which `client_rooms`' composite foreign key
+    rejects outright. `test_room_service_tenant_bindings.py` is where that is
+    proven against Postgres; here the signature is simply kept honest.
+    """
 
     def __init__(self, by_type: dict[str, list[Any]]) -> None:
         self._by_type = by_type
 
-    def get_by_type(self, client_type: str) -> list[Any]:
-        return list(self._by_type.get(client_type, []))
+    def get_by_type(self, client_type: str, tenant_id: str) -> list[Any]:
+        return [
+            client
+            for client in self._by_type.get(client_type, [])
+            if client.tenant_id == tenant_id
+        ]
 
 
 class _FakeMatrix:
@@ -64,13 +78,16 @@ class _FakeMatrix:
         self.invited.append((matrix_room_id, matrix_user_id))
 
 
-def _admin() -> SimpleNamespace:
+def _admin(tenant_id: str = "tenant-1") -> SimpleNamespace:
     return SimpleNamespace(
-        client_id="admin-client", matrix_user_id="@switch-admin:switch.local"
+        client_id="admin-client",
+        matrix_user_id="@switch-admin:switch.local",
+        tenant_id=tenant_id,
     )
 
 
 def _build_service(
+    monkeypatch: pytest.MonkeyPatch,
     *,
     rooms: list[Any],
     client_ids_by_room: dict[str, list[str]],
@@ -79,6 +96,20 @@ def _build_service(
 ) -> tuple[RoomService, _FakeRoomStore, _FakeMatrix]:
     room_store = _FakeRoomStore(rooms, client_ids_by_room, agent_clients_by_room or {})
     matrix = _FakeMatrix()
+
+    # `reconcile_room_clients` now finds its tenants through `all_tenant_ids`,
+    # a real query against `tenants` (`db/tenant_lookup.py`) that the fake
+    # session below cannot answer — it is a stand-in for `RoomStore`, not for
+    # Postgres. Stubbing it to the tenants these fake rooms actually carry
+    # keeps the fan-out (one `get_all` per tenant, each room's own tenant
+    # bound around it) exercised without a real database.
+    tenant_ids = sorted({room.tenant_id for room in rooms})
+
+    async def _fake_all_tenant_ids(session_factory: Any) -> list[str]:
+        return tenant_ids
+
+    monkeypatch.setattr(room_service_module, "all_tenant_ids", _fake_all_tenant_ids)
+
     svc = object.__new__(RoomService)
     svc._session_factory = lambda: _FakeSessionCM()  # type: ignore[assignment]
     svc._room_store = room_store  # type: ignore[assignment]
@@ -88,11 +119,16 @@ def _build_service(
 
 
 class TestReconcileRoomClients:
-    async def test_backfills_missing_admin_into_existing_room(self) -> None:
+    async def test_backfills_missing_admin_into_existing_room(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         # A room created before the admin client existed: it has the other
         # system clients but not the admin. Reconcile invites + records it.
-        room = SimpleNamespace(id="room-1", matrix_room_id="!mx:switch.local")
+        room = SimpleNamespace(
+            id="room-1", tenant_id="tenant-1", matrix_room_id="!mx:switch.local"
+        )
         svc, room_store, matrix = _build_service(
+            monkeypatch,
             rooms=[room],
             client_ids_by_room={"room-1": ["resource-mgr", "observe"]},
             by_type={"admin": [_admin()]},
@@ -103,9 +139,32 @@ class TestReconcileRoomClients:
         assert matrix.invited == [("!mx:switch.local", "@switch-admin:switch.local")]
         assert room_store.added == [("admin-client", "room-1")]
 
-    async def test_skips_room_that_already_has_the_admin(self) -> None:
-        room = SimpleNamespace(id="room-1", matrix_room_id="!mx:switch.local")
+    async def test_another_tenants_admin_client_is_not_offered(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        room = SimpleNamespace(
+            id="room-1", tenant_id="tenant-1", matrix_room_id="!mx:switch.local"
+        )
         svc, room_store, matrix = _build_service(
+            monkeypatch,
+            rooms=[room],
+            client_ids_by_room={"room-1": []},
+            by_type={"admin": [_admin(tenant_id="tenant-2")]},
+        )
+
+        await svc.reconcile_room_clients()
+
+        assert matrix.invited == []
+        assert room_store.added == []
+
+    async def test_skips_room_that_already_has_the_admin(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        room = SimpleNamespace(
+            id="room-1", tenant_id="tenant-1", matrix_room_id="!mx:switch.local"
+        )
+        svc, room_store, matrix = _build_service(
+            monkeypatch,
             rooms=[room],
             client_ids_by_room={"room-1": ["admin-client"]},
             by_type={"admin": [_admin()]},
@@ -116,12 +175,21 @@ class TestReconcileRoomClients:
         assert matrix.invited == []
         assert room_store.added == []
 
-    async def test_covers_archived_rooms_too(self) -> None:
+    async def test_covers_archived_rooms_too(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         rooms = [
-            SimpleNamespace(id="live", matrix_room_id="!live:switch.local"),
-            SimpleNamespace(id="archived", matrix_room_id="!arch:switch.local"),
+            SimpleNamespace(
+                id="live", tenant_id="tenant-1", matrix_room_id="!live:switch.local"
+            ),
+            SimpleNamespace(
+                id="archived",
+                tenant_id="tenant-1",
+                matrix_room_id="!arch:switch.local",
+            ),
         ]
         svc, room_store, matrix = _build_service(
+            monkeypatch,
             rooms=rooms,
             client_ids_by_room={"live": [], "archived": []},
             by_type={"admin": [_admin()]},
@@ -134,9 +202,14 @@ class TestReconcileRoomClients:
         assert ("admin-client", "live") in room_store.added
         assert ("admin-client", "archived") in room_store.added
 
-    async def test_no_running_system_clients_is_a_noop(self) -> None:
-        room = SimpleNamespace(id="room-1", matrix_room_id="!mx:switch.local")
+    async def test_no_running_system_clients_is_a_noop(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        room = SimpleNamespace(
+            id="room-1", tenant_id="tenant-1", matrix_room_id="!mx:switch.local"
+        )
         svc, room_store, matrix = _build_service(
+            monkeypatch,
             rooms=[room],
             client_ids_by_room={"room-1": []},
             by_type={},
@@ -147,12 +220,17 @@ class TestReconcileRoomClients:
         assert matrix.invited == []
         assert room_store.added == []
 
-    async def test_reinvites_an_agent_whose_invite_never_landed(self) -> None:
+    async def test_reinvites_an_agent_whose_invite_never_landed(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         # `add_agents_to_room` writes the membership row, invites, then records
         # `room_clients`. A crash in that window leaves the member with no
         # `room_clients` row, which is exactly what is repaired here.
-        room = SimpleNamespace(id="room-1", matrix_room_id="!mx:switch.local")
+        room = SimpleNamespace(
+            id="room-1", tenant_id="tenant-1", matrix_room_id="!mx:switch.local"
+        )
         svc, room_store, matrix = _build_service(
+            monkeypatch,
             rooms=[room],
             client_ids_by_room={"room-1": []},
             by_type={},
@@ -164,9 +242,14 @@ class TestReconcileRoomClients:
         assert matrix.invited == [("!mx:switch.local", "@fixer:switch.local")]
         assert room_store.added == [("agent-client", "room-1")]
 
-    async def test_an_agent_already_recorded_is_left_alone(self) -> None:
-        room = SimpleNamespace(id="room-1", matrix_room_id="!mx:switch.local")
+    async def test_an_agent_already_recorded_is_left_alone(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        room = SimpleNamespace(
+            id="room-1", tenant_id="tenant-1", matrix_room_id="!mx:switch.local"
+        )
         svc, room_store, matrix = _build_service(
+            monkeypatch,
             rooms=[room],
             client_ids_by_room={"room-1": ["agent-client"]},
             by_type={},

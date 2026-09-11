@@ -36,11 +36,13 @@ function agent(overrides: Partial<RemoteAgentSummary>): RemoteAgentSummary {
   return {
     id: 'a-1',
     name: 'worker',
+    displayName: null,
     description: '',
     connectorType: 'claude-code',
     ownerId: 'user-me',
     ownerName: 'me',
     knownAgentType: 'claude-code',
+    knownAgentOptions: null,
     addressingPolicy: null,
     iconUrl: null,
     createdAt: '2026-01-01T00:00:00Z',

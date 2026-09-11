@@ -16,6 +16,7 @@ import { COMPATIBLE_SWITCH_VERSION } from '@shared/app-identity';
 import {
   type DockerAvailability,
   type StartLocalServerResult,
+  matrixMigrationFailedMessage,
   switchVersionDowngradeMessage,
 } from '@shared/core/managed-switch-server/managed-switch-server';
 import {
@@ -190,6 +191,13 @@ class RemoteServerService {
           drift: { deployed: result.deployed, expected: result.expected, direction: 'downgrade' },
         });
         host.dispose();
+      } else if (result.kind === 'matrix-migration-failed') {
+        this.setStatus(sshHost, {
+          phase: 'error',
+          message: null,
+          error: matrixMigrationFailedMessage(result.deployed, result.expected),
+          deployedVersion: result.deployed,
+        });
       } else if (result.kind === 'error') {
         this.setStatus(sshHost, { phase: 'error', error: result.message });
         host.dispose();

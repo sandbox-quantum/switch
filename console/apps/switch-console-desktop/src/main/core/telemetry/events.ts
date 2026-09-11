@@ -51,6 +51,7 @@ export type TelemetryAgentCreateFailure =
   | 'unauthenticated'
   | 'name_conflict'
   | 'credentials_conflict'
+  | 'already_configured'
   | 'invalid_name'
   | 'directory_missing'
   /**
@@ -195,6 +196,7 @@ export type TelemetryManagedServerFailure =
   | 'docker_not_installed'
   | 'docker_daemon_down'
   | 'version_downgrade'
+  | 'matrix_migration_failed'
   | 'error';
 
 /**

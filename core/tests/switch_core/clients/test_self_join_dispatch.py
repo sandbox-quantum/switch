@@ -9,11 +9,10 @@ greeting unreachable on every room an agent is invited to, which is all of them.
 
 from __future__ import annotations
 
-from types import SimpleNamespace
-
 import pytest
 
 from switch_core.clients.client_base import ClientBase
+from switch_core.transport import InboundMembership, RoomRef
 
 MATRIX_ROOM_ID = "!matrix:switch.local"
 SELF = "@switch-agent-1:switch.local"
@@ -22,6 +21,8 @@ SELF = "@switch-agent-1:switch.local"
 class _Client(ClientBase):
     def __init__(self) -> None:
         self.matrix_user_id = SELF
+        self.client_id = "client-1"
+        self.display_name = "client one"
         self.room_join_times = {}
         self._room_joined_events = {}
         self._self_join_dispatched = set()
@@ -36,8 +37,8 @@ class _Client(ClientBase):
         self.member_events.append(event.state_key)
 
 
-def _room() -> SimpleNamespace:
-    return SimpleNamespace(room_id=MATRIX_ROOM_ID)
+def _room() -> RoomRef:
+    return RoomRef(room_id=MATRIX_ROOM_ID)
 
 
 def _member_event(
@@ -45,15 +46,16 @@ def _member_event(
     state_key: str = SELF,
     membership: str = "join",
     prev_membership: str | None = "invite",
-    server_timestamp: int = 2000,
-) -> SimpleNamespace:
-    return SimpleNamespace(
+    timestamp: int = 2000,
+) -> InboundMembership:
+    return InboundMembership(
+        room_id=MATRIX_ROOM_ID,
+        event_id="$member",
+        sender=state_key,
+        timestamp=timestamp,
         state_key=state_key,
         membership=membership,
         prev_membership=prev_membership,
-        server_timestamp=server_timestamp,
-        sender=state_key,
-        content={},
     )
 
 
@@ -85,7 +87,7 @@ async def test_profile_update_is_not_an_arrival() -> None:
     client = _Client()
 
     await client._handle_member_event(
-        _room(), _member_event(prev_membership="join", server_timestamp=3000)
+        _room(), _member_event(prev_membership="join", timestamp=3000)
     )
 
     assert client.self_joins == []
@@ -95,7 +97,7 @@ async def test_profile_update_is_not_an_arrival() -> None:
 async def test_join_predating_this_process_is_not_announced() -> None:
     client = _Client()
 
-    await client._handle_member_event(_room(), _member_event(server_timestamp=500))
+    await client._handle_member_event(_room(), _member_event(timestamp=500))
 
     assert client.self_joins == []
 
@@ -107,12 +109,10 @@ async def test_rejoining_after_leaving_is_a_fresh_arrival() -> None:
     await client._handle_member_event(_room(), _member_event())
     await client._handle_member_event(
         _room(),
-        _member_event(
-            membership="leave", prev_membership="join", server_timestamp=3000
-        ),
+        _member_event(membership="leave", prev_membership="join", timestamp=3000),
     )
     await client._handle_member_event(
-        _room(), _member_event(prev_membership="leave", server_timestamp=4000)
+        _room(), _member_event(prev_membership="leave", timestamp=4000)
     )
 
     assert client.self_joins == [MATRIX_ROOM_ID, MATRIX_ROOM_ID]
@@ -127,3 +127,17 @@ async def test_another_member_joining_is_not_a_self_join() -> None:
 
     assert client.self_joins == []
     assert client.member_events == [other]
+
+
+@pytest.mark.asyncio
+async def test_an_arrival_is_logged_even_when_it_is_not_announced() -> None:
+    """Announcing and logging answer different questions.
+
+    A join older than this process is nobody's news, so it is not announced.
+    It is still how that participant got into the room, so it is still history.
+    """
+    client = _Client()
+
+    await client._handle_member_event(_room(), _member_event(timestamp=500))
+
+    assert client.self_joins == []

@@ -12,10 +12,10 @@ relay path at the time, so nothing caught it.
 
 from __future__ import annotations
 
-from types import SimpleNamespace
 from typing import Any
 
 from switch_core.bridges.collaboration.bridge_core import ADMIN_MARKER, BridgeCore
+from switch_core.transport import InboundMessage, RoomRef
 
 BODY = "**Agents in this room:**\n- **scout** — Claude Code"
 
@@ -70,6 +70,8 @@ def _bridge(adapter: _RecordingAdapter) -> BridgeCore:
     core._puppet_matrix_ids = set()  # type: ignore[assignment]
     core._bridge_client_matrix_user_id = "@bridge:switch.local"  # type: ignore[assignment]
     core._find_channel = lambda **_kwargs: "C1"  # type: ignore[assignment]
+    core._channel_to_room = {"C1": ("room-uuid", "!r:switch.local")}  # type: ignore[assignment]
+    core._room_tenant = _tenant  # type: ignore[assignment]
     core._record_message_map = _noop  # type: ignore[assignment]
     core._move_indicator_for_sender = _noop  # type: ignore[assignment]
     core._outbound_thread_root_ref = _none  # type: ignore[assignment]
@@ -84,17 +86,22 @@ async def _none(*_args: Any, **_kwargs: Any) -> None:
     return None
 
 
-def _event(*, admin: bool) -> Any:
+async def _tenant(*_args: Any, **_kwargs: Any) -> str:
+    return "tenant-1"
+
+
+def _event(*, admin: bool) -> InboundMessage:
     content: dict[str, Any] = {}
     if admin:
         content[ADMIN_MARKER] = {"type": "command_result"}
-    else:
-        content["sender_name"] = "scout"
-    return SimpleNamespace(
-        sender="@someone:switch.local",
-        body=BODY,
+    return InboundMessage(
+        room_id="!r:switch.local",
         event_id="$e1",
-        source={"content": content},
+        sender="@someone:switch.local",
+        timestamp=1700000000000,
+        content=content,
+        body=BODY,
+        sender_name=None if admin else "scout",
     )
 
 
@@ -102,7 +109,7 @@ async def test_an_admin_event_reaches_the_adapter_unrendered() -> None:
     adapter = _RecordingAdapter()
 
     await _bridge(adapter).handle_outbound_message(
-        SimpleNamespace(room_id="!r:switch.local"), _event(admin=True)
+        RoomRef("!r:switch.local"), _event(admin=True)
     )
 
     # Handed on as written, for admin_message to render once.
@@ -116,7 +123,7 @@ async def test_an_admin_event_is_not_rendered_twice() -> None:
     adapter = _RecordingAdapter()
 
     await _bridge(adapter).handle_outbound_message(
-        SimpleNamespace(room_id="!r:switch.local"), _event(admin=True)
+        RoomRef("!r:switch.local"), _event(admin=True)
     )
 
     rendered = adapter.translate_outbound(adapter.admin_calls[0])
@@ -130,7 +137,7 @@ async def test_an_agent_message_is_still_rendered_by_the_relay() -> None:
     adapter = _RecordingAdapter()
 
     await _bridge(adapter).handle_outbound_message(
-        SimpleNamespace(room_id="!r:switch.local"), _event(admin=False)
+        RoomRef("!r:switch.local"), _event(admin=False)
     )
 
     assert adapter.admin_calls == []

@@ -28,7 +28,6 @@ async def _make_client(session: AsyncSession, *, client_type: str) -> str:
         matrix_user_id=f"@{client_type}-{uuid.uuid4().hex[:8]}:test",
         display_name=f"{client_type} client",
         type=client_type,
-        password="x",
     )
     session.add(client)
     await session.flush()

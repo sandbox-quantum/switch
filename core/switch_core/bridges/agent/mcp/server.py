@@ -84,7 +84,7 @@ mcp.add_middleware(CallContextMiddleware())
 # Every operation, registered as a tool. This loop is the only thing that makes
 # an operation an MCP tool, so the two surfaces cannot diverge.
 for _op in all_operations().values():
-    mcp.tool(_op.fn)
+    mcp.tool(_op.fn, description=_op.description)
 
 logger.debug("Registered %d operations as MCP tools", len(all_operations()))
 

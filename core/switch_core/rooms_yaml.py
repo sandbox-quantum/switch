@@ -1,21 +1,27 @@
 """Declarative provisioning of a single room from YAML, and export back.
 
-This is the first step toward configurable room-network packages.
-v1 is deliberately a single-room bootstrap tool: one ``room:`` mapping is parsed
-into a fully-resolved :class:`RoomSpec` (no parameters / no templating), then
-provisioned in one shot on top of the existing :class:`RoomService.create_room`
-primitive. Export is the inverse: a live room is read back into the same
-surface so it round-trips.
+v0 supports a ``params:`` block beside ``room:`` that declares typed,
+defaultable placeholders. ``parse(text, inputs)`` resolves them and
+interpolates ``{name}`` throughout the ``room:`` tree before validation, so
+one file can stamp out many rooms with different inputs.  A literal
+``{word}`` that collides with a declared param name *is* substituted — this
+is accepted for v0; ``sensitive: true`` is deferred to a later version.
+
+An optional top-level ``version:`` key (default ``0``) is accepted and
+validated as an integer, but not acted on yet.
 
 Provisioning is room-first and best-effort: the room is created first (which
 fails loud on bad agents / refs / config), then inline references and docs are
 attached, with any post-creation failures collected into ``failed_attachments``
 rather than silently dropped.
+
+Export emits resolved rooms and never emits ``params:``.
 """
 
 from __future__ import annotations
 
 import logging
+import re
 from typing import TYPE_CHECKING, Any, Literal, cast
 
 import yaml
@@ -39,6 +45,108 @@ if TYPE_CHECKING:
     from switch_core.room_service import RoomService
 
 logger = logging.getLogger(__name__)
+
+# ── Template parameters (v0) ─────────────────────────────────────────────
+
+PLACEHOLDER_RE = re.compile(r"\{([A-Za-z_][A-Za-z0-9_]*)\}")
+
+
+class ParamSpec(BaseModel):
+    model_config = {"extra": "forbid"}
+    type: Literal["string", "number", "boolean", "enum"] = "string"
+    description: str | None = None
+    default: str | int | float | bool | None = None
+    enum: list[str] | None = None
+
+
+def _coerce(value: Any, spec: ParamSpec, name: str) -> str | int | float | bool:
+    """Coerce a raw input value to the declared type."""
+    t = spec.type
+    if t == "string":
+        return str(value)
+    if t == "number":
+        if isinstance(value, bool):
+            raise ValueError(f"param {name!r}: expected a number, got {value!r}")
+        if isinstance(value, int):
+            return value  # keep int as int; no float roundtrip, no precision loss
+        try:
+            f = float(value)
+            return int(f) if f == int(f) else f
+        except (ValueError, TypeError, OverflowError) as e:
+            raise ValueError(f"param {name!r}: expected a number, got {value!r}") from e
+    if t == "boolean":
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            low = value.lower()
+            if low in ("true", "1", "yes"):
+                return True
+            if low in ("false", "0", "no"):
+                return False
+        raise ValueError(f"param {name!r}: expected a boolean, got {value!r}")
+    # enum
+    s = str(value)
+    if spec.enum and s not in spec.enum:
+        raise ValueError(f"param {name!r}: {s!r} is not one of {spec.enum}")
+    return s
+
+
+def resolve_params(
+    declared: dict[str, ParamSpec],
+    inputs: dict[str, Any] | None,
+) -> dict[str, str | int | float | bool]:
+    """Merge inputs over defaults, enforce required, coerce types."""
+    if inputs is not None and not isinstance(inputs, dict):
+        raise ValueError("'inputs' must be a mapping of param name to value")
+    inputs = inputs or {}
+    undeclared = set(inputs) - set(declared)
+    if undeclared:
+        raise ValueError(f"Undeclared input(s): {', '.join(sorted(undeclared))}")
+    resolved: dict[str, str | int | float | bool] = {}
+    missing: list[str] = []
+    for name, spec in declared.items():
+        if name in inputs:
+            resolved[name] = _coerce(inputs[name], spec, name)
+        elif spec.default is not None:
+            resolved[name] = _coerce(spec.default, spec, name)
+        else:
+            missing.append(name)
+    if missing:
+        raise ValueError(f"Missing required param(s): {', '.join(missing)}")
+    return resolved
+
+
+def interpolate(
+    node: Any,
+    values: dict[str, str | int | float | bool],
+) -> Any:
+    """Recursively substitute ``{name}`` placeholders in *node*.
+
+    If an entire string is exactly one placeholder for a declared param the
+    typed value is returned unchanged (so a boolean/enum param can fill a
+    non-string field).  Otherwise each declared placeholder in the string is
+    replaced with ``str(value)``.  Undeclared ``{word}`` patterns are left
+    untouched so that JSON braces and other non-param patterns survive.
+    """
+    if isinstance(node, str):
+        # Whole-field substitution: the entire string is one placeholder.
+        m = PLACEHOLDER_RE.fullmatch(node)
+        if m and m.group(1) in values:
+            return values[m.group(1)]
+
+        # Partial substitution within the string.
+        def _replace(m: re.Match[str]) -> str:
+            key = m.group(1)
+            if key in values:
+                return str(values[key])
+            return m.group(0)  # leave undeclared placeholders intact
+
+        return PLACEHOLDER_RE.sub(_replace, node)
+    if isinstance(node, dict):
+        return {k: interpolate(v, values) for k, v in node.items()}
+    if isinstance(node, list):
+        return [interpolate(item, values) for item in node]
+    return node
 
 
 # ── Spec models ───────────────────────────────────────────────────────────
@@ -167,15 +275,50 @@ class RoomYamlService:
 
     # ── Parse ─────────────────────────────────────────────────────────────
 
-    def parse(self, text: str) -> RoomSpec:
+    def parse(self, text: str, inputs: dict[str, Any] | None = None) -> RoomSpec:
         try:
             data = yaml.safe_load(text)
         except yaml.YAMLError as e:
             raise ValueError(f"Invalid YAML: {e}") from e
         if not isinstance(data, dict) or "room" not in data:
             raise ValueError("YAML must have a single top-level 'room:' mapping")
+
+        allowed_keys = {"room", "params", "version"}
+        extra = set(data) - allowed_keys
+        if extra:
+            raise ValueError(f"Unknown top-level key(s): {', '.join(sorted(extra))}")
+
+        # version: accepted, not acted on yet.
+        version = data.get("version", 0)
+        if not isinstance(version, int):
+            raise ValueError(
+                f"'version' must be an integer, got {type(version).__name__}"
+            )
+
+        raw_params = data.get("params")
+        if raw_params is not None:
+            if not isinstance(raw_params, dict):
+                raise ValueError("'params' must be a mapping")
+            try:
+                declared = {
+                    k: ParamSpec.model_validate(v) for k, v in raw_params.items()
+                }
+            except ValidationError as e:
+                raise ValueError(f"Invalid param spec: {e}") from e
+        else:
+            declared = {}
+
+        if inputs and not declared:
+            raise ValueError("Inputs supplied but the template declares no params")
+
+        if declared:
+            values = resolve_params(declared, inputs)
+            room_data = interpolate(data["room"], values)
+        else:
+            room_data = data["room"]
+
         try:
-            return RoomSpec.model_validate(data["room"])
+            return RoomSpec.model_validate(room_data)
         except ValidationError as e:
             raise ValueError(f"Invalid room spec: {e}") from e
 

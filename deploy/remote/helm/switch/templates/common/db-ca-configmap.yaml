@@ -1,0 +1,11 @@
+{{- if and .Values.postgresql.caBundle.contents (not .Values.postgresql.caBundle.existingConfigMap) }}
+# Certificate authorities, not a secret: a CA bundle is public by construction.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "switch.fullname" . }}-db-ca
+  labels:
+    {{- include "switch.labels" . | nindent 4 }}
+data:
+  {{- include "switch.dbCaBundleData" . | nindent 2 }}
+{{- end }}

@@ -67,7 +67,8 @@ ingress:
 #    chart then renders no Secret and the values below are ignored. That Secret
 #    must contain these keys:
 #      POSTGRES_PASSWORD (unless postgresql.existingSecret is set),
-#      MATRIX_REGISTRATION_SHARED_SECRET, MATRIX_ADMIN_PASSWORD,
+#      DB_OWNER_PASSWORD (only if postgresql.owner.username is set, and unless
+#        postgresql.owner.existingSecret is set),
 #      AGENT_REGISTRATION_TOKEN, JWT_SECRET_KEY, GATEWAY_ADMIN_EMAIL,
 #      GATEWAY_ADMIN_PASSWORD,
 #      MATTERMOST_ADMIN_PASSWORD + MATTERMOST_USER_PASSWORD (if mattermost.enabled),
@@ -77,8 +78,9 @@ secrets:
   # chart manages its own Secret from the values below.
   existingSecret: ""
   postgresPassword: ""
-  matrixRegistrationSharedSecret: ""
-  matrixAdminPassword: ""
+  # Password for postgresql.owner.username. Required when that is set, unless
+  # postgresql.owner.existingSecret names a Secret that already carries it.
+  dbOwnerPassword: ""
   agentRegistrationToken: ""
   jwtSecretKey: ""
   gatewayAdminEmail: ""
@@ -93,6 +95,28 @@ switchCore:
   image: switch-core:latest
   imagePullPolicy: Always
   logLevel: INFO
+
+  # Logging. "text" is for reading in a terminal; "json" is what a log pipeline
+  # wants, and the only format that carries the context fields as fields — the
+  # tenant, and the request, agent and user a line belongs to — rather than
+  # inside the message. Set format: json anywhere the logs are collected.
+  #
+  # tenantId is a deployment-wide constant while Switch serves one organisation
+  # per deployment. Setting it per deployment is what lets one pipeline hold
+  # several and still tell them apart, so name the customer or the environment
+  # rather than leaving it at "default".
+  #
+  # environment and serviceName are emitted as `env` and `service`, the names
+  # a collector expects to group and filter on.
+  # rootLevel governs everything, libraries included; logLevel above is
+  # switch-core's own and is usually the one to change.
+  logging:
+    format: text
+    rootLevel: INFO
+    tenantId: default
+    environment: ""
+    serviceName: switch-core
+
   # Public base URL the gateway is served on (used for links / OIDC redirects).
   frontendBaseUrl: ""
   # Public origin (scheme + host, no path) of the gateway HTTP API itself, used
@@ -118,6 +142,11 @@ switchCore:
     providerLabel: "OIDC"
     # Must exactly match the redirect URI registered with the IdP.
     redirectUrl: ""
+    # Refuse a login unless the IdP asserts email_verified. Set false only for a
+    # single-tenant IdP whose addresses are authoritative — e.g. Okta's org
+    # authorization server, which reports false for every directory-provisioned
+    # user and offers no way to change that.
+    requireEmailVerified: true
     # Set false to disable password login entirely (OIDC-only).
     passwordLoginEnabled: true
   # Bearer-token resolution runs before every authenticated request and agents
@@ -197,9 +226,12 @@ switchCore:
         # Secret holding the cert; cert-manager creates it from the annotation
         # above, or reference a pre-created TLS Secret.
         secretName: ""
-  # switch-core keeps live Matrix sync sessions in memory, so it MUST run as a
-  # single replica — a second replica would double every client and split
-  # session state. This is enforced at render time; do not raise it.
+  # switch-core MUST run as a single replica. Four things live in the process
+  # rather than the database: the per-agent event buffer, the invite bus, the
+  # ephemeral (presence) bus, and the message listener's subscriber registry. A
+  # second replica would hold its own copy of each, so a signal raised in one
+  # would never reach a client attached to the other. This is enforced at
+  # render time; do not raise it.
   replicaCount: 1
   # Run DB migrations (alembic upgrade head) as a pre-upgrade hook Job, before
   # the new pods roll, so a failed migration blocks the upgrade instead of
@@ -232,32 +264,23 @@ gateway:
       memory: "128Mi"
       cpu: "200m"
 
-# ── Tuwunel (Matrix homeserver) ───────────────────────────────────────────────
-# The internal message bus. switch-core points here. RocksDB-backed (no Postgres
-# dependency); data lives on its own PVC.
-tuwunel:
-  image: jevolk/tuwunel:v1.7.1
-  imagePullPolicy: IfNotPresent
-  # Every Matrix user id is @localpart:<serverName>, so changing this on an
-  # existing deployment orphans all accounts.
+# ── Retained homeserver disk ──────────────────────────────────────────────────
+# Switch no longer runs a homeserver, but its volume still holds every media
+# blob and the raw history — the backfill moved the messages into Postgres and
+# not the files, so this is their only copy. Left claimed, and annotated
+# keep, so an upgrade does not destroy it. Set false once you have decided you
+# do not want that data; there is no getting it back.
+retainTuwunelData: true
+# Must match what the volume was created with. Shrinking a PVC is rejected.
+retainedTuwunelDataSize: 10Gi
+
+# ── Client identity ───────────────────────────────────────────────────────────
+# The server half of every client id (@localpart:<serverName>). Nothing is
+# contacted at it — it is a naming scheme, not an address — but the ids are
+# stable public handles, so changing it on an existing deployment orphans every
+# account.
+clientIdentity:
   serverName: "switch.local"
-  allowFederation: false
-  allowRegistration: false
-  maxRequestSize: "20000000"
-  # Set if the image runs as non-root and can't write the PVC, e.g. {fsGroup: 1000}.
-  podSecurityContext: {}
-  service:
-    type: ClusterIP
-    port: 8008
-  persistence:
-    size: 10Gi
-  resources:
-    requests:
-      memory: "512Mi"
-      cpu: "250m"
-    limits:
-      memory: "2Gi"
-      cpu: "1000m"
 
 # ── Mattermost ───────────────────────────────────────────────────────────────
 mattermost:
@@ -311,6 +334,27 @@ postgresql:
   # managed cloud databases generally require "require" or stricter.
   sslMode: disable
 
+  # Certificate authorities the server certificate is checked against, as a PEM
+  # bundle. The two verifying sslModes require one and the others ignore one, so
+  # the chart refuses a mismatch rather than rendering a release that fails on
+  # first connect. A managed database is signed by the provider's own root
+  # rather than a publicly trusted one, which is why the system trust store is
+  # not enough; AWS publishes a bundle covering every commercial region at
+  # https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem
+  #
+  # Supply it inline as `contents` (rendered into a chart-managed ConfigMap) or
+  # name a ConfigMap you already have — not both. It is mounted into
+  # switch-core, the migration Job and Mattermost, all of which connect.
+  #
+  # verify-full additionally checks the hostname, so external.host must be the
+  # name the certificate was issued for — for RDS the instance endpoint, not a
+  # CNAME of your own. A CNAME means settling for verify-ca.
+  caBundle:
+    contents: ""
+    existingConfigMap: ""
+    key: ca.pem
+    mountPath: /etc/ssl/switch-db
+
   # switch-core's SQLAlchemy connection pool. Size this against the number of
   # live agent connections, not human traffic: bearer-token auth hits the
   # database on every authenticated request and each agent connection beats
@@ -326,6 +370,25 @@ postgresql:
     # Seconds to wait for a free slot before raising. Deliberately short:
     # SQLAlchemy's 30s default hides starvation as latency.
     timeout: 5
+
+  # How quickly switch-core notices a database server that stopped answering
+  # without closing its connections — what a managed instance does when it
+  # fails over to its standby. Nothing above the socket can tell: the
+  # connections stay open, reads never return, and the process goes on
+  # reporting itself healthy while delivering nothing. Left to the kernel's own
+  # defaults that lasts about fifteen minutes, all of it silent.
+  #
+  # Both mechanisms are needed; they cover different sockets. Keepalive probes
+  # fail a connection that was idle when the server went. userTimeout fails one
+  # that had already sent something, which keepalives never look at. Raise them
+  # on a lossy network, where a brief stall would otherwise cost good
+  # connections. Seconds; 0 disables either. Linux only — a developer's macOS
+  # applies what it can and says at startup what it could not.
+  tcp:
+    keepaliveIdle: 10
+    keepaliveInterval: 5
+    keepaliveCount: 3
+    userTimeout: 30
 
   # Postgres kills a switch-core connection that sits inside an open
   # transaction without executing anything for longer than this (e.g. "15s"),
@@ -344,6 +407,87 @@ postgresql:
   # required and no POSTGRES_PASSWORD is written into the chart Secret.
   existingSecret: ""
   existingSecretKey: POSTGRES_PASSWORD
+
+  # Schema owner credentials — the account with DDL and grant privileges, as
+  # distinct from DB_USER above (or postgresql.external.username for
+  # mode: existing), which name the RUNTIME role every request actually
+  # authenticates as and which the row-level-security policies apply to.
+  # switch-core uses the owner connection for exactly two things at boot, and
+  # never to serve a request: applying Alembic migrations, and re-issuing the
+  # runtime role's grants immediately afterwards, so a table a migration just
+  # added is usable by the role that is about to need it.
+  #
+  # mode: managed defaults this to the bootstrapped "postgres" superuser (the
+  # same account POSTGRES_USER creates on the StatefulSet below) whenever
+  # owner.username is left empty, because that account already exists in
+  # every managed install and its password is already the one this chart
+  # tracks as secrets.postgresPassword — there is nothing new to configure.
+  # Set owner.username only to point a managed deployment's migrations at some
+  # other DDL-capable role instead.
+  #
+  # mode: existing has no such account to default to — the chart has no
+  # visibility into what the external database's superuser is called — so
+  # owner.username stays genuinely empty there until you set it. That does NOT
+  # mean boot skips migrations: alembic upgrade head still runs, over whatever
+  # DB_USER resolves to (see migrations/env.py's fallback), and for a
+  # restricted runtime role any migration it actually has to apply fails with a
+  # permissions error.
+  #
+  # Note what that does not cover, because it is the trap here. A boot with
+  # nothing pending never issues a statement the restricted role lacks rights
+  # for, so it succeeds — and so does the isolation self-check, which asks
+  # about the connection rather than about who can migrate. An existing-mode
+  # deployment with a restricted DB_USER and no owner therefore comes up
+  # perfectly on the release that moved it there, and fails at boot on the
+  # next release that carries a migration. Set owner.username at the same time
+  # you repoint external.username, not afterwards.
+  #
+  # Setting it also decides what Mattermost connects as. In existing mode the
+  # chart has one username value for both roles, so Mattermost follows
+  # external.username unless an owner is configured — onto the restricted role,
+  # which has no rights in the "mattermost" database and cannot create or
+  # migrate its schema. With owner.username set, Mattermost uses the owner and
+  # switch-core alone uses the restricted role. See switch.mattermostDbUser in
+  # templates/_helpers.tpl.
+  #
+  # mode: managed can create the runtime role itself (see
+  # postgresql.managed.runtimeUsername, templates/postgresql/configmap-init.yaml
+  # for fresh installs and templates/switch-core/create-runtime-role-job.yaml
+  # for an upgrade of a deployment that predates it) precisely because it owns
+  # the Postgres it points at. mode: existing does not, and cannot: the chart
+  # has no way to run CREATE ROLE against a database it does not manage, so
+  # create the role out of band before pointing a deployment at it —
+  # docs/old/rds-migration.md has the exact SQL for an RDS master user.
+  owner:
+    username: ""
+    # Password source, mirroring existingSecret/existingSecretKey above. Only
+    # consulted when owner.username is set; the managed default above reads
+    # its password from wherever secrets.postgresPassword does instead.
+    existingSecret: ""
+    existingSecretKey: DB_OWNER_PASSWORD
+
+  # Refuse to serve when the runtime connection (DB_USER) is not actually
+  # subject to row-level security — a superuser, a BYPASSRLS role, or the
+  # owner of the policied tables. On by default in both modes, matching
+  # switch-core's own default, because the failure it guards against is
+  # silent: a deployment that believes it is isolating tenants and is not
+  # looks identical to one that is, right up until a second tenant reads the
+  # first's rooms.
+  #
+  # mode: managed creates DB_USER's role itself — see
+  # postgresql.managed.runtimeUsername above and the owner comment's
+  # explanation of why managed mode can do this and existing mode cannot — so
+  # the default install already has a restricted role for this check to pass
+  # against, and there is no reason to relax it there.
+  #
+  # mode: existing is the case this flag exists for. The chart cannot run
+  # CREATE ROLE against a database it does not manage, so a fresh
+  # existing-mode deployment, or one upgrading before its operator has run the
+  # CREATE ROLE in docs/old/rds-migration.md, has no restricted role yet. Set
+  # this false until that role exists; switch-core then logs an error on every
+  # boot instead of refusing to serve, as the visible reminder that tenant
+  # isolation is not active yet.
+  requireRestrictedRole: true
 
   # ── mode: existing ──────────────────────────────────────────────────────────
   # Only used when mode=existing. The `switch` and `mattermost` databases and
@@ -368,6 +512,27 @@ postgresql:
     limits:
       memory: 512Mi
 
+  managed:
+    # DB_USER for mode: managed — the restricted role this chart creates for
+    # switch-core to serve requests as, so the row-level-security policies
+    # apply to the connection actually handling traffic rather than to the
+    # bootstrapped superuser (see the postgresql.owner and requireRestrictedRole
+    # comments above for the full picture). Created on a fresh install by
+    # templates/postgresql/configmap-init.yaml and, for an upgrade of a
+    # deployment that predates it, by the create-runtime-role pre-upgrade hook.
+    #
+    # Its password is deliberately the bootstrapped superuser's own —
+    # secrets.postgresPassword, or whatever postgresql.existingSecret resolves
+    # to — rather than a password of its own. That adds no new required value,
+    # keeps working unmodified with postgresql.existingSecret, and exposes
+    # nothing new: this pod already holds that password as DB_OWNER_PASSWORD.
+    # The point of splitting DB_USER from the superuser is that the
+    # row-level-security policies apply to the connection serving requests,
+    # not to compartmentalise passwords between two accounts that already
+    # trust each other — so change the username here if you want, but there is
+    # no separate password field to set alongside it.
+    runtimeUsername: switch_app
+
   # Postgres server parameters, passed as `-c name=value`. Each client
   # connection is a backend process costing several MB of non-reclaimable
   # memory, so raising the pool above without also raising resources.limits
@@ -384,5 +549,5 @@ postgresql:
 # This chart ships no backup jobs on purpose — an on-cluster backup shares the
 # storage backend it is meant to protect, and every target already has stronger,
 # portable primitives (CSI VolumeSnapshots, managed-DB backups, Velero). See
-# BACKUP.md for what to back up (the Tuwunel volume holds the Matrix signing key
+# BACKUP.md for what to back up (the Postgres volume holds every room and message
 # — the irreplaceable server identity) and how, plus samples/volumesnapshot.example.yaml.

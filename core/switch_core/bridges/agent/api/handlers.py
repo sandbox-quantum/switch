@@ -90,6 +90,10 @@ from switch_core.bridges.agent.protocol.connections import (
 )
 from switch_core.bridges.agent.protocol.service import AgentExistsError, ProtocolService
 from switch_core.bridges.agent.protocol.stream import event_stream
+from switch_core.bridges.agent.registration_bootstrap import (
+    REGISTRATION_KEY_TYPES,
+    resolve_registration_owner_id,
+)
 from switch_core.db.models import Agent, Task
 from switch_core.db.stores.api_key_store import ApiKeyStore
 from switch_core.db.stores.feature_flag_store import FeatureFlagStore
@@ -100,8 +104,6 @@ from switch_core.version import switch_core_version
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
-
-MEDIATION_TIMEOUT_SECONDS = 10.0
 
 
 def parse_timestamp_ms(iso: str) -> int:
@@ -132,17 +134,30 @@ async def _resolve_registration_user_id(
     authorization: Annotated[str, Header()],
     session: Annotated[AsyncSession, Depends(get_session)],
     api_key_store: Annotated[ApiKeyStore, Depends(get_api_key_store)],
+    protocol: Annotated[ProtocolService, Depends(get_protocol)],
 ) -> str:
     """Validate the registration token in the Authorization header and
-    return the owning user_id."""
+    return the user_id new agents should be owned by.
+
+    A personal ``"registration"`` key resolves to the user who minted it. The
+    deployment-wide ``"bootstrap"`` key (see ``registration_bootstrap.py``)
+    resolves to a dedicated, non-admin account instead of the admin who
+    seeded it, so holding it never confers admin authority.
+    """
     if not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Invalid authorization header")
     token = authorization[7:]
     token_hash = hashlib.sha256(token.encode()).hexdigest()
     key = await api_key_store.get_by_hash(session, token_hash)
-    if key is None or key.type != "registration":
+    if key is None or key.type not in REGISTRATION_KEY_TYPES:
         raise HTTPException(status_code=401, detail="Invalid registration token")
-    return key.user_id
+    try:
+        return await resolve_registration_owner_id(session, protocol.user_store, key)
+    except RuntimeError as exc:
+        logger.error("Agent-registration bootstrap owner resolution failed: %s", exc)
+        raise HTTPException(
+            status_code=503, detail="Agent registration is temporarily unavailable"
+        ) from exc
 
 
 # Registration endpoints
@@ -1185,7 +1200,10 @@ async def list_task_agents(
     except PermissionError as e:
         raise HTTPException(status_code=403, detail=str(e)) from e
 
-    agents = [AgentInfo(id=p.id, name=p.name, description="") for p in performers]
+    agents = [
+        AgentInfo(id=p.id, name=p.name, description="", display_name=p.display_name)
+        for p in performers
+    ]
 
     return TaskAgentsResponse(agents=agents)
 
@@ -1274,8 +1292,6 @@ async def pre_tool_call(
             req.room_id,
             req.tool_name,
             req.arguments,
-            req.request_id,
-            MEDIATION_TIMEOUT_SECONDS,
         )
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
@@ -1301,8 +1317,6 @@ async def pre_llm_request(
             req.room_id,
             req.model,
             req.messages,
-            req.request_id,
-            MEDIATION_TIMEOUT_SECONDS,
         )
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
@@ -1328,8 +1342,6 @@ async def post_tool_result(
             req.room_id,
             req.tool_name,
             req.result,
-            req.request_id,
-            MEDIATION_TIMEOUT_SECONDS,
         )
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
@@ -1355,8 +1367,6 @@ async def post_llm_response(
             req.room_id,
             req.model,
             req.response,
-            req.request_id,
-            MEDIATION_TIMEOUT_SECONDS,
         )
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
@@ -1411,6 +1421,7 @@ async def create_room(
     return CreateModerationRoomResponse(
         id=result.room.id,
         name=result.room.name,
+        transport_room_id=result.room.matrix_room_id,
         matrix_room_id=result.room.matrix_room_id,
         failed_attachments=result.failed_attachments,
     )
@@ -1488,7 +1499,13 @@ async def list_agents(
     agents = await protocol.list_all_agents(agent.id)
     return AgentListResponse(
         agents=[
-            AgentInfo(id=a.id, name=a.name, description=a.description) for a in agents
+            AgentInfo(
+                id=a.id,
+                name=a.name,
+                description=a.description,
+                display_name=a.display_name,
+            )
+            for a in agents
         ]
     )
 

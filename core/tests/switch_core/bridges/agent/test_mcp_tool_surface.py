@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 
 from switch_core.bridges.agent.mcp.server import mcp
+from switch_core.bridges.agent.operations import all_operations
 
 TASK_PROTOCOL_TOOLS = {
     "delegate_task",
@@ -85,6 +86,14 @@ async def test_documented_tools_exist(tool_names: set[str]) -> None:
     assert documented <= tool_names, (
         f"documented but not registered: {sorted(documented - tool_names)}"
     )
+
+
+async def test_tool_descriptions_preserve_the_full_operation_contract() -> None:
+    tools = {tool.name: tool for tool in await mcp.list_tools()}
+    operation = all_operations()["list_agents"]
+
+    assert tools[operation.name].description == operation.description
+    assert "Returns:" in tools[operation.name].description
 
 
 SKILLS = sorted(
