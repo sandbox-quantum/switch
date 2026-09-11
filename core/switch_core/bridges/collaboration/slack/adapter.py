@@ -1215,6 +1215,18 @@ class SlackAdapter(CollaborationAdapter):
         """
         await self._mark_being_read(channel_id, message_ref, working=working)
 
+    def reaction_target(self, channel_id: str, thread_root_id: str) -> str:
+        """Which message in `thread_root_id`'s thread actually asked.
+
+        The runtime-state indicator already resolves this for its own `:eyes:`
+        (`_thread_trigger`, kept in step on every inbound message) — a thread
+        can move on to a newer asker while an older turn is still running, and
+        the root is not necessarily who asked. Falls back to the root itself
+        for a thread nothing has ever addressed through, e.g. one a turn
+        opened rather than joined.
+        """
+        return self._thread_trigger.get((channel_id, thread_root_id), thread_root_id)
+
     def _streaming(self, channel_id: str, thread_root_id: str | None) -> bool:
         """Whether Slack is already drawing this turn's progress itself.
 
@@ -1526,159 +1538,6 @@ class SlackAdapter(CollaborationAdapter):
             # and recording it would tell the next one the link had been sent.
             return
         self._stream_step[key] = step
-
-    # ── A session's turn activity, streamed ──────────────────────────────────
-
-    async def open_activity_stream(
-        self, channel_id: str, thread_root_id: str | None, agent_name: str
-    ) -> str | None:
-        """Open the stream a turn's activity will be written into, if one can be.
-
-        None where Slack will not open one, and every reason for that is
-        ordinary rather than broken: streaming into a channel is a reply to
-        somebody, so it needs a thread and a person in it, and the workspace's
-        own id to address them by. A channel nobody has spoken in has none of
-        those. The caller has a Block Kit message to post instead, which is why
-        this reports rather than raises. It reports at warning: blocks are the
-        degraded rendering of a turn, and at debug the only sign of it was the
-        channel looking the way it did before any of this existed.
-
-        `task_display_mode` is left at Slack's default of `timeline`, named
-        anyway because it is the whole reason for streaming this rather than
-        posting it: the tasks render as their own cards, collapsed, and a
-        reader opens them only when something looks wrong.
-        """
-        client = self._web_client
-        if client is None:
-            logger.warning(
-                "Cannot stream activity in %s: Slack client not connected.",
-                channel_id,
-            )
-            return None
-        thread_ts = self._thread_ts_of(thread_root_id)
-        if not thread_ts:
-            logger.warning(
-                "Drawing %s's turn in %s as blocks: Slack will only stream into "
-                "a channel as a reply, and this has no thread.",
-                agent_name,
-                channel_id,
-            )
-            return None
-        key = (channel_id, thread_ts)
-        requester = self._thread_requester.get(key)
-        if not requester:
-            logger.warning(
-                "Drawing %s's turn on %s as blocks: a stream is addressed to "
-                "somebody and nobody was recorded for this thread.",
-                agent_name,
-                thread_ts,
-            )
-            return None
-        if not self._team_id:
-            logger.warning(
-                "Drawing %s's turn as blocks: the bot's team id is unknown, so "
-                "there is no workspace to address the stream in.",
-                agent_name,
-            )
-            return None
-        agent = await self.agent_rendering(agent_name)
-        ts = await self._call_session_api(
-            lambda: client.chat_startStream(
-                channel=channel_id,
-                thread_ts=thread_ts,
-                recipient_user_id=requester,
-                recipient_team_id=self._team_id,
-                task_display_mode="timeline",
-                username=agent.field_label,
-                icon_url=agent.icon_url,
-            ),
-            agent_name=agent_name,
-            channel_id=channel_id,
-        )
-        if not ts:
-            return None
-        self._activity_streams[key] = ts
-        logger.debug(
-            _TRACE + "opened activity stream %s for %s on %s", ts, agent_name, thread_ts
-        )
-        return f"{channel_id}:{ts}"
-
-    async def append_activity_stream(
-        self,
-        channel_id: str,
-        stream_ref: str,
-        chunks: list[dict[str, Any]],
-        *,
-        agent_name: str,
-    ) -> bool:
-        """Add chunks to an open activity stream. False if Slack would not take them.
-
-        A task chunk carrying an id Slack has already seen moves that card
-        rather than adding another, which is what lets a turn's steps be
-        revised in place; a markdown chunk can only ever be appended. Both are
-        the caller's to decide, because only the caller knows what it has
-        already sent.
-        """
-        client = self._web_client
-        if client is None:
-            logger.warning(
-                "Cannot append to the activity stream in %s: Slack client not "
-                "connected.",
-                channel_id,
-            )
-            return False
-        ts = self._thread_ts_of(stream_ref)
-        if not ts:
-            raise ValueError(f"Not an activity stream ref: {stream_ref}.")
-        pushed = await self._call_session_api(
-            lambda: client.chat_appendStream(channel=channel_id, ts=ts, chunks=chunks),
-            agent_name=agent_name,
-            channel_id=channel_id,
-            stream_key=self._activity_key(channel_id, ts),
-        )
-        return pushed is not None
-
-    async def close_activity_stream(
-        self, channel_id: str, stream_ref: str, *, agent_name: str
-    ) -> None:
-        """Finalise the stream and leave it where it is.
-
-        Unlike the runtime-state card this is not deleted. That card is an
-        indicator — it says a turn is running and has nothing to say once one
-        is not — and a session's activity is the opposite: the record of what
-        the turn did, which is worth as much after the turn as during it.
-
-        The thread is released whether or not Slack accepted the stop, because
-        either way nothing more is going into this stream, and holding the key
-        would keep the runtime-state path standing down from a thread that no
-        longer has a live stream in it.
-        """
-        client = self._web_client
-        ts = self._thread_ts_of(stream_ref)
-        if not ts:
-            raise ValueError(f"Not an activity stream ref: {stream_ref}.")
-        key = self._activity_key(channel_id, ts)
-        if client is not None:
-            await self._call_session_api(
-                lambda: client.chat_stopStream(channel=channel_id, ts=ts),
-                agent_name=agent_name,
-                channel_id=channel_id,
-                stream_key=key,
-            )
-        if key is not None:
-            self._activity_streams.pop(key, None)
-
-    def _activity_key(self, channel_id: str, stream_ts: str) -> tuple[str, str] | None:
-        """The thread an open activity stream was registered under.
-
-        The stream's own `ts` is not the thread's, so the registry cannot be
-        read by it; it is small and searched once per call, which is cheaper
-        than a second index that can fall out of step with this one.
-        """
-        for key, open_ts in self._activity_streams.items():
-            if key[0] == channel_id and open_ts == stream_ts:
-                return key
-        return None
 
     async def _call_session_api(
         self,

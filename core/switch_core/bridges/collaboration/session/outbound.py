@@ -82,16 +82,19 @@ _MAX_ANCHORS = 512
 class _Anchor:
     """The message a turn is being kept in.
 
-    `thread_root_id` is not where the message itself lives — `channel_id` and
-    `message_ref` already say that — it is what the `:eyes:` reaction goes on
-    and comes off of, which is the thread's own root rather than the turn's
-    message inside it, and the only reason this is kept once the message has
-    been posted.
+    `thread_root_id` is what a later edit still needs — it is the thread this
+    turn's own message was posted into. `reaction_ref` is a different message
+    entirely: on Slack, the one that actually asked, resolved once when the
+    turn's own message is first posted and kept for as long as the anchor is,
+    so a later resolve — the same lookup, but the thread may have moved on to
+    a newer asker by then — cannot make a turn's own end clear someone else's
+    `:eyes:` instead of its own.
     """
 
     channel_id: str
     message_ref: str
     thread_root_id: str | None
+    reaction_ref: str | None
 
 
 def _violates(error: IntegrityError, constraint: str) -> bool:
@@ -163,6 +166,7 @@ class SessionTurnActivity:
     def __init__(self, adapter: CollaborationAdapter) -> None:
         self._adapter = adapter
         self._anchors: OrderedDict[tuple[str, str], _Anchor] = OrderedDict()
+        self._thread_turns: dict[tuple[str, str], set[tuple[str, str]]] = {}
 
     async def publish(
         self,
@@ -213,7 +217,8 @@ class SessionTurnActivity:
             if anchor is None:
                 return False
             drawn = True
-            await self._mark_thread(anchor, working=True)
+            if not ended:
+                await self._claim_thread(key, anchor)
         else:
             drawn = await self._edit(
                 anchor,
@@ -225,7 +230,7 @@ class SessionTurnActivity:
             )
 
         if ended:
-            await self._mark_thread(anchor, working=False)
+            await self._release_thread(key, anchor)
             return drawn
         self._anchors[key] = anchor
         await self._forget_the_oldest()
@@ -267,8 +272,14 @@ class SessionTurnActivity:
                 error,
             )
             return None
+        reaction_ref = thread_root_id
+        if thread_root_id is not None and isinstance(self._adapter, SlackAdapter):
+            reaction_ref = self._adapter.reaction_target(channel_id, thread_root_id)
         return _Anchor(
-            channel_id=channel_id, message_ref=posted, thread_root_id=thread_root_id
+            channel_id=channel_id,
+            message_ref=posted,
+            thread_root_id=thread_root_id,
+            reaction_ref=reaction_ref,
         )
 
     async def _edit(
@@ -304,27 +315,63 @@ class SessionTurnActivity:
             return False
         return True
 
-    async def _mark_thread(self, anchor: _Anchor, *, working: bool) -> None:
-        """Put `:eyes:` on the thread this turn's message lives in, or take
-        it off.
+    async def _claim_thread(self, key: tuple[str, str], anchor: _Anchor) -> None:
+        """Add this turn to the set of turns holding the reaction on
+        `anchor.reaction_ref`, switching it on only if this turn is the
+        first to want it.
 
-        On the thread's own root, not the turn's message — the root is what a
-        reader scanning the channel sees without opening the thread, which is
-        the whole point of a reaction rather than the message inside it. Slack
-        only, and best effort: neither reacting nor removing a reaction is on
-        the port, and losing one is not worth failing a turn's own draw over.
+        Two turns can resolve to the same asking message — one addressed at
+        the channel root threads under it, and another already running in
+        that same thread shares it too — and the second must not find the
+        reaction already there and skip it, nor the first's own end wipe it
+        out from under the second.
         """
-        if anchor.thread_root_id is None or not isinstance(self._adapter, SlackAdapter):
+        if anchor.reaction_ref is None:
+            return
+        thread_key = (anchor.channel_id, anchor.reaction_ref)
+        turns = self._thread_turns.setdefault(thread_key, set())
+        first = not turns
+        turns.add(key)
+        if first:
+            await self._mark_thread(anchor, working=True)
+
+    async def _release_thread(self, key: tuple[str, str], anchor: _Anchor) -> None:
+        """The inverse of `_claim_thread`: drop this turn from the holders of
+        `anchor.reaction_ref`, switching the reaction off only once none are
+        left — and doing nothing at all for a turn that never claimed it,
+        which is what a turn published for the first time already ended
+        does."""
+        if anchor.reaction_ref is None:
+            return
+        thread_key = (anchor.channel_id, anchor.reaction_ref)
+        turns = self._thread_turns.get(thread_key)
+        if turns is None or key not in turns:
+            return
+        turns.discard(key)
+        if not turns:
+            del self._thread_turns[thread_key]
+            await self._mark_thread(anchor, working=False)
+
+    async def _mark_thread(self, anchor: _Anchor, *, working: bool) -> None:
+        """Put `:eyes:` on the message that actually asked, or take it off.
+
+        Not necessarily the thread root — a turn threaded under a reply deep
+        in the thread reacts to that reply, resolved once by `_begin` and
+        kept on the anchor as `reaction_ref` for exactly this. Slack only,
+        and best effort: neither reacting nor removing a reaction is on the
+        port, and losing one is not worth failing a turn's own draw over.
+        """
+        if anchor.reaction_ref is None or not isinstance(self._adapter, SlackAdapter):
             return
         try:
             await self._adapter.mark_activity(
-                anchor.channel_id, anchor.thread_root_id, working=working
+                anchor.channel_id, anchor.reaction_ref, working=working
             )
         except Exception:
             logger.warning(
                 "Could not %s the activity reaction on %s in %s.",
                 "add" if working else "remove",
-                anchor.thread_root_id,
+                anchor.reaction_ref,
                 anchor.channel_id,
                 exc_info=True,
             )
@@ -341,7 +388,8 @@ class SessionTurnActivity:
         record of where that reaction went.
         """
         while len(self._anchors) > _MAX_ANCHORS:
-            (session_id, turn_id), anchor = self._anchors.popitem(last=False)
+            key, anchor = self._anchors.popitem(last=False)
+            session_id, turn_id = key
             logger.warning(
                 "Holding activity anchors for more than %s turns, so turn %s of "
                 "session %s is being forgotten: if it changes again it will be "
@@ -350,7 +398,7 @@ class SessionTurnActivity:
                 turn_id,
                 session_id,
             )
-            await self._mark_thread(anchor, working=False)
+            await self._release_thread(key, anchor)
 
 
 class SessionRequestCards:

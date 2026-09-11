@@ -343,3 +343,66 @@ async def test_a_reaction_failure_does_not_fail_the_turns_own_draw(
     assert drawn is True
     assert len(client.posted) == 1
     assert "Could not add the working reaction on parent-1 in C1" in caplog.text
+
+
+async def test_the_reaction_lands_on_the_message_that_actually_asked() -> None:
+    """A thread root is not necessarily who asked — `_thread_trigger` resolves
+    that, the same way the old runtime-state indicator did, and the turn's
+    own `:eyes:` should follow it rather than always sitting on the root."""
+    client = FakeWebClient()
+    adapter = _adapter(client)
+    adapter._thread_trigger[(CHANNEL, "parent-1")] = "asker-99"
+    activity = SessionTurnActivity(adapter)
+
+    await _publish(activity, [_item()], _turn("running"), thread_root_id="parent-1")
+
+    assert client.reactions == [("add", "asker-99", "eyes")]
+
+
+async def test_two_turns_sharing_a_resolved_target_do_not_clobber_each_others_eyes() -> (
+    None
+):
+    """Two turns in the same thread resolve to the same asking message. The
+    first to end must not strip the reaction out from under the second still
+    running — the mark comes off only once nothing is left holding it."""
+    client = FakeWebClient()
+    adapter = _adapter(client)
+    adapter._thread_trigger[(CHANNEL, "parent-1")] = "asker-1"
+    activity = SessionTurnActivity(adapter)
+
+    await _publish(activity, [_item()], _turn("running"), thread_root_id="parent-1")
+    await _publish(
+        activity,
+        [_item("turn-two")],
+        _turn("running", "turn-two"),
+        thread_root_id="parent-1",
+    )
+    assert client.reactions == [("add", "asker-1", "eyes")]
+
+    await _publish(activity, [_item()], _turn("completed"), thread_root_id="parent-1")
+    assert client.reactions == [("add", "asker-1", "eyes")]
+
+    await _publish(
+        activity,
+        [_item("turn-two")],
+        _turn("completed", "turn-two"),
+        thread_root_id="parent-1",
+    )
+    assert client.reactions == [
+        ("add", "asker-1", "eyes"),
+        ("remove", "asker-1", "eyes"),
+    ]
+
+
+async def test_a_turn_first_published_already_ended_does_not_touch_the_reaction() -> (
+    None
+):
+    """A turn can arrive already in its final state — recovery replaying a
+    turn that finished before the bridge came back, say. Nothing was ever
+    watching it, so there is nothing to add and then immediately take off."""
+    client = FakeWebClient()
+    activity = SessionTurnActivity(_adapter(client))
+
+    await _publish(activity, [_item()], _turn("completed"), thread_root_id="parent-1")
+
+    assert client.reactions == []
