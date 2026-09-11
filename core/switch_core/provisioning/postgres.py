@@ -142,18 +142,23 @@ class PostgresProvisioning:
         self, room_id: str, body: str, *, format: str = "markdown"
     ) -> str | None:
         """Post a system message into a room."""
-        from switch_core.db.models import Message
-
+        event_id = f"sw_{uuid.uuid4().hex}"
         msg = Message(
             room_id=room_id,
+            transport_event_id=event_id,
             sender_id="system",
+            sender_client_id=None,
+            sender_name="System",
+            event_type="m.room.message",
+            msgtype="m.text",
             body=body,
-            content={"msgtype": "m.text", "body": body, "format": format},
+            formatted_body=body if format == "markdown" else None,
+            content={"msgtype": "m.text", "body": body},
         )
         async with self._session_factory() as session:
-            created = await self._message_store.create(session, msg, [])
+            await self._message_store.create(session, msg, [])
             await session.commit()
-        return created.id
+        return event_id
 
     async def close(self) -> None:
         """Nothing held open."""
