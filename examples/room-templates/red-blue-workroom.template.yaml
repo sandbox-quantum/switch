@@ -1,0 +1,55 @@
+# Red-blue workroom: a coder/reviewer loop with a human gate.
+#
+# The canonical example for the room-template surface. Conventions it
+# demonstrates:
+#
+#   params:      Typed inputs the Console's "Create from template" wizard
+#                collects. A string param named `agent` or ending in `_agent`
+#                gets an agent picker, validated against the server's agents.
+#
+#   {$creator}:  Server-injected builtin — the creating user's name on the
+#                room's bridge (their linked identity when they have claimed
+#                one, otherwise their account name). Putting it in `users:`
+#                invites whoever instantiates the template into the room.
+#                Other builtins: {$creator_email}, {$date}, {$timestamp}.
+#
+#   kickoff:     Posted into the room as the creating user once provisioning
+#                completes. Agents only start working when a message
+#                addresses them, so mention them here — this is what turns a
+#                provisioned room into running work.
+params:
+  task_name:
+    type: string
+    description: Short name for the task (used in the room name)
+  coder_agent:
+    type: string
+    description: Agent that implements the task
+  reviewer_agent:
+    type: string
+    description: Agent that reviews and drives the acceptance loop
+  brief:
+    type: string
+    description: The task brief (paste the full text)
+room:
+  name: "Switch work: {task_name}"
+  description: "Workroom for {task_name} — coder/reviewer loop, human-gated."
+  channel_type: channel_private
+  agents: ["{coder_agent}", "{reviewer_agent}"]
+  users: ["{$creator}"]
+  instructions: |
+    This room implements {task_name}. {coder_agent} owns the branch and
+    commits. {reviewer_agent} reviews against the Acceptance section of the
+    brief and pushes the coder in a loop until every item is met. Only
+    {$creator}'s explicit confirmation stops the loop.
+
+    Brief:
+    {brief}
+  kickoff: |
+    @{coder_agent} @{reviewer_agent} — kicking off {task_name}.
+
+    @{coder_agent}: read the brief in the room instructions and start
+    implementing. Post your plan here before your first commit.
+
+    @{reviewer_agent}: drive the acceptance loop. Review every hand-off
+    against the brief's Acceptance section and push back until every item is
+    met, then ping {$creator} to confirm and close.
