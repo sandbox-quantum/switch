@@ -58,10 +58,10 @@ describe('CodexAdapter', () => {
     expect(session.nativeSessionId).toBe(THREAD);
     expect(eventsOf(events, 'session.started')[0]?.nativeSessionId).toBe(THREAD);
     const threadStart = server.received.find((message) => message.method === 'thread/start');
+    expect(threadStart?.params).not.toHaveProperty('sandbox');
     expect(threadStart?.params).toMatchObject({
       cwd: '/work',
       approvalPolicy: 'never',
-      sandbox: 'danger-full-access',
     });
   });
 
@@ -88,9 +88,9 @@ describe('CodexAdapter', () => {
   it('asks for approvals in approval-required mode', async () => {
     const { server } = await start('approval-required');
     const threadStart = server.received.find((message) => message.method === 'thread/start');
+    expect(threadStart?.params).not.toHaveProperty('sandbox');
     expect(threadStart?.params).toMatchObject({
       approvalPolicy: 'untrusted',
-      sandbox: 'workspace-write',
     });
   });
 

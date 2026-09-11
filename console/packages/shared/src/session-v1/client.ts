@@ -1,11 +1,19 @@
-import type { Command, ServerEvent, Snapshot } from './contract';
+import { isDeepEqual } from '../deep-equal';
+import type { Attachment, Command, ServerEvent, Snapshot } from './contract';
 import { SessionReplica } from './replica';
 import { commandStatusSchema, snapshotSchema } from './validation';
 
 export type ClientCommand = Omit<Command, 'origin'>;
 export type CommandStatus = Snapshot['commandStatuses'][number];
 /** Transport methods must validate server JSON before returning typed receipts. */
+export type AttachmentUpload = {
+  attachmentId: string;
+  name: string;
+  mimeType: string;
+  data: string;
+};
 export interface SessionTransport {
+  uploadAttachment?(sessionId: string, file: AttachmentUpload): Promise<Attachment>;
   snapshot(sessionId: string, pageToken: string | null): Promise<unknown>;
   subscribe(
     sessionId: string,
@@ -112,7 +120,16 @@ export class SessionChatClient {
     }
   }
 
-  async send(text: string, commandId: string): Promise<CommandStatus> {
+  async uploadAttachment(file: AttachmentUpload): Promise<Attachment> {
+    if (!this.transport.uploadAttachment) throw new Error('Attachment upload is unavailable.');
+    return this.transport.uploadAttachment(this.sessionId, file);
+  }
+
+  async send(
+    text: string,
+    commandId: string,
+    attachments: Attachment[] = []
+  ): Promise<CommandStatus> {
     const snapshot = this.replica?.snapshot();
     if (!snapshot || !this.view.connected || snapshot.session.connectivity !== 'online')
       throw new Error('HOST_OFFLINE: reconnect before sending.');
@@ -122,7 +139,8 @@ export class SessionChatClient {
       this.pending &&
       (this.pending.commandId !== commandId ||
         this.pending.body.type !== 'message.send' ||
-        this.pending.body.text !== text)
+        this.pending.body.text !== text ||
+        !isDeepEqual(this.pending.body.attachments, attachments))
     )
       throw new Error('Resolve the previous message before sending another.');
     const command: ClientCommand = this.pending ?? {
@@ -133,7 +151,7 @@ export class SessionChatClient {
       body: {
         type: 'message.send',
         text,
-        attachments: [],
+        attachments,
         delivery: 'queue',
       },
     };
@@ -185,6 +203,28 @@ export class SessionChatClient {
     return status;
   }
 
+  hasUnknownCommand(): boolean {
+    return Boolean(
+      this.pending &&
+      this.view.snapshot?.commandStatuses.some(
+        (status) => status.commandId === this.pending?.commandId && status.status === 'unknown'
+      )
+    );
+  }
+
+  async acknowledgeUnknown(): Promise<void> {
+    if (!this.pending) throw new Error('No uncertain command.');
+    const id = this.pending.commandId;
+    const status = commandStatusSchema.parse(
+      await this.transport.commandStatus(this.sessionId, id)
+    );
+    if (status.commandId !== id || status.status !== 'unknown')
+      throw new Error('Check command status before acknowledging an unknown outcome.');
+    this.replica?.recordReceipt(status);
+    this.pending = null;
+    this.publish(this.view.connected, null);
+  }
+
   dispose(): void {
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     this.reconnectTimer = null;
@@ -196,8 +236,11 @@ export class SessionChatClient {
 
   private acceptReceipt(status: CommandStatus, commandId: string): void {
     if (status.commandId !== commandId) throw new Error('Command receipt identity mismatch.');
-    if (status.status === 'unknown')
-      throw new Error('Command outcome is unknown; keep the original command ID.');
+    if (status.status === 'unknown') {
+      this.replica?.recordReceipt(status);
+      this.publish(this.view.connected, null);
+      throw new Error('Command outcome is unknown. It will not be resent automatically.');
+    }
     if (status.status === 'rejected') {
       this.pending = null;
       throw new Error(status.message ?? status.code ?? 'Message rejected.');

@@ -13,8 +13,13 @@ from collections.abc import AsyncIterator, Iterable, Sequence
 from pathlib import Path
 from typing import Any, Protocol
 
-from .contract import ServerEvent, Snapshot, parse_server_event, parse_snapshot
-from .projection import SessionProjection
+from switch_core.sessions.contract import (
+    ServerEvent,
+    Snapshot,
+    parse_server_event,
+    parse_snapshot,
+)
+from switch_core.sessions.projection import SessionProjection
 
 
 class SessionEventSource(Protocol):

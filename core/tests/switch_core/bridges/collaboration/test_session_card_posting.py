@@ -31,7 +31,6 @@ from switch_core.bridges.collaboration.models import (
     InboundMessage,
 )
 from switch_core.bridges.collaboration.session import demo
-from switch_core.bridges.collaboration.session.contract import SnapshotRequest
 from switch_core.bridges.collaboration.session.demo import TRIGGER, SessionDemo
 from switch_core.bridges.collaboration.session.inbound import (
     InboundActor,
@@ -59,6 +58,7 @@ from switch_core.db.models import (
     SessionRequestPost,
 )
 from switch_core.db.stores.session_request_post_store import SessionRequestPostStore
+from switch_core.sessions.contract import SnapshotRequest
 
 from .test_slack_agent_sessions import FakeResponse, FakeWebClient
 

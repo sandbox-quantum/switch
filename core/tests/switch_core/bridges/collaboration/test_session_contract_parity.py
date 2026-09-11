@@ -22,7 +22,7 @@ from typing import Any
 
 import pytest
 
-from switch_core.bridges.collaboration.session.contract import (
+from switch_core.sessions.contract import (
     Item,
     ServerEvent,
     Snapshot,
@@ -32,7 +32,7 @@ from switch_core.bridges.collaboration.session.contract import (
     parse_server_event,
     parse_snapshot,
 )
-from switch_core.bridges.collaboration.session.projection import SessionProjection
+from switch_core.sessions.projection import SessionProjection
 
 REPO_ROOT = Path(__file__).resolve().parents[5]
 EXAMPLES_PATH = REPO_ROOT / "console/packages/shared/src/session-v1/examples.json"

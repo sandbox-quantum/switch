@@ -18,16 +18,11 @@ from typing import Any
 import pytest
 from slack_sdk.socket_mode.request import SocketModeRequest
 
-from switch_core.bridges.collaboration.session.contract import (
-    ApprovalOption,
-    parse_snapshot,
-)
 from switch_core.bridges.collaboration.session.form import (
     Unanswerable,
     posted_form,
     resolve_text_answer,
 )
-from switch_core.bridges.collaboration.session.projection import SessionProjection
 from switch_core.bridges.collaboration.session.renderers import (
     ANSWER_ACTION,
     RequestReference,
@@ -49,6 +44,11 @@ from switch_core.bridges.collaboration.slack.adapter import (
     SlackAdapter,
     SlackConnectionConfig,
 )
+from switch_core.sessions.contract import (
+    ApprovalOption,
+    parse_snapshot,
+)
+from switch_core.sessions.projection import SessionProjection
 
 from .test_slack_agent_sessions import FakeWebClient
 

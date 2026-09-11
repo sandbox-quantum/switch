@@ -108,6 +108,7 @@ class Attachment(_Model):
     name: str
     mime_type: str
     bytes: Counter
+    sha256: str | None = None
 
 
 class Item(_Model):
@@ -193,7 +194,20 @@ class Request(_Model):
     expires_at: Timestamp | None
 
 
+class SessionModel(_Model):
+    id: Id
+    options: dict[str, str]
+
+
+class ModelChoice(_Model):
+    id: Id
+    label: str
+    options: dict[str, list[str]]
+    image_input: bool | None = None
+
+
 class Session(_Model):
+    room_ids: list[Id] = Field(default_factory=list)
     session_id: Id
     agent_id: Id
     provider: Provider
@@ -203,6 +217,8 @@ class Session(_Model):
     connectivity: Literal["online", "offline"]
     capabilities: Capability
     pending_request_ids: list[Id]
+    models: list[ModelChoice] = Field(default_factory=list)
+    model: SessionModel | None = None
 
 
 # ── Event bodies ─────────────────────────────────────────────────────────────
@@ -220,7 +236,6 @@ class TurnUpsert(_Model):
     command_id: Id | None
 
 
-# The three of those statuses after which nothing more arrives for the turn.
 TURN_ENDED = frozenset({"completed", "interrupted", "error"})
 
 

@@ -1,7 +1,8 @@
 import { createOpencodeClient, type Event, type OpencodeClient } from '@opencode-ai/sdk/v2';
+import type { ModelChoice } from '@switch-console/shared/session-v1';
 import { ProviderSessionError, ProviderUnavailableError } from '../adapter';
 import type { OpencodeConfigFile, OpencodePermissionRule } from './config';
-import { type OpencodeSkill, startOpencodeServer } from './server';
+import { type OpencodeSkill, startOpencodeServer, stopOpencodeServer } from './server';
 
 export type OpencodeEvent = Event;
 
@@ -9,6 +10,7 @@ export type OpencodePermissionReply = 'once' | 'always' | 'reject';
 
 export interface OpencodePromptInput {
   text: string;
+  variant?: string;
   system?: string;
   model?: { providerID: string; modelID: string };
   files?: Array<{ url: string; mime: string; filename: string }>;
@@ -17,6 +19,8 @@ export interface OpencodePromptInput {
 export interface OpencodeSessionTransport {
   readonly nativeSessionId: string;
   readonly events: AsyncIterable<OpencodeEvent>;
+  compact?(model: { providerID: string; modelID: string } | undefined): Promise<void>;
+  listModels?(): Promise<ModelChoice[]>;
   prompt(input: OpencodePromptInput): Promise<void>;
   abort(): Promise<void>;
   sessionStatus(): Promise<'busy' | 'idle' | 'unknown'>;
@@ -82,7 +86,7 @@ export function createHttpTransport(options: HttpTransportOptions): OpencodeTran
         );
         subscription = result.stream;
       } catch (error) {
-        server.process.kill('SIGKILL');
+        await stopOpencodeServer(server);
         throw new ProviderUnavailableError('opencode', 'could not open the event stream', {
           cause: error,
         });
@@ -93,7 +97,7 @@ export function createHttpTransport(options: HttpTransportOptions): OpencodeTran
         nativeSessionId = await resolveSession(client, input);
       } catch (error) {
         abortController.abort();
-        server.process.kill('SIGKILL');
+        await stopOpencodeServer(server);
         throw error;
       }
 
@@ -111,11 +115,49 @@ export function createHttpTransport(options: HttpTransportOptions): OpencodeTran
       return {
         nativeSessionId,
         events: subscription,
+        async compact(model) {
+          if (!model) {
+            const { data } = await client.session.messages<true>({
+              sessionID: nativeSessionId,
+              directory: input.cwd,
+            });
+            const last = [...data].reverse().find((entry) => entry.info.role === 'assistant');
+            if (last?.info.role === 'assistant')
+              model = { providerID: last.info.providerID, modelID: last.info.modelID };
+          }
+          if (!model) throw new Error('There is no completed conversation to compact.');
+          const response = await client.session.summarize<true>({
+            sessionID: nativeSessionId,
+            directory: input.cwd,
+            ...model,
+            auto: false,
+          });
+          if (response.data !== true)
+            throw new Error('OpenCode did not confirm native compaction.');
+        },
+        async listModels() {
+          const { data } = await client.provider.list<true>({ directory: input.cwd });
+          return data.all
+            .filter((provider) => data.connected.includes(provider.id))
+            .flatMap((provider) =>
+              Object.values(provider.models).map(
+                (model): ModelChoice => ({
+                  id: `${provider.id}/${model.id}`,
+                  label: `${provider.name}: ${model.name}`,
+                  imageInput: model.capabilities.input.image,
+                  options: Object.keys(model.variants ?? {}).length
+                    ? { variant: Object.keys(model.variants!) }
+                    : {},
+                })
+              )
+            );
+        },
         async prompt(promptInput) {
           await client.session.promptAsync<true>({
             sessionID: nativeSessionId,
             directory: input.cwd,
             ...(promptInput.model ? { model: promptInput.model } : {}),
+            ...(promptInput.variant ? { variant: promptInput.variant } : {}),
             ...(promptInput.system ? { system: promptInput.system } : {}),
             parts: [
               { type: 'text', text: promptInput.text },
@@ -164,25 +206,7 @@ export function createHttpTransport(options: HttpTransportOptions): OpencodeTran
         async dispose() {
           disposed = true;
           abortController.abort();
-          if (server.process.exitCode !== null || server.process.signalCode !== null) return;
-          await new Promise<void>((resolve, reject) => {
-            const escalate = setTimeout(() => server.process.kill('SIGKILL'), 2000);
-            const timeout = setTimeout(() => {
-              cleanup();
-              reject(new Error('OpenCode process did not exit after termination.'));
-            }, 5000);
-            const cleanup = () => {
-              clearTimeout(escalate);
-              clearTimeout(timeout);
-              server.process.removeListener('exit', exited);
-            };
-            const exited = () => {
-              cleanup();
-              resolve();
-            };
-            server.process.once('exit', exited);
-            server.process.kill('SIGTERM');
-          });
+          await stopOpencodeServer(server);
         },
       };
     },

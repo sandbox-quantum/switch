@@ -1,10 +1,10 @@
 import { randomUUID } from 'node:crypto';
-import { mkdir, readFile, unlink } from 'node:fs/promises';
+import { mkdir, readFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { sessionSchema, snapshotSchema } from '@switch-console/shared/session-v1';
 import { z } from 'zod';
 import { Journal } from './journal';
-import { replaceOwner, withOwnershipLock } from './ownership-lock';
+import { releaseOwner, replaceOwner, withOwnershipLock } from './ownership-lock';
 import { fenceDeadOwner, ownProcessGroup } from './process-fence';
 import type { SharedHostOptions } from './shared-host';
 
@@ -36,16 +36,20 @@ type Record = z.infer<typeof schema>;
 export class SharedState {
   private constructor(
     readonly journal: Journal<Record>,
-    private readonly lock: string
+    private readonly lock: string,
+    private readonly root: string,
+    private readonly owner: { pid: number; group: number | null; token: string }
   ) {}
 
   static async open(options: SharedHostOptions): Promise<SharedState> {
     await mkdir(options.root, { recursive: true, mode: 0o700 });
     const lock = join(options.root, 'shared-owner.lock');
+    const owner = { pid: process.pid, group: await ownProcessGroup(), token: randomUUID() };
     await withOwnershipLock(options.root, async () => {
       try {
         const owner = z
           .strictObject({
+            token: z.string().optional(),
             pid: z.number().int().positive(),
             group: z.number().int().positive().nullable(),
           })
@@ -54,7 +58,7 @@ export class SharedState {
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
       }
-      await replaceOwner(lock, { pid: process.pid, group: await ownProcessGroup() });
+      await replaceOwner(lock, owner);
     });
     try {
       const journal = await Journal.load(join(options.root, 'shared-state.jsonl'), (value) =>
@@ -82,9 +86,9 @@ export class SharedState {
           cwd,
           operationId: randomUUID(),
         });
-      return new SharedState(journal, lock);
+      return new SharedState(journal, lock, options.root, owner);
     } catch (error) {
-      await unlink(lock);
+      await releaseOwner(options.root, lock, owner);
       throw error;
     }
   }
@@ -102,6 +106,6 @@ export class SharedState {
   }
 
   async unlock(): Promise<void> {
-    await unlink(this.lock);
+    await releaseOwner(this.root, this.lock, this.owner);
   }
 }

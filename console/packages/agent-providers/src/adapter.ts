@@ -1,3 +1,4 @@
+import type { ModelChoice } from '@switch-console/shared/session-v1';
 import type {
   ApprovalDecision,
   ProviderKind,
@@ -16,6 +17,7 @@ export interface StdioMcpServerSpec {
   command: string;
   args: string[];
   env?: Record<string, string>;
+  envVars?: string[];
 }
 
 export interface HttpMcpServerSpec {
@@ -119,6 +121,9 @@ export interface ProviderAdapter {
     requestId: string,
     answers: UserInputAnswers
   ): Promise<void>;
+  compactSession?(sessionId: string): Promise<void>;
+  canCompact?(sessionId: string): Promise<boolean>;
+  listModels?(sessionId: string): Promise<ModelChoice[]>;
   setModel?(sessionId: string, model: ModelSelection): Promise<void>;
   stopSession(sessionId: string): Promise<void>;
   stopAll(): Promise<void>;

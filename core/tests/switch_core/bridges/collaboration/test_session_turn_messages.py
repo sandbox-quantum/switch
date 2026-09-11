@@ -24,9 +24,7 @@ from pathlib import Path
 from typing import Any
 
 from switch_core.bridges.collaboration.session import outbound
-from switch_core.bridges.collaboration.session.contract import Item, TurnUpsert
 from switch_core.bridges.collaboration.session.outbound import SessionTurnActivity
-from switch_core.bridges.collaboration.session.projection import SessionProjection
 from switch_core.bridges.collaboration.session.transport import (
     FixtureEventSource,
     project,
@@ -35,6 +33,8 @@ from switch_core.bridges.collaboration.slack.adapter import (
     SlackAdapter,
     SlackConnectionConfig,
 )
+from switch_core.sessions.contract import Item, TurnUpsert
+from switch_core.sessions.projection import SessionProjection
 
 from .test_slack_agent_sessions import FakeWebClient
 

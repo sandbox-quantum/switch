@@ -39,6 +39,7 @@ interface PendingRequest {
   resolve: (value: unknown) => void;
   reject: (error: Error) => void;
   method: string;
+  timer: ReturnType<typeof setTimeout>;
 }
 
 type NotificationHandler = (params: unknown) => void;
@@ -110,12 +111,29 @@ export class StdioJsonRpcClient {
     }
     const id = ++this.nextId;
     return new Promise<T>((resolve, reject) => {
+      const timeoutMs = method === 'session/prompt' ? 12 * 60 * 60 * 1000 : 60000;
+      const timer = setTimeout(() => {
+        this.pending.delete(id);
+        reject(
+          new Error(
+            `Provider request ${method} timed out; its outcome is unknown and it was not resent.`
+          )
+        );
+      }, timeoutMs);
+      timer.unref();
       this.pending.set(id, {
         resolve: resolve as (value: unknown) => void,
         reject,
         method,
+        timer,
       });
-      this.write({ jsonrpc: '2.0', id, method, params });
+      try {
+        this.write({ jsonrpc: '2.0', id, method, params });
+      } catch (error) {
+        clearTimeout(timer);
+        this.pending.delete(id);
+        reject(error instanceof Error ? error : new Error(String(error)));
+      }
     });
   }
 
@@ -159,7 +177,8 @@ export class StdioJsonRpcClient {
 
   private write(message: Record<string, unknown>): void {
     const stdin = this.child.stdin;
-    if (!stdin || !stdin.writable) return;
+    if (!stdin || !stdin.writable)
+      throw new Error('Provider input is closed; command was not written.');
     stdin.write(`${JSON.stringify(message)}\n`);
   }
 
@@ -200,6 +219,7 @@ export class StdioJsonRpcClient {
     const pending = this.pending.get(id);
     if (!pending) return;
     this.pending.delete(id);
+    clearTimeout(pending.timer);
     if (message.error) {
       pending.reject(
         new JsonRpcError(message.error.code, message.error.message, message.error.data)
@@ -220,15 +240,22 @@ export class StdioJsonRpcClient {
       });
       return;
     }
-    handler(params).then(
-      (result) => this.write({ jsonrpc: '2.0', id, result }),
-      (cause: unknown) =>
-        this.write({
-          jsonrpc: '2.0',
-          id,
-          error: { code: -32603, message: String(cause) },
-        })
-    );
+    handler(params)
+      .then(
+        (result) => this.write({ jsonrpc: '2.0', id, result }),
+        (cause: unknown) =>
+          this.write({
+            jsonrpc: '2.0',
+            id,
+            error: { code: -32603, message: String(cause) },
+          })
+      )
+      .catch((error: unknown) => {
+        this.logger.error('Provider response could not be delivered; its outcome is unknown.', {
+          method,
+          error: String(error),
+        });
+      });
   }
 
   private handleExit(reason: string): void {
@@ -236,6 +263,7 @@ export class StdioJsonRpcClient {
     this.exited = true;
     for (const [id, pending] of this.pending) {
       this.pending.delete(id);
+      clearTimeout(pending.timer);
       pending.reject(new Error(`${reason} while awaiting ${pending.method}`));
     }
     this.onExit(reason);

@@ -9,11 +9,6 @@ from pathlib import Path
 import pytest
 
 from switch_core.addressing import AddressingPolicy, owner_only_policy
-from switch_core.bridges.collaboration.session.contract import (
-    Command,
-    HostEvent,
-    Session,
-)
 from switch_core.db.models import (
     Agent,
     ApiKey,
@@ -26,6 +21,11 @@ from switch_core.db.models import (
     SdkSession,
     SdkSessionCommand,
     User,
+)
+from switch_core.sessions.contract import (
+    Command,
+    HostEvent,
+    Session,
 )
 from switch_core.sessions.service import SessionAuthority, SessionError
 

@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { appendFile, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Command, Session } from '@switch-console/shared/session-v1';
@@ -74,7 +74,7 @@ function setup(provider: Session['provider']) {
         approvals: true,
         questions: true,
         interrupt: true,
-        reset: false,
+        reset: true,
         compact: false,
         modelChange: false,
         attachmentMimeTypes: [],
@@ -335,4 +335,270 @@ it('stops active and queued turns without dispatching the queue during cleanup',
   await vi.waitFor(() => expect(host.snapshot().session.status).toBe('stopped'));
   expect(host.snapshot().turns.map((turn) => turn.status)).toEqual(['interrupted', 'interrupted']);
   expect(adapter.sendTurn).toHaveBeenCalledOnce();
+});
+
+it('resets into a new epoch and native conversation while retaining history', async () => {
+  const { host, adapter, emit, root } = await start('claude');
+  await host.command(message('old-turn'));
+  await vi.waitFor(() => expect(host.snapshot().turns[0]?.status).toBe('running'));
+  emit({ type: 'turn.completed', turnId: 'old-turn', outcome: 'completed' });
+  await vi.waitFor(() => expect(host.snapshot().turns[0]?.status).toBe('completed'));
+  vi.mocked(adapter.startSession).mockImplementationOnce(async () => {
+    emit({ type: 'session.state.changed', status: 'ready' });
+    return { provider: 'claude', sessionId: 'session', nativeSessionId: 'fresh-native' };
+  });
+  const command = { ...message('reset'), body: { type: 'session.reset' as const } };
+  expect((await host.command(command)).status).toBe('applied');
+  expect(host.snapshot().session.epoch).not.toBe('epoch');
+  expect(host.snapshot().items[0].text).toBe('Hello');
+  expect(vi.mocked(adapter.startSession).mock.calls[1][0].resume).toBeUndefined();
+  expect((await host.command(command)).status).toBe('applied');
+  expect(adapter.startSession).toHaveBeenCalledTimes(2);
+  await expect(host.command(message('stale'))).rejects.toThrow('STALE_EPOCH');
+  await host.shutdown();
+  const next = setup('claude');
+  hosts.push(await HostedSession.start(root, next.config, next.adapter));
+  expect(next.adapter.startSession).toHaveBeenCalledWith(
+    expect.objectContaining({
+      resume: { nativeSessionId: 'fresh-native' },
+    })
+  );
+});
+
+it('rejects reset with queued work or a pending native request', async () => {
+  const { host, adapter, emit } = await start('claude');
+  await host.command(message('active'));
+  await host.command(message('queued'));
+  emit({
+    type: 'request.opened',
+    turnId: 'active',
+    requestId: 'permission',
+    requestType: 'tool_approval',
+    title: 'Run command',
+    options: [{ decision: 'accept', label: 'Allow' }],
+  });
+  await vi.waitFor(() => expect(host.snapshot().requests).toHaveLength(1));
+  await expect(
+    host.command({ ...message('reset'), body: { type: 'session.reset' } })
+  ).rejects.toThrow('SESSION_BUSY');
+  expect(adapter.stopSession).not.toHaveBeenCalled();
+  expect(host.snapshot().session.epoch).toBe('epoch');
+  expect(host.snapshot().requests[0].state).toBe('open');
+});
+
+it.each([false, true])(
+  'does not recover an uncertain reset (native ID recorded: %s)',
+  async (nativeRecorded) => {
+    const { host, root } = await start('claude');
+    await host.shutdown();
+    await appendFile(join(root, 'inbox.jsonl'), JSON.stringify({ type: 'reset-started' }) + '\n');
+    if (nativeRecorded)
+      await appendFile(
+        join(root, 'inbox.jsonl'),
+        JSON.stringify({ type: 'native', nativeSessionId: 'possibly-created' }) + '\n'
+      );
+    const next = setup('claude');
+    await expect(HostedSession.start(root, next.config, next.adapter)).rejects.toThrow(
+      'RESET_OUTCOME_UNKNOWN'
+    );
+    expect(next.adapter.startSession).not.toHaveBeenCalled();
+  }
+);
+
+it('validates native model choices and persists a confirmed choice across restart', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'sdk-model-test-'));
+  roots.push(root);
+  const fixture = setup('claude');
+  fixture.adapter.listModels = vi.fn(async () => [
+    { id: 'model-a', label: 'Model A', options: { effort: ['low', 'high'] } },
+  ]);
+  fixture.adapter.setModel = vi.fn(async () => {});
+  const host = await HostedSession.start(root, fixture.config, fixture.adapter);
+  hosts.push(host);
+  expect(host.snapshot().session.capabilities.modelChange).toBe(true);
+  const command: Command = {
+    ...message('model'),
+    body: {
+      type: 'session.model.set',
+      modelId: 'model-a',
+      options: { effort: 'high' },
+    },
+  };
+  await expect(
+    host.command({ ...command, body: { ...command.body, modelId: 'invented' } } as Command)
+  ).rejects.toThrow('UNSUPPORTED_MODEL');
+  await expect(
+    host.command({
+      ...command,
+      body: { ...command.body, options: { effort: 'invented' } },
+    } as Command)
+  ).rejects.toThrow('UNSUPPORTED_MODEL');
+  expect(fixture.adapter.setModel).not.toHaveBeenCalled();
+  expect((await host.command(command)).status).toBe('applied');
+  expect((await host.command(command)).status).toBe('applied');
+  expect(fixture.adapter.setModel).toHaveBeenCalledTimes(1);
+  expect(host.snapshot().session.model).toEqual({ id: 'model-a', options: { effort: 'high' } });
+  await host.shutdown();
+  const recovered = setup('claude');
+  hosts.push(await HostedSession.start(root, recovered.config, recovered.adapter));
+  expect(recovered.adapter.startSession).toHaveBeenCalledWith(
+    expect.objectContaining({
+      model: { id: 'model-a', options: { effort: 'high' } },
+      resume: { nativeSessionId: 'native' },
+    })
+  );
+});
+
+it('leaves a lost model acknowledgement unknown and does not retry it', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'sdk-model-test-'));
+  roots.push(root);
+  const fixture = setup('claude');
+  fixture.adapter.listModels = vi.fn(async () => [{ id: 'model-a', label: 'A', options: {} }]);
+  fixture.adapter.setModel = vi.fn(async () => {
+    throw new Error('Acknowledgement lost');
+  });
+  const host = await HostedSession.start(root, fixture.config, fixture.adapter);
+  hosts.push(host);
+  const command: Command = {
+    ...message('model'),
+    body: { type: 'session.model.set', modelId: 'model-a', options: {} },
+  };
+  expect((await host.command(command)).status).toBe('unknown');
+  expect((await host.command(command)).status).toBe('unknown');
+  expect(fixture.adapter.setModel).toHaveBeenCalledTimes(1);
+  expect(host.snapshot().session.model).toBeNull();
+});
+
+it('waits for native compaction and keeps history without sending a summarization prompt', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'sdk-compact-test-'));
+  roots.push(root);
+  const fixture = setup('claude');
+  let finish!: () => void;
+  fixture.adapter.compactSession = vi.fn(
+    () =>
+      new Promise<void>((resolve) => {
+        finish = resolve;
+      })
+  );
+  const host = await HostedSession.start(root, fixture.config, fixture.adapter);
+  hosts.push(host);
+  const command: Command = { ...message('compact'), body: { type: 'session.compact' } };
+  const applied = host.command(command);
+  await vi.waitFor(() => expect(fixture.adapter.compactSession).toHaveBeenCalledTimes(1));
+  expect(host.status('compact').status).toBe('accepted');
+  expect(host.snapshot().session.status).toBe('running');
+  expect(
+    host
+      .replay(0)
+      .events.some(
+        (event) => event.body.type === 'notice' && event.body.code === 'COMPACTION_STARTED'
+      )
+  ).toBe(true);
+  finish();
+  expect((await applied).status).toBe('applied');
+  expect(host.snapshot().session.status).toBe('ready');
+  expect(host.snapshot().session.epoch).toBe('epoch');
+  await host.command(command);
+  expect(fixture.adapter.compactSession).toHaveBeenCalledTimes(1);
+  expect(fixture.adapter.sendTurn).not.toHaveBeenCalled();
+  expect(fixture.adapter.interruptTurn).not.toHaveBeenCalled();
+});
+
+it('stages attachments before dispatch and never executes after shutdown during transfer', async () => {
+  const { adapter, config } = setup('codex');
+  let resolve!: (files: Array<{ path: string; mimeType: string }>) => void;
+  const promise = new Promise<Array<{ path: string; mimeType: string }>>((done) => {
+    resolve = done;
+  });
+  const transfer = { promise, resolve };
+  const root = await mkdtemp(join(tmpdir(), 'sdk-stage-stop-'));
+  roots.push(root);
+  const stageAttachments = vi.fn(() => transfer.promise);
+  const host = await HostedSession.start(root, { ...config, stageAttachments }, adapter);
+  const command = message('with-file');
+  if (command.body.type !== 'message.send') throw new Error('Expected message');
+  command.body.attachments = [
+    { attachmentId: randomUUID(), name: 'note.txt', mimeType: 'text/plain', bytes: 4 },
+  ];
+  await host.command(command);
+  await expect.poll(() => stageAttachments.mock.calls.length).toBe(1);
+  expect(adapter.sendTurn).not.toHaveBeenCalled();
+  await host.shutdown();
+  transfer.resolve([{ path: '/execution-host/note.txt', mimeType: 'text/plain' }]);
+  await expect
+    .poll(() => host.snapshot().turns.find((turn) => turn.turnId === command.commandId)?.status)
+    .toBe('error');
+  expect(adapter.sendTurn).not.toHaveBeenCalled();
+});
+
+it('delivers staged execution paths once and keeps durable attachment metadata', async () => {
+  const { adapter, config } = setup('codex');
+  const root = await mkdtemp(join(tmpdir(), 'sdk-stage-delivery-'));
+  roots.push(root);
+  const staged = [{ path: '/execution-host/note.txt', mimeType: 'text/plain' }];
+  const stageAttachments = vi.fn(async () => staged);
+  const host = await HostedSession.start(root, { ...config, stageAttachments }, adapter);
+  hosts.push(host);
+  const command = message('with-file');
+  if (command.body.type !== 'message.send') throw new Error('Expected message');
+  command.body.attachments = [
+    { attachmentId: randomUUID(), name: 'note.txt', mimeType: 'text/plain', bytes: 4 },
+  ];
+  await host.command(command);
+  await host.command(command);
+  await expect.poll(() => vi.mocked(adapter.sendTurn).mock.calls.length).toBe(1);
+  expect(vi.mocked(adapter.sendTurn).mock.calls[0]?.[0].attachments).toEqual(staged);
+  expect(stageAttachments).toHaveBeenCalledOnce();
+  expect(host.snapshot().items.find((item) => item.kind === 'user-message')?.attachments).toEqual(
+    command.body.attachments
+  );
+});
+
+it('updates attachment support after a confirmed native model change', async () => {
+  const { adapter, config } = setup('opencode');
+  adapter.listModels = vi.fn(async () => [
+    { id: 'text', label: 'Text', options: {}, imageInput: false },
+    { id: 'vision', label: 'Vision', options: {}, imageInput: true },
+  ]);
+  adapter.setModel = vi.fn(async () => {});
+  const root = await mkdtemp(join(tmpdir(), 'sdk-model-images-'));
+  roots.push(root);
+  const host = await HostedSession.start(
+    root,
+    {
+      ...config,
+      input: { ...config.input, model: { id: 'text' } },
+      stageAttachments: async () => [],
+    },
+    adapter
+  );
+  hosts.push(host);
+  expect(host.snapshot().session.capabilities.attachmentMimeTypes).not.toContain('image/png');
+  const image = message('image');
+  if (image.body.type !== 'message.send') throw new Error('Expected message');
+  image.body.attachments = [
+    { attachmentId: randomUUID(), name: 'image.png', mimeType: 'image/png', bytes: 10 },
+  ];
+  await expect(host.command(image)).rejects.toThrow('attachment type');
+  expect(adapter.sendTurn).not.toHaveBeenCalled();
+  await host.command({
+    ...message('vision'),
+    body: { type: 'session.model.set', modelId: 'vision', options: {} },
+  });
+  expect(host.snapshot().session.capabilities.attachmentMimeTypes).toContain('image/png');
+});
+
+it('rejects unsupported native compaction without faulting the session', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'unsupported-compact-'));
+  const { adapter, config } = setup('claude');
+  const host = await HostedSession.start(root, config, adapter);
+  try {
+    await expect(
+      host.command({ ...message('unsupported-compact'), body: { type: 'session.compact' } })
+    ).rejects.toThrow('UNSUPPORTED_CAPABILITY');
+    expect(host.snapshot().session.status).toBe('ready');
+  } finally {
+    await host.shutdown();
+    await rm(root, { recursive: true, force: true });
+  }
 });

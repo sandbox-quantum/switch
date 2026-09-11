@@ -1,3 +1,4 @@
+import { providerAdapterRegistry } from '@main/core/agent-runtime/impl/provider-adapter-registry';
 import { hostReachabilityService } from '@main/core/remote-hosts/production-host-reachability';
 import { log } from '@main/lib/logger';
 import type { AgentTypeAvailability } from '@shared/core/switch-setup/agent-type-availability';
@@ -28,7 +29,7 @@ export const switchSetupController = createRPCController({
     const service = await getRemoteSwitchSetupService(sshHost);
     const statuses = await service.listAgentTypeStatuses();
     return statuses.map((status) => {
-      if (!status.supported) {
+      if (!status.supported || !providerAdapterRegistry.supports(status.agentId)) {
         return {
           agentId: status.agentId,
           available: false,

@@ -1,11 +1,10 @@
 import { type ChildProcess, spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
+import { rm } from 'node:fs/promises';
 import { createServer } from 'node:net';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import { ProviderUnavailableError } from '../adapter';
 import type { OpencodeConfigFile } from './config';
+import { prepareOpencodeHome } from './home';
 
 const READY_PREFIX = 'opencode server listening';
 
@@ -35,10 +34,7 @@ export interface StartServerInput {
   config: OpencodeConfigFile;
   startupTimeoutMs: number;
   /**
-   * Skills to write beside the generated config. Isolating `XDG_CONFIG_HOME`
-   * hides the user's own `~/.config/opencode/skills` along with their MCP
-   * registrations, so a caller that needs a skill in the session has to supply
-   * it here.
+   * Managed skills to load in addition to the execution host's native skills.
    */
   skills: OpencodeSkill[];
 }
@@ -59,33 +55,10 @@ async function findFreePort(): Promise<number> {
   });
 }
 
-/**
- * OpenCode reads `$XDG_CONFIG_HOME/opencode/opencode.json` and merges nothing
- * else in, so pointing it at a directory Switch writes is the only way to keep
- * a user's own MCP registrations out of the session. `OPENCODE_CONFIG` and
- * `OPENCODE_CONFIG_CONTENT` were both measured against 1.18.27 and leave the
- * user's global `mcp` block in place. Auth lives under `XDG_DATA_HOME`, which
- * is deliberately left alone so the spawned server stays signed in.
- */
-async function writeSessionConfig(
-  config: OpencodeConfigFile,
-  skills: OpencodeSkill[]
-): Promise<string> {
-  const configHome = await mkdtemp(join(tmpdir(), 'switch-opencode-'));
-  await mkdir(join(configHome, 'opencode'), { recursive: true });
-  await writeFile(join(configHome, 'opencode', 'opencode.json'), JSON.stringify(config, null, 2));
-  for (const skill of skills) {
-    const dir = join(configHome, 'opencode', 'skills', skill.name);
-    await mkdir(dir, { recursive: true });
-    await writeFile(join(dir, 'SKILL.md'), skill.content);
-  }
-  return configHome;
-}
-
 export async function startOpencodeServer(input: StartServerInput): Promise<OpencodeServerHandle> {
   const password = randomBytes(24).toString('base64url');
-  const configHome = await writeSessionConfig(input.config, input.skills);
   const port = await findFreePort();
+  const configHome = await prepareOpencodeHome(input.config, input.skills, input.env);
 
   const child = spawn(input.binaryPath, ['serve', '--hostname=127.0.0.1', `--port=${port}`], {
     cwd: input.cwd,
@@ -97,60 +70,92 @@ export async function startOpencodeServer(input: StartServerInput): Promise<Open
     stdio: ['ignore', 'pipe', 'pipe'],
   });
 
-  const url = await new Promise<string>((resolve, reject) => {
-    let output = '';
-    let settled = false;
-    const finish = (run: () => void) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      run();
-    };
-    const timer = setTimeout(() => {
-      finish(() => {
-        child.kill('SIGKILL');
-        reject(
-          new ProviderUnavailableError(
-            'opencode',
-            `server did not start within ${input.startupTimeoutMs}ms: ${output.trim()}`
+  try {
+    const url = await new Promise<string>((resolve, reject) => {
+      let output = '';
+      let settled = false;
+      const finish = (run: () => void) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        run();
+      };
+      const timer = setTimeout(() => {
+        finish(() => {
+          child.kill('SIGKILL');
+          reject(
+            new ProviderUnavailableError(
+              'opencode',
+              `server did not start within ${input.startupTimeoutMs}ms: ${output.trim()}`
+            )
+          );
+        });
+      }, input.startupTimeoutMs);
+
+      child.stdout?.on('data', (chunk: Buffer) => {
+        output = (output + chunk.toString()).slice(-8000);
+        for (const line of output.split('\n')) {
+          if (!line.startsWith(READY_PREFIX)) continue;
+          const match = line.match(/on\s+(https?:\/\/\S+)/);
+          if (!match?.[1]) continue;
+          finish(() => resolve(match[1] as string));
+          return;
+        }
+      });
+      child.stderr?.on('data', (chunk: Buffer) => {
+        output = (output + chunk.toString()).slice(-8000);
+      });
+      child.on('error', (error) => {
+        finish(() =>
+          reject(new ProviderUnavailableError('opencode', 'could not spawn', { cause: error }))
+        );
+      });
+      child.on('exit', (code) => {
+        finish(() =>
+          reject(
+            new ProviderUnavailableError(
+              'opencode',
+              `server exited with code ${code}: ${output.trim()}`
+            )
           )
         );
       });
-    }, input.startupTimeoutMs);
+    });
 
-    child.stdout?.on('data', (chunk: Buffer) => {
-      output += chunk.toString();
-      for (const line of output.split('\n')) {
-        if (!line.startsWith(READY_PREFIX)) continue;
-        const match = line.match(/on\s+(https?:\/\/\S+)/);
-        if (!match?.[1]) continue;
-        finish(() => resolve(match[1] as string));
-        return;
-      }
-    });
-    child.stderr?.on('data', (chunk: Buffer) => {
-      output += chunk.toString();
-    });
-    child.on('error', (error) => {
-      finish(() =>
-        reject(new ProviderUnavailableError('opencode', 'could not spawn', { cause: error }))
-      );
-    });
-    child.on('exit', (code) => {
-      finish(() =>
-        reject(
-          new ProviderUnavailableError(
-            'opencode',
-            `server exited with code ${code}: ${output.trim()}`
-          )
-        )
-      );
-    });
-  });
+    const authorization = `Basic ${Buffer.from(`opencode:${password}`).toString('base64')}`;
+    await waitForHealth(url, authorization, input.startupTimeoutMs);
+    return { url, authorization, process: child, configHome };
+  } catch (error) {
+    await stopOpencodeServer({ process: child, configHome });
+    throw error;
+  }
+}
 
-  const authorization = `Basic ${Buffer.from(`opencode:${password}`).toString('base64')}`;
-  await waitForHealth(url, authorization, input.startupTimeoutMs);
-  return { url, authorization, process: child, configHome };
+export async function stopOpencodeServer(
+  server: Pick<OpencodeServerHandle, 'process' | 'configHome'>
+): Promise<void> {
+  const child = server.process;
+  if (child.pid && child.exitCode === null && child.signalCode === null) {
+    await new Promise<void>((resolve, reject) => {
+      const kill = setTimeout(() => child.kill('SIGKILL'), 2000);
+      const timeout = setTimeout(() => {
+        cleanup();
+        reject(new Error('OpenCode process did not exit after termination.'));
+      }, 5000);
+      const cleanup = () => {
+        clearTimeout(kill);
+        clearTimeout(timeout);
+        child.removeListener('exit', exited);
+      };
+      const exited = () => {
+        cleanup();
+        resolve();
+      };
+      child.once('exit', exited);
+      child.kill('SIGTERM');
+    });
+  }
+  await rm(server.configHome, { recursive: true, force: true });
 }
 
 async function waitForHealth(url: string, authorization: string, timeoutMs: number): Promise<void> {
@@ -158,7 +163,10 @@ async function waitForHealth(url: string, authorization: string, timeoutMs: numb
   let lastError = 'no attempt made';
   while (Date.now() < deadline) {
     try {
-      const response = await fetch(`${url}/global/health`, { headers: { authorization } });
+      const response = await fetch(`${url}/global/health`, {
+        headers: { authorization },
+        signal: AbortSignal.timeout(Math.min(5000, Math.max(1, deadline - Date.now()))),
+      });
       if (response.ok) {
         const body = (await response.json()) as { healthy?: boolean };
         if (body.healthy === true) return;

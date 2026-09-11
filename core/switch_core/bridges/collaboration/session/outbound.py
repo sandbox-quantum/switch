@@ -51,8 +51,8 @@ from switch_core.bridges.collaboration.adapter import (
 from switch_core.bridges.collaboration.slack.adapter import SlackAdapter
 from switch_core.db.models import SessionRequestPost
 from switch_core.db.stores.session_request_post_store import SessionRequestPostStore
+from switch_core.sessions.contract import TURN_ENDED, Item, SnapshotRequest, TurnUpsert
 
-from .contract import TURN_ENDED, Item, SnapshotRequest, TurnUpsert
 from .form import posted_form
 from .renderers import RequestReference
 

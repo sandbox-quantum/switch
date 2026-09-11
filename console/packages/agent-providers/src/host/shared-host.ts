@@ -10,6 +10,7 @@ import {
 import type { Session } from '@switch-console/shared/session-v1';
 import type { z } from 'zod';
 import type { ProviderAdapter, ProviderSessionStartInput } from '../adapter';
+import { stageAttachment, MAX_ATTACHMENT_BYTES } from './attachments';
 import { Journal } from './journal';
 import { SharedRoomInbox, type roomConnectionSchema } from './room-inbox';
 import { HostedSession } from './session-host';
@@ -166,10 +167,10 @@ export async function runSharedHost(
     return parsed;
   };
   const finish = async () => {
-    if (starting)
-      throw new Error(
-        'FENCING_REQUIRED: provider startup failed before shutdown could be confirmed.'
-      );
+    if (starting) {
+      await adapter.stopSession(options.session.sessionId);
+      starting = false;
+    }
     await stopExecution();
     if (host && delivery)
       for (const event of host.replay(delivery.cursor).events) await delivery.capture(event);
@@ -188,7 +189,8 @@ export async function runSharedHost(
         );
       }
     }
-    await state.unlock();
+    // The supervisor reaps the isolated group after this worker exits.
+    // Retain its owner record so a replacement supervisor can fence it too.
   };
   try {
     // Complete a recovery whose response may have been lost before doing anything else.
@@ -242,20 +244,28 @@ export async function runSharedHost(
       await state.journal.append({ type: 'lease', snapshot, sourceBase: 0 });
     }
     lease = state.latest('lease')!;
-    const session = lease.snapshot.session;
+    const session = structuredClone(lease.snapshot.session);
     const hostLease = { host_id: session.hostId, epoch: session.epoch };
     // Renew before opening a provider, including after a lost acquisition response.
     const renewingAt = performance.now();
     await request(`${sessionPath}/renew`, hostLease);
     deadline = renewingAt + 25000;
     delivery = await SharedDelivery.load(options.root, session, lease.sourceBase);
+    let leaseSerial: Promise<unknown> = Promise.resolve();
+    const withLease = <T>(action: () => Promise<T>): Promise<T> => {
+      const result = leaseSerial.then(action);
+      leaseSerial = result.catch(() => {});
+      return result;
+    };
     heartbeat = (async () => {
       try {
         while (!executionSignal.aborted) {
           await delay(5000, undefined, { signal: executionSignal });
-          const renewingAt = performance.now();
-          await request(`${sessionPath}/renew`, hostLease);
-          deadline = renewingAt + 25000;
+          await withLease(async () => {
+            const renewingAt = performance.now();
+            await request(`${sessionPath}/renew`, hostLease);
+            deadline = renewingAt + 25000;
+          });
         }
       } catch (error) {
         if (!executionSignal.aborted) {
@@ -281,7 +291,84 @@ export async function runSharedHost(
     starting = true;
     host = await HostedSession.start(
       options.root,
-      { session, input: options.input, epochAuthority: 'server' },
+      {
+        session,
+        input: options.input,
+        epochAuthority: 'server',
+        stageAttachments: (attachments) =>
+          Promise.all(
+            attachments.map((attachment) =>
+              stageAttachment(options.root, attachment, async () => {
+                const url = `${base.href.replace(/\/$/, '')}/sessions${sessionPath}/attachments/${encodeURIComponent(attachment.attachmentId)}?host_id=${encodeURIComponent(hostLease.host_id)}&epoch=${encodeURIComponent(hostLease.epoch)}`;
+                const response = await fetch(url, {
+                  headers: { authorization: `Bearer ${options.token}` },
+                  signal: AbortSignal.any([executionSignal, AbortSignal.timeout(15000)]),
+                  redirect: 'error',
+                });
+                if (!response.ok || !response.body)
+                  throw new Error(`Attachment download failed (${response.status}).`);
+                const chunks: Uint8Array[] = [];
+                let size = 0;
+                const reader = response.body.getReader();
+                try {
+                  while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+                    size += value.byteLength;
+                    if (size > MAX_ATTACHMENT_BYTES || size > attachment.bytes)
+                      throw new Error('Attachment exceeds its declared size.');
+                    chunks.push(value);
+                  }
+                } finally {
+                  await reader.cancel();
+                }
+                return {
+                  data: Buffer.concat(chunks),
+                  sha256: response.headers.get('x-content-sha256') ?? '',
+                };
+              })
+            )
+          ),
+        resetEpoch: () =>
+          withLease(async () => {
+            for (const event of host!.replay(delivery!.cursor).events)
+              await delivery!.capture(event);
+            await upload(false);
+            await request(`${sessionPath}/quiesce`, hostLease);
+            const operation = {
+              type: 'recover' as const,
+              operationId: randomUUID(),
+              epoch: hostLease.epoch,
+              sourceBase: delivery!.cursor,
+              throughHostSequence: delivery!.throughHostSequence,
+            };
+            await state.journal.append(operation);
+            const snapshot = validateSession(
+              await request(`${sessionPath}/recover`, {
+                host_id: hostLease.host_id,
+                epoch: operation.epoch,
+                operation_id: operation.operationId,
+                through_host_sequence: operation.throughHostSequence,
+              })
+            );
+            await state.journal.append({
+              type: 'lease',
+              snapshot,
+              sourceBase: operation.sourceBase,
+            });
+            lease = state.latest('lease')!;
+            hostLease.epoch = snapshot.session.epoch;
+            delivery = await SharedDelivery.load(
+              options.root,
+              snapshot.session,
+              operation.sourceBase
+            );
+            const renewingAt = performance.now();
+            await request(`${sessionPath}/renew`, hostLease);
+            deadline = renewingAt + 25000;
+            return hostLease.epoch;
+          }),
+      },
       adapter
     );
     starting = false;
@@ -289,8 +376,19 @@ export async function runSharedHost(
       for (const event of host!.replay(delivery!.cursor).events) await delivery!.capture(event);
       await upload(false);
     };
+    let roomBinding: string | null = null;
     while (!executionSignal.aborted) {
       await flush();
+      if (rooms && options.roomConnection) {
+        const current = JSON.stringify(rooms.currentRooms());
+        if (current !== roomBinding) {
+          await request(`${sessionPath}/room-connection`, {
+            ...hostLease,
+            connection_id: options.roomConnection.connectionId,
+          });
+          roomBinding = current;
+        }
+      }
       if (host.snapshot().session.status === 'stopped') break;
       if (
         host.snapshot().session.status === 'ready' ||
@@ -333,9 +431,25 @@ export async function runSharedHost(
         executionSignal.throwIfAborted();
         if (performance.now() >= deadline) throw new SharedHostLeaseExpiredError();
         const command = commandSchema.parse(value);
-        if (command.sessionId !== session.sessionId || command.epoch !== session.epoch)
-          throw new Error('Switch returned a command for another session generation.');
-        await host.command(command);
+        if (command.sessionId !== session.sessionId)
+          throw new Error('Switch returned a command for another session.');
+        if (command.epoch !== hostLease.epoch) continue;
+        try {
+          if (command.body.type === 'session.compact') {
+            let finished = false;
+            const pending = host.command(command).finally(() => {
+              finished = true;
+            });
+            void pending.catch(() => {});
+            while (!finished) {
+              await flush();
+              await delay(250, undefined, { signal: executionSignal });
+            }
+            await pending;
+          } else await host.command(command);
+        } catch (error) {
+          await host.reject(command, error);
+        }
         await flush();
       }
       await delay(250, undefined, { signal: executionSignal });

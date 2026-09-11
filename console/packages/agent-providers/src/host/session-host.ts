@@ -8,6 +8,7 @@ import {
   serverEventSchema,
 } from '@switch-console/shared/session-v1';
 import type {
+  Attachment,
   Command,
   HostBody,
   Request,
@@ -16,10 +17,11 @@ import type {
   Snapshot,
 } from '@switch-console/shared/session-v1';
 import { z } from 'zod';
-import type { ProviderAdapter, ProviderSessionStartInput } from '../adapter';
+import type { ProviderAdapter, ProviderSessionStartInput, TurnAttachment } from '../adapter';
 import type { UserInputAnswers } from '../events';
 import type { ProviderRuntimeEvent } from '../events';
 import { ChatProjector } from '../session-v1/chat-projector';
+import { ATTACHMENT_MIME_TYPES } from './attachments';
 import { Journal } from './journal';
 
 const recordSchema = z.discriminatedUnion('type', [
@@ -28,12 +30,17 @@ const recordSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('finished'), commandId: z.string() }),
   z.object({ type: z.literal('native'), nativeSessionId: z.string() }),
   z.object({ type: z.literal('stopped') }),
+  z.object({ type: z.literal('reset-started') }),
+  z.object({ type: z.literal('reset-completed') }),
+  z.object({ type: z.literal('model'), id: z.string(), options: z.record(z.string(), z.string()) }),
 ]);
 type RecordEntry = z.infer<typeof recordSchema>;
 export type HostSessionStart = {
   session: Session;
   input: ProviderSessionStartInput;
   epochAuthority?: 'server';
+  resetEpoch?: () => Promise<string>;
+  stageAttachments?: (attachments: Attachment[]) => Promise<TurnAttachment[]>;
 };
 type PendingQuestion = { request: Request; options: Map<string, string> };
 
@@ -54,6 +61,8 @@ export class HostedSession {
   private fault: Error | null = null;
   private shuttingDown = false;
   private stopped = false;
+  private resetting = false;
+  private resetPending = false;
   private readonly unsubscribe: () => void;
   private readonly timer: ReturnType<typeof setInterval>;
 
@@ -95,6 +104,12 @@ export class HostedSession {
       if (record.type === 'finished') this.finished.add(record.commandId);
       if (record.type === 'native') this.nativeId = record.nativeSessionId;
       if (record.type === 'stopped') this.stopped = true;
+      if (record.type === 'reset-started') {
+        this.nativeId = null;
+        this.resetPending = true;
+      }
+      if (record.type === 'reset-completed') this.resetPending = false;
+      if (record.type === 'model') config.input.model = { id: record.id, options: record.options };
     }
     this.projector = new ChatProjector(config.session);
     this.unsubscribe = adapter.subscribe((event) => {
@@ -172,10 +187,15 @@ export class HostedSession {
           host.unsubscribe();
           return host;
         }
+        if (host.resetPending)
+          throw new Error(
+            'RESET_OUTCOME_UNKNOWN: reset was interrupted. Automatic recovery cannot choose a conversation.'
+          );
         if (!host.nativeId)
           throw new Error('Cannot recover a session without its native provider ID.');
         if (config.epochAuthority !== 'server') config.session.epoch = randomUUID();
         const next = host.replica.snapshot();
+        config.session.models = next.session.models;
         next.session = structuredClone(config.session);
         host.replica = new SessionReplica(next);
       }
@@ -186,12 +206,54 @@ export class HostedSession {
       });
       await host.inbox.append({ type: 'native', nativeSessionId: native.nativeSessionId });
       host.nativeId = native.nativeSessionId;
+      await host.eventSerial;
+      await host.refreshModels();
       return host;
     } catch (error) {
       await host.fail(error);
       await host.shutdown();
       throw error;
     }
+  }
+
+  private async refreshModels(): Promise<void> {
+    this.config.session.capabilities.compact =
+      Boolean(this.adapter.compactSession) &&
+      (!this.adapter.canCompact || (await this.adapter.canCompact(this.config.session.sessionId)));
+    if (!this.adapter.listModels) {
+      this.updateAttachmentCapabilities();
+      await this.publish({ type: 'session.upsert', session: structuredClone(this.config.session) });
+      return;
+    }
+    let models = await this.adapter.listModels(this.config.session.sessionId);
+    const previousModels = this.replica.snapshot().session.models;
+    if (!models.length && previousModels?.length) {
+      models = previousModels;
+      await this.publish({
+        type: 'notice',
+        level: 'warning',
+        code: 'MODEL_CATALOG_CACHED',
+        message:
+          'The provider did not return a model catalog on resume. Showing the last known choices; the provider will validate each change.',
+      });
+    }
+    this.config.session.models = models;
+    this.config.session.model = this.config.input.model
+      ? { id: this.config.input.model.id, options: this.config.input.model.options ?? {} }
+      : null;
+    this.config.session.capabilities.modelChange = Boolean(models.length && this.adapter.setModel);
+    this.updateAttachmentCapabilities();
+    await this.publish({ type: 'session.upsert', session: structuredClone(this.config.session) });
+  }
+
+  private updateAttachmentCapabilities(): void {
+    const session = this.config.session;
+    const model = session.models?.find((entry) => entry.id === session.model?.id);
+    session.capabilities.attachmentMimeTypes = this.config.stageAttachments
+      ? ATTACHMENT_MIME_TYPES.filter(
+          (mime) => model?.imageInput !== false || !mime.startsWith('image/')
+        )
+      : [];
   }
 
   notice(message: string): Promise<void> {
@@ -216,7 +278,6 @@ export class HostedSession {
   }
 
   private async accept(command: Command): Promise<Snapshot['commandStatuses'][number]> {
-    if (this.fault) throw this.fault;
     if (this.shuttingDown) throw new Error('HOST_STOPPING');
     const { session } = this.snapshot();
     if (command.sessionId !== session.sessionId) throw new Error('NOT_FOUND: session mismatch.');
@@ -225,6 +286,7 @@ export class HostedSession {
       if (!isDeepStrictEqual(previous, command)) throw new Error('IDEMPOTENCY_CONFLICT');
       return this.status(command.commandId);
     }
+    if (this.fault) throw this.fault;
     if (command.epoch !== session.epoch) throw new Error('STALE_EPOCH');
     const body = command.body;
     if (body.type === 'message.send') {
@@ -233,16 +295,64 @@ export class HostedSession {
         throw new Error('UNSUPPORTED_CAPABILITY: host currently accepts queued messages.');
       if (eventBytes(command) > 60 * 1024)
         throw new Error('PAYLOAD_TOO_LARGE: message exceeds the local host limit.');
-      if (body.attachments.length)
+      if (body.attachments.length && !this.config.stageAttachments)
         throw new Error('UNSUPPORTED_CAPABILITY: attachment staging is not configured.');
+      if (
+        body.attachments.some(
+          (file) => !session.capabilities.attachmentMimeTypes.includes(file.mimeType)
+        )
+      )
+        throw new Error(
+          'UNSUPPORTED_CAPABILITY: the selected provider model does not accept this attachment type.'
+        );
       if (session.status !== 'ready' && session.status !== 'running')
         throw new Error('Session is not ready.');
     } else if (
       body.type !== 'turn.interrupt' &&
       body.type !== 'session.stop' &&
+      body.type !== 'session.reset' &&
+      body.type !== 'session.compact' &&
+      body.type !== 'session.model.set' &&
       body.type !== 'request.answer'
     )
       throw new Error('UNSUPPORTED_CAPABILITY');
+    if (
+      body.type === 'session.reset' ||
+      body.type === 'session.model.set' ||
+      body.type === 'session.compact'
+    ) {
+      if (
+        this.activeTurn ||
+        this.queue.length ||
+        session.status !== 'ready' ||
+        this.snapshot().requests.some((r) => r.state === 'open' || r.state === 'submitting')
+      )
+        throw new Error('SESSION_BUSY: finish or interrupt the current turn first.');
+      if (
+        body.type === 'session.reset' &&
+        (!session.capabilities.reset ||
+          (this.config.epochAuthority === 'server' && !this.config.resetEpoch))
+      )
+        throw new Error('UNSUPPORTED_CAPABILITY: reset needs a generation authority.');
+      if (
+        body.type === 'session.compact' &&
+        (!session.capabilities.compact || !this.adapter.compactSession)
+      )
+        throw new Error('UNSUPPORTED_CAPABILITY: native compaction is unavailable.');
+      if (
+        body.type === 'session.model.set' &&
+        (!session.capabilities.modelChange || !this.adapter.setModel)
+      )
+        throw new Error('UNSUPPORTED_CAPABILITY: model changes are unavailable.');
+    }
+    if (body.type === 'session.model.set') {
+      const model = session.models?.find((entry) => entry.id === body.modelId);
+      if (
+        !model ||
+        Object.entries(body.options).some(([key, value]) => !model.options[key]?.includes(value))
+      )
+        throw new Error('UNSUPPORTED_MODEL: choose an offered model and options.');
+    }
     if (body.type === 'request.answer') this.validateAnswer(command);
     await this.inbox.append({ type: 'accepted', command });
     this.commands.set(command.commandId, command);
@@ -276,11 +386,116 @@ export class HostedSession {
             status: 'completed',
             title: '',
             text: body.text,
-            attachments: [],
+            attachments: body.attachments,
             origin: command.origin,
           },
         });
         this.queue.push(command);
+      } else if (body.type === 'session.compact') {
+        await this.inbox.append({ type: 'dispatched', commandId: command.commandId });
+        this.dispatched.add(command.commandId);
+        this.config.session.status = 'running';
+        await this.publish({
+          type: 'session.upsert',
+          session: structuredClone(this.config.session),
+        });
+        await this.publish({
+          type: 'notice',
+          level: 'info',
+          code: 'COMPACTION_STARTED',
+          message: 'Compacting provider context…',
+        });
+        let timeout: ReturnType<typeof setTimeout>;
+        try {
+          await Promise.race([
+            this.adapter.compactSession!(session.sessionId),
+            new Promise<never>((_, reject) => {
+              timeout = setTimeout(
+                () => reject(new Error('Native compaction outcome is unknown after 180 seconds.')),
+                180000
+              );
+            }),
+          ]);
+          await this.eventSerial;
+          await this.publish({
+            type: 'notice',
+            level: 'info',
+            code: 'COMPACTION_COMPLETED',
+            message: 'Provider context compaction completed. The transcript remains available.',
+          });
+          this.config.session.status = 'ready';
+          await this.publish({
+            type: 'session.upsert',
+            session: structuredClone(this.config.session),
+          });
+        } catch (error) {
+          await this.fail(error);
+          throw error;
+        } finally {
+          clearTimeout(timeout!);
+        }
+      } else if (body.type === 'session.model.set') {
+        await this.inbox.append({ type: 'dispatched', commandId: command.commandId });
+        this.dispatched.add(command.commandId);
+        await this.adapter.setModel!(session.sessionId, {
+          id: body.modelId,
+          options: body.options,
+        });
+        await this.inbox.append({ type: 'model', id: body.modelId, options: body.options });
+        this.config.input.model = { id: body.modelId, options: body.options };
+        this.config.session.model = { id: body.modelId, options: body.options };
+        this.updateAttachmentCapabilities();
+        await this.publish({
+          type: 'session.upsert',
+          session: structuredClone(this.config.session),
+        });
+        await this.publish({
+          type: 'notice',
+          level: 'info',
+          code: 'MODEL_CHANGED',
+          message: `Model changed to ${body.modelId}.`,
+        });
+      } else if (body.type === 'session.reset') {
+        await this.inbox.append({ type: 'dispatched', commandId: command.commandId });
+        this.dispatched.add(command.commandId);
+        await this.inbox.append({ type: 'reset-started' });
+        this.nativeId = null;
+        this.resetPending = true;
+        this.resetting = true;
+        try {
+          await this.adapter.stopSession(session.sessionId);
+          await this.eventSerial;
+          const epoch = this.config.resetEpoch ? await this.config.resetEpoch() : randomUUID();
+          this.config.session.epoch = epoch;
+          this.config.session.status = 'starting';
+          const snapshot = this.snapshot();
+          snapshot.session = structuredClone(this.config.session);
+          this.replica = new SessionReplica(snapshot);
+          await this.publish({
+            type: 'session.upsert',
+            session: structuredClone(this.config.session),
+          });
+          const { resume: _resume, ...fresh } = this.config.input;
+          const native = await this.adapter.startSession(fresh);
+          await this.inbox.append({ type: 'native', nativeSessionId: native.nativeSessionId });
+          this.nativeId = native.nativeSessionId;
+          await this.eventSerial;
+          await this.inbox.append({ type: 'reset-completed' });
+          this.resetPending = false;
+          await this.refreshModels();
+          await this.publish({
+            type: 'notice',
+            level: 'info',
+            code: 'CONTEXT_RESET',
+            message:
+              'Started a fresh provider conversation. Earlier messages remain in the transcript for reference.',
+          });
+        } catch (error) {
+          await this.fail(error);
+          throw error;
+        } finally {
+          this.resetting = false;
+        }
       } else if (body.type === 'turn.interrupt') {
         if (body.turnId !== this.activeTurn) throw new Error('Turn is no longer active.');
         await this.inbox.append({ type: 'dispatched', commandId: command.commandId });
@@ -311,6 +526,7 @@ export class HostedSession {
       if (body.type === 'message.send')
         void this.runNext().catch((error: unknown) => this.fail(error));
     } catch (error) {
+      if (body.type === 'session.model.set') await this.fail(error);
       if (body.type === 'request.answer') {
         const request = this.snapshot().requests.find((r) => r.requestId === body.requestId);
         if (request?.state === 'submitting')
@@ -334,6 +550,19 @@ export class HostedSession {
     return this.status(command.commandId);
   }
 
+  async reject(command: Command, error: unknown): Promise<void> {
+    if (this.fault || this.commands.has(command.commandId)) throw error;
+    await this.inbox.append({ type: 'accepted', command });
+    this.commands.set(command.commandId, command);
+    await this.publish({
+      type: 'command.status',
+      commandId: command.commandId,
+      status: 'rejected',
+      code: 'COMMAND_REJECTED',
+      message: String(error),
+    });
+  }
+
   status(commandId: string): Snapshot['commandStatuses'][number] {
     const status = this.snapshot().commandStatuses.find((value) => value.commandId === commandId);
     if (!status) throw new Error('NOT_FOUND: command not found.');
@@ -346,12 +575,17 @@ export class HostedSession {
     if (!command || command.body.type !== 'message.send') return;
     this.activeTurn = command.commandId;
     try {
+      const attachments = command.body.attachments.length
+        ? await this.config.stageAttachments!(command.body.attachments)
+        : [];
+      if (this.shuttingDown || this.stopped || this.fault) throw new Error('HOST_STOPPING');
       await this.inbox.append({ type: 'dispatched', commandId: command.commandId });
       this.dispatched.add(command.commandId);
       await this.adapter.sendTurn({
         sessionId: this.config.session.sessionId,
         turnId: command.commandId,
         text: command.body.text,
+        attachments,
       });
     } catch (error) {
       await this.publish({
@@ -372,6 +606,7 @@ export class HostedSession {
   }
 
   private async providerEvent(event: ProviderRuntimeEvent): Promise<void> {
+    if (this.resetting && event.type === 'session.exited') return;
     if (event.type === 'session.exited') {
       for (const request of this.snapshot().requests)
         if (request.state === 'open' || request.state === 'submitting')

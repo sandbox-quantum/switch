@@ -774,6 +774,14 @@ tool existing.
 Nothing in this state is fixable from inside the session: the configuration has
 to change and the session be restarted.
 
+### SDK session controls
+
+For a room connected to an SDK session, \`!reset\`, \`!compact\`, and \`!interrupt\`
+use server-authorized durable commands. The agent owner must issue these controls
+from a verified account. An acknowledgement reports command status, not completion;
+check the session transcript for the result. Unsupported controls fail explicitly.
+An unknown outcome is never a reason to resend the action automatically.
+
 ## Tool index
 
 Every Switch tool you call in normal operation, one line each. The two

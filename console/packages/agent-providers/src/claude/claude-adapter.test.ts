@@ -797,6 +797,16 @@ describe('ClaudeAdapter user input', () => {
 });
 
 describe('ClaudeAdapter model switching', () => {
+  it('clears an explicit effort when the user selects the provider default', async () => {
+    const { sdk, adapter } = await startSession();
+    await adapter.setModel(SESSION, { id: 'sonnet', options: { effort: 'high' } });
+    await adapter.setModel(SESSION, { id: 'sonnet', options: {} });
+    expect(sdk.latest().flagSettingsCalls).toEqual([
+      { effortLevel: 'high' },
+      { effortLevel: null },
+    ]);
+  });
+
   it('forwards setModel to the live query', async () => {
     const { sdk, adapter } = await startSession();
     await adapter.setModel(SESSION, { id: 'claude-opus-4-8' });

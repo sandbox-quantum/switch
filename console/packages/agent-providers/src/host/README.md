@@ -17,22 +17,11 @@ client. The private endpoint file contains the loopback address and bearer token
 keep the state directory private. Provider environment and configuration are also
 stored there so the host can recover sessions independently of the desktop app.
 
-The Console development view uses this real host through main-process RPC:
-
-```sh
-SWITCHDASH_DB_FILE=/tmp/console-host-check.db VITE_SESSION_HOST=1 pnpm dev
-```
-
-Run that command from the desktop app directory after building workspace packages.
-The view supports new local sessions, saved conversations, chat, tool activity,
-approvals and question forms. It is not the production session route.
+The production Console path uses the shared daemon and server authority described
+below. The private local daemon is retained for isolated provider testing and
+rejects Switch identity credentials. Neither path uses tmux.
 
 ## Current boundary
-
-The local daemon accepts local-only sessions and rejects Switch identity
-credentials. The separate experimental shared daemon uses the Switch server's
-lease, authorization and reservation path described below. No tmux fallback is
-used by either host.
 
 Host events and client commands contain no publication authority. Verified command
 origin is context only. The shared server must select any request card destination
@@ -42,9 +31,11 @@ MCP room replies use their existing path. The local host publishes nothing to ro
 The wire validators reject the former audience field. Journals written with that
 field require explicit conversion before this development host can reopen them.
 
-Attachments, steering, reset, compact and model changes are unavailable. A partial
-journal write fails visibly and requires explicit repair. Journals currently have
-no retention or compaction policy. This is not a release-ready tmux replacement.
+Reset and model changes use durable command outcomes. Native compaction is enabled
+only when the adapter supports it. Shared sessions support authenticated attachment
+staging; the private local HTTP test daemon does not accept attachment uploads.
+See [SDK sessions](../../../../docs/sdk-sessions.md) for capability and recovery
+semantics. Journals and attachments currently have no automatic retention policy.
 
 ## Verification
 
@@ -59,7 +50,7 @@ SDK_HOST_LIVE=1 pnpm exec vitest run src/host/host.integration.test.ts
 
 The live test uses scratch directories and consumes provider usage.
 
-## Experimental shared host
+## Shared host
 
 `runSharedHost` connects one provider session to the Switch session authority.
 The standalone entry point is `dist/shared-host-daemon.mjs`:

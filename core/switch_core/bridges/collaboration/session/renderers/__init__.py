@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from ..contract import TURN_ENDED, Item, TurnUpsert
+from switch_core.sessions.contract import TURN_ENDED, Item, TurnUpsert
 
 # Where the turn itself has got to. One message per turn is edited in place, so
 # without this a turn that finished and a turn that stalled read identically:

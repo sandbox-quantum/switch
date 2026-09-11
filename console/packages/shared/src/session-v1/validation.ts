@@ -37,6 +37,11 @@ const attachment = z.strictObject({
   name: z.string(),
   mimeType: z.string(),
   bytes: counter,
+  sha256: z
+    .string()
+    .regex(/^[a-f0-9]{64}$/)
+    .nullable()
+    .optional(),
 });
 const item = z.strictObject({
   itemId: id,
@@ -94,6 +99,7 @@ const request = z.strictObject({
   expiresAt: timestamp.nullable(),
 });
 export const sessionSchema = z.strictObject({
+  roomIds: z.array(id).optional(),
   sessionId: id,
   agentId: id,
   provider: z.enum(['claude', 'codex', 'opencode', 'gemini', 'cursor']),
@@ -103,6 +109,20 @@ export const sessionSchema = z.strictObject({
   connectivity: z.enum(['online', 'offline']),
   capabilities,
   pendingRequestIds: z.array(id),
+  models: z
+    .array(
+      z.strictObject({
+        id,
+        label: z.string(),
+        options: z.record(z.string(), z.array(z.string())),
+        imageInput: z.boolean().nullable().optional(),
+      })
+    )
+    .optional(),
+  model: z
+    .strictObject({ id, options: z.record(z.string(), z.string()) })
+    .nullable()
+    .optional(),
 });
 const turn = z.strictObject({
   type: z.literal('turn.upsert'),

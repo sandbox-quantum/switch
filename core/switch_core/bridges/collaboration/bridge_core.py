@@ -27,7 +27,6 @@ from switch_core.bridges.collaboration.models import (
     InboundUserJoin,
     OutboundAttachment,
 )
-from switch_core.bridges.collaboration.session.contract import Command, Surface
 from switch_core.bridges.collaboration.session.demo import SessionDemo
 from switch_core.bridges.collaboration.session.inbound import (
     InboundActor,
@@ -53,6 +52,7 @@ from switch_core.events import AgentRuntimeStateEvent
 from switch_core.logging_context import log_context
 from switch_core.provisioning import Provisioning
 from switch_core.room_service import RoomCreateConfig
+from switch_core.sessions.contract import Command, Surface
 from switch_core.transport import (
     InboundMedia as TransportMedia,
 )

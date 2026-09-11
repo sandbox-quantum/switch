@@ -11,4 +11,10 @@ export {
   snapshotSchema,
 } from './validation';
 export { SessionChatClient } from './client';
-export type { ChatView, ClientCommand, CommandStatus, SessionTransport } from './client';
+export type {
+  AttachmentUpload,
+  ChatView,
+  ClientCommand,
+  CommandStatus,
+  SessionTransport,
+} from './client';

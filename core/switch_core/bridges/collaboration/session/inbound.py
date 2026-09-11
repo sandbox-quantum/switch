@@ -41,8 +41,14 @@ from typing import TYPE_CHECKING, Protocol
 from switch_core.bridges.collaboration.models import InboundInteraction, InboundMessage
 from switch_core.db.models import SessionRequestPost
 from switch_core.db.stores.session_request_post_store import SessionRequestPostStore
+from switch_core.sessions.contract import (
+    Command,
+    Origin,
+    RequestAnswer,
+    RequestResult,
+    Surface,
+)
 
-from .contract import Command, Origin, RequestAnswer, RequestResult, Surface
 from .form import (
     Unanswerable,
     resolve_pressed_option,

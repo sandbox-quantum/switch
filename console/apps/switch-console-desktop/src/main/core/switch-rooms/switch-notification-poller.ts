@@ -4,10 +4,10 @@ class SessionRoomIntents {
   noteIntendedRoom(sessionId: string, roomId: string, _roomName: string | null): void {
     this.rooms.set(sessionId, roomId);
   }
-  takeSharedIntent(sessionId: string, _agentId: string): { rooms: string[]; startCursor: number } {
+  takeSharedIntent(sessionId: string, _agentId: string): { rooms: string[]; startCursor?: number } {
     const room = this.rooms.get(sessionId);
     this.rooms.delete(sessionId);
-    return { rooms: room ? [room] : [], startCursor: 0 };
+    return { rooms: room ? [room] : [] };
   }
 }
 export const switchNotificationPoller = new SessionRoomIntents();

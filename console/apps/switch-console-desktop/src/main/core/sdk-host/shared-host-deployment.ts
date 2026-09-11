@@ -1,5 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { readFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { resolveSharedHostBundlePath } from '@main/core/agent-runtime/impl/resolve-sidecar-bundle';
 import { LocalExecutionContext } from '@main/core/execution-context/local-execution-context';
 import { SshExecutionContext } from '@main/core/execution-context/ssh-execution-context';
@@ -36,18 +38,31 @@ export async function deploySharedHost(
     ]);
     const fs = new SshFileSystem(proxy, directory);
     entrypoint = `${directory}/shared-host-${hash}.mjs`;
+    const existing = await ctx.exec('node', [
+      '-e',
+      "const fs=require('node:fs');try{console.log(require('node:crypto').createHash('sha256').update(fs.readFileSync(process.argv[1])).digest('hex')===process.argv[2])}catch(e){if(e.code!=='ENOENT')throw e;console.log(false)}",
+      entrypoint,
+      hash,
+    ]);
     const temporary = `shared-host-${hash}.${randomUUID()}.tmp`;
     try {
-      await fs.copyLocalFile(bundle, temporary);
+      if (existing.stdout.trim() !== 'true') {
+        await fs.copyLocalFile(bundle, temporary);
+        await ctx.exec('node', [
+          '-e',
+          "require('node:fs').renameSync(process.argv[1],process.argv[2])",
+          `${directory}/${temporary}`,
+          entrypoint,
+        ]);
+      }
     } finally {
       fs.close();
+      await ctx.exec('node', [
+        '-e',
+        "require('node:fs').rmSync(process.argv[1],{force:true})",
+        `${directory}/${temporary}`,
+      ]);
     }
-    await ctx.exec('node', [
-      '-e',
-      "require('node:fs').renameSync(process.argv[1],process.argv[2])",
-      `${directory}/${temporary}`,
-      entrypoint,
-    ]);
   } else ctx = new LocalExecutionContext();
   const { stdout } = await ctx.exec('node', [
     '-e',
@@ -58,4 +73,59 @@ export async function deploySharedHost(
   ]);
   const root = stdout.trim();
   return { ctx, root, entrypoint };
+}
+
+export async function runSharedHostCommand(
+  transport: LocationTransport,
+  deployed: Awaited<ReturnType<typeof deploySharedHost>>,
+  config: unknown,
+  mode: '--ensure' | '--ensure-watch' | '--restart',
+  resuming: boolean
+) {
+  const local = await mkdtemp(join(tmpdir(), 'switch-sdk-launch-'));
+  const localFile = join(local, 'config.json');
+  let remote: string | null = null;
+  try {
+    await writeFile(localFile, JSON.stringify(config), { mode: 0o600 });
+    let configPath = localFile;
+    if (transport.kind === 'ssh') {
+      const proxy = await ensureSshConnected(transport.connectionId, transport.host);
+      const result = await deployed.ctx.exec('node', [
+        '-e',
+        "const fs=require('node:fs'),path=require('node:path');const parent=path.dirname(process.argv[1]);fs.mkdirSync(parent,{recursive:true,mode:0o700});console.log(fs.mkdtempSync(path.join(parent,'.launch-')))",
+        deployed.root,
+      ]);
+      remote = result.stdout.trim();
+      const fs = new SshFileSystem(proxy, remote);
+      try {
+        await fs.copyLocalFile(localFile, 'config.json');
+      } finally {
+        fs.close();
+      }
+      configPath = `${remote}/config.json`;
+      await deployed.ctx.exec('node', [
+        '-e',
+        "require('node:fs').chmodSync(process.argv[1],0o600)",
+        configPath,
+      ]);
+    }
+    return await deployed.ctx.exec('node', [
+      deployed.entrypoint,
+      deployed.root,
+      configPath,
+      mode,
+      String(resuming),
+    ]);
+  } finally {
+    try {
+      if (remote)
+        await deployed.ctx.exec('node', [
+          '-e',
+          "require('node:fs').rmSync(process.argv[1],{recursive:true,force:true})",
+          remote,
+        ]);
+    } finally {
+      await rm(local, { recursive: true, force: true });
+    }
+  }
 }

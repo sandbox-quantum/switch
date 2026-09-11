@@ -38,6 +38,7 @@ export function mcpServerConfigArgs(servers: Record<string, McpServerSpec>): str
     if (spec.transport === 'stdio') {
       push('command', tomlString(spec.command));
       push('args', tomlStringArray(spec.args));
+      if (spec.envVars?.length) push('env_vars', tomlStringArray(spec.envVars));
       if (spec.env && Object.keys(spec.env).length > 0) push('env', tomlStringTable(spec.env));
     } else {
       push('url', tomlString(spec.url));

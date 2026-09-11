@@ -8,11 +8,6 @@ from datetime import UTC, datetime
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from switch_core.bridges.collaboration.session.contract import (
-    TURN_ENDED,
-    Command,
-    Snapshot,
-)
 from switch_core.bridges.collaboration.session.outbound import (
     SessionRequestCards,
     SessionTurnActivity,
@@ -26,6 +21,11 @@ from switch_core.db.models import (
     SdkSessionEvent,
 )
 from switch_core.db.stores.session_request_post_store import SessionRequestPostStore
+from switch_core.sessions.contract import (
+    TURN_ENDED,
+    Command,
+    Snapshot,
+)
 from switch_core.sessions.service import SessionError
 
 logger = logging.getLogger(__name__)

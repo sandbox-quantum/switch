@@ -21,13 +21,6 @@ from typing import Any
 
 import pytest
 
-from switch_core.bridges.collaboration.session.contract import (
-    Answer,
-    Question,
-    QuestionOption,
-    QuestionsResult,
-    SnapshotRequest,
-)
 from switch_core.bridges.collaboration.session.form import (
     Unanswerable,
     posted_form,
@@ -43,6 +36,13 @@ from switch_core.bridges.collaboration.session.text import parse_text_answer
 from switch_core.bridges.collaboration.session.transport import (
     FixtureEventSource,
     project,
+)
+from switch_core.sessions.contract import (
+    Answer,
+    Question,
+    QuestionOption,
+    QuestionsResult,
+    SnapshotRequest,
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[5]

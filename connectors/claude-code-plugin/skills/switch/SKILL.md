@@ -766,6 +766,14 @@ session be restarted. But you can do the changing: the connector ships a
 the reason points at missing or mismatched credentials, offer to run it, and say
 the session will need restarting afterwards either way.
 
+### SDK session controls
+
+For a room connected to an SDK session, `!reset`, `!compact`, and `!interrupt`
+use server-authorized durable commands. The agent owner must issue these controls
+from a verified account. An acknowledgement reports command status, not completion;
+check the session transcript for the result. Unsupported controls fail explicitly.
+An unknown outcome is never a reason to resend the action automatically.
+
 ## Tool index
 
 Every Switch tool you call in normal operation, one line each. The two

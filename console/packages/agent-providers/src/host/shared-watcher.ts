@@ -1,12 +1,13 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { readFile, unlink } from 'node:fs/promises';
+import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { SwitchEventStream } from '@sandboxaq/switch-agent-runtime';
 import { z } from 'zod';
 import { Journal } from './journal';
 import { ensureSharedProcess, sharedSessionRoot } from './launch';
-import { replaceOwner, withOwnershipLock } from './ownership-lock';
+import { releaseOwner, replaceOwner, withOwnershipLock } from './ownership-lock';
+import { roomInputId } from './room-inbox';
 import { readSharedCredentials, sharedConfigSchema, type SharedHostConfig } from './shared-config';
 
 const assignmentSchema = z.strictObject({
@@ -29,6 +30,10 @@ function sessionIdFor(agentId: string, roomId: string, messageId: string): strin
 async function stopped(sessionId: string): Promise<boolean> {
   try {
     const text = await readFile(join(sharedSessionRoot(sessionId), 'inbox.jsonl'), 'utf8');
+    if (text && !text.endsWith('\n'))
+      throw new Error(
+        'Watcher session journal has an incomplete record; recovery review is required.'
+      );
     return text
       .split('\n')
       .slice(0, -1)
@@ -102,6 +107,7 @@ export async function runSharedWatcher(
   signal: AbortSignal
 ): Promise<void> {
   const ownerPath = join(root, 'shared-owner.lock');
+  const owner = { pid: process.pid, token: randomUUID() };
   await withOwnershipLock(root, async () => {
     try {
       const { pid } = z
@@ -112,7 +118,7 @@ export async function runSharedWatcher(
     } catch (error) {
       if (!['ENOENT', 'ESRCH'].includes((error as NodeJS.ErrnoException).code ?? '')) throw error;
     }
-    await replaceOwner(ownerPath, { pid: process.pid });
+    await replaceOwner(ownerPath, owner);
   });
   const stop = new AbortController();
   const abort = () => stop.abort(signal.reason);
@@ -157,24 +163,19 @@ export async function runSharedWatcher(
       filter: 'addressed',
       spawnCapable: true,
       rooms: [],
-      startCursor: assignments.cursor,
+      startCursor: assignments.cursor || undefined,
       signal: stop.signal,
       log: console,
       onEvent: (event) => {
         pending = pending.then(async () => {
-          if (event.type !== 'message')
-            throw new Error(
-              `Shared SDK auto-start does not support ${event.type}; open a session to handle this event.`
-            );
-          const payload = z
-            .object({ message_id: z.string().min(1), addressed: z.literal(true) })
-            .parse(event.payload);
+          const messageId = roomInputId(event);
+          if (!messageId) return;
           const config = await assignments.assign(
             sharedConfigSchema.parse(JSON.parse(await readFile(join(root, 'config.json'), 'utf8'))),
             {
               sequence: z.number().int().positive().parse(event.sequence),
               roomId: event.room_id,
-              messageId: payload.message_id,
+              messageId,
             }
           );
           await launch(config);
@@ -210,7 +211,7 @@ export async function runSharedWatcher(
     stop.abort();
     signal.removeEventListener('abort', abort);
     await pending.catch(() => {});
-    await unlink(ownerPath);
+    await releaseOwner(root, ownerPath, owner);
   }
   if (fault) throw fault;
 }

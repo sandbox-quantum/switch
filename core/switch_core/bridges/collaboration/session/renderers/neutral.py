@@ -18,7 +18,8 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-from ..contract import Item, SnapshotRequest, TurnUpsert
+from switch_core.sessions.contract import Item, SnapshotRequest, TurnUpsert
+
 from . import RequestReference, turn_state
 
 

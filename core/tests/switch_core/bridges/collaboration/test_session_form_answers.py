@@ -17,10 +17,6 @@ from typing import Any
 
 import pytest
 
-from switch_core.bridges.collaboration.session.contract import (
-    ApprovalResult,
-    QuestionsResult,
-)
 from switch_core.bridges.collaboration.session.form import (
     Unanswerable,
     posted_form,
@@ -30,6 +26,10 @@ from switch_core.bridges.collaboration.session.form import (
 from switch_core.bridges.collaboration.session.inbound import Refused
 from switch_core.bridges.collaboration.session.renderers import ANSWER_ACTION
 from switch_core.bridges.collaboration.session.text import parse_text_answer
+from switch_core.sessions.contract import (
+    ApprovalResult,
+    QuestionsResult,
+)
 
 from .test_session_answers import (
     _approval_form,

@@ -12,8 +12,8 @@ and resumes the saved native conversation under a new server-issued epoch.
 A stopped conversation cannot be reopened as a new conversation.
 
 The execution host supplies the working directory, provider installation,
-credentials, environment, shell setup, skills and MCP configuration. Provider
-settings changed during a session take effect when its host restarts. A cold
+credentials, environment, shell setup, skills and MCP configuration. Skills and MCP changes take effect when the host restarts. Confirmed model
+changes apply to the next turn and survive host restart. A cold
 provider startup can take up to two minutes before Console reports a startup
 failure. The saved session remains available for inspection after a failure;
 its initial prompt is not automatically sent again.
@@ -35,11 +35,69 @@ its initial prompt is not automatically sent again.
   before recovery. The transcript reconnects without resending commands.
 - A command dispatched before a crash can have an unknown outcome. Recovery
   marks affected work unknown or interrupted. It does not repeat the action or
-  report success without evidence. Use **Check command status** when available.
+  report success without evidence. Use **Check command status** when available. If the server confirms an unknown
+  outcome, **Acknowledge unknown outcome and clear draft** releases the composer
+  without resending the action or changing its recorded outcome.
 - Pending approvals and questions remain subject to the server's first-answer
   arbitration. A callback whose outcome is uncertain is not invoked again.
 - Room replay gaps stop automatic delivery with a visible error. Review room
   context before starting further work. The host cannot infer missing messages.
+
+## Context, models and attachments
+
+Reset starts a fresh native conversation under a new server-issued epoch. The
+transcript remains as history; earlier messages are not inserted into the new
+context. Reset requires an idle session with no queued turns or pending requests.
+Commands from the previous epoch cannot execute afterward. A crash between reset
+intent and durable completion leaves the reset unknown and blocks automatic resume.
+Review the outcome before replacing that session; recovery never retries reset.
+
+The model selector shows the native provider's model catalog and available options.
+The server and host reject unsupported selections and changes while work is pending.
+The host persists a selection only after the native operation succeeds. An uncertain
+model change stops further execution until recovery, without repeating the change.
+Codex offers **Keep current effort** because omitting its turn override preserves
+the native thread setting. Choose an explicit effort to replace it. Claude
+**Provider default** clears the previous session effort override.
+
+Compaction uses a native operation: Claude's `/compact` with a completed compaction
+boundary, Codex's `thread/compact/start` with turn completion, or OpenCode's
+`session.summarize` with native busy/idle completion. Console shows progress and the
+outcome. A timeout or interrupted completion remains unknown. Gemini CLI's current
+ACP command registry has no compaction operation. The installed Cursor ACP command catalog also advertises no compaction operation. Neither receives a substitute summarization prompt.
+
+| Provider | Reset | Model selection | Native compaction | Attachments |
+| --- | --- | --- | --- | --- |
+| Claude Code | Yes | Native catalog and effort | When `/compact` is advertised | Images as bytes; other files staged |
+| Codex | Yes | Native catalog and reasoning effort | App-server compaction | Local images and staged file mentions |
+| OpenCode | Yes | Connected models and native variants | Native session compaction | Staged file URLs |
+| Gemini CLI | Yes | ACP model catalog | Unavailable | Images/resources as bytes |
+| Cursor | Yes | ACP model catalog | Unavailable | Images as bytes; staged file references |
+
+Controls depend on the connected provider's reported support. OpenCode models
+that report no image input are labelled in the selector and reject images before
+dispatch. A model can still
+reject an image or exhaust its account quota; those failures remain visible.
+
+Attach files with the picker, paste, or drag and drop. Uploads require session-owner
+authorization. The server stores bytes and returns durable, session-scoped references.
+Only the active authorized host can download them. The host checks length and hash,
+then writes private files on the execution machine before provider dispatch. Laptop
+paths are never sent as remote attachments. Upload retries retain their attachment
+identity; transfer retries cannot repeat a provider action.
+
+Limits are eight files per message and 10 MiB per file. PNG, JPEG, WebP, PDF, UTF-8
+text, Markdown, CSV, JSON and opaque binary files are accepted. Filenames cannot
+contain directory traversal or control characters. Files remain with the transcript;
+there is currently no automatic attachment retention policy.
+
+Native skills, MCP settings and credentials come from the execution host. Managed
+provider homes preserve user configuration and add Switch's configuration. OpenCode
+retains native JSONC settings and skill directories alongside managed skills.
+Relative configuration paths resolve on the execution host. Restart an idle host
+after editing skills or MCP; changing a laptop's configuration does not update an
+SSH machine. No credentials are copied from the laptop as part of file attachment
+transfer.
 
 ## Capability and deployment limits
 
@@ -62,7 +120,7 @@ not establish that an external host has these dependencies or credentials.
 
 Run provider crash and delivery tests with
 `pnpm --filter @switch-console/agent-providers test`. Run live provider checks with
-`SDK_HOST_LIVE=1 pnpm --filter @switch-console/agent-providers exec vitest run src/host/host.integration.test.ts`.
+`SDK_HOST_LIVE=1 SDK_CAPABILITIES_LIVE=1 pnpm --filter @switch-console/agent-providers exec vitest run src/host/host.integration.test.ts`.
 Live tests use the installed providers and their existing authentication.
 
 Backend session and migration tests use real PostgreSQL containers. Run
@@ -72,5 +130,33 @@ The desktop's opt-in `shared-host-deployment.integration.test.ts` uses an isolat
 local SSH fixture. Set `SDK_SSH_TEST_KEY` to its disposable private-key path and
 `SDK_SSH_TEST_PORT` to its published localhost port. The fixture must permit key
 authentication as root, provide Node and `/workspace`, and permit TCP forwarding.
-The tests exercise real direct SSH, ProxyCommand, ProxyJump, SFTP deployment and
-reconnection to saved state. They do not run authenticated providers remotely.
+The tests exercise real direct SSH, ProxyCommand, ProxyJump, SFTP deployment,
+standalone bundle startup and reconnection to saved state. They also execute
+attachment staging, transient transfer retry, native skill paths and MCP environment
+checks on the SSH machine. The download source and provider are simulated in those
+checks; they do not run authenticated providers remotely.
+
+`SDK_ATTACHMENTS_LIVE=1` enables `src/host/attachments.integration.test.ts`. It
+requires native project-skill discovery, real MCP invocation, staged document
+contents and image recognition when the selected model supports images. Cursor
+requires an account with available usage.
+
+## Room discovery and supported execution hosts
+
+A host binds its live room connection to its SDK session through the server.
+Console refreshes this binding for existing and newly discovered sessions, including
+room detachment. Owner-issued room controls use the same durable command path as
+Console controls. Addressed messages, subscribed join notifications, and task events
+retain durable delivery identities. Room attachments are copied from authenticated
+server media into session-owned storage; missing media is reported alongside the
+message instead of silently dropping the text.
+
+Attachment hashes are stored at upload and checked during download and staging.
+Deleting the SDK session also removes its attachment blobs. Older uploads without
+a stored digest receive transport checks but have no original-upload integrity proof.
+
+Local Windows execution is currently unavailable because process-group fencing
+requires a POSIX host. Use a POSIX SSH execution host. Tmux is optional and applies
+only to user terminals and lifecycle scripts; it does not execute SDK sessions.
+Codex and Cursor do not advertise interactive questions until their native execution
+mode can support that interaction. Approvals remain separate capabilities.

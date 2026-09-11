@@ -1,13 +1,21 @@
+import base64
+import binascii
+import json
 from typing import Annotated, Literal
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Request
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.bridges.collaboration.lifecycle_service import (
     CollaborationBridgeLifecycleService,
 )
-from switch_core.bridges.collaboration.session.contract import (
+from switch_core.db.models import User
+from switch_core.gateway.auth import get_current_user
+from switch_core.gateway.dependencies import get_collab_lifecycle, get_session_factory
+from switch_core.sessions.attachments import MAX_ATTACHMENT_BYTES
+from switch_core.sessions.contract import (
+    Attachment,
     Command,
     CommandBody,
     CommandStatus,
@@ -16,10 +24,7 @@ from switch_core.bridges.collaboration.session.contract import (
     Session,
     Snapshot,
 )
-from switch_core.db.models import User
-from switch_core.gateway.auth import get_current_user
-from switch_core.gateway.dependencies import get_collab_lifecycle, get_session_factory
-from switch_core.sessions.service import SessionAuthority
+from switch_core.sessions.service import SessionAuthority, SessionError
 
 router = APIRouter()
 Factory = Annotated[async_sessionmaker[AsyncSession], Depends(get_session_factory)]
@@ -94,3 +99,35 @@ async def submit(
     )
     await lifecycle.refresh_sdk_session(session_id)
     return status
+
+
+class UploadAttachment(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+    name: str
+    mime_type: str = Field(alias="mimeType")
+    data: str
+
+
+@router.put("/{session_id}/attachments/{attachment_id}")
+async def upload_attachment(
+    session_id: str,
+    attachment_id: str,
+    request: Request,
+    user: CurrentUser,
+    factory: Factory,
+) -> Attachment:
+    authority = SessionAuthority(factory)
+    await authority.snapshot(session_id, user.id)
+    chunks = bytearray()
+    async for chunk in request.stream():
+        chunks.extend(chunk)
+        if len(chunks) > MAX_ATTACHMENT_BYTES * 4 // 3 + 4096:
+            raise SessionError("PAYLOAD_TOO_LARGE", "Attachment exceeds 10 MiB.")
+    try:
+        payload = UploadAttachment.model_validate(json.loads(chunks))
+        data = base64.b64decode(payload.data, validate=True)
+    except (ValueError, binascii.Error) as exc:
+        raise SessionError("INVALID_ATTACHMENT", "Invalid attachment upload.") from exc
+    return await authority.upload_attachment(
+        session_id, user.id, attachment_id, payload.name, payload.mime_type, data
+    )

@@ -63,3 +63,11 @@ describe('featureArgs', () => {
     ]);
   });
 });
+
+it('forwards MCP credentials by name without putting values in argv', () => {
+  const args = mcpServerConfigArgs({
+    switch: { transport: 'stdio', command: 'node', args: [], envVars: ['SWITCH_API_TOKEN'] },
+  });
+  expect(args).toContain('mcp_servers.switch.env_vars=["SWITCH_API_TOKEN"]');
+  expect(args.some((arg) => arg.startsWith('mcp_servers.switch.env='))).toBe(false);
+});

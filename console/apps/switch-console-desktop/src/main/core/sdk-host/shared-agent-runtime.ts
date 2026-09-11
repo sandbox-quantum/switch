@@ -1,4 +1,4 @@
-import { deploySharedHost } from './shared-host-deployment';
+import { deploySharedHost, runSharedHostCommand } from './shared-host-deployment';
 export { deploySharedHost } from './shared-host-deployment';
 import { randomUUID } from 'node:crypto';
 import { join, posix } from 'node:path';
@@ -20,12 +20,14 @@ import { getPlugin } from '@main/core/providers/plugin-registry';
 import { AGENT_ENV_VARS } from '@main/core/pty/pty-env';
 import { loadSessionWithAgent } from '@main/core/sessions/session-join';
 import { switchNotificationPoller } from '@main/core/switch-rooms/switch-notification-poller';
+import { switchRoomService } from '@main/core/switch-rooms/switch-room-service';
 import {
   fetchSdkCommandStatus,
   fetchSdkSnapshot,
   submitSdkCommand,
 } from '@main/core/switch-servers/gateway-client';
 import { getServer } from '@main/core/switch-servers/servers-store';
+import { makePtyId } from '@shared/core/pty/ptyId';
 import type { Session } from '@shared/core/sessions/sessions';
 import type { SwitchServer } from '@shared/core/switch-servers/switch-servers';
 
@@ -79,13 +81,13 @@ export class SharedAgentRuntime implements AgentRuntimeProvider {
       session.id,
       false
     );
-    const launched = await ctx.exec('node', [
-      entrypoint,
-      root,
-      Buffer.from(JSON.stringify(config)).toString('base64'),
+    const launched = await runSharedHostCommand(
+      this.transport,
+      { ctx, root, entrypoint },
+      config,
       restart ? '--restart' : '--ensure',
-      String(isResuming),
-    ]);
+      isResuming
+    );
     const created = JSON.parse(launched.stdout).created === true;
     let snapshot;
     const deadline = Date.now() + 120000;
@@ -112,7 +114,15 @@ export class SharedAgentRuntime implements AgentRuntimeProvider {
       throw new Error(
         `Shared SDK host did not become ready. Inspect ${root}/supervisor.log on the execution host.`
       );
-    if (created && initialPrompt?.trim() && !intended.rooms.length)
+    const roomContext = {
+      sessionId: session.id,
+      providerId: session.providerId,
+      ptyId: makePtyId(session.providerId, session.id),
+    };
+    if (intended.rooms[0])
+      switchRoomService.setSessionRoom(roomContext, intended.rooms[0], agent.switchAgentId, null);
+    else await switchRoomService.restoreConnection(roomContext);
+    if (created && initialPrompt?.trim())
       await submitSdkCommand(this.server, {
         contractVersion: 1,
         sessionId: session.id,
@@ -162,11 +172,19 @@ export async function buildSharedHostConfig(
   >,
   params: { sessionPath: string; sessionEnvVars: Record<string, string>; shellSetup?: string },
   transport: LocationTransport,
-  intended: { rooms: string[]; startCursor: number }
+  intended: { rooms: string[]; startCursor?: number }
 ): Promise<SharedHostConfig> {
   const agent = await getAgentById(session.agentId);
   if (!agent?.switchAgentId) throw new Error('Link the agent to Switch before launching its host.');
   const specialization = (await agentLaunchSpecialization(session.agentId)) ?? {};
+  if (!providerAdapterRegistry.supports(session.providerId))
+    throw new Error(
+      'SDK sessions support Claude Code, Codex, OpenCode, Gemini and Cursor. Choose one of these providers.'
+    );
+  if (transport.kind !== 'ssh' && process.platform === 'win32')
+    throw new Error(
+      'Persistent SDK sessions require a POSIX execution host. Configure an SSH host for Windows Console.'
+    );
   const provider = sharedConfigSchema.shape.start.shape.provider.parse(session.providerId);
   const selection = await hostDependencyStore.getSelection(
     transport.kind === 'ssh' ? transport.connectionId : 'local',
@@ -207,7 +225,7 @@ export async function buildSharedHostConfig(
         approvals: capabilities.approvals,
         questions: capabilities.userInput,
         interrupt: true,
-        reset: false,
+        reset: true,
         compact: false,
         modelChange: false,
         attachmentMimeTypes: [],

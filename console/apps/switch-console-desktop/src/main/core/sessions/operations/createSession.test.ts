@@ -7,6 +7,8 @@ const mocks = vi.hoisted(() => ({
   getLocation: vi.fn(),
   insert: vi.fn(),
   deleteFn: vi.fn(),
+  update: vi.fn(),
+  set: vi.fn(),
   provisionSessionRuntime: vi.fn(),
   registerSession: vi.fn(),
   startSession: vi.fn(),
@@ -24,6 +26,7 @@ vi.mock('@main/db/client', () => ({
   db: {
     insert: mocks.insert,
     delete: mocks.deleteFn,
+    update: mocks.update,
   },
 }));
 
@@ -64,6 +67,8 @@ function setupInsertMock(options: { conflict?: boolean } = {}) {
     }),
   });
   mocks.deleteFn.mockReturnValue({ where: () => Promise.resolve() });
+  mocks.update.mockReturnValue({ set: mocks.set });
+  mocks.set.mockReturnValue({ where: async () => {} });
 }
 
 const baseParams = {
@@ -112,6 +117,7 @@ describe('createSession', () => {
     const result = await createSession(baseParams);
     expect(result).toEqual({ success: false, error: { type: 'spawn-failed', message: 'boom' } });
     expect(mocks.deleteFn).not.toHaveBeenCalled();
+    expect(mocks.set).toHaveBeenCalledWith({ status: 'review' });
   });
 
   it('returns already-exists when the id is taken, without provisioning or rollback', async () => {

@@ -50,14 +50,7 @@ export interface OpencodeAdapterOptions {
    * falling back to polling `session.status`.
    */
   admissionTimeoutMs?: number;
-  /**
-   * Skills to place in every session's isolated config home.
-   *
-   * The transport isolates `XDG_CONFIG_HOME` to keep the user's own MCP
-   * registrations out of a session, which hides their `skills/` directory with
-   * them. Anything the session must be able to load — the Switch room-workflow
-   * skill, for one — has to be supplied here or it is simply not there.
-   */
+  /** Managed skills added alongside the execution host's native configuration. */
   skills?: OpencodeSkill[];
   /** Replaces the spawned server; the unit tests drive the adapter through this. */
   transport?: OpencodeTransport;
@@ -85,11 +78,13 @@ interface SessionRecord {
   runtimeMode: RuntimeMode;
   model?: { providerID: string; modelID: string };
   systemContext?: string;
+  variant?: string;
   mcpNames: string[];
   transport: OpencodeSessionTransport;
   stopping: boolean;
   exited: boolean;
   activeTurnId?: string;
+  compaction?: { busySeen: boolean; resolve: () => void; reject: (error: Error) => void };
   /** An `idle` is only honored once OpenCode has confirmed the prompt with a `busy`. */
   awaitingBusy: boolean;
   admissionTimer?: ReturnType<typeof setTimeout>;
@@ -173,6 +168,7 @@ export class OpencodeAdapter implements ProviderAdapter {
       runtimeMode: input.runtimeMode,
       ...(model ? { model } : {}),
       ...(input.systemContext ? { systemContext: input.systemContext } : {}),
+      ...(input.model?.options?.variant ? { variant: input.model.options.variant } : {}),
       mcpNames: Object.keys(input.mcpServers),
       transport,
       stopping: false,
@@ -219,6 +215,7 @@ export class OpencodeAdapter implements ProviderAdapter {
   async sendTurn(input: ProviderSendTurnInput): Promise<ProviderTurnStartResult> {
     const record = this.require(input.sessionId);
     const model = input.model ? parseModelId(input.model.id) : record.model;
+    const variant = input.model ? input.model.options?.variant : record.variant;
     const steeredInto = record.activeTurnId;
     const turnId = steeredInto ?? input.turnId;
     const previousAwaitingBusy = record.awaitingBusy;
@@ -233,6 +230,7 @@ export class OpencodeAdapter implements ProviderAdapter {
       await record.transport.prompt({
         text: input.text,
         ...(record.systemContext ? { system: record.systemContext } : {}),
+        ...(variant ? { variant } : {}),
         ...(model ? { model } : {}),
         ...(input.attachments && input.attachments.length > 0
           ? {
@@ -317,9 +315,40 @@ export class OpencodeAdapter implements ProviderAdapter {
     await record.transport.replyQuestion(requestId, toQuestionAnswers(answers));
   }
 
+  async canCompact(sessionId: string): Promise<boolean> {
+    return Boolean(this.require(sessionId).transport.compact);
+  }
+
+  async compactSession(sessionId: string): Promise<void> {
+    const record = this.require(sessionId);
+    if (record.activeTurnId || record.compaction) throw new Error('SESSION_BUSY');
+    if (!record.transport.compact) throw new Error('Native compaction is unavailable.');
+    let resolve!: () => void;
+    let reject!: (error: Error) => void;
+    const promise = new Promise<void>((done, fail) => {
+      resolve = done;
+      reject = fail;
+    });
+    const completion = { promise, resolve, reject };
+    void completion.promise.catch(() => {});
+    record.compaction = { ...completion, busySeen: false };
+    try {
+      await record.transport.compact(record.model);
+      await completion.promise;
+    } finally {
+      record.compaction = undefined;
+    }
+  }
+
+  async listModels(sessionId: string) {
+    const transport = this.require(sessionId).transport;
+    return transport.listModels ? transport.listModels() : [];
+  }
+
   async setModel(sessionId: string, model: ModelSelection): Promise<void> {
     const record = this.require(sessionId);
     record.model = parseModelId(model.id);
+    record.variant = model.options?.variant;
   }
 
   async stopSession(sessionId: string): Promise<void> {
@@ -328,6 +357,7 @@ export class OpencodeAdapter implements ProviderAdapter {
       throw new ProviderSessionError('opencode', sessionId, 'unknown session');
     }
     record.stopping = true;
+    record.compaction?.reject(new Error('Native compaction was interrupted by session shutdown.'));
     await this.cancelPending(record);
     if (record.activeTurnId !== undefined) {
       this.completeTurn(record, record.activeTurnId, 'interrupted', 'session stopped');
@@ -367,6 +397,7 @@ export class OpencodeAdapter implements ProviderAdapter {
 
   private handleUnexpectedExit(record: SessionRecord, reason: string): void {
     if (record.stopping || record.exited) return;
+    record.compaction?.reject(new Error(reason));
     this.sessions.delete(record.sessionId);
     this.emit(record, { type: 'runtime.error', message: reason });
     if (record.activeTurnId !== undefined) {
@@ -387,7 +418,7 @@ export class OpencodeAdapter implements ProviderAdapter {
     try {
       for await (const event of record.transport.events) {
         try {
-          this.handleEvent(record, event);
+          await this.handleEvent(record, event);
         } catch (error) {
           this.logger.error('opencode: event handling failed', {
             sessionId: record.sessionId,
@@ -405,7 +436,7 @@ export class OpencodeAdapter implements ProviderAdapter {
     }
   }
 
-  private handleEvent(record: SessionRecord, event: OpencodeEvent): void {
+  private async handleEvent(record: SessionRecord, event: OpencodeEvent): Promise<void> {
     const properties = (event as { properties?: Record<string, unknown> }).properties ?? {};
     const sessionId = properties['sessionID'];
     if (typeof sessionId === 'string' && sessionId !== record.nativeSessionId) return;
@@ -427,7 +458,7 @@ export class OpencodeAdapter implements ProviderAdapter {
         this.handleDelta(record, event);
         return;
       case 'permission.asked':
-        void this.handlePermissionAsked(record, event);
+        await this.handlePermissionAsked(record, event);
         return;
       case 'permission.replied': {
         const { requestID, reply } = event.properties;
@@ -440,7 +471,7 @@ export class OpencodeAdapter implements ProviderAdapter {
         return;
       }
       case 'question.asked':
-        this.handleQuestionAsked(record, event);
+        await this.handleQuestionAsked(record, event);
         return;
       case 'question.replied':
       case 'question.rejected': {
@@ -481,12 +512,15 @@ export class OpencodeAdapter implements ProviderAdapter {
       return;
     }
     if (status === 'busy') {
+      if (record.compaction) record.compaction.busySeen = true;
       record.awaitingBusy = false;
       this.clearAdmissionTimer(record);
       this.emitState(record, 'running');
       return;
     }
     if (record.interrupting) return;
+    if (record.compaction && !record.compaction.busySeen) return;
+    record.compaction?.resolve();
     this.emitState(record, 'ready');
     if (record.activeTurnId === undefined || record.awaitingBusy) return;
     this.completeTurn(record, record.activeTurnId, 'completed', undefined, event);
@@ -577,6 +611,14 @@ export class OpencodeAdapter implements ProviderAdapter {
     event: Extract<OpencodeEvent, { type: 'permission.asked' }>
   ): Promise<void> {
     const { id, permission, patterns, metadata } = event.properties;
+    if (record.activeTurnId === undefined) {
+      await record.transport.replyPermission(id, 'reject');
+      this.emit(record, {
+        type: 'runtime.warning',
+        message: 'Rejected a provider permission request with no active turn.',
+      });
+      return;
+    }
     if (record.runtimeMode === 'full-access') {
       // Doom-loop detection and subagent sessions are evaluated against rules
       // that never include the session ruleset, so full access still has to
@@ -617,12 +659,19 @@ export class OpencodeAdapter implements ProviderAdapter {
     );
   }
 
-  private handleQuestionAsked(
+  private async handleQuestionAsked(
     record: SessionRecord,
     event: Extract<OpencodeEvent, { type: 'question.asked' }>
-  ): void {
+  ): Promise<void> {
     const turnId = record.activeTurnId;
-    if (turnId === undefined) return;
+    if (turnId === undefined) {
+      await record.transport.rejectQuestion(event.properties.id);
+      this.emit(record, {
+        type: 'runtime.warning',
+        message: 'Rejected a provider question with no active turn.',
+      });
+      return;
+    }
     const { id, questions } = event.properties;
     record.pendingQuestions.set(id, { turnId });
     this.emit(
@@ -848,16 +897,17 @@ function toolTitle(
   input: Record<string, unknown>,
   stateTitle: string | undefined
 ): string {
+  const title = stateTitle?.trim() || tool;
   const pick = (key: string): string | undefined => {
     const value = input[key];
     return typeof value === 'string' && value.length > 0 ? value : undefined;
   };
-  if (type === 'command_execution') return pick('command') ?? stateTitle ?? tool;
-  if (type === 'file_change') return pick('filePath') ?? stateTitle ?? tool;
+  if (type === 'command_execution') return pick('command') ?? title;
+  if (type === 'file_change') return pick('filePath') ?? title;
   if (type === 'subagent') {
-    return pick('description') ?? pick('prompt')?.slice(0, 120) ?? stateTitle ?? tool;
+    return pick('description') ?? pick('prompt')?.slice(0, 120) ?? title;
   }
-  return stateTitle ?? tool;
+  return title;
 }
 
 /**

@@ -1168,6 +1168,13 @@ class MediaBlob(Base):
     uri: Mapped[str] = mapped_column(Text, unique=True, nullable=False)
     content_type: Mapped[str | None] = mapped_column(Text, nullable=True)
     filename: Mapped[str | None] = mapped_column(Text, nullable=True)
+    sha256: Mapped[str | None] = mapped_column(Text, nullable=True)
+    sdk_session_id: Mapped[str | None] = mapped_column(
+        Text,
+        ForeignKey("sdk_sessions.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+    )
     size: Mapped[int] = mapped_column(BigInteger, nullable=False)
     data: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
     created_at: Mapped[str] = mapped_column(
@@ -1200,6 +1207,7 @@ class SdkSession(Base):
 
     id: Mapped[str] = mapped_column(Text, primary_key=True)
     agent_id: Mapped[str] = mapped_column(Text, ForeignKey("agents.id"), nullable=False)
+    connection_id: Mapped[str | None] = mapped_column(Text, unique=True, nullable=True)
     host_id: Mapped[str] = mapped_column(Text, nullable=False)
     epoch: Mapped[str] = mapped_column(Text, nullable=False)
     lease_expires_at: Mapped[datetime] = mapped_column(
@@ -1208,7 +1216,9 @@ class SdkSession(Base):
     snapshot: Mapped[dict] = mapped_column(JSONB, nullable=False)
     host_sequence: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
 
-    recovery: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    recovery: Mapped[dict] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default="{}"
+    )
 
 
 class SdkSessionEvent(Base):

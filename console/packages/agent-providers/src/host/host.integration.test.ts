@@ -76,6 +76,9 @@ it
       });
       await expect.poll(async () => (await get()).session.status, { timeout: 20000 }).toBe('ready');
       const initial = await get();
+      console.info(
+        `${provider}: ${initial.session.models?.length ?? 0} models, compact=${initial.session.capabilities.compact}`
+      );
       const command = {
         contractVersion: 1 as const,
         sessionId,
@@ -92,7 +95,10 @@ it
       await client.submit(command);
       const first = await completed(command.commandId);
       expect(first.items.filter((i) => i.kind === 'user-message')).toHaveLength(1);
-      expect(first.items.some((i) => i.kind === 'tool-activity')).toBe(true);
+      expect(
+        first.items.some((i) => i.kind === 'tool-activity'),
+        JSON.stringify(first.items)
+      ).toBe(true);
       expect(
         first.items
           .filter((i) => i.kind === 'assistant-message')
@@ -139,6 +145,60 @@ it
           .map((i) => i.text)
           .join(' ')
       ).toMatch(/pelican/i);
+      if (process.env.SDK_CAPABILITIES_LIVE === '1') {
+        const current = await get();
+        expect(current.session.capabilities.modelChange).toBe(true);
+        expect(current.session.capabilities.compact).toBe(
+          ['claude', 'codex', 'opencode'].includes(provider)
+        );
+        const choice =
+          current.session.models?.find((model) => model.id === current.session.model?.id) ??
+          current.session.models?.find((model) => /sonnet|big-pickle/.test(model.id)) ??
+          current.session.models?.[0];
+        if (choice) {
+          const change = {
+            ...command,
+            epoch: current.session.epoch,
+            commandId: randomUUID(),
+            body: { type: 'session.model.set' as const, modelId: choice.id, options: {} },
+          };
+          expect((await client.submit(change)).status).toBe('applied');
+          expect((await get()).session.model?.id).toBe(choice.id);
+        }
+        if (current.session.capabilities.compact) {
+          const compact = {
+            ...command,
+            epoch: current.session.epoch,
+            commandId: randomUUID(),
+            body: { type: 'session.compact' as const },
+          };
+          const result = await client.submit(compact);
+          console.info(`${provider}: native compaction ${result.status}: ${result.message ?? ''}`);
+          expect(result.status).toBe('applied');
+          expect((await client.submit(compact)).status).toBe('applied');
+        }
+        const beforeReset = await get();
+        const reset = {
+          ...command,
+          epoch: beforeReset.session.epoch,
+          commandId: randomUUID(),
+          body: { type: 'session.reset' as const },
+        };
+        expect((await client.submit(reset)).status).toBe('applied');
+        const fresh = await get();
+        expect(fresh.session.epoch).not.toBe(beforeReset.session.epoch);
+        expect(fresh.items).toEqual(beforeReset.items);
+        expect((await client.submit(reset)).status).toBe('applied');
+        const nextTurn = {
+          ...followup,
+          epoch: fresh.session.epoch,
+          commandId: randomUUID(),
+          body: { ...followup.body, text: 'Reply NEW_CONTEXT_READY without using tools.' },
+        };
+        await client.submit(nextTurn);
+        await completed(nextTurn.commandId);
+        console.info(`${provider}: model selection and native reset passed`);
+      }
     } finally {
       await server.close();
       await rm(root, { recursive: true, force: true });

@@ -18,9 +18,7 @@ from typing import Any, cast
 import pytest
 
 from switch_core.bridges.collaboration.adapter import RichContentFailed
-from switch_core.bridges.collaboration.session.contract import SnapshotRequest
 from switch_core.bridges.collaboration.session.outbound import SessionRequestCards
-from switch_core.bridges.collaboration.session.projection import SessionProjection
 from switch_core.bridges.collaboration.session.renderers import RequestReference
 from switch_core.bridges.collaboration.session.renderers.slack import (
     render_approval,
@@ -36,6 +34,8 @@ from switch_core.bridges.collaboration.slack.adapter import (
 )
 from switch_core.db.models import SessionRequestPost
 from switch_core.db.stores.session_request_post_store import SessionRequestPostStore
+from switch_core.sessions.contract import SnapshotRequest
+from switch_core.sessions.projection import SessionProjection
 
 from .test_slack_agent_sessions import FakeWebClient
 

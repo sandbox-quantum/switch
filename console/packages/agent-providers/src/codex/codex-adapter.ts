@@ -43,7 +43,6 @@ import {
   type CodexItemNotification,
   type CodexMcpElicitationParams,
   type CodexPermissionsApprovalParams,
-  type CodexSandboxMode,
   type CodexThreadItem,
   type CodexThreadOpenResponse,
   type CodexThreadStatusChangedNotification,
@@ -92,6 +91,7 @@ interface CodexSessionState {
   client: StdioJsonRpcClient;
   model?: string;
   effort?: string;
+  compaction?: { resolve: () => void; reject: (error: Error) => void };
   activeNativeTurnId?: string;
   /** Caller turn ids handed to `turn/start` but not yet bound to a native id. */
   unboundTurnIds: string[];
@@ -106,17 +106,16 @@ interface CodexSessionState {
 
 interface ThreadModeConfig {
   approvalPolicy: CodexAskForApproval;
-  sandbox: CodexSandboxMode;
 }
 
 function threadModeConfig(mode: RuntimeMode): ThreadModeConfig {
   switch (mode) {
     case 'approval-required':
-      return { approvalPolicy: 'untrusted', sandbox: 'workspace-write' };
+      return { approvalPolicy: 'untrusted' };
     case 'auto-accept-edits':
-      return { approvalPolicy: 'on-request', sandbox: 'workspace-write' };
+      return { approvalPolicy: 'on-request' };
     case 'full-access':
-      return { approvalPolicy: 'never', sandbox: 'danger-full-access' };
+      return { approvalPolicy: 'never' };
   }
 }
 
@@ -189,7 +188,7 @@ export class CodexAdapter implements ProviderAdapter {
     steering: true,
     resume: true,
     approvals: true,
-    userInput: true,
+    userInput: false,
   };
 
   private readonly sessions = new Map<string, CodexSessionState>();
@@ -263,7 +262,6 @@ export class CodexAdapter implements ProviderAdapter {
       const config = {
         cwd: input.cwd,
         approvalPolicy: mode.approvalPolicy,
-        sandbox: mode.sandbox,
         approvalsReviewer: 'user' as const,
         ...(input.model?.id ? { model: input.model.id } : {}),
         ...(input.systemContext ? { developerInstructions: input.systemContext } : {}),
@@ -398,6 +396,53 @@ export class CodexAdapter implements ProviderAdapter {
     this.emit(state, { type: 'user-input.resolved', requestId });
   }
 
+  async compactSession(sessionId: string): Promise<void> {
+    const state = this.requireSession(sessionId);
+    if (state.activeNativeTurnId || state.compaction) throw new Error('SESSION_BUSY');
+    let resolve!: () => void;
+    let reject!: (error: Error) => void;
+    const promise = new Promise<void>((done, fail) => {
+      resolve = done;
+      reject = fail;
+    });
+    void promise.catch(() => {});
+    const pending = { promise, resolve, reject };
+    state.compaction = pending;
+    try {
+      await state.client.request('thread/compact/start', { threadId: state.threadId });
+      await pending.promise;
+    } finally {
+      state.compaction = undefined;
+    }
+  }
+
+  async listModels(sessionId: string) {
+    const state = this.requireSession(sessionId);
+    const models: { id: string; label: string; options: Record<string, string[]> }[] = [];
+    let cursor: string | null = null;
+    do {
+      const page: {
+        data: {
+          model: string;
+          displayName: string;
+          supportedReasoningEfforts: { reasoningEffort: string }[];
+        }[];
+        nextCursor: string | null;
+      } = await state.client.request('model/list', { cursor, limit: 100 });
+      models.push(
+        ...page.data.map((model) => ({
+          id: model.model,
+          label: model.displayName,
+          options: {
+            effort: model.supportedReasoningEfforts.map((option) => option.reasoningEffort),
+          },
+        }))
+      );
+      cursor = page.nextCursor;
+    } while (cursor);
+    return models;
+  }
+
   async setModel(sessionId: string, model: ModelSelection): Promise<void> {
     const state = this.requireSession(sessionId);
     state.model = model.id;
@@ -408,6 +453,7 @@ export class CodexAdapter implements ProviderAdapter {
     const state = this.sessions.get(sessionId);
     if (!state) return;
     state.stopping = true;
+    state.compaction?.reject(new Error('Native compaction was interrupted by session shutdown.'));
     this.cancelPending(state);
     // Let the cancel answers reach codex before stdin is closed under them.
     await new Promise<void>((resolve) => setTimeout(resolve, 0));
@@ -498,6 +544,14 @@ export class CodexAdapter implements ProviderAdapter {
       const payload = params as CodexTurnNotification;
       if (!this.isOwnThread(state, payload.threadId)) return;
       if (state.activeNativeTurnId === payload.turn.id) state.activeNativeTurnId = undefined;
+      if (state.compaction) {
+        if (payload.turn.status === 'completed') state.compaction.resolve();
+        else
+          state.compaction.reject(
+            new Error(payload.turn.error?.message ?? 'Native compaction was interrupted.')
+          );
+        return;
+      }
       const turnId = state.turnIdByNative.get(payload.turn.id);
       state.turnIdByNative.delete(payload.turn.id);
       const outcome = turnOutcomeOf(payload.turn.status);
@@ -782,6 +836,7 @@ export class CodexAdapter implements ProviderAdapter {
   }
 
   private finishSession(state: CodexSessionState, reason: string): void {
+    state.compaction?.reject(new Error(reason));
     if (state.exited) return;
     state.exited = true;
     this.sessions.delete(state.sessionId);

@@ -18,14 +18,6 @@ from pathlib import Path
 from typing import Any
 
 from switch_core.bridges.collaboration.adapter import RequestCard, TurnActivity
-from switch_core.bridges.collaboration.session.contract import (
-    ApprovalContent,
-    ApprovalOption,
-    Item,
-    SnapshotRequest,
-    TurnUpsert,
-)
-from switch_core.bridges.collaboration.session.projection import SessionProjection
 from switch_core.bridges.collaboration.session.renderers import (
     RequestReference,
     turn_state,
@@ -44,6 +36,14 @@ from switch_core.bridges.collaboration.slack.adapter import (
     SlackAdapter,
     SlackConnectionConfig,
 )
+from switch_core.sessions.contract import (
+    ApprovalContent,
+    ApprovalOption,
+    Item,
+    SnapshotRequest,
+    TurnUpsert,
+)
+from switch_core.sessions.projection import SessionProjection
 
 REPO_ROOT = Path(__file__).resolve().parents[5]
 ACTIVITY_PATH = (

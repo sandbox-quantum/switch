@@ -31,6 +31,7 @@ export type Attachment = {
   name: string;
   mimeType: string;
   bytes: number;
+  sha256?: string | null;
 };
 export type Item = {
   itemId: Id;
@@ -68,7 +69,15 @@ export type Request = {
   content: RequestContent;
   expiresAt: string | null;
 };
+export type SessionModel = { id: string; options: Record<string, string> };
+export type ModelChoice = {
+  id: string;
+  label: string;
+  options: Record<string, string[]>;
+  imageInput?: boolean | null;
+};
 export type Session = {
+  roomIds?: Id[];
   sessionId: Id;
   agentId: Id;
   provider: Provider;
@@ -78,6 +87,8 @@ export type Session = {
   connectivity: 'online' | 'offline';
   capabilities: Capability;
   pendingRequestIds: Id[];
+  models?: ModelChoice[];
+  model?: SessionModel | null;
 };
 export type HostBody =
   | { type: 'session.upsert'; session: Session }

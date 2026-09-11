@@ -1,5 +1,6 @@
 import { err, ok, type Result } from '@switch-console/shared';
-import { sql } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
+import { providerAdapterRegistry } from '@main/core/agent-runtime/impl/provider-adapter-registry';
 import { getAgentById } from '@main/core/agents/getAgentById';
 import { locationManager } from '@main/core/locations/location-manager';
 import { db } from '@main/db/client';
@@ -27,6 +28,17 @@ export async function createSession(
 
   const location = locationManager.getLocation(agent.locationId);
   if (!location) return err({ type: 'agent-not-found' });
+
+  if (!providerAdapterRegistry.supports(agent.providerId))
+    return err({
+      type: 'spawn-failed',
+      message: 'SDK sessions support Claude Code, Codex, OpenCode, Gemini CLI and Cursor.',
+    });
+  if (process.platform === 'win32' && location.transport.kind !== 'ssh')
+    return err({
+      type: 'spawn-failed',
+      message: 'SDK sessions require a POSIX execution host. Select an SSH host.',
+    });
 
   const configObj: SessionConfig = {};
   if (params.autoApprove !== undefined) configObj.autoApprove = params.autoApprove;
@@ -64,13 +76,15 @@ export async function createSession(
     const built = await provisionSessionRuntime(session, location);
     await sessionRuntimeManager.registerSession(session.id, built, location.ctx);
 
-    await built.agent.start(
-      session,
-      params.initialSize,
-      params.attach === false,
-      params.initialPrompt
-    );
+    if (params.startSource !== 'adopted')
+      await built.agent.start(
+        session,
+        params.initialSize,
+        params.attach === false,
+        params.initialPrompt
+      );
   } catch (e) {
+    await db.update(sessions).set({ status: 'review' }).where(eq(sessions.id, session.id));
     return err({ type: 'spawn-failed', message: e instanceof Error ? e.message : String(e) });
   }
 

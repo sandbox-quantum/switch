@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { accessSync, constants } from 'node:fs';
+import { readFile } from 'node:fs/promises';
 import { delimiter, join } from 'node:path';
 import { query as sdkQuery } from '@anthropic-ai/claude-agent-sdk';
 import type {
@@ -15,6 +16,7 @@ import type {
   SDKResultMessage,
   SDKUserMessage,
 } from '@anthropic-ai/claude-agent-sdk';
+import type { ModelChoice } from '@switch-console/shared/session-v1';
 import type {
   ModelSelection,
   ProviderAdapter,
@@ -164,6 +166,7 @@ interface SessionState {
   nativeSessionId: string;
   query: Query;
   drained: Promise<void>;
+  compaction?: { resolve: () => void; reject: (error: Error) => void; boundary: boolean };
   runtimeMode: ProviderSessionStartInput['runtimeMode'];
   /** `mcp__<server>__` prefixes for the servers the caller registered. */
   registeredMcpPrefixes: string[];
@@ -433,7 +436,7 @@ export class ClaudeAdapter implements ProviderAdapter {
     if (input.model) await this.applyModel(session, input.model);
 
     const uuid = randomUUID();
-    const text = this.composeText(input);
+    const text = await this.composeText(input);
     const message: SDKUserMessage = {
       type: 'user',
       message: { role: 'user', content: text },
@@ -494,6 +497,48 @@ export class ClaudeAdapter implements ProviderAdapter {
     pending.settle(answers);
   }
 
+  async canCompact(sessionId: string): Promise<boolean> {
+    return (await this.requireSession(sessionId).query.supportedCommands()).some(
+      (command) => command.name === 'compact'
+    );
+  }
+
+  async compactSession(sessionId: string): Promise<void> {
+    const session = this.requireSession(sessionId);
+    if (session.turn || session.compaction) throw new Error('SESSION_BUSY');
+    if (!(await this.canCompact(sessionId))) throw new Error('Native compaction is unavailable.');
+    let resolve!: () => void;
+    let reject!: (error: Error) => void;
+    const promise = new Promise<void>((done, fail) => {
+      resolve = done;
+      reject = fail;
+    });
+    void promise.catch(() => {});
+    const pending = { promise, resolve, reject };
+    session.compaction = { resolve: pending.resolve, reject: pending.reject, boundary: false };
+    session.input.push({
+      type: 'user',
+      message: { role: 'user', content: '/compact' },
+      parent_tool_use_id: null,
+      session_id: session.nativeSessionId,
+      uuid: randomUUID(),
+    });
+    try {
+      await pending.promise;
+    } finally {
+      session.compaction = undefined;
+    }
+  }
+
+  async listModels(sessionId: string): Promise<ModelChoice[]> {
+    const rows = await this.requireSession(sessionId).query.supportedModels();
+    return rows.map((model) => {
+      const options: Record<string, string[]> = {};
+      if (model.supportedEffortLevels?.length) options.effort = model.supportedEffortLevels;
+      return { id: model.value, label: model.displayName, options };
+    });
+  }
+
   async setModel(sessionId: string, model: ModelSelection): Promise<void> {
     const session = this.requireSession(sessionId);
     await this.applyModel(session, model);
@@ -517,19 +562,41 @@ export class ClaudeAdapter implements ProviderAdapter {
     return session;
   }
 
-  private composeText(input: ProviderSendTurnInput): string {
-    if (!input.attachments || input.attachments.length === 0) return input.text;
-    const lines = input.attachments.map(
-      (attachment) => `Attached file (${attachment.mimeType}): ${attachment.path}`
-    );
-    return `${input.text}\n\n${lines.join('\n')}`;
+  private async composeText(
+    input: ProviderSendTurnInput
+  ): Promise<SDKUserMessage['message']['content']> {
+    if (!input.attachments?.length) return input.text;
+    const content: Exclude<SDKUserMessage['message']['content'], string> = [
+      { type: 'text', text: input.text },
+    ];
+    for (const attachment of input.attachments) {
+      if (
+        attachment.mimeType === 'image/png' ||
+        attachment.mimeType === 'image/jpeg' ||
+        attachment.mimeType === 'image/webp'
+      )
+        content.push({
+          type: 'image',
+          source: {
+            type: 'base64',
+            media_type: attachment.mimeType,
+            data: (await readFile(attachment.path)).toString('base64'),
+          },
+        });
+      else
+        content.push({
+          type: 'text',
+          text: `Attached file (${attachment.mimeType}): ${attachment.path}`,
+        });
+    }
+    return content;
   }
 
   private async applyModel(session: SessionState, model: ModelSelection): Promise<void> {
     try {
       await session.query.setModel(model.id);
       const effort = effortFrom(model);
-      if (effort) await session.query.applyFlagSettings({ effortLevel: effort });
+      await session.query.applyFlagSettings({ effortLevel: effort ?? null });
     } catch (cause) {
       throw new ProviderSessionError(PROVIDER, session.sessionId, 'Failed to set the model.', {
         cause,
@@ -580,6 +647,21 @@ export class ClaudeAdapter implements ProviderAdapter {
   }
 
   private handleMessage(session: SessionState, message: SDKMessage): void {
+    if (session.compaction) {
+      if (message.type === 'system' && message.subtype === 'compact_boundary')
+        session.compaction.boundary = true;
+      if (message.type === 'result') {
+        if (message.subtype === 'success' && session.compaction.boundary)
+          session.compaction.resolve();
+        else
+          session.compaction.reject(
+            new Error(
+              'Native compaction did not report a completed boundary. It may have insufficient history.'
+            )
+          );
+      }
+      return;
+    }
     switch (message.type) {
       case 'system':
         if (message.subtype === 'init') {
@@ -935,6 +1017,7 @@ export class ClaudeAdapter implements ProviderAdapter {
   }
 
   private shutdown(session: SessionState, reason: string): void {
+    session.compaction?.reject(new Error(reason));
     if (session.exited) return;
     session.exited = true;
     session.stopping = true;

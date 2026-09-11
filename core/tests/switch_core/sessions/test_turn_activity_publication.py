@@ -1,7 +1,7 @@
 from switch_core.bridges.collaboration.adapter import RichContentFailed
-from switch_core.bridges.collaboration.session.contract import Command, HostEvent
 from switch_core.bridges.collaboration.session.outbound import SessionTurnActivity
 from switch_core.sessions import publication
+from switch_core.sessions.contract import Command, HostEvent
 from switch_core.sessions.publication import (
     SessionPublisher,
     _RecoveryBackoff,

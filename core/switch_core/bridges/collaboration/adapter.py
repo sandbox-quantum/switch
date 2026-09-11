@@ -23,15 +23,15 @@ from switch_core.bridges.collaboration.models import (
     InboundUserJoin,
     OutboundAttachment,
 )
-from switch_core.bridges.collaboration.session.contract import (
-    Item,
-    SnapshotRequest,
-    TurnUpsert,
-)
 from switch_core.bridges.collaboration.session.renderers import RequestReference
 from switch_core.bridges.collaboration.session.renderers.neutral import (
     request_summary,
     turn_summary,
+)
+from switch_core.sessions.contract import (
+    Item,
+    SnapshotRequest,
+    TurnUpsert,
 )
 
 logger = logging.getLogger(__name__)

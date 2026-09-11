@@ -106,8 +106,8 @@ export const EnableTmuxRow: React.FC = () => {
 
   return (
     <SettingRow
-      title="Enable tmux"
-      description="Run agent sessions and terminals in tmux sessions by default."
+      title="Persistent terminals (tmux)"
+      description="Keep lifecycle and user terminals in tmux. SDK agent sessions persist independently."
       control={
         <>
           <ResetToDefaultButton

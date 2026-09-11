@@ -1,6 +1,7 @@
+import hashlib
 from typing import Annotated
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Response
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -8,20 +9,22 @@ from switch_core.bridges.agent.auth import get_agent_from_scope
 from switch_core.bridges.agent.dependencies import (
     get_collab_lifecycle,
     get_event_buffer,
+    get_protocol,
     get_session_factory,
 )
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
+from switch_core.bridges.agent.protocol.service import ProtocolService
 from switch_core.bridges.collaboration.lifecycle_service import (
     CollaborationBridgeLifecycleService,
 )
-from switch_core.bridges.collaboration.session.contract import (
+from switch_core.db.models import Agent
+from switch_core.sessions.contract import (
     Command,
     CommandStatus,
     HostEvent,
     Session,
     Snapshot,
 )
-from switch_core.db.models import Agent
 from switch_core.sessions.service import SessionAuthority
 
 router = APIRouter(prefix="/sessions")
@@ -166,3 +169,49 @@ async def room_message(
         body.sequence,
         buffer,
     )
+
+
+@router.get("/{session_id}/attachments/{attachment_id}")
+async def download_attachment(
+    session_id: str,
+    attachment_id: str,
+    host_id: str,
+    epoch: str,
+    agent: AuthenticatedAgent,
+    factory: Factory,
+) -> Response:
+    blob = await SessionAuthority(factory).attachment(
+        agent.id, session_id, host_id, epoch, attachment_id
+    )
+    return Response(
+        blob.data,
+        media_type=blob.content_type,
+        headers={
+            "X-Content-SHA256": blob.sha256 or hashlib.sha256(blob.data).hexdigest(),
+            "Cache-Control": "no-store",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
+
+
+class RoomConnection(HostLease):
+    connection_id: str = Field(min_length=1)
+
+
+@router.post("/{session_id}/room-connection")
+async def bind_room_connection(
+    session_id: str,
+    body: RoomConnection,
+    agent: AuthenticatedAgent,
+    factory: Factory,
+    protocol: Annotated[ProtocolService, Depends(get_protocol)],
+) -> dict[str, list[str]]:
+    rooms = await SessionAuthority(factory).bind_connection(
+        agent.id,
+        session_id,
+        body.host_id,
+        body.epoch,
+        body.connection_id,
+        protocol.connections,
+    )
+    return {"rooms": rooms}

@@ -182,3 +182,26 @@ it('persists host sequences and acknowledgements across reloads', async () => {
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+it('preserves a long Unicode response in bounded wire items', () => {
+  const projector = new ChatProjector(session('claude'));
+  projector.bindTurn('turn', context);
+  const text = '😀\n"'.repeat(20000);
+  const events = projector.ingest(
+    {
+      provider: 'claude',
+      sessionId: 'session',
+      eventId: 'large',
+      createdAt: '2026-09-07T12:00:00Z',
+      turnId: 'turn',
+      type: 'item.completed',
+      item: { id: 'answer', type: 'assistant_message', status: 'completed', title: '', text },
+    },
+    0
+  );
+  expect(
+    events.map((event) => (event.type === 'item.upsert' ? event.item.text : '')).join('')
+  ).toBe(text);
+  for (const event of events)
+    expect(Buffer.byteLength(JSON.stringify(event))).toBeLessThan(60 * 1024);
+});

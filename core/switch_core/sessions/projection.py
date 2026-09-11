@@ -181,7 +181,7 @@ class SessionProjection:
         return [item for item in self._value.items if item.turn_id == turn_id]
 
     def turn(self, turn_id: str) -> TurnUpsert | None:
-        """Where that turn got to, if the session has said."""
+        """Return the current state of a turn, if known."""
         return next((x for x in self._value.turns if x.turn_id == turn_id), None)
 
     # ── What is waiting on someone ───────────────────────────────────────────

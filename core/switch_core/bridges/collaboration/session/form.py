@@ -23,7 +23,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from .contract import (
+from switch_core.sessions.contract import (
     Answer,
     ApprovalContent,
     ApprovalResult,
@@ -32,6 +32,7 @@ from .contract import (
     RequestResult,
     SnapshotRequest,
 )
+
 from .text import AnswerPart, TextAnswer
 
 

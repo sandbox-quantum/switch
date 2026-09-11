@@ -8,8 +8,8 @@ all: the last thing the agent said, and whether the turn is still going.
 
 from __future__ import annotations
 
-from switch_core.bridges.collaboration.session.contract import Item, TurnUpsert
 from switch_core.bridges.collaboration.session.renderers.neutral import turn_summary
+from switch_core.sessions.contract import Item, TurnUpsert
 
 from .test_session_activity import TURN, _item, _items, _turn
 

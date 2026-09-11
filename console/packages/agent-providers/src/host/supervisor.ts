@@ -1,10 +1,12 @@
 import { spawn } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { once } from 'node:events';
-import { mkdir, open, readFile, unlink } from 'node:fs/promises';
+import { mkdir, open, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { z } from 'zod';
-import { replaceOwner, withOwnershipLock } from './ownership-lock';
+import { releaseOwner, replaceOwner, withOwnershipLock } from './ownership-lock';
+import { fenceDeadOwner } from './process-fence';
 
 function alive(pid: number): boolean {
   try {
@@ -38,11 +40,12 @@ export async function superviseSharedHost(input: {
   const directory = join(input.root, 'supervisor');
   await mkdir(directory, { recursive: true, mode: 0o700 });
   const ownerPath = join(directory, 'owner.json');
+  const owner = { pid: process.pid, token: randomUUID() };
   await withOwnershipLock(directory, async () => {
     const pid = await ownerPid(ownerPath);
     if (pid !== null && alive(pid))
       throw new Error('The shared host supervisor is already running.');
-    await replaceOwner(ownerPath, { pid: process.pid });
+    await replaceOwner(ownerPath, owner);
   });
   try {
     while (!input.signal.aborted) {
@@ -70,6 +73,16 @@ export async function superviseSharedHost(input: {
       } finally {
         input.signal.removeEventListener('abort', stop);
       }
+      if (child.pid) {
+        await fenceDeadOwner(child.pid, child.pid);
+        const workerPath = join(input.root, 'shared-owner.lock');
+        try {
+          const owner = JSON.parse(await readFile(workerPath, 'utf8'));
+          if (owner.pid === child.pid) await releaseOwner(input.root, workerPath, owner);
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+        }
+      }
       if (input.signal.aborted) return;
       if (code === 0) return;
       if (code !== null) {
@@ -84,6 +97,6 @@ export async function superviseSharedHost(input: {
   } catch (error) {
     if (!input.signal.aborted) throw error;
   } finally {
-    await unlink(ownerPath);
+    await releaseOwner(directory, ownerPath, owner);
   }
 }

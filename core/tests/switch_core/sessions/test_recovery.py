@@ -155,3 +155,160 @@ async def test_lifecycle_commands_are_authorized_durable_and_fenced(session_fact
         )
         == []
     )
+
+
+@pytest.mark.asyncio
+async def test_reset_authorization_busy_state_and_epoch_reconciliation(session_factory):
+    service, epoch = await setup(session_factory)
+    snapshot = await service.snapshot("session-demo", "owner")
+    ready = snapshot.session.model_copy(
+        update={
+            "status": "ready",
+            "capabilities": snapshot.session.capabilities.model_copy(
+                update={"reset": True}
+            ),
+        }
+    )
+    await service.ingest(
+        "agent-demo",
+        "host-demo",
+        host_event(
+            epoch,
+            1,
+            {
+                "type": "session.upsert",
+                "session": ready.model_dump(by_alias=True),
+            },
+        ),
+    )
+    reset = command(epoch, "reset-demo", {"type": "session.reset"})
+    with pytest.raises(SessionError):
+        await service.submit(reset, user_id="outsider", bridge_id=None)
+    await service.submit(reset, user_id="owner", bridge_id=None)
+    assert (await service.pending("agent-demo", "session-demo", "host-demo", epoch))[
+        0
+    ] == reset
+    await service.quiesce("agent-demo", "session-demo", "host-demo", epoch)
+    recovered = await service.recover(
+        "agent-demo", "session-demo", "host-demo", epoch, "reset-epoch", 1
+    )
+    assert recovered.session.epoch != epoch
+    assert (
+        next(
+            s for s in recovered.command_statuses if s.command_id == "reset-demo"
+        ).status
+        == "unknown"
+    )
+    assert (
+        await service.pending(
+            "agent-demo", "session-demo", "host-demo", recovered.session.epoch
+        )
+        == []
+    )
+    await service.ingest(
+        "agent-demo",
+        "host-demo",
+        host_event(
+            recovered.session.epoch,
+            1,
+            {
+                "type": "command.result",
+                "commandId": "reset-demo",
+                "status": "applied",
+                "code": None,
+                "message": None,
+            },
+        ).model_copy(update={"event_id": "reset-confirmed"}),
+    )
+    assert (
+        await service.command_status("session-demo", "reset-demo", "owner")
+    ).status == "applied"
+    with pytest.raises(SessionError, match="generation changed"):
+        await service.submit(
+            command(epoch, "stale-reset", {"type": "session.reset"}),
+            user_id="owner",
+            bridge_id=None,
+        )
+
+
+@pytest.mark.asyncio
+async def test_reset_rejects_pending_questions(session_factory):
+    service, epoch = await setup(session_factory)
+    await opened(service, epoch)
+    snapshot = await service.snapshot("session-demo", "owner")
+    ready = snapshot.session.model_copy(
+        update={
+            "status": "ready",
+            "capabilities": snapshot.session.capabilities.model_copy(
+                update={"reset": True}
+            ),
+        }
+    )
+    await service.ingest(
+        "agent-demo",
+        "host-demo",
+        host_event(
+            epoch,
+            3,
+            {
+                "type": "session.upsert",
+                "session": ready.model_dump(by_alias=True),
+            },
+        ),
+    )
+    with pytest.raises(SessionError, match="Finish or interrupt"):
+        await service.submit(
+            command(epoch, "busy-reset", {"type": "session.reset"}),
+            user_id="owner",
+            bridge_id=None,
+        )
+
+
+@pytest.mark.asyncio
+async def test_model_catalog_validation_and_compaction_capability(session_factory):
+    service, epoch = await setup(session_factory)
+    snapshot = await service.snapshot("session-demo", "owner")
+    data = snapshot.session.model_dump(by_alias=True)
+    data.update(
+        status="ready",
+        models=[
+            {
+                "id": "model-demo",
+                "label": "Demo",
+                "options": {"effort": ["low", "high"]},
+            }
+        ],
+    )
+    data["capabilities"].update(modelChange=True, compact=False)
+    await service.ingest(
+        "agent-demo",
+        "host-demo",
+        host_event(epoch, 1, {"type": "session.upsert", "session": data}),
+    )
+    for body in (
+        {"type": "session.model.set", "modelId": "invented", "options": {}},
+        {
+            "type": "session.model.set",
+            "modelId": "model-demo",
+            "options": {"effort": "invented"},
+        },
+        {"type": "session.compact"},
+    ):
+        with pytest.raises(SessionError):
+            await service.submit(
+                command(epoch, "invalid", body), user_id="owner", bridge_id=None
+            )
+    result = await service.submit(
+        command(
+            epoch,
+            "valid-model",
+            {
+                "type": "session.model.set",
+                "modelId": "model-demo",
+                "options": {"effort": "high"},
+            },
+        ),
+        user_id="owner",
+        bridge_id=None,
+    )
+    assert result.status == "accepted"

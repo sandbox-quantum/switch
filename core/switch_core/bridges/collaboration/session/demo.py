@@ -47,9 +47,9 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from switch_core.db.models import SessionRequestPost
+from switch_core.sessions.projection import SessionProjection
 
 from .outbound import SessionRequestCards, SessionTurnActivity
-from .projection import SessionProjection
 from .transport import FixtureEventSource, project
 
 logger = logging.getLogger(__name__)

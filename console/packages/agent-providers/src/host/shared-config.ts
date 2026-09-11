@@ -53,7 +53,12 @@ export async function prepareSharedConfig(root: string, config: SharedHostConfig
     const credentials = await readSharedCredentials(config);
     agentApiUrl = credentials.SWITCH_API_ENDPOINT;
     token = credentials.SWITCH_API_TOKEN;
-    const inherited = await executionEnvironment(input.cwd, input.env, execution.shellSetup);
+    const inherited = await executionEnvironment(
+      input.cwd,
+      input.env,
+      execution.shellSetup,
+      execution.inheritEnv
+    );
     const switchEnv = {
       ...credentials,
       SWITCH_CONNECTION_ID: config.roomConnection?.connectionId ?? '',
@@ -66,7 +71,7 @@ export async function prepareSharedConfig(root: string, config: SharedHostConfig
       transport: 'stdio',
       command: 'npx',
       args: ['-y', execution.mcpRuntime],
-      env: switchEnv,
+      envVars: Object.keys(switchEnv),
     };
     if (config.start.provider === 'codex')
       input.env.CODEX_HOME = await prepareCodexSessionHome({
@@ -84,7 +89,8 @@ export async function prepareSharedConfig(root: string, config: SharedHostConfig
         context: execution.context,
         mcpServerNames: Object.keys(input.mcpServers),
       });
-    if (config.start.provider === 'cursor') input.systemContext = execution.context;
+    if (config.start.provider === 'cursor' || config.start.provider === 'opencode')
+      input.systemContext = execution.context;
   }
   if (!agentApiUrl || !token)
     throw new Error('Shared SDK host requires execution-host Switch credentials.');
@@ -110,11 +116,17 @@ export async function readSharedCredentials(config: SharedHostConfig) {
 export async function executionEnvironment(
   cwd: string,
   configured: Record<string, string>,
-  setup: string | undefined
+  setup: string | undefined,
+  inheritEnv: string[]
 ): Promise<Record<string, string>> {
   const env: Record<string, string> = {};
   for (const [key, value] of Object.entries(process.env))
-    if (value !== undefined && !key.startsWith('SWITCH_') && !key.startsWith('ELECTRON_'))
+    if (
+      value !== undefined &&
+      inheritEnv.includes(key) &&
+      !key.startsWith('SWITCH_') &&
+      !key.startsWith('ELECTRON_')
+    )
       env[key] = value;
   Object.assign(env, configured);
   if (!setup) return env;

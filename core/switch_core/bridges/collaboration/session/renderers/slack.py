@@ -31,8 +31,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from switch_core.bridges.collaboration.slack.mrkdwn import escape_mrkdwn, plain_text
-
-from ..contract import (
+from switch_core.sessions.contract import (
     ApprovalContent,
     ApprovalOption,
     ApprovalResult,
@@ -46,6 +45,7 @@ from ..contract import (
     Surface,
     TurnUpsert,
 )
+
 from . import ANSWER_ACTION, RequestReference, turn_state
 
 # Slack's own limits. Exceeding one is rejected at the API, so it is caught here
