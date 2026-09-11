@@ -131,6 +131,15 @@ class SwitchConfig(BaseSettings):
     # this true so the JWT session cookie is never sent over an insecure channel.
     gateway_cookie_secure: bool = False
 
+    # Off by default: a person who belongs to more than one tenant and has not
+    # selected one on their session gets the same 403 a single-tenant
+    # deployment already returns today, rather than a 409 listing the tenants
+    # to choose from. The 409 is a breaking change for a client that has never
+    # had to handle it — set true only once the client that will authenticate
+    # against this deployment knows what to do with it. See
+    # docs/old/multi-tenancy-phase2-tenants.md, §4.
+    gateway_tenant_choice_enabled: bool = False
+
     # ── Logging ──────────────────────────────────────────────────────────────
     # "text" for a terminal, "json" for a log pipeline that parses fields.
     log_format: str = "text"

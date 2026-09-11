@@ -208,6 +208,6 @@ async def oidc_callback(
     # back on the SPA with our own session cookie set.
     response = RedirectResponse(url=config.frontend_base_url or "/", status_code=303)
     set_session_cookie(
-        response, user, config.jwt_secret_key, config.gateway_cookie_secure
+        response, user, config.jwt_secret_key, config.gateway_cookie_secure, None
     )
     return response

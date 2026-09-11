@@ -102,17 +102,20 @@ async def get_session() -> AsyncIterator[AsyncSession]:
 
 
 async def get_system_session() -> AsyncIterator[AsyncSession]:
-    """The session for a request that has no authenticated caller yet.
+    """The session for a request with no tenant bound yet.
 
-    Password login and the OIDC callback are the whole list: both run before
-    anyone is signed in, so neither can bind a tenant from a principal the way
-    `get_current_user` does. Named separately from `get_session` so that
-    reads as a deliberate, reviewable exception rather than an
-    accidentally-unscoped session, and so the guard test above can hold for
-    `get_session` without exemptions. Nothing about opening it differs from
-    `get_session` today — it is the same session and the same hook, simply
-    with nothing bound around it — so the two must stay interchangeable in
-    behaviour only, never in name.
+    Password login and the OIDC callback are the original two: both run
+    before anyone is signed in, so neither can bind a tenant from a principal
+    the way `get_current_user` does. `POST /tenants/{id}/switch`
+    (`gateway/tenants.py`) is a third, for a different reason — the caller is
+    authenticated (`get_authenticated_user_id`) but has, by construction, not
+    yet selected the tenant this session opens for. Named separately from
+    `get_session` so that reads as a deliberate, reviewable exception rather
+    than an accidentally-unscoped session, and so the guard test above can
+    hold for `get_session` without exemptions. Nothing about opening it
+    differs from `get_session` today — it is the same session and the same
+    hook, simply with nothing bound around it — so the two must stay
+    interchangeable in behaviour only, never in name.
 
     "No tenant bound" is not the same as "writes land nowhere in particular":
     the OIDC callback provisions a user and picks its tenant explicitly (see

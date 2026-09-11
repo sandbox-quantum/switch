@@ -36,11 +36,8 @@ import switch_core
 from switch_core.config import SwitchConfig
 from switch_core.db.models import TENANT_ZERO_ID, TenantMember, User
 from switch_core.db.stores.user_store import UserStore
-from switch_core.gateway.auth import (
-    TenantMembershipError,
-    hash_password,
-    sole_tenant_id,
-)
+from switch_core.db.tenant_lookup import tenants_of_user
+from switch_core.gateway.auth import hash_password
 from switch_core.main import _seed_admin_user
 from switch_core.tenant_context import tenant_scope
 
@@ -182,8 +179,7 @@ class TestWhatBeingStrandedCosts:
             await session.commit()
         await _strand_the_admin(session_factory, user_id)
 
-        with pytest.raises(TenantMembershipError):
-            await sole_tenant_id(session_factory, user_id)
+        assert await tenants_of_user(session_factory, user_id) == []
 
     async def test_creating_a_user_still_writes_one(
         self, session_factory: async_sessionmaker[AsyncSession]

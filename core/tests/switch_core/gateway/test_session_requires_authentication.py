@@ -33,12 +33,17 @@ import switch_core.gateway as gateway_package
 from switch_core.gateway.auth import get_current_user, require_admin
 from switch_core.gateway.dependencies import get_session, get_system_session
 
-# The only routes that may open a session without an authenticated caller,
-# because there is not one yet: both are how a caller becomes authenticated.
-# They take `get_system_session` instead, which says so in the signature.
-_UNAUTHENTICATED_ROUTES = {
+# The only routes that may open a session with no tenant bound. `get_session`
+# is unavailable to them because there is no `get_current_user` to bind one:
+# for login and the OIDC callback there is no caller yet at all; for switching
+# tenants the caller is authenticated (`get_authenticated_user_id`) but has,
+# by construction, not yet selected the tenant this session opens for — see
+# `get_system_session`'s docstring. All three take `get_system_session`
+# instead, which says so in the signature.
+_ROUTES_WITH_NO_TENANT_BOUND = {
     ("POST", "/auth/login"),
     ("GET", "/auth/oidc/callback"),
+    ("POST", "/tenants/{tenant_id}/switch"),
 }
 
 
@@ -100,7 +105,7 @@ def test_every_route_taking_the_session_also_authenticates() -> None:
         str(route)
         for route in ROUTES
         if get_session in route.calls
-        and route.key not in _UNAUTHENTICATED_ROUTES
+        and route.key not in _ROUTES_WITH_NO_TENANT_BOUND
         and get_current_user not in route.calls
         and require_admin not in route.calls
     )
@@ -110,12 +115,13 @@ def test_every_route_taking_the_session_also_authenticates() -> None:
     )
 
 
-def test_the_unauthenticated_routes_are_exactly_the_two_that_sign_you_in() -> None:
-    """The exemption above is not a list to grow: `get_system_session` exists
-    so that adding a third is a visible act, not a signature nobody reads."""
+def test_the_routes_with_no_tenant_bound_are_exactly_these_three() -> None:
+    """The exemption above is not a list to grow casually: `get_system_session`
+    exists so that adding a fourth is a visible act, not a signature nobody
+    reads."""
     assert {
         route.key for route in ROUTES if get_system_session in route.calls
-    } == _UNAUTHENTICATED_ROUTES
+    } == _ROUTES_WITH_NO_TENANT_BOUND
 
 
 def test_the_exempt_routes_do_not_also_take_the_tenant_scoped_session() -> None:
@@ -124,5 +130,5 @@ def test_the_exempt_routes_do_not_also_take_the_tenant_scoped_session() -> None:
     assert not [
         str(route)
         for route in ROUTES
-        if get_session in route.calls and route.key in _UNAUTHENTICATED_ROUTES
+        if get_session in route.calls and route.key in _ROUTES_WITH_NO_TENANT_BOUND
     ]

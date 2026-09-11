@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from switch_core.config import SwitchConfig
@@ -101,13 +101,14 @@ async def login(
         raise HTTPException(status_code=401, detail="Invalid email or password")
 
     set_session_cookie(
-        response, user, config.jwt_secret_key, config.gateway_cookie_secure
+        response, user, config.jwt_secret_key, config.gateway_cookie_secure, None
     )
     return _session_response(user)
 
 
 @router.post("/auth/refresh")
 async def refresh(
+    request: Request,
     response: Response,
     user: Annotated[User, Depends(get_current_user)],
     config: Annotated[SwitchConfig, Depends(get_config)],
@@ -118,8 +119,16 @@ async def refresh(
     # rather than replaying either login flow). get_current_user rejects a
     # missing/expired/invalid cookie with 401, so an expired session cannot renew
     # itself; the client falls back to interactive sign-in in that case.
+    #
+    # `request.state.tenant_id` is what get_current_user just resolved this
+    # request to — carrying it forward is the whole point: re-minting from
+    # `user` alone would drop whatever tenant this session had selected.
     set_session_cookie(
-        response, user, config.jwt_secret_key, config.gateway_cookie_secure
+        response,
+        user,
+        config.jwt_secret_key,
+        config.gateway_cookie_secure,
+        request.state.tenant_id,
     )
     return _session_response(user)
 

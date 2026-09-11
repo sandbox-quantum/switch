@@ -658,6 +658,21 @@ class ChangePasswordRequest(BaseModel):
     new_password: str = Field(min_length=8)
 
 
+class TenantMembershipResponse(BaseModel):
+    """One tenant the caller belongs to, and their role in it.
+
+    The body of `GET /tenants`, and — as a list — the body of the 409
+    `_resolve_tenant_id` raises when there is no tenant claim to bind and
+    several memberships to choose from: the same question asked at a
+    different moment (`docs/old/multi-tenancy-phase2-tenants.md`, §4 and §7).
+    """
+
+    id: str
+    slug: str
+    name: str
+    role: str
+
+
 class AuthConfigResponse(BaseModel):
     # Read unauthenticated by the login page to decide which login methods to
     # show. `oidc_provider_label` is the button text (e.g. "Okta").
