@@ -415,12 +415,18 @@ async def refresh_activity(
             # see SessionTurnActivity for why. A command with neither is one
             # nothing here can thread under, and posts at the root as before.
             thread_root_id = origin.thread_id or origin.message_id
+            # The message that actually asked, for the `:eyes:` that goes
+            # with the thread — origin.message_id is the typed message or the
+            # card the command came from either way, not wherever the thread
+            # has since moved on to.
+            asked_on = origin.message_id or thread_root_id
             publications.append(
                 (
                     turn,
                     items,
                     room.external_channel_id,
                     thread_root_id,
+                    asked_on,
                     state,
                     elapsed_seconds,
                 )
@@ -429,7 +435,15 @@ async def refresh_activity(
         db.expunge_all()
     failed: list[str] = []
     backed_off = 0
-    for turn, items, channel_id, thread_id, state, elapsed_seconds in publications:
+    for (
+        turn,
+        items,
+        channel_id,
+        thread_id,
+        asked_on,
+        state,
+        elapsed_seconds,
+    ) in publications:
         token = f"{session_id}:{turn.turn_id}"
         if not retry_allowed(token):
             backed_off += 1
@@ -440,6 +454,7 @@ async def refresh_activity(
             session_id=session_id,
             channel_id=channel_id,
             thread_root_id=thread_id,
+            asked_on=asked_on,
             agent_name=agent_name,
             elapsed_seconds=elapsed_seconds,
         )

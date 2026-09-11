@@ -84,11 +84,11 @@ class _Anchor:
 
     `thread_root_id` is what a later edit still needs — it is the thread this
     turn's own message was posted into. `reaction_ref` is a different message
-    entirely: on Slack, the one that actually asked, resolved once when the
-    turn's own message is first posted and kept for as long as the anchor is,
-    so a later resolve — the same lookup, but the thread may have moved on to
-    a newer asker by then — cannot make a turn's own end clear someone else's
-    `:eyes:` instead of its own.
+    entirely: the one that actually asked, as the caller resolved it
+    (`refresh_activity` reads it straight off the command's own `Origin`), and
+    kept for as long as the anchor is — a thread can move on to a newer asker
+    while this turn is still running, and re-reading that at release time
+    would clear someone else's `:eyes:` instead of its own.
     """
 
     channel_id: str
@@ -176,10 +176,19 @@ class SessionTurnActivity:
         session_id: str,
         channel_id: str,
         thread_root_id: str | None,
+        asked_on: str | None,
         agent_name: str,
         elapsed_seconds: float | None,
     ) -> bool:
         """Draw the turn where it already is, or where it is not yet.
+
+        `asked_on` is the message the `:eyes:` reaction goes on, which is not
+        necessarily `thread_root_id`: a command answered inside an existing
+        thread threads under that thread's root, but the message that
+        actually asked is the reply itself. The caller resolves it once, off
+        the command's own `Origin` (`refresh_activity`), and it is carried
+        through rather than re-derived here from whatever the thread looks
+        like by the time this runs.
 
         Logged rather than raised, unlike a card that cannot be posted: nobody
         is waiting on this to answer anything, so the session is no worse off
@@ -211,6 +220,7 @@ class SessionTurnActivity:
                 session_id=session_id,
                 channel_id=channel_id,
                 thread_root_id=thread_root_id,
+                asked_on=asked_on,
                 agent_name=agent_name,
                 elapsed_seconds=elapsed_seconds,
             )
@@ -244,6 +254,7 @@ class SessionTurnActivity:
         session_id: str,
         channel_id: str,
         thread_root_id: str | None,
+        asked_on: str | None,
         agent_name: str,
         elapsed_seconds: float | None,
     ) -> _Anchor | None:
@@ -272,14 +283,11 @@ class SessionTurnActivity:
                 error,
             )
             return None
-        reaction_ref = thread_root_id
-        if thread_root_id is not None and isinstance(self._adapter, SlackAdapter):
-            reaction_ref = self._adapter.reaction_target(channel_id, thread_root_id)
         return _Anchor(
             channel_id=channel_id,
             message_ref=posted,
             thread_root_id=thread_root_id,
-            reaction_ref=reaction_ref,
+            reaction_ref=asked_on,
         )
 
     async def _edit(

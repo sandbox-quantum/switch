@@ -88,6 +88,9 @@ def _item(turn_id: str = TURN) -> Item:
     )
 
 
+_SAME_AS_THREAD_ROOT = object()
+
+
 async def _publish(
     activity: SessionTurnActivity,
     items: list[Item],
@@ -96,14 +99,18 @@ async def _publish(
     session_id: str = SESSION,
     channel_id: str = CHANNEL,
     thread_root_id: str | None = None,
+    asked_on: Any = _SAME_AS_THREAD_ROOT,
     elapsed_seconds: float | None = None,
 ) -> bool:
+    if asked_on is _SAME_AS_THREAD_ROOT:
+        asked_on = thread_root_id
     return await activity.publish(
         items,
         turn,
         session_id=session_id,
         channel_id=channel_id,
         thread_root_id=thread_root_id,
+        asked_on=asked_on,
         agent_name="agent-demo",
         elapsed_seconds=elapsed_seconds,
     )
@@ -346,62 +353,76 @@ async def test_a_reaction_failure_does_not_fail_the_turns_own_draw(
 
 
 async def test_the_reaction_lands_on_the_message_that_actually_asked() -> None:
-    """A thread root is not necessarily who asked — `_thread_trigger` resolves
-    that, the same way the old runtime-state indicator did, and the turn's
-    own `:eyes:` should follow it rather than always sitting on the root.
-
-    `thread_root_id` arrives as the `"channel:ts"` composite an `Origin`
-    carries, not a bare ts — `_thread_trigger` is keyed on the bare ts, so a
-    fixture using a plain string like `"parent-1"` for the root would pass
-    even if the composite were never stripped before the lookup ran.
-    """
-    client = FakeWebClient()
-    adapter = _adapter(client)
-    adapter._thread_trigger[(CHANNEL, "111.0")] = "99.0"
-    activity = SessionTurnActivity(adapter)
-
-    await _publish(
-        activity, [_item()], _turn("running"), thread_root_id=f"{CHANNEL}:111.0"
-    )
-
-    assert client.reactions == [("add", "99.0", "eyes")]
-
-
-async def test_the_reaction_falls_back_to_the_bare_thread_root() -> None:
-    """No entry in `_thread_trigger` for a composite ref still resolves to a
-    bare ts to react on, not the raw `"channel:ts"` composite handed in —
-    Slack's API takes a bare ts, not this class's own message reference."""
+    """`asked_on` is not necessarily the thread root — a command answered
+    inside an existing thread threads under that thread's root, but the
+    message that actually asked is the reply itself (`refresh_activity`
+    resolves this off the command's own `Origin`), and the turn's own
+    `:eyes:` follows that, not the root."""
     client = FakeWebClient()
     activity = SessionTurnActivity(_adapter(client))
 
     await _publish(
-        activity, [_item()], _turn("running"), thread_root_id=f"{CHANNEL}:111.0"
+        activity,
+        [_item()],
+        _turn("running"),
+        thread_root_id="parent-1",
+        asked_on="asker-99",
+    )
+
+    assert client.reactions == [("add", "asker-99", "eyes")]
+
+
+async def test_the_reaction_normalises_a_composite_asked_on() -> None:
+    """`asked_on` arrives as the `"channel:ts"` composite an `Origin` carries,
+    not a bare ts — Slack's reaction API takes a bare ts, not this class's own
+    message reference."""
+    client = FakeWebClient()
+    activity = SessionTurnActivity(_adapter(client))
+
+    await _publish(
+        activity,
+        [_item()],
+        _turn("running"),
+        thread_root_id="parent-1",
+        asked_on=f"{CHANNEL}:111.0",
     )
 
     assert client.reactions == [("add", "111.0", "eyes")]
 
 
-async def test_two_turns_sharing_a_resolved_target_do_not_clobber_each_others_eyes() -> (
+async def test_two_turns_sharing_the_same_asker_do_not_clobber_each_others_eyes() -> (
     None
 ):
-    """Two turns in the same thread resolve to the same asking message. The
-    first to end must not strip the reaction out from under the second still
-    running — the mark comes off only once nothing is left holding it."""
+    """Two turns answered in the same thread resolve to the same asking
+    message. The first to end must not strip the reaction out from under the
+    second still running — the mark comes off only once nothing is left
+    holding it."""
     client = FakeWebClient()
-    adapter = _adapter(client)
-    adapter._thread_trigger[(CHANNEL, "parent-1")] = "asker-1"
-    activity = SessionTurnActivity(adapter)
+    activity = SessionTurnActivity(_adapter(client))
 
-    await _publish(activity, [_item()], _turn("running"), thread_root_id="parent-1")
+    await _publish(
+        activity,
+        [_item()],
+        _turn("running"),
+        thread_root_id="parent-1",
+        asked_on="asker-1",
+    )
     await _publish(
         activity,
         [_item("turn-two")],
         _turn("running", "turn-two"),
         thread_root_id="parent-1",
+        asked_on="asker-1",
     )
     assert client.reactions == [("add", "asker-1", "eyes")]
 
-    await _publish(activity, [_item()], _turn("completed"), thread_root_id="parent-1")
+    await _publish(
+        activity,
+        [_item()],
+        _turn("completed"),
+        thread_root_id="parent-1",
+        asked_on="asker-1",
+    )
     assert client.reactions == [("add", "asker-1", "eyes")]
 
     await _publish(
@@ -409,6 +430,7 @@ async def test_two_turns_sharing_a_resolved_target_do_not_clobber_each_others_ey
         [_item("turn-two")],
         _turn("completed", "turn-two"),
         thread_root_id="parent-1",
+        asked_on="asker-1",
     )
     assert client.reactions == [
         ("add", "asker-1", "eyes"),
