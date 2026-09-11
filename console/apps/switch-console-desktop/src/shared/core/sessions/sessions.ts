@@ -3,6 +3,7 @@ import type { AgentProviderId } from '@shared/core/providers/agent-provider-regi
 import type { AgentStatus } from '@shared/core/providers/agentEvents';
 import type { SessionStartSource, UiEntryPoint } from '@shared/core/telemetry/reporting';
 import type { TerminalShellId } from '@shared/core/terminals/terminal-settings';
+import type { InitialPromptDelivery } from './session-config';
 
 export const MAX_SESSION_TITLE_LENGTH = 100;
 
@@ -36,6 +37,7 @@ export type Session = {
   statusChangedAt: string;
   /** Native conversation imported from an earlier session, when available. */
   providerSessionId?: string;
+  initialPromptDelivery?: InitialPromptDelivery;
   agentStatus?: AgentStatus | null;
   agentStatusSeen?: boolean;
   isInitialSession: boolean | null;

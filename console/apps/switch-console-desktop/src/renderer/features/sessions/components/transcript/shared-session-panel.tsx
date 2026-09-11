@@ -1,10 +1,19 @@
 import { SessionChatClient } from '@switch-console/shared/session-v1';
 import { useEffect, useState } from 'react';
 import { rpc } from '@renderer/lib/ipc';
+import type { InitialPromptDelivery } from '@shared/core/sessions/session-config';
 import { SessionV1Chat } from './session-v1-chat';
 import { sharedSessionTransport } from './shared-session-transport';
 
-export function SharedSessionPanel({ sessionId, agentId }: { sessionId: string; agentId: string }) {
+export function SharedSessionPanel({
+  sessionId,
+  agentId,
+  initialPromptDelivery,
+}: {
+  sessionId: string;
+  agentId: string;
+  initialPromptDelivery: InitialPromptDelivery | undefined;
+}) {
   const [client, setClient] = useState<SessionChatClient | null>(null);
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
@@ -33,6 +42,7 @@ export function SharedSessionPanel({ sessionId, agentId }: { sessionId: string; 
   return client ? (
     <SessionV1Chat
       client={client}
+      initialPromptDelivery={initialPromptDelivery}
       restartHost={() => rpc.sessions.restartAgent(sessionId)}
       retireHost={async (epoch) => {
         const serverId = await rpc.sdkHost.serverForAgent(agentId);

@@ -38,6 +38,7 @@ export function mapSessionRowToSession(
     lastInteractedAt: row.lastInteractedAt ?? undefined,
     autoApprove: config.autoApprove,
     providerSessionId: config.providerSessionId,
+    initialPromptDelivery: config.initialPromptDelivery,
     agentName,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,

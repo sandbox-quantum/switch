@@ -34,6 +34,8 @@ Session and attachment identifiers can be reused in different tenants without
 sharing data or command outcomes. Upgrading an existing SDK database derives
 each session’s tenant from its owning agent and preserves its history.
 
+Initial prompts have a saved delivery record. Reopening checks the command receipt before sending. A pending attempt keeps its command ID and original epoch; an unknown or rejected attempt is never sent again automatically. Console shows unresolved or rejected delivery above the transcript. Review the conversation before sending a new message. Older sessions reconcile their legacy command ID first; existing activity without a receipt remains unknown.
+
 ## Recovery guarantees
 
 - Events, upload receipts, command states and room-message assignments are

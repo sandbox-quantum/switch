@@ -1,5 +1,6 @@
 import { stopSharedSession } from './stop-shared-session';
 export { stopSharedSession } from './stop-shared-session';
+import { isCommandNotFound, reconcileInitialPrompt } from './initial-prompt';
 import { deploySharedHost, runSharedHostCommand } from './shared-host-deployment';
 export { deploySharedHost } from './shared-host-deployment';
 import { randomUUID } from 'node:crypto';
@@ -11,7 +12,11 @@ import { CODEX_SKILL_CONTENT } from '@switch-console/plugins/agents/codex/skill'
 import { CURSOR_SKILL_CONTENT } from '@switch-console/plugins/agents/cursor/skill';
 import { GEMINI_SKILL_CONTENT } from '@switch-console/plugins/agents/gemini/skill';
 import { SWITCH_AGENT_RUNTIME_PIN } from '@switch-console/plugins/distribution';
-import { snapshotSchema } from '@switch-console/shared/session-v1';
+import {
+  commandStatusSchema,
+  snapshotSchema,
+  type Snapshot,
+} from '@switch-console/shared/session-v1';
 import { providerAdapterRegistry } from '@main/core/agent-runtime/impl/provider-adapter-registry';
 import type { AgentRuntimeProvider } from '@main/core/agent-runtime/types';
 import { agentLaunchSpecialization } from '@main/core/agents/agent-launch-config';
@@ -21,11 +26,18 @@ import { hostDependencyStore } from '@main/core/dependencies/host-dependency-sto
 import type { LocationTransport } from '@main/core/locations/location-transport';
 import { getPlugin } from '@main/core/providers/plugin-registry';
 import { AGENT_ENV_VARS } from '@main/core/pty/pty-env';
+import { setInitialPromptDelivery } from '@main/core/sessions/operations/set-initial-prompt-delivery';
 import { loadSessionWithAgent } from '@main/core/sessions/session-join';
 import { switchNotificationPoller } from '@main/core/switch-rooms/switch-notification-poller';
 import { switchRoomService } from '@main/core/switch-rooms/switch-room-service';
-import { fetchSdkSnapshot, submitSdkCommand } from '@main/core/switch-servers/gateway-client';
+import {
+  fetchSdkCommandStatus,
+  fetchSdkSnapshot,
+  GatewayError,
+  submitSdkCommand,
+} from '@main/core/switch-servers/gateway-client';
 import { getServer } from '@main/core/switch-servers/servers-store';
+import { log } from '@main/lib/logger';
 import { makePtyId } from '@shared/core/pty/ptyId';
 import type { Session } from '@shared/core/sessions/sessions';
 import type { SwitchServer } from '@shared/core/switch-servers/switch-servers';
@@ -69,6 +81,7 @@ export class SharedAgentRuntime implements AgentRuntimeProvider {
       throw new Error('Link this agent to a Switch server before starting a session.');
     this.server = await getServer(agent.serverId);
     if (!this.server) throw new Error('The agent’s Switch server is missing.');
+    const server = this.server;
     const intended = switchNotificationPoller.getSharedIntent(session.id, agent.switchAgentId);
     const config = await buildSharedHostConfig(session, this.params, this.transport, intended);
     const previousEpoch = restart
@@ -80,14 +93,13 @@ export class SharedAgentRuntime implements AgentRuntimeProvider {
       session.id,
       false
     );
-    const launched = await runSharedHostCommand(
+    await runSharedHostCommand(
       this.transport,
       { ctx, root, entrypoint },
       config,
       restart ? '--restart' : '--ensure',
       isResuming
     );
-    const created = JSON.parse(launched.stdout).created === true;
     let snapshot;
     const deadline = Date.now() + 120000;
     let nextFailureCheck = 0;
@@ -134,18 +146,85 @@ export class SharedAgentRuntime implements AgentRuntimeProvider {
       switchRoomService.setSessionRoom(roomContext, intended.rooms[0], agent.switchAgentId, null);
     else await switchRoomService.restoreConnection(roomContext);
     switchNotificationPoller.clearSharedIntent(session.id);
-    if (created && initialPrompt?.trim())
-      await submitSdkCommand(this.server, {
-        contractVersion: 1,
+    await this.deliverInitialPrompt(session, initialPrompt, snapshot, server);
+  }
+
+  private async deliverInitialPrompt(
+    session: Session,
+    initialPrompt: string | undefined,
+    snapshot: Snapshot,
+    server: SwitchServer
+  ): Promise<void> {
+    const epoch = snapshot.session.epoch;
+    const saved = (await loadSessionWithAgent(session.id))?.row.config;
+    const prompt = (saved?.initialPrompt ?? initialPrompt)?.trim();
+    if (!prompt) return;
+    const outcome = await reconcileInitialPrompt({
+      prompt,
+      epoch,
+      record: saved?.initialPromptDelivery,
+      legacyCommandId: `initial-${session.id}`,
+      hasPriorActivity: snapshot.turns.length > 0 || snapshot.items.length > 0,
+      lookup: async (commandId) => {
+        try {
+          const status = commandStatusSchema.parse(
+            await fetchSdkCommandStatus(server, session.id, commandId)
+          );
+          return {
+            recorded: true,
+            status: status.status,
+            code: status.code,
+            message: status.message,
+          };
+        } catch (error) {
+          if (error instanceof GatewayError && isCommandNotFound(error)) return { recorded: false };
+          throw error;
+        }
+      },
+      persist: (record) => setInitialPromptDelivery(session.id, record),
+      submit: async (commandId, commandEpoch) => {
+        const receipt = commandStatusSchema.parse(
+          await submitSdkCommand(server, {
+            contractVersion: 1,
+            sessionId: session.id,
+            epoch: commandEpoch,
+            commandId,
+            body: {
+              type: 'message.send',
+              text: prompt,
+              attachments: [],
+              delivery: 'queue',
+            },
+          })
+        );
+        return {
+          recorded: true,
+          status: receipt.status,
+          code: receipt.code,
+          message: receipt.message,
+        };
+      },
+      newCommandId: () => randomUUID(),
+      now: () => new Date().toISOString(),
+    });
+    // An undelivered prompt leaves the session open and usable, so it is
+    // reported rather than fatal.
+    if (outcome.action === 'unresolved')
+      log.warn('Initial prompt delivery is unresolved', {
+        event: 'sdk_host.initial_prompt',
+        stage: 'unresolved',
         sessionId: session.id,
-        epoch: snapshot.session.epoch,
-        commandId: `initial-${session.id}`,
-        body: {
-          type: 'message.send',
-          text: initialPrompt.trim(),
-          attachments: [],
-          delivery: 'queue',
-        },
+        commandId: outcome.record.commandId,
+        reason: outcome.record.reason,
+      });
+    if (outcome.action === 'rejected')
+      log.error('Initial prompt was rejected', {
+        event: 'sdk_host.initial_prompt',
+        stage: 'rejected',
+        sessionId: session.id,
+        commandId: outcome.record.commandId,
+        errorCode: outcome.record.code,
+        detail: outcome.record.message,
       });
   }
 

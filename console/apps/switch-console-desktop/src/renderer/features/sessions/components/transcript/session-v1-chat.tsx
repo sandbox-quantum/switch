@@ -4,6 +4,7 @@ import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { Button } from '@renderer/lib/ui/button';
 import { MarkdownRenderer } from '@renderer/lib/ui/markdown-renderer';
 import { Textarea } from '@renderer/lib/ui/textarea';
+import type { InitialPromptDelivery } from '@shared/core/sessions/session-config';
 import { SessionAttachmentList, useSessionAttachments } from './session-attachments';
 import { SessionV1Controls } from './session-v1-controls';
 import { SessionV1Request } from './session-v1-request';
@@ -13,8 +14,10 @@ export function SessionV1Chat({
   client,
   restartHost,
   retireHost,
+  initialPromptDelivery,
 }: {
   client: SessionChatClient;
+  initialPromptDelivery?: InitialPromptDelivery;
   restartHost?: () => Promise<void>;
   retireHost?: (epoch: string) => Promise<void>;
 }) {
@@ -153,6 +156,28 @@ export function SessionV1Chat({
           </span>
         </div>
       </div>
+      {(initialPromptDelivery?.state === 'unknown' ||
+        initialPromptDelivery?.state === 'rejected') && (
+        <div
+          role="alert"
+          className="border-b border-border px-5 py-3 text-sm [overflow-wrap:anywhere] text-foreground-destructive"
+        >
+          <p>
+            {initialPromptDelivery.state === 'unknown'
+              ? 'Initial prompt delivery is unresolved.'
+              : 'The initial prompt was rejected.'}
+          </p>
+          <p>
+            {initialPromptDelivery.message ??
+              initialPromptDelivery.reason ??
+              initialPromptDelivery.code}
+          </p>
+          <p>
+            It will not be sent again automatically. Review the conversation before sending a new
+            message.
+          </p>
+        </div>
+      )}
       {session?.retired && (
         <div role="status" className="px-5 py-3 text-sm">
           This session was retired. Its history is retained; prior uncertain actions remain unknown.
