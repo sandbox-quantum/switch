@@ -1083,12 +1083,19 @@ export async function createRoomFromTemplate(
 
 // ── Stored templates (template registry) ────────────────────────────────────
 
+export type SourceEntry = {
+  url: string;
+  label: string;
+};
+
 export type StoredTemplateSummary = {
   id: string;
   name: string;
   description: string;
   kind: string;
   creator: string;
+  repoUrl: string | null;
+  sources: SourceEntry[] | null;
 };
 
 export type StoredTemplateDetail = StoredTemplateSummary & {
@@ -1102,6 +1109,8 @@ type RegistryTemplateSummary = {
   name: string;
   description: string;
   kind: string;
+  repo_url?: string | null;
+  sources?: SourceEntry[] | null;
 };
 
 function toSummary(t: RegistryTemplateSummary): StoredTemplateSummary {
@@ -1111,6 +1120,8 @@ function toSummary(t: RegistryTemplateSummary): StoredTemplateSummary {
     description: t.description,
     kind: t.kind,
     creator: t.owner_name ?? t.owner_id,
+    repoUrl: t.repo_url ?? null,
+    sources: t.sources ?? null,
   };
 }
 
