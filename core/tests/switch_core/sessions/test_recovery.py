@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -137,12 +138,13 @@ async def test_lifecycle_commands_are_authorized_durable_and_fenced(session_fact
         assert control in await service.pending(
             "agent-demo", "session-demo", "host-demo", epoch
         )
-    with pytest.raises(SessionError, match="no longer running"):
-        await service.submit(
-            command(epoch, "old-turn", {"type": "turn.interrupt", "turnId": "other"}),
-            user_id="owner",
-            bridge_id=None,
-        )
+    rejected = await service.submit(
+        command(epoch, "old-turn", {"type": "turn.interrupt", "turnId": "other"}),
+        user_id="owner",
+        bridge_id=None,
+    )
+    assert rejected.status == "rejected"
+    assert rejected.code == "TURN_NOT_ACTIVE"
     await service.quiesce("agent-demo", "session-demo", "host-demo", epoch)
     snapshot = await service.recover(
         "agent-demo", "session-demo", "host-demo", epoch, "recovery", 2
@@ -263,12 +265,13 @@ async def test_reset_rejects_pending_questions(session_factory):
             },
         ),
     )
-    with pytest.raises(SessionError, match="Finish or interrupt"):
-        await service.submit(
-            command(epoch, "busy-reset", {"type": "session.reset"}),
-            user_id="owner",
-            bridge_id=None,
-        )
+    rejected = await service.submit(
+        command(epoch, "busy-reset", {"type": "session.reset"}),
+        user_id="owner",
+        bridge_id=None,
+    )
+    assert rejected.status == "rejected"
+    assert rejected.code == "SESSION_BUSY"
 
 
 @pytest.mark.asyncio
@@ -301,10 +304,13 @@ async def test_model_catalog_validation_and_compaction_capability(session_factor
         },
         {"type": "session.compact"},
     ):
-        with pytest.raises(SessionError):
-            await service.submit(
-                command(epoch, "invalid", body), user_id="owner", bridge_id=None
-            )
+        rejected = await service.submit(
+            command(epoch, "invalid-" + json.dumps(body, sort_keys=True), body),
+            user_id="owner",
+            bridge_id=None,
+        )
+        assert rejected.status == "rejected"
+        assert rejected.code in ("UNSUPPORTED_MODEL", "UNSUPPORTED_CAPABILITY")
     result = await service.submit(
         command(
             epoch,

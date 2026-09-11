@@ -52,3 +52,33 @@ async def test_http_identity_is_server_supplied_and_host_is_fenced(session_facto
             json={"host_id": "host-demo", "epoch": epoch},
         )
         assert response.status_code == 403
+
+
+async def test_http_reconciliation_fences_an_unaccepted_command(session_factory):
+    authority, epoch = await setup(session_factory)
+    app = FastAPI()
+    app.include_router(router, prefix="/sessions")
+    app.add_exception_handler(SessionError, session_error_response)
+    app.dependency_overrides[get_session_factory] = lambda: session_factory
+    app.dependency_overrides[get_current_user] = lambda: User(id="viewer")
+    request = {
+        "commandId": "late-http",
+        "epoch": epoch,
+        "surface": "console",
+        "roomId": None,
+        "body": {"type": "session.stop"},
+    }
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        url = "/sessions/session-demo/commands"
+        assert (await client.post(url + "/reconcile", json=request)).status_code == 403
+        app.dependency_overrides[get_current_user] = lambda: User(id="owner")
+        response = await client.post(url + "/reconcile", json=request)
+        assert response.status_code == 200
+        assert response.json()["code"] == "NOT_ACCEPTED"
+        assert (await client.post(url, json=request)).json() == response.json()
+        assert (
+            await authority.pending("agent-demo", "session-demo", "host-demo", epoch)
+            == []
+        )

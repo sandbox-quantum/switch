@@ -84,10 +84,11 @@ async def test_attachment_upload_download_authorization_and_idempotency(
         ("attachmentId", str(uuid.uuid4())),
     ):
         forged = {**body, "attachments": [{**attachment, field: value}]}
-        with pytest.raises(SessionError):
-            await authority.submit(
-                command(epoch, "invalid", forged), user_id="owner", bridge_id=None
-            )
+        rejected = await authority.submit(
+            command(epoch, "invalid-" + field, forged), user_id="owner", bridge_id=None
+        )
+        assert rejected.status == "rejected"
+        assert rejected.code in ("INVALID_ATTACHMENT", "NOT_FOUND")
     assert (
         await authority.submit(
             command(epoch, "valid", body), user_id="owner", bridge_id=None

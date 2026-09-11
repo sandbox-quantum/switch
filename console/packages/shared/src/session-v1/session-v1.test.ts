@@ -184,6 +184,14 @@ describe('session-v1 client transport', () => {
       vi.useRealTimers();
     }
   });
+  it('rejects oversized input before reserving the composer', async () => {
+    const wire = transport();
+    const client = new SessionChatClient('session-demo', wire.api);
+    await client.connect();
+    await expect(client.send('x'.repeat(60 * 1024), 'oversized')).rejects.toThrow('59 KiB');
+    expect(client.hasPendingCommand()).toBe(false);
+    expect(wire.api.submit).not.toHaveBeenCalled();
+  });
   it('preserves command ID and body after a lost receipt, then reconciles', async () => {
     const wire = transport();
     const client = new SessionChatClient('session-demo', wire.api);
@@ -195,6 +203,37 @@ describe('session-v1 client transport', () => {
     expect(vi.mocked(wire.api.submit).mock.calls[0][0]).toEqual(
       vi.mocked(wire.api.submit).mock.calls[1][0]
     );
+  });
+  it('fences the exact uncertain command without resending it', async () => {
+    const wire = transport();
+    wire.api.reconcile = vi.fn(async () => ({
+      ...wire.receipt,
+      status: 'rejected' as const,
+      code: 'NOT_ACCEPTED',
+      message: 'The command was not accepted.',
+    }));
+    const client = new SessionChatClient('session-demo', wire.api);
+    await client.connect();
+    vi.mocked(wire.api.submit).mockRejectedValueOnce(new Error('Lost reply'));
+    await expect(client.send('Hello', 'send')).rejects.toThrow('Lost reply');
+    await expect(client.reconcile()).rejects.toThrow('not accepted');
+    expect(wire.api.reconcile).toHaveBeenCalledWith(vi.mocked(wire.api.submit).mock.calls[0][0]);
+    expect(wire.api.submit).toHaveBeenCalledTimes(1);
+    expect(wire.api.commandStatus).not.toHaveBeenCalled();
+    expect(client.hasPendingCommand()).toBe(false);
+  });
+  it('keeps pending identity when reconciliation fails', async () => {
+    const wire = transport();
+    wire.api.reconcile = vi.fn(async () => {
+      throw new Error('Connection lost');
+    });
+    const client = new SessionChatClient('session-demo', wire.api);
+    await client.connect();
+    vi.mocked(wire.api.submit).mockRejectedValueOnce(new Error('Lost reply'));
+    await expect(client.send('Hello', 'send')).rejects.toThrow();
+    await expect(client.reconcile()).rejects.toThrow('Connection lost');
+    expect(client.hasPendingCommand()).toBe(true);
+    expect(wire.api.submit).toHaveBeenCalledTimes(1);
   });
   it('retains uncertain commands and blocks sends while disconnected', async () => {
     const wire = transport();

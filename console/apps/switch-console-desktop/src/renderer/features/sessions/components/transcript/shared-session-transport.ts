@@ -16,6 +16,8 @@ export function sharedSessionTransport(serverId: string): SessionTransport {
     snapshot: (id) => rpc.sdkHost.sharedSnapshot(serverId, id),
     submit: async (command) =>
       commandStatusSchema.parse(await rpc.sdkHost.sharedSubmit(serverId, command)),
+    reconcile: async (command) =>
+      commandStatusSchema.parse(await rpc.sdkHost.sharedReconcile(serverId, command)),
     commandStatus: async (id, commandId) =>
       commandStatusSchema.parse(await rpc.sdkHost.sharedCommandStatus(serverId, id, commandId)),
     subscribe(id, after, onEvent, onError, onCursor) {

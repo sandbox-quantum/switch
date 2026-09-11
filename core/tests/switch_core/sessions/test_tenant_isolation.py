@@ -193,6 +193,15 @@ async def test_all_authority_paths_reject_another_tenants_session(rls_harness):
             lambda: authority.command_status(
                 "session-demo", "same-command", "tenant-b"
             ),
+            lambda: authority.reconcile(
+                command(
+                    epoch,
+                    "reconcile-command",
+                    {"type": "session.stop"},
+                    actor="tenant-b",
+                ),
+                "tenant-b",
+            ),
             lambda: authority.retire("session-demo", "tenant-b", epoch),
             lambda: authority.submit(
                 command(

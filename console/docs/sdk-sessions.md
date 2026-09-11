@@ -36,6 +36,14 @@ each session’s tenant from its owning agent and preserves its history.
 
 Initial prompts have a saved delivery record. Reopening checks the command receipt before sending. A pending attempt keeps its command ID and original epoch; an unknown or rejected attempt is never sent again automatically. Console shows unresolved or rejected delivery above the transcript. Review the conversation before sending a new message. Older sessions reconcile their legacy command ID first; existing activity without a receipt remains unknown.
 
+Console limits command payloads to 59 KiB so the server can add authenticated
+origin metadata within its 60 KiB limit. Larger input must be shortened or attached.
+Authorized validation failures have durable rejection receipts. **Check command
+status** returns the existing receipt or records that an unaccepted command must
+not execute, fencing a late submission with the same ID. It never sends the action
+again. A rejected message stays in the composer for review; an unknown answer can
+be acknowledged without resubmitting it.
+
 ## Recovery guarantees
 
 - Events, upload receipts, command states and room-message assignments are

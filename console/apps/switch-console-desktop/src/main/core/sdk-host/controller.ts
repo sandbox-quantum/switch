@@ -9,6 +9,7 @@ import {
   fetchSdkEvents,
   fetchSdkCommandStatus,
   submitSdkCommand,
+  reconcileSdkCommand,
   retireSdkSession,
 } from '../switch-servers/gateway-client';
 import { getServer } from '../switch-servers/servers-store';
@@ -38,6 +39,8 @@ export const sdkHostController = createRPCController({
     fetchSdkEvents(await sharedServer(serverId), sessionId, after),
   sharedSubmit: async (serverId: string, command: ClientCommand) =>
     submitSdkCommand(await sharedServer(serverId), command),
+  sharedReconcile: async (serverId: string, command: ClientCommand) =>
+    reconcileSdkCommand(await sharedServer(serverId), command),
   sharedCommandStatus: async (serverId: string, sessionId: string, commandId: string) =>
     fetchSdkCommandStatus(await sharedServer(serverId), sessionId, commandId),
 });

@@ -208,10 +208,17 @@ async def test_authorized_answer_reserves_once_across_competing_workers(
         second_worker.submit(answer(epoch, "second"), user_id="owner", bridge_id=None),
         return_exceptions=True,
     )
-    accepted = [r for r in results if not isinstance(r, Exception)]
+    accepted = [
+        r for r in results if not isinstance(r, Exception) and r.status == "accepted"
+    ]
     assert len(accepted) == 1
     assert (
-        next(r for r in results if isinstance(r, SessionError)).code == "REQUEST_BUSY"
+        next(
+            r
+            for r in results
+            if not isinstance(r, Exception) and r.status == "rejected"
+        ).code
+        == "REQUEST_BUSY"
     )
     accepted_id = accepted[0].command_id
     assert (
@@ -443,8 +450,11 @@ async def test_request_expiry_queues_one_cancellation_without_answering(
     snapshot = await service.snapshot("session-demo", "owner")
     assert snapshot.requests[0].state == "open"
     assert snapshot.requests[0].result is None
-    with pytest.raises(SessionError, match="expired"):
-        await service.submit(answer(epoch, "too-late"), user_id="owner", bridge_id=None)
+    rejected = await service.submit(
+        answer(epoch, "too-late"), user_id="owner", bridge_id=None
+    )
+    assert rejected.status == "rejected"
+    assert rejected.code == "REQUEST_CLOSED"
 
 
 async def test_reserved_answer_is_not_cancelled_by_request_expiry(session_factory):
@@ -518,3 +528,56 @@ async def test_old_epoch_retry_returns_original_outcome_after_recovery(session_f
     receipt = await service.command_status("session-demo", message.command_id, "owner")
     assert receipt.status == "unknown"
     assert await service.submit(message, user_id="owner", bridge_id=None) == receipt
+
+
+async def test_validation_rejection_survives_retry_without_dispatch(session_factory):
+    service, epoch = await setup(session_factory)
+    invalid = command(
+        epoch, "rejected-control", {"type": "turn.interrupt", "turnId": "missing"}
+    )
+    rejected = await service.submit(invalid, user_id="owner", bridge_id=None)
+    assert rejected.status == "rejected"
+    assert rejected.code == "TURN_NOT_ACTIVE"
+    restarted = SessionAuthority(session_factory)
+    assert (
+        await restarted.command_status("session-demo", invalid.command_id, "owner")
+        == rejected
+    )
+    assert await restarted.submit(invalid, user_id="owner", bridge_id=None) == rejected
+    assert (
+        await restarted.pending("agent-demo", "session-demo", "host-demo", epoch) == []
+    )
+    with pytest.raises(SessionError) as conflict:
+        await restarted.submit(
+            command(epoch, invalid.command_id, {"type": "session.stop"}),
+            user_id="owner",
+            bridge_id=None,
+        )
+    assert conflict.value.code == "IDEMPOTENCY_CONFLICT"
+
+
+async def test_reconcile_fences_a_late_original_submission(session_factory):
+    service, epoch = await setup(session_factory)
+    pending = command(epoch, "late-command", {"type": "session.stop"})
+    with pytest.raises(SessionError):
+        await service.reconcile(pending, "outsider")
+    rejected = await service.reconcile(pending, "owner")
+    assert rejected.status == "rejected"
+    assert rejected.code == "NOT_ACCEPTED"
+    second = SessionAuthority(session_factory)
+    assert await second.submit(pending, user_id="owner", bridge_id=None) == rejected
+    assert await second.reconcile(pending, "owner") == rejected
+    assert await second.pending("agent-demo", "session-demo", "host-demo", epoch) == []
+
+
+async def test_reconcile_and_submit_have_one_authoritative_outcome(session_factory):
+    service, epoch = await setup(session_factory)
+    pending = command(epoch, "racing-command", {"type": "session.stop"})
+    submitted, reconciled = await asyncio.gather(
+        service.submit(pending, user_id="owner", bridge_id=None),
+        SessionAuthority(session_factory).reconcile(pending, "owner"),
+    )
+    assert submitted == reconciled
+    assert submitted.status in ("accepted", "rejected")
+    queued = await service.pending("agent-demo", "session-demo", "host-demo", epoch)
+    assert len(queued) == (1 if submitted.status == "accepted" else 0)

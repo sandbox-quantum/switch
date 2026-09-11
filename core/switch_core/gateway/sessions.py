@@ -105,6 +105,31 @@ async def submit(
     return status
 
 
+@router.post("/{session_id}/commands/reconcile")
+async def reconcile(
+    session_id: str,
+    body: SubmitCommand,
+    user: CurrentUser,
+    factory: Factory,
+) -> CommandStatus:
+    command = Command(
+        contract_version=1,
+        command_id=body.command_id,
+        session_id=session_id,
+        epoch=body.epoch,
+        origin=Origin(
+            surface=body.surface,
+            actor_id=user.id,
+            room_id=body.room_id,
+            thread_id=None,
+            message_id=None,
+        ),
+        body=body.body,
+    )
+    status = await SessionAuthority(factory).reconcile(command, user.id)
+    return status
+
+
 class UploadAttachment(BaseModel):
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
     name: str

@@ -1302,6 +1302,29 @@ export async function submitSdkCommand(
   ).json();
 }
 
+export async function reconcileSdkCommand(
+  server: SwitchServer,
+  command: ClientCommand
+): Promise<unknown> {
+  return (
+    await gatewayFetch(
+      server,
+      `/sessions/${encodeURIComponent(command.sessionId)}/commands/reconcile`,
+      {
+        authenticated: true,
+        method: 'POST',
+        body: {
+          commandId: command.commandId,
+          epoch: command.epoch,
+          surface: 'console',
+          roomId: null,
+          body: command.body,
+        },
+      }
+    )
+  ).json();
+}
+
 export async function uploadSdkAttachment(
   server: SwitchServer,
   sessionId: string,

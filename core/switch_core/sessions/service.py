@@ -502,7 +502,77 @@ class SessionAuthority:
         ):
             row = await self._locked(db, command.session_id)
             await self._authorize(db, row, command.origin, user_id, bridge_id)
-            return await self._accept(db, row, command, bridge_id)
+            try:
+                return await self._accept(db, row, command, bridge_id)
+            except SessionError as exc:
+                if exc.code in ("NOT_AUTHORIZED", "IDEMPOTENCY_CONFLICT"):
+                    raise
+                existing = await db.get(
+                    SdkSessionCommand,
+                    (require_tenant_id(), row.id, command.command_id),
+                )
+                if existing is not None:
+                    raise
+                return await self._record_rejection(
+                    db, row, command, exc.code, str(exc)
+                )
+
+    async def reconcile(self, command: Command, user_id: str) -> CommandStatus:
+        if len(command.model_dump_json().encode("utf-8")) > 60 * 1024:
+            raise SessionError("PAYLOAD_TOO_LARGE", "Command exceeds 60 KiB.")
+        async with (
+            tenant_session(self._sessions, require_tenant_id()) as db,
+            db.begin(),
+        ):
+            row = await self._locked(db, command.session_id)
+            await self._authorize(db, row, command.origin, user_id, None)
+            previous = await db.get(
+                SdkSessionCommand, (require_tenant_id(), row.id, command.command_id)
+            )
+            if previous is not None:
+                if self._command_identity(previous.command) != self._command_identity(
+                    command.model_dump(by_alias=True)
+                ):
+                    raise SessionError(
+                        "IDEMPOTENCY_CONFLICT",
+                        "Command ID has different content or origin.",
+                    )
+                return CommandStatus.model_validate(previous.status)
+            return await self._record_rejection(
+                db,
+                row,
+                command,
+                "NOT_ACCEPTED",
+                "The server did not accept this command. It will not execute under this ID. Review before sending again.",
+            )
+
+    async def _record_rejection(
+        self,
+        db: AsyncSession,
+        row: SdkSession,
+        command: Command,
+        code: str,
+        message: str,
+    ) -> CommandStatus:
+        status = CommandStatus(
+            type="command.status",
+            command_id=command.command_id,
+            status="rejected",
+            code=code,
+            message=message,
+        )
+        snapshot = Snapshot.model_validate(row.snapshot)
+        db.add(
+            SdkSessionCommand(
+                session_id=row.id,
+                command_id=command.command_id,
+                accepted_sequence=snapshot.through_sequence + 1,
+                command=command.model_dump(by_alias=True),
+                status=status.model_dump(by_alias=True),
+            )
+        )
+        await self._append(db, row, status)
+        return status
 
     async def submit_room_message(
         self,

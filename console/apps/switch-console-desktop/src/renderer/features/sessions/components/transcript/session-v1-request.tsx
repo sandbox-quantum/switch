@@ -35,7 +35,12 @@ export function SessionV1Request({
         : decision
           ? 'Approved'
           : 'Answered';
-  const disabled = busy || !connected || request.state !== 'open' || pending !== null;
+  const disabled =
+    busy ||
+    !connected ||
+    request.state !== 'open' ||
+    pending !== null ||
+    client.hasPendingCommand();
   const submit = async (answer: AnswerBody) => {
     const command = pending ?? { id: crypto.randomUUID(), answer };
     setPending(command);
@@ -201,6 +206,33 @@ export function SessionV1Request({
         <p role="alert" className="mt-3 text-sm text-foreground-destructive">
           {error}
         </p>
+      )}
+      {pending && client.hasUnknownCommand() && (
+        <div className="mt-2 text-sm">
+          <p>
+            The server cannot confirm whether this answer took effect. Acknowledging it does not
+            send it again.
+          </p>
+          <Button
+            className="mt-2"
+            variant="outline"
+            size="sm"
+            disabled={busy}
+            onClick={() => {
+              setBusy(true);
+              void client
+                .acknowledgeUnknown()
+                .then(() => {
+                  setPending(null);
+                  setError(null);
+                })
+                .catch((error: unknown) => setError(String(error)))
+                .finally(() => setBusy(false));
+            }}
+          >
+            Acknowledge unknown answer
+          </Button>
+        </div>
       )}
       {pending && (
         <Button
