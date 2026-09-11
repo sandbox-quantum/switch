@@ -191,13 +191,47 @@ so there is nothing to reset behind a replicated cutover.
      NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS;
    ```
 
-   That is the only manual step. Nothing here grants `switch_app` anything on
-   `switch` or `mattermost` — switch-core does that itself at boot, from the
-   owner connection (the RDS master user, over `DB_OWNER_USER` /
-   `DB_OWNER_PASSWORD`), immediately after running Alembic. The master user
-   stays the schema owner throughout; it is configured as the owner
-   connection, never as `DB_USER`, so it is never the connection every
+   That is the only manual step in the database. Nothing here grants
+   `switch_app` anything on `switch` or `mattermost` — switch-core does that
+   itself at boot, from the owner connection (the RDS master user, over
+   `DB_OWNER_USER` / `DB_OWNER_PASSWORD`), immediately after running Alembic.
+   The master user stays the schema owner throughout; it is configured as the
+   owner connection, never as `DB_USER`, so it is never the connection every
    request is served over.
+
+   Both halves go into the chart values together:
+
+   ```yaml
+   postgresql:
+     mode: existing
+     external:
+       username: switch_app        # DB_USER — the restricted runtime role
+     owner:
+       username: <the master user> # DB_OWNER_USER — migrations and grants
+   secrets:
+     postgresPassword: <switch_app's password>
+     dbOwnerPassword: <the master password>
+   ```
+
+   Note `secrets.postgresPassword` is the *runtime* role's password here, not
+   the master's: in existing mode it is whatever `external.username`
+   authenticates with. Setting one half without the other renders fine and
+   will not necessarily fail on the deploy that introduces it —
+
+   - **`external.username` moved, `owner.username` left empty.** switch-core
+     has no owner to migrate as, so it migrates as the restricted role. With
+     nothing pending that is a no-op and the deployment comes up clean; the
+     next release carrying a migration dies at boot. Mattermost breaks
+     immediately, though, because in existing mode it follows
+     `external.username` unless an owner is configured, and the restricted
+     role has no rights in the `mattermost` database.
+   - **`owner.username` set, `external.username` left at the master user.**
+     switch-core refuses to serve: the runtime connection owns the tables its
+     own policies protect, so the policies are inert against it and tenants
+     are not isolated.
+
+   An instance that is already on RDS needs the same two values and the same
+   `CREATE ROLE`; only the dump and restore below are specific to the move.
 
 3. Download the CA bundle and put it in `postgresql.caBundle` — as
    `existingConfigMap` if it is synced in from elsewhere, otherwise inline.

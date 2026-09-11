@@ -430,11 +430,25 @@ postgresql:
   # owner.username stays genuinely empty there until you set it. That does NOT
   # mean boot skips migrations: alembic upgrade head still runs, over whatever
   # DB_USER resolves to (see migrations/env.py's fallback), and for a
-  # restricted runtime role that fails loudly with a permissions error rather
-  # than quietly doing nothing. That failure is deliberate — it is boot
-  # telling you this deployment moved to a restricted role without saying who
-  # owns the schema, rather than starting up unable to apply its own
-  # migrations and only finding out later.
+  # restricted runtime role any migration it actually has to apply fails with a
+  # permissions error.
+  #
+  # Note what that does not cover, because it is the trap here. A boot with
+  # nothing pending never issues a statement the restricted role lacks rights
+  # for, so it succeeds — and so does the isolation self-check, which asks
+  # about the connection rather than about who can migrate. An existing-mode
+  # deployment with a restricted DB_USER and no owner therefore comes up
+  # perfectly on the release that moved it there, and fails at boot on the
+  # next release that carries a migration. Set owner.username at the same time
+  # you repoint external.username, not afterwards.
+  #
+  # Setting it also decides what Mattermost connects as. In existing mode the
+  # chart has one username value for both roles, so Mattermost follows
+  # external.username unless an owner is configured — onto the restricted role,
+  # which has no rights in the "mattermost" database and cannot create or
+  # migrate its schema. With owner.username set, Mattermost uses the owner and
+  # switch-core alone uses the restricted role. See switch.mattermostDbUser in
+  # templates/_helpers.tpl.
   #
   # mode: managed can create the runtime role itself (see
   # postgresql.managed.runtimeUsername, templates/postgresql/configmap-init.yaml
