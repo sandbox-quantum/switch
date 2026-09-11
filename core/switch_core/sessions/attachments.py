@@ -53,6 +53,24 @@ def validate_attachment(name: str, mime_type: str, data: bytes) -> None:
         "image/webp": data.startswith(b"RIFF") and data[8:12] == b"WEBP",
         "application/pdf": data.startswith(b"%PDF-"),
     }
+    detected = next((kind for kind, matches in signatures.items() if matches), None)
+    image_extension = name.rsplit(".", 1)[-1].lower() in {
+        "png",
+        "jpg",
+        "jpeg",
+        "webp",
+        "gif",
+        "bmp",
+        "tif",
+        "tiff",
+        "svg",
+    }
+    if (detected is not None and detected != mime_type) or (
+        image_extension and not mime_type.startswith("image/")
+    ):
+        raise ValueError(
+            "Use the file's actual MIME type; images cannot be uploaded as generic files."
+        )
     if mime_type in signatures and not signatures[mime_type]:
         raise ValueError("The file contents do not match its MIME type.")
     if mime_type.startswith("text/") or mime_type == "application/json":

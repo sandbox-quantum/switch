@@ -11,6 +11,7 @@ import { cn } from '@renderer/utils/utils';
 import { SWITCH_CONSOLE_DOCS_URL } from '@shared/urls';
 import { WorkspaceSwitcher } from '../switch-servers/workspace-switcher';
 import { SidebarPinnedSessionList } from './pinned-session-list';
+import { SessionDiscoveryStatus } from './session-discovery-status';
 import { SessionsSectionHeader } from './sessions-section-header';
 import { SidebarGroupedList } from './sidebar-grouped-list';
 import {
@@ -65,6 +66,7 @@ export const LeftSidebar: React.FC = observer(function LeftSidebar() {
           </div>
           <SidebarGroup className="mt-0 mb-0 flex min-h-0 flex-1 flex-col">
             <SessionsSectionHeader />
+            <SessionDiscoveryStatus />
             <SidebarGroupContent className="flex min-h-0 flex-1 flex-col">
               <SidebarMenu className="flex min-h-0 flex-1 flex-col">
                 <SidebarGroupedList />

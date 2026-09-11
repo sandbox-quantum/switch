@@ -112,6 +112,9 @@ export class SwitchEventStream {
   /** Aborts only the current socket, so a reconnect can replace it without
    * tearing down the connection. */
   private socketAbort: AbortController | null = null;
+  /** Aborts the connection for good. Distinct from the caller's signal: some
+   * refusals can never be retried into a success, and both loops have to end. */
+  private readonly halt = new AbortController();
   private rooms: string[];
 
   constructor(deps: SwitchEventStreamDeps) {
@@ -190,6 +193,22 @@ export class SwitchEventStream {
     return true;
   }
 
+  /** A rejected credential is not an outage: every reopen would carry the same
+   * token, so end both loops and tell the owner once. */
+  private rejectCredentials(status: number, body: string): void {
+    if (this.halt.signal.aborted) return;
+    const detail = body.slice(0, 500);
+    this.deps.log.error('SwitchEventStream: the server rejected our credentials — stopping', {
+      event: 'switch_stream_credentials_rejected',
+      status,
+      detail,
+    });
+    this.halt.abort();
+    this.deps.onEvicted(
+      `Switch rejected the agent credentials (HTTP ${status})${detail ? `: ${detail}` : ''}`
+    );
+  }
+
   private async subscribe(roomId: string): Promise<void> {
     const resp = await this.post('connection/subscribe', {
       connection_id: this.deps.connectionId,
@@ -212,7 +231,7 @@ export class SwitchEventStream {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify(body),
-      signal: AbortSignal.any([AbortSignal.timeout(timeoutMs), this.deps.signal]),
+      signal: AbortSignal.any([AbortSignal.timeout(timeoutMs), this.deps.signal, this.halt.signal]),
     });
   }
 
@@ -233,7 +252,7 @@ export class SwitchEventStream {
     let backoff = INITIAL_BACKOFF_MS;
     let failures = 0;
 
-    while (!signal.aborted) {
+    while (!signal.aborted && !this.halt.signal.aborted) {
       const socketAbort = new AbortController();
       this.socketAbort = socketAbort;
       try {
@@ -261,7 +280,7 @@ export class SwitchEventStream {
             Accept: 'text/event-stream',
             ...(this.cursor > 0 ? { 'Last-Event-ID': String(this.cursor) } : {}),
           },
-          signal: AbortSignal.any([socketAbort.signal, signal]),
+          signal: AbortSignal.any([socketAbort.signal, signal, this.halt.signal]),
         });
 
         if (!resp.ok || !resp.body) {
@@ -271,6 +290,10 @@ export class SwitchEventStream {
           // this cannot spin: retry now rather than serving the backoff a
           // transport failure earned.
           if (this.dropRefusedRooms(resp.status, body)) continue;
+          if (resp.status === 401 || resp.status === 403) {
+            this.rejectCredentials(resp.status, body);
+            return;
+          }
           throw new Error(`HTTP ${resp.status}: ${body}`);
         }
 
@@ -294,7 +317,7 @@ export class SwitchEventStream {
           if (frame.id) this.cursor = Math.max(this.cursor, Number(frame.id) || 0);
         }
       } catch (error) {
-        if (signal.aborted) return;
+        if (signal.aborted || this.halt.signal.aborted) return;
         // A deliberate reopen (repoint) aborts the socket; that is not an error.
         if (!socketAbort.signal.aborted) {
           failures += 1;
@@ -404,12 +427,16 @@ export class SwitchEventStream {
       });
     };
 
-    while (!signal.aborted) {
+    while (!signal.aborted && !this.halt.signal.aborted) {
       try {
         const resp = await this.post('connection/beat', {
           connection_id: connectionId,
           cursor: this.cursor,
         });
+        if (resp.status === 401 || resp.status === 403) {
+          this.rejectCredentials(resp.status, await resp.text());
+          return;
+        }
         if (resp.status === 404 || resp.status === 409) {
           // The server answered, so this is not an outage — but it is not a
           // beat that landed either: we are not attached, and only a reopen
@@ -440,7 +467,7 @@ export class SwitchEventStream {
           backoff = BEAT_INTERVAL_MS;
         }
       } catch (error) {
-        if (signal.aborted) return;
+        if (signal.aborted || this.halt.signal.aborted) return;
         fail(error);
       }
       await new Promise((r) => setTimeout(r, backoff));

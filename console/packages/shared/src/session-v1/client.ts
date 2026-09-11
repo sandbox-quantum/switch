@@ -23,6 +23,7 @@ export interface SessionTransport {
     onCursor: (sequence: number) => void
   ): () => void;
   submit(command: ClientCommand): Promise<CommandStatus>;
+  reconcile?(command: ClientCommand): Promise<CommandStatus>;
   commandStatus(sessionId: string, commandId: string): Promise<CommandStatus>;
 }
 export type ChatView = {
@@ -157,6 +158,10 @@ export class SessionChatClient {
     };
     if (command.epoch !== snapshot.session.epoch)
       throw new Error('STALE_EPOCH: the previous message needs reconciliation.');
+    if (new TextEncoder().encode(JSON.stringify(command)).byteLength > 59 * 1024)
+      throw new Error(
+        'Command exceeds the 59 KiB Console limit. Shorten the message or attach a file.'
+      );
     this.pending = command;
     // Keep this command on uncertain transport failure; retry uses the same ID and body.
     const status = commandStatusSchema.parse(await this.transport.submit(command));
@@ -183,6 +188,10 @@ export class SessionChatClient {
     };
     if (command.epoch !== session.epoch)
       throw new Error('STALE_EPOCH: reconcile the previous command.');
+    if (new TextEncoder().encode(JSON.stringify(command)).byteLength > 59 * 1024)
+      throw new Error(
+        'Command exceeds the 59 KiB Console limit. Shorten the message or attach a file.'
+      );
     this.pending = command;
     const status = commandStatusSchema.parse(await this.transport.submit(command));
     this.acceptReceipt(status, commandId);
@@ -197,7 +206,9 @@ export class SessionChatClient {
     if (!this.pending) throw new Error('No uncertain command.');
     const id = this.pending.commandId;
     const status = commandStatusSchema.parse(
-      await this.transport.commandStatus(this.sessionId, id)
+      this.transport.reconcile
+        ? await this.transport.reconcile(this.pending)
+        : await this.transport.commandStatus(this.sessionId, id)
     );
     this.acceptReceipt(status, id);
     return status;
@@ -243,6 +254,8 @@ export class SessionChatClient {
     }
     if (status.status === 'rejected') {
       this.pending = null;
+      this.replica?.recordReceipt(status);
+      this.publish(this.view.connected, null);
       throw new Error(status.message ?? status.code ?? 'Message rejected.');
     }
     this.pending = null;

@@ -21,6 +21,7 @@ from switch_core.db.models import (
     SdkSession,
     SdkSessionCommand,
     User,
+    require_tenant_id,
 )
 from switch_core.sessions.contract import (
     Command,
@@ -218,10 +219,17 @@ async def test_authorized_answer_reserves_once_across_competing_workers(
         second_worker.submit(answer(epoch, "second"), user_id="owner", bridge_id=None),
         return_exceptions=True,
     )
-    accepted = [r for r in results if not isinstance(r, Exception)]
+    accepted = [
+        r for r in results if not isinstance(r, Exception) and r.status == "accepted"
+    ]
     assert len(accepted) == 1
     assert (
-        next(r for r in results if isinstance(r, SessionError)).code == "REQUEST_BUSY"
+        next(
+            r
+            for r in results
+            if not isinstance(r, Exception) and r.status == "rejected"
+        ).code
+        == "REQUEST_BUSY"
     )
     accepted_id = accepted[0].command_id
     assert (
@@ -254,7 +262,12 @@ async def test_room_viewer_cannot_reserve_but_verified_owner_can(session_factory
     )
     assert result.status == "accepted"
     async with session_factory() as db:
-        assert await db.get(SdkSessionCommand, ("session-demo", "outsider")) is None
+        assert (
+            await db.get(
+                SdkSessionCommand, (require_tenant_id(), "session-demo", "outsider")
+            )
+            is None
+        )
 
 
 async def test_an_open_addressing_policy_lets_an_unclaimed_room_member_answer(
@@ -348,7 +361,7 @@ async def test_expired_host_cannot_execute_or_renew_with_a_stale_lease(session_f
     assert conflict.value.code == "STALE_EPOCH"
 
     async with session_factory() as db, db.begin():
-        row = await db.get(SdkSession, "session-demo")
+        row = await db.get(SdkSession, (require_tenant_id(), "session-demo"))
         row.lease_expires_at = datetime.now(UTC) - timedelta(seconds=1)
     with pytest.raises(SessionError) as conflict:
         await service.renew("agent-demo", "session-demo", "host-demo", epoch)
@@ -403,3 +416,194 @@ async def test_cancellation_cannot_be_confirmed_as_approval(session_factory):
     assert request.result.outcome == "cancelled"
     assert request.result.result is None
     assert request.decided_by.actor_id == "owner"
+
+
+@pytest.mark.asyncio
+async def test_owner_can_retire_expired_unknown_session_without_replay(session_factory):
+    service, epoch = await setup(session_factory)
+    await opened(service, epoch)
+    with pytest.raises(SessionError, match="owner"):
+        await service.retire("session-demo", "outsider", epoch)
+    with pytest.raises(SessionError, match="active host"):
+        await service.retire("session-demo", "owner", epoch)
+    async with session_factory() as db, db.begin():
+        row = await db.get(SdkSession, (require_tenant_id(), "session-demo"))
+        row.lease_expires_at = datetime.now(UTC) - timedelta(seconds=1)
+    retired = await service.retire("session-demo", "owner", epoch)
+    assert retired.session.retired
+    assert retired.session.epoch != epoch
+    assert retired.session.connectivity == "offline"
+    assert retired.session.status == "error"
+    assert retired.session.pending_request_ids == []
+    assert all(request.state == "closed" for request in retired.requests)
+    assert any(status.status == "unknown" for status in retired.command_statuses)
+    assert retired.turns
+    assert retired.requests
+    assert await service.retire("session-demo", "owner", epoch) == retired
+    with pytest.raises(SessionError, match="cannot resume"):
+        await service.recover(
+            "agent-demo", "session-demo", "host-demo", epoch, "recover-retired", 0
+        )
+    with pytest.raises(SessionError):
+        await service.renew("agent-demo", "session-demo", "host-demo", epoch)
+
+
+async def test_request_expiry_queues_one_cancellation_without_answering(
+    session_factory,
+):
+    service, epoch = await setup(session_factory)
+    await opened(service, epoch)
+    initial = (await service.snapshot("session-demo", "owner")).requests[0]
+    assert initial.expires_at is not None
+    assert datetime.fromisoformat(initial.expires_at) > datetime.now(UTC)
+    async with session_factory() as db, db.begin():
+        row = await db.get(SdkSession, (require_tenant_id(), "session-demo"))
+        snapshot = dict(row.snapshot)
+        requests = [dict(request) for request in snapshot["requests"]]
+        requests[0]["expiresAt"] = (
+            datetime.now(UTC) - timedelta(seconds=1)
+        ).isoformat()
+        snapshot["requests"] = requests
+        row.snapshot = snapshot
+    first = await service.pending("agent-demo", "session-demo", "host-demo", epoch)
+    second = await service.pending("agent-demo", "session-demo", "host-demo", epoch)
+    cancellation = [
+        command for command in first if command.body.type == "turn.interrupt"
+    ]
+    assert len(cancellation) == 1
+    assert cancellation[0].command_id in [command.command_id for command in second]
+    assert cancellation[0].origin.actor_id == "switch-session-authority"
+    snapshot = await service.snapshot("session-demo", "owner")
+    assert snapshot.requests[0].state == "open"
+    assert snapshot.requests[0].result is None
+    rejected = await service.submit(
+        answer(epoch, "too-late"), user_id="owner", bridge_id=None
+    )
+    assert rejected.status == "rejected"
+    assert rejected.code == "REQUEST_CLOSED"
+
+
+async def test_reserved_answer_is_not_cancelled_by_request_expiry(session_factory):
+    service, epoch = await setup(session_factory)
+    await opened(service, epoch)
+    await service.submit(answer(epoch, "winner"), user_id="owner", bridge_id=None)
+    async with session_factory() as db, db.begin():
+        row = await db.get(SdkSession, (require_tenant_id(), "session-demo"))
+        snapshot = dict(row.snapshot)
+        requests = [dict(request) for request in snapshot["requests"]]
+        requests[0]["expiresAt"] = (
+            datetime.now(UTC) - timedelta(seconds=1)
+        ).isoformat()
+        snapshot["requests"] = requests
+        row.snapshot = snapshot
+    commands = await service.pending("agent-demo", "session-demo", "host-demo", epoch)
+    assert not any(command.body.type == "turn.interrupt" for command in commands)
+
+
+async def test_stale_command_has_a_durable_rejection_and_never_executes(
+    session_factory,
+):
+    service, epoch = await setup(session_factory)
+    message = command(
+        "old-epoch",
+        "stale-message",
+        {
+            "type": "message.send",
+            "text": "Once",
+            "attachments": [],
+            "delivery": "queue",
+        },
+    )
+    receipt = await service.submit(message, user_id="owner", bridge_id=None)
+    assert receipt.status == "rejected"
+    assert receipt.code == "STALE_EPOCH"
+    assert (
+        await service.command_status("session-demo", "stale-message", "owner")
+        == receipt
+    )
+    assert await service.submit(message, user_id="owner", bridge_id=None) == receipt
+    assert await service.pending("agent-demo", "session-demo", "host-demo", epoch) == []
+    with pytest.raises(SessionError) as conflict:
+        await service.submit(
+            message.model_copy(update={"epoch": epoch}), user_id="owner", bridge_id=None
+        )
+    assert conflict.value.code == "IDEMPOTENCY_CONFLICT"
+    fresh = message.model_copy(update={"epoch": epoch, "command_id": "fresh-message"})
+    assert (
+        await service.submit(fresh, user_id="owner", bridge_id=None)
+    ).status == "accepted"
+
+
+async def test_old_epoch_retry_returns_original_outcome_after_recovery(session_factory):
+    service, epoch = await setup(session_factory)
+    message = command(
+        epoch,
+        "accepted-before-recovery",
+        {
+            "type": "message.send",
+            "text": "Once",
+            "attachments": [],
+            "delivery": "queue",
+        },
+    )
+    await service.submit(message, user_id="owner", bridge_id=None)
+    await service.quiesce("agent-demo", "session-demo", "host-demo", epoch)
+    await service.recover(
+        "agent-demo", "session-demo", "host-demo", epoch, "recovery", 0
+    )
+    receipt = await service.command_status("session-demo", message.command_id, "owner")
+    assert receipt.status == "unknown"
+    assert await service.submit(message, user_id="owner", bridge_id=None) == receipt
+
+
+async def test_validation_rejection_survives_retry_without_dispatch(session_factory):
+    service, epoch = await setup(session_factory)
+    invalid = command(
+        epoch, "rejected-control", {"type": "turn.interrupt", "turnId": "missing"}
+    )
+    rejected = await service.submit(invalid, user_id="owner", bridge_id=None)
+    assert rejected.status == "rejected"
+    assert rejected.code == "TURN_NOT_ACTIVE"
+    restarted = SessionAuthority(session_factory)
+    assert (
+        await restarted.command_status("session-demo", invalid.command_id, "owner")
+        == rejected
+    )
+    assert await restarted.submit(invalid, user_id="owner", bridge_id=None) == rejected
+    assert (
+        await restarted.pending("agent-demo", "session-demo", "host-demo", epoch) == []
+    )
+    with pytest.raises(SessionError) as conflict:
+        await restarted.submit(
+            command(epoch, invalid.command_id, {"type": "session.stop"}),
+            user_id="owner",
+            bridge_id=None,
+        )
+    assert conflict.value.code == "IDEMPOTENCY_CONFLICT"
+
+
+async def test_reconcile_fences_a_late_original_submission(session_factory):
+    service, epoch = await setup(session_factory)
+    pending = command(epoch, "late-command", {"type": "session.stop"})
+    with pytest.raises(SessionError):
+        await service.reconcile(pending, "outsider")
+    rejected = await service.reconcile(pending, "owner")
+    assert rejected.status == "rejected"
+    assert rejected.code == "NOT_ACCEPTED"
+    second = SessionAuthority(session_factory)
+    assert await second.submit(pending, user_id="owner", bridge_id=None) == rejected
+    assert await second.reconcile(pending, "owner") == rejected
+    assert await second.pending("agent-demo", "session-demo", "host-demo", epoch) == []
+
+
+async def test_reconcile_and_submit_have_one_authoritative_outcome(session_factory):
+    service, epoch = await setup(session_factory)
+    pending = command(epoch, "racing-command", {"type": "session.stop"})
+    submitted, reconciled = await asyncio.gather(
+        service.submit(pending, user_id="owner", bridge_id=None),
+        SessionAuthority(session_factory).reconcile(pending, "owner"),
+    )
+    assert submitted == reconciled
+    assert submitted.status in ("accepted", "rejected")
+    queued = await service.pending("agent-demo", "session-demo", "host-demo", epoch)
+    assert len(queued) == (1 if submitted.status == "accepted" else 0)

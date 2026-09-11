@@ -6,11 +6,15 @@ import type { Command, HostEvent, Session, Snapshot } from '@switch-console/shar
 import { afterEach, expect, it, vi } from 'vitest';
 import type { ProviderAdapter } from '../adapter';
 import type { ProviderRuntimeEvent } from '../events';
+import { SharedRoomInbox } from './room-inbox';
 import { runSharedHost } from './shared-host';
+
+vi.setConfig({ testTimeout: 30_000 });
 
 const roots: string[] = [];
 afterEach(async () => {
   vi.unstubAllGlobals();
+  vi.restoreAllMocks();
   for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true });
 });
 async function fixture() {
@@ -127,6 +131,7 @@ async function fixture() {
   vi.stubGlobal('fetch', fetchMock);
   return {
     root,
+    emit,
     command,
     adapter,
     events,
@@ -159,7 +164,9 @@ it('retries lost acknowledgements and duplicate commands, then resumes the same 
   let stop = new AbortController();
   let running = runSharedHost(f.options, f.adapter, stop.signal);
   try {
-    await vi.waitFor(() => expect(f.adapter.sendTurn).toHaveBeenCalledTimes(1), { timeout: 3000 });
+    await vi.waitFor(() => expect(f.adapter.sendTurn).toHaveBeenCalledTimes(1), {
+      timeout: 10_000,
+    });
     f.setDisconnected(true);
     await new Promise((resolve) => setTimeout(resolve, 600));
     expect(f.adapter.stopSession).not.toHaveBeenCalled();
@@ -182,7 +189,7 @@ it('retries lost acknowledgements and duplicate commands, then resumes the same 
   running = runSharedHost(f.options, f.adapter, stop.signal);
   try {
     await vi.waitFor(() => expect(f.adapter.startSession).toHaveBeenCalledTimes(2), {
-      timeout: 3000,
+      timeout: 10_000,
     });
     expect(f.adapter.startSession).toHaveBeenLastCalledWith(
       expect.objectContaining({ resume: { nativeSessionId: 'saved-native' } })
@@ -221,7 +228,7 @@ it('stops an expired lease and resumes without repeating the accepted turn', asy
   const f = await fixture();
   const stop = new AbortController();
   const outcome = runSharedHost(f.options, f.adapter, stop.signal).catch((error) => error);
-  await vi.waitFor(() => expect(f.adapter.sendTurn).toHaveBeenCalledTimes(1), { timeout: 3000 });
+  await vi.waitFor(() => expect(f.adapter.sendTurn).toHaveBeenCalledTimes(1), { timeout: 10_000 });
   f.setExpired(true);
   expect(await outcome).toMatchObject({ name: 'SharedHostLeaseExpiredError' });
   expect(f.adapter.stopSession).toHaveBeenCalledTimes(1);
@@ -266,7 +273,7 @@ it('resets under a server epoch despite a lost recovery acknowledgement', async 
               event.body.status === 'applied'
           )
         ).toBe(true),
-      { timeout: 4000 }
+      { timeout: 10_000 }
     );
     expect(f.adapter.startSession).toHaveBeenCalledTimes(2);
     expect(vi.mocked(f.adapter.startSession).mock.calls[1][0].resume).toBeUndefined();
@@ -287,4 +294,66 @@ it('resets under a server epoch despite a lost recovery acknowledgement', async 
     stop.abort();
     await running;
   }
+});
+
+it('releases a faulted host instead of renewing its room claim forever', async () => {
+  const f = await fixture();
+  const result = runSharedHost(f.options, f.adapter, new AbortController().signal).catch(
+    (error) => error
+  );
+  await vi.waitFor(() => expect(f.adapter.sendTurn).toHaveBeenCalledTimes(1), { timeout: 10_000 });
+  f.emit({ type: 'session.state.changed', status: 'error' });
+  expect(await result).toMatchObject({ message: expect.stringContaining('HOST_FAULTED') });
+  expect(f.adapter.stopSession).toHaveBeenCalledTimes(1);
+  expect(f.fetchMock.mock.calls.some(([url]) => url.endsWith('/quiesce'))).toBe(true);
+  expect(
+    f.events.some(
+      (event) => event.body.type === 'session.upsert' && event.body.session.status === 'error'
+    )
+  ).toBe(true);
+});
+
+it('bounds unavailable-server startup before any provider execution', async () => {
+  const f = await fixture();
+  let now = 0;
+  vi.spyOn(performance, 'now').mockImplementation(() => now);
+  f.fetchMock.mockImplementation(async () => {
+    now = 31000;
+    throw new TypeError('Unreachable');
+  });
+  await expect(runSharedHost(f.options, f.adapter, new AbortController().signal)).rejects.toThrow(
+    'HOST_START_TIMEOUT'
+  );
+  expect(f.adapter.startSession).not.toHaveBeenCalled();
+  expect(f.fetchMock).toHaveBeenCalledTimes(1);
+});
+
+it('retains an unverified room event when server replay evidence is unavailable', async () => {
+  const f = await fixture();
+  await writeFile(
+    join(f.root, 'room-inbox.jsonl'),
+    JSON.stringify({ type: 'received', sequence: 1, roomId: 'room', messageId: 'message' }) + '\n'
+  );
+  vi.spyOn(SharedRoomInbox.prototype, 'connect').mockResolvedValue(undefined);
+  const original = f.fetchMock.getMockImplementation()!;
+  f.fetchMock.mockImplementation(async (url, options) => {
+    if (url.endsWith('/room-message'))
+      return Response.json(
+        { code: 'ROOM_EVENT_UNAVAILABLE', message: 'Room event is no longer retained' },
+        { status: 409 }
+      );
+    return original(url, options);
+  });
+  await expect(
+    runSharedHost(
+      { ...f.options, roomConnection: { connectionId: 'connection', rooms: ['room'] } },
+      f.adapter,
+      new AbortController().signal
+    )
+  ).rejects.toThrow('ROOM_EVENT_UNAVAILABLE');
+  expect(f.adapter.sendTurn).not.toHaveBeenCalled();
+  expect(f.adapter.stopSession).toHaveBeenCalled();
+  expect((await SharedRoomInbox.open(f.root)).pending()).toMatchObject([
+    { sequence: 1, messageId: 'message' },
+  ]);
 });

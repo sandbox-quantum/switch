@@ -1,6 +1,7 @@
 export type * from './contract';
 export { SessionReplica } from './replica';
 export {
+  attachmentSchema,
   commandSchema,
   commandStatusSchema,
   sessionSchema,

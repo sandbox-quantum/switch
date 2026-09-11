@@ -1,7 +1,7 @@
 import hashlib
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Response
+from fastapi import APIRouter, Depends, Request, Response
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -19,13 +19,14 @@ from switch_core.bridges.collaboration.lifecycle_service import (
 )
 from switch_core.db.models import Agent
 from switch_core.sessions.contract import (
+    MAX_EVENT_BYTES,
     Command,
     CommandStatus,
     HostEvent,
     Session,
     Snapshot,
 )
-from switch_core.sessions.service import SessionAuthority
+from switch_core.sessions.service import SessionAuthority, SessionError
 
 router = APIRouter(prefix="/sessions")
 Factory = Annotated[async_sessionmaker[AsyncSession], Depends(get_session_factory)]
@@ -58,9 +59,23 @@ async def renew(
     return {"leaseSeconds": 30}
 
 
+async def read_host_event(request: Request) -> HostEvent:
+    data = bytearray()
+    async for chunk in request.stream():
+        if len(data) + len(chunk) > MAX_EVENT_BYTES:
+            raise SessionError(
+                "PAYLOAD_TOO_LARGE", "Host events must not exceed 64 KiB."
+            )
+        data.extend(chunk)
+    try:
+        return HostEvent.model_validate_json(data)
+    except ValueError as exc:
+        raise SessionError("INVALID_EVENT", "Invalid host event.") from exc
+
+
 @router.post("/events")
 async def ingest(
-    body: HostEvent,
+    body: Annotated[HostEvent, Depends(read_host_event)],
     agent: AuthenticatedAgent,
     factory: Factory,
     lifecycle: Lifecycle,
@@ -112,7 +127,7 @@ async def quiesce(
 
 @router.post("/reconcile")
 async def reconcile(
-    body: HostEvent,
+    body: Annotated[HostEvent, Depends(read_host_event)],
     agent: AuthenticatedAgent,
     factory: Factory,
     lifecycle: Lifecycle,
@@ -149,6 +164,8 @@ class RoomMessage(HostLease):
     room_id: str = Field(min_length=1)
     message_id: str = Field(min_length=1)
     sequence: int = Field(ge=1)
+    missed_count: int = Field(default=0, ge=0)
+    gap_reason: str | None = None
 
 
 @router.post("/{session_id}/room-message")
@@ -168,6 +185,8 @@ async def room_message(
         body.room_id,
         body.message_id,
         body.sequence,
+        body.missed_count,
+        body.gap_reason,
         buffer,
     )
 

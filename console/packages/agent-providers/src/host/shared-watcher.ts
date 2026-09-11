@@ -7,7 +7,7 @@ import { z } from 'zod';
 import { Journal } from './journal';
 import { ensureSharedProcess, sharedSessionRoot } from './launch';
 import { releaseOwner, replaceOwner, withOwnershipLock } from './ownership-lock';
-import { roomInputId } from './room-inbox';
+import { roomInputId, SharedRoomInbox } from './room-inbox';
 import { readSharedCredentials, sharedConfigSchema, type SharedHostConfig } from './shared-config';
 
 const assignmentSchema = z.strictObject({
@@ -72,7 +72,15 @@ export class SharedWatchAssignments {
       .reverse()
       .find((record) => record.roomId === event.roomId);
     let config: SharedHostConfig;
-    if (previous && !(await stopped(previous.config.session.sessionId))) config = previous.config;
+    const savedRooms = previous
+      ? await SharedRoomInbox.savedRooms(sharedSessionRoot(previous.config.session.sessionId))
+      : null;
+    if (
+      previous &&
+      !(await stopped(previous.config.session.sessionId)) &&
+      (savedRooms === null || savedRooms.includes(event.roomId))
+    )
+      config = previous.config;
     else {
       config = structuredClone(template);
       const sessionId = sessionIdFor(template.session.agentId, event.roomId, event.messageId);

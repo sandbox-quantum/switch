@@ -9,13 +9,19 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.responses import RedirectResponse
 
 from switch_core.config import SwitchConfig
+from switch_core.db.models import TENANT_ZERO_ID
 from switch_core.db.stores.user_store import (
     OidcIdentityConflictError,
     OidcIdentityRaceError,
     UserStore,
 )
 from switch_core.gateway.auth import set_session_cookie
-from switch_core.gateway.dependencies import get_config, get_session, get_user_store
+from switch_core.gateway.dependencies import (
+    get_config,
+    get_system_session,
+    get_user_store,
+)
+from switch_core.tenant_context import tenant_scope
 
 logger = logging.getLogger(__name__)
 
@@ -73,9 +79,12 @@ async def oidc_login(
 async def oidc_callback(
     request: Request,
     config: Annotated[SwitchConfig, Depends(get_config)],
-    session: Annotated[AsyncSession, Depends(get_session)],
+    session: Annotated[AsyncSession, Depends(get_system_session)],
     user_store: Annotated[UserStore, Depends(get_user_store)],
 ) -> RedirectResponse:
+    # `get_system_session`: nobody is signed in yet, so there is no principal
+    # to take a tenant from — the tenant this route writes into is chosen
+    # below, deliberately.
     if not config.gateway_oidc_enabled:
         raise HTTPException(status_code=404, detail="OIDC login is not configured")
     client = _client()
@@ -125,25 +134,38 @@ async def oidc_callback(
     iss = claims.get("iss") or config.gateway_oidc_issuer_url
     if not iss:
         raise HTTPException(status_code=401, detail="OIDC token missing issuer")
-    try:
-        user = await user_store.get_or_create_oidc_user(
-            session, iss=iss, email=email, name=name, sub=sub, email_verified=verified
-        )
-    except OidcIdentityConflictError as exc:
-        logger.warning("OIDC identity conflict: %s", exc)
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-    except OidcIdentityRaceError as exc:
-        # Transient contention, not a rejected security decision (see the
-        # exception's docstring) — 503 so an operator's dashboards can tell
-        # this apart from the 409s above rather than lumping a retry storm in
-        # with attack signal.
-        logger.warning("OIDC identity resolution raced: %s", exc)
-        raise HTTPException(
-            status_code=503,
-            detail="Login is temporarily contended, please try again",
-            headers={"Retry-After": "1"},
-        ) from exc
-    await session.commit()
+    # A first sign-in provisions the account just in time, and that account
+    # needs a tenant: a user with no membership can never sign in again (see
+    # `gateway/auth.py`). Exactly one tenant exists, and this names it rather
+    # than letting `TenantScoped`'s fallback pick it by accident — the two
+    # produce the same row today, but only one of them is a decision. Sign-up
+    # creating a tenant of its own is a later phase, and this is the line it
+    # changes.
+    with tenant_scope(TENANT_ZERO_ID):
+        try:
+            user = await user_store.get_or_create_oidc_user(
+                session,
+                iss=iss,
+                email=email,
+                name=name,
+                sub=sub,
+                email_verified=verified,
+            )
+        except OidcIdentityConflictError as exc:
+            logger.warning("OIDC identity conflict: %s", exc)
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except OidcIdentityRaceError as exc:
+            # Transient contention, not a rejected security decision (see the
+            # exception's docstring) — 503 so an operator's dashboards can tell
+            # this apart from the 409s above rather than lumping a retry storm
+            # in with attack signal.
+            logger.warning("OIDC identity resolution raced: %s", exc)
+            raise HTTPException(
+                status_code=503,
+                detail="Login is temporarily contended, please try again",
+                headers={"Retry-After": "1"},
+            ) from exc
+        await session.commit()
 
     # Verify-at-login only: we don't persist the IdP tokens. Land the browser
     # back on the SPA with our own session cookie set.

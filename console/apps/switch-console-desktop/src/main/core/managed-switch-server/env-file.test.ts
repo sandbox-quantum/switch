@@ -7,6 +7,7 @@ import type { LocalServerSecrets } from './secret-values';
 
 const secrets: LocalServerSecrets = {
   dbPassword: 'db-pw',
+  dbRuntimePassword: 'db-runtime-pw',
   agentRegistrationToken: 'agent-token',
   jwtSecretKey: 'jwt-key',
   gatewayAdminPassword: 'gw-admin',
@@ -58,12 +59,21 @@ describe('buildEnvFile', () => {
   });
 
   it('injects every secret into its env var', () => {
-    expect(vars.DB_PASSWORD).toBe('db-pw');
+    expect(vars.DB_PASSWORD).toBe('db-runtime-pw');
+    expect(vars.DB_OWNER_PASSWORD).toBe('db-pw');
     expect(vars.AGENT_REGISTRATION_TOKEN).toBe('agent-token');
     expect(vars.JWT_SECRET_KEY).toBe('jwt-key');
     expect(vars.GATEWAY_ADMIN_PASSWORD).toBe('gw-admin');
     expect(vars.MATTERMOST_ADMIN_PASSWORD).toBe('mm-admin');
     expect(vars.MATTERMOST_USER_PASSWORD).toBe('mm-user');
+  });
+
+  it('runs switch-core as the restricted runtime role, not the schema owner', () => {
+    // The runtime role name is fixed (switch_app), not derived from the
+    // secrets bundle: init-db creates exactly this role, so drifting the name
+    // here would create a role nothing grants access to.
+    expect(vars.DB_USER).toBe('switch_app');
+    expect(vars.DB_OWNER_USER).toBe('postgres');
   });
 
   it('defines every var the bundled compose file interpolates', () => {

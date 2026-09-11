@@ -3,6 +3,7 @@ import { getAgentById } from '@main/core/agents/getAgentById';
 import { locationManager } from '@main/core/locations/location-manager';
 import { resolveSessionEnv } from '@main/core/locations/location-runtime-factory';
 import { locationTransport } from '@main/core/locations/location-transport';
+import { adoptSubagent } from './adopt-subagent';
 import { buildSharedHostConfig } from './shared-agent-runtime';
 import { deploySharedHost, runSharedHostCommand } from './shared-host-deployment';
 
@@ -50,6 +51,7 @@ export async function configureSharedWatcher(
     if (!remoteId || remoteId === 'undefined')
       throw new Error('Subagent Switch identity is missing.');
     config.session.agentId = remoteId;
+    await adoptSubagent(agent, name, remoteId);
   }
   const { ctx, root, entrypoint } = await deploySharedHost(
     transport,

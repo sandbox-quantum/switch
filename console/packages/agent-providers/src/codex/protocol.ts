@@ -82,6 +82,7 @@ export interface CodexTurnStartParams {
   threadId: string;
   input: CodexUserInput[];
   model?: string;
+  effort?: string;
 }
 
 export interface CodexTurnSteerParams {

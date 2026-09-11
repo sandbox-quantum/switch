@@ -8,6 +8,7 @@ import { useAgentTypeAvailability } from '@renderer/lib/stores/use-switch-setup'
 import { Field, FieldLabel } from '@renderer/lib/ui/field';
 import { Spinner } from '@renderer/lib/ui/spinner';
 import { cn } from '@renderer/utils/utils';
+import { supportsProviderRuntime } from '@shared/core/agents/agent-provider-config';
 import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
 import { autoSelectedAgentType } from './agent-type-auto-selection';
 
@@ -47,7 +48,7 @@ export function AgentTypePicker({
     const byId = new Map((agents ?? []).map((a) => [a.id, a]));
     return (availability ?? []).flatMap((entry) => {
       const agent = byId.get(entry.agentId);
-      return agent ? [{ agent, ...entry }] : [];
+      return agent && supportsProviderRuntime(agent.id) ? [{ agent, ...entry }] : [];
     });
   }, [availability, agents]);
   const selectable = useMemo(() => options.filter((o) => o.available), [options]);

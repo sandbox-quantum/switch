@@ -112,6 +112,17 @@ describe('createSession', () => {
     expect(mocks.startSession).toHaveBeenCalledTimes(1);
   });
 
+  it('adopts a session at a closed location without provisioning or launching it', async () => {
+    mocks.getLocation.mockReturnValue(undefined);
+    const result = await createSession({ ...baseParams, startSource: 'adopted', attach: false });
+    expect(result.success).toBe(true);
+    expect(mocks.insert).toHaveBeenCalledTimes(1);
+    expect(mocks.getLocation).not.toHaveBeenCalled();
+    expect(mocks.provisionSessionRuntime).not.toHaveBeenCalled();
+    expect(mocks.registerSession).not.toHaveBeenCalled();
+    expect(mocks.startSession).not.toHaveBeenCalled();
+  });
+
   it('preserves the session row after a failed launch so recovery cannot create another conversation', async () => {
     mocks.provisionSessionRuntime.mockRejectedValue(new Error('boom'));
     const result = await createSession(baseParams);

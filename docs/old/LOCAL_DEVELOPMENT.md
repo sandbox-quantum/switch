@@ -25,17 +25,50 @@ just gateway-install     # install gateway frontend deps (first time only)
 ```
 
 `just init-env` copies `.env.example` to `.env` and fills every secret field
-that ships blank — `DB_PASSWORD`, `AGENT_REGISTRATION_TOKEN`,
-`JWT_SECRET_KEY`, `GATEWAY_ADMIN_PASSWORD`, `MATTERMOST_ADMIN_PASSWORD`,
-`MATTERMOST_USER_PASSWORD` — with a freshly generated `openssl rand -hex 24`
-value, then prints the gateway admin login it just set. The fields ship
-blank on purpose: it means no default credential (the old `admin`/`admin`)
-can ever reach a running stack by accident. The recipe refuses to touch an
-existing `.env`, so re-running it never rotates secrets out from under a
-stack that's already up — delete `.env` first if you actually want to
-regenerate everything. `just` loads `.env` automatically for every recipe
-below (`set dotenv-load := true` in the justfile), so nothing else needs to
-source it.
+that ships blank — `DB_PASSWORD`, `DB_OWNER_PASSWORD`,
+`AGENT_REGISTRATION_TOKEN`, `JWT_SECRET_KEY`, `GATEWAY_ADMIN_PASSWORD`,
+`MATTERMOST_ADMIN_PASSWORD`, `MATTERMOST_USER_PASSWORD` — with a freshly
+generated `openssl rand -hex 24` value, then prints the gateway admin login
+it just set. The fields ship blank on purpose: it means no default
+credential (the old `admin`/`admin`) can ever reach a running stack by
+accident. The recipe refuses to touch an existing `.env`, so re-running it
+never rotates secrets out from under a stack that's already up — delete
+`.env` first if you actually want to regenerate everything. `just` loads
+`.env` automatically for every recipe below (`set dotenv-load := true` in
+the justfile), so nothing else needs to source it.
+
+### Two database roles, not one
+
+`.env` carries two sets of Postgres credentials, because row-level security
+is inert against the role that owns the tables it protects — Postgres
+exempts a table's owner from its own policies. `DB_USER` / `DB_PASSWORD` name
+the **runtime role**: a plain, unprivileged login that switch-core
+authenticates as for every request, and the one the tenant-isolation
+policies actually apply to. `DB_OWNER_USER` / `DB_OWNER_PASSWORD` name the
+**schema owner**, used for exactly two things at boot — running Alembic and
+re-issuing the runtime role's grants right after — and never to serve a
+request. `just up`'s `init-db` container creates the runtime role on a fresh
+volume; it does not grant it anything, because on a fresh volume there is
+nothing yet to grant — switch-core does that itself once the owner
+connection has migrated the schema.
+
+If you have an existing `.env` from before this split, add `DB_OWNER_USER`
+and `DB_OWNER_PASSWORD` to it and change `DB_USER` to `switch_app` (see
+`.env.example`), then run `just reset` to rebuild the Postgres volume from
+scratch — that's the clean way to get the runtime role created, since
+`init-db` only creates it on a fresh volume. Reusing an old volume with the
+new `.env` leaves the runtime role missing entirely. `just up` refuses to
+start while the two owner variables are absent, and says this, rather than
+bringing up a Postgres container with an empty `POSTGRES_USER` and leaving
+you to work backwards from whatever fails after it.
+
+Boot refuses to serve if the runtime connection turns out not to be
+restricted — a superuser, a role with `BYPASSRLS`, or the owner of a policied
+table — because that failure is silent otherwise: a deployment that believes
+it is isolating tenants and is not looks identical to one that is. Set
+`DB_REQUIRE_RESTRICTED_ROLE=false` as an escape hatch for a stack that has
+not created its runtime role yet; switch-core then logs an `error` on every
+boot instead, as a standing reminder that tenant isolation is not active.
 
 ## Starting the stack
 

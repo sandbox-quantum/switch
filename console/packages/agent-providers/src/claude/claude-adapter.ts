@@ -60,12 +60,12 @@ const ASK_USER_QUESTION = 'AskUserQuestion';
  * hook matcher.
  *
  * Deliberately the tools Claude Code already asks about in `default` mode —
- * running a command and changing a file — and no others. A hook decision
+ * running a command, changing a file, or delegating execution. A hook decision
  * outranks the permission rules, so widening this would start prompting for
  * reads and searches that nothing asks about today, and a session that asks
  * before every `Read` cannot answer a room.
  */
-const APPROVAL_TOOLS = 'Bash|Edit|Write|MultiEdit|NotebookEdit';
+const APPROVAL_TOOLS = 'Bash|Edit|Write|MultiEdit|NotebookEdit|Agent|Task';
 const EFFORT_LEVELS: readonly EffortLevel[] = ['low', 'medium', 'high', 'xhigh', 'max'];
 
 /**
@@ -358,6 +358,9 @@ export class ClaudeAdapter implements ProviderAdapter {
       env: input.env,
       permissionMode,
       strictMcpConfig: false,
+      ...(mcpServers.switch
+        ? { settings: { enabledPlugins: { 'switch-connector@switch-plugins': false } } }
+        : {}),
       canUseTool: this.makeCanUseTool(input.sessionId),
       ...(permissionMode === 'bypassPermissions' ? { allowDangerouslySkipPermissions: true } : {}),
       ...(executable ? { pathToClaudeCodeExecutable: executable } : {}),

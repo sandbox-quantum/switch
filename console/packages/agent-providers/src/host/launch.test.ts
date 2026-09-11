@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, expect, it } from 'vitest';
@@ -92,3 +92,25 @@ it.skipIf(process.platform === 'win32')(
     }
   }
 );
+
+it('refreshes renamed agent configuration without changing the saved session or room', async () => {
+  const input = await fixture();
+  input.restart = false;
+  input.config.start.input.agentName = 'old-name';
+  input.config.roomConnection = { connectionId: 'connection', rooms: ['room'] };
+  await writeFile(join(input.root, 'config.json'), JSON.stringify(input.config));
+  await mkdir(join(input.root, 'supervisor'));
+  await writeFile(
+    join(input.root, 'supervisor', 'owner.json'),
+    JSON.stringify({ pid: process.pid })
+  );
+  input.config = structuredClone(input.config);
+  input.config.start.input.agentName = 'new-name';
+  input.config.session.hostId = 'proposed-new-host';
+  input.config.roomConnection = { connectionId: 'new-connection', rooms: [] };
+  expect(await ensureSharedProcess(input)).toEqual({ created: false });
+  const saved = JSON.parse(await readFile(join(input.root, 'config.json'), 'utf8'));
+  expect(saved.start.input.agentName).toBe('new-name');
+  expect(saved.session.hostId).toBe('host');
+  expect(saved.roomConnection).toEqual({ connectionId: 'connection', rooms: ['room'] });
+});

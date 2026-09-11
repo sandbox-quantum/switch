@@ -87,6 +87,7 @@ asyncio_mode = "auto"
 addopts = "-m 'not integration'"
 markers = [
     "integration: boots real Postgres + Tuwunel via testcontainers (slow; excluded from the default run — use `just test-integration`)",
+    "no_ambient_tenant: opt out of session_factory's default tenant-zero binding, for tests asserting what is or is not bound",
 ]
 
 [tool.mypy]

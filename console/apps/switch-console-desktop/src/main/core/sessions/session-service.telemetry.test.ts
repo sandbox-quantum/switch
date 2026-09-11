@@ -19,6 +19,8 @@ const { hoisted } = vi.hoisted(() => ({
     sessionRows: vi.fn(),
     mapSessionRow: vi.fn(),
     getLocation: vi.fn(),
+    build: vi.fn(),
+    register: vi.fn(),
   },
 }));
 
@@ -32,6 +34,7 @@ vi.mock('@main/core/telemetry/telemetry-service', () => ({ trackEvent: hoisted.t
 // failure under test is the double, not the code.
 vi.mock('@main/db/client', () => ({
   db: {
+    update: () => ({ set: () => ({ where: async () => undefined }) }),
     select: () => ({ from: () => ({ where: () => ({ limit: () => hoisted.sessionRows() }) }) }),
   },
 }));
@@ -43,9 +46,9 @@ vi.mock('@main/lib/logger', () => ({
 vi.mock('@main/core/locations/location-manager', () => ({
   locationManager: { getLocation: hoisted.getLocation },
 }));
-vi.mock('./session-builder', () => ({ provisionSessionRuntime: vi.fn() }));
+vi.mock('./session-builder', () => ({ provisionSessionRuntime: hoisted.build }));
 vi.mock('./session-runtime-manager', () => ({
-  sessionRuntimeManager: { registerSession: vi.fn(), getAgent: vi.fn() },
+  sessionRuntimeManager: { registerSession: hoisted.register, getAgent: vi.fn() },
 }));
 vi.mock('./utils/utils', () => ({ mapSessionRowToSession: hoisted.mapSessionRow }));
 vi.mock('./operations/archiveSession', () => ({ archiveSession: vi.fn() }));
@@ -306,5 +309,33 @@ describe('provisioning a session again', () => {
     expect(JSON.stringify(result)).toContain('secret-project');
     expect(hoisted.trackEvent).toHaveBeenCalled();
     expect(JSON.stringify(hoisted.trackEvent.mock.calls)).not.toContain('secret-project');
+  });
+});
+
+describe('concurrent session provisioning', () => {
+  beforeEach(() => {
+    hoisted.sessionRows.mockResolvedValue([{ id: 's-1', agentId: 'agent-1' }]);
+    hoisted.mapSessionRow.mockReturnValue({ id: 's-1', agentId: 'agent-1' });
+    hoisted.getLocation.mockReturnValue({ locationId: 'loc', dir: '/workspace', ctx: {} });
+    hoisted.register.mockResolvedValue(undefined);
+  });
+
+  it('builds and registers one runtime when two callers open the same session', async () => {
+    const built = Promise.withResolvers<{ path: string; locationId: string }>();
+    hoisted.build.mockReturnValueOnce(built.promise);
+    const first = sessionService.provisionSession('s-1');
+    const second = sessionService.provisionSession('s-1');
+    await vi.waitFor(() => expect(hoisted.build).toHaveBeenCalledTimes(1));
+    built.resolve({ path: '/workspace', locationId: 'loc' });
+    expect(await first).toEqual(await second);
+    expect(hoisted.register).toHaveBeenCalledTimes(1);
+  });
+
+  it('releases a failed attempt so the next explicit retry can provision', async () => {
+    hoisted.build.mockRejectedValueOnce(new Error('Host unavailable'));
+    expect((await sessionService.provisionSession('s-1')).success).toBe(false);
+    hoisted.build.mockResolvedValueOnce({ path: '/workspace', locationId: 'loc' });
+    expect((await sessionService.provisionSession('s-1')).success).toBe(true);
+    expect(hoisted.build).toHaveBeenCalledTimes(2);
   });
 });

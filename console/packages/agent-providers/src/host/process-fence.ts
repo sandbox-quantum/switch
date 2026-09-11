@@ -27,7 +27,12 @@ export async function fenceDeadOwner(pid: number, group: number | null): Promise
   if (group !== pid || process.platform === 'win32')
     throw new Error('FENCING_REQUIRED: the previous host did not isolate its provider processes.');
   if (!exists(-group)) return;
-  process.kill(-group, 'SIGKILL');
+  try {
+    process.kill(-group, 'SIGKILL');
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ESRCH') return;
+    throw error;
+  }
   for (let attempt = 0; attempt < 100; attempt++) {
     if (!exists(-group)) return;
     await delay(50);

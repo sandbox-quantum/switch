@@ -110,6 +110,27 @@ describe('CodexAdapter', () => {
     ).toMatchObject({ developerInstructions: 'you are in a Switch room' });
   });
 
+  it('sends the reasoning effort selected at session start on the first turn', async () => {
+    const adapter = createCodexAdapter();
+    await adapter.startSession({
+      sessionId: 'session-1',
+      cwd: '/work',
+      runtimeMode: 'full-access',
+      env: { PATH: '/usr/bin' },
+      mcpServers: {},
+      model: { id: 'start-model', options: { effort: 'low' } },
+    });
+    const server = servers.at(-1)!;
+    server.replyAlways('turn/start', () => ({
+      turn: { id: 'native-effort', status: 'inProgress' },
+    }));
+    await adapter.sendTurn({ sessionId: 'session-1', turnId: 'effort-turn', text: 'hello' });
+    const turnStarts = server.received.filter((message) => message.method === 'turn/start');
+    expect(turnStarts).toHaveLength(1);
+    expect(turnStarts[0]?.params).toMatchObject({ model: 'start-model', effort: 'low' });
+    await adapter.stopAll();
+  });
+
   it('sends reasoning effort with model changes', async () => {
     const { adapter, server } = await start();
     server.replyAlways('turn/start', () => ({

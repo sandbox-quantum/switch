@@ -7,9 +7,24 @@ record and the formatters in :mod:`switch_core.logging_config` render it.
 
 ``tenant_id`` is the point of the exercise: multi-tenancy needs "is this one
 customer or everyone?" to be answerable from the logs alone, and that is far
-cheaper to build before tenants exist than after. Until the tenant model lands
-nothing binds it per request, and the filter stamps the deployment's configured
-tenant instead — see ``SwitchConfig.tenant_id``.
+cheaper to build before tenants exist than after. It was built before tenants
+existed, and now that they do, ``gateway/auth.py`` and ``bridges/agent/auth.py``
+bind the real one for every authenticated request.
+
+Background work binds a tenant too, but through
+:mod:`switch_core.tenant_context` rather than through this module — and that
+binding is the one the database actually writes under, since
+``db/tenant_session.py`` turns it into ``set_config('app.tenant_id')`` on every
+transaction. Nothing taught the log about it, so a startup seed running inside
+``tenant_scope(TENANT_ZERO_ID)`` wrote its rows into ``00000000-…`` and logged
+``tenant_id=default``: a line naming a tenant that was not the one written.
+:class:`LogContextFilter` reads that binding as its second choice for exactly
+that reason.
+
+Only when neither is bound does the deployment's configured placeholder apply;
+see ``SwitchConfig.tenant_id``. Nothing scoped can be written in that state —
+``db/models.require_tenant_id`` raises — so the placeholder cannot contradict a
+row the way the two bindings could.
 """
 
 from __future__ import annotations
@@ -19,6 +34,8 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar, Token
 from dataclasses import dataclass, replace
+
+from switch_core.tenant_context import current_tenant_id
 
 # The context fields, in the order they are rendered. Anything logged as
 # context must be listed here, so that a typo in a bind call is an error rather
@@ -79,6 +96,18 @@ class LogContextFilter(logging.Filter):
 
     ``tenant_id`` always has a value; the rest are ``None`` outside a request
     and are omitted by the formatters rather than rendered as empty.
+
+    Three sources, in this order, and the order is the whole point:
+
+    1. what a request bound here, which is the caller's tenant;
+    2. what :mod:`switch_core.tenant_context` has bound, which is the tenant
+       every statement on this task's sessions is being written under;
+    3. the configured placeholder, which stands for "no tenant at all".
+
+    Without (2) a background line reports (3) while its transaction writes a
+    real tenant, and the two do not even use the same vocabulary — the
+    placeholder is a slug, ``app.tenant_id`` is a uuid — so the line does not
+    read as merely imprecise. It reads as a different tenant.
     """
 
     def __init__(self, default_tenant_id: str) -> None:
@@ -87,7 +116,9 @@ class LogContextFilter(logging.Filter):
 
     def filter(self, record: logging.LogRecord) -> bool:
         context = _current.get()
-        record.tenant_id = context.tenant_id or self._default_tenant_id
+        record.tenant_id = (
+            context.tenant_id or current_tenant_id() or self._default_tenant_id
+        )
         record.request_id = context.request_id
         record.agent_id = context.agent_id
         record.user_id = context.user_id

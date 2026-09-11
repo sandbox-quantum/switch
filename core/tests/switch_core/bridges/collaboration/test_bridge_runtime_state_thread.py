@@ -65,17 +65,23 @@ def _bridge(*, follows_anchor: bool, posts: dict[str, str]) -> Any:
     async def external_post_for_matrix_event(event_id: str) -> str | None:
         return posts.get(event_id)
 
+    async def room_tenant(room_id: str) -> str:
+        return "tenant-1"
+
     ns = SimpleNamespace(
         _adapter=adapter,
         _indicator_move_timers={},
         _indicator_move_targets={},
         _reported_anchors={},
         _find_channel=lambda **kwargs: "chan-1",
+        _channel_to_room={"chan-1": ("room-1", "!room:switch.local")},
+        _room_tenant=room_tenant,
         _external_post_for_matrix_event=external_post_for_matrix_event,
         adapter_spy=adapter,
     )
     for name in (
         "handle_agent_runtime_state",
+        "_apply_runtime_state",
         "_follow_reported_anchor",
         "_schedule_indicator_move",
         "_run_indicator_move",

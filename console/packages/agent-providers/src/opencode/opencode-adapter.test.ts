@@ -196,6 +196,42 @@ describe('OpencodeAdapter turn lifecycle', () => {
     const failure = await recorder.waitFor('runtime.error', () => true, 1_000);
     expect(failure.message).toContain('upstream exploded');
   });
+
+  it('fails only the items of the turn that failed', async () => {
+    const { adapter, session, recorder } = await setup();
+    const running = { status: 'running', input: { command: 'sleep 1' }, time: { start: 0 } };
+
+    await adapter.sendTurn({ sessionId: 'switch-session', turnId: 't1', text: 'first' });
+    session.push(sessionStatus(NATIVE, 'busy'));
+    session.push(messageUpdated(NATIVE, 'msg1', 'assistant'));
+    session.push(toolPart(NATIVE, 'msg1', 'c1', 'bash', running));
+    session.push(sessionStatus(NATIVE, 'idle'));
+    const first = await recorder.waitFor('turn.completed', (event) => event.turnId === 't1', 1_000);
+    expect(first.outcome).toBe('completed');
+
+    await adapter.sendTurn({ sessionId: 'switch-session', turnId: 't2', text: 'second' });
+    session.push(sessionStatus(NATIVE, 'busy'));
+    session.push(messageUpdated(NATIVE, 'msg2', 'assistant'));
+    session.push(toolPart(NATIVE, 'msg2', 'c2', 'bash', running));
+    session.push(
+      opencodeEvent('session.error', {
+        sessionID: NATIVE,
+        error: { name: 'ApiError', data: { message: 'upstream exploded' } },
+      })
+    );
+    const second = await recorder.waitFor(
+      'turn.completed',
+      (event) => event.turnId === 't2',
+      1_000
+    );
+    expect(second.outcome).toBe('error');
+
+    const failed = recorder
+      .ofType('item.completed')
+      .filter((event) => event.item.status === 'failed');
+    expect(failed.map((event) => event.item.id)).toEqual(['c2']);
+    expect(failed.every((event) => event.turnId === 't2')).toBe(true);
+  });
 });
 
 describe('OpencodeAdapter item translation', () => {

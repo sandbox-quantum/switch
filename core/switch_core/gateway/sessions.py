@@ -43,6 +43,18 @@ class SubmitCommand(BaseModel):
     body: CommandBody
 
 
+class RetireSession(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    epoch: str = Field(min_length=1)
+
+
+@router.post("/{session_id}/retire")
+async def retire(
+    session_id: str, body: RetireSession, user: CurrentUser, factory: Factory
+) -> Snapshot:
+    return await SessionAuthority(factory).retire(session_id, user.id, body.epoch)
+
+
 @router.get("")
 async def list_sessions(user: CurrentUser, factory: Factory) -> list[Session]:
     return await SessionAuthority(factory).list_sessions(user.id)
@@ -98,6 +110,31 @@ async def submit(
         command, user_id=user.id, bridge_id=None
     )
     await lifecycle.refresh_sdk_session(session_id)
+    return status
+
+
+@router.post("/{session_id}/commands/reconcile")
+async def reconcile(
+    session_id: str,
+    body: SubmitCommand,
+    user: CurrentUser,
+    factory: Factory,
+) -> CommandStatus:
+    command = Command(
+        contract_version=1,
+        command_id=body.command_id,
+        session_id=session_id,
+        epoch=body.epoch,
+        origin=Origin(
+            surface=body.surface,
+            actor_id=user.id,
+            room_id=body.room_id,
+            thread_id=None,
+            message_id=None,
+        ),
+        body=body.body,
+    )
+    status = await SessionAuthority(factory).reconcile(command, user.id)
     return status
 
 

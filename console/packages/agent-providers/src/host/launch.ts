@@ -83,7 +83,7 @@ async function launch(input: LaunchInput): Promise<{ created: boolean }> {
     await stopOwnedProcess(input.root, join(input.root, 'supervisor', 'owner.json'));
     await stopOwnedProcess(input.root, join(input.root, 'shared-owner.lock'));
   }
-  if (input.restart || input.watcher) {
+  {
     await replaceOwner(path, {
       ...input.config,
       session: saved.session,
@@ -99,6 +99,11 @@ async function launch(input: LaunchInput): Promise<{ created: boolean }> {
   } catch (error) {
     if (!['ENOENT', 'ESRCH'].includes((error as NodeJS.ErrnoException).code ?? '')) throw error;
   }
+  await unlink(join(input.root, 'supervisor', 'failure.json')).catch(
+    (error: NodeJS.ErrnoException) => {
+      if (error.code !== 'ENOENT') throw error;
+    }
+  );
   const log = await open(join(input.root, 'supervisor.log'), 'a', 0o600);
   try {
     const child = spawn(

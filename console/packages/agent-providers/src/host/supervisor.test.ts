@@ -76,3 +76,23 @@ it('reaps provider descendants even after a clean worker exit', async () => {
   expect(() => process.kill(pid, 0)).toThrow();
   await expect(readFile(join(root, 'shared-owner.lock'))).rejects.toMatchObject({ code: 'ENOENT' });
 });
+
+it('preserves the worker failure reason for Console startup', async () => {
+  const root = await fixture();
+  await expect(
+    superviseSharedHost({
+      root,
+      executable: process.execPath,
+      args: [
+        '-e',
+        "require('node:fs').writeFileSync(process.argv[1]+'/supervisor/failure.json', JSON.stringify({message:'Provider executable is missing'}));process.exit(1)",
+        root,
+      ],
+      env: process.env,
+      signal: new AbortController().signal,
+    })
+  ).rejects.toThrow('exit code 1');
+  expect(JSON.parse(await readFile(join(root, 'supervisor', 'failure.json'), 'utf8')).message).toBe(
+    'Provider executable is missing'
+  );
+});

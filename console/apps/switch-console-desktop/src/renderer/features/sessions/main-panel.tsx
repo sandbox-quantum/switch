@@ -111,5 +111,11 @@ export const SessionMainPanel = observer(function SessionMainPanel() {
   }
 
   const session = getRegisteredSessionData(locationId, sessionId);
-  return session ? <SharedSessionPanel sessionId={sessionId} agentId={session.agentId} /> : null;
+  return session ? (
+    <SharedSessionPanel
+      sessionId={sessionId}
+      agentId={session.agentId}
+      initialPromptDelivery={session.initialPromptDelivery}
+    />
+  ) : null;
 });

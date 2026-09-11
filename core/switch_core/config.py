@@ -9,6 +9,12 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 # A Postgres time value: a bare count of milliseconds, or a count with a unit.
 _PG_INTERVAL_RE = re.compile(r"^\d+\s*(us|ms|s|min|h|d)?$")
 
+# An unquoted Postgres identifier, and a conservative one: real role names are
+# always this shape in practice, so anything outside it is a misconfiguration
+# worth catching at startup rather than at the first `GRANT`. The 63-character
+# cap matches Postgres's own `NAMEDATALEN` limit.
+_DB_ROLE_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,62}$")
+
 
 class SwitchConfig(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="")
@@ -18,6 +24,46 @@ class SwitchConfig(BaseSettings):
     db_user: str
     db_password: str
     db_name: str
+
+    # The schema owner, used for exactly two things and never to serve a
+    # request: running Alembic, and re-issuing the runtime role's grants right
+    # after it, so a table a migration has just added is readable by the role
+    # that is about to need it.
+    #
+    # `DB_USER` above is the *runtime* role, the one the row-level-security
+    # policies apply to. It deliberately owns nothing and can create nothing,
+    # so it cannot run a migration — that is what it is for, not an oversight
+    # — and granting it schema rights so that boot-time migrations keep
+    # working would hand back the ownership exemption the policies rely on it
+    # not having.
+    #
+    # Boot always runs `alembic upgrade head`, unconditionally, whether or not
+    # this is set — that is `main()`'s job, not this setting's. What this
+    # setting decides is which connection that migration (and the runtime
+    # role's grant re-issue right after it) runs on: `migrations/env.py` uses
+    # the owner connection where one is configured here, and falls back to the
+    # runtime connection where none is. That fallback is what keeps `alembic`
+    # on the command line working against a scratch database a developer
+    # points it at, where the two roles are the same one. For a deployment
+    # that has moved DB_USER to a genuinely restricted runtime role without
+    # also setting this, the same fallback is what makes the failure loud: the
+    # runtime role cannot issue DDL, so the migration fails immediately with a
+    # permission error naming the statement it could not run, rather than
+    # boot silently skipping the migration or half-applying it.
+    db_owner_user: str | None = None
+    db_owner_password: str | None = None
+
+    # Refuse to serve when the runtime connection is not actually subject to
+    # the policies — a superuser, a `BYPASSRLS` role, or the owner of the
+    # scoped tables. On by default because the failure it catches is silent: a
+    # Switch that believes it is isolating tenants and is not looks exactly
+    # like one that is, right up until a second customer reads the first's
+    # rooms.
+    #
+    # Set false only for a deployment that has not created its runtime role
+    # yet. Boot then logs at `error` on every start, because that is a
+    # deployment with no tenant isolation in it.
+    db_require_restricted_role: bool = True
 
     # The server half of every client's `@localpart:server` id. Not a
     # homeserver address — nothing is contacted at it — but the ids are stable
@@ -91,13 +137,17 @@ class SwitchConfig(BaseSettings):
     service_name: str = "switch-core"
     environment: str | None = None
 
-    # The tenant every log line is attributed to. Switch is single-tenant: one
-    # deployment serves one organisation, so the tenant is a deployment-wide
-    # constant and there is nothing per-request to read it from. Setting it per
-    # deployment now means the logs of two deployments can be told apart in one
-    # pipeline today, and that when the tenant model lands the only change is
-    # where the value comes from — the field is already on every line, and on
-    # every log call written between now and then.
+    # The placeholder a log line carries when no tenant is bound at all —
+    # deliberately not a tenant id, and it must not be set to one. An
+    # authenticated request binds the caller's tenant (`gateway/auth.py`,
+    # `bridges/agent/auth.py`); background work binds the tenant of the row it
+    # is acting on (`tenant_context.py`); `LogContextFilter` prefers either
+    # over this. What is left is code that has bound neither, which cannot
+    # write a scoped row at all — `db/models.require_tenant_id` raises — so
+    # this value never names where anything landed. Set it to a real tenant's
+    # id and it starts to: every unattributed line in the deployment would be
+    # indistinguishable from that tenant's own when an operator filters on
+    # `tenant_id`.
     tenant_id: str = "default"
 
     server_host: str = "0.0.0.0"
@@ -232,6 +282,24 @@ class SwitchConfig(BaseSettings):
         return self
 
     @model_validator(mode="after")
+    def _validate_db_user(self) -> "SwitchConfig":
+        # `db_user` is the runtime role name, and `db/runtime_role.py` builds
+        # `GRANT`/`ALTER DEFAULT PRIVILEGES` DDL by interpolating it (quoted
+        # through Postgres's own `quote_ident`, which is what makes that safe
+        # against injection). This is a second, independent layer: a role name
+        # outside the shape every real one takes is far more likely a typo or
+        # a stray character from a copied connection string than an intended
+        # identifier, and rejecting it here turns that into a startup error
+        # instead of a `GRANT` that quietly names a role nobody meant.
+        if not _DB_ROLE_RE.match(self.db_user):
+            raise ValueError(
+                "DB_USER must be a plain identifier (letters, digits, "
+                "underscore, not starting with a digit, 63 characters or "
+                f"fewer), got {self.db_user!r}."
+            )
+        return self
+
+    @model_validator(mode="after")
     def _validate_idle_in_transaction_session_timeout(self) -> "SwitchConfig":
         value = self.db_idle_in_transaction_session_timeout
         if value is not None and not _PG_INTERVAL_RE.match(value):
@@ -322,8 +390,25 @@ class SwitchConfig(BaseSettings):
 
     @property
     def database_url(self) -> str:
+        """The runtime connection: the restricted role that serves every request."""
         return (
             f"postgresql+asyncpg://{self.db_user}:{self.db_password}"
+            f"@{self.db_host}:{self.db_port}/{self.db_name}"
+        )
+
+    @property
+    def owner_database_url(self) -> str | None:
+        """The schema owner's connection, or None if this deployment has none.
+
+        Same host, port and database as the runtime connection — only the role
+        differs. Two roles rather than two databases is the entire shape: the
+        owner exists so that something can run DDL, and the runtime role exists
+        so that nothing serving a request can.
+        """
+        if self.db_owner_user is None or self.db_owner_password is None:
+            return None
+        return (
+            f"postgresql+asyncpg://{self.db_owner_user}:{self.db_owner_password}"
             f"@{self.db_host}:{self.db_port}/{self.db_name}"
         )
 

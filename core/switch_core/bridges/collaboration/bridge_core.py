@@ -42,17 +42,20 @@ from switch_core.clients.admin_messages import ADMIN_MARKER, AdminMessageType
 from switch_core.clients.client_base import ClientBase, ClientConfig
 from switch_core.clients.mentions import mention_regex, strip_emphasis
 from switch_core.db.models import BridgeMessageMap, ExternalUser
+from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.bridge_message_map_store import BridgeMessageMapStore
 from switch_core.db.stores.client_store import ClientStore
 from switch_core.db.stores.external_user_store import ExternalUserStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.session_request_post_store import SessionRequestPostStore
+from switch_core.db.tenant_lookup import tenant_of_room
 from switch_core.events import AgentRuntimeStateEvent
 from switch_core.logging_context import log_context
 from switch_core.provisioning import Provisioning
 from switch_core.room_service import RoomCreateConfig
 from switch_core.sessions.contract import Command, Surface
+from switch_core.tenant_context import no_tenant, tenant_scope
 from switch_core.transport import (
     InboundMedia as TransportMedia,
 )
@@ -75,6 +78,7 @@ logger = logging.getLogger(__name__)
 
 _InboundEventT = TypeVar(
     "_InboundEventT",
+    InboundInteraction,
     InboundMessage,
     InboundCommand,
     InboundAgentJoin,
@@ -137,6 +141,7 @@ class BridgeCore:
         self,
         *,
         bridge_id: str,
+        bridge_tenant_id: str,
         bridge_type: str,
         bridge_display_name: str,
         adapter: CollaborationAdapter,
@@ -156,6 +161,14 @@ class BridgeCore:
         session_demo_enabled: bool,
     ) -> None:
         self._bridge_id = bridge_id
+        # The tenant of this bridge's own row. Read once here because it is
+        # immutable, but never *bound* for the life of anything: each unit of
+        # work binds it at the point it acts, and room-scoped work binds the
+        # room's tenant instead. The schema makes those the same value —
+        # `rooms` has a composite foreign key to `collaboration_bridges` on
+        # `tenant_id` — but the code does not lean on that, so a room whose
+        # tenant somehow differs is still handled under its own.
+        self._bridge_tenant_id = bridge_tenant_id
         self._bridge_type = bridge_type
         self._bridge_display_name = bridge_display_name
         self._adapter = adapter
@@ -174,6 +187,11 @@ class BridgeCore:
 
         self._channel_to_room: dict[str, tuple[str, str]] = {}
         self._room_to_channel: dict[tuple[str, str], str] = {}
+        # Switch room id -> its tenant. Filled by `add_room_mapping`, which is
+        # the one way a room enters the channel maps at all, so a room that
+        # has a channel mapping always has a tenant here — including rooms
+        # created long after this bridge started. See `_room_tenant`.
+        self._room_tenants: dict[str, str] = {}
         self._user_puppets: dict[str, str] = {}
         # External user ids whose stored name is known not to be a platform id,
         # so the placeholder repair does not re-ask the database once per
@@ -297,18 +315,43 @@ class BridgeCore:
     def _traced(
         self, handler: Callable[[_InboundEventT], Awaitable[None]]
     ) -> Callable[[_InboundEventT], Awaitable[None]]:
-        """Give each inbound platform event its own id in the logs.
+        """Give each inbound platform event its own id in the logs, and bind
+        the tenant the event belongs to.
 
         An event fans out across room lookup, identity provisioning and the
         transport, so without this the lines from two events arriving at once
         cannot be told apart. Applied where the adapter is wired up rather than
-        inside each handler, so every inbound path gets it.
+        inside each handler, so every inbound path gets it — and the same
+        choke point is where the tenant is bound, so a handler needs no
+        session-opening call site of its own to remember it.
+
+        This is what makes the platform irrelevant. An adapter is free to
+        deliver from anywhere: Mattermost's websocket runs on an OS thread and
+        hands the coroutine over with `asyncio.run_coroutine_threadsafe`,
+        which starts it in an *empty* context, while Slack's dispatches from a
+        task that inherited whatever created it. Binding here rather than
+        relying on what the handler inherits means both arrive at the same
+        tenant, so which platform a message came in on stops being able to
+        decide where its room lands.
+
+        A channel with no room yet — auto-room-creation, still to come in the
+        handler — binds the **bridge's** tenant. There is no room to ask, but
+        there is nothing ambient about the answer either: a room this bridge
+        creates belongs to the tenant that owns the bridge, and the schema
+        agrees (`rooms` keys to `collaboration_bridges` on `tenant_id`).
         """
 
         async def traced(event: _InboundEventT) -> None:
             event_id = uuid.uuid4().hex[:16]
             with log_context(request_id=f"{self._bridge_type}-{event_id}"):
-                await handler(event)
+                room_ids = self._channel_to_room.get(event.channel_id)
+                tenant_id = (
+                    self._bridge_tenant_id
+                    if room_ids is None
+                    else await self._room_tenant(room_ids[0])
+                )
+                with tenant_scope(tenant_id):
+                    await handler(event)
 
         return traced
 
@@ -318,7 +361,9 @@ class BridgeCore:
         self._adapter.set_channel_migration_handler(self._handle_channel_migrated)
         self._adapter.set_agent_presentation_resolver(self._agent_presentation)
         if self._session_interactions is not None:
-            self._adapter.set_interaction_handler(self._handle_inbound_interaction)
+            self._adapter.set_interaction_handler(
+                self._traced(self._handle_inbound_interaction)
+            )
         await self._adapter.start(
             on_message=self._traced(self._handle_inbound_message),
             on_command=self._traced(self._handle_inbound_command),
@@ -328,9 +373,10 @@ class BridgeCore:
         )
         await self._ensure_channel_captures()
         if self._session_publisher is not None:
-            self._session_publication_task = asyncio.create_task(
-                self._session_publisher.run()
-            )
+            with tenant_scope(self._bridge_tenant_id):
+                self._session_publication_task = asyncio.create_task(
+                    self._session_publisher.run()
+                )
         # Deliberately not awaited. Provisioning is one call per agent against
         # the platform, and a rate-limited platform makes that minutes of
         # mostly waiting — which would hold up the bridge coming online, and
@@ -355,16 +401,53 @@ class BridgeCore:
     # ── Startup loading ──────────────────────────────────────────────────────
 
     async def _load_channel_map(self) -> None:
-        async with self._session_factory() as session:
+        async with tenant_session(
+            self._session_factory, self._bridge_tenant_id
+        ) as session:
             rooms = await self._room_store.get_by_bridge(session, self._bridge_id)
         for room in rooms:
             if room.external_channel_id:
-                key = (room.id, room.matrix_room_id)
-                self._channel_to_room[room.external_channel_id] = key
-                self._room_to_channel[key] = room.external_channel_id
+                self.add_room_mapping(
+                    room.id,
+                    room.matrix_room_id,
+                    room.external_channel_id,
+                    room.tenant_id,
+                )
+
+    async def _room_tenant(self, room_id: str) -> str:
+        """The tenant `room_id` belongs to, resolved and cached.
+
+        Cached by room id rather than assumed to be this bridge's own tenant:
+        nothing here relies on a bridge never carrying rooms in more than one
+        tenant, only on a given room's tenant never changing once it exists —
+        the same invariant `_channel_to_room` already relies on for the
+        channel mapping.
+
+        A miss should not happen — `add_room_mapping` fills the tenant along
+        with the channel mapping, and this is only ever asked about a room
+        that has one — but if it does, the answer comes from the exemption
+        (`db/tenant_lookup.py`) rather than from a read of the row. Asking
+        "which tenant is this room in" while a tenant is bound would either
+        confirm the guess or return nothing, and the second reads as "no such
+        room" for a room that exists in another tenant. The whole point of
+        resolving is that the answer is not known yet.
+
+        This is the shape the exemption is for. The fallback needed one field
+        of one row, and the field was the tenant; it now reads no row at all.
+        """
+        cached = self._room_tenants.get(room_id)
+        if cached is not None:
+            return cached
+        tenant_id = await tenant_of_room(self._session_factory, room_id)
+        if tenant_id is None:
+            raise ValueError(f"Room not found: {room_id}")
+        self._room_tenants[room_id] = tenant_id
+        return tenant_id
 
     async def _load_existing_puppets(self) -> None:
-        async with self._session_factory() as session:
+        async with tenant_session(
+            self._session_factory, self._bridge_tenant_id
+        ) as session:
             users = await self._external_user_store.get_by_bridge(
                 session, self._bridge_id
             )
@@ -394,7 +477,15 @@ class BridgeCore:
 
         A bare create_task swallows whatever the coroutine raises, so anything
         escaping the per-agent handling below would vanish without trace.
-        Cancellation is ordinary shutdown and says so quietly."""
+        Cancellation is ordinary shutdown and says so quietly.
+
+        `no_tenant` for the same reason the bridge's own task does it: this is
+        a task, and a task keeps whatever context created it. The work inside
+        binds the bridge's tenant for itself."""
+        with no_tenant():
+            await self._run_agent_identities_unbound()
+
+    async def _run_agent_identities_unbound(self) -> None:
         try:
             await self._create_agent_identities()
         except asyncio.CancelledError:
@@ -409,7 +500,9 @@ class BridgeCore:
             )
 
     async def _create_agent_identities(self) -> None:
-        async with self._session_factory() as session:
+        async with tenant_session(
+            self._session_factory, self._bridge_tenant_id
+        ) as session:
             agents = await self._agent_store.get_all(session)
 
         failed = 0
@@ -448,7 +541,9 @@ class BridgeCore:
         bridge's channels. Runs on startup so capture self-heals after a restart
         or a notification-URL change (e.g. a rotated tunnel). A no-op for
         adapters that don't use expiring subscriptions."""
-        async with self._session_factory() as session:
+        async with tenant_session(
+            self._session_factory, self._bridge_tenant_id
+        ) as session:
             rooms = await self._room_store.get_by_bridge(session, self._bridge_id)
         channels: list[tuple[str, str]] = []
         for room in rooms:
@@ -468,8 +563,16 @@ class BridgeCore:
         know whether to override what it already has. Either field being None
         within a hit means the same thing one field down: the agent was given
         no value, and the adapter's default stands.
+
+        Installed on the adapter, so it is called from the adapter's own task
+        with nothing bound rather than through `_traced` — hence the explicit
+        bind. Agent names are unique per tenant, not globally, so an unscoped
+        read here would raise `MultipleResultsFound` the day a second tenant
+        has an agent of the same name.
         """
-        async with self._session_factory() as session:
+        async with tenant_session(
+            self._session_factory, self._bridge_tenant_id
+        ) as session:
             agent = await self._agent_store.get_by_name(session, agent_name)
         if agent is None:
             return None
@@ -901,7 +1004,12 @@ class BridgeCore:
         """
         lock = self._channel_locks.setdefault(old_id, asyncio.Lock())
         async with lock:
-            async with self._session_factory() as session:
+            # Reached from the adapter's own task rather than through
+            # `_traced`, so nothing is bound: this is one unit of work for one
+            # bridge, and it binds that bridge's tenant to find its room.
+            async with tenant_session(
+                self._session_factory, self._bridge_tenant_id
+            ) as session:
                 room = await self._room_store.get_by_external_channel(
                     session, self._bridge_id, old_id
                 )
@@ -930,13 +1038,12 @@ class BridgeCore:
                         room.id,
                     )
                     return
+            async with tenant_session(self._session_factory, room.tenant_id) as session:
                 await self._room_store.update_external_channel(session, room.id, new_id)
                 await session.commit()
 
-            key = (room.id, room.matrix_room_id)
             self._channel_to_room.pop(old_id, None)
-            self._channel_to_room[new_id] = key
-            self._room_to_channel[key] = new_id
+            self.add_room_mapping(room.id, room.matrix_room_id, new_id, room.tenant_id)
             logger.warning(
                 "Re-pointed room %s from channel %s to %s after the platform "
                 "reissued the id",
@@ -957,13 +1064,15 @@ class BridgeCore:
         """If a room already exists in the DB for this channel on this bridge,
         register it in the in-memory map and return its (room_id,
         matrix_room_id). Returns None if no such room exists. Idempotent."""
-        async with self._session_factory() as session:
+        async with tenant_session(
+            self._session_factory, self._bridge_tenant_id
+        ) as session:
             room = await self._room_store.get_by_external_channel(
                 session, self._bridge_id, channel_id
             )
         if room is None:
             return None
-        self.add_room_mapping(room.id, room.matrix_room_id, channel_id)
+        self.add_room_mapping(room.id, room.matrix_room_id, channel_id, room.tenant_id)
         logger.debug("Adopted existing room %s for channel %s", room.id, channel_id)
         return (room.id, room.matrix_room_id)
 
@@ -1039,7 +1148,7 @@ class BridgeCore:
             return None
         room = result.room
 
-        self.add_room_mapping(room.id, room.matrix_room_id, channel_id)
+        self.add_room_mapping(room.id, room.matrix_room_id, channel_id, room.tenant_id)
         logger.info(
             "Auto-created %s room %s for %s channel %s",
             channel_type,
@@ -1475,61 +1584,77 @@ class BridgeCore:
     async def _create_puppet(
         self, external_user_id: str, external_username: str
     ) -> str:
+        """Mint the Matrix identity that stands in for a person on the platform.
+
+        Bound to the **bridge's** tenant, not to whatever room the message
+        that triggered it arrived in. A puppet is per-bridge and outlives that
+        message: the same client is reused for every room this person speaks
+        in, so a client row stamped with the first room's tenant would be
+        wrong for the second — and the client task it starts must not carry
+        that tenant either, which is why `ClientLifecycleService` unbinds
+        before running one.
+        """
         lock = self._puppet_locks.setdefault(external_user_id, asyncio.Lock())
         async with lock:
-            existing = self._user_puppets.get(external_user_id)
-            if existing is not None:
-                return existing
-
-            # Defence in depth against agent/user misdetection: a
-            # bridged agent must never be puppeted as an external user. If the
-            # name collides with a registered Switch agent, refuse loudly rather
-            # than create a duplicate "user" identity for it.
-            async with self._session_factory() as session:
-                agent = await self._agent_store.get_by_name(session, external_username)
-            if agent is not None:
-                raise ValueError(
-                    f"Refusing to create external-user puppet for '{external_username}'"
-                    " on bridge "
-                    f"{self._bridge_id}: name collides with a registered Switch agent"
-                    " (likely a bridged agent bot misclassified as a user)"
+            with tenant_scope(self._bridge_tenant_id):
+                return await self._create_puppet_locked(
+                    external_user_id, external_username
                 )
 
-            sanitized = re.sub(r"[^a-z0-9_-]", "-", external_username.lower()).strip(
-                "-"
-            )
-            # Scope to the bridge: the same username on two bridges of the same
-            # type (e.g. two Slack workspaces) must map to distinct Matrix users,
-            # since matrix_user_id is globally unique but usernames are not.
-            localpart = f"switch-{self._bridge_type}-{self._bridge_id}-{sanitized}"
+    async def _create_puppet_locked(
+        self, external_user_id: str, external_username: str
+    ) -> str:
+        existing = self._user_puppets.get(external_user_id)
+        if existing is not None:
+            return existing
 
-            client = await self._client_lifecycle.create_and_start(
-                client_type="user",
-                display_name=external_username,
-                localpart=localpart,
+        # Defence in depth against agent/user misdetection: a
+        # bridged agent must never be puppeted as an external user. If the
+        # name collides with a registered Switch agent, refuse loudly rather
+        # than create a duplicate "user" identity for it.
+        async with self._session_factory() as session:
+            agent = await self._agent_store.get_by_name(session, external_username)
+        if agent is not None:
+            raise ValueError(
+                f"Refusing to create external-user puppet for '{external_username}'"
+                " on bridge "
+                f"{self._bridge_id}: name collides with a registered Switch agent"
+                " (likely a bridged agent bot misclassified as a user)"
             )
 
-            ext_user = ExternalUser(
-                bridge_id=self._bridge_id,
-                external_user_id=external_user_id,
-                external_username=external_username,
-                client_id=client.client_id,
-            )
-            async with self._session_factory() as session:
-                await self._external_user_store.create(session, ext_user)
-                await session.commit()
+        sanitized = re.sub(r"[^a-z0-9_-]", "-", external_username.lower()).strip("-")
+        # Scope to the bridge: the same username on two bridges of the same
+        # type (e.g. two Slack workspaces) must map to distinct Matrix users,
+        # since matrix_user_id is globally unique but usernames are not.
+        localpart = f"switch-{self._bridge_type}-{self._bridge_id}-{sanitized}"
 
-            self._user_puppets[external_user_id] = client.client_id
-            self._puppet_matrix_ids.add(client.matrix_user_id)
-            self._adapter.prime_mention_targets({external_username: external_user_id})
+        client = await self._client_lifecycle.create_and_start(
+            client_type="user",
+            display_name=external_username,
+            localpart=localpart,
+        )
 
-            logger.info(
-                "Created puppet %s for external user %s on bridge %s",
-                client.matrix_user_id,
-                external_user_id,
-                self._bridge_id,
-            )
-            return client.client_id
+        ext_user = ExternalUser(
+            bridge_id=self._bridge_id,
+            external_user_id=external_user_id,
+            external_username=external_username,
+            client_id=client.client_id,
+        )
+        async with self._session_factory() as session:
+            await self._external_user_store.create(session, ext_user)
+            await session.commit()
+
+        self._user_puppets[external_user_id] = client.client_id
+        self._puppet_matrix_ids.add(client.matrix_user_id)
+        self._adapter.prime_mention_targets({external_username: external_user_id})
+
+        logger.info(
+            "Created puppet %s for external user %s on bridge %s",
+            client.matrix_user_id,
+            external_user_id,
+            self._bridge_id,
+        )
+        return client.client_id
 
     def _find_channel(
         self, room_id: str | None = None, matrix_room_id: str | None = None
@@ -1564,6 +1689,13 @@ class BridgeCore:
             logger.debug("[BRIDGE-OUT] no channel mapping for room %s", room.room_id)
             return
 
+        room_id, _ = self._channel_to_room[channel_id]
+        with tenant_scope(await self._room_tenant(room_id)):
+            await self._relay_outbound_message(channel_id, event)
+
+    async def _relay_outbound_message(
+        self, channel_id: str, event: TransportMessage
+    ) -> None:
         event_content = event.content
         admin_marker = event_content.get(ADMIN_MARKER)
         sender_name = event.sender_name
@@ -1680,6 +1812,13 @@ class BridgeCore:
             logger.debug("[BRIDGE-OUT] no channel mapping for room %s", room.room_id)
             return
 
+        room_id, _ = self._channel_to_room[channel_id]
+        with tenant_scope(await self._room_tenant(room_id)):
+            await self._relay_outbound_media(channel_id, event, client)
+
+    async def _relay_outbound_media(
+        self, channel_id: str, event: TransportMedia, client: ClientBase[Any]
+    ) -> None:
         event_content = event.content
         sender_name = event.sender_name
         if sender_name is None:
@@ -1910,6 +2049,13 @@ class BridgeCore:
             )
             return
 
+        room_id, _ = self._channel_to_room[channel_id]
+        with tenant_scope(await self._room_tenant(room_id)):
+            await self._apply_runtime_state(channel_id, event)
+
+    async def _apply_runtime_state(
+        self, channel_id: str, event: AgentRuntimeStateEvent
+    ) -> None:
         # Where the triggering message itself sits — None when it came from the
         # channel root. This is what a typing indicator follows.
         trigger_thread_ref: str | None = None
@@ -2161,14 +2307,29 @@ class BridgeCore:
         self._provisioning_channels.discard(external_channel_id)
 
     def add_room_mapping(
-        self, room_id: str, matrix_room_id: str, external_channel_id: str
+        self,
+        room_id: str,
+        matrix_room_id: str,
+        external_channel_id: str,
+        tenant_id: str,
     ) -> None:
+        """Register a room↔channel mapping, and the room's tenant with it.
+
+        The tenant is a required argument rather than something looked up
+        later because every caller already has the room row in hand. Taking it
+        here is what lets `_traced` bind a tenant for a room created *after*
+        this bridge started without a database read on the inbound path — and,
+        more to the point, without a read that would run under whatever tenant
+        happened to be bound at the time.
+        """
         key = (room_id, matrix_room_id)
         self._channel_to_room[external_channel_id] = key
         self._room_to_channel[key] = external_channel_id
+        self._room_tenants[room_id] = tenant_id
 
     def remove_room_mapping(self, room_id: str, matrix_room_id: str) -> None:
         key = (room_id, matrix_room_id)
         channel_id = self._room_to_channel.pop(key, None)
         if channel_id is not None:
             self._channel_to_room.pop(channel_id, None)
+        self._room_tenants.pop(room_id, None)

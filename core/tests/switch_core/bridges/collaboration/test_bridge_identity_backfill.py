@@ -13,6 +13,7 @@ from typing import Any
 import pytest
 
 from switch_core.bridges.collaboration.bridge_core import BridgeCore
+from switch_core.tenant_context import current_tenant_id
 
 
 class _FakeAdapter:
@@ -142,6 +143,7 @@ async def test_stop_awaits_session_publisher_shutdown() -> None:
 
     class Publisher:
         async def run(self):
+            assert current_tenant_id() == "bridge-tenant"
             started.set()
             try:
                 await asyncio.Event().wait()
@@ -152,6 +154,7 @@ async def test_stop_awaits_session_publisher_shutdown() -> None:
         pass
 
     core, _ = _core(provision)
+    core._bridge_tenant_id = "bridge-tenant"
     core._session_publisher = Publisher()
     await core.start()
     await asyncio.wait_for(started.wait(), timeout=1)

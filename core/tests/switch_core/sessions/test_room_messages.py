@@ -5,6 +5,7 @@ import hashlib
 import json
 
 import pytest
+from sqlalchemy import func, select
 
 from switch_core.bridges.agent.protocol.connections import (
     ClientDeclaration,
@@ -17,7 +18,7 @@ from switch_core.bridges.agent.protocol.types import (
     MessagePayload,
     RoomJoinPayload,
 )
-from switch_core.db.models import ClientRoom, MediaBlob, Room
+from switch_core.db.models import ClientRoom, MediaBlob, Room, SdkSessionCommand
 from switch_core.sessions.service import SessionError
 from tests.switch_core.sessions.test_authority import host_event, setup
 
@@ -53,6 +54,8 @@ async def test_room_admission_uses_verified_content_and_survives_lost_ack(
         "room-demo",
         "message",
         sequence,
+        0,
+        None,
     )
     receipt = await service.submit_room_message(*args, buffer)
     assert receipt.status == "accepted"
@@ -65,7 +68,9 @@ async def test_room_admission_uses_verified_content_and_survives_lost_ack(
         await service.submit_room_message(*args, EventBuffer())
     ).command_id == receipt.command_id
     with pytest.raises(SessionError, match="verified addressed"):
-        await service.submit_room_message(*args[:5], "forged", sequence, buffer)
+        await service.submit_room_message(
+            *args[:5], "forged", sequence, 0, None, buffer
+        )
     with pytest.raises(SessionError, match="does not own"):
         await service.submit_room_message(
             "agent-demo", "session-demo", "other", *args[3:], buffer
@@ -74,6 +79,46 @@ async def test_room_admission_uses_verified_content_and_survives_lost_ack(
         await db.delete(await db.get(ClientRoom, ("agent-client", "room-demo")))
     with pytest.raises(SessionError, match="not a member"):
         await service.submit_room_message(*args, buffer)
+
+
+@pytest.mark.asyncio
+async def test_prompt_reports_unread_chatter_and_an_unreplayable_gap(session_factory):
+    service, epoch = await setup(session_factory)
+    buffer = EventBuffer()
+
+    async def deliver(message_id, missed_count, gap_reason):
+        message = event()
+        message.payload.message_id = message_id
+        sequence = buffer.enqueue("agent-demo", "room-demo", message)
+        await service.submit_room_message(
+            "agent-demo",
+            "session-demo",
+            "host-demo",
+            epoch,
+            "room-demo",
+            message_id,
+            sequence,
+            missed_count,
+            gap_reason,
+            buffer,
+        )
+        pending = await service.pending(
+            "agent-demo", "session-demo", "host-demo", epoch
+        )
+        return pending[-1].body.text
+
+    assert (await deliver("quiet", 0, None)).endswith("Run the check")
+    assert (await deliver("one", 1, None)).endswith(
+        "\n(1 unaddressed room message arrived since the previous message you were sent — call read_context to catch up.)"
+    )
+    assert (await deliver("many", 2, None)).endswith(
+        "\n(2 unaddressed room messages arrived since the previous message you were sent — call read_context to catch up.)"
+    )
+    text = await deliver("gapped", 2, "events aged out of the buffer")
+    assert "2 unaddressed room messages arrived" in text
+    assert text.endswith(
+        "\n⚠️ Some earlier room events were dropped and cannot be replayed (events aged out of the buffer) — call read_context before responding."
+    )
 
 
 @pytest.mark.asyncio
@@ -95,6 +140,8 @@ async def test_two_sessions_cannot_execute_the_same_room_delivery(session_factor
                 "room-demo",
                 "message",
                 sequence,
+                0,
+                None,
                 buffer,
             )
             for session_id, generation in (
@@ -127,6 +174,8 @@ async def test_internal_room_admission_preserves_thread_context(session_factory)
         "room-demo",
         "message",
         sequence,
+        0,
+        None,
         buffer,
     )
     assert result.status == "accepted"
@@ -186,6 +235,8 @@ async def test_room_attachment_is_copied_durably_with_caption_and_missing_file_n
         "room-demo",
         "message",
         sequence,
+        0,
+        None,
         buffer,
     )
     command = (await service.pending("agent-demo", "session-demo", "host-demo", epoch))[
@@ -258,6 +309,7 @@ async def test_room_binding_is_authorized_and_control_delivery_is_durable(
             "reset",
             "@outsider:example.test",
             "reset-message",
+            "thread-root",
             connections,
         )
     receipt = await service.submit_room_control(
@@ -266,6 +318,7 @@ async def test_room_binding_is_authorized_and_control_delivery_is_durable(
         "reset",
         "@owner:example.test",
         "reset-message",
+        "thread-root",
         connections,
     )
     assert receipt.status == "accepted"
@@ -276,6 +329,7 @@ async def test_room_binding_is_authorized_and_control_delivery_is_durable(
             "reset",
             "@owner:example.test",
             "reset-message",
+            "thread-root",
             connections,
         )
         == receipt
@@ -292,17 +346,16 @@ async def test_room_binding_is_authorized_and_control_delivery_is_durable(
         == []
     )
     assert (await service.snapshot("session-demo", "owner")).session.room_ids == []
-    assert (
+    with pytest.raises(SessionError, match="command was not queued"):
         await service.submit_room_control(
             "agent-demo",
             "room-demo",
             "reset",
             "@owner:example.test",
             "next-message",
+            "thread-root",
             connections,
         )
-        is None
-    )
 
 
 @pytest.mark.asyncio
@@ -338,6 +391,8 @@ async def test_room_join_requires_opt_in_and_deduplicates(session_factory, liste
         "room-demo",
         message_id,
         sequence,
+        0,
+        None,
         buffer,
     )
     if not listening:
@@ -350,3 +405,107 @@ async def test_room_join_requires_opt_in_and_deduplicates(session_factory, liste
         len(await service.pending("agent-demo", "session-demo", "host-demo", epoch))
         == 1
     )
+
+
+async def ready_control_session(session_factory):
+    """A live, ready session bound to `room-demo` that accepts room controls."""
+    service, epoch = await setup(session_factory)
+    connections = ConnectionRegistry()
+    connection = connections.open(
+        agent_id="agent-demo",
+        connection_id="connection-demo",
+        scope="single",
+        delivery_filter="addressed",
+        spawn_capable=False,
+        cursor=0,
+        declaration=ClientDeclaration(),
+    )
+    connections.claim_room(connection, "room-demo")
+    await service.bind_connection(
+        "agent-demo", "session-demo", "host-demo", epoch, connection.id, connections
+    )
+    snapshot = await service.snapshot("session-demo", "owner")
+    ready = snapshot.session.model_copy(
+        update={
+            "status": "ready",
+            "capabilities": snapshot.session.capabilities.model_copy(
+                update={"reset": True}
+            ),
+        }
+    )
+    await service.ingest(
+        "agent-demo",
+        "host-demo",
+        host_event(
+            epoch,
+            1,
+            {"type": "session.upsert", "session": ready.model_dump(by_alias=True)},
+        ),
+    )
+    return service, epoch, connections
+
+
+@pytest.mark.asyncio
+async def test_controls_in_one_thread_are_distinct_commands(session_factory):
+    service, epoch, connections = await ready_control_session(session_factory)
+
+    first = await service.submit_room_control(
+        "agent-demo",
+        "room-demo",
+        "reset",
+        "@owner:example.test",
+        "message-one",
+        "thread-root",
+        connections,
+    )
+    second = await service.submit_room_control(
+        "agent-demo",
+        "room-demo",
+        "reset",
+        "@owner:example.test",
+        "message-two",
+        "thread-root",
+        connections,
+    )
+    assert first.status == "accepted"
+    assert second.status == "accepted"
+    assert first.command_id != second.command_id
+
+    pending = await service.pending("agent-demo", "session-demo", "host-demo", epoch)
+    assert [command.command_id for command in pending] == [
+        first.command_id,
+        second.command_id,
+    ]
+    assert [command.body.type for command in pending] == [
+        "session.reset",
+        "session.reset",
+    ]
+    assert {command.origin.thread_id for command in pending} == {"thread-root"}
+    assert [command.origin.message_id for command in pending] == [
+        "message-one",
+        "message-two",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_redelivered_control_returns_the_stored_status(session_factory):
+    service, epoch, connections = await ready_control_session(session_factory)
+
+    args = (
+        "agent-demo",
+        "room-demo",
+        "reset",
+        "@owner:example.test",
+        "message-one",
+        "thread-root",
+        connections,
+    )
+    receipt = await service.submit_room_control(*args)
+    assert await service.submit_room_control(*args) == receipt
+
+    async with session_factory() as db:
+        assert (
+            await db.scalar(select(func.count()).select_from(SdkSessionCommand))
+        ) == 1
+    pending = await service.pending("agent-demo", "session-demo", "host-demo", epoch)
+    assert [command.command_id for command in pending] == [receipt.command_id]

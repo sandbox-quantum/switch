@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { expect, it } from 'vitest';
+import { expect, it, vi } from 'vitest';
 import { fenceDeadOwner } from './process-fence';
 
 function terminateGroup(pid: number): void {
@@ -40,6 +40,28 @@ it.skipIf(process.platform === 'win32')(
       expect(() => process.kill(-pid, 0)).toThrow();
     } finally {
       if (!fenced) terminateGroup(pid);
+    }
+  }
+);
+
+it.skipIf(process.platform === 'win32')(
+  'accepts a group exiting between the liveness check and fencing',
+  async () => {
+    const gone = Object.assign(new Error('Process exited'), { code: 'ESRCH' });
+    const kill = vi
+      .spyOn(process, 'kill')
+      .mockImplementationOnce(() => {
+        throw gone;
+      })
+      .mockReturnValueOnce(true)
+      .mockImplementationOnce(() => {
+        throw gone;
+      });
+    try {
+      await expect(fenceDeadOwner(12345, 12345)).resolves.toBeUndefined();
+      expect(kill).toHaveBeenLastCalledWith(-12345, 'SIGKILL');
+    } finally {
+      kill.mockRestore();
     }
   }
 );

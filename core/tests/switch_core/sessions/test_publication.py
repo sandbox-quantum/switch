@@ -12,6 +12,7 @@ from switch_core.db.models import (
     ExternalUser,
     SdkSessionCommand,
     SessionRequestPost,
+    require_tenant_id,
 )
 from switch_core.db.stores.session_request_post_store import SessionRequestPostStore
 from switch_core.sessions.publication import refresh_cards
@@ -137,7 +138,9 @@ async def test_permission_uses_activity_thread_and_persists_it(session_factory, 
     service, epoch = await setup(session_factory)
     await opened(service, epoch)
     async with session_factory() as db:
-        row = await db.get(SdkSessionCommand, ("session-demo", "message-demo"))
+        row = await db.get(
+            SdkSessionCommand, (require_tenant_id(), "session-demo", "message-demo")
+        )
         payload = dict(row.command)
         payload["origin"] = {
             **payload["origin"],

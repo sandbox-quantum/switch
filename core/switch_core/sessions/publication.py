@@ -20,6 +20,7 @@ from switch_core.db.models import (
     SdkSession,
     SdkSessionCommand,
     SdkSessionEvent,
+    require_tenant_id,
 )
 from switch_core.db.stores.session_request_post_store import SessionRequestPostStore
 from switch_core.sessions.contract import (
@@ -107,7 +108,7 @@ async def refresh_cards(
     """
     posts = SessionRequestPostStore()
     async with session_factory() as db:
-        row = await db.get(SdkSession, session_id)
+        row = await db.get(SdkSession, (require_tenant_id(), session_id))
         if row is None:
             raise SessionError("NOT_FOUND", "Session not found.")
         snapshot = Snapshot.model_validate(row.snapshot)
@@ -117,7 +118,9 @@ async def refresh_cards(
         publications = []
         for request in snapshot.requests:
             turn = next(t for t in snapshot.turns if t.turn_id == request.turn_id)
-            stored = await db.get(SdkSessionCommand, (row.id, turn.command_id))
+            stored = await db.get(
+                SdkSessionCommand, (require_tenant_id(), row.id, turn.command_id)
+            )
             if stored is None:
                 raise SessionError("NOT_FOUND", "Request has no source command.")
             origin = Command.model_validate(stored.command).origin
@@ -288,6 +291,7 @@ async def _turn_elapsed_seconds(
                 SdkSessionEvent.event["body"]["status"].as_string(),
             )
             .where(
+                SdkSessionEvent.tenant_id == require_tenant_id(),
                 SdkSessionEvent.session_id == session_id,
                 SdkSessionEvent.event["body"]["type"].as_string() == "turn.upsert",
                 SdkSessionEvent.event["body"]["turnId"].as_string() == turn_id,
@@ -401,7 +405,7 @@ async def refresh_activity(
     a fixed-size cache sized for turns actually being watched.
     """
     async with session_factory() as db:
-        row = await db.get(SdkSession, session_id)
+        row = await db.get(SdkSession, (require_tenant_id(), session_id))
         if row is None:
             raise SessionError("NOT_FOUND", "Session not found.")
         snapshot = Snapshot.model_validate(row.snapshot)
@@ -416,6 +420,7 @@ async def refresh_activity(
         for pending_command in await db.scalars(
             select(SdkSessionCommand)
             .where(
+                SdkSessionCommand.tenant_id == require_tenant_id(),
                 SdkSessionCommand.session_id == session_id,
                 SdkSessionCommand.status["status"]
                 .as_string()
@@ -463,7 +468,9 @@ async def refresh_activity(
                 continue
             if turn.command_id is None:
                 continue
-            stored = await db.get(SdkSessionCommand, (row.id, turn.command_id))
+            stored = await db.get(
+                SdkSessionCommand, (require_tenant_id(), row.id, turn.command_id)
+            )
             if stored is None:
                 continue
             origin = Command.model_validate(stored.command).origin
@@ -724,7 +731,7 @@ class SessionPublisher:
                     select(
                         SdkSession.id,
                         SdkSession.snapshot["throughSequence"].as_integer(),
-                    )
+                    ).where(SdkSession.tenant_id == require_tenant_id())
                 )
             ).all()
         for session_id, sequence in rows:

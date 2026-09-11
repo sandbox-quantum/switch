@@ -28,7 +28,8 @@ def _event() -> CommandEvent:
         args="",
         user_id="@u:server",
         user_name="louisa",
-        thread_id=None,
+        message_id="$reset-command",
+        thread_id="$reset-command",
     )
 
 

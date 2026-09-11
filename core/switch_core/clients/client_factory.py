@@ -64,6 +64,12 @@ class ClientFactory:
         config = cls.config_class.model_validate(record.config or {})
         return cls(
             client_id=record.id,
+            # Straight off the row this client *is*. `create_client` writes
+            # that row inside a session with the tenant bound and the factory
+            # does not expire on commit, so a record that has just been
+            # flushed carries its tenant here as surely as one read back at
+            # boot does.
+            tenant_id=record.tenant_id,
             matrix_user_id=record.matrix_user_id,
             display_name=record.display_name,
             session_factory=self._session_factory,
@@ -84,6 +90,7 @@ class ClientFactory:
         return PostgresTransport(
             user_id=client.matrix_user_id,
             client_id=client.client_id,
+            tenant_id=client.tenant_id,
             display_name=client.display_name,
             session_factory=self._session_factory,
             room_store=self._room_store,

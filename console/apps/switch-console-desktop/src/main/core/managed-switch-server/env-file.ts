@@ -49,8 +49,16 @@ export function buildEnvFile(params: LocalServerEnvParams): string {
     '',
     'DB_HOST=postgres',
     'DB_PORT=5432',
-    'DB_USER=postgres',
-    `DB_PASSWORD=${secrets.dbPassword}`,
+    // The runtime role switch-core actually serves requests as. It owns
+    // nothing and is NOBYPASSRLS, so row-level security applies to it — see
+    // the `postgres`/`init-db` services in the bundled compose. `postgres`
+    // stays the schema owner, bootstrapped as POSTGRES_USER/POSTGRES_PASSWORD
+    // below; switch-core migrates and grants as the owner, then serves
+    // requests as this role.
+    'DB_USER=switch_app',
+    `DB_PASSWORD=${secrets.dbRuntimePassword}`,
+    'DB_OWNER_USER=postgres',
+    `DB_OWNER_PASSWORD=${secrets.dbPassword}`,
     'DB_NAME=switch',
     '',
     'MATRIX_SERVER_NAME=localhost',

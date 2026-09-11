@@ -303,6 +303,7 @@ async def _dispatch_control_command(
             meta.room_id,
             command,
             event.user_id,
+            event.message_id,
             event.thread_id,
             client._connections,
         )

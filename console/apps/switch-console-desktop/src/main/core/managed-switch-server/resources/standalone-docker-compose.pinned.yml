@@ -17,10 +17,23 @@
 #   docker compose -f standalone-docker-compose.yml -f standalone-docker-compose.build.yml up
 #
 # Profiles keep optional services opt-in:
-#   (core, no profile) postgres, switch  — always started
-#   collab            init-db, mattermost, setup  — Mattermost bridge + seeder
+#   (core, no profile) postgres, init-db, switch  — always started
+#   collab            mattermost, setup            — Mattermost bridge + seeder
 #   gateway           gateway                      — operator dashboard
 # Select them with `--profile collab --profile gateway` or COMPOSE_PROFILES.
+#
+# init-db is core, not collab, even though the database it seeds
+# (`mattermost`) is only ever read by a collab service. What init-db also
+# does — create the DB_USER runtime role — has nothing to do with the
+# collaboration bridge: switch-core authenticates as that role on every boot,
+# profile or no profile, so the role has to exist before switch does its own
+# grant-and-verify step. Gating that behind `collab` meant a default,
+# Mattermost-less stack pointed switch at a role nobody had created. Creating
+# the unused `mattermost` database on a core-only stack is harmless and
+# idempotent, and keeping one service rather than splitting role creation out
+# of it is simpler than a second init container for one CREATE ROLE. This
+# widens what a default `up` starts, but the contract's service names are
+# unchanged — init-db already existed under `collab`, it just moves to core.
 #
 # Image coordinates are env-interpolated so the same file retargets registries
 # and pins versions without edits:
@@ -58,8 +71,13 @@ services:
     ports:
       - "${SWITCH_BIND_ADDR:-127.0.0.1}:${POSTGRES_HOST_PORT:-5432}:5432"
     environment:
-      POSTGRES_USER: ${DB_USER}
-      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      # The container's bootstrapped superuser is the SCHEMA OWNER
+      # (DB_OWNER_USER), not the runtime role Switch serves requests as
+      # (DB_USER). Row-level security is inert against a table's owner, so
+      # the role every request authenticates as must be a separate, deliberately
+      # unprivileged login — created below by init-db, once the owner is up.
+      POSTGRES_USER: ${DB_OWNER_USER}
+      POSTGRES_PASSWORD: ${DB_OWNER_PASSWORD}
       POSTGRES_DB: ${DB_NAME}
     volumes:
   # Kept deliberately after Tuwunel was removed. It still holds every media
@@ -68,33 +86,61 @@ services:
   # release than the one that stops reading it.
       - pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${DB_USER}"]
+      test: ["CMD-SHELL", "pg_isready -U ${DB_OWNER_USER}"]
       interval: 2s
       timeout: 3s
       retries: 10
 
   init-db:
     image: postgres:16-alpine
-    profiles: ["collab"]
+    # No profile here on purpose — see the note above the profile table. This
+    # runs on every `up`, collab or not, because switch alone needs the
+    # runtime role it creates.
     environment:
-      PGPASSWORD: ${DB_PASSWORD}
+      PGPASSWORD: ${DB_OWNER_PASSWORD}
+    # Runs as the owner: creating a database and a role both need privileges
+    # the runtime role is deliberately never given. Note the mixed quoting in
+    # the CREATE ROLE / ALTER ROLE statements is not optional — DB_USER is an
+    # identifier (double-quoted, and safe only because .env.example pins it to
+    # a fixed, non-attacker-controlled name) and the password is a string
+    # literal (single-quoted); swapping them would either fail to parse or
+    # quietly create a role named after the password.
+    #
+    # No GRANT here on purpose: on a fresh volume there is nothing yet to
+    # grant. The `switch` database has no tables until switch-core runs
+    # Alembic against the owner connection, so the runtime role's CRUD grants
+    # are issued by switch-core itself at boot, immediately after migrating.
+    # This step only has to make the role exist.
+    #
+    # The trailing ALTER ROLE is what keeps a regenerated .env working on a
+    # reused pgdata volume: the CREATE ROLE guard above skips a role that
+    # already exists, so without it a new DB_PASSWORD would never reach
+    # Postgres. DB_OWNER_PASSWORD gets no such reapplication — it is set once,
+    # as POSTGRES_PASSWORD, by the container's initial bootstrap of its own
+    # superuser, and nothing here ever reissues it. So a regenerated
+    # DB_PASSWORD takes effect on the next `up` with no rebuild, while a
+    # regenerated DB_OWNER_PASSWORD needs the stack (and its volume)
+    # recreated to match.
     entrypoint: >
       sh -c "
         i=0
-        until psql -h postgres -U ${DB_USER} -d postgres -c 'SELECT 1' >/dev/null 2>&1; do
+        until psql -h postgres -U ${DB_OWNER_USER} -d postgres -c 'SELECT 1' >/dev/null 2>&1; do
           i=$$((i+1))
           if [ $$i -ge 30 ]; then
-            echo 'init-db: could not connect to postgres as ${DB_USER} after 30 tries.' >&2
+            echo 'init-db: could not connect to postgres as ${DB_OWNER_USER} after 30 tries.' >&2
             echo 'Last attempt:' >&2
-            psql -h postgres -U ${DB_USER} -d postgres -c 'SELECT 1' >&2
+            psql -h postgres -U ${DB_OWNER_USER} -d postgres -c 'SELECT 1' >&2
             echo 'A stale pgdata volume keeps the password it was first created with,' >&2
-            echo 'so a regenerated DB_PASSWORD will fail here. Recreate the stack to reset it.' >&2
+            echo 'so a regenerated DB_OWNER_PASSWORD will fail here. Recreate the stack to reset it.' >&2
             exit 1
           fi
           sleep 1
         done
-        psql -h postgres -U ${DB_USER} -d postgres -tc \"SELECT 1 FROM pg_database WHERE datname='mattermost'\" | grep -q 1 ||
-          psql -h postgres -U ${DB_USER} -d postgres -c 'CREATE DATABASE mattermost;'
+        psql -h postgres -U ${DB_OWNER_USER} -d postgres -tc \"SELECT 1 FROM pg_database WHERE datname='mattermost'\" | grep -q 1 ||
+          psql -h postgres -U ${DB_OWNER_USER} -d postgres -c 'CREATE DATABASE mattermost;'
+        psql -h postgres -U ${DB_OWNER_USER} -d postgres -tc \"SELECT 1 FROM pg_roles WHERE rolname='${DB_USER}'\" | grep -q 1 ||
+          psql -h postgres -U ${DB_OWNER_USER} -d postgres -c 'CREATE ROLE \"${DB_USER}\" LOGIN PASSWORD '\\''${DB_PASSWORD}'\\'' NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS;'
+        psql -h postgres -U ${DB_OWNER_USER} -d postgres -c 'ALTER ROLE \"${DB_USER}\" PASSWORD '\\''${DB_PASSWORD}'\\'';'
       "
     depends_on:
       postgres:
@@ -119,7 +165,13 @@ services:
       - mmdata:/mattermost/data
     environment:
       MM_SQLSETTINGS_DRIVERNAME: postgres
-      MM_SQLSETTINGS_DATASOURCE: postgres://${DB_USER}:${DB_PASSWORD}@postgres:5432/mattermost?sslmode=disable
+      # The owner's credentials, not the runtime role's: init-db creates the
+      # `mattermost` database as the owner, and the runtime role (DB_USER)
+      # neither owns it nor was granted anything on it — only `switch`'s
+      # tables get the runtime role's grants, issued by switch-core itself at
+      # boot. Mattermost's own schema has no row-level security in it, so
+      # there is no isolation reason to run it as the restricted role too.
+      MM_SQLSETTINGS_DATASOURCE: postgres://${DB_OWNER_USER}:${DB_OWNER_PASSWORD}@postgres:5432/mattermost?sslmode=disable
       MM_SERVICESETTINGS_SITEURL: http://localhost:${MATTERMOST_HOST_PORT:-8065}
       MM_SERVICESETTINGS_ENABLELOCALMODE: "true"
       # The first-run onboarding checklist opens a modal over a dimmed page,
@@ -152,6 +204,8 @@ services:
       DB_PORT: "5432"
       DB_USER: ${DB_USER}
       DB_PASSWORD: ${DB_PASSWORD}
+      DB_OWNER_USER: ${DB_OWNER_USER}
+      DB_OWNER_PASSWORD: ${DB_OWNER_PASSWORD}
       DB_NAME: ${DB_NAME}
       MATRIX_SERVER_NAME: localhost
       AGENT_REGISTRATION_TOKEN: ${AGENT_REGISTRATION_TOKEN}
@@ -166,6 +220,13 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      # Without this, switch-core can start migrating (as the owner) and try
+      # its own grant-and-verify of DB_USER (see db/runtime_role.py) before
+      # init-db has created that role at all — a race, not just a missing
+      # role, since init-db polls postgres rather than blocking on its
+      # healthcheck.
+      init-db:
+        condition: service_completed_successfully
 
   gateway:
     image: ${SWITCH_REGISTRY:-ghcr.io}/${SWITCH_IMAGE_NAMESPACE:-sandbox-quantum}/gateway:${SWITCH_VERSION:?required, set it in .env, there is no default}

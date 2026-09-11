@@ -1,6 +1,6 @@
 import {
   commandStatusSchema,
-  type Attachment,
+  attachmentSchema,
   serverEventSchema,
   type SessionTransport,
 } from '@switch-console/shared/session-v1';
@@ -11,18 +11,13 @@ export function sharedSessionTransport(serverId: string): SessionTransport {
   return {
     uploadAttachment: async (sessionId, file) => {
       const value = await rpc.sdkHost.uploadAttachment(serverId, sessionId, file);
-      return z
-        .strictObject({
-          attachmentId: z.string(),
-          name: z.string(),
-          mimeType: z.string(),
-          bytes: z.number().int().nonnegative(),
-        })
-        .parse(value) satisfies Attachment;
+      return attachmentSchema.parse(value);
     },
     snapshot: (id) => rpc.sdkHost.sharedSnapshot(serverId, id),
     submit: async (command) =>
       commandStatusSchema.parse(await rpc.sdkHost.sharedSubmit(serverId, command)),
+    reconcile: async (command) =>
+      commandStatusSchema.parse(await rpc.sdkHost.sharedReconcile(serverId, command)),
     commandStatus: async (id, commandId) =>
       commandStatusSchema.parse(await rpc.sdkHost.sharedCommandStatus(serverId, id, commandId)),
     subscribe(id, after, onEvent, onError, onCursor) {

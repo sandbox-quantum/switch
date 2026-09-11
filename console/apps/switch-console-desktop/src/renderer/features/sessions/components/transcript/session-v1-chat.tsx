@@ -4,6 +4,7 @@ import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { Button } from '@renderer/lib/ui/button';
 import { MarkdownRenderer } from '@renderer/lib/ui/markdown-renderer';
 import { Textarea } from '@renderer/lib/ui/textarea';
+import type { InitialPromptDelivery } from '@shared/core/sessions/session-config';
 import { SessionAttachmentList, useSessionAttachments } from './session-attachments';
 import { SessionV1Controls } from './session-v1-controls';
 import { SessionV1Request } from './session-v1-request';
@@ -12,14 +13,19 @@ import { SessionV1Request } from './session-v1-request';
 export function SessionV1Chat({
   client,
   restartHost,
+  retireHost,
+  initialPromptDelivery,
 }: {
   client: SessionChatClient;
+  initialPromptDelivery?: InitialPromptDelivery;
   restartHost?: () => Promise<void>;
+  retireHost?: (epoch: string) => Promise<void>;
 }) {
   const view = useSyncExternalStore(client.subscribe, client.getSnapshot);
   const [draft, setDraft] = useState('');
   const [pendingId, setPendingId] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
+  const [retireConfirm, setRetireConfirm] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
   useEffect(() => {
     void client.connect();
@@ -91,10 +97,11 @@ export function SessionV1Chat({
     <div className="flex h-full min-h-0 flex-col bg-background text-foreground">
       <div className="flex items-center justify-between border-b border-border px-5 py-3 text-xs">
         <span>
-          {session?.provider ?? 'Session'} · {session?.status ?? 'Loading'}
+          {session?.provider ?? 'Session'} ·{' '}
+          {session?.retired ? 'Retired' : (session?.status ?? 'Loading')}
         </span>
         <div className="flex items-center gap-2">
-          {restartHost && session?.status !== 'stopped' && (
+          {restartHost && !session?.retired && session?.status !== 'stopped' && (
             <Button
               size="sm"
               variant="outline"
@@ -127,7 +134,7 @@ export function SessionV1Chat({
               Interrupt
             </Button>
           )}
-          {session && session.status !== 'stopped' && (
+          {session && !session.retired && session.status !== 'stopped' && (
             <Button
               size="sm"
               variant="outline"
@@ -149,6 +156,72 @@ export function SessionV1Chat({
           </span>
         </div>
       </div>
+      {(initialPromptDelivery?.state === 'unknown' ||
+        initialPromptDelivery?.state === 'rejected') && (
+        <div
+          role="alert"
+          className="border-b border-border px-5 py-3 text-sm [overflow-wrap:anywhere] text-foreground-destructive"
+        >
+          <p>
+            {initialPromptDelivery.state === 'unknown'
+              ? 'Initial prompt delivery is unresolved.'
+              : 'The initial prompt was rejected.'}
+          </p>
+          <p>
+            {initialPromptDelivery.message ??
+              initialPromptDelivery.reason ??
+              initialPromptDelivery.code}
+          </p>
+          <p>
+            It will not be sent again automatically. Review the conversation before sending a new
+            message.
+          </p>
+        </div>
+      )}
+      {session?.retired && (
+        <div role="status" className="px-5 py-3 text-sm">
+          This session was retired. Its history is retained; prior uncertain actions remain unknown.
+          Start a separate session from the agent page.
+        </div>
+      )}
+      {retireHost &&
+        session &&
+        !session.retired &&
+        session.connectivity === 'offline' &&
+        session.status !== 'stopped' && (
+          <div className="px-5 py-3 text-sm">
+            {retireConfirm ? (
+              <>
+                Retire this session permanently? Recovery will be disabled. This does not confirm
+                whether prior actions completed. Start a separate session only after reviewing their
+                effects.
+                <Button
+                  variant="destructive"
+                  disabled={sending}
+                  onClick={() => {
+                    setSending(true);
+                    void retireHost(session.epoch)
+                      .then(() => client.connect())
+                      .catch((error: unknown) => setSendError(String(error)))
+                      .finally(() => {
+                        setSending(false);
+                        setRetireConfirm(false);
+                      });
+                  }}
+                >
+                  Retire session permanently
+                </Button>
+                <Button variant="outline" onClick={() => setRetireConfirm(false)}>
+                  Cancel
+                </Button>
+              </>
+            ) : (
+              <Button variant="outline" onClick={() => setRetireConfirm(true)}>
+                Retire unrecoverable session…
+              </Button>
+            )}
+          </div>
+        )}
       {session && !session.capabilities.questions && (
         <div className="px-5 py-2 text-xs text-foreground-muted">
           This provider does not support interactive questions. Supply additional instructions in

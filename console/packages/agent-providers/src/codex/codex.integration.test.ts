@@ -16,7 +16,7 @@ const USER_AUTH = join(USER_CODEX_HOME, 'auth.json');
 function isolatedCodexHome(): string {
   const dir = mkdtempSync(join(tmpdir(), 'switch-codex-home-'));
   if (existsSync(USER_AUTH)) copyFileSync(USER_AUTH, join(dir, 'auth.json'));
-  writeFileSync(join(dir, 'config.toml'), '# Written by the Switch codex conformance suite.\n');
+  writeFileSync(join(dir, 'config.toml'), 'sandbox_mode = "workspace-write"\n');
   return dir;
 }
 

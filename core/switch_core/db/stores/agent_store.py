@@ -1,7 +1,14 @@
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from switch_core.db.models import Agent, ClientRoom, Model, Tool, room_agents
+from switch_core.db.models import (
+    Agent,
+    ClientRoom,
+    Model,
+    Tool,
+    require_tenant_id,
+    room_agents,
+)
 
 
 class AgentStore:
@@ -15,19 +22,36 @@ class AgentStore:
         return await session.get(Agent, agent_id)
 
     async def get_by_name(self, session: AsyncSession, name: str) -> Agent | None:
-        result = await session.execute(select(Agent).where(Agent.name == name))
+        """Resolve an agent by name within the bound tenant.
+
+        Scoped explicitly rather than left to row-level security: `name` is
+        unique per tenant (`uq_agents_tenant_name`), not globally, so the
+        moment a second tenant has an agent of the same name, an unfiltered
+        read here matches both rows and raises `MultipleResultsFound` out of
+        every caller that resolves an agent by name — mention routing,
+        registration, and the gateway's agent lookup among them.
+        """
+        result = await session.execute(
+            select(Agent).where(
+                Agent.tenant_id == require_tenant_id(), Agent.name == name
+            )
+        )
         return result.scalar_one_or_none()
 
     async def get_by_name_insensitive(
         self, session: AsyncSession, name: str
     ) -> Agent | None:
-        """Resolve an agent by name, case-insensitively.
+        """Resolve an agent by name, case-insensitively, within the bound tenant.
 
         Mirrors how `@name` mentions are matched (case-insensitive), so a tagged
-        token resolves to the same agent the router would address.
+        token resolves to the same agent the router would address. Scoped for
+        the same reason as `get_by_name`.
         """
         result = await session.execute(
-            select(Agent).where(func.lower(Agent.name) == name.lower())
+            select(Agent).where(
+                Agent.tenant_id == require_tenant_id(),
+                func.lower(Agent.name) == name.lower(),
+            )
         )
         return result.scalar_one_or_none()
 

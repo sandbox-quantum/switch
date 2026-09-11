@@ -86,9 +86,14 @@ export async function superviseSharedHost(input: {
       if (input.signal.aborted) return;
       if (code === 0) return;
       if (code !== null) {
-        await replaceOwner(join(directory, 'failure.json'), {
-          message: `Shared SDK host exited with code ${code}. Inspect worker.log before reopening.`,
-        });
+        try {
+          await readFile(join(directory, 'failure.json'));
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+          await replaceOwner(join(directory, 'failure.json'), {
+            message: `Shared SDK host exited with code ${code}. Inspect worker.log before reopening.`,
+          });
+        }
         throw new Error(`Shared SDK host failed with exit code ${code}.`);
       }
       console.warn(`Shared SDK host exited on ${signal}; recovering its saved state.`);

@@ -8,6 +8,7 @@ export default defineConfig({
     distribution: 'src/distribution.ts',
     // The room-workflow skill, for a session whose config directory the app
     // writes and which therefore cannot see the installed connector's copy.
+    'claude-skill': 'src/agents/impl/claude/skill-file.ts',
     'cursor-skill': 'src/agents/impl/cursor/skill-file.ts',
     'gemini-skill': 'src/agents/impl/gemini/skill-file.ts',
     'codex-skill': 'src/agents/impl/codex/skill-file.ts',

@@ -26,6 +26,7 @@ from switch_core.clients.client_base import ClientBase, ClientConfig
 def _base_kwargs() -> dict[str, Any]:
     return {
         "client_id": "client-1",
+        "tenant_id": "tenant-1",
         "matrix_user_id": "@switch-agent-1:switch.local",
         "display_name": "agent-one",
         "session_factory": object(),

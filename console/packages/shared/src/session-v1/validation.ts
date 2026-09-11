@@ -22,7 +22,7 @@ const origin = z.strictObject({
   threadId: id.nullable(),
   messageId: id.nullable(),
 });
-const capabilities = z.strictObject({
+const capabilities = z.object({
   input: z.enum(['queue', 'steer']),
   approvals: z.boolean(),
   questions: z.boolean(),
@@ -32,7 +32,7 @@ const capabilities = z.strictObject({
   modelChange: z.boolean(),
   attachmentMimeTypes: z.array(z.string()),
 });
-const attachment = z.strictObject({
+export const attachmentSchema = z.strictObject({
   attachmentId: id,
   name: z.string(),
   mimeType: z.string(),
@@ -51,7 +51,7 @@ const item = z.strictObject({
   status: z.enum(['in-progress', 'completed', 'failed', 'declined']),
   title: z.string(),
   text: z.string(),
-  attachments: z.array(attachment),
+  attachments: z.array(attachmentSchema),
   origin: origin.nullable(),
 });
 const option = z.strictObject({
@@ -98,8 +98,9 @@ const request = z.strictObject({
   ]),
   expiresAt: timestamp.nullable(),
 });
-export const sessionSchema = z.strictObject({
+export const sessionSchema = z.object({
   roomIds: z.array(id).optional(),
+  retired: z.boolean().optional(),
   sessionId: id,
   agentId: id,
   provider: z.enum(['claude', 'codex', 'opencode', 'gemini', 'cursor']),
@@ -192,7 +193,7 @@ export const serverEventSchema: z.ZodType<ServerEvent> = z.strictObject({
     }),
   ]),
 });
-export const snapshotSchema: z.ZodType<Snapshot> = z.strictObject({
+export const snapshotSchema: z.ZodType<Snapshot> = z.object({
   contractVersion: z.literal(1),
   throughSequence: counter,
   session: sessionSchema,
@@ -217,7 +218,7 @@ export const commandSchema: z.ZodType<Command> = z.strictObject({
     z.strictObject({
       type: z.literal('message.send'),
       text: z.string(),
-      attachments: z.array(attachment),
+      attachments: z.array(attachmentSchema),
       delivery: z.enum(['queue', 'steer']),
     }),
     z.strictObject({

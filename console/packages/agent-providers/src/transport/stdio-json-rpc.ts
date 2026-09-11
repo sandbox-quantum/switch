@@ -1,5 +1,6 @@
 import { type ChildProcess, spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
+import { Transform } from 'node:stream';
 
 export interface ProviderLogger {
   debug(message: string, context?: Record<string, unknown>): void;
@@ -84,7 +85,29 @@ export class StdioJsonRpcClient {
     const stderr = this.child.stderr;
     if (!stdout || !stderr) throw new Error('provider process was spawned without stdio pipes');
 
-    createInterface({ input: stdout }).on('line', (line) => this.handleLine(line));
+    let lineBytes = 0;
+    const bounded = new Transform({
+      transform(chunk: Buffer, _encoding, callback) {
+        for (const byte of chunk) {
+          lineBytes = byte === 10 ? 0 : lineBytes + 1;
+          if (lineBytes > 16 * 1024 * 1024) {
+            callback(
+              new Error('Provider protocol line exceeds 16 MiB. Execution was interrupted.')
+            );
+            return;
+          }
+        }
+        callback(null, chunk);
+      },
+    });
+    bounded.on('error', (error) => {
+      this.child.kill('SIGKILL');
+      this.handleExit(error.message);
+    });
+    stdout.pipe(bounded);
+    createInterface({ input: bounded })
+      .on('line', (line) => this.handleLine(line))
+      .on('error', (error) => this.handleExit(error.message));
     stderr.on('data', (chunk: Buffer) => {
       this.stderrTail = `${this.stderrTail}${chunk.toString('utf8')}`.slice(-STDERR_TAIL_LIMIT);
     });

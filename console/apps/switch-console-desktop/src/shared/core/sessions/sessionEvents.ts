@@ -6,7 +6,9 @@ export const sessionCreatedChannel = defineEvent<{ session: Session }>('session:
 
 export const sessionChangedChannel = defineEvent<{
   sessionId: string;
-  changes: Partial<Pick<Session, 'lastInteractedAt' | 'title' | 'providerSessionId'>>;
+  changes: Partial<
+    Pick<Session, 'lastInteractedAt' | 'title' | 'providerSessionId' | 'initialPromptDelivery'>
+  >;
 }>('session:changed');
 
 export const sessionAgentStatusChangedChannel = defineEvent<{

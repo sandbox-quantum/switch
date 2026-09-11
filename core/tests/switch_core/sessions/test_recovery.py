@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from switch_core.db.models import SdkSession
+from switch_core.db.models import SdkSession, require_tenant_id
 from switch_core.sessions.service import SessionError
 from tests.switch_core.sessions.test_authority import (
     answer,
@@ -20,7 +21,7 @@ from tests.switch_core.sessions.test_authority import (
 async def test_expiry_does_not_grant_recovery(session_factory):
     service, epoch = await setup(session_factory)
     async with session_factory() as db, db.begin():
-        row = await db.get(SdkSession, "session-demo")
+        row = await db.get(SdkSession, (require_tenant_id(), "session-demo"))
         row.lease_expires_at = datetime.now(UTC) - timedelta(seconds=1)
     with pytest.raises(SessionError, match="previous execution"):
         await service.recover(
@@ -137,12 +138,13 @@ async def test_lifecycle_commands_are_authorized_durable_and_fenced(session_fact
         assert control in await service.pending(
             "agent-demo", "session-demo", "host-demo", epoch
         )
-    with pytest.raises(SessionError, match="no longer running"):
-        await service.submit(
-            command(epoch, "old-turn", {"type": "turn.interrupt", "turnId": "other"}),
-            user_id="owner",
-            bridge_id=None,
-        )
+    rejected = await service.submit(
+        command(epoch, "old-turn", {"type": "turn.interrupt", "turnId": "other"}),
+        user_id="owner",
+        bridge_id=None,
+    )
+    assert rejected.status == "rejected"
+    assert rejected.code == "TURN_NOT_ACTIVE"
     await service.quiesce("agent-demo", "session-demo", "host-demo", epoch)
     snapshot = await service.recover(
         "agent-demo", "session-demo", "host-demo", epoch, "recovery", 2
@@ -223,12 +225,19 @@ async def test_reset_authorization_busy_state_and_epoch_reconciliation(session_f
     assert (
         await service.command_status("session-demo", "reset-demo", "owner")
     ).status == "applied"
-    with pytest.raises(SessionError, match="generation changed"):
-        await service.submit(
-            command(epoch, "stale-reset", {"type": "session.reset"}),
-            user_id="owner",
-            bridge_id=None,
+    rejected = await service.submit(
+        command(epoch, "stale-reset", {"type": "session.reset"}),
+        user_id="owner",
+        bridge_id=None,
+    )
+    assert rejected.status == "rejected"
+    assert rejected.code == "STALE_EPOCH"
+    assert (
+        await service.pending(
+            "agent-demo", "session-demo", "host-demo", recovered.session.epoch
         )
+        == []
+    )
 
 
 @pytest.mark.asyncio
@@ -256,12 +265,13 @@ async def test_reset_rejects_pending_questions(session_factory):
             },
         ),
     )
-    with pytest.raises(SessionError, match="Finish or interrupt"):
-        await service.submit(
-            command(epoch, "busy-reset", {"type": "session.reset"}),
-            user_id="owner",
-            bridge_id=None,
-        )
+    rejected = await service.submit(
+        command(epoch, "busy-reset", {"type": "session.reset"}),
+        user_id="owner",
+        bridge_id=None,
+    )
+    assert rejected.status == "rejected"
+    assert rejected.code == "SESSION_BUSY"
 
 
 @pytest.mark.asyncio
@@ -294,10 +304,13 @@ async def test_model_catalog_validation_and_compaction_capability(session_factor
         },
         {"type": "session.compact"},
     ):
-        with pytest.raises(SessionError):
-            await service.submit(
-                command(epoch, "invalid", body), user_id="owner", bridge_id=None
-            )
+        rejected = await service.submit(
+            command(epoch, "invalid-" + json.dumps(body, sort_keys=True), body),
+            user_id="owner",
+            bridge_id=None,
+        )
+        assert rejected.status == "rejected"
+        assert rejected.code in ("UNSUPPORTED_MODEL", "UNSUPPORTED_CAPABILITY")
     result = await service.submit(
         command(
             epoch,
