@@ -877,7 +877,7 @@ class Document(TenantScoped, Base):
 # ── Templates ─────────────────────────────────────────────────────────────────
 
 
-class Template(Base):
+class Template(TenantScoped, Base):
     """A template document held on this server, plus the metadata to find it.
 
     ``content`` is stored verbatim and never parsed, so a document in a format
@@ -892,7 +892,9 @@ class Template(Base):
 
     __tablename__ = "templates"
     __table_args__ = (
-        UniqueConstraint("owner_id", "name", name="uq_templates_owner_name"),
+        UniqueConstraint(
+            "tenant_id", "owner_id", "name", name="uq_templates_tenant_owner_name"
+        ),
     )
 
     id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)

@@ -4,7 +4,7 @@ from sqlalchemy import ColumnElement, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from switch_core.db.models import Template
+from switch_core.db.models import Template, require_tenant_id
 
 _LIKE_ESCAPE = "\\"
 
@@ -82,11 +82,13 @@ class TemplateStore:
     ) -> list[TemplateListing]:
         """The catalogue, newest first, without the documents.
 
-        The registry is server-wide: a template is visible to everyone
-        regardless of who uploaded it. Ownership governs who may change or
-        remove one, not who may see it.
+        Templates are scoped to the caller's tenant: each tenant sees only
+        its own templates. Ownership governs who may change or remove one,
+        not who may see it within the tenant.
         """
-        conditions: list[ColumnElement[bool]] = []
+        conditions: list[ColumnElement[bool]] = [
+            Template.tenant_id == require_tenant_id(),
+        ]
         if query:
             needle = _like_needle(query)
             conditions.append(
