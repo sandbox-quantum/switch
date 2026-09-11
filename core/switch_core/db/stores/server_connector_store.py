@@ -37,7 +37,16 @@ class ServerConnectorStore:
         await session.flush()
 
     async def delete(self, session: AsyncSession, connector_id: str) -> None:
+        """Delete the connector, raising when this session cannot see it.
+
+        Matching `update_status` above rather than the silent no-op this used
+        to be. Row-level security makes "no such connector" and "not this
+        tenant's connector" the same empty lookup, so returning quietly is not
+        a harmless idempotent delete — it is the shape a cross-tenant delete
+        takes, and the caller went on to log a removal that had not happened.
+        """
         connector = await session.get(ServerConnector, connector_id)
-        if connector:
-            await session.delete(connector)
-            await session.flush()
+        if connector is None:
+            raise ValueError(f"Connector not found: {connector_id}")
+        await session.delete(connector)
+        await session.flush()

@@ -8,6 +8,18 @@ fails here even if nobody remembers to update these tests by hand. See
 
     Every table holding customer data carries a non-null `tenant_id`, and
     every foreign key between two such tables carries `tenant_id` as well.
+
+**The invariant is stated the way round that fails closed**, which it was
+not when this file was written. It used to derive "scoped" as *carries a
+`tenant_id` foreign key*, and then check things about the tables in that
+set — so a new table full of customer data and no tenant column was not in
+the set, was checked by nothing, and passed. That is the exact regression
+these tests exist to prevent, so the derivation is inverted: the small set
+of tables with no tenant is hardcoded in `rls_ddl.GLOBAL_TABLES`, and every
+other table in the metadata must be scoped. Adding a table with customer
+data and no tenant column now fails at import — `db/models.py` attaches the
+policies at the bottom and `scoped_tables` refuses — and the two tests below
+pin both halves of the escape hatch so it cannot be widened quietly.
 """
 
 from __future__ import annotations
@@ -19,31 +31,17 @@ from sqlalchemy.ext.asyncio import AsyncConnection, AsyncSession, async_sessionm
 # junction tables) on `Base.metadata`.
 import switch_core.db.models  # noqa: F401
 from switch_core.db.base import Base
+from switch_core.db.rls_ddl import GLOBAL_TABLES, scoped_tables, unscoped_tables
 
 
 def _scoped_tables() -> set[str]:
-    """Every table carrying a `tenant_id` column whose foreign key targets
-    `tenants.id` — the schema's own definition of "scoped".
+    """Every table the schema says is tenant-scoped: all but the globals.
 
-    Deliberately not the list from the design doc: a table that gains a
-    `tenant_id` later by copying the mixin (or the equivalent inline column,
-    for the plain `Table()` junction tables) is picked up automatically, and
-    one that forgets the foreign key to `tenants` is correctly left out and
-    so exempt from these checks — the accompanying test that every scoped
-    table's FKs carry `tenant_id` only means anything once a table is on this
-    list at all.
+    The same derivation `create_all` used to attach the policies
+    (`rls_ddl.scoped_tables`), not a second copy of it — a private copy here
+    is what let this file and the policies disagree in the first place.
     """
-    scoped = set()
-    for table in Base.metadata.tables.values():
-        tenant_id_col = table.columns.get("tenant_id")
-        if tenant_id_col is None:
-            continue
-        if any(
-            fk.column.table.name == "tenants" and fk.column.name == "id"
-            for fk in tenant_id_col.foreign_keys
-        ):
-            scoped.add(table.name)
-    return scoped
+    return set(scoped_tables(Base.metadata))
 
 
 def _get_foreign_keys(sync_conn, table_name: str) -> list[dict]:
@@ -71,28 +69,53 @@ async def _unique_column_sets(
     return await conn.run_sync(_get_unique_column_sets, table_name)
 
 
-class TestScopedTableCatalogue:
-    async def test_scoped_tables_exist_and_are_not_trivial(
-        self, session_factory: async_sessionmaker[AsyncSession]
-    ) -> None:
-        """Sanity check on the derivation itself: if this list ever collapses
-        to empty or to one table, the two tests below would pass vacuously."""
-        scoped = _scoped_tables()
-        assert len(scoped) >= 30, scoped
-        assert "messages" in scoped
-        assert "agents" in scoped
-        # Global tables must not appear.
-        assert "users" not in scoped
-        assert "oidc_identities" not in scoped
-        assert "feature_flags" not in scoped
+class TestEveryTableIsScopedUnlessItIsNamedGlobal:
+    """The inverted invariant itself, in two halves.
 
+    Half one: nothing in the metadata is unaccounted for. Half two: the list
+    of things excused is exactly the list someone signed off on. Without the
+    second, the first is trivially satisfiable by adding the new table to
+    `GLOBAL_TABLES` — which is a legitimate thing to do and must simply be
+    visible in a diff rather than available as a quick way to get a red suite
+    green.
+    """
+
+    async def test_no_table_escapes_the_rule(self) -> None:
+        assert unscoped_tables(Base.metadata) == [], (
+            "table(s) hold customer data with no tenant and no exemption; "
+            "inherit TenantScoped, or name them in rls_ddl.GLOBAL_TABLES and "
+            "update the test below"
+        )
+
+    async def test_the_global_table_list_is_exactly_these(self) -> None:
+        """Hardcoded on purpose, and hardcoded twice on purpose.
+
+        `users` is a person rather than a tenant member, `oidc_identities`
+        records how that person proves who they are, and `feature_flags` is a
+        deployment switch — a flag that has to vary per customer is a new
+        scoped table, not a nullable column there. `alembic_version` is
+        global too but is not in this metadata: Alembic owns it.
+        """
+        assert set(GLOBAL_TABLES) == {"users", "oidc_identities", "feature_flags"}
+
+    async def test_scoped_is_everything_else(self) -> None:
+        scoped = _scoped_tables()
+        assert scoped == set(Base.metadata.tables) - set(GLOBAL_TABLES)
+        # Not vacuous, and the shape is what the design doc describes.
+        assert len(scoped) >= 30, scoped
+        assert {"messages", "agents", "tenants", "tenant_members"} <= scoped
+
+
+class TestScopedTableCatalogue:
     async def test_every_cross_scoped_foreign_key_carries_tenant_id(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
         """A foreign key from one scoped table to another must be composite
         on `tenant_id`, so a row can never reference a parent in another
         tenant. Foreign keys to a *global* table (e.g. `rooms.owner_id ->
-        users.id`) are single-column by design and are not checked here."""
+        users.id`) are single-column by design and are not checked here, and
+        neither is a table's own key to `tenants` — that key is what makes it
+        scoped in the first place and is single-column by construction."""
         scoped = _scoped_tables()
         violations: list[tuple[str, str, str]] = []
         async with session_factory() as session:
@@ -100,7 +123,7 @@ class TestScopedTableCatalogue:
             for table_name in scoped:
                 for fk in await _foreign_keys(conn, table_name):
                     ref_table = fk["referred_table"]
-                    if ref_table not in scoped:
+                    if ref_table not in scoped or ref_table == "tenants":
                         continue
                     local_cols = set(fk["constrained_columns"])
                     ref_cols = set(fk["referred_columns"])

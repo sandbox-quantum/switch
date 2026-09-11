@@ -13,11 +13,13 @@ from sqlalchemy.pool import NullPool
 
 from switch_core.config import SwitchConfig
 
-# Imported for its side effect: it registers the `after_begin` hook that stamps
-# the bound tenant onto every session's transaction. Here rather than at a
-# factory call site, so a process that builds an `async_sessionmaker` by hand
-# is covered too — it still needs an engine, and an engine comes from here.
-from switch_core.db import tenant_session  # noqa: F401
+# Imported both for its side effect and for what it holds. The side effect is
+# the `after_begin` hook that stamps the bound tenant onto every session's
+# transaction, registered here rather than at a factory call site so that a
+# process building an `async_sessionmaker` by hand is covered too — it still
+# needs an engine, and an engine comes from here. What it holds is the session
+# class `create_session_factory` binds below.
+from switch_core.db import tenant_session
 
 logger = logging.getLogger(__name__)
 
@@ -167,4 +169,16 @@ def create_unpooled_engine(config: SwitchConfig) -> AsyncEngine:
 
 
 def create_session_factory(engine: AsyncEngine) -> async_sessionmaker[AsyncSession]:
-    return async_sessionmaker(bind=engine, expire_on_commit=False)
+    """The factory every session in the process comes from.
+
+    `sync_session_class` is what puts the tenant checks on `Session.get`:
+    `AsyncSession` does no ORM work of its own, it drives a synchronous
+    `Session` underneath, and `get` answered from that session's identity map
+    is the one read that reaches neither the row-level-security policy nor the
+    `do_orm_execute` hook. See `db/tenant_session.TenantCheckedSession`.
+    """
+    return async_sessionmaker(
+        bind=engine,
+        expire_on_commit=False,
+        sync_session_class=tenant_session.TenantCheckedSession,
+    )

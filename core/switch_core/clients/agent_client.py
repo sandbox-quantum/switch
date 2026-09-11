@@ -44,7 +44,7 @@ from switch_core.clients.mentions import (
 )
 from switch_core.clients.room_meta import RoomMeta
 from switch_core.db.models import Agent
-from switch_core.db.session_scope import unscoped_session
+from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.agent_session_store import AgentSessionStore
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.collaboration_bridge_store import CollaborationBridgeStore
@@ -300,14 +300,14 @@ class AgentClient(ClientBase[ClientConfig]):
     async def start(self) -> None:
         """Resolve the agent this client is, then run.
 
-        Unscoped, deliberately: this runs at the top of the client's own task,
-        which binds nothing, and it is the lookup that says which tenant this
-        client belongs to at all. `clients.id` is globally unique, so there is
-        nothing for a tenant to disambiguate — while a guessed one would turn
-        "this client is an agent" into "no agent found for client" and fail
-        the client at boot over a row that exists.
+        This runs at the top of the client's own task, which binds nothing, so
+        the tenant is carried rather than inherited: it comes from the
+        `clients` row this client was built from. A *guessed* tenant would
+        turn "this client is an agent" into "no agent found for client" and
+        fail the client at boot over a row that exists, which is why nothing
+        here falls back to whatever is ambient.
         """
-        async with unscoped_session(self.session_factory) as session:
+        async with tenant_session(self.session_factory, self.tenant_id) as session:
             agent = await self._agent_store.get_by_client_id(session, self.client_id)
             if agent is None:
                 raise RuntimeError(f"No agent found for client: {self.client_id}")
@@ -808,7 +808,7 @@ class AgentClient(ClientBase[ClientConfig]):
         if matrix_room_id in self._room_meta:
             return self._room_meta[matrix_room_id]
 
-        async with self.session_factory() as session:
+        async with tenant_session(self.session_factory, self.tenant_id) as session:
             room = await self._room_store.get_by_matrix_room_id(session, matrix_room_id)
             if room is None:
                 logger.error("Room not found for matrix room ID: %s", matrix_room_id)

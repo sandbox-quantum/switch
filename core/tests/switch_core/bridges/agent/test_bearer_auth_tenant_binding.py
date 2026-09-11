@@ -15,6 +15,7 @@ from __future__ import annotations
 import hashlib
 from typing import Any
 
+import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.bridges.agent.api_key_cache import ApiKeyCache
@@ -161,6 +162,7 @@ class TestBearerAuthBindsTheApiKeysTenant:
         assert captured["agent_id"] is not None
         assert captured["tenant_id"] == TENANT_A
 
+    @pytest.mark.no_ambient_tenant
     async def test_the_tenant_is_not_bound_before_or_after_the_call(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
@@ -171,6 +173,7 @@ class TestBearerAuthBindsTheApiKeysTenant:
         await _dispatch(mw, "tok")
         assert current_tenant_id() is None
 
+    @pytest.mark.no_ambient_tenant
     async def test_an_unknown_token_binds_nothing(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
@@ -211,6 +214,7 @@ class TestBearerAuthBindsARegistrationTokensTenant:
 
         assert captured["tenant_id"] == TENANT_B
 
+    @pytest.mark.no_ambient_tenant
     async def test_the_tenant_is_unbound_once_the_call_returns(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
@@ -221,6 +225,7 @@ class TestBearerAuthBindsARegistrationTokensTenant:
         await _dispatch(mw, "reg-tok")
         assert current_tenant_id() is None
 
+    @pytest.mark.no_ambient_tenant
     async def test_mcp_still_refuses_a_registration_token_and_binds_nothing(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:

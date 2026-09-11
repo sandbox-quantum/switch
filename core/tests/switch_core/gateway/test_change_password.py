@@ -24,7 +24,6 @@ from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.db.models import User
-from switch_core.db.stores.tenant_member_store import TenantMemberStore
 from switch_core.db.stores.user_store import UserStore
 from switch_core.gateway import dependencies as gw_deps
 from switch_core.gateway.auth import create_jwt, hash_password, verify_password
@@ -57,9 +56,6 @@ def _app(session_factory: async_sessionmaker[AsyncSession]) -> FastAPI:
     app.dependency_overrides[gw_deps.get_system_session] = _session_dep
     app.dependency_overrides[gw_deps.get_session_factory] = lambda: session_factory
     app.dependency_overrides[gw_deps.get_user_store] = lambda: _USER_STORE
-    app.dependency_overrides[gw_deps.get_tenant_member_store] = lambda: (
-        TenantMemberStore()
-    )
     app.dependency_overrides[gw_deps.get_config] = lambda: SimpleNamespace(
         jwt_secret_key=_SECRET,
         gateway_cookie_secure=False,

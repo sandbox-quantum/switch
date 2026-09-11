@@ -25,6 +25,7 @@ from sqlalchemy.orm import Session
 from switch_core.db import tenant_session
 from switch_core.db.base import Base
 from switch_core.db.engine import create_session_factory
+from switch_core.db.models import Client, Tenant, User
 from switch_core.tenant_context import tenant_scope
 
 TENANT_A = "tenant-hook-a"
@@ -233,3 +234,228 @@ class TestNoLeakAcrossAPooledConnection:
             pid_c, setting_c = await _pid_and_setting(session)
             assert pid_c == pid_a
             assert setting_c is None
+
+
+class TestABindingThatArrivesTooLateIsRefused:
+    """`set_config` rides `after_begin`, so it is issued once — when the
+    transaction opens. Binding a tenant after that rebinds a contextvar and
+    nothing the database can see, and the call site looks correct while every
+    statement runs under whatever the transaction was actually told.
+
+    On a connection Postgres exempts from the policies (every environment
+    before the runtime role, and the whole unit suite still) both halves of
+    that are invisible: no policy narrows the reads, none rejects the writes.
+    So the process refuses rather than leaving it to a reviewer's eye —
+    `TenantBindingDriftError`, from two hooks, because a read and a write take
+    different paths out of a `Session`.
+    """
+
+    async def test_a_read_after_a_late_binding_raises(
+        self, single_connection_session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        async with single_connection_session_factory() as session:
+            # Opens the transaction with nothing bound; the hook stamps None.
+            assert (await _pid_and_setting(session))[1] is None
+            with tenant_scope(TENANT_A):
+                with pytest.raises(tenant_session.TenantBindingDriftError) as raised:
+                    await session.execute(text("SELECT 1"))
+        assert "opened with tenant None" in str(raised.value)
+        assert TENANT_A in str(raised.value)
+
+    async def test_a_flush_after_a_late_binding_raises(
+        self, single_connection_session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """The path `do_orm_execute` does not see, and the one that matters
+        most: the unit of work emits its INSERTs to the connection directly
+        rather than through `Session.execute`. A late binding followed only by
+        `add` and `commit` is exactly how a row comes to claim one tenant on a
+        transaction that carries another."""
+        async with single_connection_session_factory() as session:
+            assert (await _pid_and_setting(session))[1] is None
+            with tenant_scope(TENANT_A):
+                session.add(Tenant(id=TENANT_A, slug=TENANT_A, name=TENANT_A))
+                with pytest.raises(tenant_session.TenantBindingDriftError):
+                    await session.flush()
+
+    async def test_rebinding_the_same_tenant_is_not_drift(
+        self, single_connection_session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """A redundant binding is not a wrong one. `tenant_session` nested
+        inside a `tenant_scope` for the same tenant is an ordinary shape on the
+        delivery path, and refusing it would be a false positive."""
+        async with single_connection_session_factory() as session:
+            with tenant_scope(TENANT_A):
+                assert (await _pid_and_setting(session))[1] == TENANT_A
+                with tenant_scope(TENANT_A):
+                    await session.execute(text("SELECT 1"))
+            await session.commit()
+
+    async def test_a_commit_clears_the_stamp_so_the_next_binding_is_free(
+        self, single_connection_session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """The escape the error message offers has to actually work. A session
+        reused after a commit opens a fresh transaction, which gets its own
+        `set_config` and its own stamp, so binding a different tenant between
+        the two is correct rather than drift."""
+        async with single_connection_session_factory() as session:
+            with tenant_scope(TENANT_A):
+                assert (await _pid_and_setting(session))[1] == TENANT_A
+            await session.commit()
+            with tenant_scope(TENANT_B):
+                assert (await _pid_and_setting(session))[1] == TENANT_B
+                await session.commit()
+
+
+class TestARowFromAnotherTenantIsRefusedFromTheIdentityMap:
+    """`Session.get` answered from the identity map is the one read that
+    reaches neither the policy nor the drift check.
+
+    Both of the guarantees this design rests on are downstream of a round
+    trip: the row-level-security policy is the server's, and the drift hooks
+    fire on `Session.execute` and on a flush. A `get` whose primary key is
+    already in the session's identity map issues no statement, opens no
+    transaction and flushes nothing, so it goes past all three and hands back
+    an object loaded under whatever tenant was bound at the time.
+
+    `db/engine.create_session_factory` puts `TenantCheckedSession` under every
+    session in the process for exactly this. The first test below is the
+    defect, asserted against a session built the plain way, so this file
+    records what the subclass is worth rather than only that it is wired in.
+    """
+
+    @staticmethod
+    async def _two_tenants_and_a_client(
+        factory: async_sessionmaker[AsyncSession],
+    ) -> str:
+        """Tenant A, tenant B, and one client row in A. Returns the client id."""
+        client_id = "client-in-tenant-a"
+        async with factory() as session:
+            for tenant_id in (TENANT_A, TENANT_B):
+                session.add(Tenant(id=tenant_id, slug=tenant_id, name=tenant_id))
+            # Flushed before the client is added: nothing declares a
+            # relationship between the two mappers, so the unit of work has no
+            # dependency to sort them by and is free to insert the child first.
+            await session.flush()
+            session.add(
+                Client(
+                    id=client_id,
+                    tenant_id=TENANT_A,
+                    matrix_user_id=f"@{client_id}:localhost",
+                    display_name="a client",
+                    type="agent",
+                )
+            )
+            await session.commit()
+        return client_id
+
+    async def test_a_plain_session_hands_back_the_other_tenants_row(
+        self, single_connection_session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """The defect, stated as a passing test so the fix has something to be
+        a fix of. A session built without `TenantCheckedSession` answers the
+        second `get` from the identity map: no statement reaches Postgres, so
+        the policy never sees it, and tenant B is handed tenant A's row."""
+        client_id = await self._two_tenants_and_a_client(
+            single_connection_session_factory
+        )
+        engine = single_connection_session_factory.kw["bind"]
+        plain = async_sessionmaker(bind=engine, expire_on_commit=False)
+        async with plain() as session:
+            with tenant_scope(TENANT_A):
+                loaded = await session.get(Client, client_id)
+                assert loaded is not None
+                await session.commit()
+            with tenant_scope(TENANT_B):
+                leaked = await session.get(Client, client_id)
+        assert leaked is loaded
+        assert leaked is not None and leaked.tenant_id == TENANT_A
+
+    async def test_the_production_factory_refuses_it(
+        self, single_connection_session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        client_id = await self._two_tenants_and_a_client(
+            single_connection_session_factory
+        )
+        async with single_connection_session_factory() as session:
+            with tenant_scope(TENANT_A):
+                loaded = await session.get(Client, client_id)
+                assert loaded is not None
+                await session.commit()
+            with tenant_scope(TENANT_B):
+                with pytest.raises(
+                    tenant_session.CrossTenantIdentityMapError
+                ) as raised:
+                    await session.get(Client, client_id)
+        message = str(raised.value)
+        assert TENANT_A in message and TENANT_B in message
+
+    async def test_the_same_tenant_reading_its_own_row_is_untouched(
+        self, single_connection_session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """The check has to be silent on the shape every request actually
+        takes, or it is a false positive on the whole codebase."""
+        client_id = await self._two_tenants_and_a_client(
+            single_connection_session_factory
+        )
+        async with single_connection_session_factory() as session:
+            with tenant_scope(TENANT_A):
+                loaded = await session.get(Client, client_id)
+                assert loaded is not None
+                await session.commit()
+                again = await session.get(Client, client_id)
+                assert again is not None and again.tenant_id == TENANT_A
+
+    async def test_a_get_that_actually_queried_is_not_second_guessed(
+        self, single_connection_session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """The check must fire on the identity map and nowhere else.
+
+        This fixture connects as the container's superuser, whom Postgres
+        exempts from every policy — the same connection the whole unit suite
+        uses, and the same one every fan-out has to filter its own results on
+        (`db/tenant_lookup.py`). So a `get` that really goes to the database
+        can and does return another tenant's row here. Refusing that would
+        impose the policy's semantics on the owner connection, which this
+        design does not do anywhere else, and would break every test that
+        arranges a second tenant's fixture rows.
+
+        `expire_all` is what forces the round trip: the object is still in the
+        identity map, but its attributes are gone, so `get` has to reload it.
+        """
+        client_id = await self._two_tenants_and_a_client(
+            single_connection_session_factory
+        )
+        async with single_connection_session_factory() as session:
+            with tenant_scope(TENANT_A):
+                loaded = await session.get(Client, client_id)
+                assert loaded is not None
+                await session.commit()
+            session.expire_all()
+            with tenant_scope(TENANT_B):
+                fetched = await session.get(Client, client_id)
+        assert fetched is not None and fetched.tenant_id == TENANT_A
+
+    async def test_a_global_row_is_not_refused(
+        self, single_connection_session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """`users` carries no tenant and no policy — a person is global — so
+        there is nothing to compare and nothing to refuse. Reading one from
+        two tenants is the ordinary case, not a leak."""
+        async with single_connection_session_factory() as session:
+            for tenant_id in (TENANT_A, TENANT_B):
+                session.add(Tenant(id=tenant_id, slug=tenant_id, name=tenant_id))
+            session.add(
+                User(
+                    id="a-person",
+                    name="A Person",
+                    email="person@example.invalid",
+                    role="admin",
+                )
+            )
+            await session.commit()
+        async with single_connection_session_factory() as session:
+            with tenant_scope(TENANT_A):
+                assert await session.get(User, "a-person") is not None
+                await session.commit()
+            with tenant_scope(TENANT_B):
+                assert await session.get(User, "a-person") is not None

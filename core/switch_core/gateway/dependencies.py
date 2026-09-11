@@ -23,7 +23,6 @@ from switch_core.db.stores.external_user_store import ExternalUserStore
 from switch_core.db.stores.room_group_store import RoomGroupStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.server_connector_store import ServerConnectorStore
-from switch_core.db.stores.tenant_member_store import TenantMemberStore
 from switch_core.db.stores.user_store import UserStore
 from switch_core.room_service import RoomService
 from switch_core.rooms_yaml import RoomYamlService
@@ -47,7 +46,6 @@ def init_dependencies(
     user_store: UserStore,
     external_user_store: ExternalUserStore,
     api_key_store: ApiKeyStore,
-    tenant_member_store: TenantMemberStore,
     resource_service: ResourceService,
     protocol: ProtocolService,
     config: SwitchConfig,
@@ -66,7 +64,6 @@ def init_dependencies(
     _state["user_store"] = user_store
     _state["external_user_store"] = external_user_store
     _state["api_key_store"] = api_key_store
-    _state["tenant_member_store"] = tenant_member_store
     _state["resource_service"] = resource_service
     _state["protocol"] = protocol
     _state["config"] = config
@@ -110,8 +107,9 @@ async def get_system_session() -> AsyncIterator[AsyncSession]:
     reads as a deliberate, reviewable exception rather than an
     accidentally-unscoped session, and so the guard test above can hold for
     `get_session` without exemptions. Nothing about opening it differs from
-    `get_session` today, since row-level security is not enforced yet; the two
-    must stay interchangeable in behaviour only, never in name.
+    `get_session` today — it is the same session and the same hook, simply
+    with nothing bound around it — so the two must stay interchangeable in
+    behaviour only, never in name.
 
     "No tenant bound" is not the same as "writes land nowhere in particular":
     the OIDC callback provisions a user and picks its tenant explicitly (see
@@ -181,10 +179,6 @@ def get_external_user_store() -> ExternalUserStore:
 
 def get_api_key_store() -> ApiKeyStore:
     return _state["api_key_store"]  # type: ignore[no-any-return]
-
-
-def get_tenant_member_store() -> TenantMemberStore:
-    return _state["tenant_member_store"]  # type: ignore[no-any-return]
 
 
 def get_connector_lifecycle() -> ServerSideConnectorLifecycleService:

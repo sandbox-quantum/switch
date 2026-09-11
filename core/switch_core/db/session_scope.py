@@ -1,52 +1,55 @@
-"""The two ways background code may open a session, named so the call site
-says which one it means.
+"""How background code opens a session: bound to a tenant, and nothing else.
 
 Everything in a request already gets a tenant for free: `gateway/auth.py` and
 `bridges/agent/auth.py` bind one before the endpoint body runs, and the
 `after_begin` hook (`db/tenant_session.py`) stamps it on every transaction
 that session opens from then on, at any depth, with no call site to remember.
 
-Nothing does that for the 164 places that open a session from the factory
-directly with no request behind them — the delivery loop, the
-collaboration and server-connector lifecycle services, the startup seeding in
-`main.py`, the periodic sweeps. Each needs to say, at the point it opens a
-session, which of two things it is doing:
+`tenant_session` is that, for the 157 places that open a session from the
+factory with no request behind them — the delivery loop, the collaboration and
+server-connector lifecycle services, the startup seeding in `main.py`, the
+periodic sweeps. It binds a tenant for the life of one session, and the tenant
+is derived from the row the work is acting on: a message delivery binds the
+room's, an inbound bridge event binds the room's or the bridge's, one row out
+of a sweep binds its own. Never once per long-lived object, and never once per
+task — see `tenant_context.no_tenant` for the four ways that went wrong.
 
-- **`tenant_session`** binds a tenant for the life of one session, the same
-  way a request does. This is the answer for a unit of work that acts on one
-  row: a message delivery, an inbound bridge event, one bridge's startup, one
-  row out of a cross-tenant sweep. Derive the tenant from the row the work is
-  actually for — the room, the bridge, the connector — at the point the work
-  happens. Never once per long-lived object, and never once per task: see
-  `tenant_context.no_tenant` for why.
+**There was a second helper here, `unscoped_session`, and it is gone.** It
+opened a session with no tenant bound, for work that was legitimately
+cross-tenant: a boot enumeration, a sweep, a lookup whose job was to answer
+*which* tenant something was in. It read across every tenant, exactly as
+documented — but only because every environment connected to Postgres as the
+tables' owner, which Postgres exempts from their policies. Under the
+restricted runtime role an unscoped session is not a hatch at all: unscoped is
+precisely the state `require_tenant_id()` raises on, so every one of its
+seventeen call sites — the ones that went through this helper by name, which
+is not the same count as the exemption's full inventory; see
+`db/tenant_lookup.py` for the other two — either died at boot or silently
+read nothing. The whole model was inverted, and `db/tenant_lookup.py` is what
+replaced it: seven `SECURITY DEFINER` functions that answer *which tenant*
+and never return a row, so a cross-tenant question is asked in one place with
+a fixed shape, and the work it fans out into is scoped like everything else.
+That module states exactly what the exemption concedes and what it does not;
+it is a boundary on rows rather than on the shape of the deployment, and the
+difference is worth reading there rather than guessing at from here.
 
-- **`unscoped_session`** opens a session with **no tenant bound at all**, for
-  the duration of the block, whatever the caller had bound going in. It is
-  the fail-open hatch inside an otherwise fail-closed design, and it exists
-  for two shapes of work:
+What is left is the one helper. Two things still open a session with nothing
+bound, and neither is cross-tenant:
 
-  - reading every row before fanning out work per row — a sweep, a lifecycle
-    enumeration, startup seeding that runs before any tenant exists;
-  - a lookup whose whole job is to answer *which* tenant something is in, or
-    that is keyed by something globally unique and spans tenants by nature:
-    resolving a room from its transport id, or a client's rooms from its id.
-    Inheriting a caller's tenant here is not a smaller answer, it is a wrong
-    one.
+- `db/tenant_lookup.py` itself, which touches only its own exempt functions;
+- the reads of `users` and `oidc_identities` in `gateway/auth.py` and
+  `main.py`. Those tables carry no tenant and no policy — a person is not a
+  tenant member — so an unbound session is the honest way to read them and
+  there is nothing for a tenant to narrow.
 
-  The unbinding is the point, and it is why this is not a synonym for calling
-  the factory. A helper that merely *named* the intent while inheriting
-  whatever was ambient would have the hook stamp the caller's tenant onto the
-  transaction, and the cross-tenant read the call site asked for would
-  silently be a single-tenant one. Its callers are pinned to an explicit
-  allowlist by `tests/switch_core/db/test_unscoped_session_allowlist.py`,
-  which fails on a new one and says what to do about it. Reach for
-  `tenant_session` first.
+`tests/switch_core/db/test_tenant_exemption_allowlist.py` pins both surfaces:
+who may reach the exemption, and which modules may open a session straight
+from the factory at all.
 
-Both are thin: the tenant binding is a contextvar (`tenant_context.py`), and
-the `after_begin` hook is what actually turns it into `set_config` on the
-transaction. Opening a session through either helper does no I/O by itself,
-same as calling the factory directly — the hook only fires once a transaction
-begins, on that session's first query.
+The binding is a contextvar (`tenant_context.py`), and the `after_begin` hook
+is what turns it into `set_config` on the transaction. Opening a session does
+no I/O by itself — the hook only fires once a transaction begins, on that
+session's first query.
 """
 
 from __future__ import annotations
@@ -56,7 +59,7 @@ from contextlib import asynccontextmanager
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from switch_core.tenant_context import bind_tenant_id, no_tenant, unbind_tenant_id
+from switch_core.tenant_context import tenant_scope
 
 
 @asynccontextmanager
@@ -65,32 +68,16 @@ async def tenant_session(
 ) -> AsyncIterator[AsyncSession]:
     """Open a session bound to `tenant_id` for the life of the `async with` block.
 
-    Binds before the session is constructed and unbinds in a `finally`, so a
+    Binds before the session is constructed and unbinds on the way out, so a
     long-lived caller (a bridge's own task, say) cannot leak this tenant into
     whatever it does next even if the block raises.
+
+    Before the session is constructed matters more than it reads. The
+    `set_config` rides `after_begin`, so a `tenant_scope` entered *inside* an
+    already-open transaction changes nothing about that transaction — the
+    startup bootstrap seeding did exactly that and wrote a `tenant_members`
+    row on a connection that had never been told which tenant it was for.
     """
-    token = bind_tenant_id(tenant_id)
-    try:
-        async with session_factory() as session:
-            yield session
-    finally:
-        unbind_tenant_id(token)
-
-
-@asynccontextmanager
-async def unscoped_session(
-    session_factory: async_sessionmaker[AsyncSession],
-) -> AsyncIterator[AsyncSession]:
-    """Open a session with no tenant bound — the fail-open hatch.
-
-    Unbinds for the duration of the block and restores the caller's binding on
-    the way out, so a query issued here reads across every tenant *whether or
-    not* the caller had one bound. That is the whole contract: a call site
-    that says "unscoped" and then quietly ran scoped, because it was reached
-    from a request or from inside a `tenant_scope`, would be the worst
-    available outcome — an allowlist certifying a cross-tenant read that never
-    happened.
-    """
-    with no_tenant():
+    with tenant_scope(tenant_id):
         async with session_factory() as session:
             yield session

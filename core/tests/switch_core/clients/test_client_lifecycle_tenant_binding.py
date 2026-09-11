@@ -19,11 +19,13 @@ import asyncio
 import uuid
 from unittest.mock import MagicMock
 
+import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.clients.client_lifecycle_service import ClientLifecycleService
 from switch_core.db.models import Client, Tenant
 from switch_core.db.stores.client_store import ClientStore
+from switch_core.db.stores.tenant_store import TenantStore
 from switch_core.tenant_context import current_tenant_id, tenant_scope
 
 
@@ -49,6 +51,7 @@ def _service(
     return ClientLifecycleService(
         matrix_admin=MagicMock(),
         client_store=ClientStore(),
+        tenant_store=TenantStore(),
         client_factory=client_factory,  # type: ignore[arg-type]
         session_factory=session_factory,
         config=MagicMock(),
@@ -74,6 +77,7 @@ async def test_a_client_task_runs_with_no_tenant_bound(
     )
 
 
+@pytest.mark.no_ambient_tenant
 async def test_start_all_binds_nothing_around_starting_each_client(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:

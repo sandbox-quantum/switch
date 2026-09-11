@@ -21,12 +21,15 @@ from __future__ import annotations
 from types import SimpleNamespace
 from typing import Any
 
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
 from switch_core.bridges.agent.protocol.connections import (
     PROTOCOL_VERSION,
     ClientDeclaration,
     ConnectionRegistry,
 )
 from switch_core.bridges.agent.protocol.service import ProtocolService
+from switch_core.db.models import TENANT_ZERO_ID
 
 AGENT = "agent-1"
 ROOM = "room-1"
@@ -56,7 +59,9 @@ class _SessionStore:
 
 
 def _service(
-    registry: ConnectionRegistry, store: _RuntimeStateStore
+    session_factory: async_sessionmaker[AsyncSession],
+    registry: ConnectionRegistry,
+    store: _RuntimeStateStore,
 ) -> ProtocolService:
     svc = object.__new__(ProtocolService)
     svc.connections = registry
@@ -64,7 +69,10 @@ def _service(
     svc.agent_session_store = _SessionStore()  # type: ignore[assignment]
     svc.agent_store = SimpleNamespace(get=_an_agent)  # type: ignore[assignment]
     svc.room_store = SimpleNamespace(get=_a_room)  # type: ignore[assignment]
-    svc.session_factory = _session_factory  # type: ignore[assignment]
+    # The sweep now opens `all_tenant_ids()` and `tenant_session` against a
+    # real session, since those are real SQL — the fixture's Postgres, not a
+    # hand-rolled fake, is what makes that call answerable at all.
+    svc.session_factory = session_factory  # type: ignore[assignment]
     # The emit reaches Matrix and the bridge; the decision to clear is what is
     # under test, and `cleared` records it.
     svc._emit_runtime_state = _noop  # type: ignore[assignment]
@@ -79,17 +87,6 @@ async def _an_agent(*_a: Any, **_kw: Any) -> Any:
 
 async def _a_room(*_a: Any, **_kw: Any) -> Any:
     return SimpleNamespace(id=ROOM, matrix_room_id="!m:server", bridge_id=None)
-
-
-def _session_factory() -> Any:
-    class _Session:
-        async def __aenter__(self) -> Any:
-            return SimpleNamespace(commit=_noop)
-
-        async def __aexit__(self, *_a: Any) -> None:
-            return None
-
-    return _Session()
 
 
 async def _noop(*_a: Any, **_kw: Any) -> None:
@@ -113,32 +110,44 @@ def _connected(room: str | None) -> ConnectionRegistry:
 
 
 def _row() -> Any:
+    # Tenant zero, because that is the one tenant `all_tenant_ids()` actually
+    # finds in the fixture's database — the sweep now enumerates real tenants
+    # before it asks any store for a tenant's active rows, so the row handed
+    # back by the fake store has to name one that exists.
     return SimpleNamespace(
-        agent_id=AGENT, room_id=ROOM, state="working", tenant_id="tenant-1"
+        agent_id=AGENT, room_id=ROOM, state="working", tenant_id=TENANT_ZERO_ID
     )
 
 
-async def test_a_live_connection_in_the_room_is_left_alone() -> None:
+async def test_a_live_connection_in_the_room_is_left_alone(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
     store = _RuntimeStateStore([_row()])
 
-    await _service(_connected(ROOM), store).sweep_runtime_states()
+    await _service(session_factory, _connected(ROOM), store).sweep_runtime_states()
 
     assert store.cleared == []
 
 
-async def test_a_connection_in_another_room_does_not_protect_this_one() -> None:
+async def test_a_connection_in_another_room_does_not_protect_this_one(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
     # Otherwise any live session would freeze every room's status message.
     store = _RuntimeStateStore([_row()])
 
-    await _service(_connected("other-room"), store).sweep_runtime_states()
+    await _service(
+        session_factory, _connected("other-room"), store
+    ).sweep_runtime_states()
 
     assert store.cleared == [(AGENT, ROOM)]
 
 
-async def test_with_nothing_live_the_sweep_still_clears() -> None:
+async def test_with_nothing_live_the_sweep_still_clears(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
     """The sweep's whole purpose: a crashed session must not stay 'working'."""
     store = _RuntimeStateStore([_row()])
 
-    await _service(ConnectionRegistry(), store).sweep_runtime_states()
+    await _service(session_factory, ConnectionRegistry(), store).sweep_runtime_states()
 
     assert store.cleared == [(AGENT, ROOM)]

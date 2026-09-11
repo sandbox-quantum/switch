@@ -37,7 +37,7 @@ spec:
               protocol: TCP
           env:
             - name: POSTGRES_USER
-              value: postgres
+              value: {{ include "switch.postgresSuperUser" . | quote }}
             - name: POSTGRES_PASSWORD
               valueFrom:
                 secretKeyRef:

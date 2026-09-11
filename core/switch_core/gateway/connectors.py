@@ -142,5 +142,11 @@ async def delete_connector(
             status_code=403, detail="Not authorized to delete this connector"
         )
 
-    await connector_lifecycle.remove(connector_id)
+    try:
+        await connector_lifecycle.remove(connector_id)
+    except ValueError as exc:
+        # Deleted between the read above and the removal. `remove` refuses to
+        # report a removal it did not perform, so the race surfaces as the
+        # same 404 the read would have given a moment earlier.
+        raise HTTPException(status_code=404, detail="Connector not found") from exc
     return {"ok": True}

@@ -6,8 +6,12 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from switch_core.db.models import TENANT_ZERO_ID, OidcIdentity, TenantMember, User
-from switch_core.tenant_context import current_tenant_id
+from switch_core.db.models import (
+    OidcIdentity,
+    TenantMember,
+    User,
+    require_tenant_id,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -55,38 +59,56 @@ class UserStore:
         """
         session.add(user)
         await session.flush()
-        await self._ensure_membership(session, user)
+        await self.ensure_membership(session, user)
 
-    async def _ensure_membership(self, session: AsyncSession, user: User) -> None:
+    async def ensure_membership(self, session: AsyncSession, user: User) -> bool:
         """Give `user` a membership if they have none; leave any they have.
 
-        Called from every path that can produce a user who would otherwise
-        have zero: creation, and linking an identity to an account that
-        predates memberships existing. Idempotent because the link path runs
-        against accounts that usually already have one, and adding a second
-        would be worse than adding none — resolution refuses to pick between
-        two.
+        Returns whether one was written, so a repair path can say it repaired
+        something instead of logging on every boot.
+
+        Called from every path that can produce, or inherit, a user who would
+        otherwise have zero: creation, linking an identity to an account that
+        predates memberships existing, and the startup admin seeding
+        (`main.py`), which reaches accounts none of the others do. Idempotent
+        because most of those run against accounts that already have one, and
+        adding a second would be worse than adding none — resolution refuses
+        to pick between two.
+
+        Public for the sake of that last caller. An account with no membership
+        cannot sign in at all (`gateway/auth.py` answers 403), and until this
+        was reachable from seeding, the only thing that ever repaired one was
+        an OIDC login — so a password-only account in that state had no remedy
+        inside the product and needed direct SQL.
 
         Joins the tenant bound to the caller's context, so an admin creating a
-        user joins them to their own tenant; falls back to tenant zero for the
-        callers with no tenant bound (startup and bootstrap seeding) — the
-        only tenant Phase 1 has anyway. The role mirrors the migration's own
-        mapping for pre-existing users: `owner` for the global admin role,
-        `member` otherwise.
+        user joins them to their own tenant. There is no fallback: `tenant_id`
+        is not nullable and nothing else in this schema fills it in, so an
+        unbound caller would otherwise get whichever tenant this function
+        happened to name — the same silent write into a real tenant that
+        `require_tenant_id` exists to refuse, and this is the one scoped write
+        the model default cannot cover because `TenantMember` is addressed by
+        its whole primary key. The seeding paths that legitimately run with
+        nothing bound name tenant zero themselves (`main.py`,
+        `gateway/oidc_routes.py`).
+
+        The role mirrors the migration's own mapping for pre-existing users:
+        `owner` for the global admin role, `member` otherwise.
         """
         existing = await session.execute(
             select(TenantMember.tenant_id).where(TenantMember.user_id == user.id)
         )
         if existing.first() is not None:
-            return
+            return False
         session.add(
             TenantMember(
-                tenant_id=current_tenant_id() or TENANT_ZERO_ID,
+                tenant_id=require_tenant_id(),
                 user_id=user.id,
                 role="owner" if user.role == "admin" else "member",
             )
         )
         await session.flush()
+        return True
 
     async def get(self, session: AsyncSession, user_id: str) -> User | None:
         return await session.get(User, user_id)
@@ -267,9 +289,10 @@ class UserStore:
             "Linking OIDC identity (iss=%r, sub=%r) to user %s", iss, sub, user.id
         )
         # Linking reaches accounts this store did not create, including any
-        # that predate memberships. Nothing else repairs an account with none,
-        # and the symptom would be that the person can never sign in again.
-        await self._ensure_membership(session, user)
+        # that predate memberships — and an account with none can never sign
+        # in again. The startup admin seeding repairs the deployment's own
+        # admin; this repairs anyone else who signs in through an IdP.
+        await self.ensure_membership(session, user)
 
     async def get_all(self, session: AsyncSession) -> list[User]:
         result = await session.execute(select(User))

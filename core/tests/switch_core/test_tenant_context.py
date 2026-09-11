@@ -4,7 +4,13 @@ that reads or writes it for a real request."""
 from __future__ import annotations
 
 import asyncio
+import contextvars
+from collections.abc import Coroutine, Generator
+from typing import Any
 
+import pytest
+
+from switch_core.logging_context import bind_log_context, unbind_log_context
 from switch_core.tenant_context import (
     bind_tenant_id,
     clear_tenant_id,
@@ -13,6 +19,14 @@ from switch_core.tenant_context import (
     tenant_scope,
     unbind_tenant_id,
 )
+
+
+class _Suspend:
+    """An await that suspends once, so a coroutine can be left mid-scope with
+    no event loop in sight."""
+
+    def __await__(self) -> Generator[None, None, None]:
+        yield
 
 
 class TestBindAndUnbind:
@@ -113,3 +127,71 @@ class TestNoTenant:
             assert current_tenant_id() is None
             unbind_tenant_id(token)
             assert current_tenant_id() == "tenant-a"
+
+
+class TestFinalisationInAnotherContext:
+    """A dropped coroutine is closed by the garbage collector, and the
+    collector runs the frame's `finally` in whatever context it is in rather
+    than the task's. A scope that reset its token there would either raise
+    (`Token.reset` refuses to cross contexts) or, worse, write its tenant into
+    a context that never asked for one."""
+
+    @staticmethod
+    def _drive_then_finalise_elsewhere(coro: Coroutine[Any, Any, None]) -> None:
+        """Enter the scope inside its own context, then close from this one."""
+        contextvars.copy_context().run(coro.send, None)
+        coro.close()
+
+    def test_no_tenant_survives_being_closed_from_another_context(self) -> None:
+        async def body() -> None:
+            with no_tenant():
+                await _Suspend()
+
+        with tenant_scope("caller"):
+            self._drive_then_finalise_elsewhere(body())
+            assert current_tenant_id() == "caller"
+
+    def test_tenant_scope_survives_being_closed_from_another_context(self) -> None:
+        async def body() -> None:
+            with tenant_scope("the-task-s-tenant"):
+                await _Suspend()
+
+        self._drive_then_finalise_elsewhere(body())
+        assert current_tenant_id() is None, (
+            "finalising a dropped coroutine leaked its tenant into the "
+            "collector's context"
+        )
+
+    @pytest.mark.xfail(
+        strict=True,
+        reason=(
+            "tenant_scope alone does not cover this shape yet. "
+            "gateway/auth.py and bridges/agent/auth.py bind a log context "
+            "with the raw bind_log_context/unbind_log_context pair inside "
+            "the tenant scope; unbind_log_context has the same unguarded "
+            "Token.reset and raises first on finalisation, turning the "
+            "GeneratorExit into a ValueError before tenant_scope's own "
+            "guard ever sees one — so it resets its own token from the "
+            "wrong context too, and the crash this ticket set out to close "
+            "still reaches both call sites. Closing it needs "
+            "logging_context.unbind_log_context to get the same guard "
+            "tenant_context._held gives bind_tenant_id/unbind_tenant_id, "
+            "tracked separately. Delete this test (or flip the assertion) "
+            "once that lands."
+        ),
+    )
+    def test_the_request_auth_shape_survives_too(self) -> None:
+        """The shape `gateway/auth.py` and `bridges/agent/auth.py` bind: a
+        tenant scope wrapping a log context, torn down together when the
+        request that opened them is dropped rather than resumed."""
+
+        async def body() -> None:
+            with tenant_scope("the-request-s-tenant"):
+                log_token = bind_log_context(tenant_id="the-request-s-tenant")
+                try:
+                    await _Suspend()
+                finally:
+                    unbind_log_context(log_token)
+
+        self._drive_then_finalise_elsewhere(body())
+        assert current_tenant_id() is None
