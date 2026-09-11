@@ -12,6 +12,7 @@ from pathlib import Path
 
 import sqlalchemy as sa
 from alembic import op
+from sqlalchemy.dialects.postgresql import JSONB
 
 revision: str = "03463c958b95"
 down_revision: str | None = "b47e0c39a1f5"
@@ -36,7 +37,7 @@ def upgrade() -> None:
         sa.Column("definition", sa.Text(), nullable=False),
         sa.Column("creator", sa.Text(), nullable=False),
         sa.Column("repo_url", sa.Text(), nullable=True),
-        sa.Column("sources", sa.JSON(), nullable=True),
+        sa.Column("sources", JSONB(), nullable=True),
         sa.Column(
             "is_bundled",
             sa.Boolean(),
