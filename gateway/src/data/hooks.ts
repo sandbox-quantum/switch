@@ -22,6 +22,7 @@ import {
   type RoomDetail,
   type RoomGroupDetail,
   type RoomSummary,
+  type TemplateSummary,
   type UserInfo,
   fetchAgent,
   fetchAgents,
@@ -54,6 +55,7 @@ import {
   fetchRoomPackages,
   fetchRoomReferences,
   fetchRooms,
+  fetchTemplates,
   fetchUsers,
 } from "./api";
 
@@ -319,4 +321,8 @@ export function usePackageDocuments(
     [packageId],
   );
   return useQuery(fetcher);
+}
+
+export function useTemplates(): UseQueryResult<TemplateSummary[]> {
+  return useQuery(fetchTemplates);
 }

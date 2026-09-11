@@ -169,6 +169,11 @@ class SwitchConfig(BaseSettings):
     # of being truncated or silently dropped.
     agent_media_max_bytes: int = 20 * 1024 * 1024
 
+    # Upper bound on a template document uploaded to the registry. The column
+    # itself is unbounded, so raising this is a deploy-time change and never a
+    # migration. Oversize uploads are refused rather than truncated.
+    template_max_bytes: int = 1024 * 1024
+
     # Every authenticated agent request resolves its bearer token against the
     # database before the handler runs, and each live agent connection beats
     # every 2s, so the pool is sized against connection count rather than
@@ -271,6 +276,10 @@ class SwitchConfig(BaseSettings):
                 )
         if not self.tenant_id.strip():
             raise ValueError("TENANT_ID must not be empty.")
+        if self.template_max_bytes < 1:
+            raise ValueError(
+                f"TEMPLATE_MAX_BYTES must be at least 1, got {self.template_max_bytes}."
+            )
         return self
 
     @model_validator(mode="after")

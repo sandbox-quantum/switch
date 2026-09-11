@@ -9,29 +9,30 @@ import CreateReferenceTypeDialog from "./CreateReferenceTypeDialog";
 import DocumentsTab from "./DocumentsTab";
 import PackagesTab from "./PackagesTab";
 import ReferencesTab from "./ReferencesTab";
+import CreateTemplateDialog from "./CreateTemplateDialog";
 import ReferenceTypesTab from "./ReferenceTypesTab";
+import TemplatesTab from "./TemplatesTab";
 
-type ResourceTab = "references" | "types" | "documents" | "packages";
+// One list drives the tab bar, the URL parameter, the type and the create
+// button's label. They belong together: a tab listed in one and missed in
+// another renders a body nothing can navigate to, which compiles cleanly and
+// is invisible until someone goes looking for the tab.
+const TABS = [
+  { value: "references", label: "References", newLabel: "New reference" },
+  { value: "types", label: "Reference types", newLabel: "New reference type" },
+  { value: "documents", label: "Documents", newLabel: "New document" },
+  { value: "packages", label: "Packages", newLabel: "New package" },
+  { value: "templates", label: "Templates", newLabel: "Upload template" },
+] as const;
 
-const NEW_LABELS: Record<ResourceTab, string> = {
-  references: "New reference",
-  types: "New reference type",
-  documents: "New document",
-  packages: "New package",
-};
+type ResourceTab = (typeof TABS)[number]["value"];
 
 export default function ResourcesPage() {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const tabParam = searchParams.get("tab");
-  const tab: ResourceTab =
-    tabParam === "documents"
-      ? "documents"
-      : tabParam === "packages"
-        ? "packages"
-        : tabParam === "types"
-          ? "types"
-          : "references";
+  const active = TABS.find((t) => t.value === tabParam) ?? TABS[0];
+  const tab: ResourceTab = active.value;
   const [createOpen, setCreateOpen] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
 
@@ -59,12 +60,16 @@ export default function ResourcesPage() {
     navigate(`/resources/packages/${id}`);
   };
 
+  const handleTemplateCreated = (id: string) => {
+    setCreateOpen(false);
+    setRefreshKey((k) => k + 1);
+    navigate(`/resources/templates/${id}`);
+  };
+
   const handleReferenceTypeCreated = () => {
     setCreateOpen(false);
     setRefreshKey((k) => k + 1);
   };
-
-  const newLabel = NEW_LABELS[tab];
 
   return (
     <Box sx={{ display: "flex", flexDirection: "column", flexGrow: 1, minHeight: 0 }}>
@@ -75,7 +80,7 @@ export default function ResourcesPage() {
           startIcon={<AddIcon />}
           onClick={() => setCreateOpen(true)}
         >
-          {newLabel}
+          {active.newLabel}
         </Button>
       </Stack>
 
@@ -84,10 +89,9 @@ export default function ResourcesPage() {
         onChange={(_, v) => setTab(v as ResourceTab)}
         sx={{ mb: 2, borderBottom: 1, borderColor: "divider" }}
       >
-        <Tab label="References" value="references" />
-        <Tab label="Reference types" value="types" />
-        <Tab label="Documents" value="documents" />
-        <Tab label="Packages" value="packages" />
+        {TABS.map((t) => (
+          <Tab key={t.value} label={t.label} value={t.value} />
+        ))}
       </Tabs>
 
       <Box sx={{ display: "flex", flexDirection: "column", flexGrow: 1, minHeight: 0 }}>
@@ -95,6 +99,7 @@ export default function ResourcesPage() {
         {tab === "types" && <ReferenceTypesTab refreshKey={refreshKey} />}
         {tab === "documents" && <DocumentsTab refreshKey={refreshKey} />}
         {tab === "packages" && <PackagesTab refreshKey={refreshKey} />}
+        {tab === "templates" && <TemplatesTab refreshKey={refreshKey} />}
       </Box>
 
       {tab === "references" && (
@@ -123,6 +128,13 @@ export default function ResourcesPage() {
           open={createOpen}
           onClose={() => setCreateOpen(false)}
           onCreated={handlePackageCreated}
+        />
+      )}
+      {tab === "templates" && (
+        <CreateTemplateDialog
+          open={createOpen}
+          onClose={() => setCreateOpen(false)}
+          onCreated={handleTemplateCreated}
         />
       )}
     </Box>
