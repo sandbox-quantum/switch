@@ -12,6 +12,8 @@ export type BundledTemplate = {
   kind: string;
   creator: string;
   definition: string;
+  repoUrl: string | null;
+  sources: Array<{ url: string; label: string }> | null;
 };
 
 export const bundledTemplates: BundledTemplate[] = [
@@ -23,5 +25,11 @@ export const bundledTemplates: BundledTemplate[] = [
     kind: 'agent',
     creator: 'Switch',
     definition: switchExpertInstructions,
+    repoUrl: 'https://github.com/sandbox-quantum/switch',
+    sources: [
+      { url: 'https://docs.flintai.dev', label: 'Switch documentation' },
+      { url: 'https://docs.flintai.dev/getting-started', label: 'Getting started guide' },
+      { url: 'https://docs.flintai.dev/working-in-switch', label: 'Working in Switch' },
+    ],
   },
 ];
