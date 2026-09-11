@@ -72,6 +72,8 @@ export type AddLocationModalProps = BaseModalProps<void> & {
   entryPoint: UiEntryPoint;
   /** When set, the modal pre-fills identity fields from this template. */
   template?: AgentTemplateData | null;
+  /** When set, pre-fills the agent name (e.g. from a room template slot). */
+  prefillName?: string | null;
 };
 
 /** Sentinel `runHost` value meaning "run on this machine" (no remote host). */
@@ -90,6 +92,7 @@ export const AddAgentModal = observer(function AddAgentModal({
   onClose,
   entryPoint,
   template,
+  prefillName,
 }: AddLocationModalProps) {
   const [submitState, setSubmitState] = useState<'idle' | 'creating'>('idle');
   const { navigate } = useNavigate();
@@ -99,15 +102,20 @@ export const AddAgentModal = observer(function AddAgentModal({
   const pickState = usePickMode();
   const form = useConfigureAgentForm();
 
-  // Pre-fill form from a template (once, on mount).
+  // Pre-fill form from a template or a prefilled name (once, on mount).
   const [templateApplied, setTemplateApplied] = useState(false);
   useEffect(() => {
-    if (template && !templateApplied) {
+    if (templateApplied) return;
+    if (template) {
       form.setDescription(template.description);
       form.setInstructions(template.instructions);
       setTemplateApplied(true);
     }
-  }, [template, templateApplied, form]);
+    if (prefillName) {
+      form.setAgentName(prefillName);
+      setTemplateApplied(true);
+    }
+  }, [template, prefillName, templateApplied, form]);
 
   // Run location: 'local' (default) or an onboarded remote host's SSH alias. A
   // remote agent runs its sessions on the host and needs a remote working dir.
