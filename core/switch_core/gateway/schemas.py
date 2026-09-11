@@ -1067,3 +1067,24 @@ class TemplateUpdateRequest(BaseModel):
 
 class TemplateDeleteResponse(BaseModel):
     deleted_id: str
+
+
+class TemplateValidateRequest(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    content: str
+
+
+class TemplateFinding(BaseModel):
+    code: str
+    message: str
+    subject: str | None = None
+
+
+class TemplateValidateResponse(BaseModel):
+    """Advisory only. An upload with errors is still an upload the registry
+    will accept — this says what a person would want to fix first."""
+
+    ok: bool
+    errors: list[TemplateFinding]
+    warnings: list[TemplateFinding]

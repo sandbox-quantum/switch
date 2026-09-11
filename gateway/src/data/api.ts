@@ -1569,3 +1569,28 @@ export async function fetchTemplateContent(id: string): Promise<string> {
   }
   return res.text();
 }
+
+export interface TemplateFinding {
+  code: string;
+  message: string;
+  subject: string | null;
+}
+
+export interface TemplateValidation {
+  ok: boolean;
+  errors: TemplateFinding[];
+  warnings: TemplateFinding[];
+}
+
+/**
+ * Check a document without storing it. Advisory: the registry accepts an
+ * upload whatever this says, so a caller shows the findings rather than
+ * gating on them.
+ */
+export async function validateTemplate(
+  content: string,
+): Promise<TemplateValidation> {
+  return jsonRequest<TemplateValidation>("/templates/validate", "POST", {
+    content,
+  });
+}

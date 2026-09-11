@@ -12,7 +12,9 @@ import {
 } from "@mui/material";
 import { useRef, useState } from "react";
 import { createTemplate } from "../../data/api";
+import TemplateFindings from "./TemplateFindings";
 import { MAX_DOCUMENT_BYTES, formatBytes } from "./templateFormat";
+import { useTemplateValidation } from "./useTemplateValidation";
 
 interface Props {
   open: boolean;
@@ -32,6 +34,9 @@ export default function CreateTemplateDialog({
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
+  const { result: validation, checking } = useTemplateValidation(content, {
+    enabled: open,
+  });
 
   const reset = () => {
     setName("");
@@ -152,6 +157,7 @@ export default function CreateTemplateDialog({
             slotProps={{ input: { sx: { fontFamily: "monospace" } } }}
             helperText="Stored exactly as written. The registry does not parse it."
           />
+          <TemplateFindings result={validation} checking={checking} />
           {error && <Alert severity="error">{error}</Alert>}
         </Stack>
       </DialogContent>
