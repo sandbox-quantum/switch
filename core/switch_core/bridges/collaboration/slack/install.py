@@ -125,6 +125,7 @@ class SlackAppInstaller(MessagingAppInstaller):
 
         return InstallGrant(
             external_workspace_id=workspace_id,
+            workspace_name=team.get("name") or workspace_id,
             bot_token=access_token,
             scopes=response.get("scope") or "",
         )
@@ -150,4 +151,9 @@ class SlackAppInstaller(MessagingAppInstaller):
         return {
             "bot_token": grant.bot_token,
             "workspace_id": grant.external_workspace_id,
+            # Not a detail of this rendering: it is the difference between the
+            # two apps. Left out, the config validates as a Socket Mode bridge
+            # missing its app token, and the install fails at registration
+            # rather than at anything a reader would look at.
+            "event_delivery": "webhook",
         }

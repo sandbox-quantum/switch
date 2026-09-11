@@ -8,6 +8,9 @@ from switch_core.bridges.agent.protocol.service import ProtocolService
 from switch_core.bridges.agent.server_connectors.lifecycle import (
     ServerSideConnectorLifecycleService,
 )
+from switch_core.bridges.collaboration.install_service import (
+    MessagingInstallService,
+)
 from switch_core.bridges.collaboration.lifecycle_service import (
     CollaborationBridgeLifecycleService,
 )
@@ -32,6 +35,9 @@ from switch_core.gateway.connectors import router as connectors_router
 from switch_core.gateway.dependencies import init_dependencies
 from switch_core.gateway.documents import router as documents_router
 from switch_core.gateway.ecosystem import router as ecosystem_router
+from switch_core.gateway.messaging_installs import (
+    router as messaging_installs_router,
+)
 from switch_core.gateway.oidc_routes import register_oidc_client
 from switch_core.gateway.oidc_routes import router as oidc_router
 from switch_core.gateway.packages import router as packages_router
@@ -64,6 +70,7 @@ def create_gateway_app(
     template_store: TemplateStore,
     resource_service: ResourceService,
     protocol: ProtocolService,
+    install_service: MessagingInstallService | None,
     config: SwitchConfig,
 ) -> FastAPI:
     init_dependencies(
@@ -85,6 +92,7 @@ def create_gateway_app(
         template_store=template_store,
         resource_service=resource_service,
         protocol=protocol,
+        install_service=install_service,
         config=config,
     )
 
@@ -120,5 +128,10 @@ def create_gateway_app(
     app.include_router(packages_router, tags=["packages"])
     app.include_router(templates_router, tags=["templates"])
     app.include_router(ecosystem_router, prefix="/ecosystem", tags=["ecosystem"])
+    app.include_router(
+        messaging_installs_router,
+        prefix="/messaging-apps",
+        tags=["messaging-apps"],
+    )
 
     return app

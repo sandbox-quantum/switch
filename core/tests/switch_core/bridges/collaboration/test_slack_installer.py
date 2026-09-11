@@ -157,7 +157,7 @@ class TestRedeem:
         monkeypatch.setattr(AsyncWebClient, "oauth_v2_access", fake)
         return await installer.redeem(code="c", redirect_uri="https://x.example/cb")
 
-    async def test_a_good_grant_becomes_the_three_things_we_keep(
+    async def test_a_good_grant_becomes_the_few_things_we_keep(
         self, installer: SlackAppInstaller, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         grant = await self._redeem_returning(
@@ -172,9 +172,26 @@ class TestRedeem:
         )
         assert grant == InstallGrant(
             external_workspace_id="T123",
+            workspace_name="Acme",
             bot_token="xoxb-granted",
             scopes="chat:write,commands",
         )
+
+    async def test_a_workspace_with_no_name_falls_back_to_its_id(
+        self, installer: SlackAppInstaller, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The name is only ever a label, so its absence is not a failure."""
+        grant = await self._redeem_returning(
+            monkeypatch,
+            installer,
+            {
+                "ok": True,
+                "access_token": "xoxb-granted",
+                "scope": "chat:write",
+                "team": {"id": "T123"},
+            },
+        )
+        assert grant.workspace_name == "T123"
 
     async def test_a_two_hundred_saying_not_ok_is_still_a_failure(
         self, installer: SlackAppInstaller, monkeypatch: pytest.MonkeyPatch
@@ -215,19 +232,24 @@ class TestConnectionConfig:
     def test_a_grant_renders_a_config_the_adapter_accepts(
         self, installer: SlackAppInstaller
     ) -> None:
-        """The seam: after this an installed bridge is an ordinary bridge."""
+        """The seam: after this an installed bridge is an ordinary bridge.
+
+        Validated as-is, with nothing added. What the installer renders is what
+        `register` is handed, so a rendering that only validates once the test
+        has helped it along is a registration that fails in production.
+        """
         rendered = installer.connection_config(
             InstallGrant(
                 external_workspace_id="T123",
+                workspace_name="Acme",
                 bot_token="xoxb-granted",
                 scopes="chat:write",
             )
         )
-        config = SlackConnectionConfig.model_validate(
-            {**rendered, "event_delivery": "webhook"}
-        )
+        config = SlackConnectionConfig.model_validate(rendered)
         assert config.bot_token == "xoxb-granted"
         assert config.workspace_id == "T123"
+        assert config.event_delivery == "webhook"
         assert config.app_token is None
 
 
