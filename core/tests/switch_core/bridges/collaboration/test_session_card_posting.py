@@ -578,18 +578,19 @@ async def test_the_trigger_posts_the_recorded_turn_and_then_its_card(
 
     assert await demo.handle(TRIGGER, CHANNEL, room_id) is True
 
-    assert len(client.posted) == 2
-    turn, card = (json.dumps(post["blocks"]) for post in client.posted)
-    assert "same fixture user" in turn
-    assert "Ran tests/auth/test_login.py" in turn
+    assert len(client.posted) == 3
+    turn, log, card = (json.dumps(post["blocks"]) for post in client.posted)
+    assert "Working" in turn
+    assert "same fixture user" not in turn
+    assert "Ran tests/auth/test_login.py" in log
     assert "Edit tests/auth/conftest.py?" in card
-    assert [post.get("thread_ts") for post in client.posted] == [None, None]
+    assert [post.get("thread_ts") for post in client.posted] == [None, None, None]
 
 
 async def test_running_the_recording_to_the_end_edits_what_is_already_there(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
-    """Two messages, four states between them, and nothing posted twice.
+    """Separate status, tool log, and request messages are edited in place.
 
     The variant exists to make the anchor visible in a real channel: without
     it, a turn only ever gets one publish and nothing shows that the second
@@ -600,7 +601,7 @@ async def test_running_the_recording_to_the_end_edits_what_is_already_there(
 
     assert await demo.handle(f"{TRIGGER} end", CHANNEL, room_id) is True
 
-    assert len(client.posted) == 2
+    assert len(client.posted) == 3
     turn, card = (
         json.dumps(call["blocks"], ensure_ascii=False) for call in client.updated
     )
@@ -649,7 +650,7 @@ async def test_ending_a_channel_with_no_demo_in_it_runs_one_through(
 
     assert await demo.handle(f"{TRIGGER} end", CHANNEL, room_id) is True
 
-    assert len(client.posted) == 2
+    assert len(client.posted) == 3
     assert "Permission request closed" in json.dumps(
         client.updated[1]["blocks"], ensure_ascii=False
     )
@@ -672,7 +673,7 @@ async def test_a_demo_can_only_be_ended_once(
     posted = len(client.posted)
     await demo.handle(f"{TRIGGER} end", CHANNEL, room_id)
 
-    assert len(client.posted) == posted + 2
+    assert len(client.posted) == posted + 3
 
 
 async def test_each_channel_ends_its_own_demo(
@@ -712,7 +713,7 @@ async def test_the_trigger_is_case_insensitive_and_forgives_spacing(
 
     assert await demo.handle(f"  {TRIGGER.upper()} ", CHANNEL, room_id)
 
-    assert len(client.posted) == 2
+    assert len(client.posted) == 3
 
 
 async def test_the_demo_can_be_shown_more_than_once(

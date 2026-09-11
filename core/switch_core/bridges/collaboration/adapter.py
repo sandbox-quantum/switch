@@ -128,6 +128,8 @@ class TurnActivity:
     items: list[Item]
     turn: TurnUpsert
     elapsed_seconds: float | None = None
+    tool_log: bool = False
+    status_only: bool = False
 
 
 @dataclass(frozen=True)

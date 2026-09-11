@@ -95,6 +95,9 @@ class _Anchor:
     message_ref: str
     thread_root_id: str | None
     reaction_ref: str | None
+    agent_name: str = ""
+    log_ref: str | None = None
+    log_state: tuple[tuple[str, int], ...] | None = None
 
 
 def _violates(error: IntegrityError, constraint: str) -> bool:
@@ -129,42 +132,18 @@ class CardAlreadyPosted(CardNotPosted):
 
 
 class SessionTurnActivity:
-    """A turn's work, shown in a channel and kept in step as it runs.
+    """Publish SDK activity without exposing internal assistant narration.
 
-    One message per turn, because a turn is a report and reposting one is a
-    running commentary: a reader scrolling a channel would find six versions
-    of the same turn and no way to tell which is current. The message is the
-    anchor every later change goes to via `post_rich` / `update_rich`,
-    rewritten whole on every change — a Block Kit message with the tool calls
-    as the cards of a `plan` block on Slack, the neutral turn summary
-    anywhere else — and the last change is the turn's final state.
+    Slack keeps the live status separate from the collapsible tool log.
+    When the turn ends, the log becomes the summary and the status is removed.
 
-    Always in a thread, never at the channel root: a turn already addressed
-    inside a thread stays there, and one addressed at the channel root now
-    threads under that same triggering message rather than posting beside it
-    — the caller resolves which before this ever sees it (`refresh_activity`).
-    On Slack, whichever message ends up as that thread's root gets a `:eyes:`
-    reaction for as long as the turn runs, the same signal the old
-    runtime-state indicator put on a message being handled — added once the
-    turn's own message first posts, taken off once the turn ends. Best
-    effort and Slack-only: a reaction is not on the port, and losing one is
-    not worth failing a turn's own draw over.
-
-    Still not a card, which is the difference in how failure is handled here. A
-    card has buttons, so one left showing a stale state invites a press that
-    cannot land and has to be raised about; a turn is read, so a failed edit is
-    logged and the next one tries the same anchor again.
-
-    **The anchors are held in memory, and that is this slice's boundary.** They
-    live as long as the process does, so a bridge restarted mid-turn reposts
-    the turn instead of editing it — one duplicate in the channel, visible, and
-    not silence. Making them durable is the publisher's work in the server-side
-    branch, which has a record with a sweep behind it; there is nothing here
-    for it to migrate, only a store to hand in.
+    Message anchors are process-local. A bridge restart can repost
+    activity; durable recovery remains a separate follow-up.
     """
 
     def __init__(self, adapter: CollaborationAdapter) -> None:
         self._adapter = adapter
+        self._slack_activity = isinstance(adapter, SlackAdapter)
         self._anchors: OrderedDict[tuple[str, str], _Anchor] = OrderedDict()
         self._thread_turns: dict[tuple[str, str], set[tuple[str, str]]] = {}
 
@@ -199,15 +178,9 @@ class SessionTurnActivity:
         `False` on any refusal along the way, so it knows not to treat a
         refusal as the turn's current state having been shown.
 
-        The anchor is dropped once the turn has ended, because nothing more is
-        coming for it — including when the last edit is the one that failed,
-        which is the one case worth a different sentence in the log: what is
-        left in the channel then says the turn is still running, and no later
-        call from this process will correct it. A caller that retries on a
-        `False` return will still try again, and finding no anchor left will
-        post the turn's final state as a new message rather than editing the
-        old one — one visible duplicate, the same trade this class already
-        makes for a process restart.
+        Retain anchors until the final summary edit succeeds.
+        A failed final publication retries the same messages instead of posting
+        duplicate history. Process restarts still require durable recovery.
         """
         # The SDK transcript includes internal narration such as "Answered in
         # the room". Activity is a tool log; the actual reply is delivered separately.
@@ -243,8 +216,16 @@ class SessionTurnActivity:
                 elapsed_seconds=elapsed_seconds,
             )
 
+        if self._slack_activity and not ended:
+            drawn = await self._draw_log(anchor, items, turn) and drawn
         if ended:
+            if drawn and anchor.log_ref:
+                await self._adapter.delete_message(
+                    anchor.channel_id, anchor.message_ref
+                )
             await self._release_thread(key, anchor)
+            if not drawn:
+                self._anchors[key] = anchor
             return drawn
         self._anchors[key] = anchor
         await self._forget_the_oldest()
@@ -273,7 +254,13 @@ class SessionTurnActivity:
             posted = await self._adapter.post_rich(
                 channel_id,
                 agent_name,
-                TurnActivity(items, turn, elapsed_seconds),
+                TurnActivity(
+                    items,
+                    turn,
+                    elapsed_seconds,
+                    tool_log=self._slack_activity and turn.status in TURN_ENDED,
+                    status_only=self._slack_activity and turn.status not in TURN_ENDED,
+                ),
                 thread_root_id,
             )
         except RichContentFailed as error:
@@ -292,6 +279,9 @@ class SessionTurnActivity:
             message_ref=posted,
             thread_root_id=thread_root_id,
             reaction_ref=asked_on,
+            agent_name=agent_name,
+            log_state=tuple((item.item_id, item.revision) for item in items)
+            + ((turn.status, 0),),
         )
 
     async def _edit(
@@ -308,8 +298,14 @@ class SessionTurnActivity:
         try:
             await self._adapter.update_rich(
                 anchor.channel_id,
-                anchor.message_ref,
-                TurnActivity(items, turn, elapsed_seconds),
+                anchor.log_ref if ended and anchor.log_ref else anchor.message_ref,
+                TurnActivity(
+                    items,
+                    turn,
+                    elapsed_seconds,
+                    tool_log=self._slack_activity and turn.status in TURN_ENDED,
+                    status_only=self._slack_activity and turn.status not in TURN_ENDED,
+                ),
             )
         except RichContentFailed as error:
             logger.error(
@@ -325,6 +321,30 @@ class SessionTurnActivity:
                 else "The next change to the turn will try the same message.",
             )
             return False
+        return True
+
+    async def _draw_log(
+        self, anchor: _Anchor, items: list[Item], turn: TurnUpsert
+    ) -> bool:
+        if not items:
+            return True
+        state = tuple((item.item_id, item.revision) for item in items)
+        if state == anchor.log_state and anchor.log_ref:
+            return True
+        content = TurnActivity(items, turn, tool_log=True)
+        try:
+            if anchor.log_ref is None:
+                anchor.log_ref = await self._adapter.post_rich(
+                    anchor.channel_id, anchor.agent_name, content, anchor.thread_root_id
+                )
+            else:
+                await self._adapter.update_rich(
+                    anchor.channel_id, anchor.log_ref, content
+                )
+        except RichContentFailed:
+            logger.exception("Could not update tool log for turn %s", turn.turn_id)
+            return False
+        anchor.log_state = state
         return True
 
     async def _claim_thread(self, key: tuple[str, str], anchor: _Anchor) -> None:

@@ -138,9 +138,9 @@ async def test_a_turn_is_posted_once_and_edited_every_time_after() -> None:
     await _publish(activity, items.turn_activity(TURN), _turn("running"))
     await _publish(activity, items.turn_activity(TURN), _turn("completed"))
 
-    assert len(client.posted) == 1
-    assert len(client.updated) == 2
-    assert {call["ts"] for call in client.updated} == {"1.0"}
+    assert len(client.posted) == 2  # status and tool log
+    assert len(client.updated) == 2  # live status and combined final log
+    assert [call["ts"] for call in client.updated] == ["1.0", "2.0"]
 
 
 async def test_the_last_edit_is_the_state_the_turn_ended_in() -> None:
@@ -158,7 +158,7 @@ async def test_the_last_edit_is_the_state_the_turn_ended_in() -> None:
     await _publish(activity, stopped.turn_activity(TURN), _turn("interrupted"))
 
     assert "Working…" in _blocks(client.posted[0])
-    assert client.deleted == []
+    assert [call["ts"] for call in client.deleted] == ["1.0"]
     assert "Turn interrupted. 1 step left unfinished." in _blocks(client.updated[0])
 
 
@@ -487,5 +487,26 @@ async def test_internal_narration_is_not_published_in_activity_or_fallback() -> 
     await _publish(activity, [narration, tool], _turn("completed"), elapsed_seconds=25)
     for call in [*client.posted, *client.updated]:
         assert "Answered in the room" not in json.dumps(call)
-        assert "Read file" in _blocks(call)
-    assert "Worked for 25s" in _blocks(client.updated[-1])
+    assert "Read file" in _blocks(client.posted[1])
+    assert "Worked for 25s" in _blocks(client.updated[0])
+
+
+async def test_plan_log_is_not_redrawn_by_timer_and_preserves_tool_warnings() -> None:
+    client = FakeWebClient()
+    activity = SessionTurnActivity(_adapter(client))
+    tool = _item().model_copy(
+        update={"kind": "tool-activity", "title": "Read", "status": "in-progress"}
+    )
+    await _publish(activity, [tool], _turn("running"), elapsed_seconds=0)
+    assert client.posted[1]["blocks"][0]["type"] == "plan"
+    assert client.posted[1]["blocks"][0]["title"] == "1 tool call · Running: Read"
+    await _publish(activity, [tool], _turn("running"), elapsed_seconds=5)
+    assert [call["ts"] for call in client.updated] == ["1.0"]
+    failed = tool.model_copy(update={"revision": 2, "status": "failed"})
+    await _publish(activity, [failed], _turn("completed"), elapsed_seconds=10)
+    task = client.updated[-1]["blocks"][0]["tasks"][0]
+    assert client.updated[-1]["blocks"][0]["title"] == "Worked for 10s. 1 tool call."
+    assert task["status"] == "complete"
+    assert "Read" in task["title"] and task["title"] != "Read"
+    assert "Worked for 10s" in _blocks(client.updated[-1])
+    assert client.api_calls == []

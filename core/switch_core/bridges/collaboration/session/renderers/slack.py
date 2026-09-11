@@ -32,6 +32,7 @@ from typing import Any
 
 from switch_core.bridges.collaboration.slack.mrkdwn import escape_mrkdwn, plain_text
 from switch_core.sessions.contract import (
+    TURN_ENDED,
     ApprovalContent,
     ApprovalOption,
     ApprovalResult,
@@ -738,7 +739,12 @@ def _answered_questions(request: SnapshotRequest, content: QuestionsContent) -> 
 
 
 def render_activity(
-    items: list[Item], turn: TurnUpsert, *, elapsed_seconds: float | None = None
+    items: list[Item],
+    turn: TurnUpsert,
+    *,
+    elapsed_seconds: float | None = None,
+    tool_log: bool = False,
+    status_only: bool = False,
 ) -> SlackMessage:
     """One turn, as the channel sees it: what was said, over what was done.
 
@@ -775,6 +781,52 @@ def render_activity(
     back to the room it was typed in is only ever telling someone what they
     just said.
     """
+    if status_only:
+        state = turn_state(items, turn, elapsed_seconds=elapsed_seconds)
+        if turn.status not in TURN_ENDED:
+            return SlackMessage(
+                text=state,
+                blocks=[
+                    {
+                        "type": "task_card",
+                        "task_id": _task_id(turn.turn_id),
+                        "title": _fit(state, _MAX_PLAN_TASK_TITLE),
+                        "status": "in_progress",
+                    }
+                ],
+            )
+        return SlackMessage(text=state, blocks=[_context(state)])
+    if tool_log:
+        did = [item for item in items if item.kind == "tool-activity"]
+        if not did:
+            state = turn_state(items, turn, elapsed_seconds=elapsed_seconds)
+            return SlackMessage(text=state, blocks=[_context(state)])
+        plan = _plan(did, did, turn)
+        count = len(did)
+        title = f"{count} tool {'call' if count == 1 else 'calls'}"
+        state = turn_state(items, turn, elapsed_seconds=elapsed_seconds)
+        if turn.status in TURN_ENDED:
+            title = state if elapsed_seconds is not None else f"{state} {title}"
+        if did and turn.status not in TURN_ENDED:
+            current = next(
+                (item for item in reversed(did) if item.status == "in-progress"), None
+            )
+            label = "Running" if current else "Last"
+            tool = current or did[-1]
+            title += f" · {label}: {plain_text(tool.title) if tool.title else 'Tool'}"
+        plan["title"] = _fit(title, _MAX_PLAN_TITLE)
+        for task, item in zip(plan["tasks"], did[-_MAX_PLAN_TASKS:]):
+            # A historical call can finish unsuccessfully. Preserve its warning
+            # in the title without making the whole log look like a failed plan.
+            if item.status != "in-progress" or turn.status in TURN_ENDED:
+                task["status"] = "complete"
+            if item.status == "in-progress" and turn.status in TURN_ENDED:
+                task["title"] = _fit(
+                    "Unfinished: " + task["title"], _MAX_PLAN_TASK_TITLE
+                )
+        return SlackMessage(
+            text=plan["title"] + "\n" + "\n".join(_activity_lines(did)), blocks=[plan]
+        )
     said = [item for item in items if item.kind == "assistant-message"]
     did = [item for item in items if item.kind == "tool-activity"]
 
