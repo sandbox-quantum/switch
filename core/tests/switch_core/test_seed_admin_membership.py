@@ -202,13 +202,13 @@ class TestWhatBeingStrandedCosts:
 def test_there_is_one_way_to_write_a_membership() -> None:
     """`UserStore.ensure_membership` is it, and nothing else writes one.
 
-    "Exactly one membership per account" holds because a single idempotent
-    function writes them all. There was a `TenantMemberStore.create` beside
-    it, taking `tenant_id`, `user_id` and `role` from whatever the caller
-    felt like; nothing ever called it, and an unguarded second way in is how
-    an account ends up with two — which `sole_tenant_id` rejects just as
-    firmly as it rejects none. The store is gone, so this asserts the
-    property rather than the absence: only `UserStore` constructs a
+    Every membership traces back to a single idempotent function rather than
+    to every writer remembering to check first. There was a
+    `TenantMemberStore.create` beside it, taking `tenant_id`, `user_id` and
+    `role` from whatever the caller felt like; nothing ever called it, and an
+    unguarded second way in is how an account ends up with a membership
+    nothing else wrote or accounted for. The store is gone, so this asserts
+    the property rather than the absence: only `UserStore` constructs a
     `TenantMember`.
     """
     package = pathlib.Path(switch_core.__file__).resolve().parent
