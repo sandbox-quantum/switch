@@ -987,17 +987,13 @@ class BridgeCore:
             if ext_id:
                 resolved[name] = ext_id
             else:
-                # Proactive platform lookup — search by name or email
+                # Proactive platform lookup — exact match only (username or email)
                 try:
                     results = await self.adapter.search_directory_users(name)
-                    # Exact match on username or email first
                     match = next(
                         (r for r in results if r.username == name or r.email == name),
                         None,
                     )
-                    # If no exact match but exactly one result, use it
-                    if match is None and len(results) == 1:
-                        match = results[0]
                     if match:
                         resolved[name] = match.external_user_id
                         continue

@@ -400,7 +400,7 @@ async def create_room_from_yaml(
         else:
             text = (await request.body()).decode("utf-8")
             inputs = None
-        spec = rooms_yaml.parse(
+        spec, kickoff = rooms_yaml.parse(
             text,
             inputs=inputs,
             builtins={
@@ -412,6 +412,7 @@ async def create_room_from_yaml(
         )
         return await rooms_yaml.provision(
             spec,
+            kickoff=kickoff,
             user_id=user.id,
             is_admin=user.role == "admin",
         )

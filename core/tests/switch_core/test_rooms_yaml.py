@@ -192,7 +192,7 @@ def _svc(env) -> RoomYamlService:
 
 
 def test_parse_minimal(env):
-    spec = _svc(env).parse(
+    spec, _ = _svc(env).parse(
         """
         room:
           name: "Room A"
@@ -202,6 +202,57 @@ def test_parse_minimal(env):
     assert spec.name == "Room A"
     assert spec.channel_type == "channel_public"
     assert spec.references == []
+
+
+def test_parse_returns_kickoff(env):
+    spec, kickoff = _svc(env).parse(
+        """
+        room:
+          name: "Room K"
+          description: "desc"
+        kickoff: "Start working now."
+        """
+    )
+    assert spec.name == "Room K"
+    assert kickoff == "Start working now."
+
+
+def test_parse_no_kickoff_returns_none(env):
+    _, kickoff = _svc(env).parse(
+        """
+        room:
+          name: "Room N"
+          description: "desc"
+        """
+    )
+    assert kickoff is None
+
+
+def test_parse_kickoff_interpolates_builtins(env):
+    _, kickoff = _svc(env).parse(
+        """
+        room:
+          name: "Room B"
+          description: "desc"
+        kickoff: "Welcome {$creator}, today is {$date}."
+        """,
+        builtins={"$creator": "alice", "$date": "2026-09-11"},
+    )
+    assert kickoff == "Welcome alice, today is 2026-09-11."
+
+
+def test_parse_builtins_resolve_in_room(env):
+    spec, _ = _svc(env).parse(
+        """
+        room:
+          name: "{$creator}'s room"
+          description: "desc"
+          users: ["{$creator_email}"]
+        """,
+        builtins={"$creator": "alice", "$creator_email": "alice@example.com"},
+    )
+    assert spec.name == "alice's room"
+    assert spec.users == ["alice@example.com"]
 
 
 def test_parse_rejects_missing_room_key(env):
@@ -266,7 +317,7 @@ def test_parse_reference_entry_requires_one_form(env):
 
 @pytest.mark.asyncio
 async def test_provision_basic_with_agents_roles_and_inline_ref(env):
-    spec = _svc(env).parse(
+    spec, _ = _svc(env).parse(
         """
         room:
           name: "Pilot"
@@ -299,7 +350,7 @@ async def test_provision_basic_with_agents_roles_and_inline_ref(env):
 
 @pytest.mark.asyncio
 async def test_provision_no_agents_or_users(env):
-    spec = _svc(env).parse(
+    spec, _ = _svc(env).parse(
         """
         room:
           name: "Agentless"
@@ -316,7 +367,7 @@ async def test_provision_no_agents_or_users(env):
 
 @pytest.mark.asyncio
 async def test_provision_unknown_agent_fails_loud(env):
-    spec = _svc(env).parse(
+    spec, _ = _svc(env).parse(
         """
         room:
           name: "R"
@@ -336,7 +387,7 @@ async def test_provision_unknown_reference_type_fails_before_the_room_exists(env
     nor a principal — so the check lives in ``_resolve_references``, which runs
     before ``create_room``. Nothing may be created.
     """
-    spec = _svc(env).parse(
+    spec, _ = _svc(env).parse(
         """
         room:
           name: "Bad type"
@@ -388,7 +439,7 @@ async def test_provision_inline_ref_of_a_user_defined_type(env):
         )
         await session.commit()
 
-    spec = _svc(env).parse(
+    spec, _ = _svc(env).parse(
         """
         room:
           name: "Custom type"
@@ -425,7 +476,7 @@ async def test_provision_attach_reference_by_name(env):
         await session.commit()
         ref_id = ref.id
 
-    spec = _svc(env).parse(
+    spec, _ = _svc(env).parse(
         """
         room:
           name: "R"
@@ -441,7 +492,7 @@ async def test_provision_attach_reference_by_name(env):
 
 @pytest.mark.asyncio
 async def test_provision_attach_reference_by_name_unknown_fails(env):
-    spec = _svc(env).parse(
+    spec, _ = _svc(env).parse(
         """
         room:
           name: "R"
@@ -472,7 +523,7 @@ async def test_provision_ambiguous_reference_name_fails(env):
             )
         await session.commit()
 
-    spec = _svc(env).parse(
+    spec, _ = _svc(env).parse(
         """
         room:
           name: "R"
@@ -487,7 +538,7 @@ async def test_provision_ambiguous_reference_name_fails(env):
 
 @pytest.mark.asyncio
 async def test_provision_duplicate_doc_name_is_best_effort(env):
-    spec = _svc(env).parse(
+    spec, _ = _svc(env).parse(
         """
         room:
           name: "R"
@@ -507,7 +558,7 @@ async def test_provision_duplicate_doc_name_is_best_effort(env):
 
 @pytest.mark.asyncio
 async def test_provision_users_without_bridge_fails(env):
-    spec = _svc(env).parse(
+    spec, _ = _svc(env).parse(
         """
         room:
           name: "R"
@@ -524,7 +575,7 @@ async def test_provision_users_without_bridge_fails(env):
 
 @pytest.mark.asyncio
 async def test_export_round_trips_within_import_surface(env):
-    spec = _svc(env).parse(
+    spec, _ = _svc(env).parse(
         """
         room:
           name: "Export me"
@@ -549,7 +600,7 @@ async def test_export_round_trips_within_import_surface(env):
     result = await _svc(env).provision(spec, user_id=env["user_id"], is_admin=False)
 
     yaml_text = await _svc(env).export(result.room_id)
-    reparsed = _svc(env).parse(yaml_text)
+    reparsed, _ = _svc(env).parse(yaml_text)
 
     assert reparsed.name == "Export me"
     assert reparsed.instructions == "instr"
@@ -567,7 +618,7 @@ async def test_export_round_trips_within_import_surface(env):
 
 @pytest.mark.asyncio
 async def test_export_toggles_drop_sections(env):
-    spec = _svc(env).parse(
+    spec, _ = _svc(env).parse(
         """
         room:
           name: "Toggle"
@@ -584,7 +635,7 @@ async def test_export_toggles_drop_sections(env):
     yaml_text = await _svc(env).export(
         result.room_id, agents=False, roles=False, docs=False
     )
-    reparsed = _svc(env).parse(yaml_text)
+    reparsed, _ = _svc(env).parse(yaml_text)
     assert reparsed.agents == []
     assert reparsed.roles == []
     assert reparsed.docs == []
@@ -646,7 +697,7 @@ async def test_export_includes_users_from_bridge(env):
         room_id = room.id
 
     yaml_text = await _svc(env).export(room_id)
-    reparsed = _svc(env).parse(yaml_text)
+    reparsed, _ = _svc(env).parse(yaml_text)
     # The "Mattermost: " display-name prefix is stripped on export.
     assert reparsed.name == "Bridged"
     assert reparsed.bridge == "Mattermost"
@@ -780,7 +831,7 @@ def test_interpolate_non_string_passthrough():
 
 
 def test_parse_with_params_defaults_only(env):
-    spec = _svc(env).parse(
+    spec, _ = _svc(env).parse(
         """
         params:
           owner:
@@ -796,7 +847,7 @@ def test_parse_with_params_defaults_only(env):
 
 
 def test_parse_with_params_override(env):
-    spec = _svc(env).parse(
+    spec, _ = _svc(env).parse(
         """
         params:
           owner:
@@ -853,7 +904,7 @@ def test_parse_inputs_against_paramless_file_raises(env):
 
 
 def test_parse_unknown_placeholder_left_intact(env):
-    spec = _svc(env).parse(
+    spec, _ = _svc(env).parse(
         """
         params:
           owner:
@@ -869,7 +920,7 @@ def test_parse_unknown_placeholder_left_intact(env):
 
 def test_parse_whole_field_typed_substitution(env):
     """An enum param used as the whole value of channel_type stays valid."""
-    spec = _svc(env).parse(
+    spec, _ = _svc(env).parse(
         """
         params:
           visibility:
@@ -886,7 +937,7 @@ def test_parse_whole_field_typed_substitution(env):
 
 
 def test_parse_interpolation_into_docs_content(env):
-    spec = _svc(env).parse(
+    spec, _ = _svc(env).parse(
         """
         params:
           owner:
@@ -906,7 +957,7 @@ def test_parse_interpolation_into_docs_content(env):
 
 
 def test_parse_interpolation_into_references_value(env):
-    spec = _svc(env).parse(
+    spec, _ = _svc(env).parse(
         """
         params:
           repo:
@@ -928,7 +979,7 @@ def test_parse_interpolation_into_references_value(env):
 
 
 def test_parse_version_key_accepted(env):
-    spec = _svc(env).parse(
+    spec, _ = _svc(env).parse(
         """
         version: 0
         room:
@@ -995,18 +1046,14 @@ room:
 async def test_provision_template_two_owners(env):
     """The same template instantiates twice with different owners."""
     svc = _svc(env)
-    r1 = await svc.provision(
-        svc.parse(
-            TEMPLATE, inputs={"owner": "alice", "deploy_agent": "claude-code.alice"}
-        ),
-        user_id=env["user_id"],
-        is_admin=False,
+    spec1, _ = svc.parse(
+        TEMPLATE, inputs={"owner": "alice", "deploy_agent": "claude-code.alice"}
     )
-    r2 = await svc.provision(
-        svc.parse(TEMPLATE, inputs={"owner": "bob", "deploy_agent": "claude-code.bob"}),
-        user_id=env["user_id"],
-        is_admin=False,
+    r1 = await svc.provision(spec1, user_id=env["user_id"], is_admin=False)
+    spec2, _ = svc.parse(
+        TEMPLATE, inputs={"owner": "bob", "deploy_agent": "claude-code.bob"}
     )
+    r2 = await svc.provision(spec2, user_id=env["user_id"], is_admin=False)
     assert r1.room_name == "alice local-deploy"
     assert r2.room_name == "bob local-deploy"
     assert r1.room_id != r2.room_id
