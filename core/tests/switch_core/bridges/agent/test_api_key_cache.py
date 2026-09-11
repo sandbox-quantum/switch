@@ -83,6 +83,9 @@ class _NoBridges:
     def all_bridges(self) -> list[object]:
         return []
 
+    def bridges_for_tenant(self, tenant_id: str) -> list[object]:
+        return []
+
 
 def _middleware(session_factory: Any, cache: ApiKeyCache) -> BearerAuthMiddleware:
     async def _app(scope: Any, receive: Any, send: Any) -> None:

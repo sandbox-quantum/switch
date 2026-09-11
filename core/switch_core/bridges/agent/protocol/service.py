@@ -93,7 +93,7 @@ from switch_core.events import (
     ToolCallReport as MatrixToolCallReport,
 )
 from switch_core.messages.recorded_types import MEMBERSHIP_EVENT_TYPE
-from switch_core.tenant_context import tenant_scope
+from switch_core.tenant_context import current_tenant_id, tenant_scope
 from switch_core.transport import (
     TransportError,
 )
@@ -697,7 +697,23 @@ class ProtocolService:
     async def _create_bridge_identities(
         self, agent_name: str, description: str
     ) -> None:
-        for bridge_core in self.collab_lifecycle.all_bridges():
+        """Create `agent_name`'s platform identity on every running bridge of
+        the registering tenant — and only that tenant's bridges.
+
+        A bound tenant is a precondition, not an input to fall back from: both
+        registration paths bind one before this runs (an authenticated
+        request via middleware, or ``register_agent_with_token`` itself), so
+        nothing bound here is a bug upstream, and fanning out to every
+        tenant's bridges instead would repeat the cross-tenant identity leak
+        this method exists to avoid.
+        """
+        tenant_id = current_tenant_id()
+        if tenant_id is None:
+            raise RuntimeError(
+                "_create_bridge_identities requires a bound tenant; "
+                "register_agent must be called with one already bound"
+            )
+        for bridge_core in self.collab_lifecycle.bridges_for_tenant(tenant_id):
             try:
                 await bridge_core.adapter.create_agent_identity(agent_name, description)
             except Exception:
@@ -800,7 +816,24 @@ class ProtocolService:
             await session.commit()
 
     async def _remove_bridge_identities(self, agent_name: str) -> None:
-        for bridge_core in self.collab_lifecycle.all_bridges():
+        """Remove `agent_name`'s platform identity from every running bridge of
+        the deleting tenant — and only that tenant's bridges.
+
+        Unscoped, this is worse than its `_create_bridge_identities` twin:
+        deleting an agent in one tenant would delete the platform bot, user
+        group, or role of a same-named agent belonging to another tenant. A
+        bound tenant is a precondition here too — every `delete_agent` caller
+        (the HTTP/gateway endpoints, and the server-connector removal path)
+        runs under a tenant already bound by the request — so nothing bound is
+        a bug upstream, not a reason to fall back to every bridge.
+        """
+        tenant_id = current_tenant_id()
+        if tenant_id is None:
+            raise RuntimeError(
+                "_remove_bridge_identities requires a bound tenant; "
+                "delete_agent must be called with one already bound"
+            )
+        for bridge_core in self.collab_lifecycle.bridges_for_tenant(tenant_id):
             try:
                 await bridge_core.adapter.remove_agent_identity(agent_name)
             except Exception:
