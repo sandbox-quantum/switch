@@ -25,7 +25,9 @@ import {
 import { useAuth } from "../../data/AuthContext";
 import { EM_DASH, MONO_SX, formatDateTime } from "../../theme/hootFormat";
 import DeleteTemplateDialog from "./DeleteTemplateDialog";
+import TemplateFindings from "./TemplateFindings";
 import { formatBytes, templateFilename } from "./templateFormat";
+import { useTemplateValidation } from "./useTemplateValidation";
 
 const LIST_URL = "/resources?tab=templates";
 
@@ -180,6 +182,10 @@ function DocumentSection({
   const [error, setError] = useState<string | null>(null);
   const [exportError, setExportError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  // Only while the document is editable — a reader cannot act on the findings.
+  const { result: validation, checking } = useTemplateValidation(content, {
+    enabled: canMutate,
+  });
 
   const dirty = useMemo(
     () =>
@@ -310,6 +316,7 @@ function DocumentSection({
         slotProps={{ input: { sx: { fontFamily: "monospace" } } }}
         helperText="Saving a changed document bumps the revision."
       />
+      <TemplateFindings result={validation} checking={checking} />
       {error && <Alert severity="error">{error}</Alert>}
       <Box>
         <Button

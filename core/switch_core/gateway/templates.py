@@ -35,9 +35,13 @@ from switch_core.gateway.schemas import (
     TemplateCreateRequest,
     TemplateDeleteResponse,
     TemplateDetail,
+    TemplateFinding,
     TemplateSummary,
     TemplateUpdateRequest,
+    TemplateValidateRequest,
+    TemplateValidateResponse,
 )
+from switch_core.template_lint import lint_template
 
 router = APIRouter()
 
@@ -183,6 +187,34 @@ async def create_template(
         raise HTTPException(status_code=409, detail=str(e)) from e
     await session.commit()
     return _detail(template, await _owner_name(session, user_store, user.id))
+
+
+@router.post("/templates/validate")
+async def validate_template(
+    req: TemplateValidateRequest,
+    _user: Annotated[User, Depends(get_current_user)],
+) -> TemplateValidateResponse:
+    """Check a document without storing it.
+
+    Declared above `/templates/{template_id}` so the literal path wins; FastAPI
+    matches in declaration order and would otherwise read "validate" as an id.
+
+    Advisory by design. It never asks whether this is a room, a group or
+    something newer — the registry holds documents in shapes this server may
+    not know, and upload does not consult this at all.
+    """
+    result = lint_template(req.content)
+    return TemplateValidateResponse(
+        ok=result.ok,
+        errors=[
+            TemplateFinding(code=f.code, message=f.message, subject=f.subject)
+            for f in result.errors
+        ],
+        warnings=[
+            TemplateFinding(code=f.code, message=f.message, subject=f.subject)
+            for f in result.warnings
+        ],
+    )
 
 
 @router.get("/templates/{template_id}")

@@ -209,6 +209,103 @@ class TestOverTheWire:
         # And it is bytes, not characters — the document has multibyte text in it.
         assert expected > len(_AWKWARD_DOCUMENT)
 
+    async def test_validate_reports_without_storing(
+        self, session_factory: async_sessionmaker[AsyncSession], users: dict[str, User]
+    ) -> None:
+        client = _client(session_factory, users["alice"])
+
+        response = await client.post(
+            "/templates/validate", json={"content": "a: [unclosed\n"}
+        )
+        assert response.status_code == 200
+        body = response.json()
+        assert body["ok"] is False
+        assert [e["code"] for e in body["errors"]] == ["invalid_yaml"]
+
+        # The point of it: nothing was created by asking.
+        listing = await client.get("/templates")
+        assert listing.json() == []
+
+    async def test_validate_does_not_gate_upload(
+        self, session_factory: async_sessionmaker[AsyncSession], users: dict[str, User]
+    ) -> None:
+        """Advisory means advisory — storage stays opaque to the format."""
+        client = _client(session_factory, users["alice"])
+        garbage = "a: [unclosed\n"
+
+        check = await client.post("/templates/validate", json={"content": garbage})
+        assert check.json()["ok"] is False
+
+        created = await _upload(client, name="stored-anyway", content=garbage)
+        raw = await client.get(f"/templates/{created['id']}/content")
+        assert raw.content.decode("utf-8") == garbage
+
+    async def test_validate_warns_without_failing(
+        self, session_factory: async_sessionmaker[AsyncSession], users: dict[str, User]
+    ) -> None:
+        client = _client(session_factory, users["alice"])
+        response = await client.post(
+            "/templates/validate",
+            json={
+                "content": (
+                    "params:\n  owner:\n    type: string\nroom:\n  name: '{ownr}'\n"
+                )
+            },
+        )
+        body = response.json()
+        assert body["ok"] is True
+        assert body["errors"] == []
+        assert {w["code"] for w in body["warnings"]} == {
+            "undeclared_placeholder",
+            "unused_param",
+        }
+
+    async def test_validate_accepts_a_shape_this_server_does_not_provision(
+        self, session_factory: async_sessionmaker[AsyncSession], users: dict[str, User]
+    ) -> None:
+        """A group template has no `room:` key and must not be called wrong."""
+        client = _client(session_factory, users["alice"])
+        response = await client.post(
+            "/templates/validate",
+            json={
+                "content": "group:\n  name: workstream\nrooms:\n  - name: planning\n"
+            },
+        )
+        assert response.json() == {"ok": True, "errors": [], "warnings": []}
+
+    async def test_validate_is_not_mistaken_for_a_template_id(
+        self, session_factory: async_sessionmaker[AsyncSession], users: dict[str, User]
+    ) -> None:
+        """`/templates/validate` sits beside `/templates/{id}`; order decides."""
+        client = _client(session_factory, users["alice"])
+        response = await client.post(
+            "/templates/validate", json={"content": "room: {}"}
+        )
+        assert response.status_code == 200
+        assert "ok" in response.json()
+
+    async def test_validate_needs_authentication_like_everything_else(
+        self, session_factory: async_sessionmaker[AsyncSession], users: dict[str, User]
+    ) -> None:
+        async def _no_session() -> AsyncIterator[None]:
+            yield None
+
+        app = FastAPI()
+        app.include_router(router)
+        # Stubbed because FastAPI resolves every sub-dependency before the
+        # endpoint runs, so `get_current_user` cannot reach its 401 without
+        # them. Left real, it is the thing under test.
+        app.dependency_overrides[get_session] = _no_session
+        app.dependency_overrides[get_user_store] = lambda: None
+        app.dependency_overrides[get_config] = _config
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as anonymous:
+            response = await anonymous.post(
+                "/templates/validate", json={"content": "room: {}"}
+            )
+        assert response.status_code in (401, 403)
+
     async def test_the_catalogue_shows_every_owners_templates(
         self, session_factory: async_sessionmaker[AsyncSession], users: dict[str, User]
     ) -> None:
