@@ -21,7 +21,7 @@ from switch_core.db.stores.collaboration_bridge_store import CollaborationBridge
 from switch_core.db.stores.external_user_store import ExternalUserStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.user_store import UserStore
-from switch_core.gateway.auth import get_current_user, require_admin
+from switch_core.gateway.auth import get_current_user, require_tenant_admin
 from switch_core.gateway.dependencies import (
     get_bridge_store,
     get_collab_lifecycle,
@@ -164,7 +164,7 @@ async def create_bridge(
     # Admin-only: a bridge is an unowned, workspace-wide integration holding
     # platform secrets, so there is no owner to scope to (unlike connectors,
     # whose authz is owner-or-admin) — registering one is an admin action.
-    _user: Annotated[User, Depends(require_admin)],
+    _user: Annotated[User, Depends(require_tenant_admin)],
 ) -> BridgeDetail:
     try:
         bridge = await collab_lifecycle.register(
@@ -202,7 +202,7 @@ async def set_default_bridge(
     collab_lifecycle: Annotated[
         CollaborationBridgeLifecycleService, Depends(get_collab_lifecycle)
     ],
-    _user: Annotated[User, Depends(require_admin)],
+    _user: Annotated[User, Depends(require_tenant_admin)],
 ) -> BridgeDetail:
     """Nominate a bridge as the instance default, demoting the previous one."""
     try:
@@ -253,7 +253,7 @@ async def update_bridge(
     ],
     # Admin-only for the same reason as registering one: a bridge is an unowned,
     # workspace-wide integration, so there is no owner to scope mutation to.
-    _user: Annotated[User, Depends(require_admin)],
+    _user: Annotated[User, Depends(require_tenant_admin)],
 ) -> BridgeDetail:
     bridge = await bridge_store.get(session, bridge_id)
     if bridge is None:
@@ -548,7 +548,7 @@ async def claim_bridge_identity(
         raise HTTPException(status_code=404, detail="Bridge not found")
 
     target_user_id = payload.user_id or user.id
-    if target_user_id != user.id and user.role != "admin":
+    if target_user_id != user.id and not await user_store.administers(session, user):
         raise HTTPException(
             status_code=403,
             detail="Only an admin may claim a messaging identity for another user",
@@ -644,7 +644,7 @@ async def release_bridge_identity(
         raise HTTPException(status_code=404, detail="Identity not found")
 
     target_user_id = user_id or user.id
-    if target_user_id != user.id and user.role != "admin":
+    if target_user_id != user.id and not await user_store.administers(session, user):
         raise HTTPException(
             status_code=403,
             detail="Only an admin may release another user's messaging identity",
@@ -676,7 +676,7 @@ async def delete_bridge(
     ],
     # Admin-only: deleting a bridge cascades into deleting every room on it, so
     # this is the most destructive operation on the router.
-    _user: Annotated[User, Depends(require_admin)],
+    _user: Annotated[User, Depends(require_tenant_admin)],
 ) -> dict[str, bool]:
     bridge = await bridge_store.get(session, bridge_id)
     if bridge is None:

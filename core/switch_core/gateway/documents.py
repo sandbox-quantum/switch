@@ -10,7 +10,11 @@ from switch_core.db.models import Document, User
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.user_store import UserStore
-from switch_core.gateway.auth import get_current_user, require_room_access
+from switch_core.gateway.auth import (
+    get_current_user,
+    get_tenant_is_admin,
+    require_room_access,
+)
 from switch_core.gateway.dependencies import (
     get_agent_store,
     get_resource_service,
@@ -200,10 +204,11 @@ async def get_document(
     user_store: Annotated[UserStore, Depends(get_user_store)],
     agent_store: Annotated[AgentStore, Depends(get_agent_store)],
     user: Annotated[User, Depends(get_current_user)],
+    is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> DocumentDetail:
     try:
         doc = await resource_service.get_document_for_user(
-            session, document_id, user.id, is_admin=user.role == "admin"
+            session, document_id, user.id, is_admin=is_admin
         )
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
@@ -221,13 +226,14 @@ async def patch_document(
     user_store: Annotated[UserStore, Depends(get_user_store)],
     agent_store: Annotated[AgentStore, Depends(get_agent_store)],
     user: Annotated[User, Depends(get_current_user)],
+    is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> DocumentDetail:
     try:
         doc = await resource_service.update_document(
             session,
             document_id,
             user_id=user.id,
-            is_admin=user.role == "admin",
+            is_admin=is_admin,
             name=req.name,
             description=req.description,
             instructions=req.instructions,
@@ -249,6 +255,7 @@ async def delete_document(
     session: Annotated[AsyncSession, Depends(get_session)],
     resource_service: Annotated[ResourceService, Depends(get_resource_service)],
     user: Annotated[User, Depends(get_current_user)],
+    is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> DocumentDeleteResponse:
     affected_packages = await resource_service.list_packages_for_document(
         session, document_id
@@ -258,7 +265,7 @@ async def delete_document(
             session,
             document_id,
             user_id=user.id,
-            is_admin=user.role == "admin",
+            is_admin=is_admin,
         )
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
@@ -278,10 +285,11 @@ async def list_rooms_for_document(
     session: Annotated[AsyncSession, Depends(get_session)],
     resource_service: Annotated[ResourceService, Depends(get_resource_service)],
     user: Annotated[User, Depends(get_current_user)],
+    is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> list[ResourceRoom]:
     try:
         await resource_service.get_document_for_user(
-            session, document_id, user.id, is_admin=user.role == "admin"
+            session, document_id, user.id, is_admin=is_admin
         )
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
@@ -318,6 +326,7 @@ async def attach_document_to_room(
     agent_store: Annotated[AgentStore, Depends(get_agent_store)],
     room_store: Annotated[RoomStore, Depends(get_room_store)],
     user: Annotated[User, Depends(get_current_user)],
+    is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> DocumentDetail:
     await require_room_access(session, room_store, room_id, user, "write")
     try:
@@ -326,7 +335,7 @@ async def attach_document_to_room(
             room_id,
             document_id,
             user_id=user.id,
-            is_admin=user.role == "admin",
+            is_admin=is_admin,
         )
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
@@ -334,7 +343,7 @@ async def attach_document_to_room(
         raise HTTPException(status_code=403, detail=str(e)) from e
     await session.commit()
     doc = await resource_service.get_document_for_user(
-        session, document_id, user.id, is_admin=user.role == "admin"
+        session, document_id, user.id, is_admin=is_admin
     )
     return await _enrich_detail(session, doc, resource_service, user_store, agent_store)
 

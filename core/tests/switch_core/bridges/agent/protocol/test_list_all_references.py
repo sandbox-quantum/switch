@@ -26,6 +26,7 @@ from switch_core.db.stores.package_store import PackageStore
 from switch_core.db.stores.reference_store import ReferenceStore
 from switch_core.db.stores.reference_type_store import ReferenceTypeStore
 from switch_core.db.stores.room_link_store import RoomLinkStore
+from switch_core.db.stores.user_store import UserStore
 
 T_OLD = datetime(2024, 1, 1, 12, 0, tzinfo=UTC)
 
@@ -50,6 +51,7 @@ def _build_service(
     svc.connections = ConnectionRegistry()
     svc.session_factory = session_factory  # type: ignore[assignment]
     svc.agent_store = _FakeAgentStore(owners)  # type: ignore[assignment]
+    svc.user_store = UserStore()  # type: ignore[assignment]
     svc.resource_service = ResourceService(
         reference_store=ReferenceStore(),
         reference_type_store=ReferenceTypeStore(),

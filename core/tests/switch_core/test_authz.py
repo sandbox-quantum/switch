@@ -6,6 +6,7 @@ import pytest
 
 from switch_core.authz import (
     Principal,
+    administers_tenant,
     can,
     can_manage,
     require,
@@ -104,6 +105,26 @@ class TestCanManage:
         with pytest.raises(PermissionError):
             require_manage(ALICE, "u-bob")
         require_manage(ALICE, "u-alice")  # owner — no raise
+
+
+class TestAdministersTenant:
+    """`administers_tenant` is the one function allowed to turn a role into
+    the admin bit (`authz.py` module docstring) — the operator bypass and the
+    per-tenant `owner`/`admin` membership role, combined."""
+
+    def test_operator_administers_regardless_of_tenant_role(self) -> None:
+        assert administers_tenant(is_operator=True, tenant_role=None)
+        assert administers_tenant(is_operator=True, tenant_role="member")
+
+    def test_owner_or_admin_membership_administers(self) -> None:
+        assert administers_tenant(is_operator=False, tenant_role="owner")
+        assert administers_tenant(is_operator=False, tenant_role="admin")
+
+    def test_plain_member_does_not_administer(self) -> None:
+        assert not administers_tenant(is_operator=False, tenant_role="member")
+
+    def test_no_membership_does_not_administer(self) -> None:
+        assert not administers_tenant(is_operator=False, tenant_role=None)
 
 
 class TestValidateVisibilityPair:

@@ -234,8 +234,50 @@ async def get_current_user(
 async def require_admin(
     user: Annotated[User, Depends(get_current_user)],
 ) -> User:
+    """Raise 403 unless `user` is a deployment operator.
+
+    ``User.role == "admin"`` is deliberately global and deliberately not
+    self-service: it names the person who runs the server, not a role any
+    tenant can grant. Gate deployment-wide actions on this — creating or
+    listing every user in the deployment — never a single tenant's resources.
+    Those use ``require_tenant_admin``.
+    """
     if user.role != "admin":
         raise HTTPException(status_code=403, detail="Admin access required")
+    return user
+
+
+async def get_tenant_is_admin(
+    session: Annotated[AsyncSession, Depends(get_session)],
+    user: Annotated[User, Depends(get_current_user)],
+    user_store: Annotated[UserStore, Depends(get_user_store)],
+) -> bool:
+    """Whether `user` may administer the tenant this request is bound to.
+
+    This is the boolean every ``Principal.is_admin`` in a gateway request
+    should be built from — see ``UserStore.administers`` for what it actually
+    checks.
+
+    Also callable directly (not just as a FastAPI dependency) from any
+    handler or service function that already holds a bound `session`, the
+    caller's `User`, and a `UserStore`.
+    """
+    return await user_store.administers(session, user)
+
+
+async def require_tenant_admin(
+    user: Annotated[User, Depends(get_current_user)],
+    is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
+) -> User:
+    """Raise 403 unless `user` may administer the tenant this request is bound to.
+
+    Unlike ``require_admin``, this is granted by ``tenant_members.role`` as
+    well as the operator bit — use it for routes that manage one tenant's
+    resources (a collaboration bridge, a room) rather than the deployment
+    itself.
+    """
+    if not is_admin:
+        raise HTTPException(status_code=403, detail="Tenant admin access required")
     return user
 
 
@@ -257,8 +299,9 @@ async def require_room_access(
     room = await room_store.get(session, room_id)
     if room is None:
         raise HTTPException(status_code=404, detail="Room not found")
+    is_admin = await UserStore().administers(session, user)
     try:
-        require(Principal(user.id, user.role == "admin"), action, room)
+        require(Principal(user.id, is_admin), action, room)
     except PermissionError as e:
         raise HTTPException(status_code=403, detail=str(e)) from e
     return room

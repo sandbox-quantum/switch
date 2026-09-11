@@ -10,9 +10,10 @@ bridge administration through the already admin-gated
 
 These tests lock in three properties:
 1. `/collab` is gone — not in the auth-bypass list, and its modules deleted.
-2. Every collaboration write route on the gateway requires an admin (the
-   route dependency is `require_admin`), and every route requires at least
-   authentication.
+2. Every collaboration write route on the gateway requires a tenant admin (the
+   route dependency is `require_tenant_admin` — a collaboration bridge is
+   tenant-scoped, so this is workspace administration, not the deployment
+   operator bit), and every route requires at least authentication.
 3. The new set-default behaviour is correct against real Postgres.
 """
 
@@ -31,7 +32,7 @@ from switch_core.bridges.collaboration.models import DirectoryUser
 from switch_core.db.models import Client, CollaborationBridge, User
 from switch_core.db.stores.collaboration_bridge_store import CollaborationBridgeStore
 from switch_core.db.stores.room_store import RoomStore
-from switch_core.gateway.auth import get_current_user, require_admin
+from switch_core.gateway.auth import get_current_user, require_tenant_admin
 from switch_core.gateway.collaborations import (
     _require_directory_account,
     claim_bridge_identity,
@@ -91,9 +92,10 @@ _OWNER_SCOPED_PATHS = {
 
 
 def test_bridge_write_routes_require_admin() -> None:
-    """EVERY state-changing route must be gated on require_admin — a bridge is an
-    unowned, workspace-wide integration holding platform secrets, so there is no
-    owner to scope mutation to.
+    """EVERY state-changing route must be gated on require_tenant_admin — a
+    bridge is an unowned, tenant-scoped integration holding platform secrets,
+    so there is no per-resource owner to scope mutation to, but it still
+    belongs to one workspace rather than the deployment as a whole.
 
     Derived from the router rather than a hand-listed set: a new write route that
     forgets the gate fails here instead of shipping open.
@@ -103,10 +105,10 @@ def test_bridge_write_routes_require_admin() -> None:
         for route in router.routes
         if route.methods & WRITE_METHODS
         and route.path not in _OWNER_SCOPED_PATHS
-        and require_admin not in _dependency_calls(route.dependant)
+        and require_tenant_admin not in _dependency_calls(route.dependant)
     )
     assert not unguarded, (
-        f"collaboration write routes missing require_admin: {unguarded}"
+        f"collaboration write routes missing require_tenant_admin: {unguarded}"
     )
 
 
@@ -118,7 +120,7 @@ def test_owner_scoped_exemptions_name_real_routes() -> None:
 
 
 class TestIdentityRoutesAreSelfOrAdmin:
-    """The check the require_admin exemption trades away moved into the
+    """The check the require_tenant_admin exemption trades away moved into the
     handler; it did not disappear."""
 
     async def test_claiming_for_another_user_is_refused(self) -> None:
@@ -236,6 +238,9 @@ class _StubGet:
     async def get(self, *_args: object, **_kwargs: object) -> object:
         return self._value
 
+    async def administers(self, *_args: object, **_kwargs: object) -> bool:
+        return False
+
 
 def _user(*, id: str, role: str) -> SimpleNamespace:
     return SimpleNamespace(id=id, role=role, name=id)
@@ -253,10 +258,10 @@ def test_known_bridge_write_routes_are_present() -> None:
 
 def test_every_collaboration_route_requires_authentication() -> None:
     """No route may fall back to the old unauthenticated behaviour: each must
-    depend on get_current_user directly or via require_admin."""
+    depend on get_current_user directly or via require_tenant_admin."""
     for route in router.routes:
         calls = _dependency_calls(route.dependant)
-        assert get_current_user in calls or require_admin in calls, (
+        assert get_current_user in calls or require_tenant_admin in calls, (
             f"{sorted(route.methods)} {route.path} is not authenticated"
         )
 
