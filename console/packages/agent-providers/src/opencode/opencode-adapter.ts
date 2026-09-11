@@ -221,6 +221,10 @@ export class OpencodeAdapter implements ProviderAdapter {
     const previousAwaitingBusy = record.awaitingBusy;
 
     if (steeredInto === undefined) {
+      record.items.clear();
+      record.emittedText.clear();
+      record.partTypes.clear();
+      record.messageRoles.clear();
       record.activeTurnId = input.turnId;
       this.emit(record, { type: 'turn.started' }, input.turnId);
     }
