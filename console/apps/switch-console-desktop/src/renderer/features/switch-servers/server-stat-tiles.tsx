@@ -38,7 +38,10 @@ export const ServerStatTiles = observer(function ServerStatTiles({
         label="Your Agents"
         value={agentsStore.loaded ? agentsStore.agentsOnServer(serverId).length : null}
       />
-      <StatTile label="Your Rooms" value={switchRoomsStore.listedRoomsOnServer(serverId).length} />
+      <StatTile
+        label="Your Rooms"
+        value={switchRoomsStore.readableRoomsOnServer(serverId).length}
+      />
       <StatTile label="Messaging apps" value={bridgesQuery.data?.length ?? null} />
     </div>
   );
