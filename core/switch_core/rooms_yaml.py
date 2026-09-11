@@ -35,6 +35,8 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
     from switch_core.bridges.resource.service import ResourceService
+    from switch_core.clients.client_lifecycle_service import ClientLifecycleService
+    from switch_core.db.models import Room
     from switch_core.db.stores.agent_store import AgentStore
     from switch_core.db.stores.collaboration_bridge_store import (
         CollaborationBridgeStore,
@@ -207,6 +209,18 @@ class DocSpec(BaseModel):
     content: str
 
 
+class KickoffSpec(BaseModel):
+    """The message sent into the room after provisioning (CHOO-2719).
+
+    Defaults to posting as the platform; ``sender: "creator"`` is explicit,
+    visible creator impersonation.
+    """
+
+    message: str
+    targets: list[str] = []
+    sender: Literal["platform", "creator"] = "platform"
+
+
 class RoomSpec(BaseModel):
     name: str
     description: str
@@ -221,6 +235,7 @@ class RoomSpec(BaseModel):
     roles: list[RoleSpec] = []
     references: list[ExternalReferenceEntry] = []
     docs: list[DocSpec] = []
+    kickoff: KickoffSpec | None = None
 
 
 class ProvisionResult(BaseModel):
@@ -263,6 +278,7 @@ class RoomYamlService:
         external_user_store: ExternalUserStore,
         room_role_store: RoomRoleStore,
         session_factory: async_sessionmaker[AsyncSession],
+        client_lifecycle: ClientLifecycleService | None = None,
     ) -> None:
         self._rooms = room_service
         self._resources = resource_service
@@ -272,6 +288,7 @@ class RoomYamlService:
         self._external_users = external_user_store
         self._room_roles = room_role_store
         self._session_factory = session_factory
+        self._client_lifecycle = client_lifecycle
 
     # ── Parse ─────────────────────────────────────────────────────────────
 
@@ -365,6 +382,15 @@ class RoomYamlService:
         created_doc_ids = await self._create_inline_docs(
             room_id, spec.docs, user_id=user_id, failures=failures
         )
+
+        if spec.kickoff is not None:
+            await self._send_kickoff(
+                result.room,
+                spec.kickoff,
+                agent_names=spec.agents,
+                user_id=user_id,
+                failures=failures,
+            )
 
         return ProvisionResult(
             room_id=room_id,
@@ -496,6 +522,76 @@ class RoomYamlService:
                     )
             await session.commit()
         return created
+
+    # ── Kickoff (CHOO-2719) ─────────────────────────────────────────────
+
+    async def _send_kickoff(
+        self,
+        room: Room,
+        kickoff: KickoffSpec,
+        *,
+        agent_names: list[str],
+        user_id: str,
+        failures: list[dict[str, Any]],
+    ) -> None:
+        """Post the kickoff message into the newly provisioned room.
+
+        ``sender="platform"`` (default) sends via the admin client with the
+        platform marker — visible as the Switch app, subject to platform
+        addressing policy.
+
+        ``sender="creator"`` sends via the admin client with ``on_behalf_of``
+        set to the creator — explicit, visible creator impersonation.
+        """
+        if self._client_lifecycle is None:
+            failures.append(
+                {
+                    "kind": "kickoff",
+                    "id": "kickoff",
+                    "error": "no client lifecycle — cannot send kickoff",
+                }
+            )
+            return
+
+        from switch_core.clients.admin_client import AdminClient
+
+        admin_clients = self._client_lifecycle.get_by_type("admin", room.tenant_id)
+        if not admin_clients:
+            failures.append(
+                {
+                    "kind": "kickoff",
+                    "id": "kickoff",
+                    "error": "no admin client available for this tenant",
+                }
+            )
+            return
+
+        admin = admin_clients[0]
+        if not isinstance(admin, AdminClient):
+            failures.append(
+                {
+                    "kind": "kickoff",
+                    "id": "kickoff",
+                    "error": "admin client is not an AdminClient instance",
+                }
+            )
+            return
+
+        targets = kickoff.targets or list(agent_names)
+        body = kickoff.message
+        if targets:
+            prefix = " ".join(f"@{t}" for t in targets)
+            body = f"{prefix} {body}"
+
+        try:
+            on_behalf_of = user_id if kickoff.sender == "creator" else None
+            await admin.send_platform_message(
+                room.matrix_room_id,
+                body,
+                on_behalf_of=on_behalf_of,
+            )
+        except Exception as e:
+            failures.append({"kind": "kickoff", "id": "kickoff", "error": str(e)})
 
     # ── Export ────────────────────────────────────────────────────────────
 

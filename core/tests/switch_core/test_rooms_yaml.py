@@ -963,6 +963,53 @@ def test_parse_unknown_top_level_key_rejected(env):
         )
 
 
+# ── kickoff spec (CHOO-2719) ─────────────────────────────────────────────
+
+
+def test_parse_kickoff_defaults(env):
+    spec = _svc(env).parse(
+        """
+        room:
+          name: "R"
+          description: "d"
+          kickoff:
+            message: "Hello agents!"
+        """
+    )
+    assert spec.kickoff is not None
+    assert spec.kickoff.message == "Hello agents!"
+    assert spec.kickoff.sender == "platform"
+    assert spec.kickoff.targets == []
+
+
+def test_parse_kickoff_with_targets_and_creator(env):
+    spec = _svc(env).parse(
+        """
+        room:
+          name: "R"
+          description: "d"
+          kickoff:
+            message: "Get to work"
+            targets: ["agent-a", "agent-b"]
+            sender: "creator"
+        """
+    )
+    assert spec.kickoff is not None
+    assert spec.kickoff.targets == ["agent-a", "agent-b"]
+    assert spec.kickoff.sender == "creator"
+
+
+def test_parse_no_kickoff(env):
+    spec = _svc(env).parse(
+        """
+        room:
+          name: "R"
+          description: "d"
+        """
+    )
+    assert spec.kickoff is None
+
+
 # ── provision with params (integration) ────────────────────────────────────
 
 
