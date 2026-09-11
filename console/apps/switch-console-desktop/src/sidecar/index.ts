@@ -36,6 +36,7 @@ import {
 import { defaultRoomConnectionFactory, SidecarRuntime } from './sidecar-runtime';
 import { SidecarStateStore } from './sidecar-state';
 import { SIDECAR_CONTROL, SIDECAR_VERSION } from './sidecar-version';
+import { existingSidecarIsHealthy } from './single-instance-guard';
 import { exactTmuxTarget, parseAgentTmuxSessionName } from './vm-tmux';
 
 /**
@@ -139,6 +140,15 @@ async function main(): Promise<void> {
   // Per-agent state paths, so multiple agents in one repo dir each drive their
   // own sidecar without clobbering each other's spec/watch flag (CHOO-1440).
   // Fall back to the legacy shared paths when launched without a slug.
+  const stateSlug = credsSlug ?? 'default';
+
+  // Single-instance guard (CHOO-2653): refuse to start if a healthy sidecar for
+  // this agent is already running. Checked before any port binding or state
+  // loading, so the duplicate never touches shared files.
+  if (await existingSidecarIsHealthy(repoDir, stateSlug, log)) {
+    process.exit(0);
+  }
+
   const launchSpecRel = credsSlug
     ? sidecarLaunchSpecRelPath(credsSlug)
     : LEGACY_LAUNCH_SPEC_REL_PATH;
@@ -178,7 +188,6 @@ async function main(): Promise<void> {
 
   // Durable session registry. Restored entries whose pane is gone are dropped
   // here, so what survives is what is actually still running on the host.
-  const stateSlug = credsSlug ?? 'default';
   const store = await SidecarStateStore.open({
     repoDir,
     slug: stateSlug,
