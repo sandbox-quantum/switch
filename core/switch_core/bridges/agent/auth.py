@@ -162,8 +162,9 @@ class BearerAuthMiddleware:
             # path resolves straight to an Agent with no ApiKey row, so it
             # falls back to the agent's own tenant.
             tenant_id = api_key.tenant_id if api_key is not None else agent.tenant_id
-            with tenant_scope(tenant_id), log_context(
-                agent_id=agent.id, tenant_id=tenant_id
+            with (
+                tenant_scope(tenant_id),
+                log_context(agent_id=agent.id, tenant_id=tenant_id),
             ):
                 await self.app(scope, receive, send)
             return
@@ -182,8 +183,9 @@ class BearerAuthMiddleware:
             # tenant zero by fallback and make that wrong answer permanent and
             # self-confirming — so bind the token's own tenant here, exactly
             # as an agent key does.
-            with tenant_scope(api_key.tenant_id), log_context(
-                tenant_id=api_key.tenant_id
+            with (
+                tenant_scope(api_key.tenant_id),
+                log_context(tenant_id=api_key.tenant_id),
             ):
                 await self.app(scope, receive, send)
             return
