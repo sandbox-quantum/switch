@@ -9,7 +9,7 @@ export default defineConfig({
   },
   format: ['esm'],
   dts: true,
-  deps: {},
+  deps: { alwaysBundle: [/^jsonc-parser(?:\/|$)/] },
   sourcemap: true,
   clean: true,
 });
