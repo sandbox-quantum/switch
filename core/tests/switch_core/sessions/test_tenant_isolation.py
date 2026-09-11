@@ -18,6 +18,8 @@ from switch_core.db.models import (
     TenantNotBoundError,
     User,
 )
+from switch_core.db.stores.media_store import MediaStore
+from switch_core.sessions.attachments import attachment_uri
 from switch_core.sessions.contract import Session
 from switch_core.sessions.service import SessionAuthority, SessionError
 from switch_core.tenant_context import no_tenant, tenant_scope
@@ -121,6 +123,11 @@ async def test_same_session_and_attachment_ids_are_isolated_by_database_policy(
                 row.connection_id = "same-connection"
     for tenant in ("tenant-a", "tenant-b"):
         with tenant_scope(tenant):
+            async with rls_harness.owner() as db:
+                blob = await MediaStore().get(
+                    db, attachment_uri("session-demo", attachment_id)
+                )
+                assert blob.data == tenant.encode()
             async with rls_harness.restricted() as db:
                 for model in (
                     SdkSession,

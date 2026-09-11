@@ -487,6 +487,15 @@ async def test_stale_command_has_a_durable_rejection_and_never_executes(
     )
     assert await service.submit(message, user_id="owner", bridge_id=None) == receipt
     assert await service.pending("agent-demo", "session-demo", "host-demo", epoch) == []
+    with pytest.raises(SessionError) as conflict:
+        await service.submit(
+            message.model_copy(update={"epoch": epoch}), user_id="owner", bridge_id=None
+        )
+    assert conflict.value.code == "IDEMPOTENCY_CONFLICT"
+    fresh = message.model_copy(update={"epoch": epoch, "command_id": "fresh-message"})
+    assert (
+        await service.submit(fresh, user_id="owner", bridge_id=None)
+    ).status == "accepted"
 
 
 async def test_old_epoch_retry_returns_original_outcome_after_recovery(session_factory):
