@@ -36,11 +36,8 @@ import switch_core
 from switch_core.config import SwitchConfig
 from switch_core.db.models import TENANT_ZERO_ID, TenantMember, User
 from switch_core.db.stores.user_store import UserStore
-from switch_core.gateway.auth import (
-    TenantMembershipError,
-    hash_password,
-    sole_tenant_id,
-)
+from switch_core.db.tenant_lookup import tenants_of_user
+from switch_core.gateway.auth import hash_password
 from switch_core.main import _seed_admin_user
 from switch_core.tenant_context import tenant_scope
 
@@ -182,8 +179,7 @@ class TestWhatBeingStrandedCosts:
             await session.commit()
         await _strand_the_admin(session_factory, user_id)
 
-        with pytest.raises(TenantMembershipError):
-            await sole_tenant_id(session_factory, user_id)
+        assert await tenants_of_user(session_factory, user_id) == []
 
     async def test_creating_a_user_still_writes_one(
         self, session_factory: async_sessionmaker[AsyncSession]
@@ -206,13 +202,13 @@ class TestWhatBeingStrandedCosts:
 def test_there_is_one_way_to_write_a_membership() -> None:
     """`UserStore.ensure_membership` is it, and nothing else writes one.
 
-    "Exactly one membership per account" holds because a single idempotent
-    function writes them all. There was a `TenantMemberStore.create` beside
-    it, taking `tenant_id`, `user_id` and `role` from whatever the caller
-    felt like; nothing ever called it, and an unguarded second way in is how
-    an account ends up with two — which `sole_tenant_id` rejects just as
-    firmly as it rejects none. The store is gone, so this asserts the
-    property rather than the absence: only `UserStore` constructs a
+    Every membership traces back to a single idempotent function rather than
+    to every writer remembering to check first. There was a
+    `TenantMemberStore.create` beside it, taking `tenant_id`, `user_id` and
+    `role` from whatever the caller felt like; nothing ever called it, and an
+    unguarded second way in is how an account ends up with a membership
+    nothing else wrote or accounted for. The store is gone, so this asserts
+    the property rather than the absence: only `UserStore` constructs a
     `TenantMember`.
     """
     package = pathlib.Path(switch_core.__file__).resolve().parent

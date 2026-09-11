@@ -12,7 +12,8 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.authz import Action, Principal, require
 from switch_core.config import SwitchConfig
-from switch_core.db.models import Room, User
+from switch_core.db.models import Room, Tenant, User
+from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.user_store import UserStore
 from switch_core.db.tenant_lookup import tenants_of_user
@@ -22,6 +23,7 @@ from switch_core.gateway.dependencies import (
     get_session_factory,
     get_user_store,
 )
+from switch_core.gateway.schemas import TenantMembershipResponse
 from switch_core.logging_context import log_context
 from switch_core.tenant_context import tenant_scope
 
@@ -45,11 +47,22 @@ def verify_password(password: str, password_hash: str | None) -> bool:
     return result
 
 
-def create_jwt(user_id: str, email: str, role: str, secret_key: str) -> str:
+def create_jwt(
+    user_id: str, email: str, role: str, secret_key: str, tenant_id: str | None
+) -> str:
+    """Sign a session JWT. `tenant_id` is the caller's selected tenant, or
+    `None` for a session that has not selected one yet (a fresh login, or a
+    multi-membership account that has never called `/tenants/{id}/switch`).
+
+    The claim only ever *selects*: `_resolve_tenant_id` re-checks it against a
+    live membership row on every request, so a forged or stale value buys
+    nothing (`docs/old/multi-tenancy-phase2-tenants.md`, §3).
+    """
     payload = {
         "sub": user_id,
         "email": email,
         "role": role,
+        "tenant_id": tenant_id,
         "exp": datetime.datetime.now(datetime.UTC)
         + datetime.timedelta(hours=JWT_EXPIRY_HOURS),
         "iat": datetime.datetime.now(datetime.UTC),
@@ -58,17 +71,25 @@ def create_jwt(user_id: str, email: str, role: str, secret_key: str) -> str:
 
 
 def set_session_cookie(
-    response: Response, user: User, secret_key: str, secure: bool
+    response: Response,
+    user: User,
+    secret_key: str,
+    secure: bool,
+    tenant_id: str | None,
 ) -> None:
     """Mint the switch_auth session cookie for an authenticated user.
 
-    Shared by password login and the OIDC callback so the session contract
-    stays identical regardless of how the user proved their identity.
+    Shared by password login, the OIDC callback, `/auth/refresh` and
+    `/tenants/{id}/switch` so the session contract stays identical regardless
+    of how the user proved their identity or picked their tenant. Every one of
+    those four must pass `tenant_id` explicitly — `/auth/refresh` is the path
+    most likely to get this wrong, because it re-mints from the still-valid
+    `User` alone otherwise, silently dropping whatever tenant was selected.
 
     `secure` gates the Secure flag: True on HTTPS deployments so the JWT is
     never sent over plain HTTP, False for local dev served over http://.
     """
-    token = create_jwt(user.id, user.email, user.role, secret_key)
+    token = create_jwt(user.id, user.email, user.role, secret_key, tenant_id)
     response.set_cookie(
         key="switch_auth",
         value=token,
@@ -89,110 +110,175 @@ def decode_jwt(token: str, secret_key: str) -> dict:
         raise HTTPException(status_code=401, detail="Invalid token")
 
 
-class TenantMembershipError(Exception):
-    """A user has zero, or more than one, tenant memberships.
+async def _authenticate(
+    request: Request,
+    session_factory: async_sessionmaker[AsyncSession],
+    user_store: UserStore,
+    config: SwitchConfig,
+) -> dict:
+    """Decode the switch_auth cookie and confirm its subject still exists.
 
-    Phase 1 has exactly one tenant, so exactly one membership row is the only
-    correct state: zero means the user was never enrolled (a bug in whatever
-    created the account), and more than one is Phase 2's tenant-switching
-    shape arriving early. Either way this must not be resolved by picking
-    one — see `docs/old/multi-tenancy-phase1-db.md`, "Setting the tenant".
-
-    Raised, not returned, but not left to reach the client either:
-    `get_current_user` below turns it into a 403 naming no user id, so a
-    broken account gets an answer an operator can act on instead of a bare
-    500.
+    Nothing here binds a tenant — both reads are on `users`, which carries no
+    tenant column and so no policy, so a session with nothing bound is the
+    honest way to read it. Shared by `get_current_user` (which goes on to bind
+    one) and `get_authenticated_user_id` (which deliberately does not).
     """
+    token = request.cookies.get("switch_auth")
+    if token is None:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    payload = decode_jwt(token, config.jwt_secret_key)
+    async with session_factory() as system_session:
+        if not await user_store.exists(system_session, payload["sub"]):
+            raise HTTPException(status_code=401, detail="User not found")
+    return payload
 
 
-async def sole_tenant_id(
-    session_factory: async_sessionmaker[AsyncSession], user_id: str
+async def get_authenticated_user_id(
+    request: Request,
+    session_factory: Annotated[
+        async_sessionmaker[AsyncSession], Depends(get_session_factory)
+    ],
+    user_store: Annotated[UserStore, Depends(get_user_store)],
+    config: Annotated[SwitchConfig, Depends(get_config)],
 ) -> str:
-    """The one tenant this user belongs to, raising if that isn't true.
+    """The caller's user id, authenticated but with no tenant bound.
 
-    Here rather than on a store, and that placement is the point. This is the
-    only caller there has ever been, and it is an authentication step: the
-    JWT names a person, and a person is global (`users` carries no tenant),
-    so something has to turn "who" into "which tenant" before a scoped session
-    can exist at all.
-
-    It goes through `tenants_of_user`, one of the seven `SECURITY DEFINER`
-    lookups that make up the whole exemption from row-level security
-    (`db/tenant_lookup.py`), which opens a session of its own with nothing
-    bound and answers with tenant ids and nothing else. `tenant_members` is a
-    scoped table, so a session cannot read the row that would tell it what to
-    be scoped to; a plain `select` here worked only because every environment
-    once connected as the tables' owner, and under the restricted runtime role
-    it is one of the reads the policy refuses.
-
-    That is also why this is a function and not an injected dependency. It
-    reaches the exemption with an arbitrary user id, and as a store on the
-    dependency graph any endpoint could declare it and do the same. The
-    exemption's audit surface is the list of modules that import a lookup
-    (`tests/switch_core/db/test_tenant_exemption_allowlist.py`), and a
-    reachable-from-anywhere wrapper made that list say less than it looked
-    like it said.
-
-    Refusing rather than picking, on both sides of "exactly one": zero
-    memberships is an account that was never enrolled, and two is a decision
-    about which tenant's data the caller is about to see. Neither is a thing
-    to guess at. Membership is written by exactly one function,
-    `UserStore.ensure_membership`, which is idempotent and derives the role
-    from the user — so "every account has exactly one" holds by construction
-    rather than by every writer remembering, and a second, unguarded way to
-    write one is how an account ends up with two.
+    For the one route that must answer before a tenant can be chosen:
+    `GET /tenants` and `POST /tenants/{id}/switch` (`gateway/tenants.py`). A
+    caller with several memberships and no selection cannot reach
+    `get_current_user` at all — that is the whole point of the 409 it raises —
+    so listing and switching have to authenticate independently of it.
     """
-    tenant_ids = await tenants_of_user(session_factory, user_id)
-    if len(tenant_ids) != 1:
-        raise TenantMembershipError(
-            f"user {user_id} has {len(tenant_ids)} tenant memberships; expected exactly 1"
+    payload = await _authenticate(request, session_factory, user_store, config)
+    return payload["sub"]  # type: ignore[no-any-return]
+
+
+async def is_tenant_member(
+    session_factory: async_sessionmaker[AsyncSession], user_id: str, tenant_id: str
+) -> bool:
+    """Whether `user_id` has a membership in `tenant_id`.
+
+    Backs `POST /tenants/{id}/switch`: the claim it goes on to mint never
+    authorises by itself (`_resolve_tenant_id` re-checks it on every request
+    regardless), but switching still must not let someone select a tenant
+    they do not belong to.
+    """
+    return tenant_id in await tenants_of_user(session_factory, user_id)
+
+
+async def list_tenant_memberships(
+    session_factory: async_sessionmaker[AsyncSession],
+    user_store: UserStore,
+    user_id: str,
+) -> list[TenantMembershipResponse]:
+    """Every tenant `user_id` belongs to: id, slug, name, and their role in it.
+
+    Backs `GET /tenants`, and the body of the 409 `_resolve_tenant_id` raises
+    when there is no claim to bind and several memberships to choose from —
+    the same question asked at a different moment
+    (`docs/old/multi-tenancy-phase2-tenants.md`, §7).
+
+    Never holds two connections at once. `tenants_of_user` is its own
+    short session with nothing bound; each tenant after that is read on its
+    own short `tenant_session`, opened and closed before the next one starts.
+    A request reaching this has no other session open — `get_current_user` is
+    exactly what this exists to run *before* — so nothing here needs the
+    guarantee, but the shape is worth keeping anyway: looping bound sessions
+    from inside a request that already holds one is the mistake this design
+    explicitly rejects.
+    """
+    memberships: list[TenantMembershipResponse] = []
+    for tenant_id in await tenants_of_user(session_factory, user_id):
+        async with tenant_session(session_factory, tenant_id) as session:
+            tenant = await session.get(Tenant, tenant_id)
+            role = await user_store.tenant_role(session, tenant_id, user_id)
+        if tenant is None or role is None:
+            # tenants_of_user just said this tenant has a membership row for
+            # this user; either read failing to confirm it a moment later is
+            # a genuine race (removed between the two calls), not a bug to
+            # paper over by including a tenant we can no longer describe.
+            logger.warning(
+                "tenants_of_user named tenant %s for user %s, but it or the "
+                "membership row was gone by the time it was read",
+                tenant_id,
+                user_id,
+            )
+            continue
+        memberships.append(
+            TenantMembershipResponse(
+                id=tenant.id, slug=tenant.slug, name=tenant.name, role=role
+            )
         )
-    return tenant_ids[0]
+    return memberships
 
 
 async def _resolve_tenant_id(
     session_factory: async_sessionmaker[AsyncSession],
     user_store: UserStore,
     user_id: str,
+    tenant_claim: str | None,
+    choice_enabled: bool,
 ) -> str:
-    """Which tenant the JWT's subject belongs to, before one is bound.
+    """Which tenant a request binds, in the order set out in
+    `docs/old/multi-tenancy-phase2-tenants.md`, §4:
 
-    Two reads, and they are unbound for different reasons. `users` carries no
-    tenant at all — a person is not a tenant member — so the existence check
-    is an ordinary read on a session with nothing bound. The membership read
-    is not: `tenant_members` is scoped, and this is the lookup that decides
-    what to scope to, so it goes through the `SECURITY DEFINER` exemption
-    (`db/tenant_lookup.py`) rather than through a session the policy would
-    refuse.
+    1. A claim naming a tenant the caller belongs to → bind it.
+    2. A claim naming a tenant the caller does not belong to → 403. The cookie
+       is not cleared here: it is `lax`, so a cross-site navigation can reach
+       this path, and any page resetting someone's selection on a stale or
+       forged claim would be a worse failure than answering 403 and leaving
+       the session alone. Clearing belongs on a dedicated endpoint.
+    3. No claim, exactly one membership → bind it. Every session issued before
+       this change, and every single-workspace account forever, lands here.
+    4. No claim, several memberships → the choose-one response, gated on
+       `choice_enabled` because it is a breaking change for a client that has
+       never had to handle it. Off, this falls through to the same 403 as
+       case 5 — the exact behaviour every account had before this change,
+       since two memberships did not exist for anyone to reach it.
+    5. No memberships → 403.
 
-    Both are short-lived on purpose. Held as a yield dependency instead, they
-    would keep a second pooled connection — idle in transaction, since the
-    lookup autobegins one nothing ever ends — for the whole request, halving
-    effective pool capacity.
-
-    Nothing loaded here escapes: the caller re-reads the `User` from the
-    request's own session, so the object an endpoint mutates belongs to the
-    session that endpoint commits.
+    `tenants_of_user` is read once and used for every case below it, rather
+    than once per case, so this is one round trip to the exemption regardless
+    of which case answers.
     """
-    async with session_factory() as system_session:
-        if not await user_store.exists(system_session, user_id):
-            raise HTTPException(status_code=401, detail="User not found")
-    try:
-        return await sole_tenant_id(session_factory, user_id)
-    except TenantMembershipError as exc:
-        # Phase 1 has exactly one tenant, so anything but one membership is a
-        # provisioning bug, not a credential problem — but the caller still
-        # deserves a legible answer instead of an opaque 500. The detail names
-        # no user id: it is rendered to whoever is holding the cookie, not to
-        # the operator, who gets the id from the log.
-        logger.error("Cannot resolve a tenant for user %s: %s", user_id, exc)
+    memberships = await tenants_of_user(session_factory, user_id)
+
+    if tenant_claim is not None:
+        if tenant_claim in memberships:
+            return tenant_claim
+        logger.warning(
+            "Tenant claim %s for user %s names no membership", tenant_claim, user_id
+        )
         raise HTTPException(
             status_code=403,
             detail=(
-                "This account is not a member of exactly one tenant; "
+                "This account is not a member of the selected tenant; "
                 "ask an administrator to check its membership."
             ),
-        ) from exc
+        )
+
+    if len(memberships) == 1:
+        return memberships[0]
+
+    if len(memberships) > 1 and choice_enabled:
+        choices = await list_tenant_memberships(session_factory, user_store, user_id)
+        raise HTTPException(
+            status_code=409,
+            detail=[choice.model_dump() for choice in choices],
+        )
+
+    logger.error(
+        "Cannot resolve a tenant for user %s: %d memberships and no selection",
+        user_id,
+        len(memberships),
+    )
+    raise HTTPException(
+        status_code=403,
+        detail=(
+            "This account is not a member of exactly one tenant; "
+            "ask an administrator to check its membership."
+        ),
+    )
 
 
 async def get_current_user(
@@ -214,14 +300,23 @@ async def get_current_user(
     the same session FastAPI hands the endpoint, so an endpoint that mutates
     this object and commits that session persists the change. Loading it from
     anywhere else silently discards writes.
-    """
-    token = request.cookies.get("switch_auth")
-    if token is None:
-        raise HTTPException(status_code=401, detail="Not authenticated")
-    payload = decode_jwt(token, config.jwt_secret_key)
-    user_id = payload["sub"]
 
-    tenant_id = await _resolve_tenant_id(session_factory, user_store, user_id)
+    The resolved tenant is stamped on `request.state` so `/auth/refresh` can
+    re-mint the cookie carrying it forward — the one mint that has no other
+    way to learn which tenant this session had selected.
+    """
+    payload = await _authenticate(request, session_factory, user_store, config)
+    user_id = payload["sub"]
+    tenant_claim = payload.get("tenant_id")
+
+    tenant_id = await _resolve_tenant_id(
+        session_factory,
+        user_store,
+        user_id,
+        tenant_claim,
+        config.gateway_tenant_choice_enabled,
+    )
+    request.state.tenant_id = tenant_id
 
     with tenant_scope(tenant_id), log_context(user_id=user_id, tenant_id=tenant_id):
         user = await user_store.get(session, user_id)

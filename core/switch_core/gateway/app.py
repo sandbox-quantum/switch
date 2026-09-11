@@ -39,6 +39,7 @@ from switch_core.gateway.room_groups import router as room_groups_router
 from switch_core.gateway.room_links import router as room_links_router
 from switch_core.gateway.rooms import router as rooms_router
 from switch_core.gateway.templates import router as templates_router
+from switch_core.gateway.tenants import router as tenants_router
 from switch_core.room_service import RoomService
 
 
@@ -101,6 +102,7 @@ def create_gateway_app(
 
     app.include_router(auth_router, tags=["auth"])
     app.include_router(oidc_router, tags=["auth"])
+    app.include_router(tenants_router, tags=["tenants"])
     app.include_router(rooms_router, prefix="/rooms", tags=["rooms"])
     app.include_router(room_groups_router, prefix="/room-groups", tags=["room-groups"])
     app.include_router(agents_router, prefix="/agents", tags=["agents"])
