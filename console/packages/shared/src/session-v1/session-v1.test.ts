@@ -57,6 +57,26 @@ function transport() {
 }
 
 describe('session-v1 wire contract', () => {
+  it('accepts server approval expiry offsets in snapshots and events', () => {
+    const expiresAt = '2026-09-11T15:30:00.123456+00:00';
+    const snapshot = initial();
+    snapshot.requests[0].expiresAt = expiresAt;
+    expect(snapshotSchema.parse(snapshot).requests[0].expiresAt).toBe(expiresAt);
+    const request = { ...examples.hostRequest.body.request, expiresAt };
+    expect(() =>
+      serverEventSchema.parse({
+        ...event(11, { type: 'session.connectivity', connectivity: 'online' }),
+        body: { type: 'request.opened', request },
+      })
+    ).not.toThrow();
+    expect(() =>
+      snapshotSchema.parse({
+        ...snapshot,
+        requests: [{ ...snapshot.requests[0], expiresAt: '2026-09-11T15:30:00' }],
+      })
+    ).toThrow();
+  });
+
   it('validates the agreed examples and renders settlement after submitting', () => {
     commandSchema.parse(examples.platformAnswer);
     parseHostEvent(examples.hostRequest);

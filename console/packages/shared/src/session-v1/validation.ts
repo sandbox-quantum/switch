@@ -5,7 +5,7 @@ const id = z.string().min(1);
 const counter = z.number().int().min(0).max(Number.MAX_SAFE_INTEGER);
 const revision = counter;
 const sequence = counter.min(1);
-const timestamp = z.iso.datetime();
+const timestamp = z.iso.datetime({ offset: true });
 const surface = z.enum([
   'console',
   'switch-web',
