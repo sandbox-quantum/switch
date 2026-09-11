@@ -34,7 +34,11 @@ export async function fenceDeadOwner(pid: number, group: number | null): Promise
     throw error;
   }
   for (let attempt = 0; attempt < 100; attempt++) {
-    if (!exists(-group)) return;
+    try {
+      if (!exists(-group)) return;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EPERM') throw error;
+    }
     await delay(50);
   }
   throw new Error('FENCING_REQUIRED: the previous provider process group has not exited.');
