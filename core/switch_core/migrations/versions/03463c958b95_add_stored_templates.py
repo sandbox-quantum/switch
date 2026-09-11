@@ -21,7 +21,7 @@ SWITCH_EXPERT_ID = "00000000-0000-0000-0000-000000000001"
 
 
 def _load_persona() -> str:
-    persona_path = Path(__file__).resolve().parents[3] / "switch-expert" / "AGENT.md"
+    persona_path = Path(__file__).resolve().parents[4] / "switch-expert" / "AGENT.md"
     return persona_path.read_text()
 
 
