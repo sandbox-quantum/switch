@@ -1,4 +1,4 @@
-import { ArrowRight, Check, FileText, Loader2, Upload, X } from 'lucide-react';
+import { ArrowRight, Check, FileText, Loader2, Plus, Upload, X } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { toast } from 'sonner';
@@ -10,6 +10,7 @@ import { ServerSectionTitlebar } from '@renderer/features/switch-servers/server-
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
 import { useParams } from '@renderer/lib/layout/navigation-provider';
+import { useShowModal } from '@renderer/lib/modal/modal-provider';
 import { appState } from '@renderer/lib/stores/app-state';
 import { useRemoteAgents } from '@renderer/lib/stores/use-remote-agents';
 import { Alert, AlertDescription } from '@renderer/lib/ui/alert';
@@ -144,12 +145,14 @@ function ParamField({
   onChange,
   error,
   agentNames,
+  onCreateAgent,
 }: {
   param: ParamSpec;
   value: string | number | boolean;
   onChange: (v: string | number | boolean) => void;
   error: string | null;
   agentNames: string[];
+  onCreateAgent?: (name: string) => void;
 }) {
   const isRequired = param.default === null;
   const hasDefault = param.default !== null;
@@ -295,7 +298,19 @@ function ParamField({
                 {strVal} · exists <Check className="inline size-3" />
               </>
             ) : (
-              `not found`
+              <>
+                not found
+                {onCreateAgent && (
+                  <button
+                    type="button"
+                    onClick={() => onCreateAgent(strVal)}
+                    className="ml-1.5 inline-flex items-center gap-0.5 text-xs text-foreground-muted hover:text-foreground"
+                    title="Create this agent"
+                  >
+                    <Plus className="inline size-3" /> Create
+                  </button>
+                )}
+              </>
             )}
           </span>
         )}
@@ -454,6 +469,7 @@ function EditableNameList({
   knownNames,
   nameKind,
   missingLabel = 'not found',
+  onCreateMissing,
 }: {
   label: string;
   helperText: string;
@@ -462,6 +478,7 @@ function EditableNameList({
   knownNames: string[];
   nameKind: string;
   missingLabel?: string;
+  onCreateMissing?: (name: string) => void;
 }) {
   if (items.length === 0) return null;
   return (
@@ -484,7 +501,19 @@ function EditableNameList({
                       exists <Check className="inline size-3" />
                     </>
                   ) : (
-                    missingLabel
+                    <>
+                      {missingLabel}
+                      {onCreateMissing && (
+                        <button
+                          type="button"
+                          onClick={() => onCreateMissing(item)}
+                          className="ml-1.5 inline-flex items-center gap-0.5 text-xs text-foreground-muted hover:text-foreground"
+                          title={`Create ${nameKind}`}
+                        >
+                          <Plus className="inline size-3" /> Create
+                        </button>
+                      )}
+                    </>
                   )}
                 </span>
               </div>
@@ -524,6 +553,7 @@ function InputsStep({
   knownUserNames,
   creatorIdentity,
   bridgeName,
+  onCreateAgent,
 }: {
   parsed: ParsedTemplate;
   values: Record<string, string | number | boolean>;
@@ -541,6 +571,7 @@ function InputsStep({
   knownUserNames: string[];
   creatorIdentity: string | null;
   bridgeName: string | null;
+  onCreateAgent?: (name: string) => void;
 }) {
   const handleChange = useCallback(
     (name: string, value: string | number | boolean) => {
@@ -567,6 +598,7 @@ function InputsStep({
               onChange={(v) => handleChange(param.name, v)}
               error={fieldErrors[param.name] ?? null}
               agentNames={agentNames}
+              onCreateAgent={param.isAgentName ? onCreateAgent : undefined}
             />
           ))}
           <EditableNameList
@@ -576,6 +608,7 @@ function InputsStep({
             onChange={onEditedAgentsChange}
             knownNames={agentNames}
             nameKind="agent"
+            onCreateMissing={onCreateAgent}
           />
           <EditableNameList
             label="Users"
@@ -627,6 +660,14 @@ const TemplateImportPanel = observer(function TemplateImportPanel() {
   const serverId = useServerId();
   const agents = useRemoteAgents(serverId);
   const agentNames = useMemo(() => (agents.data ?? []).map((a) => a.name), [agents.data]);
+  const showAddAgentModal = useShowModal('addAgentModal');
+
+  const handleCreateAgent = useCallback(
+    (name: string) => {
+      showAddAgentModal({ entryPoint: 'server_page', prefillName: name });
+    },
+    [showAddAgentModal]
+  );
 
   const [step, setStep] = useState<Step>('source');
   const [yamlText, setYamlText] = useState('');
@@ -855,6 +896,7 @@ const TemplateImportPanel = observer(function TemplateImportPanel() {
             knownUserNames={knownUserNames}
             creatorIdentity={creatorIdentity}
             bridgeName={templateBridge?.displayName ?? parsed.bridge}
+            onCreateAgent={handleCreateAgent}
           />
         </>
       )}
