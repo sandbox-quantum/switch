@@ -1,4 +1,4 @@
-"""The whole exemption from row-level security, written out as seven functions.
+"""The whole exemption from row-level security, written out as eight functions.
 
 Row-level security is enforced by `require_tenant_id()` (`db/rls_ddl.py`),
 which raises when no tenant is bound. That is the property everything else
@@ -32,7 +32,8 @@ worth having:
 - **They are a closed list.** `TENANT_LOOKUPS` below is the list; a test
   compares it against the functions actually installed, against the
   migration's frozen copy, and against what each one answers when called as
-  the restricted role. Adding an eighth is an edit a reviewer sees.
+  the restricted role. Adding one is an edit a reviewer sees, and is meant to
+  be argued with rather than waved through.
 
 **What the exemption gives, stated exactly.** Every lookup returns `setof
 text` — tenant ids, never a row of a scoped table. That much is the part
@@ -63,8 +64,8 @@ them about *metadata* rather than rows:
 
 So the property this design actually holds is: **the exemption discloses the
 shape of the deployment — which tenants exist, and which tenant a given user,
-credential, room, bridge or connector belongs to — and no row of any
-tenant-scoped table.** It is a boundary on data, not on metadata. Narrowing
+credential, room, bridge, connector or invitation belongs to — and no row of
+any tenant-scoped table.** It is a boundary on data, not on metadata. Narrowing
 the second is a question about who may hold the runtime role's credentials at
 all, since everything above is reachable by anyone who has them.
 
@@ -85,7 +86,7 @@ not are now one of three shapes, and the shape is the interesting part:
    identifier the caller already has, and everything after it is scoped.
 
 **A lookup whose caller already knows the answer does not belong here.** There
-was an eighth, `tenant_of_client`, and it was the one called most: every
+was one more, `tenant_of_client`, and it was the one called most: every
 client's transport asked it, once per transport, and so did every agent
 client's `start`. Both were built from a `clients` row that names the tenant
 in a column, so the question was asked of the database with the answer already
@@ -94,6 +95,16 @@ they take a `client_id`, and revision `b1d7c4f0a92e` drops the function. The
 test that keeps the list honest is the one that would have let this stand: a
 function nobody needs is still a function every role could call, so the shorter
 list is the whole point of noticing.
+
+**`tenant_of_invitation` is the eighth, and it is the same shape as
+`tenant_of_api_key`.** Accepting an invitation is credential resolution: the
+request carries a token and nothing else, no tenant is bound yet, and the
+table it would have to read (`invitations`) is tenant-scoped like everything
+else, so the policy refuses exactly the read that has to happen first. Resolve
+the tenant here, bind it, then read the invitation itself — its role, its
+email, whether it is spent or revoked — through the ordinary scoped store.
+Nothing about *that* row crosses the exemption; only the tenant id does, which
+is the property every lookup in this module rests on.
 
 Why not the obvious alternatives is argued in
 `docs/old/multi-tenancy-phase1-db.md`, "The bootstrap problem"; the short
@@ -258,6 +269,18 @@ TENANT_LOOKUPS: tuple[TenantLookup, ...] = (
         query="SELECT tenant_id FROM server_connectors WHERE id = p_connector_id",
         purpose="Same as the bridge, for a server-side connector.",
     ),
+    TenantLookup(
+        name="tenant_of_invitation",
+        argument="token_hash",
+        query="SELECT tenant_id FROM invitations WHERE token_hash = p_token_hash",
+        purpose=(
+            "Which tenant an invitation belongs to, resolved from the hash of "
+            "its token before any tenant is bound — the same credential-"
+            "resolution shape as a bearer token, and necessary for the same "
+            "reason: accepting an invitation is exactly the read the policy "
+            "refuses to a session with nothing bound yet."
+        ),
+    ),
 )
 
 TENANT_LOOKUPS_BY_NAME: dict[str, TenantLookup] = {
@@ -313,9 +336,9 @@ def attach_tenant_lookups(metadata: MetaData) -> None:
 # ── Calling them ──────────────────────────────────────────────────────────────
 
 # One `text()` per lookup, written out rather than assembled from `lookup.name`
-# at call time: the seven names are fixed and known here, so there is nothing
+# at call time: the eight names are fixed and known here, so there is nothing
 # for a call site to build. The assertion below is what keeps this dict from
-# quietly falling behind `TENANT_LOOKUPS` — an eighth lookup with no entry
+# quietly falling behind `TENANT_LOOKUPS` — a ninth lookup with no entry
 # here fails at import, not with a `KeyError` on whatever request reaches it
 # first.
 _LOOKUP_STATEMENTS: dict[str, TextClause] = {
@@ -337,6 +360,9 @@ _LOOKUP_STATEMENTS: dict[str, TextClause] = {
     ),
     "tenant_of_server_connector": text(
         "SELECT tenant_id FROM tenant_of_server_connector(:argument) AS tenant_id"
+    ),
+    "tenant_of_invitation": text(
+        "SELECT tenant_id FROM tenant_of_invitation(:argument) AS tenant_id"
     ),
 }
 
@@ -426,3 +452,10 @@ async def tenant_of_server_connector(
 ) -> str | None:
     lookup = TENANT_LOOKUPS_BY_NAME["tenant_of_server_connector"]
     return _at_most_one(lookup, await _call(session_factory, lookup, connector_id))
+
+
+async def tenant_of_invitation(
+    session_factory: async_sessionmaker[AsyncSession], token_hash: str
+) -> str | None:
+    lookup = TENANT_LOOKUPS_BY_NAME["tenant_of_invitation"]
+    return _at_most_one(lookup, await _call(session_factory, lookup, token_hash))
