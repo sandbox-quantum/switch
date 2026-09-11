@@ -1100,6 +1100,23 @@ export async function fetchTemplateSchema(
   }
 }
 
+/**
+ * Save a template to the server's template library (`POST /templates`).
+ * Returns the created template's id.
+ */
+export async function addTemplateToLibrary(
+  server: SwitchServer,
+  params: { name: string; description?: string; kind?: string; content: string }
+): Promise<{ id: string }> {
+  const res = await gatewayFetch(server, '/templates', {
+    authenticated: true,
+    method: 'POST',
+    body: params,
+  });
+  const json = (await res.json()) as { id: string };
+  return json;
+}
+
 export async function fetchRoomRoles(
   server: SwitchServer,
   roomId: string

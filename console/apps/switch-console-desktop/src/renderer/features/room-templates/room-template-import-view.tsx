@@ -1,4 +1,4 @@
-import { ArrowRight, Check, Clock, FileText, Loader2, Upload, X } from 'lucide-react';
+import { ArrowRight, Check, Clock, FileText, Library, Loader2, Upload, X } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { toast } from 'sonner';
@@ -106,20 +106,39 @@ function RecentsSection({
         ) : (
           <div className="flex flex-col gap-1">
             {recents.map((r, i) => (
-              <button
-                key={i}
-                type="button"
-                onClick={() => onSelect(r.yamlText, r.name)}
-                className="hover:bg-accent flex items-center justify-between rounded-md border border-border px-3 py-2 text-left text-sm transition-colors"
-              >
-                <span className="flex items-center gap-2 truncate">
-                  <FileText className="size-3.5 shrink-0 text-foreground-muted" />
-                  {r.name}
-                </span>
-                <span className="shrink-0 text-xs text-foreground-passive">
-                  {formatTimeAgo(r.usedAt)}
-                </span>
-              </button>
+              <div key={i} className="flex items-center gap-1">
+                <button
+                  type="button"
+                  onClick={() => onSelect(r.yamlText, r.name)}
+                  className="hover:bg-accent flex flex-1 items-center justify-between rounded-md border border-border px-3 py-2 text-left text-sm transition-colors"
+                >
+                  <span className="flex items-center gap-2 truncate">
+                    <FileText className="size-3.5 shrink-0 text-foreground-muted" />
+                    {r.name}
+                  </span>
+                  <span className="shrink-0 text-xs text-foreground-passive">
+                    {formatTimeAgo(r.usedAt)}
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  title="Add to library"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    rpc.switchServers
+                      .addTemplateToLibrary({
+                        serverId,
+                        name: r.name,
+                        content: r.yamlText,
+                      })
+                      .then(() => toast.success(`"${r.name}" added to library`))
+                      .catch((err) => toast.error(failureText(err, 'Could not add to library')));
+                  }}
+                  className="hover:bg-accent shrink-0 rounded-md p-2 text-foreground-muted transition-colors hover:text-foreground"
+                >
+                  <Library className="size-3.5" />
+                </button>
+              </div>
             ))}
           </div>
         )}

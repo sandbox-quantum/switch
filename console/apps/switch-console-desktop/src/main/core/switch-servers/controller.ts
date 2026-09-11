@@ -106,6 +106,7 @@ import {
   GatewayError,
   ownsOwnerAddressedAgent,
   releaseBridgeIdentity,
+  addTemplateToLibrary,
   createRoomFromTemplate,
   fetchTemplateSchema,
   removeRoomAgent,
@@ -560,6 +561,20 @@ export const switchServersController = createRPCController({
 
   fetchTemplateSchema: async (serverId: string): Promise<Record<string, unknown> | null> =>
     fetchTemplateSchema(await requireServer(serverId)),
+
+  addTemplateToLibrary: async (params: {
+    serverId: string;
+    name: string;
+    description?: string;
+    kind?: string;
+    content: string;
+  }): Promise<{ id: string }> =>
+    addTemplateToLibrary(await requireServer(params.serverId), {
+      name: params.name,
+      description: params.description,
+      kind: params.kind,
+      content: params.content,
+    }),
 
   listAgentRooms: async (params: {
     serverId: string;
