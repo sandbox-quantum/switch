@@ -5,6 +5,7 @@ import logging
 import pytest
 
 from switch_core.config import SwitchConfig
+from switch_core.db.models import TENANT_ZERO_ID, TenantNotBoundError, require_tenant_id
 from switch_core.logging_config import build_handler
 from switch_core.logging_context import (
     CONTEXT_FIELDS,
@@ -14,6 +15,7 @@ from switch_core.logging_context import (
     log_context,
     unbind_log_context,
 )
+from switch_core.tenant_context import current_tenant_id, tenant_scope
 
 BASE_ENV = {
     "DB_HOST": "localhost",
@@ -253,3 +255,61 @@ def test_bound_tenant_beats_the_deployment_default() -> None:
         LogContextFilter("default").filter(record)
 
     assert record.tenant_id == "tenant-b"
+
+
+class TestTheLogAgreesWithTheDatabase:
+    """A line must not name a tenant other than the one being written.
+
+    Background work binds its tenant through `tenant_context`, not through
+    `log_context` — and that is the binding `db/tenant_session.py` turns into
+    `set_config('app.tenant_id')`, so it is where the rows go. The filter
+    ignored it, so the startup seeding wrote into tenant zero's uuid and
+    logged `tenant_id=default`. That is not a shorter spelling of the same
+    thing: it names a different tenant, and one that appears in no table.
+    """
+
+    def test_the_tenant_the_transaction_writes_is_the_one_logged(self) -> None:
+        record = logging.LogRecord(
+            "x", logging.INFO, __file__, 1, "m", args=(), exc_info=None
+        )
+
+        with tenant_scope(TENANT_ZERO_ID):
+            # The value a scoped column's default would stamp on a row written
+            # right here — read from the same place, so the two cannot drift.
+            written = require_tenant_id()
+            LogContextFilter("default").filter(record)
+
+        assert record.tenant_id == written
+
+    def test_a_request_binding_still_wins_over_it(self) -> None:
+        """`gateway/auth.py` binds both and they agree. If they ever did not,
+        the one the request resolved is the caller's own and is the more
+        specific answer."""
+        record = logging.LogRecord(
+            "x", logging.INFO, __file__, 1, "m", args=(), exc_info=None
+        )
+
+        with tenant_scope(TENANT_ZERO_ID), log_context(tenant_id="tenant-b"):
+            LogContextFilter("default").filter(record)
+
+        assert record.tenant_id == "tenant-b"
+
+    def test_with_nothing_bound_the_placeholder_stands(self) -> None:
+        """And it is safe for it to, because nothing scoped can be written
+        from here: `require_tenant_id` raises rather than choosing a tenant.
+        So the placeholder contradicts no row."""
+        record = logging.LogRecord(
+            "x", logging.INFO, __file__, 1, "m", args=(), exc_info=None
+        )
+
+        assert current_tenant_id() is None
+        LogContextFilter("default").filter(record)
+
+        assert record.tenant_id == "default"
+        with pytest.raises(TenantNotBoundError):
+            require_tenant_id()
+
+    def test_the_placeholder_is_not_a_real_tenant_id(self) -> None:
+        """Naming tenant zero here would file every unattributed line under a
+        real customer's id, which is worse than saying nothing at all."""
+        assert SwitchConfig.model_fields["tenant_id"].default != TENANT_ZERO_ID

@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from switch_core.bridges.collaboration.bridge_core import BridgeCore
 from switch_core.bridges.collaboration.models import DirectoryUser
 from switch_core.db.models import (
+    TENANT_ZERO_ID,
     Client,
     CollaborationBridge,
     ExternalUser,
@@ -102,6 +103,7 @@ def _core(
     core._user_puppets = {}
     core._puppet_locks = {}
     core._puppet_matrix_ids = set()
+    core._bridge_tenant_id = TENANT_ZERO_ID
     return core
 
 

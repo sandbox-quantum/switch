@@ -26,7 +26,7 @@ init-env:
       exit 1
     fi
     cp .env.example .env
-    for key in DB_PASSWORD \
+    for key in DB_PASSWORD DB_OWNER_PASSWORD \
                AGENT_REGISTRATION_TOKEN JWT_SECRET_KEY GATEWAY_ADMIN_PASSWORD \
                MATTERMOST_ADMIN_PASSWORD MATTERMOST_USER_PASSWORD; do
       secret="$(openssl rand -hex 24)"
@@ -38,7 +38,26 @@ init-env:
     echo "   The stack binds to 127.0.0.1 only (set SWITCH_BIND_ADDR to expose it)."
 
 # ── Dev infrastructure ─────────────────────────────────────────────────────────
+# Refuses an `.env` written before the two-role split, rather than starting a
+# stack that cannot work. Without DB_OWNER_USER the postgres container comes up
+# with an empty POSTGRES_USER, and the failure surfaces several steps later as
+# something that looks unrelated. `just init-env` fills both for a new `.env`
+# and deliberately never touches an existing one, so an `.env` from before this
+# change is the ordinary case rather than an exotic one — worth one check here
+# instead of a puzzle for whoever hits it.
 up:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [ -z "${DB_OWNER_USER:-}" ] || [ -z "${DB_OWNER_PASSWORD:-}" ]; then
+      echo "✋ No DB_OWNER_USER / DB_OWNER_PASSWORD in .env." >&2
+      echo "   Switch runs as a restricted database role now, and the schema" >&2
+      echo "   owner is configured separately. Add both (see .env.example)," >&2
+      echo "   set DB_USER=switch_app, and run 'just reset' so the Postgres" >&2
+      echo "   volume is rebuilt with the runtime role created — 'init-db'" >&2
+      echo "   only creates it on a fresh volume." >&2
+      echo "   docs/old/LOCAL_DEVELOPMENT.md, 'Two database roles, not one'." >&2
+      exit 1
+    fi
     docker compose -f deploy/local/docker-compose.yml --project-directory . up -d --build
 
 down:

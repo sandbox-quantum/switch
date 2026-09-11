@@ -28,6 +28,7 @@ from switch_core.bridges.collaboration.teams.crypto import (
     generate_encryption_keypair,
     load_certificate_der_b64,
 )
+from switch_core.tenant_context import tenant_scope
 
 
 def _raw_config(**overrides: Any) -> dict[str, Any]:
@@ -380,7 +381,37 @@ def test_outbound_only_adapters_claim_nothing() -> None:
     assert CollaborationAdapter.exclusive_resource({}) is None
 
 
-def _service_with_existing(existing: list[Any]) -> CollaborationBridgeLifecycleService:
+# The one tenant these tests pretend the deployment has. Named rather than
+# repeated: the stubbed lookup answers with it, and the fake rows have to
+# carry it, or the per-tenant filter in `_reject_resource_conflict` drops them.
+_STUB_TENANT = "tenant-a"
+
+
+def _stub_tenant_lookups(
+    monkeypatch: pytest.MonkeyPatch, tenant_id: str = _STUB_TENANT
+) -> None:
+    """Stand in for the exemption (`db/tenant_lookup.py`) with a fixed tenant.
+
+    It issues its own SQL against a real session, which these tests have
+    nothing to run against — they fake the store directly. What they exercise
+    is the exclusivity logic downstream of the lookup; that the lookup itself
+    resolves the right tenant across a real, multi-tenant database is
+    `test_lifecycle_tenant_binding.py`'s job.
+    """
+    monkeypatch.setattr(
+        "switch_core.bridges.collaboration.lifecycle_service.all_tenant_ids",
+        AsyncMock(return_value=[tenant_id]),
+    )
+    monkeypatch.setattr(
+        "switch_core.bridges.collaboration.lifecycle_service.tenant_of_collaboration_bridge",
+        AsyncMock(return_value=tenant_id),
+    )
+
+
+def _service_with_existing(
+    existing: list[Any], monkeypatch: pytest.MonkeyPatch
+) -> CollaborationBridgeLifecycleService:
+    _stub_tenant_lookups(monkeypatch)
     session = MagicMock()
     session.__aenter__ = AsyncMock(return_value=session)
     session.__aexit__ = AsyncMock(return_value=None)
@@ -409,23 +440,41 @@ async def _stored_bridge(**overrides: Any) -> Any:
     bridge.id = overrides.pop("id", "existing-id")
     bridge.type = overrides.pop("type", "teams")
     bridge.display_name = overrides.pop("display_name", "Contoso Teams")
+    # A real row's own tenant, matching what `_stub_tenant_lookups` says the
+    # deployment has. The conflict check filters what it reads back on the
+    # tenant it bound, because on an owner connection nothing else narrows the
+    # read (see `db/tenant_lookup.py`), and a `MagicMock` attribute would fail
+    # that filter and make every stored bridge invisible to it.
+    bridge.tenant_id = _STUB_TENANT
     bridge.connection_config = await TeamsAdapter.prepare_config(
         _raw_config(**overrides)
     )
     return bridge
 
 
-async def test_second_teams_bridge_on_the_same_port_is_refused() -> None:
-    """The failure this replaces was a bind error in a background task."""
-    service = _service_with_existing([await _stored_bridge()])
+async def test_second_teams_bridge_on_the_same_port_is_refused(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The failure this replaces was a bind error in a background task.
 
-    with pytest.raises(ValueError) as excinfo:
-        await service.register(
-            bridge_type="teams",
-            display_name="Second Teams",
-            connection_config=_raw_config(),
-            channel_creation_enabled=True,
-        )
+    Registering from within the incumbent's own tenant (`tenant_scope`,
+    matching what `_stub_tenant_lookups` says every stored row belongs to) is
+    the realistic case this message is written for: the operator can already
+    see "Contoso Teams" on their own bridge list, so naming it here is what
+    turns the refusal into something actionable rather than a disclosure —
+    see `test_lifecycle_tenant_binding.py` for the cross-tenant case, where
+    naming it would be exactly that.
+    """
+    service = _service_with_existing([await _stored_bridge()], monkeypatch)
+
+    with tenant_scope(_STUB_TENANT):
+        with pytest.raises(ValueError) as excinfo:
+            await service.register(
+                bridge_type="teams",
+                display_name="Second Teams",
+                connection_config=_raw_config(),
+                channel_creation_enabled=True,
+            )
 
     message = str(excinfo.value)
     assert "Contoso Teams" in message
@@ -440,7 +489,7 @@ async def test_a_second_bridge_on_its_own_port_is_allowed_through(
     Getting past this check is not the same as working — the chart publishes one
     Teams port — but that is the operator's deliberate choice to make.
     """
-    service = _service_with_existing([await _stored_bridge()])
+    service = _service_with_existing([await _stored_bridge()], monkeypatch)
     monkeypatch.setattr(
         TeamsAdapter, "verify_credentials", AsyncMock(return_value=None)
     )
@@ -462,7 +511,7 @@ async def test_a_non_teams_bridge_is_not_blocked_by_a_teams_one(
 ) -> None:
     slack = await _stored_bridge(id="slack-id", type="slack")
     slack.connection_config = {"bot_token": "x"}
-    service = _service_with_existing([slack])
+    service = _service_with_existing([slack], monkeypatch)
     monkeypatch.setattr(
         TeamsAdapter, "verify_credentials", AsyncMock(return_value=None)
     )
@@ -525,6 +574,7 @@ async def test_concurrent_registration_cannot_take_the_same_port_twice(
     several awaits later, so without serialisation both callers saw a free port
     and both took it — reproducing the collision the check exists to refuse.
     """
+    _stub_tenant_lookups(monkeypatch)
     stored: list[Any] = []
 
     session = MagicMock()
@@ -537,6 +587,11 @@ async def test_concurrent_registration_cannot_take_the_same_port_twice(
     async def _create(_s: Any, bridge: Any) -> Any:
         # The real store commits well after the conflict check has run.
         await asyncio.sleep(0)
+        # Stamped the way a flush would: `tenant_id` has a Python-side column
+        # default that fires when the row reaches the database, and nothing
+        # here ever flushes, so without this the stored row has no tenant and
+        # the conflict check filters it straight back out.
+        bridge.tenant_id = _STUB_TENANT
         stored.append(bridge)
         return bridge
 
@@ -593,12 +648,15 @@ async def test_concurrent_registration_cannot_take_the_same_port_twice(
     assert len(stored) == 1
 
 
-async def test_start_refuses_a_second_bridge_already_holding_the_port() -> None:
+async def test_start_refuses_a_second_bridge_already_holding_the_port(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """The startup guard, which covers rows that predate the registration check.
 
     Registration cannot create a colliding pair any more, but two already exist
     on some instances, and `start_all` walks straight into them.
     """
+    _stub_tenant_lookups(monkeypatch)
     session = MagicMock()
     session.__aenter__ = AsyncMock(return_value=session)
     session.__aexit__ = AsyncMock(return_value=None)

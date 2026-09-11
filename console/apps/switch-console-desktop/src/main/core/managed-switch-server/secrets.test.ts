@@ -61,6 +61,21 @@ describe('loadOrCreateSecrets', () => {
     expect(setSecret).not.toHaveBeenCalled();
   });
 
+  it('backfills a missing runtime password on an install predating the runtime role', async () => {
+    const legacy = generateSecrets() as Partial<ReturnType<typeof generateSecrets>>;
+    delete legacy.dbRuntimePassword;
+    getSecret.mockResolvedValue(JSON.stringify(legacy));
+
+    const secrets = await loadOrCreateSecrets({ secretsKey: 'host-a' });
+
+    // Every field the install already had survives untouched — in particular
+    // dbPassword, the owner password the Postgres volume was bootstrapped
+    // with, which regenerating would lock the stack out of.
+    expect(secrets).toMatchObject(legacy);
+    expect(secrets.dbRuntimePassword).toBeTruthy();
+    expect(setSecret).toHaveBeenCalledWith('host-a', JSON.stringify(secrets));
+  });
+
   it('fails loud on an unreadable bundle instead of regenerating over a live volume', async () => {
     getSecret.mockResolvedValue('not json');
 
@@ -99,6 +114,18 @@ describe('readSecrets', () => {
     getSecret.mockRejectedValue(new FakeUndecryptableSecretError('host-a'));
 
     await expect(readSecrets({ secretsKey: 'host-a' })).resolves.toBeNull();
+    expect(setSecret).not.toHaveBeenCalled();
+  });
+
+  it('backfills a missing runtime password for display without persisting it', async () => {
+    const legacy = generateSecrets() as Partial<ReturnType<typeof generateSecrets>>;
+    delete legacy.dbRuntimePassword;
+    getSecret.mockResolvedValue(JSON.stringify(legacy));
+
+    const secrets = await readSecrets({ secretsKey: 'host-a' });
+
+    expect(secrets).toMatchObject(legacy);
+    expect(secrets?.dbRuntimePassword).toBeTruthy();
     expect(setSecret).not.toHaveBeenCalled();
   });
 });

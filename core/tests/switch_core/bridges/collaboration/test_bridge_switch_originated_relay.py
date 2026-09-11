@@ -45,6 +45,8 @@ def _bridge(adapter: _RecordingAdapter) -> BridgeCore:
     core._puppet_matrix_ids = {PUPPET}  # type: ignore[assignment]
     core._bridge_client_matrix_user_id = "@bridge:switch.local"  # type: ignore[assignment]
     core._find_channel = lambda **_kwargs: "C1"  # type: ignore[assignment]
+    core._channel_to_room = {"C1": ("room-uuid", "!r:switch.local")}  # type: ignore[assignment]
+    core._room_tenant = _tenant  # type: ignore[assignment]
     core._record_message_map = _noop  # type: ignore[assignment]
     core._move_indicator_for_sender = _noop  # type: ignore[assignment]
     core._outbound_thread_root_ref = _none  # type: ignore[assignment]
@@ -57,6 +59,10 @@ async def _noop(*_args: Any, **_kwargs: Any) -> None:
 
 async def _none(*_args: Any, **_kwargs: Any) -> None:
     return None
+
+
+async def _tenant(*_args: Any, **_kwargs: Any) -> str:
+    return "00000000-0000-0000-0000-000000000000"
 
 
 def _puppet_event(*, switch_originated: bool) -> InboundMessage:

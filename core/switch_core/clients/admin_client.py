@@ -22,6 +22,7 @@ from switch_core.clients.mentions import (
     unique_mention_tokens,
 )
 from switch_core.clients.room_meta import RoomMeta
+from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.agent_session_store import AgentSessionStore
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.document_store import DocumentStore
@@ -261,7 +262,7 @@ class AdminClient(ClientBase[ClientConfig]):
     async def _resolve_room_meta(self, matrix_room_id: str) -> RoomMeta | None:
         if matrix_room_id in self._room_meta_cache:
             return self._room_meta_cache[matrix_room_id]
-        async with self.session_factory() as session:
+        async with tenant_session(self.session_factory, self.tenant_id) as session:
             room = await self._room_store.get_by_matrix_room_id(session, matrix_room_id)
         if room is None:
             logger.error("Room not found for matrix room ID: %s", matrix_room_id)
