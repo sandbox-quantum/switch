@@ -584,7 +584,14 @@ class RoomYamlService:
             body = f"{prefix} {body}"
 
         try:
-            on_behalf_of = user_id if kickoff.sender == "creator" else None
+            on_behalf_of: str | None = None
+            if kickoff.sender == "creator":
+                from switch_core.db.stores.user_store import UserStore
+
+                user_store = UserStore()
+                async with self._session_factory() as session:
+                    user = await user_store.get(session, user_id)
+                on_behalf_of = user.name if user else user_id
             await admin.send_platform_message(
                 room.matrix_room_id,
                 body,
