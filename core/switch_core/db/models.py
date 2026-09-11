@@ -1018,6 +1018,80 @@ class CollaborationBridge(TenantScoped, Base):
     )
 
 
+# ── Messaging Installs ─────────────────────────────────────────────────────────
+
+
+class MessagingInstall(TenantScoped, Base):
+    """A tenant's installation of the Switch app into one external workspace.
+
+    The difference from `collaboration_bridges` is who supplied the
+    credential. A bridge holds a token an operator pasted in, from an app that
+    operator registered; an install holds a token *we* were granted, for our
+    app, by whoever clicked Add to Slack. Both end up driving the same adapter,
+    so this table records only what the install added: which workspace, whose
+    token, and what it may do.
+
+    **`(platform, external_workspace_id)` is unique across the whole
+    deployment, not per tenant**, and that is the single most important line
+    here. Inbound events arrive over one public endpoint carrying a workspace
+    id and no tenant, so a workspace claimed by two tenants is a message with
+    two possible destinations and no way to choose — which is the failure this
+    whole phase exists to make unrepresentable. The database decides it rather
+    than a read-then-insert in application code, because the check and the
+    write cannot be made atomic from outside.
+
+    That constraint is also the one place a tenant learns something about
+    another: claiming a workspace somebody else already claimed fails, and the
+    failure says so. It is the right answer — the alternative is a silent
+    second claim — and what it discloses is that *some* tenant holds a
+    workspace the caller was already able to name.
+
+    `bridge_id` is nullable because the install row is written before anything
+    is built on it, and because removing a bridge should not force the
+    credential to be thrown away and re-granted. A null there means the
+    install is recorded and not yet serving.
+
+    `encrypted_bot_token` uses the same key as every other credential this
+    schema stores (`crypto.encrypt_token` over the configured secret), so it
+    is protected against a stolen dump and not against a compromised process.
+    A per-tenant key is a stronger boundary and a later decision.
+
+    `scopes` is the platform's own spelling of what was granted, stored
+    verbatim rather than parsed into a list — a scope string that means
+    nothing to us is still the thing to show an operator asking why a call was
+    refused.
+    """
+
+    __tablename__ = "messaging_installs"
+    __table_args__ = (
+        UniqueConstraint(
+            "platform",
+            "external_workspace_id",
+            name="uq_messaging_installs_workspace",
+        ),
+        UniqueConstraint("id", "tenant_id", name="uq_messaging_installs_id_tenant"),
+        ForeignKeyConstraint(
+            ["tenant_id", "bridge_id"],
+            ["collaboration_bridges.tenant_id", "collaboration_bridges.id"],
+            name="fk_messaging_installs_bridge",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
+    platform: Mapped[str] = mapped_column(Text, nullable=False)
+    external_workspace_id: Mapped[str] = mapped_column(Text, nullable=False)
+    encrypted_bot_token: Mapped[str] = mapped_column(Text, nullable=False)
+    scopes: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False)
+    installed_by_user_id: Mapped[str] = mapped_column(
+        Text, ForeignKey("users.id"), nullable=False
+    )
+    bridge_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    installed_at: Mapped[str] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
 # ── Server-Side Connectors ────────────────────────────────────────────────────
 
 

@@ -1,4 +1,4 @@
-"""The whole exemption from row-level security, written out as seven functions.
+"""The whole exemption from row-level security, written out as eight functions.
 
 Row-level security is enforced by `require_tenant_id()` (`db/rls_ddl.py`),
 which raises when no tenant is bound. That is the property everything else
@@ -32,7 +32,8 @@ worth having:
 - **They are a closed list.** `TENANT_LOOKUPS` below is the list; a test
   compares it against the functions actually installed, against the
   migration's frozen copy, and against what each one answers when called as
-  the restricted role. Adding an eighth is an edit a reviewer sees.
+  the restricted role. Adding one is an edit a reviewer sees, and is meant to
+  be argued with rather than waved through.
 
 **What the exemption gives, stated exactly.** Every lookup returns `setof
 text` — tenant ids, never a row of a scoped table. That much is the part
@@ -63,8 +64,8 @@ them about *metadata* rather than rows:
 
 So the property this design actually holds is: **the exemption discloses the
 shape of the deployment — which tenants exist, and which tenant a given user,
-credential, room, bridge or connector belongs to — and no row of any
-tenant-scoped table.** It is a boundary on data, not on metadata. Narrowing
+credential, room, bridge, connector or installed workspace belongs to — and no
+row of any tenant-scoped table.** It is a boundary on data, not on metadata. Narrowing
 the second is a question about who may hold the runtime role's credentials at
 all, since everything above is reachable by anyone who has them.
 
@@ -85,7 +86,7 @@ not are now one of three shapes, and the shape is the interesting part:
    identifier the caller already has, and everything after it is scoped.
 
 **A lookup whose caller already knows the answer does not belong here.** There
-was an eighth, `tenant_of_client`, and it was the one called most: every
+was one more, `tenant_of_client`, and it was the one called most: every
 client's transport asked it, once per transport, and so did every agent
 client's `start`. Both were built from a `clients` row that names the tenant
 in a column, so the question was asked of the database with the answer already
@@ -94,6 +95,19 @@ they take a `client_id`, and revision `b1d7c4f0a92e` drops the function. The
 test that keeps the list honest is the one that would have let this stand: a
 function nobody needs is still a function every role could call, so the shorter
 list is the whole point of noticing.
+
+**`tenant_of_messaging_install` is the one that had to be added back.** An
+event from the Switch app installed in a customer's Slack arrives over a
+public endpoint that no one has authenticated to: what it carries is a
+workspace id, and the tenant is precisely what has to be worked out before
+anything else may happen. There is no row in hand to read the answer off, so
+this is shape 1 with the credential replaced by a workspace — resolve the
+tenant, bind it, and read everything after that through the ordinary scoped
+store. It takes both the platform and the workspace id because that pair,
+not the workspace id alone, is what `messaging_installs` makes unique; a
+lookup on the id alone would answer twice the first time two platforms
+happened to mint the same string, and refuse a customer's traffic for a
+reason in someone else's account.
 
 Why not the obvious alternatives is argued in
 `docs/old/multi-tenancy-phase1-db.md`, "The bootstrap problem"; the short
@@ -148,9 +162,9 @@ class TenantLookupError(RuntimeError):
 
 @dataclass(frozen=True)
 class TenantLookup:
-    """One exempt function: its name, its single argument, and what it reads.
+    """One exempt function: its name, its arguments, and what it reads.
 
-    `argument` is the parameter name *without* the `p_` prefix the SQL carries.
+    `arguments` are the parameter names *without* the `p_` prefix the SQL carries.
     The prefix is not decoration: a `LANGUAGE sql` function whose parameter is
     spelled like a column of a table in its own query resolves the name to the
     column, silently, rather than to the parameter. Verified on Postgres 16,
@@ -171,25 +185,29 @@ class TenantLookup:
     """
 
     name: str
-    argument: str | None
+    arguments: tuple[str, ...]
     query: str
     purpose: str
 
     @property
-    def parameter(self) -> str | None:
-        return None if self.argument is None else f"p_{self.argument}"
+    def parameters(self) -> tuple[str, ...]:
+        return tuple(f"p_{argument}" for argument in self.arguments)
+
+    @property
+    def parameter_declaration(self) -> str:
+        return ", ".join(f"{parameter} text" for parameter in self.parameters)
 
     @property
     def signature(self) -> str:
-        return f"{self.name}({'' if self.argument is None else 'text'})"
+        return f"{self.name}({', '.join('text' for _ in self.arguments)})"
 
 
-# The seven of them. Ordered as the three shapes above: enumeration, then
+# The eight of them. Ordered as the three shapes above: enumeration, then
 # credential resolution, then deriving a tenant from an identifier in hand.
 TENANT_LOOKUPS: tuple[TenantLookup, ...] = (
     TenantLookup(
         name="all_tenant_ids",
-        argument=None,
+        arguments=(),
         query="SELECT id FROM tenants ORDER BY created_at, id",
         purpose=(
             "Every tenant in the deployment, oldest first. The one question a "
@@ -199,7 +217,7 @@ TENANT_LOOKUPS: tuple[TenantLookup, ...] = (
     ),
     TenantLookup(
         name="tenants_of_user",
-        argument="user_id",
+        arguments=("user_id",),
         query=(
             "SELECT tenant_id FROM tenant_members "
             "WHERE user_id = p_user_id ORDER BY tenant_id"
@@ -212,7 +230,7 @@ TENANT_LOOKUPS: tuple[TenantLookup, ...] = (
     ),
     TenantLookup(
         name="tenant_of_api_key",
-        argument="key_hash",
+        arguments=("key_hash",),
         query="SELECT tenant_id FROM api_keys WHERE key_hash = p_key_hash",
         purpose=(
             "Which tenant a bearer credential belongs to. `api_keys.key_hash` "
@@ -222,7 +240,7 @@ TENANT_LOOKUPS: tuple[TenantLookup, ...] = (
     ),
     TenantLookup(
         name="tenant_of_agent_oauth_client",
-        argument="oauth_client_id",
+        arguments=("oauth_client_id",),
         query=(
             "SELECT tenant_id FROM agents WHERE oauth_client_id = p_oauth_client_id"
         ),
@@ -235,7 +253,7 @@ TENANT_LOOKUPS: tuple[TenantLookup, ...] = (
     ),
     TenantLookup(
         name="tenant_of_room",
-        argument="room_id",
+        arguments=("room_id",),
         query="SELECT tenant_id FROM rooms WHERE id = p_room_id",
         purpose=(
             "Which tenant a room belongs to, for work reaching a room by its "
@@ -244,7 +262,7 @@ TENANT_LOOKUPS: tuple[TenantLookup, ...] = (
     ),
     TenantLookup(
         name="tenant_of_collaboration_bridge",
-        argument="bridge_id",
+        arguments=("bridge_id",),
         query="SELECT tenant_id FROM collaboration_bridges WHERE id = p_bridge_id",
         purpose=(
             "Which tenant a bridge belongs to. Asked from boot, with nothing "
@@ -254,9 +272,25 @@ TENANT_LOOKUPS: tuple[TenantLookup, ...] = (
     ),
     TenantLookup(
         name="tenant_of_server_connector",
-        argument="connector_id",
+        arguments=("connector_id",),
         query="SELECT tenant_id FROM server_connectors WHERE id = p_connector_id",
         purpose="Same as the bridge, for a server-side connector.",
+    ),
+    TenantLookup(
+        name="tenant_of_messaging_install",
+        arguments=("platform", "external_workspace_id"),
+        query=(
+            "SELECT tenant_id FROM messaging_installs "
+            "WHERE platform = p_platform "
+            "AND external_workspace_id = p_external_workspace_id"
+        ),
+        purpose=(
+            "Which tenant an inbound event from an installed workspace belongs "
+            "to. The public webhook is unauthenticated by nature and knows only "
+            "the platform it was posted to and the workspace the payload names, "
+            "so this runs before anything else the request does. Unique by "
+            "constraint on exactly this pair, so it answers at most once."
+        ),
     ),
 )
 
@@ -273,9 +307,8 @@ SECURE_SEARCH_PATH = "pg_catalog, public, pg_temp"
 
 
 def create_lookup_ddl(lookup: TenantLookup) -> str:
-    parameters = "" if lookup.parameter is None else f"{lookup.parameter} text"
     return (
-        f"CREATE OR REPLACE FUNCTION {lookup.name}({parameters})\n"
+        f"CREATE OR REPLACE FUNCTION {lookup.name}({lookup.parameter_declaration})\n"
         f"    RETURNS SETOF text\n"
         f"    LANGUAGE sql STABLE SECURITY DEFINER\n"
         f"    SET search_path = {SECURE_SEARCH_PATH}\n"
@@ -313,30 +346,37 @@ def attach_tenant_lookups(metadata: MetaData) -> None:
 # ── Calling them ──────────────────────────────────────────────────────────────
 
 # One `text()` per lookup, written out rather than assembled from `lookup.name`
-# at call time: the seven names are fixed and known here, so there is nothing
-# for a call site to build. The assertion below is what keeps this dict from
-# quietly falling behind `TENANT_LOOKUPS` — an eighth lookup with no entry
-# here fails at import, not with a `KeyError` on whatever request reaches it
-# first.
+# at call time: the eight names are fixed and known here, so there is nothing
+# for a call site to build. Each bind is named after the lookup's own argument,
+# which is what lets `_call` zip them positionally against the dataclass and
+# fail loudly on a mismatch rather than binding the workspace to the platform.
+# The assertion below is what keeps this dict from quietly falling behind
+# `TENANT_LOOKUPS` — a ninth lookup with no entry here fails at import, not
+# with a `KeyError` on whatever request reaches it first.
 _LOOKUP_STATEMENTS: dict[str, TextClause] = {
     "all_tenant_ids": text("SELECT tenant_id FROM all_tenant_ids() AS tenant_id"),
     "tenants_of_user": text(
-        "SELECT tenant_id FROM tenants_of_user(:argument) AS tenant_id"
+        "SELECT tenant_id FROM tenants_of_user(:user_id) AS tenant_id"
     ),
     "tenant_of_api_key": text(
-        "SELECT tenant_id FROM tenant_of_api_key(:argument) AS tenant_id"
+        "SELECT tenant_id FROM tenant_of_api_key(:key_hash) AS tenant_id"
     ),
     "tenant_of_agent_oauth_client": text(
-        "SELECT tenant_id FROM tenant_of_agent_oauth_client(:argument) AS tenant_id"
+        "SELECT tenant_id FROM tenant_of_agent_oauth_client(:oauth_client_id) "
+        "AS tenant_id"
     ),
     "tenant_of_room": text(
-        "SELECT tenant_id FROM tenant_of_room(:argument) AS tenant_id"
+        "SELECT tenant_id FROM tenant_of_room(:room_id) AS tenant_id"
     ),
     "tenant_of_collaboration_bridge": text(
-        "SELECT tenant_id FROM tenant_of_collaboration_bridge(:argument) AS tenant_id"
+        "SELECT tenant_id FROM tenant_of_collaboration_bridge(:bridge_id) AS tenant_id"
     ),
     "tenant_of_server_connector": text(
-        "SELECT tenant_id FROM tenant_of_server_connector(:argument) AS tenant_id"
+        "SELECT tenant_id FROM tenant_of_server_connector(:connector_id) AS tenant_id"
+    ),
+    "tenant_of_messaging_install": text(
+        "SELECT tenant_id FROM "
+        "tenant_of_messaging_install(:platform, :external_workspace_id) AS tenant_id"
     ),
 }
 
@@ -348,7 +388,7 @@ assert _LOOKUP_STATEMENTS.keys() == TENANT_LOOKUPS_BY_NAME.keys(), (
 async def _call(
     session_factory: async_sessionmaker[AsyncSession],
     lookup: TenantLookup,
-    argument: str | None = None,
+    *arguments: str,
 ) -> list[str]:
     """Run one lookup on a session of its own, with nothing bound.
 
@@ -357,10 +397,14 @@ async def _call(
     — and the answer must not be narrowed to it. Nothing bound is also the
     honest state: this session may not touch a scoped table, and the database
     is what enforces that now rather than an allowlist.
+
+    `strict=True` on the zip is the arity check. A lookup called with one
+    argument too few would otherwise leave a bind unfilled, and a lookup whose
+    two arguments were passed the wrong way round is a webhook resolving the
+    wrong tenant — both are worth a `ValueError` here rather than a surprise
+    further down.
     """
-    parameters: dict[str, object] = {}
-    if lookup.parameter is not None:
-        parameters["argument"] = argument
+    parameters: dict[str, object] = dict(zip(lookup.arguments, arguments, strict=True))
     with no_tenant():
         async with session_factory() as session:
             result = await session.execute(_LOOKUP_STATEMENTS[lookup.name], parameters)
@@ -426,3 +470,14 @@ async def tenant_of_server_connector(
 ) -> str | None:
     lookup = TENANT_LOOKUPS_BY_NAME["tenant_of_server_connector"]
     return _at_most_one(lookup, await _call(session_factory, lookup, connector_id))
+
+
+async def tenant_of_messaging_install(
+    session_factory: async_sessionmaker[AsyncSession],
+    platform: str,
+    external_workspace_id: str,
+) -> str | None:
+    lookup = TENANT_LOOKUPS_BY_NAME["tenant_of_messaging_install"]
+    return _at_most_one(
+        lookup, await _call(session_factory, lookup, platform, external_workspace_id)
+    )
