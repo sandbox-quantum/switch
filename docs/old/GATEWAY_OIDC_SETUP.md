@@ -20,29 +20,31 @@ you explicitly turn it off with `GATEWAY_PASSWORD_LOGIN_ENABLED=false`.
 | `GATEWAY_OIDC_ISSUER_URL` | yes* | The IdP's issuer. The gateway appends `/.well-known/openid-configuration` to it and discovers the authorize, token, JWKS and (where published) userinfo endpoints from there — nothing else about the provider is configured by hand. |
 | `GATEWAY_OIDC_CLIENT_ID` | yes* | The client id registered with the IdP for this application. |
 | `GATEWAY_OIDC_CLIENT_SECRET` | yes* | The client secret for that same registration. |
-| `GATEWAY_OIDC_SCOPES` | no, but see below | Space-separated OAuth scopes requested at authorize time, e.g. `openid profile email`. |
+| `GATEWAY_OIDC_SCOPES` | yes* | Space-separated OAuth scopes requested at authorize time, e.g. `openid profile email`. Must include `openid`. |
 | `GATEWAY_OIDC_REDIRECT_URL` | no, but see below | The absolute callback URL registered with the IdP. |
 | `GATEWAY_OIDC_PROVIDER_LABEL` | no | Text shown on the login button ("Log in with `<label>`"). Defaults to "SSO" if unset. |
 | `GATEWAY_OIDC_REQUIRE_EMAIL_VERIFIED` | no | Defaults to `true`. See "What turning this off means" below. |
 
-*\*All-or-nothing.* `GATEWAY_OIDC_ISSUER_URL`, `GATEWAY_OIDC_CLIENT_ID` and
-`GATEWAY_OIDC_CLIENT_SECRET` are validated as a group at startup: set all
-three or none of them. Setting one or two without the rest fails config
-construction immediately (`Partial gateway OIDC config: set all of
-GATEWAY_OIDC_ISSUER_URL / GATEWAY_OIDC_CLIENT_ID / GATEWAY_OIDC_CLIENT_SECRET,
-or none of them.`) rather than starting up with OIDC silently disabled. OIDC
-is considered configured (`gateway_oidc_enabled`) exactly when all three are
-set; every other variable in the table is independently optional and has a
-default.
+*\*All-or-nothing.* `GATEWAY_OIDC_ISSUER_URL`, `GATEWAY_OIDC_CLIENT_ID`,
+`GATEWAY_OIDC_CLIENT_SECRET` and `GATEWAY_OIDC_SCOPES` are validated as a
+group at startup: set all four or none of them. Setting some without the rest
+fails config construction immediately (`Partial gateway OIDC config: set all
+of GATEWAY_OIDC_ISSUER_URL / GATEWAY_OIDC_CLIENT_ID /
+GATEWAY_OIDC_CLIENT_SECRET / GATEWAY_OIDC_SCOPES, or none of them.`) rather
+than starting up with OIDC silently disabled. OIDC is considered configured
+(`gateway_oidc_enabled`) exactly when all four are set; every other variable
+in the table is independently optional and has a default.
 
-### Scopes: always set this, and quote it
+### Scopes: required, must include `openid`, and quote it
 
-`GATEWAY_OIDC_SCOPES` has no default — if you don't set it, the gateway asks
-authlib to request an unspecified scope, which most providers resolve to
-whatever their own default is. Set it explicitly, and **make sure it includes
-`openid`**: without that scope the token response carries no `id_token`, and
-the callback is left asking the provider's userinfo endpoint for claims
-instead — which some providers answer and some refuse.
+`GATEWAY_OIDC_SCOPES` has no default, and OIDC will not start without it: it
+is part of the all-or-nothing group above, and a value that does not include
+`openid` is refused at startup with its own error. Both refusals exist for
+the same reason — without that scope the token response carries no
+`id_token`, and the callback is left asking the provider's userinfo endpoint
+for claims instead, which some providers answer and some refuse. Failing to
+boot is better than a login path that works against one provider and not the
+next.
 
 Quote the value in your env file. `GATEWAY_OIDC_SCOPES=openid profile email`
 (unquoted, with spaces) breaks `just`'s env-file parser — every recipe loads
@@ -52,11 +54,11 @@ loudly: `error: failed to load environment file ... Error parsing line`, exit
 though: running `uv run python -m switch_core.main` directly skips it
 entirely. Plain `uv run` doesn't read `.env` at all, so the variable is
 simply unset there; `uv run --env-file .env` reads it but only warns on the
-bad line and continues. Either way, going around `just` trades the loud
-parse error for a silent one: `GATEWAY_OIDC_SCOPES` ends up unset, and the
-provider is asked for whatever scope it defaults to instead — with nothing
-pointing back at the scope configuration if that default happens not to
-include `openid`. Write it as:
+bad line and continues. Either way, going around `just` leaves
+`GATEWAY_OIDC_SCOPES` unset — which the startup check above now catches,
+refusing to boot rather than quietly asking the provider for whatever scope
+it defaults to. The error names the group rather than the quoting, so if you
+see it and believe you set the value, suspect the line. Write it as:
 
 ```
 GATEWAY_OIDC_SCOPES="openid profile email"
@@ -188,8 +190,8 @@ email"` (quoted, per the warning above).
 
 ## Verifying it end to end
 
-1. Set the three required variables plus `GATEWAY_OIDC_SCOPES` and
-   `GATEWAY_OIDC_REDIRECT_URL`, and restart the server.
+1. Set the four required variables plus `GATEWAY_OIDC_REDIRECT_URL`, and
+   restart the server.
 2. `GET /gateway/auth/config` should report `oidc_enabled: true` and your
    `oidc_provider_label` (or `null`, which the login page shows as "SSO").
 3. Visiting the login page should show a "Log in with `<label>`" button
