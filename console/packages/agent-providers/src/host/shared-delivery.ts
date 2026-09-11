@@ -56,7 +56,7 @@ export class SharedDelivery {
         for (const hostSequence of substituted)
           if (hostSequence <= record.sequence && !recorded.has(hostSequence))
             throw new Error(
-              'Shared delivery journal acknowledges prior-generation session state that Switch could not have accepted.'
+              'Shared delivery journal acknowledges prior-generation session state without a substitution record; this legacy state needs server-side reconciliation.'
             );
         this.acknowledged = record.sequence;
       }

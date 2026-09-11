@@ -184,7 +184,7 @@ it('records a substitution so the acknowledgement of its notice survives a reope
   expect(lines.filter((line) => line.includes('"substituted"'))).toHaveLength(1);
 });
 
-it('refuses a journal that acknowledges prior-generation session state', async () => {
+it('refuses a legacy journal that acknowledges prior-generation state without a record', async () => {
   const root = await mkdtemp(join(tmpdir(), 'shared-delivery-'));
   roots.push(root);
   await writeFile(
@@ -194,7 +194,7 @@ it('refuses a journal that acknowledges prior-generation session state', async (
       '\n'
   );
   await expect(SharedDelivery.load(root, next, 159)).rejects.toThrow(
-    'acknowledges prior-generation session state'
+    'without a substitution record'
   );
 });
 
