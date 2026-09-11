@@ -158,8 +158,9 @@ async def room_message(
     agent: AuthenticatedAgent,
     factory: Factory,
     buffer: Annotated[EventBuffer, Depends(get_event_buffer)],
+    lifecycle: Lifecycle,
 ) -> CommandStatus:
-    return await SessionAuthority(factory).submit_room_message(
+    status = await SessionAuthority(factory).submit_room_message(
         agent.id,
         session_id,
         body.host_id,
@@ -169,6 +170,9 @@ async def room_message(
         body.sequence,
         buffer,
     )
+
+    await lifecycle.refresh_sdk_session(session_id)
+    return status
 
 
 @router.get("/{session_id}/attachments/{attachment_id}")

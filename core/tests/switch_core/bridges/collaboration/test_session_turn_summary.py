@@ -149,4 +149,7 @@ def test_nothing_said_and_no_tool_calls_is_still_just_the_state() -> None:
         {"type": "turn.upsert", "turnId": TURN, "status": "queued", "commandId": None}
     )
 
-    assert turn_summary([], turn, escape=_identity, limit=10_000) == "Queued."
+    assert (
+        turn_summary([], turn, escape=_identity, limit=10_000)
+        == "Received. Waiting for the agent…"
+    )

@@ -1,5 +1,10 @@
+from types import SimpleNamespace
+
+import pytest
+
 from switch_core.bridges.collaboration.adapter import RichContentFailed
 from switch_core.bridges.collaboration.session.outbound import SessionTurnActivity
+from switch_core.db.models import BridgeMessageMap
 from switch_core.sessions import publication
 from switch_core.sessions.contract import Command, HostEvent
 from switch_core.sessions.publication import (
@@ -52,7 +57,7 @@ async def test_a_running_turn_is_published_for_a_real_session(session_factory):
     assert content.turn.turn_id == "turn-demo"
     assert content.turn.status == "running"
     assert activity_platform.edits == []
-    assert content.elapsed_seconds is None
+    assert content.elapsed_seconds >= 0
     # opened()'s command has neither a thread nor a message id, so there is
     # nothing to thread under — posts at the channel root, as before.
     assert thread is None
@@ -935,3 +940,136 @@ async def test_a_bridge_with_no_turn_activity_adapter_still_publishes_cards(
     await publisher.publish_pending()
 
     assert len(cards_platform.posts) == 1
+
+
+@pytest.mark.parametrize("in_thread", [False, True])
+async def test_slack_receipt_maps_ids_and_becomes_the_running_activity(
+    session_factory, monkeypatch, in_thread
+):
+    service, epoch = await setup(session_factory)
+    message = command(
+        epoch,
+        "receipt",
+        {
+            "type": "message.send",
+            "text": "Run tests",
+            "attachments": [],
+            "delivery": "queue",
+        },
+        actor="@owner:example.test",
+        surface="slack",
+    )
+    message = message.model_copy(
+        update={
+            "origin": message.origin.model_copy(
+                update={
+                    "message_id": "sw_reply",
+                    "thread_id": "sw_root" if in_thread else None,
+                }
+            )
+        }
+    )
+    await service.submit(message, user_id=None, bridge_id="bridge")
+    platform = ActivityPlatform()
+    activity = SessionTurnActivity(platform)
+    calls = []
+    original = activity.publish
+
+    async def capture(*args, **kwargs):
+        calls.append(kwargs)
+        return await original(*args, **kwargs)
+
+    monkeypatch.setattr(activity, "publish", capture)
+    publisher = SessionPublisher(
+        session_factory, "bridge", cards_for(session_factory, Platform()), activity
+    )
+
+    # No malformed Slack request while the inbound mapping commit is pending.
+    await publisher.publish_pending()
+    assert platform.posts == []
+    async with session_factory() as db, db.begin():
+        for internal, external in [
+            ("sw_reply", "channel-demo:1789120000.000002"),
+            ("sw_root", "channel-demo:1789120000.000001"),
+        ]:
+            db.add(
+                BridgeMessageMap(
+                    bridge_id="bridge",
+                    external_channel_id="channel-demo",
+                    transport_event_id=internal,
+                    external_post_id=external,
+                )
+            )
+    await publisher.publish_pending()
+    assert len(platform.posts) == 1
+    assert platform.posts[0][1].turn.status == "queued"
+    assert platform.posts[0][2] == (
+        "channel-demo:1789120000.000001"
+        if in_thread
+        else "channel-demo:1789120000.000002"
+    )
+    assert calls[0]["asked_on"] == "channel-demo:1789120000.000002"
+
+    await service.ingest(
+        "agent-demo",
+        "host-demo",
+        host_event(
+            epoch,
+            1,
+            {
+                "type": "turn.upsert",
+                "turnId": "sdk-turn",
+                "commandId": "receipt",
+                "status": "running",
+            },
+        ),
+    )
+    await publisher.publish_pending()
+    assert len(platform.posts) == 1
+    assert platform.edits[-1][2].turn.status == "running"
+    await service.ingest(
+        "agent-demo",
+        "host-demo",
+        host_event(
+            epoch,
+            2,
+            {
+                "type": "turn.upsert",
+                "turnId": "sdk-turn",
+                "commandId": "receipt",
+                "status": "completed",
+            },
+        ),
+    )
+    await publisher.publish_pending()
+    assert len(platform.posts) == 1
+    assert platform.edits[-1][2].turn.status == "completed"
+    edits = len(platform.edits)
+    await publisher.publish_pending()
+    assert len(platform.edits) == edits
+
+
+async def test_running_timer_refreshes_without_new_sdk_events(
+    session_factory, monkeypatch
+):
+    service, epoch = await setup(session_factory)
+    await opened(service, epoch)
+    platform = ActivityPlatform()
+    publisher = SessionPublisher(
+        session_factory,
+        "bridge",
+        cards_for(session_factory, Platform()),
+        SessionTurnActivity(platform),
+    )
+    clock = [100.0]
+    monkeypatch.setattr(
+        publication, "time", SimpleNamespace(monotonic=lambda: clock[0])
+    )
+    await publisher.publish_pending()
+    await publisher.publish_pending()
+    assert platform.edits == []
+    clock[0] += 5
+    await publisher.publish_pending()
+    assert len(platform.posts) == 1
+    assert len(platform.edits) == 1
+    assert platform.edits[0][2].elapsed_seconds >= platform.posts[0][1].elapsed_seconds

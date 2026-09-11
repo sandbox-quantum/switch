@@ -21,7 +21,7 @@ from switch_core.sessions.contract import TURN_ENDED, Item, TurnUpsert
 # which of the two a reader is looking at. Plain sentences, not markup, so
 # every renderer reads the same wording rather than each keeping its own copy.
 TURN_STATE = {
-    "queued": "Queued.",
+    "queued": "Received. Waiting for the agent…",
     "running": "Working…",
     "completed": "Turn complete.",
     "interrupted": "Turn interrupted.",
@@ -42,7 +42,7 @@ def turn_state(
 
     `elapsed_seconds` comes from outside: neither a turn nor an item carries
     a timestamp, so a caller that tracked one against the session's own event
-    log supplies it, only once a turn has ended. A completed turn shows it in
+    log supplies it. A running turn shows the live duration. A completed turn shows it in
     place of the plain "Turn complete." — that phrase said only that the turn
     was over, and this says what happened while it ran. An interrupted or
     errored turn keeps its own phrase, since that is still worth knowing on
@@ -51,6 +51,8 @@ def turn_state(
     """
     state = TURN_STATE[turn.status]
     if turn.status not in TURN_ENDED:
+        if elapsed_seconds is not None:
+            return f"{state} {_format_duration(elapsed_seconds)}"
         return state
     if elapsed_seconds is not None:
         worked = _worked_for(elapsed_seconds, items)

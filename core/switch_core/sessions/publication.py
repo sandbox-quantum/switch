@@ -14,6 +14,7 @@ from switch_core.bridges.collaboration.session.outbound import (
 )
 from switch_core.db.models import (
     Agent,
+    BridgeMessageMap,
     ClientRoom,
     Room,
     SdkSession,
@@ -25,6 +26,7 @@ from switch_core.sessions.contract import (
     TURN_ENDED,
     Command,
     Snapshot,
+    TurnUpsert,
 )
 from switch_core.sessions.service import SessionError
 
@@ -235,9 +237,9 @@ def _as_aware(value: str) -> datetime:
 
 
 async def _turn_elapsed_seconds(
-    db: AsyncSession, session_id: str, turn_id: str
+    db: AsyncSession, session_id: str, turn_id: str, *, running: bool = False
 ) -> float | None:
-    """How long a turn actually ran, read back from the session's own event log.
+    """Measure a turn from host events, using the current time while running.
 
     Neither a turn nor an item carries a timestamp, so there is nothing to
     read this off in the snapshot itself — it comes from the host-reported
@@ -261,7 +263,7 @@ async def _turn_elapsed_seconds(
     a few hundred milliseconds of queued-to-running is real but unmeasured
     work, and reporting `None` for it is more honest than reporting zero.
 
-    Fewer than two stamps from "running" on — including a turn that never
+    For a completed turn, fewer than two stamps from "running" on — including a turn that never
     reported running before something ended it — means there is no earlier
     point to measure from. `None` rather than a duration of zero, which
     would claim a measurement that was never taken; likewise a delta that
@@ -290,12 +292,36 @@ async def _turn_elapsed_seconds(
     if running_index is None:
         return None
     stamps = [at for at, _ in rows[running_index:]]
+    if running:
+        return max(0, (datetime.now(UTC) - _as_aware(stamps[0])).total_seconds())
     if len(stamps) < 2:
         return None
     started = _as_aware(stamps[0])
     ended = _as_aware(stamps[-1])
     elapsed = (ended - started).total_seconds()
     return elapsed if elapsed >= 0 else None
+
+
+async def _platform_message_ref(
+    db: AsyncSession, bridge_id: str, channel_id: str, ref: str | None
+) -> str | None:
+    if ref is None:
+        return None
+    mapping = await db.scalar(
+        select(BridgeMessageMap).where(
+            BridgeMessageMap.bridge_id == bridge_id,
+            BridgeMessageMap.external_channel_id == channel_id,
+            BridgeMessageMap.transport_event_id == ref,
+        )
+    )
+    if mapping is not None:
+        return mapping.external_post_id
+    if ref.startswith("sw_"):
+        # Inbound delivery can race the mapping commit. Retry publication.
+        raise SessionError(
+            "NOT_FOUND", "Activity message mapping is not committed yet."
+        )
+    return ref
 
 
 async def refresh_activity(
@@ -311,8 +337,8 @@ async def refresh_activity(
     already_held_back: Callable[[str, str], bool],
     hold_back: Callable[[str, str], None],
     first_sweep: bool,
-) -> None:
-    """Bring a session's turn activity up to date with its persisted state.
+) -> bool:
+    """Publish activity and return whether running turns need clock refreshes.
 
     Unlike a request, a turn is not addressed to anyone and nothing resolves
     against it, so a turn with no room to reach — no command behind it yet, no
@@ -373,12 +399,50 @@ async def refresh_activity(
         if agent is None:
             raise SessionError("NOT_FOUND", "Session agent not found.")
         publications = []
-        latest_turn_id = snapshot.turns[-1].turn_id if snapshot.turns else None
-        for turn in snapshot.turns:
+        turns = list(snapshot.turns)
+        known_commands = {turn.command_id for turn in turns}
+        # A presentation-only queued turn acknowledges accepted Slack input before
+        # the SDK reports a turn. Never write synthetic turns into the contract.
+        for pending_command in await db.scalars(
+            select(SdkSessionCommand)
+            .where(
+                SdkSessionCommand.session_id == session_id,
+                SdkSessionCommand.status["status"]
+                .as_string()
+                .in_(["accepted", "dispatched", "unknown", "rejected"]),
+            )
+            .order_by(SdkSessionCommand.accepted_sequence)
+        ):
+            command = Command.model_validate(pending_command.command)
+            if (
+                command.command_id in known_commands
+                or command.epoch != row.epoch
+                or command.origin.surface != "slack"
+                or command.body.type != "message.send"
+            ):
+                continue
+            status = pending_command.status["status"]
+            if status not in ("accepted", "dispatched", "unknown", "rejected"):
+                continue
+            turns.append(
+                TurnUpsert(
+                    type="turn.upsert",
+                    turn_id=f"pending:{command.command_id}",
+                    command_id=command.command_id,
+                    status="queued"
+                    if status in ("accepted", "dispatched")
+                    else "error",
+                )
+            )
+        latest_turn_id = turns[-1].turn_id if turns else None
+        for turn in turns:
             if already_held_back(session_id, turn.turn_id):
                 continue
             items = [item for item in snapshot.items if item.turn_id == turn.turn_id]
-            state = (turn.status, tuple(item.revision for item in items))
+            revisions = tuple(item.revision for item in items)
+            if turn.status == "running":
+                revisions += (int(time.monotonic() // 5),)
+            state = (turn.status, revisions)
             if first_sweep and turn.turn_id != latest_turn_id:
                 if turn.status in TURN_ENDED:
                     hold_back(session_id, turn.turn_id)
@@ -405,8 +469,10 @@ async def refresh_activity(
             if not redraw_needed(session_id, turn.turn_id, state):
                 continue
             elapsed_seconds = (
-                await _turn_elapsed_seconds(db, session_id, turn.turn_id)
-                if turn.status in TURN_ENDED
+                await _turn_elapsed_seconds(
+                    db, session_id, turn.turn_id, running=turn.status == "running"
+                )
+                if turn.status != "queued"
                 else None
             )
             # A turn is never shown at the channel root any more: one already
@@ -414,12 +480,22 @@ async def refresh_activity(
             # threads under that same message rather than posting beside it —
             # see SessionTurnActivity for why. A command with neither is one
             # nothing here can thread under, and posts at the root as before.
-            thread_root_id = origin.thread_id or origin.message_id
+            thread_root_id = await _platform_message_ref(
+                db,
+                bridge_id,
+                room.external_channel_id,
+                origin.thread_id or origin.message_id,
+            )
             # The message that actually asked, for the `:eyes:` that goes
             # with the thread — origin.message_id is the typed message or the
             # card the command came from either way, not wherever the thread
             # has since moved on to.
-            asked_on = origin.message_id or thread_root_id
+            asked_on = (
+                await _platform_message_ref(
+                    db, bridge_id, room.external_channel_id, origin.message_id
+                )
+                or thread_root_id
+            )
             publications.append(
                 (
                     turn,
@@ -465,6 +541,7 @@ async def refresh_activity(
             failed.append(turn.turn_id)
     if failed or backed_off:
         raise TurnActivityIncomplete(session_id, failed, backed_off)
+    return any(turn.status == "running" for turn in turns)
 
 
 class _RecoveryBackoff:
@@ -623,6 +700,7 @@ class SessionPublisher:
         self._turn_redraw = _TurnRedrawGuard()
         self._activity_retry = _RecoveryBackoff()
         self._activity_seen: set[str] = set()
+        self._clock_sessions: set[str] = set()
         self._activity_held_back = _PermanentlyHeldBack()
         self._wake = asyncio.Event()
 
@@ -640,20 +718,22 @@ class SessionPublisher:
                 )
             ).all()
         for session_id, sequence in rows:
-            if self._published.get(session_id) == sequence:
+            unchanged = self._published.get(session_id) == sequence
+            if unchanged and session_id not in self._clock_sessions:
                 continue
             ok = True
             try:
-                await refresh_cards(
-                    self._sessions,
-                    self._bridge_id,
-                    session_id,
-                    self._cards,
-                    recovery_allowed=self._recovery.allowed,
-                    recovery_succeeded=self._recovery.succeeded,
-                    refresh_needed=self._redraw.needed,
-                    refreshed=self._redraw.drawn,
-                )
+                if not unchanged:
+                    await refresh_cards(
+                        self._sessions,
+                        self._bridge_id,
+                        session_id,
+                        self._cards,
+                        recovery_allowed=self._recovery.allowed,
+                        recovery_succeeded=self._recovery.succeeded,
+                        refresh_needed=self._redraw.needed,
+                        refreshed=self._redraw.drawn,
+                    )
             except PublicationIncomplete as incomplete:
                 ok = False
                 if incomplete.errors:
@@ -689,7 +769,7 @@ class SessionPublisher:
                 first_sweep = session_id not in self._activity_seen
                 swept = False
                 try:
-                    await refresh_activity(
+                    running = await refresh_activity(
                         self._sessions,
                         self._bridge_id,
                         session_id,
@@ -702,6 +782,10 @@ class SessionPublisher:
                         hold_back=self._activity_held_back.add,
                         first_sweep=first_sweep,
                     )
+                    if running:
+                        self._clock_sessions.add(session_id)
+                    else:
+                        self._clock_sessions.discard(session_id)
                     swept = True
                 except TurnActivityIncomplete as incomplete:
                     ok = False

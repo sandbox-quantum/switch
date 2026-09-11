@@ -209,7 +209,11 @@ class SessionTurnActivity:
         old one — one visible duplicate, the same trade this class already
         makes for a process restart.
         """
-        key = (session_id, turn.turn_id)
+        # The SDK transcript includes internal narration such as "Answered in
+        # the room". Activity is a tool log; the actual reply is delivered separately.
+        items = [item for item in items if item.kind == "tool-activity"]
+        # Reuse the receipt message when an accepted command gains an SDK turn ID.
+        key = (session_id, turn.command_id or turn.turn_id)
         anchor = self._anchors.pop(key, None)
         ended = turn.status in TURN_ENDED
 

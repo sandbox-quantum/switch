@@ -285,7 +285,7 @@ async def test_the_last_line_says_whether_the_turn_is_still_moving() -> None:
     items = await _items()
 
     assert _state(items, _turn("running")) == "Working…"
-    assert _state(items, _turn("queued")) == "Queued."
+    assert _state(items, _turn("queued")) == "Received. Waiting for the agent…"
 
 
 async def test_a_turn_with_nothing_done_in_it_still_says_where_it_got_to() -> None:
@@ -434,12 +434,11 @@ async def test_an_interrupted_turn_keeps_its_own_phrase_and_says_how_long_too() 
     assert state == "Turn interrupted. Worked for 45s."
 
 
-async def test_a_running_turn_ignores_elapsed_seconds() -> None:
-    """A running turn's own line is not final, so a duration would be wrong
-    the moment it was drawn — this only ever applies once a turn has ended."""
+async def test_a_running_turn_shows_live_elapsed_seconds() -> None:
+    """The publisher refreshes this duration while the turn is running."""
     state = turn_state([], _turn("running"), elapsed_seconds=80)
 
-    assert state == "Working…"
+    assert state == "Working… 1m 20s"
 
 
 async def test_with_no_elapsed_seconds_a_completed_turn_says_only_that() -> None:

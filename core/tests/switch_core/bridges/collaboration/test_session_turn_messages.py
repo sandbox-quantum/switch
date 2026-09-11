@@ -469,3 +469,23 @@ async def test_releasing_a_claim_this_turn_never_made_still_clears_a_live_reacti
     await _publish(activity, [_item()], _turn("completed"), thread_root_id="parent-1")
 
     assert client.reactions == [("remove", "parent-1", "eyes")]
+
+
+async def test_internal_narration_is_not_published_in_activity_or_fallback() -> None:
+    client = FakeWebClient()
+    activity = SessionTurnActivity(_adapter(client))
+    narration = _item().model_copy(update={"text": "Answered in the room."})
+    tool = _item().model_copy(
+        update={
+            "item_id": "tool-read",
+            "kind": "tool-activity",
+            "title": "Read file",
+            "text": "Read 12 lines",
+        }
+    )
+    await _publish(activity, [narration, tool], _turn("running"))
+    await _publish(activity, [narration, tool], _turn("completed"), elapsed_seconds=25)
+    for call in [*client.posted, *client.updated]:
+        assert "Answered in the room" not in json.dumps(call)
+        assert "Read file" in _blocks(call)
+    assert "Worked for 25s" in _blocks(client.updated[-1])
