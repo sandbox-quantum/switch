@@ -46,6 +46,8 @@ from switch_core.db.rls_ddl import (
     GLOBAL_TABLES,
     POLICY_NAME,
     REQUIRE_TENANT_FUNCTION_NAME,
+    create_policy_ddl,
+    enable_rls_ddl,
     scoped_tables,
     unscoped_tables,
 )
@@ -328,8 +330,8 @@ def _expected_predicate(tenant_column: str) -> str:
     )
 
 
-def _migration_module() -> ModuleType:
-    """The `265ed188ad6f` revision module, loaded through Alembic.
+def _revision_module(revision: str) -> ModuleType:
+    """One revision module, loaded through Alembic.
 
     Alembic's own loader, rather than an `importlib` call on a path, so this
     finds the file the same way a deployment would and fails the same way if
@@ -338,8 +340,12 @@ def _migration_module() -> ModuleType:
     core = Path(switch_core.__file__).resolve().parents[1]
     config = Config(str(core / "alembic.ini"))
     config.set_main_option("script_location", str(core / "switch_core" / "migrations"))
-    revision = ScriptDirectory.from_config(config).get_revision(_RLS_REVISION)
-    return revision.module
+    return ScriptDirectory.from_config(config).get_revision(revision).module
+
+
+def _migration_module() -> ModuleType:
+    """The revision that installed the policies."""
+    return _revision_module(_RLS_REVISION)
 
 
 class TestCatalogueCoverage:
