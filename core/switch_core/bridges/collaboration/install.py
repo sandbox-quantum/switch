@@ -105,10 +105,15 @@ class WebhookAuthenticityError(RuntimeError):
 class InstallGrant:
     """What the platform handed back when a workspace installed us.
 
-    Deliberately three fields and not the platform's whole response. What a
+    Deliberately four fields and not the platform's whole response. What a
     grant *is*, across platforms, is a workspace, a credential, and the
     permissions that credential was actually given — everything else in the
     response is Slack's shape and belongs behind `connection_config`.
+
+    `workspace_name` is the exception, and it earns its place by being the only
+    thing here a person recognises. It names the bridge in the operator's list,
+    where the alternative is a row of opaque platform ids. It is the customer's
+    own text and is never matched on.
 
     `scopes` is the platform's own spelling, kept verbatim. A scope string that
     means nothing to us is still the thing to show an operator asking why a
@@ -117,6 +122,7 @@ class InstallGrant:
     """
 
     external_workspace_id: str
+    workspace_name: str
     bot_token: str
     scopes: str
 

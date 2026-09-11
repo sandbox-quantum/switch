@@ -10,6 +10,9 @@ from switch_core.bridges.agent.protocol.service import ProtocolService
 from switch_core.bridges.agent.server_connectors.lifecycle import (
     ServerSideConnectorLifecycleService,
 )
+from switch_core.bridges.collaboration.install_service import (
+    MessagingInstallService,
+)
 from switch_core.bridges.collaboration.lifecycle_service import (
     CollaborationBridgeLifecycleService,
 )
@@ -48,6 +51,7 @@ def init_dependencies(
     api_key_store: ApiKeyStore,
     resource_service: ResourceService,
     protocol: ProtocolService,
+    install_service: MessagingInstallService | None,
     config: SwitchConfig,
 ) -> None:
     _state["agent_store"] = agent_store
@@ -66,6 +70,7 @@ def init_dependencies(
     _state["api_key_store"] = api_key_store
     _state["resource_service"] = resource_service
     _state["protocol"] = protocol
+    _state["install_service"] = install_service
     _state["config"] = config
 
 
@@ -195,6 +200,16 @@ def get_config() -> SwitchConfig:
 
 def get_protocol() -> ProtocolService:
     return _state["protocol"]  # type: ignore[no-any-return]
+
+
+def get_install_service() -> MessagingInstallService | None:
+    """None when this deployment registered no messaging app of its own.
+
+    Nullable rather than absent because that is the ordinary case, and the
+    endpoints have to answer it with a refusal that says so rather than with a
+    KeyError.
+    """
+    return _state["install_service"]  # type: ignore[no-any-return]
 
 
 def get_resource_service() -> ResourceService:
