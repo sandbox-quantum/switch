@@ -596,7 +596,11 @@ class SlackAdapter(CollaborationAdapter):
         through raw, so a caller that no longer imports this module still
         has one thing to catch.
         """
-        message = self._render_rich(content)
+        responder_name = None
+        if isinstance(content, RequestCard) and content.responder_external_id:
+            user = await self._resolve_user_name(content.responder_external_id)
+            responder_name = user.display_name
+        message = self._render_rich(content, responder_name=responder_name)
         try:
             await self.update_blocks(
                 channel_id, message_ref, message.text, message.blocks
@@ -607,7 +611,9 @@ class SlackAdapter(CollaborationAdapter):
                 text=message.text,
             ) from error
 
-    def _render_rich(self, content: RichContent) -> SlackMessage:
+    def _render_rich(
+        self, content: RichContent, *, responder_name: str | None = None
+    ) -> SlackMessage:
         if isinstance(content, TurnActivity):
             return render_activity(
                 content.items,
@@ -629,6 +635,7 @@ class SlackAdapter(CollaborationAdapter):
             content.request,
             content.reference,
             responder_external_id=content.responder_external_id,
+            responder_name=responder_name,
         )
 
     async def is_first_reply(

@@ -126,7 +126,7 @@ async def test_card_callback_reservation_and_confirmed_settlement(session_factor
     assert "@owner:example.test" not in platform.edits[-1][2]
     blocks = platform.edits[-1][3]
     assert len(blocks) == 1
-    assert blocks[0]["type"] == "context"
+    assert blocks[0]["type"] == "plan"
     assert blocks[0]["block_id"] == f"switch-request:{post.token}"
     assert "Allow once" in platform.edits[-1][2]
     assert len(platform.posts) == 1

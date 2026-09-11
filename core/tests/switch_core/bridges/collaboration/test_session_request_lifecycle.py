@@ -17,7 +17,7 @@ from typing import Any, cast
 
 import pytest
 
-from switch_core.bridges.collaboration.adapter import RichContentFailed
+from switch_core.bridges.collaboration.adapter import RequestCard, RichContentFailed
 from switch_core.bridges.collaboration.session.outbound import SessionRequestCards
 from switch_core.bridges.collaboration.session.renderers import RequestReference
 from switch_core.bridges.collaboration.session.renderers.slack import (
@@ -31,6 +31,7 @@ from switch_core.bridges.collaboration.session.transport import (
 from switch_core.bridges.collaboration.slack.adapter import (
     SlackAdapter,
     SlackConnectionConfig,
+    SlackUser,
 )
 from switch_core.db.models import SessionRequestPost
 from switch_core.db.stores.session_request_post_store import SessionRequestPostStore
@@ -327,16 +328,18 @@ async def test_the_card_is_edited_in_place_rather_than_reposted() -> None:
     edit = client.updated[0]
     assert edit["channel"] == "C1"
     assert edit["ts"] == "111.0"
-    summary = (
-        "✅ R42 · Allow once · actor-demo from Mattermost."
-    )
-    assert edit["blocks"] == [
-        {
-            "type": "context",
-            "block_id": f"switch-request:{post.token}",
-            "elements": [{"type": "mrkdwn", "text": summary}],
-        }
-    ]
+    summary = "✅ R42 · Allow once · actor-demo from Mattermost."
+    plan = edit["blocks"][0]
+    assert len(edit["blocks"]) == 1
+    assert plan["type"] == "plan"
+    assert plan["title"] == summary
+    assert plan["block_id"] == f"switch-request:{post.token}"
+    task = plan["tasks"][0]
+    assert task["status"] == "complete"
+    assert "Run project tests" in str(task["details"])
+    assert task["title"] == "pnpm test"
+    assert "pnpm test" not in str(task["details"])
+    assert task["details"]["elements"][0]["type"] == "rich_text_preformatted"
     assert edit["text"] == summary
     assert client.posted == []
 
@@ -366,3 +369,23 @@ async def test_a_failed_edit_puts_the_outcome_in_the_thread_instead() -> None:
     assert "R42" in reply["text"]
     assert "could not be updated" in reply["text"]
     assert "Allow once · actor-demo from Mattermost." in reply["text"]
+
+
+async def test_resolved_plan_uses_display_name_and_keeps_slack_mention_in_details() -> (
+    None
+):
+    request = await _request(through=SETTLED)
+    adapter, client = _adapter()
+    adapter._user_cache["UOWNER123"] = SlackUser(
+        name="owner", display_name="Example Owner"
+    )
+    await adapter.update_rich(
+        "C1",
+        "C1:111.0",
+        RequestCard(request, REFERENCE, responder_external_id="UOWNER123"),
+    )
+    plan = client.updated[0]["blocks"][0]
+    assert "Example Owner" in plan["title"]
+    assert "<@" not in plan["title"]
+    elements = plan["tasks"][0]["details"]["elements"][-1]["elements"]
+    assert {"type": "user", "user_id": "UOWNER123"} in elements

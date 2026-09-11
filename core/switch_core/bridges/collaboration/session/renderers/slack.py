@@ -29,6 +29,7 @@ from __future__ import annotations
 import hashlib
 import re
 from dataclasses import dataclass
+from html import unescape
 from typing import Any
 
 from switch_core.bridges.collaboration.slack.mrkdwn import escape_mrkdwn, plain_text
@@ -196,6 +197,7 @@ def render_request(
     reference: RequestReference,
     *,
     responder_external_id: str | None = None,
+    responder_name: str | None = None,
 ) -> SlackMessage:
     """Whichever card `request` calls for, by the kind of thing it asks.
 
@@ -216,6 +218,14 @@ def render_request(
             message.blocks[:] = [
                 block for block in message.blocks if block["type"] != "context"
             ]
+        elif pressable is not None:
+            for block in message.blocks:
+                if block["type"] == "context":
+                    block["elements"][0]["text"] = (
+                        "Choose a button, or reply in this thread with "
+                        f'`{escape_mrkdwn(reference.handle)} "your answer"` '
+                        "to give a different answer."
+                    )
     if request.state == "resolved":
         content = request.content
         answer = (
@@ -252,7 +262,77 @@ def render_request(
                 icon = "❌"
         summary = f"{icon} {_fit(reference.handle, 32)} · {answer}"
 
-        message = SlackMessage(text=summary, blocks=[_context(summary)])
+        title = summary
+        if responder_external_id:
+            title = title.replace(
+                f"<@{responder_external_id}>", responder_name or responder_external_id
+            )
+        title = _truncate(plain_text(unescape(title)), _MAX_PLAN_TITLE)
+        task_title = (
+            plain_text(content.detail or "Permission details")
+            if isinstance(content, ApprovalContent)
+            else plain_text(content.title)
+        )
+        details = []
+        if isinstance(content, ApprovalContent):
+            if content.detail and len(task_title) > _MAX_PLAN_TASK_TITLE:
+                details.append(
+                    {
+                        "type": "text",
+                        "text": "\n" + _truncate(content.detail, _MAX_DETAIL),
+                    }
+                )
+        else:
+            description = (
+                content.title + "\n" + "\n".join(q.prompt for q in content.questions)
+            )
+            details.append({"type": "text", "text": _truncate(description, _MAX_TITLE)})
+        details.append(
+            {
+                "type": "text",
+                "text": "\n" + plain_text(unescape(answer)).split(" · <@")[0],
+            }
+        )
+        if responder_external_id and re.fullmatch(
+            r"[UW][A-Z0-9]+", responder_external_id
+        ):
+            details.extend(
+                [
+                    {"type": "text", "text": " · "},
+                    {"type": "user", "user_id": responder_external_id},
+                ]
+            )
+        detail_blocks: list[dict[str, Any]] = []
+        if isinstance(content, ApprovalContent):
+            detail_blocks.append(
+                {
+                    "type": "rich_text_preformatted",
+                    "elements": [
+                        {"type": "text", "text": _truncate(content.title, _MAX_TITLE)}
+                    ],
+                }
+            )
+        detail_blocks.append({"type": "rich_text_section", "elements": details})
+        message = SlackMessage(
+            text=summary,
+            blocks=[
+                {
+                    "type": "plan",
+                    "title": title,
+                    "tasks": [
+                        {
+                            "task_id": _task_id(request.request_id),
+                            "title": _truncate(task_title, _MAX_PLAN_TASK_TITLE),
+                            "status": "complete",
+                            "details": {
+                                "type": "rich_text",
+                                "elements": detail_blocks,
+                            },
+                        }
+                    ],
+                }
+            ],
+        )
     message.blocks[0]["block_id"] = f"switch-request:{reference.token}"
     return message
 
@@ -270,7 +350,8 @@ def render_approval(
     prompt = f"*{_HEADINGS[request.state]}*"
     if content.detail:
         prompt += f"\n{_fit(content.detail, _MAX_DETAIL)}"
-    prompt += f"\n`{_fit(content.title, _MAX_TITLE)}`"
+    command = content.title.replace("```", "``\u200b`")
+    prompt += f"\n```\n{_fit(command, _MAX_TITLE)}\n```"
 
     blocks: list[dict[str, Any]] = [
         {"type": "section", "text": {"type": "mrkdwn", "text": prompt}}

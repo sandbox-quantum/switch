@@ -541,3 +541,24 @@ def _amend_questions(
 ) -> SnapshotRequest:
     content = request.content.model_copy(update={"questions": questions})
     return request.model_copy(update={"content": content})
+
+
+@pytest.mark.parametrize("custom", [False, True])
+def test_slack_button_question_only_advertises_custom_input_when_allowed(custom):
+    from switch_core.bridges.collaboration.session.renderers.slack import render_request
+
+    request = _one_question()
+    question = request.content.questions[0].model_copy(
+        update={"allow_custom_answer": custom}
+    )
+    request = request.model_copy(
+        update={"content": request.content.model_copy(update={"questions": [question]})}
+    )
+    message = render_request(request, ONE)
+    contexts = [block for block in message.blocks if block["type"] == "context"]
+    if custom:
+        guidance = contexts[0]["elements"][0]["text"]
+        assert 'R44 "your answer"' in guidance
+        assert "R44 1" not in guidance
+    else:
+        assert contexts == []
