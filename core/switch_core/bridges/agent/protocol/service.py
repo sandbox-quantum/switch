@@ -56,6 +56,7 @@ from switch_core.bridges.agent.registration_bootstrap import (
     resolve_registration_owner_id,
 )
 from switch_core.bridges.resource.service import ResourceService
+from switch_core.clients.admin_messages import PLATFORM_MARKER as _PLATFORM_MARKER
 from switch_core.crypto import encrypt_token
 from switch_core.db.models import (
     Agent,
@@ -1672,15 +1673,24 @@ class ProtocolService:
 
     @staticmethod
     def _timeline_entry(
-        message: Message, attachments: list[MessageAttachment]
+        message: Message,
+        attachments: list[MessageAttachment],
+        sender_kinds: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         """Build the agent-facing entry for a recorded row.
 
         An arrival is stored with no body — how it reads is this function's to
         decide, not the writer's — so the sentence is composed here and can be
         changed without rewriting history.
+
+        ``sender_kinds`` is an optional pre-resolved map of sender mxid → kind
+        ("user", "agent", "platform"). When absent, ``sender_kind`` is derived
+        from the message content (PLATFORM_MARKER → "platform", else None).
         """
         name = message.sender_name or message.sender_id
+        sender_kind = (sender_kinds or {}).get(message.sender_id)
+        if sender_kind is None and _PLATFORM_MARKER in (message.content or {}):
+            sender_kind = "platform"
         if message.event_type == MEMBERSHIP_EVENT_TYPE:
             return {
                 "id": message.transport_event_id,
@@ -1691,7 +1701,7 @@ class ProtocolService:
                 "timestamp": _epoch_ms(message.sent_at),
                 "attachments": [],
             }
-        return {
+        entry: dict[str, Any] = {
             "id": message.transport_event_id,
             "kind": "message",
             "sender": message.sender_id,
@@ -1709,6 +1719,9 @@ class ProtocolService:
                 for attachment in attachments
             ],
         }
+        if sender_kind is not None:
+            entry["sender_kind"] = sender_kind
+        return entry
 
     @staticmethod
     def _thread_root_id(message: Message) -> str:

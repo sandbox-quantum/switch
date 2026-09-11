@@ -213,6 +213,10 @@ class MessagePayload(BaseModel):
     addressed: bool
     sender: str
     sender_name: str
+    # The kind of entity that sent this message: "user" (a human on a bridge),
+    # "agent" (another agent), or "platform" (the Switch app itself,
+    # CHOO-2719). None for messages sent before sender_kind was tracked.
+    sender_kind: str | None = None
     message_id: str
     body: str
     timestamp: int
