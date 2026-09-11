@@ -142,6 +142,25 @@ it('delivers the initial prompt on a relaunch that did not create the host', asy
   expect(mocks.persist.mock.calls.map((call) => call[1].state)).toEqual(['pending', 'submitted']);
 });
 
+it('accepts a host that awaits an explicit reset decision and holds the initial prompt', async () => {
+  mocks.snapshot.mockResolvedValue({
+    session: {
+      epoch: 'epoch-2',
+      connectivity: 'online',
+      status: 'error',
+      capabilities: { reset: true },
+    },
+    turns: [],
+    requests: [],
+    items: [],
+  });
+
+  await runtime().start(session, undefined, false, 'Say hello');
+
+  expect(mocks.submit).not.toHaveBeenCalled();
+  expect(mocks.persist).not.toHaveBeenCalled();
+});
+
 it('does not resend a prompt the server already holds', async () => {
   mocks.loadSession.mockResolvedValue({
     row: {
