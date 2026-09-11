@@ -1,6 +1,7 @@
 import httpx
 from fastapi import FastAPI
 
+from switch_core.bridges.agent.api.session_routes import RoomMessage
 from switch_core.bridges.agent.api.session_routes import router as host_router
 from switch_core.bridges.agent.auth import get_agent_from_scope
 from switch_core.bridges.agent.dependencies import get_session_factory as host_factory
@@ -82,3 +83,17 @@ async def test_http_reconciliation_fences_an_unaccepted_command(session_factory)
             await authority.pending("agent-demo", "session-demo", "host-demo", epoch)
             == []
         )
+
+
+def test_room_message_accepts_an_existing_host_without_context_metadata():
+    request = RoomMessage.model_validate(
+        {
+            "host_id": "host",
+            "epoch": "epoch",
+            "room_id": "room",
+            "message_id": "message",
+            "sequence": 1,
+        }
+    )
+    assert request.missed_count == 0
+    assert request.gap_reason is None

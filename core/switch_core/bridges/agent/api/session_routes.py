@@ -151,6 +151,8 @@ class RoomMessage(HostLease):
     room_id: str = Field(min_length=1)
     message_id: str = Field(min_length=1)
     sequence: int = Field(ge=1)
+    missed_count: int = Field(default=0, ge=0)
+    gap_reason: str | None = None
 
 
 @router.post("/{session_id}/room-message")
@@ -169,6 +171,8 @@ async def room_message(
         body.room_id,
         body.message_id,
         body.sequence,
+        body.missed_count,
+        body.gap_reason,
         buffer,
     )
 

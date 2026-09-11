@@ -583,6 +583,8 @@ class SessionAuthority:
         room_id: str,
         message_id: str,
         sequence: int,
+        missed_count: int,
+        gap_reason: str | None,
         buffer: EventBuffer,
     ) -> CommandStatus:
         command_id = str(
@@ -748,6 +750,15 @@ class SessionAuthority:
                     attachment_notices.append(
                         f"Attachment {reference.filename!r} was not delivered: {exc}"
                     )
+            text = (
+                f"[Switch] {payload.sender_name} addressed you in room {room_id} (message_id {message_id}, thread_id {payload.thread_id or 'none'}):\n{payload.body}"
+                + ("\n\n" + "\n".join(attachment_notices) if attachment_notices else "")
+            )
+            if missed_count > 0:
+                plural = "" if missed_count == 1 else "s"
+                text += f"\n({missed_count} unaddressed room message{plural} arrived since the previous message you were sent — call read_context to catch up.)"
+            if gap_reason:
+                text += f"\n⚠️ Some earlier room events were dropped and cannot be replayed ({gap_reason}) — call read_context before responding."
             command = Command(
                 contract_version=1,
                 command_id=command_id,
@@ -764,12 +775,7 @@ class SessionAuthority:
                 ),
                 body=MessageSend(
                     type="message.send",
-                    text=f"[Switch] {payload.sender_name} addressed you in room {room_id} (message_id {message_id}, thread_id {payload.thread_id or 'none'}):\n{payload.body}"
-                    + (
-                        "\n\n" + "\n".join(attachment_notices)
-                        if attachment_notices
-                        else ""
-                    ),
+                    text=text,
                     attachments=attachments,
                     delivery="queue",
                 ),

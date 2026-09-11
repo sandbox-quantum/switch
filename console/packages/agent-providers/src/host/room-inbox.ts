@@ -44,9 +44,21 @@ const receivedSchema = z.strictObject({
   sequence: z.number().int().positive(),
   roomId: z.string().min(1),
   messageId: z.string().min(1),
+  missed: z.number().int().nonnegative(),
+  gap: z
+    .strictObject({
+      fromSequence: z.number().int().nonnegative(),
+      reason: z.string().min(1),
+    })
+    .nullable(),
+});
+/** Deliveries journaled before a tally was recorded carry neither field. */
+const storedReceivedSchema = receivedSchema.extend({
+  missed: receivedSchema.shape.missed.default(0),
+  gap: receivedSchema.shape.gap.default(null),
 });
 const recordSchema = z.discriminatedUnion('type', [
-  receivedSchema,
+  storedReceivedSchema,
   z.strictObject({ type: z.literal('ack'), sequence: z.number().int().positive() }),
   z.strictObject({ type: z.literal('rooms'), rooms: z.array(z.string()) }),
 ]);
@@ -57,6 +69,14 @@ export class SharedRoomInbox {
   private readonly outstanding = new Map<number, Received>();
   private rooms: string[] | null = null;
   private cursor = 0;
+  /**
+   * Unaddressed room messages seen since the last delivery was journaled, and
+   * the gap the server last reported. Neither is carried across a restart: a
+   * restart resumes from `Math.max(startCursor, lastReceivedSequence)`, so the
+   * same unaddressed events stream again and the tally reaches the same number.
+   */
+  private missed = 0;
+  private gap: z.infer<typeof receivedSchema>['gap'] = null;
   private constructor(private readonly journal: Journal<z.infer<typeof recordSchema>>) {
     for (const record of journal.records) {
       if (record.type === 'received') {
@@ -107,23 +127,28 @@ export class SharedRoomInbox {
         creds: credentials,
         connectionId: connection.connectionId,
         scope: 'single',
-        filter: 'addressed',
+        filter: 'all',
         startCursor: cursor || connection.startCursor,
         rooms,
         signal,
         log: console,
         onEvent: async (event) => {
           const messageId = roomInputId(event);
-          if (!messageId) return;
+          if (!messageId) {
+            if (event.type === 'message') this.missed += 1;
+            return;
+          }
           const received = receivedSchema.parse({
             type: 'received',
             sequence: event.sequence,
             roomId: event.room_id,
             messageId,
+            missed: this.missed,
+            gap: this.gap,
           });
           const previous = this.received.get(received.sequence);
           if (previous) {
-            if (JSON.stringify(previous) !== JSON.stringify(received))
+            if (previous.roomId !== received.roomId || previous.messageId !== received.messageId)
               throw new Error('Room delivery sequence changed identity.');
             return;
           }
@@ -131,6 +156,8 @@ export class SharedRoomInbox {
           this.received.set(received.sequence, received);
           this.outstanding.set(received.sequence, received);
           this.cursor = Math.max(this.cursor, received.sequence);
+          this.missed = 0;
+          this.gap = null;
         },
         onRooms: (next) => {
           void (async () => {
@@ -146,8 +173,13 @@ export class SharedRoomInbox {
             fail(error);
           });
         },
-        onGap: (gap) =>
-          fail(new Error(`Room delivery gap: ${gap.reason}. Read room context before continuing.`)),
+        // A gap costs the agent context, not the connection: the stream keeps
+        // serving from wherever it resumed, and the warning rides on the next
+        // delivery so the agent reads the room before it answers.
+        onGap: (gap) => {
+          console.warn(`Room delivery gap: ${gap.reason}. Read room context before continuing.`);
+          this.gap = { fromSequence: gap.fromSequence, reason: gap.reason };
+        },
         onEvicted: (reason) => {
           if (reason === 'heartbeat lapsed')
             console.warn('Room heartbeat lapsed; reconnecting from the saved cursor.');
