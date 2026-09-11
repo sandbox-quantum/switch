@@ -663,3 +663,276 @@ reach:
 the fourth person arriving twenty minutes in and asking "what's the state?" — a
 question the responder agent could answer automatically the instant they join,
 and cannot, because the template cannot opt it into join events.
+
+## The responder agent
+
+The rotation is the whole problem. Six engineers take the pager in turn; the
+agent has to be the same agent for all of them, reachable by whoever is on duty,
+and not degraded by the fact that the person who set it up is on holiday.
+
+### What the SOP needs it to do
+
+Modest, deliberately. In the war room:
+
+- **Answer lookups.** Who owns this service. What the runbook says. What the
+  escalation ladder is. These are the questions that cost minutes at 03:00 and
+  they are all document reads.
+- **Draft the situation report** in the right shape when nudged, from what the
+  room has said, for a human to check and post onward.
+- **Keep the timeline**, so the postmortem is written from a record rather than
+  from memory.
+- **Orient arrivals** — say what is known so far when someone joins.
+
+Note what is absent: it does not page, does not set severity, does not decide,
+and does not act on production. The SOP grants *humans* the authority to roll
+back and to push emergency fixes; extending that to a shared agent that six
+people can address and nobody can attribute would be the single worst decision
+available here. See [The rule that makes it safe](#the-rule-that-makes-it-safe).
+
+### What `flint-tracker` actually is
+
+Read from the live instance rather than assumed, because it is the prior art and
+being wrong about it would poison the recommendation:
+
+- **Name: `flint-tracker`.** No owner suffix. Every other Claude Code agent on
+  the instance registered through Switch Console carries one —
+  `claude-code.<project>.<person>`. This one reads as a service, and that is not
+  cosmetic: the name is the routing key for everything. Mentions, the Slack user
+  group the bridge mints, room aliases and `target_names` all resolve `name`,
+  and `display_name` routes nothing at all.
+- **Owner: the deployment's `Admin` account.** Not a person.
+- **`connection_model: auto_session`, `channels_enabled: true`**, with a working
+  directory on a shared always-on host rather than on anyone's laptop. Something
+  runs there continuously, watching for the agent to be addressed and spawning a
+  session on demand.
+- **`addressing_policy: null`** — wide open. Anyone in any room it is in can
+  address it.
+- **Six room memberships across three platforms** — Slack, Discord and
+  Mattermost. It is designed to be invited around, not to live in one room.
+- **A description written at the reader**, ending "Invite it into any room and
+  ask what was decided, what changed, or who owns something." It tells a
+  stranger what to do with it.
+
+That is a coherent design and most of it is exactly right for a responder.
+
+### What carries over
+
+**The name.** `flint-responder`, not `claude-code.oncall.<someone>`. It is the
+handle six people will type under pressure and it must not encode whose agent it
+is.
+
+**Shared infrastructure, not a laptop.** This is the load-bearing one. An
+`auto_session` agent is brought online by a watcher process; put that watcher on
+an always-on host and the agent is online regardless of who is on duty, whether
+their machine is asleep, or whether they have ever installed Switch Console.
+A responder that only works when a particular laptop is open is not a responder.
+
+**An open addressing policy.** A rotating group cannot be enumerated, so the
+policy cannot enumerate it. Open within the rooms it is in is the correct
+setting, and it is what `flint-tracker` runs.
+
+**Membership by invitation.** The agent belongs to rooms, not to a room. A war
+room is created and the agent is added; nothing about the agent changes per
+incident.
+
+**A description that tells a stranger what to ask.** Half the value of a war-room
+agent is discovered by someone who has never used it, mid-incident, from the
+member list.
+
+### What breaks
+
+Six things, in rough order of how much they will hurt.
+
+**1. Admin ownership hands the agent the whole deployment.** An agent inherits
+*exactly* its owner's permissions — the authorization module says so in its
+opening lines — and `User.role == "admin"` is a global bypass on every read,
+write and delete. So an Admin-owned agent can modify or delete any reference,
+document, package or room in the tenant. For an agent that reads Slack and
+summarises, that is an over-grant you can live with. For a responder that runs
+during an incident, with tool access, addressed by six people under time
+pressure, it is not: the moment its blast radius is widest is exactly the moment
+it is unbounded. **Do not copy this part.**
+
+**2. There is nothing good to own it instead.** Switch has exactly one
+shared-owner construct: the synthetic bootstrap account that owns every agent
+registered with the deployment-wide token. It is deliberately non-admin — right
+— and it is password-less and cannot be logged into — fatal. Nobody can manage
+its agents, and nobody can ever reveal their credentials, because credential
+reveal is strict owner equality with no admin bypass. So the correct answer,
+"own it with a non-person account that is not an admin", requires a service user
+that someone can actually authenticate as, and there is no supported way to make
+one. [Gaps](#gaps) G11.
+
+Note also that "user-agnostic" cannot mean *ownerless*. An agent with
+`owner_id IS NULL` cannot create a reference, attach one, list references, or
+attach resources when creating a room — every one of those paths resolves the
+agent to its owner and fails loudly without one. It cannot even edit itself over
+MCP, because that guard compares two `None`s and refuses. Ownerless is a broken
+agent, not a neutral one. **User-agnostic means owned by a non-person, not owned
+by nobody.**
+
+And ownership is permanent: `owner_id` is set at registration and there is no
+endpoint anywhere that changes it. Registering the responder under a person "just
+for now" means it is theirs until someone runs an `UPDATE`.
+
+**3. The default addressing policy locks the rotation out, and the UI that fixes
+it breaks it.** Every agent registered through any HTTP path is created
+owner-only with an empty allowed-agents list. The `register_agent` function takes
+an `owner_only=False` parameter, but no wire path passes it — the sole caller is
+the server-side connector registration, whose comment is worth quoting because it
+is this design's precedent:
+
+> A server-side connector agent is a service the deployment offers everyone, not
+> one person's assistant; it is owned by whoever holds the registration token
+> only in the bookkeeping sense. Owner-only would make it answer to that account
+> alone.
+
+So the responder is born locked and must be widened afterwards through
+`PUT /agents/{id}/addressing-policy`. And here is the landmine: the gateway's
+React policy editor models only the four id-shaped dimensions and drops the
+symbolic `owner` and `owner_agents` rules when it saves. Open an owner-only agent
+in the dashboard, change anything, save — and the policy becomes one that admits
+nobody. The agent then answers every responder with "You're not permitted to
+direct messages to me in this room." Mid-incident, that reads as an outage.
+Switch Console's editor handles the symbolic rules correctly; the gateway's does
+not. [Gaps](#gaps) G12.
+
+**4. The offline nudge wakes the wrong person.** When an `auto_session` agent is
+addressed in a room where nothing can start it, Switch posts on its behalf. The
+message names the *owner*:
+
+> `@owner` — I'm not online in this room, and `@asker` needs me. Open Switch
+> Console to bring me online here.
+
+and, when there is no owner account on that platform to mention:
+
+> I'm not online in this room. **My owner needs to open Switch Console** to bring
+> me online here.
+
+The code's own comment explains the reasoning — "the fix is for the OWNER to open
+it, and nobody else in the room can act" — which is sound for a personal agent
+and exactly wrong for a shared one. At 03:00 the war room will either name a
+service account nobody watches, or a dead end. What it should name is whoever is
+on call. [Gaps](#gaps) G13.
+
+Running the watcher on an always-on host makes this rare rather than fixing it.
+
+**5. One credential, no rotation, no per-holder revocation.** One agent has
+exactly one API key row. There is no rotation endpoint: the only way to change
+the key is re-registration with overwrite, which deletes the old row, so every
+holder breaks at once. Reveal is restricted to the owning user with no admin
+bypass. And the token is a bearer credential in a plaintext file in the agent's
+working directory — the repository's own documentation calls that a known
+exposure.
+
+The practical consequence is a rule rather than a fix: **the responder's
+credential lives in exactly one place, on the shared host, and is never
+distributed to responders.** Handing it to six laptops means six copies of a
+token nobody can individually revoke, on machines that leave with their owners.
+[Gaps](#gaps) G14.
+
+This also settles a mechanical question. Two people *can* run sessions as the
+same agent — identity is per directory, not per machine, and an agent may hold up
+to 32 connections. But at most one session of an agent may act in a given room,
+and `connect_to_room` always takes over: the newcomer wins, the incumbent is
+disconnected from that room and told it lost, and whatever it was doing there
+stops. Two responders each starting a session during one incident would evict
+each other in turn. One process, on one host, is the only sane operating mode.
+
+**6. Nothing records which human drove it.** No actor is stored on connections,
+sessions, runtime state, role leases or messages; a message is attributed to the
+agent, not to whoever prompted it. For most agents that is a shrug. For incident
+response it is not, because the postmortem's second question is always "who did
+what, when". [Gaps](#gaps) G15.
+
+There is a mitigation, and it is a design rule rather than a feature — see below.
+
+### Roles are the wrong tool for the on-call rotation
+
+Room roles look purpose-built for this: named, assumable instruction bundles;
+`@role` reaches whoever currently holds it; an exclusive role admits one holder
+and auto-releases about six seconds after that holder dies. "Address whoever is
+currently the incident commander" is precisely the sentence roles exist for.
+
+They still do not work here, for three reasons.
+
+**A lease is held per agent, globally.** The lease table is unique on the agent,
+not on the session and not on the room. One shared responder can therefore hold
+one role, in one room, across the entire instance. Two concurrent incidents and
+it can be the scribe in only one of them. Worse, two sessions of the same agent
+assuming the same role is treated as an idempotent re-assume — the second simply
+overwrites the first's session pointer — so roles provide no arbitration at all
+between two people running the shared agent, which is the one thing you might
+have hoped they would provide. [Gaps](#gaps) G16.
+
+**Humans cannot hold roles.** Assuming a role is an agent operation. The incident
+commander is a person, so the role cannot be theirs.
+
+**There is no eligibility control.** The role model carries an `eligibility`
+field that is declared, documented as a forward-looking hook, and read by
+nothing. Any room member may assume any role. "Only the on-call primary may take
+incident commander" is not expressible. [Gaps](#gaps) G17.
+
+Where roles *do* work is between distinct agents. If responders bring their own
+coding agents into the war room — which they will, because that is how anyone
+investigates — then an exclusive `scribe` role is genuinely good: one holder at a
+time, real handoff by release-and-assume, automatic release within seconds if
+that engineer's session dies. That is why the template defines the role and
+assigns it to nobody.
+
+So: **incident commander and scribe stay human conventions, written in the room's
+instructions. The `scribe` role exists for a responder's own agent to pick up,
+not for the shared responder.**
+
+### The recommendation
+
+**One shared responder agent per product, owned by a dedicated non-admin service
+user, running `auto_session` on shared always-on infrastructure, with an open
+addressing policy, invited into each war room by the template, and never run from
+an engineer's machine.**
+
+Concretely, on top of what `flint-tracker` already gets right:
+
+| Setting | Value | Why |
+| --- | --- | --- |
+| `name` | `<product>-responder` | The routing key. No person in it. |
+| owner | a dedicated service user, **not** an admin | The agent inherits its owner's permissions exactly. |
+| `connection_model` | `auto_session` | Comes online when addressed; nobody has to remember to start it. |
+| watcher | one, on an always-on host | Online regardless of whose turn it is. |
+| credential | one copy, on that host | Cannot be revoked per holder, so do not spread it. |
+| addressing policy | open | A rotation cannot be enumerated. |
+| room membership | per incident, via the template | Nothing about the agent changes per incident. |
+| roles held | none | A lease is per agent; holding one breaks the second concurrent incident. |
+
+Two alternatives, and why not:
+
+- **One responder agent per engineer.** Real per-human attribution, real role
+  arbitration, and each agent already exists in some form. But it is six
+  registrations, six addressing policies and six credentials to keep consistent,
+  it churns on every rotation change, and each agent is still personally owned —
+  so the day someone leaves, their responder leaves with them. It solves
+  attribution by giving up shared identity, which is the thing that was asked
+  for.
+- **Own the shared agent with the Admin account, like `flint-tracker`.** One
+  fewer problem today, in exchange for an agent with unbounded authority over
+  every room and resource in the deployment, addressable by anyone, during the
+  worst hour of the quarter. If G11 cannot be closed before the first incident,
+  this is the compromise to take *knowingly and temporarily* — and the mitigation
+  is that the agent has no production access and no write path outside its rooms.
+
+### The rule that makes it safe
+
+Because nothing records which human drove the agent, the room transcript has to
+carry the attribution instead. That is achievable, but only if the agent is
+constrained:
+
+> **The responder takes no consequential action that a human did not ask for, in
+> the room, in writing.** Everything it does is either a read, or a draft posted
+> back to the room for a human to act on. It never posts to the stakeholder
+> channel, never touches the incident record, and never runs anything against
+> production.
+
+Under that rule the room *is* the audit log: every action the agent took has a
+message above it from the person who asked. Relax the rule and the attribution
+hole in G15 becomes a real one. The rule belongs in the room instructions, where
+the template puts it, and in the agent's own configuration.
