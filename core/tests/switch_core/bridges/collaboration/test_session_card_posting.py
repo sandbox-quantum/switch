@@ -268,7 +268,7 @@ async def test_the_card_carries_the_handle_that_was_reserved_for_it(
     post = await _post_one(cards, room_id)
 
     assert post.handle == "R1"
-    assert post.handle in json.dumps(client.posted[0]["blocks"])
+    assert post.handle in client.posted[0]["text"]
 
 
 async def test_the_row_records_what_the_card_offered(

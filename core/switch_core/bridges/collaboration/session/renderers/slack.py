@@ -27,6 +27,7 @@ them can reach a limit.
 from __future__ import annotations
 
 import hashlib
+import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -191,7 +192,10 @@ class SlackMessage:
 
 
 def render_request(
-    request: SnapshotRequest, reference: RequestReference
+    request: SnapshotRequest,
+    reference: RequestReference,
+    *,
+    responder_external_id: str | None = None,
 ) -> SlackMessage:
     """Whichever card `request` calls for, by the kind of thing it asks.
 
@@ -206,6 +210,49 @@ def render_request(
         if isinstance(request.content, QuestionsContent)
         else render_approval(request, reference)
     )
+    if request.state == "open" and isinstance(request.content, QuestionsContent):
+        pressable = _pressable(request, request.content)
+        if pressable is not None and not pressable.allow_custom_answer:
+            message.blocks[:] = [
+                block for block in message.blocks if block["type"] != "context"
+            ]
+    if request.state == "resolved":
+        content = request.content
+        answer = (
+            _answered_questions(request, content)
+            if isinstance(content, QuestionsContent)
+            else _answered(request, _approval(request))
+        )
+        if (
+            responder_external_id
+            and re.fullmatch(r"[UW][A-Z0-9]+", responder_external_id)
+            and request.decided_by
+        ):
+            answer = answer.replace(
+                _actor(request.decided_by), f"<@{responder_external_id}>"
+            )
+        answer = answer.replace(" — chosen by ", " · ").replace(
+            " — answered by ", " · "
+        )
+        icon = "✅"
+        if (
+            isinstance(content, ApprovalContent)
+            and request.result
+            and isinstance(request.result.result, ApprovalResult)
+        ):
+            chosen = next(
+                (
+                    option
+                    for option in content.options
+                    if option.option_id == request.result.result.option_id
+                ),
+                None,
+            )
+            if chosen and chosen.decision == "decline":
+                icon = "❌"
+        summary = f"{icon} {_fit(reference.handle, 32)} · {answer}"
+
+        message = SlackMessage(text=summary, blocks=[_context(summary)])
     message.blocks[0]["block_id"] = f"switch-request:{reference.token}"
     return message
 
@@ -220,9 +267,10 @@ def render_approval(
     card says what became of it instead.
     """
     content = _approval(request)
-    prompt = f"*{_HEADINGS[request.state]}*\n{_fit(content.title, _MAX_TITLE)}"
+    prompt = f"*{_HEADINGS[request.state]}*"
     if content.detail:
-        prompt += f"\n`{_fit(content.detail, _MAX_DETAIL)}`"
+        prompt += f"\n{_fit(content.detail, _MAX_DETAIL)}"
+    prompt += f"\n`{_fit(content.title, _MAX_TITLE)}`"
 
     blocks: list[dict[str, Any]] = [
         {"type": "section", "text": {"type": "mrkdwn", "text": prompt}}
@@ -242,14 +290,15 @@ def render_approval(
                 "elements": [_button(option, reference) for option in content.options],
             }
         )
-    blocks.append(
-        {
-            "type": "context",
-            "elements": [
-                {"type": "mrkdwn", "text": _footer(request, content, reference)}
-            ],
-        }
-    )
+    if request.state != "open" or not content.options:
+        blocks.append(
+            {
+                "type": "context",
+                "elements": [
+                    {"type": "mrkdwn", "text": _footer(request, content, reference)}
+                ],
+            }
+        )
     return SlackMessage(text=render_approval_text(request, reference), blocks=blocks)
 
 

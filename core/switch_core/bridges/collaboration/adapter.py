@@ -153,6 +153,8 @@ class RequestCard:
     items: list[Item] = field(default_factory=list)
     elapsed_seconds: float | None = None
 
+    responder_external_id: str | None = None
+
 
 RichContent = TurnActivity | RequestCard
 

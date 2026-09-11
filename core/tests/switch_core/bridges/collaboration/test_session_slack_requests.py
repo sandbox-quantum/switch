@@ -154,8 +154,8 @@ def test_the_card_says_how_to_answer_in_words() -> None:
 
     message = render_approval(request, REFERENCE)
 
-    context = next(block for block in message.blocks if block["type"] == "context")
-    assert "Reply with `R42 1`" in context["elements"][0]["text"]
+    assert not any(block["type"] == "context" for block in message.blocks)
+    assert "Reply with `R42 1`" in message.text
     assert message.text == render_approval_text(request, REFERENCE)
     assert message.text.startswith("> Request R42: Run project tests")
     assert "1. Allow once" in message.text
@@ -186,8 +186,7 @@ def test_what_the_card_tells_you_to_type_is_what_the_grammar_reads() -> None:
 
 
 def _footer_of(message: Any) -> str:
-    context = next(block for block in message.blocks if block["type"] == "context")
-    return str(context["elements"][0]["text"])
+    return message.text.splitlines()[-1]
 
 
 FORGERY = "<!channel> & <https://example.test|click>"

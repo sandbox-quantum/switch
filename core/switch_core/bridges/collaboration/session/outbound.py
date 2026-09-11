@@ -39,6 +39,7 @@ import secrets
 from collections import OrderedDict
 from dataclasses import dataclass
 
+from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -49,7 +50,7 @@ from switch_core.bridges.collaboration.adapter import (
     TurnActivity,
 )
 from switch_core.bridges.collaboration.slack.adapter import SlackAdapter
-from switch_core.db.models import SessionRequestPost
+from switch_core.db.models import Client, ExternalUser, SessionRequestPost
 from switch_core.db.stores.session_request_post_store import SessionRequestPostStore
 from switch_core.sessions.contract import TURN_ENDED, Item, SnapshotRequest, TurnUpsert
 
@@ -685,11 +686,24 @@ class SessionRequestCards:
         seconds until something moves it on.
         """
         reference = RequestReference(token=post.token, handle=post.handle)
+        responder_external_id = None
+        if request.decided_by and request.decided_by.surface == "slack":
+            async with self._session_factory() as db:
+                responder_external_id = await db.scalar(
+                    select(ExternalUser.external_user_id)
+                    .join(Client, Client.id == ExternalUser.client_id)
+                    .where(
+                        ExternalUser.bridge_id == self._bridge_id,
+                        Client.matrix_user_id == request.decided_by.actor_id,
+                    )
+                )
         try:
             await self._adapter.update_rich(
                 post.external_channel_id,
                 post.external_post_id,
-                RequestCard(request, reference),
+                RequestCard(
+                    request, reference, responder_external_id=responder_external_id
+                ),
             )
         except RichContentFailed as error:
             logger.error(

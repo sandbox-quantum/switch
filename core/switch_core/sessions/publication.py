@@ -137,8 +137,18 @@ async def refresh_cards(
             if not room.external_channel_id:
                 raise SessionError("NOT_FOUND", "Request room has no platform channel.")
             post = await posts.get_by_request(db, bridge_id, row.id, request.request_id)
+            thread_id = (
+                post.thread_id
+                if post is not None
+                else await _platform_message_ref(
+                    db,
+                    bridge_id,
+                    room.external_channel_id,
+                    origin.thread_id or origin.message_id,
+                )
+            )
             publications.append(
-                (request, post, room.id, room.external_channel_id, origin.thread_id)
+                (request, post, room.id, room.external_channel_id, thread_id)
             )
         epoch = row.epoch
         agent_name = agent.name

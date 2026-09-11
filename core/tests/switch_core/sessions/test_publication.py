@@ -1,3 +1,4 @@
+import pytest
 from sqlalchemy import select
 
 from switch_core.bridges.collaboration.adapter import RequestCard
@@ -6,11 +7,17 @@ from switch_core.bridges.collaboration.session.inbound import SessionInteraction
 from switch_core.bridges.collaboration.session.outbound import SessionRequestCards
 from switch_core.bridges.collaboration.session.renderers import ANSWER_ACTION
 from switch_core.bridges.collaboration.session.renderers.slack import render_request
-from switch_core.db.models import SessionRequestPost
+from switch_core.db.models import (
+    BridgeMessageMap,
+    ExternalUser,
+    SdkSessionCommand,
+    SessionRequestPost,
+)
 from switch_core.db.stores.session_request_post_store import SessionRequestPostStore
 from switch_core.sessions.publication import refresh_cards
+from switch_core.sessions.service import SessionError
 
-from .test_authority import host_event, opened, setup
+from .test_authority import answer, host_event, opened, setup
 
 
 class Platform:
@@ -27,18 +34,34 @@ class Platform:
         self.edits = []
 
     async def post_rich(self, channel, agent, content: RequestCard, thread):
-        message = render_request(content.request, content.reference)
+        message = render_request(
+            content.request,
+            content.reference,
+            responder_external_id=content.responder_external_id,
+        )
         self.posts.append((channel, message.text, message.blocks, thread))
         return f"{channel}:111.0"
 
     async def update_rich(self, channel, post, content: RequestCard):
-        message = render_request(content.request, content.reference)
+        message = render_request(
+            content.request,
+            content.reference,
+            responder_external_id=content.responder_external_id,
+        )
         self.edits.append((channel, post, message.text, message.blocks))
 
 
 async def test_card_callback_reservation_and_confirmed_settlement(session_factory):
     service, epoch = await setup(session_factory)
     await opened(service, epoch)
+    async with session_factory() as db:
+        external = await db.scalar(
+            select(ExternalUser).where(
+                ExternalUser.external_user_id == "platform-owner"
+            )
+        )
+        external.external_user_id = "UOWNER123"
+        await db.commit()
     platform = Platform()
     posts = SessionRequestPostStore()
     cards = SessionRequestCards(
@@ -99,6 +122,69 @@ async def test_card_callback_reservation_and_confirmed_settlement(session_factor
         ),
     )
     await refresh_cards(session_factory, "bridge", "session-demo", cards)
-    assert "@owner:example.test" in platform.edits[-1][2]
-    assert "slack" in platform.edits[-1][2].lower()
+    assert "<@UOWNER123>" in platform.edits[-1][2]
+    assert "@owner:example.test" not in platform.edits[-1][2]
+    blocks = platform.edits[-1][3]
+    assert len(blocks) == 1
+    assert blocks[0]["type"] == "context"
+    assert blocks[0]["block_id"] == f"switch-request:{post.token}"
+    assert "Allow once" in platform.edits[-1][2]
     assert len(platform.posts) == 1
+
+
+@pytest.mark.parametrize("thread", [None, "sw_thread"])
+async def test_permission_uses_activity_thread_and_persists_it(session_factory, thread):
+    service, epoch = await setup(session_factory)
+    await opened(service, epoch)
+    async with session_factory() as db:
+        row = await db.get(SdkSessionCommand, ("session-demo", "message-demo"))
+        payload = dict(row.command)
+        payload["origin"] = {
+            **payload["origin"],
+            "messageId": "sw_message",
+            "threadId": thread,
+        }
+        row.command = payload
+        for internal, external in [
+            ("sw_message", "channel-demo:100.1"),
+            ("sw_thread", "channel-demo:100.0"),
+        ]:
+            db.add(
+                BridgeMessageMap(
+                    bridge_id="bridge",
+                    external_channel_id="channel-demo",
+                    transport_event_id=internal,
+                    external_post_id=external,
+                )
+            )
+        await db.commit()
+    platform = Platform()
+    cards = SessionRequestCards(
+        platform,
+        bridge_id="bridge",
+        posts=SessionRequestPostStore(),
+        session_factory=session_factory,
+    )
+    await refresh_cards(session_factory, "bridge", "session-demo", cards)
+    expected = "channel-demo:100.0" if thread else "channel-demo:100.1"
+    assert platform.posts[0][3] == expected
+    async with session_factory() as db:
+        post = await db.scalar(select(SessionRequestPost))
+        assert post.thread_id == expected
+
+    reply = answer(epoch, "thread-answer", actor="@owner:example.test", surface="slack")
+    for wrong_thread in ["different-thread", "sw_message", None]:
+        wrong = reply.model_copy(
+            update={
+                "origin": reply.origin.model_copy(update={"thread_id": wrong_thread})
+            }
+        )
+        with pytest.raises(SessionError) as failure:
+            await service.submit(wrong, user_id=None, bridge_id="bridge")
+        assert failure.value.code == "NOT_AUTHORIZED"
+    reply = reply.model_copy(
+        update={"origin": reply.origin.model_copy(update={"thread_id": expected})}
+    )
+    assert (
+        await service.submit(reply, user_id=None, bridge_id="bridge")
+    ).status == "accepted"

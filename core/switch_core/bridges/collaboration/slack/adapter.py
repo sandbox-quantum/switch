@@ -625,7 +625,11 @@ class SlackAdapter(CollaborationAdapter):
                 content.reference,
                 elapsed_seconds=content.elapsed_seconds,
             )
-        return render_request(content.request, content.reference)
+        return render_request(
+            content.request,
+            content.reference,
+            responder_external_id=content.responder_external_id,
+        )
 
     async def is_first_reply(
         self, channel_id: str, root_ref: str, message_ref: str

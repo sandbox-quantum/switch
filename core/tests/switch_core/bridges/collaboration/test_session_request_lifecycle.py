@@ -327,10 +327,17 @@ async def test_the_card_is_edited_in_place_rather_than_reposted() -> None:
     edit = client.updated[0]
     assert edit["channel"] == "C1"
     assert edit["ts"] == "111.0"
-    expected = render_approval(request, REFERENCE).blocks
-    expected[0]["block_id"] = f"switch-request:{_post().token}"
-    assert edit["blocks"] == expected
-    assert edit["text"] == render_approval_text(request, REFERENCE)
+    summary = (
+        "✅ R42 · Allow once · actor-demo from Mattermost."
+    )
+    assert edit["blocks"] == [
+        {
+            "type": "context",
+            "block_id": f"switch-request:{post.token}",
+            "elements": [{"type": "mrkdwn", "text": summary}],
+        }
+    ]
+    assert edit["text"] == summary
     assert client.posted == []
 
 
@@ -358,4 +365,4 @@ async def test_a_failed_edit_puts_the_outcome_in_the_thread_instead() -> None:
     assert reply["thread_ts"] == "111.0"
     assert "R42" in reply["text"]
     assert "could not be updated" in reply["text"]
-    assert "Allow once — chosen by actor-demo from Mattermost." in reply["text"]
+    assert "Allow once · actor-demo from Mattermost." in reply["text"]

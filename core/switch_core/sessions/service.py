@@ -30,6 +30,7 @@ from switch_core.db.models import (
     SdkSession,
     SdkSessionCommand,
     SdkSessionEvent,
+    SessionRequestPost,
 )
 from switch_core.sessions.attachments import (
     MAX_ATTACHMENTS,
@@ -607,10 +608,21 @@ class SessionAuthority:
                 if source is None:
                     raise SessionError("NOT_FOUND", "Request has no source command.")
                 origin = Command.model_validate(source.command).origin
-                if (origin.room_id, origin.thread_id) != (
+                # Cards may be threaded under a channel-level prompt, and their
+                # destination uses platform IDs rather than SDK message IDs.
+                post = await db.scalar(
+                    select(SessionRequestPost).where(
+                        SessionRequestPost.bridge_id == bridge_id,
+                        SessionRequestPost.session_id == row.id,
+                        SessionRequestPost.request_id == request.request_id,
+                        SessionRequestPost.epoch == row.epoch,
+                    )
+                )
+                expected_thread = post.thread_id if post else origin.thread_id
+                if (origin.room_id, expected_thread) != (
                     command.origin.room_id,
                     command.origin.thread_id,
-                ):
+                ) or (post is not None and post.room_id != origin.room_id):
                     raise SessionError(
                         "NOT_AUTHORIZED",
                         "Answer came from a different request destination.",
