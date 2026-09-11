@@ -337,20 +337,30 @@ class SessionTurnActivity:
 
     async def _release_thread(self, key: tuple[str, str], anchor: _Anchor) -> None:
         """The inverse of `_claim_thread`: drop this turn from the holders of
-        `anchor.reaction_ref`, switching the reaction off only once none are
-        left — and doing nothing at all for a turn that never claimed it,
-        which is what a turn published for the first time already ended
-        does."""
+        `anchor.reaction_ref`, switching the reaction off once none are left.
+
+        A turn that never claimed it still reaches this — published already
+        ended, or one whose claim this process never recorded at all (a
+        restart loses `_thread_turns` along with everything else this class
+        holds only in memory). Either way the rule is the same: touch the
+        reaction only when nothing else here is holding it. A claim by
+        another live turn must survive this turn's own end, so that check
+        comes first; a turn that was never tracked, with nobody else holding
+        the ref either, still asks `_mark_thread` to take it off — a genuine
+        no-op if there was truly never anything to remove, since
+        `_mark_being_read` already will not act against its own record of
+        having nothing there.
+        """
         if anchor.reaction_ref is None:
             return
         thread_key = (anchor.channel_id, anchor.reaction_ref)
         turns = self._thread_turns.get(thread_key)
-        if turns is None or key not in turns:
-            return
-        turns.discard(key)
-        if not turns:
+        if turns is not None:
+            turns.discard(key)
+            if turns:
+                return
             del self._thread_turns[thread_key]
-            await self._mark_thread(anchor, working=False)
+        await self._mark_thread(anchor, working=False)
 
     async def _mark_thread(self, anchor: _Anchor, *, working: bool) -> None:
         """Put `:eyes:` on the message that actually asked, or take it off.

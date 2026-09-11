@@ -1212,8 +1212,30 @@ class SlackAdapter(CollaborationAdapter):
         already handles — a reaction already there, already gone, or a
         message that no longer exists — do not change depending on who is
         asking, so this reuses it rather than a second reaction mechanism.
+
+        `message_ref` can arrive as a bare ts or as `SessionTurnActivity`'s own
+        `"channel:ts"` composite (that is what `Origin.thread_id`/`message_id`
+        carry) — normalised the same way `_track_turn` normalises its own
+        thread root, so a caller does not have to know which shape it is
+        holding.
+
+        Sharing `_mark_being_read` means sharing its `_eyes` bookkeeping with
+        `_track_turn`, the runtime-state indicator's own caller — a message
+        both would mark has turn activity's claim masking runtime-state's, or
+        the reverse, and whichever releases first takes the reaction out from
+        under the one still holding it. Nothing today reports runtime state
+        for a session that also publishes turn activity — a session-v1
+        connector never calls the runtime-state endpoint, and runtime-state's
+        own callers are Switch Console's PTY-managed sessions, which do not
+        speak session-v1 — but that is a fact about today's connectors, not a
+        gate this method enforces, and it is already the design (turn
+        activity was deliberately layered onto this rather than a second
+        reaction mechanism). If a future connector ever reports both for the
+        same session, this needs revisiting.
         """
-        await self._mark_being_read(channel_id, message_ref, working=working)
+        await self._mark_being_read(
+            channel_id, self._thread_ts_of(message_ref), working=working
+        )
 
     def reaction_target(self, channel_id: str, thread_root_id: str) -> str:
         """Which message in `thread_root_id`'s thread actually asked.
@@ -1224,8 +1246,14 @@ class SlackAdapter(CollaborationAdapter):
         the root is not necessarily who asked. Falls back to the root itself
         for a thread nothing has ever addressed through, e.g. one a turn
         opened rather than joined.
+
+        `thread_root_id` is `SessionTurnActivity`'s own `"channel:ts"`
+        composite, not a bare ts — `_thread_trigger` is keyed on the bare ts
+        `_track_turn` already normalises to, so the lookup has to normalise
+        the same way or it never matches.
         """
-        return self._thread_trigger.get((channel_id, thread_root_id), thread_root_id)
+        ts = self._thread_ts_of(thread_root_id) or thread_root_id
+        return self._thread_trigger.get((channel_id, ts), ts)
 
     def _streaming(self, channel_id: str, thread_root_id: str | None) -> bool:
         """Whether Slack is already drawing this turn's progress itself.

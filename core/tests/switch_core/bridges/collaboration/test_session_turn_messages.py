@@ -348,15 +348,37 @@ async def test_a_reaction_failure_does_not_fail_the_turns_own_draw(
 async def test_the_reaction_lands_on_the_message_that_actually_asked() -> None:
     """A thread root is not necessarily who asked — `_thread_trigger` resolves
     that, the same way the old runtime-state indicator did, and the turn's
-    own `:eyes:` should follow it rather than always sitting on the root."""
+    own `:eyes:` should follow it rather than always sitting on the root.
+
+    `thread_root_id` arrives as the `"channel:ts"` composite an `Origin`
+    carries, not a bare ts — `_thread_trigger` is keyed on the bare ts, so a
+    fixture using a plain string like `"parent-1"` for the root would pass
+    even if the composite were never stripped before the lookup ran.
+    """
     client = FakeWebClient()
     adapter = _adapter(client)
-    adapter._thread_trigger[(CHANNEL, "parent-1")] = "asker-99"
+    adapter._thread_trigger[(CHANNEL, "111.0")] = "99.0"
     activity = SessionTurnActivity(adapter)
 
-    await _publish(activity, [_item()], _turn("running"), thread_root_id="parent-1")
+    await _publish(
+        activity, [_item()], _turn("running"), thread_root_id=f"{CHANNEL}:111.0"
+    )
 
-    assert client.reactions == [("add", "asker-99", "eyes")]
+    assert client.reactions == [("add", "99.0", "eyes")]
+
+
+async def test_the_reaction_falls_back_to_the_bare_thread_root() -> None:
+    """No entry in `_thread_trigger` for a composite ref still resolves to a
+    bare ts to react on, not the raw `"channel:ts"` composite handed in —
+    Slack's API takes a bare ts, not this class's own message reference."""
+    client = FakeWebClient()
+    activity = SessionTurnActivity(_adapter(client))
+
+    await _publish(
+        activity, [_item()], _turn("running"), thread_root_id=f"{CHANNEL}:111.0"
+    )
+
+    assert client.reactions == [("add", "111.0", "eyes")]
 
 
 async def test_two_turns_sharing_a_resolved_target_do_not_clobber_each_others_eyes() -> (
@@ -406,3 +428,22 @@ async def test_a_turn_first_published_already_ended_does_not_touch_the_reaction(
     await _publish(activity, [_item()], _turn("completed"), thread_root_id="parent-1")
 
     assert client.reactions == []
+
+
+async def test_releasing_a_claim_this_turn_never_made_still_clears_a_live_reaction() -> (
+    None
+):
+    """This process's own bookkeeping of who claimed a reaction is not the
+    same thing as whether Slack is showing one — a turn ending without ever
+    having been the one to add it (its claim lost some other way than the
+    ordinary claim/release pairing this class does itself) must still take
+    the reaction off when nothing else is holding it, or it is stuck showing
+    `:eyes:` for good."""
+    client = FakeWebClient()
+    adapter = _adapter(client)
+    adapter._eyes.add((CHANNEL, "parent-1"))
+    activity = SessionTurnActivity(adapter)
+
+    await _publish(activity, [_item()], _turn("completed"), thread_root_id="parent-1")
+
+    assert client.reactions == [("remove", "parent-1", "eyes")]
