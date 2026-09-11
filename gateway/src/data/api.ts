@@ -1574,18 +1574,23 @@ export interface TemplateFinding {
   code: string;
   message: string;
   subject: string | null;
+  blocking: boolean;
 }
 
 export interface TemplateValidation {
   ok: boolean;
+  /** The server refuses an upload of this document. */
+  blocked: boolean;
   errors: TemplateFinding[];
   warnings: TemplateFinding[];
 }
 
 /**
- * Check a document without storing it. Advisory: the registry accepts an
- * upload whatever this says, so a caller shows the findings rather than
- * gating on them.
+ * Check a document without storing it.
+ *
+ * Mostly advisory — but `blocked` is not. The server refuses an upload that
+ * is not YAML at all, so a form that ignored it would offer a button that
+ * always fails.
  */
 export async function validateTemplate(
   content: string,

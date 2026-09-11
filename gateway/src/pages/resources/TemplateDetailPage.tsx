@@ -322,7 +322,7 @@ function DocumentSection({
         <Button
           variant="contained"
           onClick={handleSave}
-          disabled={!canMutate || !dirty || saving}
+          disabled={!canMutate || !dirty || saving || !!validation?.blocked}
           startIcon={saving ? <CircularProgress size={16} /> : undefined}
         >
           Save

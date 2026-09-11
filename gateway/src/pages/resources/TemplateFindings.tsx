@@ -4,9 +4,10 @@ import type { TemplateValidation } from "../../data/api";
 /**
  * What the checker made of the document.
  *
- * Errors are shown as errors and warnings as warnings, but neither stops an
- * upload — the registry stores documents in shapes this server may not
- * understand, so the form reports and the person decides.
+ * Most of it is advice: the registry stores documents in shapes this server
+ * may not understand, so the form reports and the person decides. The one
+ * exception is a document that is not YAML at all, which the server refuses —
+ * said plainly here rather than left to a failed upload to explain.
  */
 export default function TemplateFindings({
   result,
@@ -32,8 +33,9 @@ export default function TemplateFindings({
               <li key={`${f.code}-${f.subject ?? i}`}>{f.message}</li>
             ))}
           </Box>
-          You can still upload it — the registry stores documents it does not
-          understand — but check this is what you meant.
+          {result.blocked
+            ? "This cannot be uploaded until it parses."
+            : "You can still upload it — the registry stores documents it does not understand — but check this is what you meant."}
         </Alert>
       )}
       {result.warnings.length > 0 && (

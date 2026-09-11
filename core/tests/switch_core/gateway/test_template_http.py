@@ -181,7 +181,7 @@ class TestOverTheWire:
         """The bytes are whatever someone uploaded, HTML included."""
         client = _client(session_factory, users["alice"])
         created = await _upload(
-            client, name="sneaky", content="<script>alert(1)</script>"
+            client, name="sneaky", content="room:\n  name: <script>alert(1)</script>\n"
         )
 
         raw = await client.get(f"/templates/{created['id']}/content")
@@ -227,19 +227,68 @@ class TestOverTheWire:
         listing = await client.get("/templates")
         assert listing.json() == []
 
-    async def test_validate_does_not_gate_upload(
+    async def test_a_document_that_is_not_yaml_is_refused(
         self, session_factory: async_sessionmaker[AsyncSession], users: dict[str, User]
     ) -> None:
-        """Advisory means advisory — storage stays opaque to the format."""
+        """The one refusal: nothing could ever provision this.
+
+        Enforced here and not only in the form, so a `curl` cannot walk past a
+        rule the dashboard applies.
+        """
         client = _client(session_factory, users["alice"])
         garbage = "a: [unclosed\n"
 
         check = await client.post("/templates/validate", json={"content": garbage})
-        assert check.json()["ok"] is False
+        assert check.json()["blocked"] is True
 
-        created = await _upload(client, name="stored-anyway", content=garbage)
+        refused = await client.post(
+            "/templates",
+            json={
+                "name": "not-yaml",
+                "description": "d",
+                "kind": "room",
+                "content": garbage,
+            },
+        )
+        assert refused.status_code == 422
+        assert "Not valid YAML" in refused.json()["detail"]
+        assert (await client.get("/templates")).json() == []
+
+    async def test_everything_else_it_says_is_advice(
+        self, session_factory: async_sessionmaker[AsyncSession], users: dict[str, User]
+    ) -> None:
+        """A document the checker dislikes but cannot prove wrong still stores.
+
+        The format keeps moving and this checker has called a valid document
+        invalid before, so only the refusal that holds under every shape is
+        allowed to bar the door.
+        """
+        client = _client(session_factory, users["alice"])
+        # An enum with no choices: a real error, and still not this checker's
+        # decision to make on the registry's behalf.
+        doubtful = "params:\n  v:\n    type: enum\nroom:\n  name: '{v}'\n"
+
+        check = await client.post("/templates/validate", json={"content": doubtful})
+        assert check.json()["ok"] is False
+        assert check.json()["blocked"] is False
+
+        created = await _upload(client, name="stored-anyway", content=doubtful)
         raw = await client.get(f"/templates/{created['id']}/content")
-        assert raw.content.decode("utf-8") == garbage
+        assert raw.content.decode("utf-8") == doubtful
+
+    async def test_an_edit_cannot_replace_a_document_with_something_unparseable(
+        self, session_factory: async_sessionmaker[AsyncSession], users: dict[str, User]
+    ) -> None:
+        client = _client(session_factory, users["alice"])
+        created = await _upload(client, name="fine", content="room:\n  name: r\n")
+
+        refused = await client.patch(
+            f"/templates/{created['id']}", json={"content": "a: [unclosed\n"}
+        )
+        assert refused.status_code == 422
+
+        raw = await client.get(f"/templates/{created['id']}/content")
+        assert raw.content.decode("utf-8") == "room:\n  name: r\n"
 
     async def test_validate_warns_without_failing(
         self, session_factory: async_sessionmaker[AsyncSession], users: dict[str, User]
@@ -272,7 +321,12 @@ class TestOverTheWire:
                 "content": "group:\n  name: workstream\nrooms:\n  - name: planning\n"
             },
         )
-        assert response.json() == {"ok": True, "errors": [], "warnings": []}
+        assert response.json() == {
+            "ok": True,
+            "blocked": False,
+            "errors": [],
+            "warnings": [],
+        }
 
     async def test_validate_is_not_mistaken_for_a_template_id(
         self, session_factory: async_sessionmaker[AsyncSession], users: dict[str, User]
@@ -398,18 +452,22 @@ class TestOverTheWire:
         assert updated.json()["version"] == 2
         assert updated.json()["content"] == _AWKWARD_DOCUMENT
 
-    async def test_an_unparseable_document_is_still_accepted(
+    async def test_a_shape_this_server_cannot_provision_is_still_accepted(
         self, session_factory: async_sessionmaker[AsyncSession], users: dict[str, User]
     ) -> None:
-        """Storage is opaque to the format, so the door does not validate."""
-        garbage = "this: is: not: valid: yaml\n\t- [unclosed"
+        """Storage is opaque to the format — just not to YAML itself.
+
+        The document parses; nothing here knows what an `orbit:` is, and that
+        is the whole point of a kind-agnostic registry.
+        """
+        future = "orbit:\n  around: whatever comes next\n  params: []\n"
         client = _client(session_factory, users["alice"])
         created = await _upload(
-            client, name="future", kind="constellation", content=garbage
+            client, name="future", kind="constellation", content=future
         )
 
         raw = await client.get(f"/templates/{created['id']}/content")
-        assert raw.content.decode("utf-8") == garbage
+        assert raw.content.decode("utf-8") == future
 
     async def test_an_unknown_template_is_a_404_on_both_read_routes(
         self, session_factory: async_sessionmaker[AsyncSession], users: dict[str, User]

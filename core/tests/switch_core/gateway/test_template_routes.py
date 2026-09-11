@@ -131,8 +131,8 @@ class TestUploadAndFetch:
             owner = await add_user(session, name="alice")
             await session.commit()
 
-            created = await _create(session, owner, name="t", content="☕")
-            assert created.size_bytes == 3  # type: ignore[attr-defined]
+            created = await _create(session, owner, name="t", content="room: ☕\n")
+            assert created.size_bytes == 10  # type: ignore[attr-defined]
 
     async def test_reusing_your_own_name_is_a_conflict(
         self, session_factory: async_sessionmaker[AsyncSession]
@@ -171,7 +171,7 @@ class TestSizeLimit:
                     session,
                     owner,
                     name="huge",
-                    content="x" * 101,
+                    content="room: " + "x" * 101,
                     config=_config(template_max_bytes=100),
                 )
             assert exc.value.status_code == 413
@@ -189,7 +189,7 @@ class TestSizeLimit:
                     session,
                     owner,
                     name="huge",
-                    content="x" * 101,
+                    content="room: " + "x" * 101,
                     config=_config(template_max_bytes=100),
                 )
             assert await _TEMPLATE_STORE.list_all(session) == []
@@ -207,7 +207,7 @@ class TestSizeLimit:
                     session,
                     owner,
                     name="coffee",
-                    content="☕" * 10,
+                    content="room: " + "☕" * 10,
                     config=_config(template_max_bytes=20),
                 )
             assert exc.value.status_code == 413
@@ -451,12 +451,12 @@ class TestUpdate:
         async with session_factory() as session:
             alice = await add_user(session, name="alice")
             await session.commit()
-            created = await _create(session, alice, name="t", content="small")
+            created = await _create(session, alice, name="t", content="room: small\n")
 
             with pytest.raises(HTTPException) as exc:
                 await patch_template(
                     created.id,  # type: ignore[attr-defined]
-                    TemplateUpdateRequest(content="x" * 101),
+                    TemplateUpdateRequest(content="room: " + "x" * 101),
                     session,
                     _TEMPLATE_STORE,
                     _USER_STORE,
@@ -465,7 +465,7 @@ class TestUpdate:
                 )
             assert exc.value.status_code == 413
             stored = await _TEMPLATE_STORE.get(session, created.id)  # type: ignore[attr-defined]
-            assert stored is not None and stored.content == "small"
+            assert stored is not None and stored.content == "room: small\n"
 
     async def test_renaming_onto_a_name_you_already_use_is_a_conflict(
         self, session_factory: async_sessionmaker[AsyncSession]

@@ -1079,12 +1079,20 @@ class TemplateFinding(BaseModel):
     code: str
     message: str
     subject: str | None = None
+    # Whether this one is a refusal rather than a remark.
+    blocking: bool = False
 
 
 class TemplateValidateResponse(BaseModel):
-    """Advisory only. An upload with errors is still an upload the registry
-    will accept — this says what a person would want to fix first."""
+    """What the checker made of a document, and whether it bars the door.
+
+    `blocked` is the only part an upload consults: a document that is not YAML
+    at all is refused, everything else is said and then allowed. `ok` is the
+    wider question of whether anything is wrong, which a form shows without
+    acting on.
+    """
 
     ok: bool
+    blocked: bool
     errors: list[TemplateFinding]
     warnings: list[TemplateFinding]

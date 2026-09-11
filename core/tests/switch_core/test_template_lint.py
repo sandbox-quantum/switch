@@ -103,6 +103,62 @@ class TestTheCanonicalExample:
         assert "multiline" in warning.message
 
 
+class TestWhatBarsTheDoor:
+    """Which findings refuse an upload, and — more importantly — which do not.
+
+    The blocking set is deliberately tiny and deliberately shape-independent.
+    Every entry added to it is a document some future format cannot store, so
+    the list itself is the thing to be sceptical of.
+    """
+
+    @pytest.mark.parametrize(
+        "text",
+        ["", "a: [unclosed\n", "- one\n- two\n", "just a bare string"],
+        ids=["empty", "not-yaml", "a-list", "a-scalar"],
+    )
+    def test_a_document_no_consumer_could_read_is_blocked(self, text: str) -> None:
+        assert lint_template(text).blocked
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "params:\n  v:\n    type: enum\nroom:\n  name: '{v}'\n",
+            "params:\n  owner:\nroom:\n  name: '{owner}'\n",
+            "params:\n  owner:\n    type: nonsense\nroom:\n  name: '{owner}'\n",
+            "params:\n  - a\n  - b\nroom:\n  name: r\n",
+        ],
+        ids=[
+            "enum-without-choices",
+            "bare-param",
+            "unknown-type",
+            "params-not-a-mapping",
+        ],
+    )
+    def test_a_document_only_the_format_objects_to_is_not_blocked(
+        self, text: str
+    ) -> None:
+        """These are errors, and still not this checker's call to make.
+
+        The format moves and this checker has called a valid document invalid
+        before — and Console's own parser accepts a bare param that this
+        server refuses, so the two already disagree about one of these.
+        """
+        result = lint_template(text)
+        assert result.errors, "expected the checker to object"
+        assert not result.blocked
+
+    def test_the_blocking_finding_says_it_blocks(self) -> None:
+        """So a caller can show which one is the refusal."""
+        (error,) = lint_template("a: [unclosed\n").errors
+        assert error.blocking is True
+
+    def test_a_document_it_merely_dislikes_says_it_does_not(self) -> None:
+        (error,) = lint_template(
+            "params:\n  v:\n    type: enum\nroom:\n  name: '{v}'\n"
+        ).errors
+        assert error.blocking is False
+
+
 class TestBuiltins:
     def test_a_misspelled_builtin_is_caught(self) -> None:
         result = lint_template('room:\n  users: ["{$creatr}"]\n')

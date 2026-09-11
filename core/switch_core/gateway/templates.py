@@ -123,6 +123,25 @@ async def _owner_name(
     return owner.name if owner is not None else None
 
 
+def _require_storable(content: str) -> None:
+    """Refuse a document no consumer could ever provision.
+
+    Only the checker's blocking findings — not YAML, empty, not a mapping —
+    are refused here. Everything else it says is advice the caller is free to
+    ignore, because the format keeps moving and this check has been wrong
+    about a valid document before.
+
+    Enforced on the API rather than only in the form, so the two cannot
+    disagree and a `curl` cannot walk past a rule the dashboard applies.
+    """
+    result = lint_template(content)
+    if result.blocked:
+        raise HTTPException(
+            status_code=422,
+            detail="; ".join(f.message for f in result.errors if f.blocking),
+        )
+
+
 def _require_within_size_limit(content: str, config: SwitchConfig) -> None:
     size = _size_bytes(content)
     if size > config.template_max_bytes:
@@ -177,6 +196,7 @@ async def create_template(
     user: Annotated[User, Depends(get_current_user)],
 ) -> TemplateDetail:
     _require_within_size_limit(req.content, config)
+    _require_storable(req.content)
     try:
         template = await template_store.create(
             session,
@@ -211,12 +231,23 @@ async def validate_template(
     result = lint_template(req.content)
     return TemplateValidateResponse(
         ok=result.ok,
+        blocked=result.blocked,
         errors=[
-            TemplateFinding(code=f.code, message=f.message, subject=f.subject)
+            TemplateFinding(
+                code=f.code,
+                message=f.message,
+                subject=f.subject,
+                blocking=f.blocking,
+            )
             for f in result.errors
         ],
         warnings=[
-            TemplateFinding(code=f.code, message=f.message, subject=f.subject)
+            TemplateFinding(
+                code=f.code,
+                message=f.message,
+                subject=f.subject,
+                blocking=f.blocking,
+            )
             for f in result.warnings
         ],
     )
@@ -276,6 +307,7 @@ async def patch_template(
     await _load_for_management(session, template_store, template_id, user)
     if req.content is not None:
         _require_within_size_limit(req.content, config)
+        _require_storable(req.content)
     try:
         template = await template_store.update_fields(
             session,

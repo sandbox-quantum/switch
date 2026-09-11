@@ -97,7 +97,11 @@ export default function CreateTemplateDialog({
     name.trim().length > 0 &&
     kind.trim().length > 0 &&
     content.length > 0 &&
-    !submitting;
+    !submitting &&
+    // Only a document the server would refuse outright. Every other finding
+    // is advice, and a form that gated on advice would be the checker
+    // deciding what may be stored.
+    !validation?.blocked;
 
   return (
     <Dialog open={open} onClose={handleClose} fullWidth maxWidth="md">

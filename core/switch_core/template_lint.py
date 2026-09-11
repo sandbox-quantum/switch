@@ -45,12 +45,31 @@ _BUILTINS = frozenset({"$creator", "$creator_email", "$date", "$timestamp"})
 _BUILTIN_RE = re.compile(r"\{(\$[A-Za-z_][A-Za-z0-9_]*)\}")
 
 
+# The findings an upload is refused for. Deliberately only the three that are
+# true of a template under every shape it could ever take: text that is not
+# YAML, nothing at all, or something other than a mapping. A document failing
+# one of these cannot be provisioned by any consumer, now or later, so storing
+# it serves nobody.
+#
+# Everything else stays advisory, and the reason is evidence rather than
+# caution. The params checks are the format's, and the format moves: this
+# checker called the canonical example invalid twice in a week. Console's
+# parser and this server also disagree today about a bare param with no spec —
+# Console reads it as a string, the server refuses it — so a block on that
+# would refuse a document the Console wizard renders happily.
+_BLOCKING_CODES = frozenset({"empty", "invalid_yaml", "not_a_mapping"})
+
+
 @dataclass(frozen=True)
 class Finding:
     code: str
     message: str
     # The param or key the finding is about, when it is about one.
     subject: str | None = None
+
+    @property
+    def blocking(self) -> bool:
+        return self.code in _BLOCKING_CODES
 
 
 @dataclass(frozen=True)
@@ -61,6 +80,11 @@ class LintResult:
     @property
     def ok(self) -> bool:
         return not self.errors
+
+    @property
+    def blocked(self) -> bool:
+        """Whether an upload of this document should be refused outright."""
+        return any(f.blocking for f in self.errors)
 
 
 def _walk_strings(node: Any) -> list[str]:
