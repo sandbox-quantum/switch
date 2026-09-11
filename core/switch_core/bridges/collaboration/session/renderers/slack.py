@@ -198,6 +198,7 @@ def render_request(
     *,
     responder_external_id: str | None = None,
     responder_name: str | None = None,
+    unavailable_reason: str | None = None,
 ) -> SlackMessage:
     """Whichever card `request` calls for, by the kind of thing it asks.
 
@@ -333,6 +334,17 @@ def render_request(
                 }
             ],
         )
+    if unavailable_reason and request.state in {"open", "submitting"}:
+        message.blocks[:] = [
+            block
+            for block in message.blocks
+            if block["type"] not in {"actions", "input", "context"}
+        ]
+        notice = escape_mrkdwn(unavailable_reason)
+        message.blocks.append(
+            {"type": "context", "elements": [{"type": "mrkdwn", "text": notice}]}
+        )
+        message = SlackMessage(text=unavailable_reason, blocks=message.blocks)
     message.blocks[0]["block_id"] = f"switch-request:{reference.token}"
     return message
 

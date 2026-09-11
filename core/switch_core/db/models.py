@@ -1356,6 +1356,29 @@ class BridgeMessageMap(TenantScoped, Base):
 # ── Session requests on an external surface ─────────────────────────────────
 
 
+class SessionActivityPost(TenantScoped, Base):
+    """Durable publication journal for one command's activity on one bridge."""
+
+    __tablename__ = "session_activity_posts"
+    __table_args__ = (
+        PrimaryKeyConstraint("tenant_id", "bridge_id", "session_id", "command_id"),
+        ForeignKeyConstraint(
+            ["tenant_id", "bridge_id"],
+            ["collaboration_bridges.tenant_id", "collaboration_bridges.id"],
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "session_id"],
+            ["sdk_sessions.tenant_id", "sdk_sessions.id"],
+            ondelete="CASCADE",
+        ),
+    )
+    bridge_id: Mapped[str] = mapped_column(Text, nullable=False)
+    session_id: Mapped[str] = mapped_column(Text, nullable=False)
+    command_id: Mapped[str] = mapped_column(Text, nullable=False)
+    data: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+
+
 class SessionRequestPost(TenantScoped, Base):
     """A session's request for a decision, as it was posted onto a platform.
 

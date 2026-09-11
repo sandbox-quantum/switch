@@ -39,6 +39,7 @@ class Platform:
             content.request,
             content.reference,
             responder_external_id=content.responder_external_id,
+            unavailable_reason=content.unavailable_reason,
         )
         self.posts.append((channel, message.text, message.blocks, thread))
         return f"{channel}:111.0"
@@ -48,6 +49,7 @@ class Platform:
             content.request,
             content.reference,
             responder_external_id=content.responder_external_id,
+            unavailable_reason=content.unavailable_reason,
         )
         self.edits.append((channel, post, message.text, message.blocks))
 

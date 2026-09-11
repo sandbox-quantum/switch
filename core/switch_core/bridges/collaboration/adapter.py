@@ -130,6 +130,8 @@ class TurnActivity:
     elapsed_seconds: float | None = None
     tool_log: bool = False
     status_only: bool = False
+    # Stable recovery marker for a reserved platform post, not an answer token.
+    publication_token: str | None = None
 
 
 @dataclass(frozen=True)
@@ -154,6 +156,8 @@ class RequestCard:
     elapsed_seconds: float | None = None
 
     responder_external_id: str | None = None
+    # Presentation only: never changes the SDK request or its authorization.
+    unavailable_reason: str | None = None
 
 
 RichContent = TurnActivity | RequestCard

@@ -27,6 +27,7 @@ from switch_core.bridges.collaboration.models import (
     InboundUserJoin,
     OutboundAttachment,
 )
+from switch_core.bridges.collaboration.session.activity_journal import ActivityJournal
 from switch_core.bridges.collaboration.session.demo import SessionDemo
 from switch_core.bridges.collaboration.session.inbound import (
     InboundActor,
@@ -245,7 +246,11 @@ class BridgeCore:
             else None
         )
         self._session_activity = (
-            SessionTurnActivity(adapter) if isinstance(adapter, SlackAdapter) else None
+            SessionTurnActivity(
+                adapter, journal=ActivityJournal(session_factory, bridge_id)
+            )
+            if isinstance(adapter, SlackAdapter)
+            else None
         )
         self._session_publisher = (
             SessionPublisher(

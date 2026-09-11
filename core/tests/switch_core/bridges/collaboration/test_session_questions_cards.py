@@ -562,3 +562,16 @@ def test_slack_button_question_only_advertises_custom_input_when_allowed(custom)
         assert "R44 1" not in guidance
     else:
         assert contexts == []
+
+
+@pytest.mark.parametrize("card", [_one_question(), _form()])
+def test_offline_questions_hide_controls_and_typed_answer_instructions(card):
+    message = render_request(
+        card,
+        ONE,
+        unavailable_reason="Host offline. Answers are unavailable until the session reconnects.",
+    )
+    assert not any(block["type"] in {"actions", "input"} for block in message.blocks)
+    assert "reply" not in _footer(message.blocks).lower()
+    assert "Host offline" in _footer(message.blocks)
+    assert message.blocks[0]["block_id"] == f"switch-request:{ONE.token}"

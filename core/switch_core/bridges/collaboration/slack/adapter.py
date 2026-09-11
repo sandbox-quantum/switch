@@ -501,6 +501,7 @@ class SlackAdapter(CollaborationAdapter):
         token: str,
         created_at: datetime,
     ) -> str | None:
+        """Find a reserved request or activity post by its shared recovery marker."""
         if self._web_client is None:
             raise RuntimeError(
                 "Cannot recover a request card: Slack client not connected."
@@ -615,13 +616,18 @@ class SlackAdapter(CollaborationAdapter):
         self, content: RichContent, *, responder_name: str | None = None
     ) -> SlackMessage:
         if isinstance(content, TurnActivity):
-            return render_activity(
+            message = render_activity(
                 content.items,
                 content.turn,
                 elapsed_seconds=content.elapsed_seconds,
                 tool_log=content.tool_log,
                 status_only=content.status_only,
             )
+            if content.publication_token and message.blocks:
+                message.blocks[0]["block_id"] = (
+                    f"switch-request:{content.publication_token}"
+                )
+            return message
         assert isinstance(content, RequestCard)
         if content.turn is not None:
             return render_turn_with_request(
@@ -636,6 +642,7 @@ class SlackAdapter(CollaborationAdapter):
             content.reference,
             responder_external_id=content.responder_external_id,
             responder_name=responder_name,
+            unavailable_reason=content.unavailable_reason,
         )
 
     async def is_first_reply(
@@ -960,6 +967,17 @@ class SlackAdapter(CollaborationAdapter):
         except SlackApiError as e:
             logger.error("Failed to update Slack message %s: %s", message_ref, e)
 
+    async def delete_activity_message(self, channel_id: str, message_ref: str) -> None:
+        """Confirm cleanup before marking a durable activity publication complete."""
+        if self._web_client is None:
+            raise RuntimeError("Slack client not connected")
+        _, ts = self._parse_message_ref(message_ref)
+        try:
+            await self._web_client.chat_delete(channel=channel_id, ts=ts)
+        except SlackApiError as error:
+            if error.response.get("error") != "message_not_found":
+                raise
+
     async def delete_message(self, channel_id: str, message_ref: str) -> None:
         if not self._web_client:
             logger.error("Cannot delete message: Slack client not connected")
@@ -1168,7 +1186,12 @@ class SlackAdapter(CollaborationAdapter):
             )
 
     async def _mark_being_read(
-        self, channel_id: str, thread_ts: str | None, *, working: bool
+        self,
+        channel_id: str,
+        thread_ts: str | None,
+        *,
+        working: bool,
+        force: bool = False,
     ) -> None:
         """Put 👀 on the message an agent is working on, and take it off after.
 
@@ -1181,7 +1204,7 @@ class SlackAdapter(CollaborationAdapter):
         if not ts or not self._web_client:
             return
         key = (channel_id, ts)
-        if working == (key in self._eyes):
+        if not force and working == (key in self._eyes):
             return
         if key in self._unmarkable:
             return
@@ -1209,6 +1232,9 @@ class SlackAdapter(CollaborationAdapter):
                 self._unmarkable[key] = None
                 if len(self._unmarkable) > self._unmarkable_max:
                     self._unmarkable.popitem(last=False)
+                return
+            if force:
+                raise
             logger.warning(
                 "Could not %s the working reaction on %s in %s: %s",
                 "add" if working else "remove",
@@ -1218,7 +1244,7 @@ class SlackAdapter(CollaborationAdapter):
             )
 
     async def mark_activity(
-        self, channel_id: str, message_ref: str, *, working: bool
+        self, channel_id: str, message_ref: str, *, working: bool, force: bool = False
     ) -> None:
         """Public entry point onto `_mark_being_read`, for `SessionTurnActivity`.
 
@@ -1247,7 +1273,7 @@ class SlackAdapter(CollaborationAdapter):
         one claim registry is more than this layering was meant to take on.
         """
         await self._mark_being_read(
-            channel_id, self._thread_ts_of(message_ref), working=working
+            channel_id, self._thread_ts_of(message_ref), working=working, force=force
         )
 
     def _streaming(self, channel_id: str, thread_root_id: str | None) -> bool:

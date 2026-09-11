@@ -9,9 +9,8 @@ than answered — but it changes for the same reason, so it gets the same
 treatment: one message per turn, ending on the turn's final state, a Block Kit
 message rewritten in place with the tool calls as the cards of a `plan` block.
 
-What differs is what is remembered. A card's message is a row, because an
-answer typed tomorrow has to find it; a turn's is held in memory for as long as
-the turn is running, because nothing resolves against it.
+Request cards and production activity messages have durable publication records.
+Both can recover their existing platform messages after a bridge restart.
 
 The inbound half turns a press into a command; this is the other side of it.
 
@@ -37,7 +36,9 @@ from __future__ import annotations
 import logging
 import secrets
 from collections import OrderedDict
-from dataclasses import dataclass
+from contextvars import ContextVar
+from dataclasses import asdict, dataclass, replace
+from datetime import UTC, datetime
 
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -54,6 +55,7 @@ from switch_core.db.models import Client, ExternalUser, SessionRequestPost
 from switch_core.db.stores.session_request_post_store import SessionRequestPostStore
 from switch_core.sessions.contract import TURN_ENDED, Item, SnapshotRequest, TurnUpsert
 
+from .activity_journal import ActivityJournal, ActivityRecord
 from .form import posted_form
 from .renderers import RequestReference
 
@@ -138,17 +140,141 @@ class SessionTurnActivity:
     Slack keeps the live status separate from the collapsible tool log.
     When the turn ends, the log becomes the summary and the status is removed.
 
-    Message anchors are process-local. A bridge restart can repost
-    activity; durable recovery remains a separate follow-up.
+    Production publishers use a durable journal to recover message anchors
+    and uncertain deliveries after a restart.
     """
 
-    def __init__(self, adapter: CollaborationAdapter) -> None:
+    def __init__(
+        self, adapter: CollaborationAdapter, *, journal: ActivityJournal | None = None
+    ) -> None:
+        self._journal = journal
+        self._record: ContextVar[ActivityRecord | None] = ContextVar(
+            "activity_record", default=None
+        )
         self._adapter = adapter
         self._slack_activity = isinstance(adapter, SlackAdapter)
         self._anchors: OrderedDict[tuple[str, str], _Anchor] = OrderedDict()
         self._thread_turns: dict[tuple[str, str], set[tuple[str, str]]] = {}
 
+    @property
+    def durable(self) -> bool:
+        return self._journal is not None
+
+    async def recorded_commands(self, session_id: str) -> set[str]:
+        return (
+            await self._journal.recorded_commands(session_id)
+            if self._journal
+            else set()
+        )
+
     async def publish(
+        self,
+        items: list[Item],
+        turn: TurnUpsert,
+        *,
+        session_id: str,
+        channel_id: str,
+        thread_root_id: str | None,
+        asked_on: str | None,
+        agent_name: str,
+        elapsed_seconds: float | None,
+    ) -> bool:
+        async def draw() -> bool:
+            return await self._publish(
+                items,
+                turn,
+                session_id=session_id,
+                channel_id=channel_id,
+                thread_root_id=thread_root_id,
+                asked_on=asked_on,
+                agent_name=agent_name,
+                elapsed_seconds=elapsed_seconds,
+            )
+
+        if self._journal is None:
+            return await draw()
+        key = (session_id, turn.command_id or turn.turn_id)
+        async with self._journal.open(*key) as record:
+            if record.data.get("completed"):
+                return True
+            token = self._record.set(record)
+            try:
+                saved = record.data.get("anchor")
+                if saved:
+                    anchor = _Anchor(**saved)
+                    anchor.log_state = (
+                        tuple(tuple(entry) for entry in saved["log_state"])
+                        if saved.get("log_state") is not None
+                        else None
+                    )
+                    self._anchors[key] = anchor
+                drawn = await draw()
+                if drawn and turn.status in TURN_ENDED:
+                    record.data["completed"] = True
+                    await record.save()
+                return drawn
+            finally:
+                self._record.reset(token)
+
+    async def _save_anchor(self, anchor: _Anchor) -> None:
+        record = self._record.get()
+        if record:
+            record.data["anchor"] = asdict(anchor)
+            await record.save()
+
+    async def _post_activity(
+        self,
+        channel: str,
+        agent: str,
+        content: TurnActivity,
+        thread: str | None,
+        slot: str,
+    ) -> str:
+        record = self._record.get()
+        if record is None:
+            return await self._adapter.post_rich(channel, agent, content, thread)
+        delivery = record.data.get(slot)
+        if delivery:
+            if delivery.get("ref"):
+                return delivery["ref"]
+            ref = await self._adapter.find_request_card(
+                delivery["channel"],
+                delivery["thread"],
+                delivery["token"],
+                datetime.fromisoformat(delivery["created_at"]),
+            )
+            if ref is None:
+                raise CardNotPosted(
+                    "Activity delivery is unconfirmed; retaining its reservation and retrying lookup."
+                )
+        else:
+            delivery = {
+                "token": secrets.token_urlsafe(16),
+                "channel": channel,
+                "thread": thread,
+                "created_at": datetime.now(UTC).isoformat(),
+            }
+            record.data[slot] = delivery
+            await record.save()
+            try:
+                ref = await self._adapter.post_rich(
+                    channel,
+                    agent,
+                    replace(content, publication_token=delivery["token"]),
+                    thread,
+                )
+            except RichContentFailed:
+                # The adapter explicitly refused the post. Transport timeouts
+                # propagate separately and keep their uncertain reservation.
+                del record.data[slot]
+                await record.save()
+                raise
+        delivery["ref"] = ref
+        record.data[slot] = delivery
+        await record.save()
+        return ref
+
+    async def _publish(
         self,
         items: list[Item],
         turn: TurnUpsert,
@@ -181,7 +307,7 @@ class SessionTurnActivity:
 
         Retain anchors until the final summary edit succeeds.
         A failed final publication retries the same messages instead of posting
-        duplicate history. Process restarts still require durable recovery.
+        duplicate history. The journal retains them across process restarts.
         """
         # The SDK transcript includes internal narration such as "Answered in
         # the room". Activity is a tool log; the actual reply is delivered separately.
@@ -204,7 +330,19 @@ class SessionTurnActivity:
             )
             if anchor is None:
                 return False
-            drawn = True
+            await self._save_anchor(anchor)
+            drawn = (
+                await self._edit(
+                    anchor,
+                    items,
+                    turn,
+                    session_id=session_id,
+                    ended=ended,
+                    elapsed_seconds=elapsed_seconds,
+                )
+                if self._journal
+                else True
+            )
             if not ended:
                 await self._claim_thread(key, anchor)
         else:
@@ -219,11 +357,21 @@ class SessionTurnActivity:
 
         if self._slack_activity and not ended:
             drawn = await self._draw_log(anchor, items, turn) and drawn
+            await self._save_anchor(anchor)
         if ended:
             if drawn and anchor.log_ref:
-                await self._adapter.delete_message(
-                    anchor.channel_id, anchor.message_ref
-                )
+                if self._journal and isinstance(self._adapter, SlackAdapter):
+                    await self._adapter.delete_activity_message(
+                        anchor.channel_id, anchor.message_ref
+                    )
+                else:
+                    await self._adapter.delete_message(
+                        anchor.channel_id, anchor.message_ref
+                    )
+            record = self._record.get()
+            if record and drawn:
+                record.data["ended"] = True
+                await record.save()
             await self._release_thread(key, anchor)
             if not drawn:
                 self._anchors[key] = anchor
@@ -252,7 +400,7 @@ class SessionTurnActivity:
         the caller.
         """
         try:
-            posted = await self._adapter.post_rich(
+            posted = await self._post_activity(
                 channel_id,
                 agent_name,
                 TurnActivity(
@@ -263,6 +411,7 @@ class SessionTurnActivity:
                     status_only=self._slack_activity and turn.status not in TURN_ENDED,
                 ),
                 thread_root_id,
+                "status",
             )
         except RichContentFailed as error:
             logger.error(
@@ -335,8 +484,12 @@ class SessionTurnActivity:
         content = TurnActivity(items, turn, tool_log=True)
         try:
             if anchor.log_ref is None:
-                anchor.log_ref = await self._adapter.post_rich(
-                    anchor.channel_id, anchor.agent_name, content, anchor.thread_root_id
+                anchor.log_ref = await self._post_activity(
+                    anchor.channel_id,
+                    anchor.agent_name,
+                    content,
+                    anchor.thread_root_id,
+                    "log",
                 )
             else:
                 await self._adapter.update_rich(
@@ -393,6 +546,14 @@ class SessionTurnActivity:
             if turns:
                 return
             del self._thread_turns[thread_key]
+        record = self._record.get()
+        if self._journal and await self._journal.reaction_held(
+            key,
+            anchor.channel_id,
+            anchor.reaction_ref,
+            sessions=record.sessions if record else self._journal.sessions,
+        ):
+            return
         await self._mark_thread(anchor, working=False)
 
     async def _mark_thread(self, anchor: _Anchor, *, working: bool) -> None:
@@ -408,9 +569,14 @@ class SessionTurnActivity:
             return
         try:
             await self._adapter.mark_activity(
-                anchor.channel_id, anchor.reaction_ref, working=working
+                anchor.channel_id,
+                anchor.reaction_ref,
+                working=working,
+                **({"force": True} if self._journal else {}),
             )
         except Exception:
+            if self._journal:
+                raise
             logger.warning(
                 "Could not %s the activity reaction on %s in %s.",
                 "add" if working else "remove",
@@ -441,7 +607,8 @@ class SessionTurnActivity:
                 turn_id,
                 session_id,
             )
-            await self._release_thread(key, anchor)
+            if self._journal is None:
+                await self._release_thread(key, anchor)
 
 
 class SessionRequestCards:
@@ -471,6 +638,7 @@ class SessionRequestCards:
         session_id: str,
         epoch: str,
         agent_name: str,
+        unavailable_reason: str | None = None,
     ) -> SessionRequestPost:
         """Reserve the card durably, then send it to the platform.
 
@@ -507,7 +675,9 @@ class SessionRequestCards:
                 ref = await self._adapter.post_rich(
                     channel_id,
                     agent_name,
-                    RequestCard(request, reference),
+                    RequestCard(
+                        request, reference, unavailable_reason=unavailable_reason
+                    ),
                     thread_root_id,
                 )
             except RichContentFailed as error:
@@ -652,7 +822,13 @@ class SessionRequestCards:
             f"card by another poster, which has since gone."
         )
 
-    async def refresh(self, post: SessionRequestPost, request: SnapshotRequest) -> None:
+    async def refresh(
+        self,
+        post: SessionRequestPost,
+        request: SnapshotRequest,
+        *,
+        unavailable_reason: str | None = None,
+    ) -> None:
         """Redraw the card for `request` where it was posted.
 
         When the edit fails the outcome is posted into the thread instead. A
@@ -702,7 +878,10 @@ class SessionRequestCards:
                 post.external_channel_id,
                 post.external_post_id,
                 RequestCard(
-                    request, reference, responder_external_id=responder_external_id
+                    request,
+                    reference,
+                    responder_external_id=responder_external_id,
+                    unavailable_reason=unavailable_reason,
                 ),
             )
         except RichContentFailed as error:

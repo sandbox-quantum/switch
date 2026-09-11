@@ -5,7 +5,7 @@ from collections import OrderedDict
 from collections.abc import Callable
 from datetime import UTC, datetime
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.bridges.collaboration.session.outbound import (
@@ -112,6 +112,12 @@ async def refresh_cards(
         if row is None:
             raise SessionError("NOT_FOUND", "Session not found.")
         snapshot = Snapshot.model_validate(row.snapshot)
+        now = (await db.execute(select(func.now()))).scalar_one()
+        unavailable_reason = (
+            "Host offline. Answers are unavailable until the session reconnects."
+            if row.lease_expires_at <= now or snapshot.session.connectivity == "offline"
+            else None
+        )
         agent = await db.get(Agent, row.agent_id)
         if agent is None:
             raise SessionError("NOT_FOUND", "Session agent not found.")
@@ -159,7 +165,15 @@ async def refresh_cards(
     errors: list[BaseException] = []
     backed_off = 0
     for request, post, room_id, channel_id, thread_id in publications:
-        state = (request.revision, request.state)
+        state = (
+            request.revision,
+            request.state
+            + (
+                ":offline"
+                if unavailable_reason and request.state in {"open", "submitting"}
+                else ""
+            ),
+        )
         try:
             if post is None:
                 if request.state != "open":
@@ -172,6 +186,11 @@ async def refresh_cards(
                     session_id=session_id,
                     epoch=epoch,
                     agent_name=agent_name,
+                    **(
+                        {"unavailable_reason": unavailable_reason}
+                        if unavailable_reason
+                        else {}
+                    ),
                 )
                 refreshed(new_post.token, state)
             elif post.external_post_id == post.token:
@@ -180,10 +199,26 @@ async def refresh_cards(
                     continue
                 post = await cards.recover(post)
                 recovery_succeeded(post.token)
-                await cards.refresh(post, request)
+                await cards.refresh(
+                    post,
+                    request,
+                    **(
+                        {"unavailable_reason": unavailable_reason}
+                        if unavailable_reason
+                        else {}
+                    ),
+                )
                 refreshed(post.token, state)
             elif refresh_needed(post.token, state):
-                await cards.refresh(post, request)
+                await cards.refresh(
+                    post,
+                    request,
+                    **(
+                        {"unavailable_reason": unavailable_reason}
+                        if unavailable_reason
+                        else {}
+                    ),
+                )
                 refreshed(post.token, state)
         except Exception as error:
             # One request's card failing must not stop its siblings from
@@ -374,36 +409,12 @@ async def refresh_activity(
     cycle rather than one bounded duplicate, since a fresh attempt has no
     anchor left to edit and opens fresh.
 
-    `first_sweep` scopes this call, on a session this publisher has not
-    handled activity for before, to the session's single latest turn.
-    `snapshot.turns` keeps every turn a session has ever had, in the order
-    each first appeared, and a freshly started publisher's redraw guard
-    remembers nothing, so without this every turn from earlier in the
-    session's life looks undrawn on the first sweep and each gets posted
-    again as a new message — the whole session's history replayed into the
-    channel.
-
-    Position in the list cannot tell "not drawn yet" from "drawn by a
-    previous process and since forgotten" — that needs a durable anchor
-    turn activity does not have — so this narrows only the one sweep where
-    every turn looks equally undrawn and the ambiguity is total. A turn this
-    skips has to be remembered, not merely passed over, or it is new again
-    on the very next sweep — every sweep after the first is unrestricted, so
-    a skip that left no trace would replay the same history this parameter
-    exists to hold back, just one sweep later rather than never.
-
-    An already-ended turn is remembered through `already_held_back` /
-    `hold_back` rather than `redraw_needed` / `redrawn`: its state can never
-    change again, so unlike a turn still running behind the latest — which
-    does still need `redraw_needed` watching it, since it draws once more
-    the moment it actually ends — it needs nothing watched, only never
-    revisited. That distinction is what the eviction bound underneath
-    `redraw_needed` requires: every sweep after the first re-examines a
-    session's *entire* turn history, not just what changed, so a hold-back
-    record has to outlive whatever else is going on for as long as the
-    session does, rather than compete with unrelated sessions for space in
-    a fixed-size cache sized for turns actually being watched.
+    On the first sweep, durable publishers reconcile every recorded command
+    and every live turn. Unrecorded, already-ended turns are historical and
+    are held back rather than replayed during deployment. In-memory demo
+    publishers retain their previous latest-turn-only behavior.
     """
+    recorded = await activity.recorded_commands(session_id)
     async with session_factory() as db:
         row = await db.get(SdkSession, (require_tenant_id(), session_id))
         if row is None:
@@ -458,7 +469,14 @@ async def refresh_activity(
             if turn.status == "running":
                 revisions += (int(time.monotonic() // 5),)
             state = (turn.status, revisions)
-            if first_sweep and turn.turn_id != latest_turn_id:
+            if (
+                first_sweep
+                and turn.command_id not in recorded
+                and (
+                    (activity.durable and turn.status in TURN_ENDED)
+                    or (not activity.durable and turn.turn_id != latest_turn_id)
+                )
+            ):
                 if turn.status in TURN_ENDED:
                     hold_back(session_id, turn.turn_id)
                 else:
@@ -541,16 +559,21 @@ async def refresh_activity(
         if not retry_allowed(token):
             backed_off += 1
             continue
-        drawn = await activity.publish(
-            items,
-            turn,
-            session_id=session_id,
-            channel_id=channel_id,
-            thread_root_id=thread_id,
-            asked_on=asked_on,
-            agent_name=agent_name,
-            elapsed_seconds=elapsed_seconds,
-        )
+        try:
+            drawn = await activity.publish(
+                items,
+                turn,
+                session_id=session_id,
+                channel_id=channel_id,
+                thread_root_id=thread_id,
+                asked_on=asked_on,
+                agent_name=agent_name,
+                elapsed_seconds=elapsed_seconds,
+            )
+        except Exception:
+            logger.exception("Could not recover activity for turn %s", turn.turn_id)
+            failed.append(turn.turn_id)
+            continue
         if drawn:
             retry_succeeded(token)
             redrawn(session_id, turn.turn_id, state)
@@ -711,7 +734,7 @@ class SessionPublisher:
         self._bridge_id = bridge_id
         self._cards = cards
         self._activity = activity
-        self._published: dict[str, int] = {}
+        self._published: dict[str, tuple[int, bool]] = {}
         self._recovery = _RecoveryBackoff()
         self._redraw = _RedrawGuard()
         self._turn_redraw = _TurnRedrawGuard()
@@ -731,16 +754,23 @@ class SessionPublisher:
                     select(
                         SdkSession.id,
                         SdkSession.snapshot["throughSequence"].as_integer(),
+                        (SdkSession.lease_expires_at > func.now())
+                        & (
+                            SdkSession.snapshot["session"]["connectivity"].as_string()
+                            == "online"
+                        ),
                     ).where(SdkSession.tenant_id == require_tenant_id())
                 )
             ).all()
-        for session_id, sequence in rows:
-            unchanged = self._published.get(session_id) == sequence
+        for session_id, sequence, online in rows:
+            published_state = (sequence, online)
+            unchanged = self._published.get(session_id) == published_state
             if unchanged and session_id not in self._clock_sessions:
                 continue
             ok = True
             try:
                 if not unchanged:
+                    # Lease expiry can change without a new snapshot event.
                     await refresh_cards(
                         self._sessions,
                         self._bridge_id,
@@ -782,7 +812,9 @@ class SessionPublisher:
                     session_id,
                     self._bridge_id,
                 )
-            if self._activity is not None:
+            if self._activity is not None and (
+                not unchanged or session_id in self._clock_sessions
+            ):
                 first_sweep = session_id not in self._activity_seen
                 swept = False
                 try:
@@ -847,7 +879,7 @@ class SessionPublisher:
                 if swept:
                     self._activity_seen.add(session_id)
             if ok:
-                self._published[session_id] = sequence
+                self._published[session_id] = published_state
 
     async def run(self) -> None:
         while True:
