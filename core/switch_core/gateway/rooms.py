@@ -52,7 +52,12 @@ from switch_core.gateway.schemas import (
     RoomUsersRequest,
 )
 from switch_core.room_service import RoleSpec, RoomCreateConfig, RoomService
-from switch_core.rooms_yaml import ProvisionResult, RoomYamlService
+from switch_core.rooms_yaml import (
+    GroupProvisionResult,
+    GroupSpec,
+    ProvisionResult,
+    RoomYamlService,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -373,8 +378,13 @@ async def create_room_from_yaml(
     request: Request,
     rooms_yaml: Annotated[RoomYamlService, Depends(get_room_yaml_service)],
     user: Annotated[User, Depends(get_current_user)],
-) -> ProvisionResult:
-    """Provision a single room and its attachments from a YAML spec.
+) -> ProvisionResult | GroupProvisionResult:
+    """Provision room(s) from a YAML spec.
+
+    The document shape determines the result: a ``room:`` document provisions
+    a single room (returns ``ProvisionResult``); a ``group:`` + ``rooms:``
+    document provisions a room group with its rooms and links (returns
+    ``GroupProvisionResult``).
 
     Two content types are accepted:
 
@@ -399,9 +409,12 @@ async def create_room_from_yaml(
             text = (await request.body()).decode("utf-8")
             inputs = None
         spec = rooms_yaml.parse(text, inputs=inputs)
-        return await rooms_yaml.provision(
-            spec, user_id=user.id, is_admin=user.role == "admin"
-        )
+        is_admin = user.role == "admin"
+        if isinstance(spec, GroupSpec):
+            return await rooms_yaml.provision_group(
+                spec, user_id=user.id, is_admin=is_admin
+            )
+        return await rooms_yaml.provision(spec, user_id=user.id, is_admin=is_admin)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     except PermissionError as e:

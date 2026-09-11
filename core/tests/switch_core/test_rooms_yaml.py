@@ -28,6 +28,8 @@ from switch_core.db.models import (
     Reference,
     ReferenceType,
     Room,
+    RoomGroup,
+    RoomLink,
     RoomRole,
     User,
     room_agents,
@@ -40,12 +42,14 @@ from switch_core.db.stores.external_user_store import ExternalUserStore
 from switch_core.db.stores.package_store import PackageStore
 from switch_core.db.stores.reference_store import ReferenceStore
 from switch_core.db.stores.reference_type_store import ReferenceTypeStore
+from switch_core.db.stores.room_group_store import RoomGroupStore
 from switch_core.db.stores.room_link_store import RoomLinkStore
 from switch_core.db.stores.room_role_store import RoomRoleStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.room_service import RoomCreateConfig, RoomCreateResult
 from switch_core.rooms_yaml import (
     ExistingReferenceById,
+    GroupSpec,
     ParamSpec,
     RoomYamlService,
     interpolate,
@@ -91,6 +95,7 @@ class FakeRoomService:
                 owner_id=config.owner_id,
                 read_visibility=config.read_visibility,
                 write_visibility=config.write_visibility,
+                group_id=config.group_id,
             )
             session.add(room)
             await session.flush()
@@ -163,6 +168,7 @@ async def env(session_factory: async_sessionmaker[AsyncSession]):
         agent_store=agent_store,
         bridge_store=CollaborationBridgeStore(),
         external_user_store=ExternalUserStore(),
+        room_group_store=RoomGroupStore(),
         room_role_store=RoomRoleStore(),
         session_factory=session_factory,
     )
@@ -1080,3 +1086,290 @@ async def test_endpoint_json_body(env):
     with pytest.raises(HTTPException) as exc_info:
         await create_room_from_yaml(request, svc, user)
     assert exc_info.value.status_code == 400
+
+
+# ── group parse ─────────────────────────────────────────────────────────────
+
+
+GROUP_TEMPLATE = """\
+version: 0
+params:
+  newcomer:
+    type: string
+group:
+  name: "Onboarding"
+  description: "Lobby + per-person workroom"
+  color: "#3b82f6"
+rooms:
+  - name: "{newcomer} lobby"
+    description: "Welcome room for {newcomer}"
+    agents: ["claude-code.alice"]
+    aliases:
+      claude-code.alice: greeter
+  - name: "{newcomer} workroom"
+    description: "Work room for {newcomer}"
+    agents: ["claude-code.bob"]
+links:
+  - from: "{newcomer} lobby"
+    to: "{newcomer} workroom"
+    label: workroom
+"""
+
+
+def test_parse_group_returns_group_spec(env):
+    spec = _svc(env).parse(GROUP_TEMPLATE, inputs={"newcomer": "dana"})
+    assert isinstance(spec, GroupSpec)
+    assert spec.group.name == "Onboarding"
+    assert spec.group.color == "#3b82f6"
+    assert len(spec.rooms) == 2
+    assert spec.rooms[0].name == "dana lobby"
+    assert spec.rooms[1].name == "dana workroom"
+    assert len(spec.links) == 1
+    assert spec.links[0].from_ == "dana lobby"
+    assert spec.links[0].to == "dana workroom"
+
+
+def test_parse_group_params_interpolate_aliases(env):
+    template = """\
+params:
+  bot:
+    type: string
+group:
+  name: "G"
+rooms:
+  - name: "R"
+    description: "d"
+    agents: ["{bot}"]
+    aliases:
+      "{bot}": helper
+"""
+    spec = _svc(env).parse(template, inputs={"bot": "claude-code.alice"})
+    assert isinstance(spec, GroupSpec)
+    assert spec.rooms[0].aliases == {"claude-code.alice": "helper"}
+
+
+def test_parse_group_missing_rooms_key(env):
+    with pytest.raises(ValueError, match="'rooms:'"):
+        _svc(env).parse(
+            """
+            group:
+              name: "G"
+            """
+        )
+
+
+def test_parse_group_empty_rooms_list(env):
+    with pytest.raises(ValueError, match="non-empty"):
+        _svc(env).parse(
+            """
+            group:
+              name: "G"
+            rooms: []
+            """
+        )
+
+
+def test_parse_group_duplicate_room_names(env):
+    with pytest.raises(ValueError, match="Duplicate room name"):
+        _svc(env).parse(
+            """
+            group:
+              name: "G"
+            rooms:
+              - name: "lobby"
+                description: "d"
+              - name: "lobby"
+                description: "d2"
+            """
+        )
+
+
+def test_parse_group_link_bad_name(env):
+    with pytest.raises(ValueError, match="does not match"):
+        _svc(env).parse(
+            """
+            group:
+              name: "G"
+            rooms:
+              - name: "A"
+                description: "d"
+            links:
+              - from: "A"
+                to: "B"
+                label: "x"
+            """
+        )
+
+
+def test_parse_group_unknown_top_level_key(env):
+    with pytest.raises(ValueError, match="Unknown top-level"):
+        _svc(env).parse(
+            """
+            group:
+              name: "G"
+            rooms:
+              - name: "A"
+                description: "d"
+            extra: bad
+            """
+        )
+
+
+# ── group provision ──────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_provision_group_two_rooms_linked(env):
+    """The onboarder-shaped template imports in one call: both rooms exist,
+    grouped together, linked to each other."""
+    svc = _svc(env)
+    spec = svc.parse(GROUP_TEMPLATE, inputs={"newcomer": "dana"})
+    assert isinstance(spec, GroupSpec)
+
+    result = await svc.provision_group(spec, user_id=env["user_id"], is_admin=False)
+
+    assert result.group_name == "Onboarding"
+    assert len(result.rooms) == 2
+    assert result.rooms[0].room_name == "dana lobby"
+    assert result.rooms[1].room_name == "dana workroom"
+    assert result.errors == []
+
+    # Both rooms filed under the same group.
+    sf = env["session_factory"]
+    async with sf() as session:
+        group = await session.get(RoomGroup, result.group_id)
+        assert group is not None
+        assert group.name == "Onboarding"
+        assert group.color == "#3b82f6"
+
+        for rr in result.rooms:
+            room = await session.get(Room, rr.room_id)
+            assert room is not None
+            assert room.group_id == result.group_id
+
+        # Link exists from lobby → workroom.
+        link = await session.get(
+            RoomLink,
+            (result.rooms[0].room_id, result.rooms[1].room_id),
+        )
+        assert link is not None
+        assert link.label == "workroom"
+
+
+@pytest.mark.asyncio
+async def test_provision_group_params_across_rooms(env):
+    """Params interpolate across the whole document from one inputs dict."""
+    svc = _svc(env)
+    spec = svc.parse(GROUP_TEMPLATE, inputs={"newcomer": "eve"})
+    assert isinstance(spec, GroupSpec)
+    result = await svc.provision_group(spec, user_id=env["user_id"], is_admin=False)
+
+    assert result.rooms[0].room_name == "eve lobby"
+    assert result.rooms[1].room_name == "eve workroom"
+
+
+@pytest.mark.asyncio
+async def test_provision_group_partial_failure_collision(env):
+    """When the second room name collides, group + first room exist and the
+    error names the collision."""
+    svc = _svc(env)
+
+    # Provision once to create "dana lobby".
+    spec1 = svc.parse(GROUP_TEMPLATE, inputs={"newcomer": "dana"})
+    assert isinstance(spec1, GroupSpec)
+    await svc.provision_group(spec1, user_id=env["user_id"], is_admin=False)
+
+    # Build a group whose second room collides with an existing name.
+    collision_template = """\
+group:
+  name: "Collider"
+rooms:
+  - name: "safe room"
+    description: "d"
+    agents: ["claude-code.alice"]
+  - name: "dana lobby"
+    description: "d"
+    agents: ["claude-code.bob"]
+"""
+    spec2 = svc.parse(collision_template)
+    assert isinstance(spec2, GroupSpec)
+
+    # FakeRoomService doesn't enforce unique names, so we need to pre-create
+    # the collision. Instead, make the second room reference an unknown agent.
+    collision_template_bad_agent = """\
+group:
+  name: "Collider"
+rooms:
+  - name: "safe room"
+    description: "d"
+    agents: ["claude-code.alice"]
+  - name: "boom room"
+    description: "d"
+    agents: ["does-not-exist"]
+"""
+    spec3 = svc.parse(collision_template_bad_agent)
+    assert isinstance(spec3, GroupSpec)
+    result = await svc.provision_group(spec3, user_id=env["user_id"], is_admin=False)
+
+    # Group + first room exist, second room errored.
+    assert result.group_name == "Collider"
+    assert len(result.rooms) == 1
+    assert result.rooms[0].room_name == "safe room"
+    assert len(result.errors) == 1
+    assert result.errors[0]["room_name"] == "boom room"
+    assert "does-not-exist" in result.errors[0]["error"]
+
+    # Verify the group row was created.
+    sf = env["session_factory"]
+    async with sf() as session:
+        group = await session.get(RoomGroup, result.group_id)
+        assert group is not None
+
+
+# ── single-room regression ──────────────────────────────────────────────────
+
+
+def test_single_room_parse_still_works(env):
+    """Single-room documents keep working unchanged after adding group support."""
+    spec = _svc(env).parse(
+        """
+        room:
+          name: "Room A"
+          description: "desc"
+        """
+    )
+    assert spec.name == "Room A"
+
+
+def test_parse_rejects_neither_room_nor_group(env):
+    with pytest.raises(ValueError, match="'room:' or 'group:'"):
+        _svc(env).parse("name: oops\ndescription: d\n")
+
+
+@pytest.mark.asyncio
+async def test_endpoint_json_body_group(env):
+    """The /from-yaml endpoint handles a group document."""
+    import json
+    from unittest.mock import AsyncMock
+
+    from switch_core.gateway.rooms import create_room_from_yaml
+
+    svc = _svc(env)
+    user_id = env["user_id"]
+    user = User(name="alice", email="alice@example.com", role="member")
+    object.__setattr__(user, "id", user_id)
+
+    body = json.dumps(
+        {
+            "yaml": GROUP_TEMPLATE,
+            "inputs": {"newcomer": "frank"},
+        }
+    ).encode()
+
+    request = AsyncMock()
+    request.headers = {"content-type": "application/json"}
+    request.body.return_value = body
+
+    result = await create_room_from_yaml(request, svc, user)
+    assert result.group_name == "Onboarding"
+    assert len(result.rooms) == 2

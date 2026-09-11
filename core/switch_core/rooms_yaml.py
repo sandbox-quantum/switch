@@ -1,19 +1,19 @@
-"""Declarative provisioning of a single room from YAML, and export back.
+"""Declarative provisioning of rooms from YAML, and export back.
 
-v0 supports a ``params:`` block beside ``room:`` that declares typed,
-defaultable placeholders. ``parse(text, inputs)`` resolves them and
-interpolates ``{name}`` throughout the ``room:`` tree before validation, so
-one file can stamp out many rooms with different inputs.  A literal
-``{word}`` that collides with a declared param name *is* substituted — this
-is accepted for v0; ``sensitive: true`` is deferred to a later version.
+Two document shapes are supported, discriminated by top-level key:
 
-An optional top-level ``version:`` key (default ``0``) is accepted and
-validated as an integer, but not acted on yet.
+* **Single-room** (``room:`` key): provisions one room with its attachments.
+* **Group** (``group:`` + ``rooms:`` keys): provisions a room group, several
+  rooms filed under it, and optional directed links between them.
 
-Provisioning is room-first and best-effort: the room is created first (which
-fails loud on bad agents / refs / config), then inline references and docs are
-attached, with any post-creation failures collected into ``failed_attachments``
-rather than silently dropped.
+Both shapes accept a ``params:`` block and an optional ``version:`` key.
+``parse(text, inputs)`` resolves params and interpolates ``{name}``
+throughout the document tree before validation.  A literal ``{word}`` that
+collides with a declared param name *is* substituted — this is accepted for
+v0; ``sensitive: true`` is deferred to a later version.
+
+Provisioning is best-effort: rooms are created in order, and a failure on one
+room does not roll back earlier ones — partial results are reported honestly.
 
 Export emits resolved rooms and never emits ``params:``.
 """
@@ -25,7 +25,7 @@ import re
 from typing import TYPE_CHECKING, Any, Literal, cast
 
 import yaml
-from pydantic import BaseModel, ValidationError, model_validator
+from pydantic import BaseModel, Field, ValidationError, model_validator
 
 from switch_core.bridges.collaboration.models import ChannelType
 from switch_core.bridges.resource.registry import validate_reference_value
@@ -40,6 +40,7 @@ if TYPE_CHECKING:
         CollaborationBridgeStore,
     )
     from switch_core.db.stores.external_user_store import ExternalUserStore
+    from switch_core.db.stores.room_group_store import RoomGroupStore
     from switch_core.db.stores.room_role_store import RoomRoleStore
     from switch_core.db.stores.room_store import RoomStore
     from switch_core.room_service import RoomService
@@ -143,7 +144,7 @@ def interpolate(
 
         return PLACEHOLDER_RE.sub(_replace, node)
     if isinstance(node, dict):
-        return {k: interpolate(v, values) for k, v in node.items()}
+        return {interpolate(k, values): interpolate(v, values) for k, v in node.items()}
     if isinstance(node, list):
         return [interpolate(item, values) for item in node]
     return node
@@ -221,6 +222,7 @@ class RoomSpec(BaseModel):
     roles: list[RoleSpec] = []
     references: list[ExternalReferenceEntry] = []
     docs: list[DocSpec] = []
+    aliases: dict[str, str] | None = None
 
 
 class ProvisionResult(BaseModel):
@@ -231,6 +233,36 @@ class ProvisionResult(BaseModel):
     created_document_ids: list[str] = []
     role_names: list[str] = []
     failed_attachments: list[dict[str, Any]] = []
+
+
+# ── Group document models ────────────────────────────────────────────────
+
+
+class GroupLinkSpec(BaseModel):
+    model_config = {"extra": "forbid", "populate_by_name": True}
+    from_: str = Field(alias="from")
+    to: str
+    label: str
+
+
+class GroupMeta(BaseModel):
+    model_config = {"extra": "forbid"}
+    name: str
+    description: str | None = None
+    color: str | None = None
+
+
+class GroupSpec(BaseModel):
+    group: GroupMeta
+    rooms: list[RoomSpec]
+    links: list[GroupLinkSpec] = []
+
+
+class GroupProvisionResult(BaseModel):
+    group_id: str
+    group_name: str
+    rooms: list[ProvisionResult] = []
+    errors: list[dict[str, Any]] = []
 
 
 # ── YAML literal-block dumper (keeps multiline doc content readable) ────────
@@ -249,7 +281,7 @@ _SpecDumper.add_representer(str, _str_representer)
 
 
 class RoomYamlService:
-    """Parse / provision / export a single room as YAML. Free of HTTP concerns
+    """Parse / provision / export rooms from YAML. Free of HTTP concerns
     so it is unit-testable and reusable for future MCP / CLI surfaces."""
 
     def __init__(
@@ -261,6 +293,7 @@ class RoomYamlService:
         agent_store: AgentStore,
         bridge_store: CollaborationBridgeStore,
         external_user_store: ExternalUserStore,
+        room_group_store: RoomGroupStore,
         room_role_store: RoomRoleStore,
         session_factory: async_sessionmaker[AsyncSession],
     ) -> None:
@@ -270,25 +303,33 @@ class RoomYamlService:
         self._agent_store = agent_store
         self._bridge_store = bridge_store
         self._external_users = external_user_store
+        self._room_groups = room_group_store
         self._room_roles = room_role_store
         self._session_factory = session_factory
 
     # ── Parse ─────────────────────────────────────────────────────────────
 
-    def parse(self, text: str, inputs: dict[str, Any] | None = None) -> RoomSpec:
+    @staticmethod
+    def _load_and_resolve(
+        text: str,
+        inputs: dict[str, Any] | None,
+        allowed_keys: set[str],
+    ) -> dict[str, Any]:
+        """YAML load → version check → params resolution → interpolation.
+
+        Returns the top-level dict with string values already interpolated.
+        """
         try:
             data = yaml.safe_load(text)
         except yaml.YAMLError as e:
             raise ValueError(f"Invalid YAML: {e}") from e
-        if not isinstance(data, dict) or "room" not in data:
-            raise ValueError("YAML must have a single top-level 'room:' mapping")
+        if not isinstance(data, dict):
+            raise ValueError("YAML document must be a mapping")
 
-        allowed_keys = {"room", "params", "version"}
         extra = set(data) - allowed_keys
         if extra:
             raise ValueError(f"Unknown top-level key(s): {', '.join(sorted(extra))}")
 
-        # version: accepted, not acted on yet.
         version = data.get("version", 0)
         if not isinstance(version, int):
             raise ValueError(
@@ -313,19 +354,89 @@ class RoomYamlService:
 
         if declared:
             values = resolve_params(declared, inputs)
-            room_data = interpolate(data["room"], values)
-        else:
-            room_data = data["room"]
+            return {k: interpolate(v, values) for k, v in data.items()}
+        return data
 
+    def parse(
+        self, text: str, inputs: dict[str, Any] | None = None
+    ) -> RoomSpec | GroupSpec:
+        """Parse a YAML template into a RoomSpec (single room) or GroupSpec.
+
+        The top-level key discriminates: ``room:`` → RoomSpec, ``group:`` +
+        ``rooms:`` → GroupSpec.
+        """
         try:
-            return RoomSpec.model_validate(room_data)
+            raw = yaml.safe_load(text)
+        except yaml.YAMLError as e:
+            raise ValueError(f"Invalid YAML: {e}") from e
+        if not isinstance(raw, dict):
+            raise ValueError("YAML document must be a mapping")
+
+        if "group" in raw:
+            return self._parse_group(text, inputs)
+        if "room" in raw:
+            return self._parse_room(text, inputs)
+        raise ValueError("YAML must have a top-level 'room:' or 'group:' mapping")
+
+    def _parse_room(self, text: str, inputs: dict[str, Any] | None = None) -> RoomSpec:
+        data = self._load_and_resolve(text, inputs, {"room", "params", "version"})
+        try:
+            return RoomSpec.model_validate(data["room"])
         except ValidationError as e:
             raise ValueError(f"Invalid room spec: {e}") from e
+
+    def _parse_group(
+        self, text: str, inputs: dict[str, Any] | None = None
+    ) -> GroupSpec:
+        data = self._load_and_resolve(
+            text, inputs, {"group", "rooms", "links", "params", "version"}
+        )
+        if "rooms" not in data:
+            raise ValueError("Group document requires a 'rooms:' list")
+        try:
+            group_meta = GroupMeta.model_validate(data["group"])
+        except ValidationError as e:
+            raise ValueError(f"Invalid group spec: {e}") from e
+        raw_rooms = data["rooms"]
+        if not isinstance(raw_rooms, list) or not raw_rooms:
+            raise ValueError("'rooms:' must be a non-empty list")
+        rooms: list[RoomSpec] = []
+        for i, entry in enumerate(raw_rooms):
+            try:
+                rooms.append(RoomSpec.model_validate(entry))
+            except ValidationError as e:
+                raise ValueError(f"Invalid room spec at index {i}: {e}") from e
+        raw_links = data.get("links", [])
+        if not isinstance(raw_links, list):
+            raise ValueError("'links:' must be a list")
+        links: list[GroupLinkSpec] = []
+        for i, entry in enumerate(raw_links):
+            try:
+                links.append(GroupLinkSpec.model_validate(entry))
+            except ValidationError as e:
+                raise ValueError(f"Invalid link spec at index {i}: {e}") from e
+        room_names = {r.name for r in rooms}
+        if len(room_names) != len(rooms):
+            seen: set[str] = set()
+            dupes = [r.name for r in rooms if r.name in seen or seen.add(r.name)]  # type: ignore[func-returns-value]
+            raise ValueError(f"Duplicate room name(s): {', '.join(dupes)}")
+        for link in links:
+            for end, name in [("from", link.from_), ("to", link.to)]:
+                if name not in room_names:
+                    raise ValueError(
+                        f"Link {end} {name!r} does not match any room name"
+                    )
+        return GroupSpec(group=group_meta, rooms=rooms, links=links)
 
     # ── Provision ───────────────────────────────────────────────────────────
 
     async def provision(
-        self, spec: RoomSpec, *, user_id: str, is_admin: bool
+        self,
+        spec: RoomSpec,
+        *,
+        user_id: str,
+        is_admin: bool,
+        group_id: str | None = None,
     ) -> ProvisionResult:
         bridge_id = await self._resolve_bridge_id(spec.bridge)
         if spec.users and bridge_id is None:
@@ -346,6 +457,7 @@ class RoomYamlService:
             agent_names=spec.agents or None,
             user_names=spec.users or None,
             bridge_id=bridge_id,
+            group_id=group_id,
             created_by=user_id,
             owner_id=user_id,
             acting_user_id=user_id,
@@ -354,6 +466,7 @@ class RoomYamlService:
             write_visibility=spec.write_visibility,
             roles=spec.roles or None,
             reference_ids=attached_ref_ids or None,
+            aliases=spec.aliases,
         )
         result = await self._rooms.create_room(config)
         room_id = result.room.id
@@ -374,6 +487,83 @@ class RoomYamlService:
             created_document_ids=created_doc_ids,
             role_names=[r.name for r in spec.roles],
             failed_attachments=failures,
+        )
+
+    async def provision_group(
+        self, spec: GroupSpec, *, user_id: str, is_admin: bool
+    ) -> GroupProvisionResult:
+        """Provision a room group, its rooms, and resolve intra-document links.
+
+        Order: group row → each room with ``group_id`` → links by name.
+        Partial failure on a room is reported, not rolled back.
+        """
+        async with self._session_factory() as session:
+            group = await self._room_groups.create(
+                session,
+                name=spec.group.name,
+                description=spec.group.description,
+                color=spec.group.color,
+                parent_group_id=None,
+            )
+            await session.commit()
+            group_id = group.id
+
+        room_results: list[ProvisionResult] = []
+        errors: list[dict[str, Any]] = []
+        name_to_room_id: dict[str, str] = {}
+
+        for i, room_spec in enumerate(spec.rooms):
+            try:
+                result = await self.provision(
+                    room_spec,
+                    user_id=user_id,
+                    is_admin=is_admin,
+                    group_id=group_id,
+                )
+                room_results.append(result)
+                name_to_room_id[room_spec.name] = result.room_id
+            except Exception as e:
+                errors.append(
+                    {"room_index": i, "room_name": room_spec.name, "error": str(e)}
+                )
+
+        for link in spec.links:
+            from_id = name_to_room_id.get(link.from_)
+            to_id = name_to_room_id.get(link.to)
+            if from_id is None or to_id is None:
+                errors.append(
+                    {
+                        "kind": "link",
+                        "from": link.from_,
+                        "to": link.to,
+                        "error": "one or both rooms were not created",
+                    }
+                )
+                continue
+            try:
+                async with self._session_factory() as session:
+                    await self._resources.attach_linked_room(
+                        session,
+                        source_room_id=from_id,
+                        target_room_id=to_id,
+                        label=link.label,
+                    )
+                    await session.commit()
+            except Exception as e:
+                errors.append(
+                    {
+                        "kind": "link",
+                        "from": link.from_,
+                        "to": link.to,
+                        "error": str(e),
+                    }
+                )
+
+        return GroupProvisionResult(
+            group_id=group_id,
+            group_name=spec.group.name,
+            rooms=room_results,
+            errors=errors,
         )
 
     async def _resolve_bridge_id(self, bridge_name: str | None) -> str | None:
@@ -544,13 +734,20 @@ class RoomYamlService:
 
             if agents:
                 agent_ids = await self._room_store.get_agent_ids(session, room.id)
-                names: list[str] = []
+                id_to_name: dict[str, str] = {}
                 for aid in agent_ids:
                     agent = await self._agent_store.get(session, aid)
                     if agent is not None:
-                        names.append(agent.name)
-                if names:
-                    data["agents"] = sorted(names)
+                        id_to_name[aid] = agent.name
+                if id_to_name:
+                    data["agents"] = sorted(id_to_name.values())
+                alias_map = await self._room_store.list_aliases(session, room.id)
+                if alias_map:
+                    data["aliases"] = {
+                        id_to_name[aid]: alias
+                        for aid, alias in alias_map.items()
+                        if aid in id_to_name
+                    }
 
             if users and room.bridge_id:
                 client_ids = await self._room_store.get_client_ids(session, room.id)

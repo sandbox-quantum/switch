@@ -132,6 +132,7 @@ def get_room_yaml_service() -> RoomYamlService:
         agent_store=_state["agent_store"],
         bridge_store=_state["bridge_store"],
         external_user_store=_state["external_user_store"],
+        room_group_store=_state["room_group_store"],
         room_role_store=protocol.room_role_store,
         session_factory=_state["session_factory"],
     )
