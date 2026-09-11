@@ -21,6 +21,22 @@ name: PR CI
 # Main is verified on push as well as per-PR, because a PR merged while red
 # leaves main red with nothing to say so — the next branch to merge main
 # inherits the failure and pays for it (CHOO-1430 reached main exactly this way).
+#
+# `actions/checkout` on a `pull_request` event checks out `refs/pull/<n>/merge`
+# by default (verified against a real run's logs), GitHub's own preview of the
+# PR merged into its base — so every job above already tests the merge result,
+# not the branch tip, as of whenever it last ran. That "as of" is the gap:
+# GitHub recomputes that preview as the base moves, but nothing re-runs the
+# workflow just because it did, and merging is not gated on the branch being
+# up to date. Two PRs chaining a migration off the same parent can each see a
+# single head, go green, and sit open; if the first merges and the second
+# never gets a new commit, its stale green check still satisfies the merge
+# button, and only the merge of the second one actually produces two heads
+# (CHOO-2689 — PRs #404 and #426, hand-fixed with merge revisions
+# `b47e0c39a1f5` and `c81f4a06d2b7`). The `migration-heads-on-merge` job below
+# re-tests every other open PR that touches migrations the moment a new one
+# lands on main, so that race shows up as a red status on the affected PR
+# immediately instead of at the next deploy.
 
 on:
   pull_request:
@@ -47,6 +63,7 @@ jobs:
       console: ${{ steps.filter.outputs.console }}
       gateway: ${{ steps.filter.outputs.gateway }}
       artifacts: ${{ steps.filter.outputs.artifacts }}
+      migrations: ${{ steps.filter.outputs.migrations }}
     steps:
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -74,6 +91,11 @@ jobs:
             gateway:
               - *shared
               - 'gateway/**'
+            # Its own filter, narrower than `backend`, so the push-triggered
+            # `migration-heads-on-merge` job below only runs when it can
+            # actually find a new head — not on every backend-touching push.
+            migrations:
+              - 'core/switch_core/migrations/versions/**'
             # Spans every tree, so it gets its own filter rather than riding
             # any one of them. Includes the files whose versions the registry is
             # checked against, so a release bump cannot land without the check.
@@ -236,6 +258,33 @@ jobs:
       # `build` runs `tsc -b && vite build`, so it doubles as the typecheck gate.
       - name: Build (tsc + vite)
         run: npm run build
+
+  migration-heads-on-merge:
+    name: Migration heads on merge
+    # Only meaningful right after a new migration lands on main — a PR still
+    # open at that moment is the one whose stale green check could let a
+    # second head slip through (see the comment at the top of this file and
+    # scripts/check_migration_heads_for_open_prs.py for the full story,
+    # CHOO-2689). Reads revision files as plain text and never imports them
+    # (see the script's own docstring for why), so it needs no database and no
+    # Python environment for the project — cheap enough to run on every push
+    # that touches the migrations directory.
+    needs: changes
+    if: ${{ github.event_name == 'push' && needs.changes.outputs.migrations == 'true' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+      statuses: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Re-check open PRs that touch migrations
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: python3 scripts/check_migration_heads_for_open_prs.py
 
   gitleaks:
     name: Secret scan (gitleaks)
