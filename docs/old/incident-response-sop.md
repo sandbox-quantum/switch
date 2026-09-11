@@ -10,8 +10,10 @@ rather than designed around — [Gaps](#gaps) is the part to read if you read
 only one section.
 
 Written against `main` at `514d5ba4` (the template registry). Every claim about
-current behaviour was checked against the code, and the file it lives in is
-cited so a reader can confirm it rather than trust it.
+how Switch behaves today was checked against the code on that commit rather than
+recalled, and where a behaviour is surprising enough to be worth confirming, the
+file it lives in is named. If a claim here has since gone stale, the commit is
+the thing to diff against.
 
 - [Scope](#scope)
 - [The SOP, and the one place Switch appears in it](#the-sop-and-the-one-place-switch-appears-in-it)
@@ -142,10 +144,12 @@ Everything that would otherwise fragment the war room. In particular:
 - **A tool's noisy output.** Log dumps and query results belong under the
   message that asked for them.
 
-Switch threads bridge natively to Mattermost and to Telegram forum topics. On a
-Slack-bridged room — which a war room under this SOP is — a threaded reply shows
-in the channel as a reply count under the original post, so **anything the room
-must not miss goes at the root**. That is not a Switch limitation to work around; it is a rule for
+Switch threads bridge to real platform threads everywhere it can — Slack replies
+go out with a `thread_ts`, Discord gets a real thread, Telegram gets a forum
+topic. The Slack difference is one of *rendering*: a threaded reply appears in
+the channel only as a reply count under the original post rather than in the
+main flow. So on a Slack-bridged room — which a war room under this SOP is —
+**anything the room must not miss goes at the root**. That is not a Switch limitation to work around; it is a rule for
 whoever writes in the room, agent or human. The responder agent's standing
 instructions should say so, and the template's `instructions` field is where
 that lives.
@@ -205,10 +209,12 @@ Two properties of that table are the design:
 The SOP puts situation reports on a clock: hourly at the top severity, every four
 hours below it. Something has to remember.
 
-**Switch cannot.** There is no scheduler, no cron, no timer, and no deferred
-action anywhere in `core/switch_core` — the only `schedule` symbols in the tree
-are `asyncio` call-soon helpers inside the transport and bridge loops. An agent
-in a room cannot ask to be woken in an hour.
+**Switch cannot.** There is no scheduling primitive exposed to a room or an
+agent: no cron, no timers, no deferred actions, nothing an agent can ask to be
+woken by. Switch does run periodic work internally — connection and
+runtime-state sweeps at boot, bridge-level renewal loops, `call_later` timers
+that batch attachments — but none of it is reachable from a room, and none of it
+is scheduling in the sense the SOP means.
 
 The SOP's own comment thread already has the answer, and it is the right one: a
 scheduled Slack workflow that posts into the war room mentioning the responder
@@ -240,8 +246,9 @@ honest about which half exists.
   (required), `params:` and `version:`. `version:` is parsed, type-checked and
   then ignored. An unrecognised top-level key is a hard error.
 - Typed parameters: `string`, `number`, `boolean`, `enum`, each with an optional
-  `description` and `default`. There is no `required:` key — a parameter is
-  required exactly when it has no default.
+  `description`, `default` and — for `enum` — the list of permitted values.
+  There is no `required:` key: a parameter is required exactly when it has no
+  default.
 - `{name}` interpolation over the `room:` block. Two modes: if a field is
   *entirely* one placeholder, the parameter's typed value is substituted whole,
   which is how an `enum` can fill `channel_type:`; otherwise each placeholder is
@@ -369,7 +376,7 @@ room:
   bridge: "{bridge}"
   channel_type: "{visibility}"
   read_visibility: public
-  write_visibility: public
+  write_visibility: private
 
   agents: ["{responder_agent}"]
 
@@ -521,29 +528,42 @@ Notes on choices in that document that are not arbitrary:
   `product---incident-42`, with runs of hyphens where the punctuation was.
   `{product} incident {incident_id}` gives `product-incident-42`. Cosmetic, but
   channel names are what responders type under pressure.
-- **`bridge:` is a required parameter and not omitted.** The field's own comment
-  says to omit it for an internal-only room, and that is wrong: omitting it
-  falls through to the instance default bridge. Worse, the guard that rejects
-  `users:` on an unbridged room tests the template's resolved bridge id, so a
-  template with `users:` and no `bridge:` is rejected even though the room would
-  in fact have been bridged. Naming the bridge explicitly sidesteps both.
+- **`bridge:` is a required parameter and not omitted.** The comment on the
+  template's own `bridge` field says to omit it for an internal-only room, and
+  that is wrong: omitting it falls through to the instance default bridge — or,
+  with no default configured, to no bridge at all, and with a default configured
+  but not running, to a hard failure. Worse, the guard that rejects `users:` on
+  an unbridged room tests the template's resolved bridge id, so a template with
+  `users:` and no `bridge:` is rejected even though the room would in fact have
+  been bridged. Naming the bridge explicitly sidesteps all of it.
   [Gaps](#gaps) G10.
 - **The `scribe` role is defined but nobody is told to take it.** See
   [Roles are the wrong tool for the on-call rotation](#roles-are-the-wrong-tool-for-the-on-call-rotation)
   — a role is held per *agent*, globally, so the shared responder can hold it in
   one incident at a time. It is there for a responder's own coding agent to
   assume, and the template does not assume it on anyone's behalf.
-- **`write_visibility: public`** means any participant's owner can restructure
-  the room — pull in another agent, attach a reference. During an incident that
-  is the behaviour you want; it is also worth knowing you chose it.
+- **`write_visibility: private`, and this is the one to argue about.** Public
+  write on a room does not mean "participants may restructure it" — it grants
+  write to *any* principal in the tenant, member or not, and write on a room is
+  what governs attaching a reference, defining and deleting roles, updating the
+  room and archiving it. A war room that any agent's owner in the deployment can
+  archive mid-incident is not a trade worth making, so this template narrows it:
+  readable by everyone, restructured only by the room's owner and admins.
+
+  The cost is real but small. Attaching a reference mid-incident becomes the
+  instantiating user's job. Adding agents and users is *not* affected — the
+  roster path is governed separately and admits existing members regardless of
+  visibility — so pulling another agent into the war room still works for anyone
+  already in it, which is the operation that actually matters under pressure.
 
 This document is not illustrative. It was run through the shipped parser —
-`ParamSpec`, `resolve_params`, `interpolate`, `RoomSpec` — with the inputs below,
-and it resolves: `visibility` defaults to `channel_public`, every placeholder
-substitutes with none left over, the room comes out named `flint incident 1287`,
-and the Slack channel it would create is `flint-incident-1287`. Anything in this
-section that turns out to be wrong is a bug in the design, not a typo in the
-YAML.
+`ParamSpec`, `resolve_params`, `interpolate`, `RoomSpec`, and the visibility-pair
+validator — with the inputs below, and it resolves: `visibility` defaults to
+`channel_public`, the `public` / `private` visibility pair is accepted, every
+placeholder substitutes with none left over anywhere including inside the seeded
+documents, the room comes out named `flint incident 1287`, and the Slack channel
+it would create is `flint-incident-1287`. Anything in this section that turns out
+to be wrong is a bug in the design, not a typo in the YAML.
 
 ### Instantiating it
 
@@ -650,27 +670,46 @@ Three things that branch buys and `main` cannot express:
   an agent's name. Aliases also require interpolation into a dict *key*, which
   only that branch supports.
 
-### What a template still cannot set
+### What a template still cannot set — and why that is the real finding
 
 Measured against what a room can hold, the merged template reaches
 `name`, `description`, `instructions`, `bridge`, `channel_type`, the two
 visibilities, `agents`, `users`, `roles`, `references` and `docs`. It cannot
 reach:
 
-| Cannot set | Why it matters here |
-| --- | --- |
-| `aliases` | No `@responder` handle; responders must know the agent's real name. On the group branch. |
-| `linked_rooms` | The war room cannot point at the alert hub, the stakeholder channel or the postmortem room. On the group branch. |
-| `group_id` | Incidents cannot be filed under a product's group. On the group branch. |
-| `join_event_listeners` | The responder cannot greet an arriving responder and orient them — the single highest-value automation in a war room, and it is unreachable. |
-| `internal_only` | Not needed here (war rooms are bridged), but the field's documentation is actively misleading. |
-| `package_ids` | No packaged tooling attached at creation. |
-| room metadata | Nowhere structured to record severity or the incident id; both live in prose. |
+| Cannot set from a template | Why it matters here | Reachable another way? |
+| --- | --- | --- |
+| `aliases` | No `@responder` handle; responders must know the agent's real name. | **Yes** — `create_room`, `update_room`, `PATCH`, or `!set-alias` in the room. |
+| `linked_rooms` | The war room cannot point at the alert hub, the stakeholder channel or the postmortem room. | **Yes** — `create_room`, or `link_rooms` after. |
+| `group_id` | Incidents cannot be filed under a product's group. | **Yes** — `group_name` on `create_room`. |
+| `join_event_listeners` | Without it the responder never learns that someone joined, so it cannot greet an arrival and tell them the state. | **Yes** — `create_room` or `update_room`. |
+| `internal_only` | Not needed here — war rooms are bridged. | Yes, on `create_room`. |
+| `package_ids` | No packaged tooling attached at creation. | Yes, on `create_room`. |
+| room metadata | Nowhere structured to record severity or the incident id; both live in prose. | No. |
 
-`join_event_listeners` is the one to feel bad about. A war room's worst moment is
-the fourth person arriving twenty minutes in and asking "what's the state?" — a
-question the responder agent could answer automatically the instant they join,
-and cannot, because the template cannot opt it into join events.
+That last column is the finding, and it is more useful than the list itself:
+**a room template is strictly less capable than the room creation it wraps.**
+Every one of those fields is already accepted by `create_room` — the HTTP
+endpoint, and the agent operation of the same name — and most can be set
+afterwards with `update_room`. The template format simply does not carry them.
+
+Two consequences worth acting on:
+
+- **The gap is a format gap, not a platform gap**, so it is cheap. Nothing needs
+  designing; the provisioner needs to pass through fields the config object
+  already has.
+- **Until it closes, an agent that creates the war room by calling `create_room`
+  directly can do everything the template can and more** — aliases, links, the
+  group, and join events included. That is a genuine fork in the road: the
+  template is the reusable, reviewable, version-controlled artifact, and
+  `create_room` is the capable one. Choosing the template means accepting a
+  follow-up call to set what it could not, or accepting that the war room has no
+  `@responder` alias and cannot greet arrivals.
+
+The greeting is the one worth wanting. A war room's worst recurring moment is the
+fourth person arriving twenty minutes in and asking "what's the state?" — a
+question the responder could answer the instant they join, if something opted it
+into join events. A template cannot; one extra `update_room` call can.
 
 ## The responder agent
 
@@ -763,13 +802,22 @@ it is unbounded. **Do not copy this part.**
 
 **2. There is nothing good to own it instead.** Switch has exactly one
 shared-owner construct: the synthetic bootstrap account that owns every agent
-registered with the deployment-wide token. It is deliberately non-admin — right
-— and it is password-less and cannot be logged into — fatal. Nobody can manage
-its agents, and nobody can ever reveal their credentials, because credential
-reveal is strict owner equality with no admin bypass. So the correct answer,
-"own it with a non-person account that is not an admin", requires a service user
-that someone can actually authenticate as, and there is no supported way to make
-one. [Gaps](#gaps) G11.
+registered with the deployment-wide token. It is deliberately non-admin, which is
+right. It is also password-less, so on a password deployment nobody can sign in
+as it. (On an OIDC deployment this is softer than it sounds — an identity
+provider that asserts that address would link to the existing account — but that
+is a deployment accident, not a supported way to hold a shared identity.)
+
+The consequence is narrower than "unmanageable" and still bad. An admin *can*
+manage a bootstrap-owned agent: edit its options, set its addressing policy,
+delete it. What nobody can do is **reveal its credential**, because credential
+reveal is the one check in the system with strict owner equality and no admin
+bypass. So a bootstrap-owned responder is an agent whose token can never be
+recovered — you can rotate it by re-registering, and you can never read it.
+
+So the correct answer, "own it with a non-person account that is not an admin",
+needs a service user someone can actually authenticate as, and there is no
+supported way to make one. [Gaps](#gaps) G11.
 
 Note also that "user-agnostic" cannot mean *ownerless*. An agent with
 `owner_id IS NULL` cannot create a reference, attach one, list references, or
@@ -797,13 +845,22 @@ is this design's precedent:
 
 So the responder is born locked and must be widened afterwards through
 `PUT /agents/{id}/addressing-policy`. And here is the landmine: the gateway's
-React policy editor models only the four id-shaped dimensions and drops the
-symbolic `owner` and `owner_agents` rules when it saves. Open an owner-only agent
-in the dashboard, change anything, save — and the policy becomes one that admits
-nobody. The agent then answers every responder with "You're not permitted to
-direct messages to me in this room." Mid-incident, that reads as an outage.
-Switch Console's editor handles the symbolic rules correctly; the gateway's does
-not. [Gaps](#gaps) G12.
+React policy editor models only the four id-shaped dimensions, so the symbolic
+`owner` and `owner_agents` rules are dropped from any rule it saves.
+
+The dashboard does catch the worst case — a rule with every sender dimension
+empty is flagged "This rule can never match" and Save is disabled — so you
+cannot brick the agent outright. What you *can* do is the ordinary thing: open
+the default owner-only policy, add an agent to the allowed list, save, and
+silently lose `owner: true` in the process. The policy that comes back admits
+that one agent and locks out the human owner, who then gets
+
+> You're not permitted to direct messages to me in this room — my operator has
+> restricted who can address me here.
+
+from their own agent. Mid-incident that reads as an outage. Switch Console's
+editor round-trips the symbolic rules correctly; the gateway's does not.
+[Gaps](#gaps) G12.
 
 **4. The offline nudge wakes the wrong person.** When an `auto_session` agent is
 addressed in a room where nothing can start it, Switch posts on its behalf. The
@@ -812,10 +869,12 @@ message names the *owner*:
 > `@owner` — I'm not online in this room, and `@asker` needs me. Open Switch
 > Console to bring me online here.
 
-and, when there is no owner account on that platform to mention:
+and, when the owner has no account on that platform to mention:
 
-> I'm not online in this room. **My owner needs to open Switch Console** to bring
-> me online here.
+> I'm not online in this room, and `@asker` needs me. **My owner needs to open
+> Switch Console** to bring me online here.
+
+Both may carry a terminal command underneath.
 
 The code's own comment explains the reasoning — "the fix is for the OWNER to open
 it, and nobody else in the room can act" — which is sound for a personal agent
@@ -842,10 +901,12 @@ token nobody can individually revoke, on machines that leave with their owners.
 This also settles a mechanical question. Two people *can* run sessions as the
 same agent — identity is per directory, not per machine, and an agent may hold up
 to 32 connections. But at most one session of an agent may act in a given room,
-and `connect_to_room` always takes over: the newcomer wins, the incumbent is
-disconnected from that room and told it lost, and whatever it was doing there
-stops. Two responders each starting a session during one incident would evict
-each other in turn. One process, on one host, is the only sane operating mode.
+and `connect_to_room` always takes over: the newcomer wins and is warned what it
+displaced, and the incumbent stops receiving that room's events. The incumbent's
+notification is a bare subscription change with no reason attached, so in
+practice one responder's session goes quiet without explaining why. Two
+responders each starting a session during one incident would evict each other in
+turn. One process, on one host, is the only sane operating mode.
 
 **6. Nothing records which human drove it.** No actor is stored on connections,
 sessions, runtime state, role leases or messages; a message is attributed to the
@@ -1000,6 +1061,13 @@ built for per-incident particulars has no useful defaults. Parameters are
 therefore reachable only from an API client — which, for a feature whose whole
 point is that a human instantiates it, is the same as unreachable.
 
+One caveat to check before acting on this: the template linter's own comments
+refer to "a document the Console wizard renders happily", implying a client that
+does collect inputs. Nothing under `console/` on this branch posts to
+`/rooms/from-yaml` or renders a `params:` block, so either that wizard is
+unmerged or it lives somewhere this tree cannot see. If it ships, this gap
+narrows to "the gateway cannot", which is much less serious.
+
 > **Proposed ticket:** *Parameter form for template instantiation* — render the
 > declared `params:` as a form (using `description`, which is currently stored
 > and never displayed), collect values, post the JSON body form. **S**
@@ -1007,21 +1075,23 @@ point is that a human instantiates it, is the same as unreachable.
 **G4 — A parameter cannot hold a list.**
 `ParamSpec.type` is `string`, `number`, `boolean` or `enum`. A room's `agents:`
 and `users:` are lists, so a variable-length membership cannot be parameterised
-at all: `"alice,bob"` interpolates into one username that resolves to nobody. For
-an incident template whose responders differ every time, this is the difference
-between a template that works and one that has to be edited before each use.
+at all: `"alice,bob"` interpolates into one entry. In `users:` that entry
+silently resolves to nobody and is reported as unresolved; in `agents:` it is a
+hard `Unknown agents:` failure that aborts provisioning. For an incident template
+whose responders differ every time, this is the difference between a template
+that works and one that has to be edited before each use.
 
 > **Proposed ticket:** *List-typed template parameters* — add a `list` parameter
 > type whose whole-field substitution splices into the surrounding list rather
 > than stringifying. **M**
 
-**G9 — A template cannot set aliases, links, group or join events.**
+**G9 — A room template is strictly less capable than the room creation it wraps.**
 `RoomCreateConfig` carries `aliases`, `linked_rooms`, `group_id`, `package_ids`
-and `join_event_listeners`; the template provisioner populates none of them. The
-first three land with group templates. `join_event_listeners` lands nowhere, and
-it is the one this SOP most wants: without it the responder cannot greet an
-arriving responder and tell them the state, which is the highest-value automation
-a war room has.
+and `join_event_listeners`, and `create_room` accepts every one of them. The
+template provisioner populates none. The first three arrive with group templates;
+`join_event_listeners` arrives nowhere. Nothing here needs designing — the fields
+already exist on the config object and are already validated — so this is a
+pass-through, not a feature.
 
 > **Proposed ticket:** *Land group templates* — merge
 > `origin/work/group-templates`: `group:`/`rooms:`/`links:`, per-room `aliases:`,
@@ -1032,11 +1102,14 @@ a war room has.
 
 **G10 — Omitting `bridge:` silently means "the default bridge", and breaks
 `users:`.**
-The field's own comment says to omit it for an internal-only room. That is wrong:
-omitting it falls through to the instance default bridge. And the guard that
-rejects `users:` on an unbridged room tests the template's own resolved bridge
-id, so a template with `users:` and no `bridge:` is refused even though the room
-would have been bridged. Two authoring traps in one field.
+The comment on the template's `bridge` field says to omit it for an internal-only
+room. That is wrong: omitting it falls through to the instance default bridge —
+and, less obviously, to no bridge when there is no default, or to a hard failure
+when the default is configured but not running. (The `internal_only` field's own
+documentation is accurate and says exactly this; the misleading comment is on the
+template side.) Compounding it, the guard that rejects `users:` on an unbridged
+room tests the template's own resolved bridge id, so a template with `users:` and
+no `bridge:` is refused even though the room would have been bridged.
 
 > **Proposed ticket:** *Fix `bridge:` omission semantics in a room template* —
 > resolve the default bridge before the `users:` guard, and add an explicit
@@ -1053,11 +1126,16 @@ output.
 ### C. Getting the room made at all
 
 **G5 — No agent can instantiate a template, and no one can from a channel.**
-The agent operation surface has fifty-odd operations and none of them touch
-templates. The in-room command set has twenty commands and none of them creates a
-room. So the responder agent cannot open a war room when asked, and an on-call
-engineer in Slack cannot declare an incident from the channel they are already
-in. Both are exactly the moments this feature exists for.
+The agent operation surface has 46 operations and not one of them touches
+templates. The in-room command set has 21 and not one creates a room.
+
+Be precise about what this does and does not mean. An agent *can* open a war room
+— `create_room` is an agent operation and takes agents, users, roles, references,
+links, a group, aliases and join listeners. What it cannot do is open the room
+*from the reviewed, version-controlled template*, which is the whole point of
+having one. And an on-call engineer in the alert channel cannot declare an
+incident from the channel they are already in; they have to leave Slack for an
+API client or the dashboard, at the moment they least want to.
 
 > **Proposed ticket:** *`create_room_from_yaml` agent operation* — land the
 > operation already written on `origin/work/group-templates`, extended to take a
@@ -1067,20 +1145,24 @@ in. Both are exactly the moments this feature exists for.
 > configured template from a bridged channel with positional inputs, and post
 > the new room's link back. **M**
 
-**G6 — There is no inbound alert ingress.**
-Nothing in Switch listens for an external event. No webhook endpoint, no
-signature verification, no mapping from a payload to an action. So the SOP's
-promise — "Switch will auto-create a dedicated channel on declaration" — cannot
-be kept by Switch alone; something outside has to hold a credential and call the
-API. That is workable and probably correct for a first version, but it should be
-a decision rather than a discovery.
+**G6 — There is no generic alert ingress.**
+Switch does listen for inbound HTTP from a platform — the Teams bridge runs its
+own endpoint and verifies the caller's signed token against the published keys,
+so the machinery for authenticating an inbound webhook exists and is proven.
+What does not exist is anything generic: no endpoint that accepts a third-party
+alert payload and maps it to a Switch action. So the SOP's promise — "Switch will
+auto-create a dedicated channel on declaration" — cannot be kept by Switch alone;
+something outside has to hold a credential and call the API. That is workable and
+probably correct for a first version, but it should be a decision rather than a
+discovery.
 
 > **Proposed ticket:** *Incident intake webhook* — a signed inbound endpoint that
 > maps an alerting payload to a template instantiation, with the field mapping
 > configured per source. Depends on G2. **L**
 
-**G7 — There is no scheduler.**
-No cron, no timers, no deferred actions. An agent cannot ask to be woken. The
+**G7 — There is no scheduling primitive a room or an agent can use.**
+Switch runs periodic work internally — sweeps, renewals, batching timers — but
+none of it is reachable from a room, and an agent cannot ask to be woken. The
 SOP's hourly and four-hourly update cadence therefore lives in an external
 scheduled workflow that mentions the agent — which works, and is the right
 short-term answer, but has to be created per incident and nobody will remember to
@@ -1108,11 +1190,13 @@ adopt.
 **G11 — There is no provisionable service account.**
 The recommendation in this document rests on owning the responder with a
 non-person, non-admin user. Switch has exactly one shared-owner construct — the
-synthetic bootstrap account — and it cannot be logged into, so nobody can manage
-its agents or reveal their credentials, and credential reveal has no admin
-bypass. The alternatives are to own the responder with a real person (defeats the
-purpose) or with the Admin account (hands it a global bypass over every room and
-resource). **This is the gap the whole responder design depends on.**
+synthetic bootstrap account — and on a password deployment nobody can sign in as
+it. An admin can still *manage* its agents; what nobody can do is reveal their
+credentials, because credential reveal is the one check with strict owner
+equality and no admin bypass. The alternatives are to own the responder with a
+real person (defeats the purpose) or with the Admin account (hands it a global
+bypass over every room and resource in the tenant). **This is the gap the whole
+responder design depends on.**
 
 > **Proposed ticket:** *Service accounts* — a non-interactive user that can own
 > agents and resources, with authentication a team can hold jointly, and no
@@ -1124,11 +1208,13 @@ resource). **This is the gap the whole responder design depends on.**
 
 **G12 — The gateway's addressing-policy editor silently deletes owner rules.**
 The React editor models only the four id-shaped dimensions and drops the symbolic
-`owner` / `owner_agents` rules on save. Since every agent is created owner-only,
-opening one in the dashboard and saving any change converts it to a policy that
-admits nobody — and the agent then answers every request with a refusal. Switch
-Console's editor is correct. This is a live bug and it will be hit by exactly the
-person trying to widen a responder's policy.
+`owner` / `owner_agents` rules from any rule it saves. It does guard the extreme
+case — an all-empty rule is flagged as unmatchable and Save is disabled — so the
+agent cannot be bricked outright. The reachable damage is quieter: widening the
+default owner-only policy by adding an allowed agent saves a policy that admits
+that agent and no longer admits the owner. Switch Console's editor round-trips
+the symbolic rules correctly. This is a live bug, and it sits directly on the
+path of anyone widening a shared responder's policy.
 
 > **Proposed ticket:** *Preserve symbolic rules in the gateway policy editor* —
 > represent `owner` and `owner_agents`, round-trip them, and warn when a saved
