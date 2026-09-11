@@ -28,10 +28,21 @@ from pydantic import ValidationError
 
 from switch_core.rooms_yaml import PLACEHOLDER_RE, ParamSpec
 
-# Top-level keys any shape of template may carry. Anything else is reported as
-# a warning, never an error: an unrecognised key is as likely to be a format
-# this server predates as it is to be a typo.
-_KNOWN_TOP_LEVEL = frozenset({"room", "group", "rooms", "params", "version"})
+# Top-level keys any shape of template may carry, across every shape known to
+# be in flight — room, group, and the kickoff message that rides beside them.
+# Additive on purpose, and only ever a warning: an unrecognised key is as
+# likely to be a format this server predates as it is to be a typo.
+_KNOWN_TOP_LEVEL = frozenset({"room", "group", "rooms", "params", "version", "kickoff"})
+
+# `{$...}` placeholders the server fills in itself. A template does not declare
+# them and must not be told to.
+_BUILTINS = frozenset({"$creator", "$creator_email", "$date", "$timestamp"})
+
+# Matched here rather than left to `PLACEHOLDER_RE`, which only learned about
+# the `$` prefix alongside the builtins themselves. Scanning for them directly
+# means a misspelled `{$creatr}` is caught the same way whichever version of
+# the format module this server is running.
+_BUILTIN_RE = re.compile(r"\{(\$[A-Za-z_][A-Za-z0-9_]*)\}")
 
 
 @dataclass(frozen=True)
@@ -68,11 +79,23 @@ def _walk_strings(node: Any) -> list[str]:
     return []
 
 
-def _check_params(raw: Any, errors: list[Finding]) -> set[str]:
+def _unknown_keys(details: list[Any]) -> set[str]:
+    """The field names an `extra_forbidden` complaint was about."""
+    return {str(d["loc"][-1]) for d in details if d["loc"]}
+
+
+def _check_params(raw: Any, errors: list[Finding], warnings: list[Finding]) -> set[str]:
     """Validate the params block against the spec provisioning will apply.
 
     Uses `ParamSpec` itself rather than re-describing it, so a form cannot
-    accept a param that provisioning would then refuse.
+    accept a param that provisioning would then refuse — and so a field added
+    to the spec is understood here the moment it is added there, with nothing
+    to keep in step by hand.
+
+    One kind of complaint is demoted to a warning: a field `ParamSpec` does not
+    know. `extra="forbid"` cannot tell "you misspelled it" from "this server is
+    older than the template", and the second is ordinary for a registry that
+    holds documents written against a newer Switch than the one reading them.
     """
     if not isinstance(raw, dict):
         errors.append(
@@ -105,16 +128,39 @@ def _check_params(raw: Any, errors: list[Finding]) -> set[str]:
         try:
             parsed = ParamSpec.model_validate(spec)
         except ValidationError as e:
-            first = e.errors()[0]
-            where = ".".join(str(p) for p in first["loc"]) or "spec"
-            errors.append(
-                Finding(
-                    "invalid_param_spec",
-                    f"Parameter '{name}' is not valid: {where} — {first['msg']}.",
-                    name,
+            unknown = [d for d in e.errors() if d["type"] == "extra_forbidden"]
+            malformed = [d for d in e.errors() if d["type"] != "extra_forbidden"]
+            for detail in unknown:
+                where = ".".join(str(p) for p in detail["loc"]) or "spec"
+                warnings.append(
+                    Finding(
+                        "unknown_param_field",
+                        f"Parameter '{name}' sets '{where}', which this server "
+                        "does not know. It may be from a newer Switch, or a typo.",
+                        name,
+                    )
                 )
-            )
-            continue
+            for detail in malformed:
+                where = ".".join(str(p) for p in detail["loc"]) or "spec"
+                errors.append(
+                    Finding(
+                        "invalid_param_spec",
+                        f"Parameter '{name}' is not valid: {where} — {detail['msg']}.",
+                        name,
+                    )
+                )
+            # An unknown field is the only complaint, so the rest of the spec
+            # is sound and the checks below still have something to say.
+            if malformed:
+                continue
+            try:
+                parsed = ParamSpec.model_validate(
+                    {k: v for k, v in spec.items() if k not in _unknown_keys(unknown)}
+                    if isinstance(spec, dict)
+                    else spec
+                )
+            except ValidationError:
+                continue
 
         # Two things a well-formed ParamSpec can still say that provisioning
         # will refuse. They surface here because they only bite at the moment
@@ -186,17 +232,38 @@ def lint_template(text: str) -> LintResult:
             )
 
     declared = (
-        _check_params(document["params"], errors) if "params" in document else set()
+        _check_params(document["params"], errors, warnings)
+        if "params" in document
+        else set()
     )
 
     # Placeholders are looked for everywhere except the params block, which
     # declares them rather than using them.
     body = {k: v for k, v in document.items() if k != "params"}
+    body_strings = _walk_strings(body)
     used = {
         match
-        for text_node in _walk_strings(body)
+        for text_node in body_strings
         for match in re.findall(PLACEHOLDER_RE, text_node)
     }
+    builtins_used = {
+        match for text_node in body_strings for match in _BUILTIN_RE.findall(text_node)
+    }
+    # Whether `$creator` also came back from PLACEHOLDER_RE depends on this
+    # server's version of it; either way it is a builtin, not a missing param.
+    used -= builtins_used
+
+    # `{$...}` is the server's to fill, not the template's to declare, so it is
+    # held to a different question: is it one the server actually knows?
+    for name in sorted(builtins_used - _BUILTINS):
+        warnings.append(
+            Finding(
+                "unknown_builtin",
+                f"'{{{name}}}' looks like a server-provided value, but this "
+                f"server provides only {', '.join(sorted(_BUILTINS))}.",
+                name,
+            )
+        )
 
     for name in sorted(used - declared):
         warnings.append(

@@ -17,6 +17,138 @@ def _codes(findings: list) -> set[str]:
     return {f.code for f in findings}
 
 
+# The canonical example for the room-template surface, kept here rather than
+# read from `examples/` because that file arrives with CHOO-2656 and this
+# branch must not add a second copy of it. It exercises three things at once:
+# a `kickoff:` block beside `room:`, `{$creator}` builtins, and a `multiline`
+# param field — none of which the format module on this branch knows yet.
+_CANONICAL_EXAMPLE = """\
+params:
+  task_name:
+    type: string
+    description: Short name for the task (used in the room name)
+  coder_agent:
+    type: string
+    description: Agent that implements the task
+  reviewer_agent:
+    type: string
+    description: Agent that reviews and drives the acceptance loop
+  brief:
+    type: string
+    multiline: true
+    description: The task brief (paste the full text)
+room:
+  name: "Switch work: {task_name}"
+  description: "Workroom for {task_name} — coder/reviewer loop, human-gated."
+  channel_type: channel_private
+  agents: ["{coder_agent}", "{reviewer_agent}"]
+  users: ["{$creator}"]
+  instructions: |
+    This room implements {task_name}. {coder_agent} owns the branch and
+    commits. {reviewer_agent} reviews against the Acceptance section of the
+    brief and pushes the coder in a loop until every item is met. Only
+    {$creator}'s explicit confirmation stops the loop.
+
+    Brief:
+    {brief}
+kickoff: |
+  @{coder_agent} @{reviewer_agent} — kicking off {task_name}.
+
+  @{coder_agent}: read the brief in the room instructions and start
+  implementing. Post your plan here before your first commit.
+
+  @{reviewer_agent}: drive the acceptance loop. Review every hand-off
+  against the brief's Acceptance section and push back until every item is
+  met, then ping {$creator} to confirm and close.
+"""
+
+
+class TestTheCanonicalExample:
+    """The document the room-template surface is documented by.
+
+    If the checker calls this wrong, the checker is wrong. It is the sharpest
+    test of shape-agnosticism available, because it was written against a
+    newer format module than this branch carries.
+    """
+
+    def test_it_raises_no_errors(self) -> None:
+        result = lint_template(_CANONICAL_EXAMPLE)
+        assert result.ok, [f.message for f in result.errors]
+
+    def test_kickoff_is_not_called_an_unknown_key(self) -> None:
+        result = lint_template(_CANONICAL_EXAMPLE)
+        assert "unknown_top_level_key" not in _codes(result.warnings)
+
+    def test_the_creator_builtin_is_not_called_an_undeclared_placeholder(self) -> None:
+        """`{$creator}` is the server's to fill; a template must not declare it."""
+        result = lint_template(_CANONICAL_EXAMPLE)
+        assert "undeclared_placeholder" not in _codes(result.warnings)
+        assert "unknown_builtin" not in _codes(result.warnings)
+
+    def test_every_parameter_is_seen_as_used(self) -> None:
+        """Two of them are only referenced from inside the kickoff block."""
+        result = lint_template(_CANONICAL_EXAMPLE)
+        assert "unused_param" not in _codes(result.warnings)
+
+    def test_a_newer_param_field_is_a_warning_not_an_error(self) -> None:
+        """`multiline` lands with CHOO-2656; this branch predates it.
+
+        Reported so a typo is still visible, but not as an error — a document
+        written for a newer Switch is the ordinary case for a registry, not a
+        broken document.
+        """
+        result = lint_template(_CANONICAL_EXAMPLE)
+        (warning,) = [w for w in result.warnings if w.code == "unknown_param_field"]
+        assert warning.subject == "brief"
+        assert "multiline" in warning.message
+
+
+class TestBuiltins:
+    def test_a_misspelled_builtin_is_caught(self) -> None:
+        result = lint_template('room:\n  users: ["{$creatr}"]\n')
+        (warning,) = [w for w in result.warnings if w.code == "unknown_builtin"]
+        assert warning.subject == "$creatr"
+        assert "$creator" in warning.message
+
+    @pytest.mark.parametrize(
+        "builtin", ["$creator", "$creator_email", "$date", "$timestamp"]
+    )
+    def test_each_known_builtin_passes(self, builtin: str) -> None:
+        result = lint_template(f'room:\n  name: "{{{builtin}}}"\n')
+        assert result.ok and result.warnings == []
+
+    def test_a_builtin_is_never_reported_as_a_missing_parameter(self) -> None:
+        result = lint_template('room:\n  users: ["{$creator}"]\n')
+        assert result.warnings == []
+
+
+class TestUnknownParamFields:
+    def test_the_rest_of_the_spec_is_still_checked(self) -> None:
+        """An unknown field must not buy a free pass on a real mistake."""
+        result = lint_template(
+            "params:\n"
+            "  visibility:\n"
+            "    type: enum\n"
+            "    multiline: true\n"
+            "room:\n"
+            "  channel_type: '{visibility}'\n"
+        )
+        assert _codes(result.errors) == {"enum_without_choices"}
+        assert _codes(result.warnings) == {"unknown_param_field"}
+
+    def test_a_malformed_field_is_still_an_error_alongside_an_unknown_one(self) -> None:
+        result = lint_template(
+            "params:\n"
+            "  owner:\n"
+            "    type: nonsense\n"
+            "    multiline: true\n"
+            "room:\n"
+            "  name: '{owner}'\n"
+        )
+        assert "invalid_param_spec" in _codes(result.errors)
+        assert "unknown_param_field" in _codes(result.warnings)
+
+
 class TestShapeAgnosticism:
     def test_a_room_template_is_clean(self) -> None:
         result = lint_template(
@@ -109,10 +241,10 @@ class TestParamsBlock:
         "spec",
         [
             "type: colour",
-            "type: string\n    unexpected: 1",
             "type: [not, a, type]",
+            "enum: not-a-list",
         ],
-        ids=["unknown-type", "unknown-field", "type-is-a-list"],
+        ids=["unknown-type", "type-is-a-list", "enum-is-not-a-list"],
     )
     def test_a_spec_provisioning_would_reject_is_an_error(self, spec: str) -> None:
         result = lint_template(
