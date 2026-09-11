@@ -78,6 +78,7 @@ async def test_documented_tools_exist(tool_names: set[str]) -> None:
         "list_room_groups",
         "create_room_group",
         "get_room_group_detail",
+        "create_room_from_yaml",
         "list_agents",
         "get_agent_detail",
         "update_agent_detail",

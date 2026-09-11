@@ -40,7 +40,13 @@ export async function deleteAgentsForServer(
 
   for (const row of rows) {
     try {
-      await deleteAgent(row.id, { deleteInSwitch: false, trigger: 'server_teardown' });
+      // A destroyed managed server's agents were provisioned by this install,
+      // so their on-disk files go with them.
+      await deleteAgent(row.id, {
+        deleteInSwitch: false,
+        removeProvisionedFiles: true,
+        trigger: 'server_teardown',
+      });
       deleted.push(row.id);
     } catch (error) {
       failed.push({ agentId: row.id, error: String(error) });
