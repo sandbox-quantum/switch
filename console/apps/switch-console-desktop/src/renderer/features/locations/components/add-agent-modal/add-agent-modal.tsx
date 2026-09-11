@@ -56,6 +56,13 @@ import { useConfigureAgentForm, usePickMode } from './modes';
 // switch-connector `configure` skill has set up (its `.claude/settings.local.json`
 // carries the SWITCH_* env block). The richer Switch Console flows — SSH, clone, create
 // new GitHub repo — are out of scope for v0, so this modal is local + pick only.
+/** Pre-filled values from a stored agent template. */
+export type AgentTemplateData = {
+  name: string;
+  description: string;
+  instructions: string;
+};
+
 export type AddLocationModalProps = BaseModalProps<void> & {
   /**
    * Which control opened this dialog. Required rather than defaulted: four
@@ -63,6 +70,10 @@ export type AddLocationModalProps = BaseModalProps<void> & {
    * under the same heading as the ones that did not.
    */
   entryPoint: UiEntryPoint;
+  /** When set, the modal pre-fills identity fields from this template. */
+  template?: AgentTemplateData | null;
+  /** When set, pre-fills the agent name (e.g. from a room template slot). */
+  prefillName?: string | null;
 };
 
 /** Sentinel `runHost` value meaning "run on this machine" (no remote host). */
@@ -80,6 +91,8 @@ function canonicalDir(dir: string): string {
 export const AddAgentModal = observer(function AddAgentModal({
   onClose,
   entryPoint,
+  template,
+  prefillName,
 }: AddLocationModalProps) {
   const [submitState, setSubmitState] = useState<'idle' | 'creating'>('idle');
   const { navigate } = useNavigate();
@@ -88,6 +101,21 @@ export const AddAgentModal = observer(function AddAgentModal({
 
   const pickState = usePickMode();
   const form = useConfigureAgentForm();
+
+  // Pre-fill form from a template or a prefilled name (once, on mount).
+  const [templateApplied, setTemplateApplied] = useState(false);
+  useEffect(() => {
+    if (templateApplied) return;
+    if (template) {
+      form.setDescription(template.description);
+      form.setInstructions(template.instructions);
+      setTemplateApplied(true);
+    }
+    if (prefillName) {
+      form.setAgentName(prefillName);
+      setTemplateApplied(true);
+    }
+  }, [template, prefillName, templateApplied, form]);
 
   // Run location: 'local' (default) or an onboarded remote host's SSH alias. A
   // remote agent runs its sessions on the host and needs a remote working dir.
@@ -376,7 +404,7 @@ export const AddAgentModal = observer(function AddAgentModal({
     <ModalLayout
       header={
         <DialogHeader showCloseButton={submitState === 'idle'}>
-          <DialogTitle>New agent</DialogTitle>
+          <DialogTitle>{template ? `New agent from "${template.name}"` : 'New agent'}</DialogTitle>
         </DialogHeader>
       }
       footer={

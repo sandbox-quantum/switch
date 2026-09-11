@@ -1050,6 +1050,74 @@ export type TemplateProvisionResult = {
   failedAttachments: Array<{ kind: string; id: string; error: string }>;
 };
 
+// ── Stored templates ────────────────────────────────────────────────────────
+
+export type StoredTemplateSummary = {
+  id: string;
+  name: string;
+  description: string;
+  kind: string;
+  creator: string;
+  isBundled: boolean;
+};
+
+export type StoredTemplateDetail = StoredTemplateSummary & {
+  definition: string;
+};
+
+export async function fetchTemplates(
+  server: SwitchServer,
+  kind?: string
+): Promise<StoredTemplateSummary[]> {
+  const qs = kind ? `?kind=${encodeURIComponent(kind)}` : '';
+  const res = await gatewayFetch(server, `/templates${qs}`, {
+    authenticated: true,
+  });
+  const json = (await res.json()) as Array<{
+    id: string;
+    name: string;
+    description: string;
+    kind: string;
+    creator: string;
+    is_bundled: boolean;
+  }>;
+  return json.map((t) => ({
+    id: t.id,
+    name: t.name,
+    description: t.description,
+    kind: t.kind,
+    creator: t.creator,
+    isBundled: t.is_bundled,
+  }));
+}
+
+export async function fetchTemplateDetail(
+  server: SwitchServer,
+  templateId: string
+): Promise<StoredTemplateDetail> {
+  const res = await gatewayFetch(server, `/templates/${encodeURIComponent(templateId)}`, {
+    authenticated: true,
+  });
+  const t = (await res.json()) as {
+    id: string;
+    name: string;
+    description: string;
+    kind: string;
+    definition: string;
+    creator: string;
+    is_bundled: boolean;
+  };
+  return {
+    id: t.id,
+    name: t.name,
+    description: t.description,
+    kind: t.kind,
+    definition: t.definition,
+    creator: t.creator,
+    isBundled: t.is_bundled,
+  };
+}
+
 /**
  * Create a room from a YAML template (`POST /rooms/from-yaml`). Sends the
  * template as a JSON body with the YAML text and any user-supplied inputs.

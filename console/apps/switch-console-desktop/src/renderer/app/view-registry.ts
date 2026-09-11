@@ -10,6 +10,7 @@ import { roomView } from '@renderer/features/switch-rooms/view';
 import { serverAgentsView } from '@renderer/features/switch-servers/server-agents-view';
 import { serverRoomsView } from '@renderer/features/switch-servers/server-rooms-view';
 import { serverView } from '@renderer/features/switch-servers/view';
+import { templatesView } from '@renderer/features/templates/templates-view';
 import type { CommandProvider } from '@renderer/lib/commands/types';
 import { appState } from '@renderer/lib/stores/app-state';
 import type { ViewIdName } from '@shared/core/views/view-ids';
@@ -29,6 +30,7 @@ export const views = {
   remoteHosts: remoteHostsView,
   remoteHost: remoteHostView,
   roomTemplateImport: roomTemplateImportView,
+  templates: templatesView,
   // oxlint-disable-next-line typescript/no-explicit-any
 } satisfies Record<string, ViewDefinition<any>>;
 
