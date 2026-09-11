@@ -5,6 +5,7 @@ import { mkdir, open, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { z } from 'zod';
+import { LEASE_EXPIRED_EXIT_CODE } from './exit-codes';
 import { releaseOwner, replaceOwner, withOwnershipLock } from './ownership-lock';
 import { fenceDeadOwner } from './process-fence';
 
@@ -85,6 +86,11 @@ export async function superviseSharedHost(input: {
       }
       if (input.signal.aborted) return;
       if (code === 0) return;
+      if (code === LEASE_EXPIRED_EXIT_CODE) {
+        console.warn('Shared SDK host lease expired; relaunching from saved state after fencing.');
+        await delay(1000, undefined, { signal: input.signal });
+        continue;
+      }
       if (code !== null) {
         try {
           await readFile(join(directory, 'failure.json'));

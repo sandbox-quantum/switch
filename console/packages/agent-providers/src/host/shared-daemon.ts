@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process';
 import { mkdir, readFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
-import { setTimeout as delay } from 'node:timers/promises';
+import { LEASE_EXPIRED_EXIT_CODE } from './exit-codes';
 import { ensureSharedProcess } from './launch';
 import { replaceOwner } from './ownership-lock';
 import { ownProcessGroup } from './process-fence';
@@ -69,32 +69,26 @@ async function main(): Promise<void> {
     const stop = new AbortController();
     process.on('SIGTERM', () => stop.abort());
     process.on('SIGINT', () => stop.abort());
-    while (!stop.signal.aborted) {
-      try {
-        await runSharedHost(
-          {
-            root: resolve(root),
-            agentApiUrl,
-            token,
-            session: config.session,
-            input,
-            roomConnection: config.roomConnection,
-          },
-          adapterFor(config.start.provider, config.execution?.binaryPath),
-          stop.signal
-        );
-        break;
-      } catch (error) {
-        if (stop.signal.aborted) break;
+    try {
+      await runSharedHost(
+        {
+          root: resolve(root),
+          agentApiUrl,
+          token,
+          session: config.session,
+          input,
+          roomConnection: config.roomConnection,
+        },
+        adapterFor(config.start.provider, config.execution?.binaryPath),
+        stop.signal
+      );
+    } catch (error) {
+      if (!stop.signal.aborted) {
         if (!(error instanceof SharedHostLeaseExpiredError)) throw error;
         console.warn(
           'Shared host lease expired. Execution stopped; reconnecting with saved state.'
         );
-        try {
-          await delay(1000, undefined, { signal: stop.signal });
-        } catch (error) {
-          if (!stop.signal.aborted) throw error;
-        }
+        process.exitCode = LEASE_EXPIRED_EXIT_CODE;
       }
     }
   }
