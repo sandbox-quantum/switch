@@ -9,6 +9,9 @@ export type ParamSpec = {
   default: string | number | boolean | null;
   enum: string[] | null;
   isAgentName: boolean;
+  /** String params carrying long text render as a textarea (a one-line input
+   * would strip pasted newlines). Declared in the template: `multiline: true`. */
+  multiline: boolean;
 };
 
 export type ParsedTemplate = {
@@ -48,6 +51,7 @@ function extractParams(raw: unknown): ParamSpec[] {
         default: null,
         enum: null,
         isAgentName: isAgentParam(name),
+        multiline: false,
       };
     }
     const s = spec as Record<string, unknown>;
@@ -64,6 +68,7 @@ function extractParams(raw: unknown): ParamSpec[] {
       default: s.default !== undefined ? (s.default as ParamSpec['default']) : null,
       enum: Array.isArray(s.enum) ? (s.enum as string[]) : null,
       isAgentName: validType === 'string' && isAgentParam(name),
+      multiline: validType === 'string' && s.multiline === true,
     };
   });
 }

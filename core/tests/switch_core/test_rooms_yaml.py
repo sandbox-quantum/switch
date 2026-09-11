@@ -1302,3 +1302,25 @@ async def test_builtins_creator_resolves_named_bridge(env):
         text='room:\n  name: n\n  description: d\n  bridge: "Slack"\n',
     )
     assert builtins["$creator"] == "abel.slack"
+
+
+def test_parse_multiline_param_option(env):
+    """`multiline: true` is a valid param option and rides into the schema."""
+    spec = _svc(env).parse(
+        "params:\n"
+        "  brief:\n"
+        "    type: string\n"
+        "    multiline: true\n"
+        "room:\n"
+        "  name: n\n"
+        "  description: d\n"
+        "  instructions: |\n"
+        "    {brief}\n",
+        inputs={"brief": "line one\nline two\n## Acceptance\n- item"},
+    )
+    assert spec.instructions == "line one\nline two\n## Acceptance\n- item\n"
+
+    from switch_core.rooms_yaml import TemplateDocument
+
+    schema = TemplateDocument.model_json_schema()
+    assert "multiline" in schema["$defs"]["ParamSpec"]["properties"]

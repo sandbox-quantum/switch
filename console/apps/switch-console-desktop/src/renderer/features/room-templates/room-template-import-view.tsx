@@ -236,6 +236,32 @@ function ParamField({
     );
   }
 
+  // Long-text string param: a textarea, because a one-line input strips the
+  // newlines out of a pasted brief.
+  if (param.multiline) {
+    return (
+      <Field>
+        <FieldLabel>
+          {nameLabel}
+          {labelSuffix && (
+            <span className="ml-1 font-normal text-foreground-muted">{labelSuffix}</span>
+          )}
+          {isRequired && <span className="ml-1 text-destructive">*</span>}
+        </FieldLabel>
+        <Textarea
+          value={String(value)}
+          onChange={(e) => onChange(e.target.value)}
+          className="min-h-40 resize-y font-mono text-xs"
+          aria-invalid={error ? true : undefined}
+        />
+        {param.description && (
+          <p className="mt-1 text-xs text-foreground-muted">{param.description}</p>
+        )}
+        {error && <p className="text-xs text-destructive">{error}</p>}
+      </Field>
+    );
+  }
+
   // String field — with inline agent validation
   const strVal = typeof value === 'string' ? value.trim() : '';
   const agentMatch = param.isAgentName && strVal !== '' ? agentNames.includes(strVal) : null;

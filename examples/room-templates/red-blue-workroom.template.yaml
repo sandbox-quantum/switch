@@ -29,6 +29,7 @@ params:
     description: Agent that reviews and drives the acceptance loop
   brief:
     type: string
+    multiline: true
     description: The task brief (paste the full text)
 room:
   name: "Switch work: {task_name}"

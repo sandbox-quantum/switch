@@ -59,6 +59,10 @@ class ParamSpec(BaseModel):
     description: str | None = None
     default: str | int | float | bool | None = None
     enum: list[str] | None = None
+    # Rendering hint for string params that carry long text (a task brief,
+    # instructions): the form shows a textarea instead of a one-line input,
+    # which would strip the pasted text's newlines.
+    multiline: bool = False
 
 
 def _coerce(value: Any, spec: ParamSpec, name: str) -> str | int | float | bool:

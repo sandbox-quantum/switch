@@ -225,3 +225,39 @@ describe('roomTemplatesController.parse — kickoff and creator', () => {
     expect(result.bridge).toBeNull();
   });
 });
+
+describe('roomTemplatesController.parse — multiline params', () => {
+  it('marks a string param declared multiline', () => {
+    const result = roomTemplatesController.parse({
+      yamlText: [
+        'params:',
+        '  brief:',
+        '    type: string',
+        '    multiline: true',
+        '  task_name:',
+        '    type: string',
+        'room:',
+        '  name: n',
+        '  description: d',
+      ].join('\n'),
+    });
+    const byName = Object.fromEntries(result.params.map((p) => [p.name, p]));
+    expect(byName.brief.multiline).toBe(true);
+    expect(byName.task_name.multiline).toBe(false);
+  });
+
+  it('ignores multiline on non-string params', () => {
+    const result = roomTemplatesController.parse({
+      yamlText: [
+        'params:',
+        '  flag:',
+        '    type: boolean',
+        '    multiline: true',
+        'room:',
+        '  name: n',
+        '  description: d',
+      ].join('\n'),
+    });
+    expect(result.params[0].multiline).toBe(false);
+  });
+});
