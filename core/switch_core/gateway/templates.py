@@ -2,8 +2,13 @@
 
 Two rules shape the whole of this module. A stored document is returned exactly
 as it arrived — nothing here parses, validates or reformats it — and the
-catalogue is server-wide, so ownership decides who may change a template rather
-than who may see it.
+catalogue is shared, so ownership decides who may change a template rather than
+who may see it.
+
+"Shared" means shared within the tenant. Nothing here says so, and that is
+deliberate: row-level security draws that boundary in the database, and a
+second copy of it in these queries would be a second answer to a question
+already answered — agreeing right up until the day it did not.
 """
 
 from __future__ import annotations

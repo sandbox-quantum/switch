@@ -25,6 +25,7 @@ from switch_core.gateway.auth import get_current_user
 from switch_core.gateway.dependencies import (
     get_config,
     get_session,
+    get_session_factory,
     get_template_store,
     get_user_store,
 )
@@ -296,6 +297,7 @@ class TestOverTheWire:
         # endpoint runs, so `get_current_user` cannot reach its 401 without
         # them. Left real, it is the thing under test.
         app.dependency_overrides[get_session] = _no_session
+        app.dependency_overrides[get_session_factory] = lambda: None
         app.dependency_overrides[get_user_store] = lambda: None
         app.dependency_overrides[get_config] = _config
         async with httpx.AsyncClient(

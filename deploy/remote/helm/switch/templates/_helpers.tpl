@@ -48,6 +48,9 @@ rendered from this one source and cannot drift from the release's own.
 {{- if not .Values.postgresql.existingSecret }}
 POSTGRES_PASSWORD: {{ required "secrets.postgresPassword is required (unless postgresql.existingSecret is set)" .Values.secrets.postgresPassword | b64enc | quote }}
 {{- end }}
+{{- if and .Values.postgresql.owner.username (not .Values.postgresql.owner.existingSecret) }}
+DB_OWNER_PASSWORD: {{ required "secrets.dbOwnerPassword is required when postgresql.owner.username is set (unless postgresql.owner.existingSecret is set)" .Values.secrets.dbOwnerPassword | b64enc | quote }}
+{{- end }}
 AGENT_REGISTRATION_TOKEN: {{ required "secrets.agentRegistrationToken is required" .Values.secrets.agentRegistrationToken | b64enc | quote }}
 JWT_SECRET_KEY: {{ required "secrets.jwtSecretKey is required" .Values.secrets.jwtSecretKey | b64enc | quote }}
 GATEWAY_ADMIN_EMAIL: {{ required "secrets.gatewayAdminEmail is required" .Values.secrets.gatewayAdminEmail | b64enc | quote }}
@@ -88,11 +91,52 @@ two modes stay in lockstep.
 {{- end -}}
 {{- end }}
 
-{{- define "switch.postgresUser" -}}
+{{/*
+The bootstrapped Postgres superuser: "postgres" in managed mode (the account
+POSTGRES_USER creates on the StatefulSet below), or postgresql.external.username
+in existing mode. The identity the managed StatefulSet, its initdb scripts and
+the create-runtime-role Job bootstrap and administer with. Distinct from
+switch.postgresUser below, which is DB_USER: the restricted role the RLS
+policies apply to.
+
+In managed mode those two are genuinely different accounts. In existing mode
+they are the same value, because the chart does not manage that database and
+has only the one username to go on — so this helper is *not* what Mattermost
+should connect as there; see switch.mattermostDbUser.
+*/}}
+{{- define "switch.postgresSuperUser" -}}
 {{- if eq .Values.postgresql.mode "existing" -}}
 {{- .Values.postgresql.external.username | default "postgres" -}}
 {{- else -}}
 postgres
+{{- end -}}
+{{- end }}
+
+{{/*
+DB_USER: the runtime role every request is actually served over, and the one
+the row-level-security policies apply to.
+
+  mode: existing -> postgresql.external.username, unchanged from what this
+                    chart has always sent. The chart does not manage that
+                    database, so it cannot create a role in it — DB_USER keeps
+                    pointing at whatever account you configure until you
+                    create a restricted one yourself and repoint this at it.
+  mode: managed  -> postgresql.managed.runtimeUsername, a role this chart
+                    creates itself (fresh installs: templates/postgresql/
+                    configmap-init.yaml; upgrades of a deployment that
+                    predates it: the create-runtime-role pre-upgrade hook Job).
+                    Managed mode is the one mode where the chart owns the
+                    Postgres it points at, so it is the only mode where it
+                    *can* create the role — leaving this at the superuser by
+                    default there would make the chart's own default install
+                    the one deployment shape with no tenant isolation in it,
+                    which is the opposite of what this change is for.
+*/}}
+{{- define "switch.postgresUser" -}}
+{{- if eq .Values.postgresql.mode "existing" -}}
+{{- .Values.postgresql.external.username | default "postgres" -}}
+{{- else -}}
+{{- .Values.postgresql.managed.runtimeUsername -}}
 {{- end -}}
 {{- end }}
 
@@ -119,6 +163,115 @@ external secret (e.g. one synced by external-secrets / sealed-secrets).
 
 {{- define "switch.postgresSecretKey" -}}
 {{- .Values.postgresql.existingSecretKey | default "POSTGRES_PASSWORD" -}}
+{{- end }}
+
+{{/*
+DB_OWNER_USER: the schema owner switch-core migrates and grants as.
+
+  owner.username set       -> exactly that value, in either postgresql mode.
+  owner.username unset,
+    mode: managed           -> "postgres", the bootstrapped superuser: it
+                                already exists, already owns the schema, and
+                                its password is already tracked as
+                                secrets.postgresPassword, so a managed install
+                                needs no separate owner credential configured
+                                at all.
+  owner.username unset,
+    mode: existing          -> empty. The chart has no external database
+                                superuser to default to, so an unconfigured
+                                owner there really does mean "no owner
+                                configured" — see the values.yaml comment on
+                                postgresql.owner for what that implies at boot.
+*/}}
+{{- define "switch.postgresOwnerUser" -}}
+{{- if .Values.postgresql.owner.username -}}
+{{- .Values.postgresql.owner.username -}}
+{{- else if eq .Values.postgresql.mode "managed" -}}
+postgres
+{{- end -}}
+{{- end }}
+
+{{/*
+Name/key of the Secret holding the schema owner's password, mirroring
+switch.postgresSecretName/Key above for the runtime role.
+
+Only consulted when postgresql.owner.username is explicitly set — that is the
+only case with a DB_OWNER_PASSWORD key of its own (see switch.secretData). The
+managed default owner (switch.postgresOwnerUser resolving to "postgres" with
+no owner.username set) has no such key: it is the bootstrapped superuser, so
+its password is whatever switch.postgresSecretName/Key already resolve to, and
+callers must fall back to those directly rather than through this helper.
+*/}}
+{{- define "switch.postgresOwnerSecretName" -}}
+{{- if .Values.postgresql.owner.existingSecret -}}
+{{- .Values.postgresql.owner.existingSecret -}}
+{{- else -}}
+{{- include "switch.secretName" . -}}
+{{- end -}}
+{{- end }}
+
+{{- define "switch.postgresOwnerSecretKey" -}}
+{{- .Values.postgresql.owner.existingSecretKey | default "DB_OWNER_PASSWORD" -}}
+{{- end }}
+
+{{/*
+The credentials Mattermost connects to its own "mattermost" database with,
+and the reason they are not switch.postgresUser's.
+
+Mattermost creates and migrates its own schema, so it needs an account with
+rights in that database. The runtime role has none: it is granted CRUD on the
+tables switch-core's own migration created, in switch-core's own database, and
+nothing anywhere else. There is no isolation argument for restricting
+Mattermost either — its schema carries no row-level security and no tenant
+column — so the administrative account is simply the right one.
+
+In managed mode that is the bootstrapped superuser, unchanged: initdb creates
+the "mattermost" database as "postgres" and postgresql.owner.username does not
+move it, so this deliberately does not follow that value there.
+
+Existing mode is the case this exists for. switch.postgresSuperUser and
+switch.postgresUser both resolve to postgresql.external.username there, so the
+moment an operator repoints external.username at a restricted role — which is
+exactly what docs/old/rds-migration.md asks them to do — Mattermost would
+follow it onto a role with no rights in its database and fail to start. When an
+owner is configured, use it; when one is not, this is a deployment that has not
+split its roles yet and external.username is still the administrative account,
+which is the behaviour it has always had.
+
+The three helpers below share one condition, so it is written once and the
+other two ask it. It answers with a non-empty string or nothing, which is what
+`if` reads — deliberately not "true"/"false", since an `include` returning the
+string "false" is still truthy and inviting a reader to compare against it
+would be inviting a bug.
+*/}}
+{{- define "switch.mattermostUsesOwner" -}}
+{{- if and (eq .Values.postgresql.mode "existing") .Values.postgresql.owner.username -}}
+owner
+{{- end -}}
+{{- end }}
+
+{{- define "switch.mattermostDbUser" -}}
+{{- if include "switch.mattermostUsesOwner" . -}}
+{{- .Values.postgresql.owner.username -}}
+{{- else -}}
+{{- include "switch.postgresSuperUser" . -}}
+{{- end -}}
+{{- end }}
+
+{{- define "switch.mattermostDbSecretName" -}}
+{{- if include "switch.mattermostUsesOwner" . -}}
+{{- include "switch.postgresOwnerSecretName" . -}}
+{{- else -}}
+{{- include "switch.postgresSecretName" . -}}
+{{- end -}}
+{{- end }}
+
+{{- define "switch.mattermostDbSecretKey" -}}
+{{- if include "switch.mattermostUsesOwner" . -}}
+{{- include "switch.postgresOwnerSecretKey" . -}}
+{{- else -}}
+{{- include "switch.postgresSecretKey" . -}}
+{{- end -}}
 {{- end }}
 
 {{/*
@@ -321,6 +474,25 @@ Include with `nindent 12`.
       key: {{ include "switch.postgresSecretKey" . }}
 - name: DB_NAME
   value: {{ include "switch.postgresDatabase" . | quote }}
+{{- $ownerUser := include "switch.postgresOwnerUser" . }}
+{{- if $ownerUser }}
+- name: DB_OWNER_USER
+  value: {{ $ownerUser | quote }}
+- name: DB_OWNER_PASSWORD
+  valueFrom:
+    secretKeyRef:
+      {{- if .Values.postgresql.owner.username }}
+      name: {{ include "switch.postgresOwnerSecretName" . }}
+      key: {{ include "switch.postgresOwnerSecretKey" . }}
+      {{- else }}
+      name: {{ include "switch.postgresSecretName" . }}
+      key: {{ include "switch.postgresSecretKey" . }}
+      {{- end }}
+{{- end }}
+{{- if not .Values.postgresql.requireRestrictedRole }}
+- name: DB_REQUIRE_RESTRICTED_ROLE
+  value: "false"
+{{- end }}
 - name: DB_SSL_MODE
   value: {{ .Values.postgresql.sslMode | quote }}
 {{- if include "switch.dbCaBundleConfigMap" . }}

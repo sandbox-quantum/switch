@@ -22,7 +22,17 @@ if config.config_file_name is not None and not logging_is_configured():
 target_metadata = Base.metadata
 
 switch_config = SwitchConfig()  # type: ignore[call-arg]
-config.set_main_option("sqlalchemy.url", switch_config.database_url)
+# The owner's connection where one is configured, and only there. A migration
+# is DDL and the runtime role deliberately cannot run DDL — see
+# `SwitchConfig.db_owner_user`. Falling back to the runtime connection keeps
+# `alembic` on the command line working against a database whose owner *is*
+# the configured user, which is what a developer pointing it at a scratch
+# instance has; where the two roles differ, the runtime one produces a
+# permission error naming the statement it could not run, which is the right
+# failure rather than a silent half-migration.
+config.set_main_option(
+    "sqlalchemy.url", switch_config.owner_database_url or switch_config.database_url
+)
 
 
 def run_migrations_offline() -> None:

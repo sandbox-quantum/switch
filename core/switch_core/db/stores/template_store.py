@@ -4,7 +4,7 @@ from sqlalchemy import ColumnElement, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from switch_core.db.models import Template
+from switch_core.db.models import Template, require_tenant_id
 
 _LIKE_ESCAPE = "\\"
 
@@ -59,7 +59,9 @@ class TemplateStore:
         except IntegrityError as exc:
             clash = await session.execute(
                 select(Template.id).where(
-                    Template.owner_id == owner_id, Template.name == name
+                    Template.tenant_id == require_tenant_id(),
+                    Template.owner_id == owner_id,
+                    Template.name == name,
                 )
             )
             if clash.scalar_one_or_none() is not None:
@@ -82,9 +84,11 @@ class TemplateStore:
     ) -> list[TemplateListing]:
         """The catalogue, newest first, without the documents.
 
-        The registry is server-wide: a template is visible to everyone
-        regardless of who uploaded it. Ownership governs who may change or
-        remove one, not who may see it.
+        Every template in the tenant, whoever uploaded it: ownership governs
+        who may change or remove one, not who may see it. The tenant boundary
+        is the database's to enforce, not this query's — row-level security
+        filters it, so a filter here would be a second answer to a question
+        already answered, and the wrong place to notice if the two disagreed.
         """
         conditions: list[ColumnElement[bool]] = []
         if query:
@@ -162,6 +166,7 @@ class TemplateStore:
             # that state cannot even be asked what went wrong.
             clash = await session.execute(
                 select(Template.id).where(
+                    Template.tenant_id == template.tenant_id,
                     Template.owner_id == template.owner_id,
                     Template.name == name,
                     Template.id != template_id,

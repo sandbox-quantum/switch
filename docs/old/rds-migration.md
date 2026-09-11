@@ -32,6 +32,14 @@ Read this before choosing an instance shape; two of these have bitten people.
 - **Two databases on one instance.** The chart provisions `switch` and
   `mattermost` on the same server. Both move together, or the Mattermost bridge
   loses its state.
+- **Two roles, not one.** Row-level security is inert against the role that
+  owns the tables it protects — Postgres exempts a table's owner from its own
+  policies — so the connection switch-core serves requests as must be a
+  separate, unprivileged role from whatever ran the migrations. The RDS master
+  user stays the schema owner; it is never the runtime connection. See §7 step
+  2 for the exact role to create, and note that `BYPASSRLS` is deliberately
+  never granted to it — that would be the same exemption as ownership, by a
+  different door.
 - **Connections are sized against agents, not people.** Each switch-core
   replica opens up to `db_pool_size + db_max_overflow` (30 + 10 today), plus
   one unpooled connection for the listener. Bearer-token auth hits the database
@@ -172,6 +180,59 @@ so there is nothing to reset behind a replicated cutover.
 2. Create the `switch` and `mattermost` databases and the application role. The
    RDS master user is not a superuser, and `pg_dumpall` needs privileges it does
    not have — so recreate roles by hand rather than restoring a globals dump.
+
+   The role Switch serves traffic as is a plain login with nothing beyond
+   what it needs to read and write rows — no `SUPERUSER`, no `CREATEDB`, no
+   `CREATEROLE`, and deliberately no `BYPASSRLS`, which would exempt it from
+   row-level security exactly the way owning the tables would:
+
+   ```sql
+   CREATE ROLE switch_app LOGIN PASSWORD '<generate one>'
+     NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS;
+   ```
+
+   That is the only manual step in the database. Nothing here grants
+   `switch_app` anything on `switch` or `mattermost` — switch-core does that
+   itself at boot, from the owner connection (the RDS master user, over
+   `DB_OWNER_USER` / `DB_OWNER_PASSWORD`), immediately after running Alembic.
+   The master user stays the schema owner throughout; it is configured as the
+   owner connection, never as `DB_USER`, so it is never the connection every
+   request is served over.
+
+   Both halves go into the chart values together:
+
+   ```yaml
+   postgresql:
+     mode: existing
+     external:
+       username: switch_app        # DB_USER — the restricted runtime role
+     owner:
+       username: <the master user> # DB_OWNER_USER — migrations and grants
+   secrets:
+     postgresPassword: <switch_app's password>
+     dbOwnerPassword: <the master password>
+   ```
+
+   Note `secrets.postgresPassword` is the *runtime* role's password here, not
+   the master's: in existing mode it is whatever `external.username`
+   authenticates with. Setting one half without the other renders fine and
+   will not necessarily fail on the deploy that introduces it —
+
+   - **`external.username` moved, `owner.username` left empty.** switch-core
+     has no owner to migrate as, so it migrates as the restricted role. With
+     nothing pending that is a no-op and the deployment comes up clean; the
+     next release carrying a migration dies at boot. Mattermost breaks
+     immediately, though, because in existing mode it follows
+     `external.username` unless an owner is configured, and the restricted
+     role has no rights in the `mattermost` database.
+   - **`owner.username` set, `external.username` left at the master user.**
+     switch-core refuses to serve: the runtime connection owns the tables its
+     own policies protect, so the policies are inert against it and tenants
+     are not isolated.
+
+   An instance that is already on RDS needs the same two values and the same
+   `CREATE ROLE`; only the dump and restore below are specific to the move.
+
 3. Download the CA bundle and put it in `postgresql.caBundle` — as
    `existingConfigMap` if it is synced in from elsewhere, otherwise inline.
 4. **Rehearse the whole thing** against a scratch database, and time it. The

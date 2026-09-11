@@ -1,0 +1,100 @@
+{{- if eq .Values.postgresql.mode "managed" }}
+{{- $secretOverride := "" }}
+{{/*
+The pre-upgrade copy of the Secret, on exactly the condition that makes it
+exist. A hook runs before helm applies the release's ordinary resources, so a
+chart-managed Secret read here is the *previous* release's — which is why
+migrate-prereqs.yaml renders a copy at a lower hook weight, and why this Job
+reads that copy when there is one.
+
+`switchCore.migrations.preUpgradeJob` has to be part of the condition rather
+than only `secrets.existingSecret`: the copy is rendered by that same
+template, so turning the migration Job off (to run migrations out of band)
+also removes the copy, and a Job naming a Secret nobody creates does not fail
+somewhere later — its pod never starts, the hook never succeeds, and every
+upgrade of the release is blocked. Falling back to the release's own Secret is
+correct there: in managed mode the target is always the in-cluster
+StatefulSet, whose superuser password was fixed when its volume was
+bootstrapped and which no later values change can move, so the previous
+release's copy of it is the one that still authenticates.
+*/}}
+{{- if and .Values.switchCore.migrations.preUpgradeJob (not .Values.secrets.existingSecret) }}
+{{- $secretOverride = printf "%s-migrate" (include "switch.secretName" .) }}
+{{- end }}
+{{- $ctx := merge (dict "secretNameOverride" $secretOverride) . }}
+# The fresh-install path creates the runtime role from
+# templates/postgresql/configmap-init.yaml, but /docker-entrypoint-initdb.d
+# only runs once, against a brand-new PGDATA volume — Postgres never reruns it
+# on a volume that already has a cluster in it. A managed deployment that
+# existed before that file did would upgrade straight into
+# db/runtime_role.py's self-check with no restricted role to connect as,
+# which is exactly the crashloop this Job exists to close: the same
+# idempotent CREATE-ROLE-if-missing, run over the Postgres Service instead of
+# inside the initdb container, plus an ALTER ROLE so a rotated
+# secrets.postgresPassword reaches the role even when it already existed.
+#
+# pre-upgrade only, deliberately, and at a weight before the migration Job's
+# (see its own header comment): on a fresh install the managed Postgres
+# StatefulSet has not even been created yet when pre-install hooks run, and
+# initdb creates the role for that case instead — this Job would have nothing
+# to connect to.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "switch.fullname" . }}-create-runtime-role
+  labels:
+    {{- include "switch.labels" . | nindent 4 }}
+    {{- include "switch.selectorLabels" (dict "Release" .Release "component" "create-runtime-role") | nindent 4 }}
+  annotations:
+    "helm.sh/hook": pre-upgrade
+    "helm.sh/hook-weight": "-1"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 3
+  template:
+    metadata:
+      labels:
+        {{- include "switch.labels" . | nindent 8 }}
+        {{- include "switch.selectorLabels" (dict "Release" .Release "component" "create-runtime-role") | nindent 8 }}
+    spec:
+      {{- if .Values.global.imagePullSecrets }}
+      {{- include "switch.imagePullSecrets" . | nindent 6 }}
+      {{- end }}
+      restartPolicy: OnFailure
+      initContainers:
+        {{- include "switch.waitFor" (dict "name" "postgres" "host" (include "switch.postgresHost" .) "port" (include "switch.postgresPort" .)) | nindent 8 }}
+      containers:
+        - name: create-runtime-role
+          image: {{ .Values.postgresql.image }}
+          imagePullPolicy: {{ .Values.postgresql.imagePullPolicy }}
+          command:
+            - sh
+            - -c
+            - |
+              set -eu
+              psql -v ON_ERROR_STOP=1 --host "$PGHOST" --port "$PGPORT" \
+                --username {{ include "switch.postgresSuperUser" . }} --dbname postgres \
+                -v role="$RUNTIME_ROLE" -v pw="$PGPASSWORD" <<'SQL'
+              SELECT format('CREATE ROLE %I LOGIN PASSWORD %L NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS', :'role', :'pw')
+              WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = :'role')
+              \gexec
+              ALTER ROLE :"role" PASSWORD :'pw';
+              SQL
+          env:
+            - name: PGHOST
+              value: {{ include "switch.postgresHost" . | quote }}
+            - name: PGPORT
+              value: {{ include "switch.postgresPort" . | quote }}
+            - name: RUNTIME_ROLE
+              value: {{ include "switch.postgresUser" . | quote }}
+            # The same secret PGPASSWORD authenticates this connection as the
+            # superuser AND the value ALTER ROLE sets the runtime role's
+            # password to — see the values.yaml comment on
+            # postgresql.managed.runtimeUsername for why that is one password,
+            # not two.
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "switch.postgresSecretName" $ctx }}
+                  key: {{ include "switch.postgresSecretKey" $ctx }}
+{{- end }}
