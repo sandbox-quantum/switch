@@ -737,6 +737,60 @@ describe('RoomConnection', () => {
     expect(fetchMock.mock.calls.length).toBe(before);
   });
 
+  /**
+   * Closing the connection on teardown (CHOO-2497).
+   *
+   * Deleting a session used to tell switch-core nothing, so the server kept the
+   * session's claim on the room until the heartbeat sweep expired it — and for
+   * those seconds the agent's watcher stayed dark on that room, so pinging it
+   * spawned no replacement session.
+   */
+  describe('stop()', () => {
+    function closeCalls(fetchMock: ReturnType<typeof makeFetch>) {
+      return fetchMock.mock.calls
+        .filter((c) => String(c[0]).includes('/connection/close'))
+        .map((c) => JSON.parse((c[1] as RequestInit).body as string));
+    }
+
+    it('tells the server to drop the connection so the room is freed at once', async () => {
+      const { conn, fetchMock } = connect({ acquire: () => null }, []);
+      await flush();
+
+      conn.stop();
+      await flush();
+
+      expect(closeCalls(fetchMock)).toEqual([
+        { connection_id: 'conn-1', reason: 'session stopped' },
+      ]);
+    });
+
+    it('closes once even if stop is called twice', async () => {
+      const { conn, fetchMock } = connect({ acquire: () => null }, []);
+      await flush();
+
+      conn.stop();
+      conn.stop();
+      await flush();
+
+      expect(closeCalls(fetchMock)).toHaveLength(1);
+    });
+
+    it('warns and carries on when the close cannot be delivered', async () => {
+      const { conn, fetchMock } = connect({ acquire: () => null }, []);
+      await flush();
+      fetchMock.mockImplementation(async () => {
+        throw new Error('network down');
+      });
+
+      expect(() => conn.stop()).not.toThrow();
+      await flush();
+
+      expect(
+        silentLog.warn.mock.calls.some((c) => c[1]?.event === 'room_connection_close_failed')
+      ).toBe(true);
+    });
+  });
+
   it('reports control_capabilities in the runtime-state report', async () => {
     const target: InjectionTarget = { write: vi.fn() };
     const { conn, fetchMock } = connect({ acquire: () => target }, []);
