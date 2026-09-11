@@ -978,6 +978,7 @@ class SessionAuthority:
         action: str,
         actor_id: str,
         message_id: str | None,
+        thread_id: str | None,
         connections: ConnectionRegistry,
     ) -> CommandStatus | None:
         async with (
@@ -1034,7 +1035,7 @@ class SessionAuthority:
                 surface=bridge.type if bridge else "switch-web",
                 actor_id=actor_id,
                 room_id=room_id,
-                thread_id=message_id,
+                thread_id=thread_id,
                 message_id=message_id,
             )
             await self._authorize(

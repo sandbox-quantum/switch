@@ -370,8 +370,11 @@ class ClientBase[ConfigT: ClientConfig]:
         # typed inside an existing thread the bridge relates it to that thread's
         # root (m.thread); use that root so the result stays in that thread.
         # Otherwise the command itself roots the thread — use its own event id.
-        # The id is not part of the event content, so inject it here.
+        # The command message keeps its own id as well, so two commands in one
+        # thread are distinct. Neither id is part of the event content, so
+        # inject them here.
         if isinstance(typed_event, CommandEvent):
+            typed_event.message_id = event.event_id
             typed_event.thread_id = event.thread_root_id or event.event_id
 
         try:

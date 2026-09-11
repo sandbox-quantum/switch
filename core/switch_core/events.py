@@ -18,10 +18,15 @@ class CommandEvent(SwitchEvent):
     args: str = ""
     user_id: str
     user_name: str
-    # Matrix event id of this command message itself — the thread root that
-    # command results reply into, so each command and its output stay together.
-    # Populated at dispatch (the id is not part of the event content). None for
-    # synthetic/legacy events that carry no id.
+    # Event id of this command message itself — identifies the command, so two
+    # commands in one thread stay distinct. Populated at dispatch (the id is not
+    # part of the event content). None for synthetic/legacy events that carry no
+    # id.
+    message_id: str | None = None
+    # Thread root that command results reply into, so each command and its
+    # output stay together: the root of the thread the command was typed in, or
+    # the command's own event id when it roots its own thread. Populated at
+    # dispatch. None for synthetic/legacy events that carry no id.
     thread_id: str | None = None
 
 
