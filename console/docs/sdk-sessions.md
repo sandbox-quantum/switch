@@ -57,8 +57,10 @@ each session’s tenant from its owning agent and preserves its history.
   queues an interrupt (or a stop when interrupt is unsupported), without granting
   approval. Already-reserved answers are not cancelled by this timer. A callback
   whose outcome is uncertain is not invoked again.
-- Room replay gaps stop automatic delivery with a visible error. Review room
-  context before starting further work. The host cannot infer missing messages.
+- Room replay gaps stop automatic delivery with a visible error. If the server
+  has lost the evidence needed to verify a received message, the host retains
+  its unacknowledged journal entry and stops. Review room context before
+  starting further work; automatic recovery cannot reconstruct lost evidence.
 
 An owner can retire an unrecoverable session after its server lease expires. This
 permanently fences the old epoch and disables recovery. Unconfirmed commands stay

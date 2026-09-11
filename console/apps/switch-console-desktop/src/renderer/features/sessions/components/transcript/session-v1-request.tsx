@@ -94,7 +94,7 @@ export function SessionV1Request({
       {request.content.kind === 'approval' ? (
         <>
           {request.content.detail && (
-            <p className="mt-2 text-sm whitespace-pre-wrap text-foreground-muted">
+            <p className="mt-2 text-sm [overflow-wrap:anywhere] whitespace-pre-wrap text-foreground-muted">
               {request.content.detail}
             </p>
           )}

@@ -6,6 +6,7 @@ import type { Command, HostEvent, Session, Snapshot } from '@switch-console/shar
 import { afterEach, expect, it, vi } from 'vitest';
 import type { ProviderAdapter } from '../adapter';
 import type { ProviderRuntimeEvent } from '../events';
+import { SharedRoomInbox } from './room-inbox';
 import { runSharedHost } from './shared-host';
 
 vi.setConfig({ testTimeout: 30_000 });
@@ -325,4 +326,34 @@ it('bounds unavailable-server startup before any provider execution', async () =
   );
   expect(f.adapter.startSession).not.toHaveBeenCalled();
   expect(f.fetchMock).toHaveBeenCalledTimes(1);
+});
+
+it('retains an unverified room event when server replay evidence is unavailable', async () => {
+  const f = await fixture();
+  await writeFile(
+    join(f.root, 'room-inbox.jsonl'),
+    JSON.stringify({ type: 'received', sequence: 1, roomId: 'room', messageId: 'message' }) + '\n'
+  );
+  vi.spyOn(SharedRoomInbox.prototype, 'connect').mockResolvedValue(undefined);
+  const original = f.fetchMock.getMockImplementation()!;
+  f.fetchMock.mockImplementation(async (url, options) => {
+    if (url.endsWith('/room-message'))
+      return Response.json(
+        { code: 'ROOM_EVENT_UNAVAILABLE', message: 'Room event is no longer retained' },
+        { status: 409 }
+      );
+    return original(url, options);
+  });
+  await expect(
+    runSharedHost(
+      { ...f.options, roomConnection: { connectionId: 'connection', rooms: ['room'] } },
+      f.adapter,
+      new AbortController().signal
+    )
+  ).rejects.toThrow('ROOM_EVENT_UNAVAILABLE');
+  expect(f.adapter.sendTurn).not.toHaveBeenCalled();
+  expect(f.adapter.stopSession).toHaveBeenCalled();
+  expect((await SharedRoomInbox.open(f.root)).pending()).toMatchObject([
+    { sequence: 1, messageId: 'message' },
+  ]);
 });

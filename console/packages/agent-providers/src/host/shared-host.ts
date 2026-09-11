@@ -420,11 +420,7 @@ export async function runSharedHost(
           } catch (error) {
             if (
               !(error instanceof RequestError) ||
-              ![
-                'ROOM_EVENT_UNAVAILABLE',
-                'UNSUPPORTED_CAPABILITY',
-                'ROOM_MESSAGE_RESERVED',
-              ].includes(error.code)
+              !['UNSUPPORTED_CAPABILITY', 'ROOM_MESSAGE_RESERVED'].includes(error.code)
             )
               throw error;
             await host.notice(

@@ -1,11 +1,16 @@
 import { randomUUID } from 'node:crypto';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, expect, it } from 'vitest';
+import { afterEach, expect, it, vi } from 'vitest';
 import { sharedConfigSchema } from './shared-config';
 import { SharedWatchAssignments } from './shared-watcher';
 
+const paths = vi.hoisted(() => ({ root: '' }));
+vi.mock('./launch', () => ({
+  sharedSessionRoot: (id: string) => join(paths.root, id),
+  ensureSharedProcess: vi.fn(),
+}));
 const roots: string[] = [];
 afterEach(async () => {
   for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true });
@@ -16,6 +21,7 @@ it.each(['claude', 'codex', 'opencode', 'gemini', 'cursor'])(
   async (provider) => {
     const root = await mkdtemp(join(tmpdir(), 'shared-watch-test-'));
     roots.push(root);
+    paths.root = root;
     const template = sharedConfigSchema.parse({
       session: {
         sessionId: 'watcher',
@@ -68,5 +74,26 @@ it.each(['claude', 'codex', 'opencode', 'gemini', 'cursor'])(
     );
     const another = await restarted.assign(template, { ...event, sequence: 9, roomId: 'another' });
     expect(another.session.sessionId).not.toBe(first.session.sessionId);
+    const firstRoot = join(root, first.session.sessionId);
+    await mkdir(firstRoot);
+    await writeFile(
+      join(firstRoot, 'room-inbox.jsonl'),
+      JSON.stringify({ type: 'rooms', rooms: ['another'] }) + '\n'
+    );
+    const returned = await restarted.assign(template, {
+      ...event,
+      sequence: 10,
+      messageId: 'returned',
+    });
+    expect(returned.session.sessionId).not.toBe(first.session.sessionId);
+    expect(returned.roomConnection?.rooms).toEqual(['room']);
+    expect(await restarted.assign(template, event)).toEqual(first);
+    const returnedRoot = join(root, returned.session.sessionId);
+    await mkdir(returnedRoot);
+    await writeFile(join(returnedRoot, 'room-inbox.jsonl'), '{');
+    await expect(
+      restarted.assign(template, { ...event, sequence: 11, messageId: 'after-crash' })
+    ).rejects.toThrow('incomplete record');
+    expect(restarted.cursor).toBe(10);
   }
 );

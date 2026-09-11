@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { SwitchEventStream } from '@sandboxaq/switch-agent-runtime';
 import type { AgentBridgeEvent, SwitchCredentials } from '@sandboxaq/switch-agent-runtime';
@@ -65,6 +66,24 @@ export class SharedRoomInbox {
       } else if (record.type === 'ack') this.outstanding.delete(record.sequence);
       else this.rooms = record.rooms;
     }
+  }
+
+  static async savedRooms(root: string): Promise<string[] | null> {
+    let text: string;
+    try {
+      text = await readFile(join(root, 'room-inbox.jsonl'), 'utf8');
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+      throw error;
+    }
+    if (text && !text.endsWith('\n'))
+      throw new Error('Room inbox has an incomplete record; recovery review is required.');
+    let rooms: string[] | null = null;
+    for (const line of text.split('\n').slice(0, -1)) {
+      const record = recordSchema.parse(JSON.parse(line));
+      if (record.type === 'rooms') rooms = record.rooms;
+    }
+    return rooms;
   }
 
   static async open(root: string): Promise<SharedRoomInbox> {
