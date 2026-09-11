@@ -117,18 +117,26 @@ to the mutable email address. This is the behavior on `main` today
 (`core/switch_core/db/stores/user_store.py`); it may change as the identity
 model evolves, so check that file if this page has drifted.
 
-Two things worth knowing before your first login:
+Three things worth knowing before your first login:
 
-- **It is deliberately not linked to an existing local account with the same
-  email.** If a password-authenticated account already owns that email
-  address, the OIDC login is refused with a conflict rather than silently
-  taking over the account — auto-linking by email is an account-takeover
-  vector (a token asserting someone else's email would otherwise inherit
-  their account, including a seeded admin's). There is currently no
-  self-service linking flow; a conflicting account has to be resolved by an
-  admin.
-- **Every OIDC-provisioned user gets the `user` role**, never `admin`.
-  Promote it by hand afterwards if it needs elevated access.
+- **An existing local account with the same email is linked, not refused —
+  provided the IdP says the address is verified.** The identity is attached to
+  that account and the person signs in as it, keeping its role, its rooms and
+  its password. An *unverified* address is refused with a conflict instead,
+  because auto-linking on an unverified claim is an account-takeover vector: a
+  token asserting someone else's address would otherwise inherit their
+  account. The whole guard is therefore the `email_verified` claim, which is
+  why the setting above is not cosmetic — turning it off removes the only
+  thing standing between a claimed address and the account that owns it.
+- **That is also the supported way to have an administrator who signs in
+  through the IdP.** The seeded administrator is an ordinary account on
+  `GATEWAY_ADMIN_EMAIL`; set that to an address you control at the identity
+  provider before first boot, and signing in through the IdP lands you in it
+  with its `admin` role. Point it at an address nobody can claim and there is
+  no such route.
+- **Anyone provisioned fresh gets the `user` role**, never `admin` — that
+  applies to a new account, not to one linked as above. Promote it by hand
+  afterwards if it needs elevated access.
 
 ## Setting up WorkOS as the provider
 
