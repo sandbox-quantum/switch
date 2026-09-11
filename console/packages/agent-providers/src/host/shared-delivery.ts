@@ -12,6 +12,7 @@ const recordSchema = z.discriminatedUnion('type', [
     event: hostEventSchema.nullable(),
   }),
   z.strictObject({ type: z.literal('ack'), sequence: z.number().int().nonnegative() }),
+  z.strictObject({ type: z.literal('substituted'), hostSequence: z.number().int().positive() }),
 ]);
 
 /** The source cursor and its wire event become durable in the same write. */
@@ -19,6 +20,8 @@ export class SharedDelivery {
   private sourceSequence = 0;
   private acknowledged = 0;
   private readonly events: HostEvent[] = [];
+  /** Host sequences whose prior-generation body was replaced on load but not yet recorded. */
+  private readonly unrecorded: number[] = [];
 
   private constructor(
     private readonly journal: Journal<z.infer<typeof recordSchema>>,
@@ -26,7 +29,13 @@ export class SharedDelivery {
     sourceBase: number
   ) {
     this.sourceSequence = sourceBase;
+    const substituted = new Set<number>();
+    const recorded = new Set<number>();
     for (const record of journal.records) {
+      if (record.type === 'substituted') {
+        recorded.add(record.hostSequence);
+        continue;
+      }
       if (record.type === 'event') {
         if (record.sourceSequence !== this.sourceSequence + 1)
           throw new Error('Shared delivery journal has a gap in its source cursor.');
@@ -38,13 +47,22 @@ export class SharedDelivery {
             record.event.hostSequence !== this.events.length + 1
           )
             throw new Error('Shared delivery journal has an invalid event identity or sequence.');
-          this.events.push({ ...record.event, body: this.currentGeneration(record.event.body) });
+          const body = this.currentGeneration(record.event.body);
+          if (body !== record.event.body) substituted.add(record.event.hostSequence);
+          this.events.push({ ...record.event, body });
         }
       } else {
         this.validateAck(record.sequence);
+        for (const hostSequence of substituted)
+          if (hostSequence <= record.sequence && !recorded.has(hostSequence))
+            throw new Error(
+              'Shared delivery journal acknowledges prior-generation session state that Switch could not have accepted.'
+            );
         this.acknowledged = record.sequence;
       }
     }
+    for (const hostSequence of substituted)
+      if (!recorded.has(hostSequence)) this.unrecorded.push(hostSequence);
   }
 
   static async load(root: string, session: Session, sourceBase = 0): Promise<SharedDelivery> {
@@ -52,7 +70,11 @@ export class SharedDelivery {
       join(root, `delivery-${createHash('sha256').update(session.epoch).digest('hex')}.jsonl`),
       (value) => recordSchema.parse(value)
     );
-    return new SharedDelivery(journal, session, sourceBase);
+    const delivery = new SharedDelivery(journal, session, sourceBase);
+    for (const hostSequence of delivery.unrecorded)
+      await journal.append({ type: 'substituted', hostSequence });
+    delivery.unrecorded.length = 0;
+    return delivery;
   }
 
   get throughHostSequence(): number {

@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parseHostEvent } from '@switch-console/shared/session-v1';
@@ -155,6 +155,47 @@ it('reopens a journal holding prior-generation state without losing the events b
   for (const event of pending) expect(parseHostEvent(event)).toEqual(event);
   expect(delivery.cursor).toBe(162);
   expect(delivery.throughHostSequence).toBe(3);
+});
+
+it('records a substitution so the acknowledgement of its notice survives a reopen', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'shared-delivery-'));
+  roots.push(root);
+  await writeFile(
+    deliveryPath(root, next.epoch),
+    saved(160, 1, { type: 'session.upsert', session: { ...session, status: 'error' } }) +
+      saved(161, 2, {
+        type: 'command.result',
+        commandId: 'reset',
+        status: 'unknown',
+        code: null,
+        message: null,
+      })
+  );
+  const first = await SharedDelivery.load(root, next, 159);
+  expect(first.pending()[0]).toMatchObject({
+    hostSequence: 1,
+    body: { type: 'notice', code: 'PRIOR_GENERATION_STATE_SKIPPED' },
+  });
+  await first.acknowledge(2);
+  const reopened = await SharedDelivery.load(root, next, 159);
+  expect(reopened.pending()).toHaveLength(0);
+  expect(reopened.throughHostSequence).toBe(2);
+  const lines = (await readFile(deliveryPath(root, next.epoch), 'utf8')).trim().split('\n');
+  expect(lines.filter((line) => line.includes('"substituted"'))).toHaveLength(1);
+});
+
+it('refuses a journal that acknowledges prior-generation session state', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'shared-delivery-'));
+  roots.push(root);
+  await writeFile(
+    deliveryPath(root, next.epoch),
+    saved(160, 1, { type: 'session.upsert', session: { ...session, status: 'error' } }) +
+      JSON.stringify({ type: 'ack', sequence: 1 }) +
+      '\n'
+  );
+  await expect(SharedDelivery.load(root, next, 159)).rejects.toThrow(
+    'acknowledges prior-generation session state'
+  );
 });
 
 it('refuses a journal whose saved envelope belongs elsewhere', async () => {
