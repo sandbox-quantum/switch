@@ -196,6 +196,8 @@ class SessionTurnActivity:
             return await draw()
         key = (session_id, turn.command_id or turn.turn_id)
         async with self._journal.open(*key) as record:
+            if record is None:
+                return False
             if (
                 record.data.get("completed")
                 and record.data.get("turn_id") == turn.turn_id
@@ -207,6 +209,8 @@ class SessionTurnActivity:
                 record.data.pop("completed", None)
                 record.data.pop("ended", None)
             record.data["turn_id"] = turn.turn_id
+            record.data["ended"] = turn.status in TURN_ENDED
+            await record.save()
             token = self._record.set(record)
             try:
                 saved = record.data.get("anchor")
@@ -218,8 +222,14 @@ class SessionTurnActivity:
                         else None
                     )
                     self._anchors[key] = anchor
+                    if turn.status in TURN_ENDED:
+                        await self._release_thread(key, anchor)
                 drawn = await draw()
                 if drawn and turn.status in TURN_ENDED:
+                    if not turn.turn_id.startswith("pending:"):
+                        # Keep a small completion receipt to suppress replay, but
+                        # discard delivery reservations and reaction/log anchors.
+                        record.data = {"turn_id": turn.turn_id, "ended": True}
                     record.data["completed"] = True
                     await record.save()
                 return drawn
@@ -273,6 +283,10 @@ class SessionTurnActivity:
                     replace(content, publication_token=delivery["token"]),
                     thread,
                 )
+            except RichContentThrottled:
+                del record.data[slot]
+                await record.save()
+                raise
             except RichContentFailed:
                 # The adapter explicitly refused the post. Transport timeouts
                 # propagate separately and keep their uncertain reservation.
@@ -342,6 +356,8 @@ class SessionTurnActivity:
                 return False
             self._anchors[key] = anchor
             await self._save_anchor(anchor)
+            if not ended:
+                await self._claim_thread(key, anchor)
             drawn = (
                 await self._edit(
                     anchor,
@@ -354,9 +370,9 @@ class SessionTurnActivity:
                 if self._journal
                 else True
             )
+        else:
             if not ended:
                 await self._claim_thread(key, anchor)
-        else:
             drawn = await self._edit(
                 anchor,
                 items,
@@ -383,7 +399,7 @@ class SessionTurnActivity:
             if record and drawn:
                 record.data["ended"] = True
                 await record.save()
-            await self._release_thread(key, anchor)
+            drawn = await self._release_thread(key, anchor) and drawn
             if not drawn or turn.turn_id.startswith("pending:"):
                 self._anchors[key] = anchor
                 self._anchors.move_to_end(key)
@@ -429,6 +445,8 @@ class SessionTurnActivity:
                 thread_root_id,
                 "status",
             )
+        except RichContentThrottled:
+            raise
         except RichContentFailed as error:
             logger.error(
                 "Could not post the activity for turn %s of session %s in "
@@ -537,11 +555,10 @@ class SessionTurnActivity:
         thread_key = (anchor.channel_id, anchor.reaction_ref)
         turns = self._thread_turns.setdefault(thread_key, set())
         first = not turns
-        turns.add(key)
-        if first:
-            await self._mark_thread(anchor, working=True)
+        if not first or await self._mark_thread(anchor, working=True):
+            turns.add(key)
 
-    async def _release_thread(self, key: tuple[str, str], anchor: _Anchor) -> None:
+    async def _release_thread(self, key: tuple[str, str], anchor: _Anchor) -> bool:
         """The inverse of `_claim_thread`: drop this turn from the holders of
         `anchor.reaction_ref`, switching the reaction off once none are left.
 
@@ -558,13 +575,13 @@ class SessionTurnActivity:
         having nothing there.
         """
         if anchor.reaction_ref is None:
-            return
+            return True
         thread_key = (anchor.channel_id, anchor.reaction_ref)
         turns = self._thread_turns.get(thread_key)
         if turns is not None:
             turns.discard(key)
             if turns:
-                return
+                return True
             del self._thread_turns[thread_key]
         record = self._record.get()
         if self._journal and await self._journal.reaction_held(
@@ -573,20 +590,20 @@ class SessionTurnActivity:
             anchor.reaction_ref,
             sessions=record.sessions if record else self._journal.sessions,
         ):
-            return
-        await self._mark_thread(anchor, working=False)
+            return True
+        return await self._mark_thread(anchor, working=False)
 
-    async def _mark_thread(self, anchor: _Anchor, *, working: bool) -> None:
+    async def _mark_thread(self, anchor: _Anchor, *, working: bool) -> bool:
         """Put `:eyes:` on the message that actually asked, or take it off.
 
         Not necessarily the thread root — a turn threaded under a reply deep
         in the thread reacts to that reply, resolved once by `_begin` and
         kept on the anchor as `reaction_ref` for exactly this. Slack only,
-        and best effort: neither reacting nor removing a reaction is on the
-        port, and losing one is not worth failing a turn's own draw over.
+        and best effort: errors do not interrupt rendering. Return whether it worked so
+        callers can retry a failed claim or unfinished terminal cleanup.
         """
         if anchor.reaction_ref is None or not isinstance(self._adapter, SlackAdapter):
-            return
+            return True
         try:
             await self._adapter.mark_activity(
                 anchor.channel_id,
@@ -594,9 +611,8 @@ class SessionTurnActivity:
                 working=working,
                 **({"force": True} if self._journal else {}),
             )
+            return True
         except Exception:
-            if self._journal:
-                raise
             logger.warning(
                 "Could not %s the activity reaction on %s in %s.",
                 "add" if working else "remove",
@@ -604,6 +620,7 @@ class SessionTurnActivity:
                 anchor.channel_id,
                 exc_info=True,
             )
+            return False
 
     async def _forget_the_oldest(self) -> None:
         """Bound the in-memory cache, retaining durable message references.

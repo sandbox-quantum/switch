@@ -1209,6 +1209,8 @@ def _context(text: str) -> dict[str, Any]:
 
 
 def _truncate(text: str, limit: int) -> str:
+    if limit <= 0:
+        return ""
     return text if len(text) <= limit else text[: limit - 1] + "…"
 
 

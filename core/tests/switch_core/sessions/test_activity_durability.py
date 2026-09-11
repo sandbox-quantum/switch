@@ -313,9 +313,10 @@ async def test_provisional_error_receipt_becomes_real_turn_in_place(
     assert platform.edit_refs[-1] == "channel-demo:1"
 
 
+@pytest.mark.parametrize("durable", [True, False])
 @pytest.mark.parametrize("pending_status", ["accepted", "unknown", "rejected"])
 async def test_pending_command_cannot_hide_recorded_completion_or_replay_stale_error(
-    session_factory, pending_status
+    session_factory, pending_status, durable
 ):
     from switch_core.db.models import SdkSessionCommand
 
@@ -366,9 +367,123 @@ async def test_pending_command_cannot_hide_recorded_completion_or_replay_stale_e
             session_factory,
             "bridge",
             cards_for(session_factory, Platform()),
-            activity(session_factory, platform),
+            activity(session_factory, platform)
+            if durable
+            else SessionTurnActivity(platform),
         )
         await publisher.publish_pending()
-    assert "channel-demo:1" not in platform.messages  # Old running status was removed.
-    assert "channel-demo:2" in platform.messages  # Existing log became the completion.
-    assert platform.post_count == (3 if pending_status == "accepted" else 2)
+    if durable:
+        assert "channel-demo:1" not in platform.messages
+        assert "channel-demo:2" in platform.messages
+        assert platform.post_count == (3 if pending_status == "accepted" else 2)
+    else:
+        # Each fresh demo publisher redraws the latest real completion. Pending
+        # errors are not replayed, and a queued receipt cannot hide that completion.
+        assert platform.post_count == (6 if pending_status == "accepted" else 4)
+
+
+async def test_reaction_failure_retries_without_blocking_log(session_factory):
+    from unittest.mock import AsyncMock
+
+    await setup(session_factory)
+    platform = ActivitySlack()
+    original = platform.mark_activity
+    platform.mark_activity = AsyncMock(side_effect=TimeoutError("reaction failed"))
+    renderer = activity(session_factory, platform)
+    assert await publish(renderer)
+    assert platform.post_count == 2
+    platform.mark_activity = original
+    assert await publish(renderer)
+    assert platform.reactions == {"channel-demo:question"}
+
+
+async def test_first_edit_throttle_still_claims_reaction(session_factory):
+    from unittest.mock import AsyncMock
+
+    from switch_core.bridges.collaboration.adapter import RichContentThrottled
+
+    await setup(session_factory)
+    platform = ActivitySlack()
+    original = platform.update_rich
+    platform.update_rich = AsyncMock(
+        side_effect=RichContentThrottled(text="slow down", retry_after=5)
+    )
+    renderer = activity(session_factory, platform)
+    with pytest.raises(RichContentThrottled):
+        await publish(renderer)
+    platform.update_rich = original
+    assert await publish(renderer)
+    assert platform.reactions == {"channel-demo:question"}
+
+
+async def test_failed_final_edit_releases_reaction_across_restart(session_factory):
+    from unittest.mock import AsyncMock
+
+    await setup(session_factory)
+    platform = ActivitySlack()
+    await publish(activity(session_factory, platform))
+    platform.update_rich = AsyncMock(side_effect=TimeoutError("edit failed"))
+    with pytest.raises(TimeoutError):
+        await publish(activity(session_factory, platform), "completed")
+    assert not platform.reactions
+    journal = ActivityJournal(session_factory, "bridge")
+    assert not await journal.reaction_held(
+        ("another", "command"),
+        "channel-demo",
+        "channel-demo:question",
+        sessions=session_factory,
+    )
+
+
+async def test_busy_journal_is_skipped_until_next_sweep(session_factory):
+    await setup(session_factory)
+    journal = ActivityJournal(session_factory, "bridge")
+    platform = ActivitySlack()
+    async with journal.open("session-demo", "message-demo") as record:
+        assert record is not None
+        assert not await asyncio.wait_for(
+            publish(activity(session_factory, platform)), 2
+        )
+        assert platform.post_count == 0
+    assert await publish(activity(session_factory, platform))
+
+
+async def test_throttled_initial_post_retries_without_uncertain_reservation(
+    session_factory,
+):
+    from unittest.mock import AsyncMock
+
+    from switch_core.bridges.collaboration.adapter import RichContentThrottled
+
+    await setup(session_factory)
+    platform = ActivitySlack()
+    original = platform.post_rich
+    platform.post_rich = AsyncMock(
+        side_effect=RichContentThrottled(text="slow down", retry_after=5)
+    )
+    renderer = activity(session_factory, platform)
+    with pytest.raises(RichContentThrottled):
+        await publish(renderer)
+    platform.post_rich = original
+    assert await publish(renderer)
+    assert platform.post_count == 2
+
+
+async def test_completed_journal_discards_anchors_but_keeps_replay_receipt(
+    session_factory,
+):
+    await setup(session_factory)
+    platform = ActivitySlack()
+    await publish(activity(session_factory, platform))
+    await publish(activity(session_factory, platform), "completed")
+    async with ActivityJournal(session_factory, "bridge").open(
+        "session-demo", "message-demo"
+    ) as record:
+        assert record is not None
+        assert record.data == {
+            "turn_id": _turn("completed").turn_id,
+            "ended": True,
+            "completed": True,
+        }
+    await publish(activity(session_factory, platform), "completed")
+    assert platform.post_count == 2

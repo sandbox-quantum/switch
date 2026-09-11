@@ -3,6 +3,12 @@
 A dedicated connection holds an advisory lock while short transactions commit
 publication checkpoints. A process crash releases the lock without erasing the
 reservation. An uncertain post is searched for, never blindly posted again.
+
+Completed SDK turns retain only a completion receipt until their session or
+bridge is deleted (foreign keys cascade). Expiring those receipts independently
+would allow retained SDK history to be replayed. Provisional turns retain their
+anchors so a later SDK turn can reuse the same message. On first deployment,
+pre-journal live messages cannot be adopted automatically and may be duplicated.
 """
 
 from collections.abc import AsyncIterator
@@ -68,10 +74,9 @@ class ActivityJournal:
                 select(SessionActivityPost).where(
                     SessionActivityPost.tenant_id == require_tenant_id(),
                     SessionActivityPost.bridge_id == self.bridge_id,
-                    SessionActivityPost.data["anchor"]["channel_id"].as_string()
-                    == channel,
-                    SessionActivityPost.data["anchor"]["reaction_ref"].as_string()
-                    == ref,
+                    SessionActivityPost.data.contains(
+                        {"anchor": {"channel_id": channel, "reaction_ref": ref}}
+                    ),
                 )
             )
             return any(
@@ -82,18 +87,24 @@ class ActivityJournal:
     @asynccontextmanager
     async def open(
         self, session_id: str, command_id: str
-    ) -> AsyncIterator[ActivityRecord]:
+    ) -> AsyncIterator[ActivityRecord | None]:
         key = (require_tenant_id(), self.bridge_id, session_id, command_id)
         engine = self.sessions.kw["bind"]
         if not isinstance(engine, AsyncEngine):
             raise TypeError("Activity journal requires an engine-bound session factory")
         async with engine.connect() as connection:
+            locked = False
             try:
-                await connection.execute(
-                    text("SELECT pg_advisory_lock(hashtextextended(:key, 0))"),
-                    {"key": repr(key)},
+                locked = bool(
+                    await connection.scalar(
+                        text("SELECT pg_try_advisory_lock(hashtextextended(:key, 0))"),
+                        {"key": repr(key)},
+                    )
                 )
                 await connection.commit()
+                if not locked:
+                    yield None
+                    return
                 # Keep the connection checked out across checkpoint commits. This
                 # avoids borrowing a second pool slot while holding the lock.
                 bound = async_sessionmaker(
@@ -107,10 +118,13 @@ class ActivityJournal:
             finally:
                 try:
                     await connection.rollback()
-                    await connection.execute(
-                        text("SELECT pg_advisory_unlock(hashtextextended(:key, 0))"),
-                        {"key": repr(key)},
-                    )
+                    if locked:
+                        await connection.execute(
+                            text(
+                                "SELECT pg_advisory_unlock(hashtextextended(:key, 0))"
+                            ),
+                            {"key": repr(key)},
+                        )
                     await connection.commit()
                 except BaseException:
                     # Never return a connection with a session lock to the pool.

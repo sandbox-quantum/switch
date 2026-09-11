@@ -1379,6 +1379,14 @@ class SessionActivityPost(TenantScoped, Base):
     data: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
 
 
+Index(
+    "ix_session_activity_reaction",
+    SessionActivityPost.data,
+    postgresql_using="gin",
+    postgresql_ops={"data": "jsonb_path_ops"},
+)
+
+
 class SessionRequestPost(TenantScoped, Base):
     """A session's request for a decision, as it was posted onto a platform.
 

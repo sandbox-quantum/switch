@@ -433,6 +433,7 @@ async def refresh_activity(
             raise SessionError("NOT_FOUND", "Session agent not found.")
         publications = []
         turns = list(snapshot.turns)
+        latest_turn_id = turns[-1].turn_id if turns else None
         known_commands = {turn.command_id for turn in turns}
         # A presentation-only queued turn acknowledges accepted Slack input before
         # the SDK reports a turn. Never write synthetic turns into the contract.
@@ -468,7 +469,6 @@ async def refresh_activity(
                     else "error",
                 )
             )
-        latest_turn_id = turns[-1].turn_id if turns else None
         for turn in turns:
             if already_held_back(session_id, turn.turn_id):
                 continue
@@ -482,7 +482,14 @@ async def refresh_activity(
                 and turn.command_id not in recorded
                 and (
                     (activity.durable and turn.status in TURN_ENDED)
-                    or (not activity.durable and turn.turn_id != latest_turn_id)
+                    or (
+                        not activity.durable
+                        and turn.turn_id != latest_turn_id
+                        and (
+                            turn.status in TURN_ENDED
+                            or not turn.turn_id.startswith("pending:")
+                        )
+                    )
                 )
             ):
                 if turn.status in TURN_ENDED:

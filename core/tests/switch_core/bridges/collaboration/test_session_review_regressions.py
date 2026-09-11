@@ -145,3 +145,10 @@ async def test_slack_update_cooldown_honors_retry_after_across_messages(monkeypa
     clock[0] += 1
     await adapter.update_rich("C1", "C1:2", content)
     assert update.await_count == 2
+
+
+@pytest.mark.parametrize("limit", [0, 1, 5])
+def test_truncate_respects_even_empty_budget(limit):
+    from switch_core.bridges.collaboration.session.renderers.slack import _truncate
+
+    assert len(_truncate("x" * 1000, limit)) == limit
