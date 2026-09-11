@@ -75,6 +75,13 @@ _ALLOWED_MODULES = {
     # `_room_tenant`'s fallback: which tenant is this room in, asked when the
     # answer is not already cached alongside the channel mapping.
     "switch_core.bridges.collaboration.bridge_core",
+    # An inbound webhook from an installed workspace: the platform's signature
+    # proves the sender and the payload names a workspace, and nothing in
+    # either names a tenant. It is the one read that must happen before a
+    # tenant can be bound at all, and the install row is then re-read scoped to
+    # the tenant it produced, so a wrong answer here is a miss rather than a
+    # cross-tenant read.
+    "switch_core.bridges.collaboration.install_service",
     # `switch_core.transport.postgres` and `switch_core.clients.agent_client`
     # came off this list with `tenant_of_client`: both were built from a
     # `clients` row that already named the tenant, so they carry it instead of

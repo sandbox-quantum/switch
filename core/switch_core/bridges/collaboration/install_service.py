@@ -31,12 +31,17 @@ allows for.
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping
+from dataclasses import dataclass
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from switch_core.bridges.collaboration.adapter import CollaborationAdapter
 from switch_core.bridges.collaboration.install import (
+    InboundWebhook,
     MessagingAppInstaller,
     MessagingInstallerRegistry,
+    WebhookEndpoint,
     oauth_callback_path,
     public_url,
 )
@@ -52,9 +57,38 @@ from switch_core.crypto import encrypt_token
 from switch_core.db.models import MessagingInstall
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.messaging_install_store import MessagingInstallStore
-from switch_core.tenant_context import tenant_scope
+from switch_core.db.tenant_lookup import tenant_of_messaging_install
+from switch_core.tenant_context import no_tenant, tenant_scope
 
 logger = logging.getLogger(__name__)
+
+
+class WebhookWorkspaceUnknown(RuntimeError):
+    """An authentic event named a workspace no tenant here has installed.
+
+    Ordinary rather than alarming: an app left in a workspace whose install was
+    removed goes on posting for as long as someone leaves it there. It is still
+    an error, because the alternative is answering "fine" to traffic that
+    reaches nobody.
+    """
+
+
+class WebhookBridgeUnavailable(RuntimeError):
+    """The workspace resolves to a tenant, and nothing is running to take it.
+
+    Transient by nature — a bridge mid-restart, or one that has not been built
+    for a recorded install yet — so it is worth telling the platform to try
+    again rather than swallowing the event.
+    """
+
+
+@dataclass(frozen=True)
+class WebhookTarget:
+    """Where one verified event goes: a tenant, a bridge, and its live adapter."""
+
+    tenant_id: str
+    bridge_id: str
+    adapter: CollaborationAdapter
 
 
 class InstallPlatformMismatch(RuntimeError):
@@ -194,3 +228,100 @@ class MessagingInstallService:
                 bridge.id,
             )
             return attached
+
+    # ── Inbound events ───────────────────────────────────────────────────────
+    #
+    # The other direction, and the one that runs constantly. Three steps, kept
+    # separate because each answers to something different:
+    #
+    # `authenticate` is pure and does no I/O, so a request that cannot prove
+    # itself is refused without this deployment doing any work on its behalf.
+    # `resolve` is two indexed reads and decides *whose* event this is.
+    # `deliver` is the handling, which can take as long as the work takes.
+    #
+    # The split is what lets the route acknowledge in time. Slack gives three
+    # seconds and retries what it does not get an answer to, so a handler that
+    # posts to Matrix before replying turns one slow room into duplicate
+    # messages. Everything up to and including `resolve` is fast enough to
+    # answer inside, and `deliver` runs after the response has gone.
+
+    def authenticate(
+        self,
+        *,
+        platform: str,
+        endpoint: WebhookEndpoint,
+        headers: Mapping[str, str],
+        body: bytes,
+    ) -> InboundWebhook:
+        """Prove an inbound request came from the platform, and read it.
+
+        Verification is first and unconditional. Nothing above it inspects the
+        body, so an unsigned request cannot pick which parser runs, and nothing
+        is logged from it either — it is a stranger's bytes until this passes.
+        """
+        installer = self._installers.get(platform)
+        installer.verify_webhook(headers=headers, body=body)
+        return installer.parse_webhook(endpoint=endpoint, body=body)
+
+    async def resolve(self, *, platform: str, event: InboundWebhook) -> WebhookTarget:
+        """Turn a workspace id into the one bridge entitled to the event.
+
+        The tenant comes from the exempt lookup (`db/tenant_lookup.py`), which
+        is the only way to answer it: the caller authenticated to nothing, and
+        every table that could say is scoped. The install row is then read
+        *again* under that tenant rather than returned by the lookup — a
+        deliberate second check, so a wrong answer above is a miss here instead
+        of a cross-tenant read.
+        """
+        installer = self._installers.get(platform)
+        workspace_id = installer.workspace_of_event(event.payload)
+
+        tenant_id = await tenant_of_messaging_install(
+            self._session_factory, platform, workspace_id
+        )
+        if tenant_id is None:
+            raise WebhookWorkspaceUnknown(
+                f"no tenant has installed Switch into {platform} workspace "
+                f"{workspace_id}"
+            )
+
+        async with tenant_session(self._session_factory, tenant_id) as session:
+            install = await self._store.get_for_workspace(
+                session, platform=platform, external_workspace_id=workspace_id
+            )
+        if install is None:
+            raise WebhookWorkspaceUnknown(
+                f"the install of {platform} workspace {workspace_id} resolved to "
+                f"tenant {tenant_id} and could not then be read as that tenant"
+            )
+        if install.bridge_id is None:
+            raise WebhookBridgeUnavailable(
+                f"the install of {platform} workspace {workspace_id} has no "
+                "bridge yet, so there is nothing to deliver its events to"
+            )
+
+        adapter = self._lifecycle.get_adapter(install.bridge_id)
+        if adapter is None:
+            raise WebhookBridgeUnavailable(
+                f"bridge {install.bridge_id}, which serves {platform} workspace "
+                f"{workspace_id}, is not running"
+            )
+        return WebhookTarget(
+            tenant_id=tenant_id, bridge_id=install.bridge_id, adapter=adapter
+        )
+
+    async def deliver(self, target: WebhookTarget, event: InboundWebhook) -> None:
+        """Hand a resolved event to the bridge, as its own transport would.
+
+        With **nothing bound**, which is not an oversight. A bridge that
+        receives over a socket dispatches from a task that binds no tenant, and
+        every handler below it binds the tenant of the room it is acting on.
+        Binding here would make the two delivery paths differ in the one
+        respect that decides who a message reaches, and would hide a handler
+        that had forgotten to bind for itself — for exactly as long as it took
+        someone to receive the same event over a socket instead.
+        """
+        with no_tenant():
+            await target.adapter.dispatch_event(
+                envelope_type=event.envelope_type, payload=event.payload
+            )

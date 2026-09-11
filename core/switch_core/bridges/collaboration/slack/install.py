@@ -15,25 +15,58 @@ the boundary and has no equivalent on the adapter.
 
 from __future__ import annotations
 
+import json
 import logging
 from collections.abc import Mapping
-from typing import ClassVar
-from urllib.parse import urlencode
+from typing import Any, ClassVar
+from urllib.parse import parse_qsl, urlencode
 
 from slack_sdk.errors import SlackApiError
 from slack_sdk.signature import SignatureVerifier
 from slack_sdk.web.async_client import AsyncWebClient
 
 from switch_core.bridges.collaboration.install import (
+    InboundWebhook,
     InstallGrant,
     MessagingAppInstaller,
     MessagingInstallError,
     WebhookAuthenticityError,
+    WebhookEndpoint,
+    WebhookPayloadError,
 )
 
 logger = logging.getLogger(__name__)
 
 AUTHORIZE_URL = "https://slack.com/oauth/v2/authorize"
+
+
+def _json_object(raw: bytes) -> dict[str, Any]:
+    try:
+        parsed = json.loads(raw)
+    except ValueError as error:
+        raise WebhookPayloadError("Slack posted a body that is not JSON") from error
+    if not isinstance(parsed, dict):
+        raise WebhookPayloadError("Slack posted JSON that is not an object")
+    return parsed
+
+
+def _form_fields(raw: bytes) -> dict[str, Any]:
+    """Slack's form encoding as a flat dict, matching Socket Mode's payload.
+
+    `parse_qsl` and not `parse_qs`: the latter makes every value a list, and
+    the adapter reads these fields as the strings Socket Mode hands it. A
+    repeated field would be a Slack change worth noticing rather than a list to
+    accommodate, and the last value wins the way a form is usually read.
+    """
+    try:
+        return dict(
+            parse_qsl(raw.decode(), keep_blank_values=True, strict_parsing=True)
+        )
+    except (UnicodeDecodeError, ValueError) as error:
+        raise WebhookPayloadError(
+            "Slack posted a body that is not form data"
+        ) from error
+
 
 #: The bot scopes the distributed app requests, in the manifest's order.
 #:
@@ -141,10 +174,66 @@ class SlackAppInstaller(MessagingAppInstaller):
         if not valid:
             raise WebhookAuthenticityError("bad Slack signature")
 
+    def parse_webhook(
+        self, *, endpoint: WebhookEndpoint, body: bytes
+    ) -> InboundWebhook:
+        if endpoint == "commands":
+            # A slash command posts its fields as a form, and Socket Mode
+            # delivers that same flat dict — so the parsed form *is* the
+            # payload, with no unwrapping.
+            return InboundWebhook(
+                envelope_type="slash_commands",
+                payload=_form_fields(body),
+                handshake=None,
+            )
+
+        if endpoint == "interactive":
+            # Nested once: the form carries a single `payload` field whose
+            # value is JSON.
+            raw = _form_fields(body).get("payload")
+            if not raw:
+                raise WebhookPayloadError(
+                    "Slack posted an interaction with no payload field"
+                )
+            return InboundWebhook(
+                envelope_type="interactive",
+                payload=_json_object(raw.encode()),
+                handshake=None,
+            )
+
+        envelope = _json_object(body)
+        if envelope.get("type") == "url_verification":
+            # Slack proving the URL is ours, at the moment the Request URL is
+            # saved. It is signed like any other post, so it reaches here
+            # having been verified — and it names no workspace, because none
+            # has installed anything yet.
+            challenge = envelope.get("challenge")
+            if not isinstance(challenge, str) or not challenge:
+                raise WebhookPayloadError(
+                    "Slack sent a URL verification with no challenge to echo"
+                )
+            return InboundWebhook(
+                envelope_type="url_verification", payload=envelope, handshake=challenge
+            )
+
+        return InboundWebhook(
+            envelope_type="events_api", payload=envelope, handshake=None
+        )
+
     def workspace_of_event(self, payload: Mapping[str, object]) -> str:
+        """Which workspace an event came from, over Slack's two spellings.
+
+        An event callback and a slash command name it flat, as `team_id`; an
+        interaction nests it under `team`. Both are read here rather than
+        normalised at parse time, because the payload handed to the adapter has
+        to stay byte-identical to the one Socket Mode delivers.
+        """
         workspace_id = payload.get("team_id")
         if not isinstance(workspace_id, str) or not workspace_id:
-            raise WebhookAuthenticityError("Slack event names no workspace")
+            team = payload.get("team")
+            workspace_id = team.get("id") if isinstance(team, dict) else None
+        if not isinstance(workspace_id, str) or not workspace_id:
+            raise WebhookPayloadError("Slack event names no workspace")
         return workspace_id
 
     def connection_config(self, grant: InstallGrant) -> dict[str, object]:
