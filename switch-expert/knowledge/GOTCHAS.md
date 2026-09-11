@@ -4,8 +4,8 @@ _Last checked against: 2026-08-20._
 
 Things that surprise people. Organised by **symptom**, because that is how they arrive.
 
-When the clone contradicts anything here, the clone wins — check
-`connectors/*/skills/switch/SKILL.md` and log a correction.
+When the connector skill in your context or the clone contradicts anything here, they win —
+check, and log a correction.
 
 ---
 
@@ -210,6 +210,23 @@ points at the wrong file.
 
 If an agent edits its own definition, tell it in that definition which path actually runs,
 and have it write there first.
+
+---
+
+## "I changed the agent's folder and it still runs in the old one"
+
+**Where an agent runs is fixed when it is created.** Switch Console asks for a directory on
+the new-agent dialog and never asks again; its settings let you change the instructions, the
+model, auto-session and who may address it, but not the folder. To move an agent, remove it
+and add it again in the new place.
+
+What makes this confusing is that a **"Repo dir" field does exist and is editable** — on the
+agent's page in the web dashboard, and through the agent-update tool. It is not the same
+thing. It only feeds the copy-and-paste command the dashboard offers for starting a session
+by hand. Change it and the agent carries on exactly where it was, with the dashboard now
+telling you something untrue.
+
+So: pick the directory carefully at creation, and treat that field as a display detail.
 
 ---
 

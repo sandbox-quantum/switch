@@ -1563,6 +1563,42 @@ class MediaBlob(TenantScoped, Base):
     )
 
 
+# ── Stored Templates ─────────────────────────────────────────────────────────
+
+
+class StoredTemplate(Base):
+    """A reusable template for creating agents (or rooms).
+
+    Each row is a self-contained definition that a user can browse, pick, and
+    instantiate — an agent template carries a persona (instructions), a room
+    template carries YAML. The listing is data-driven: adding a row makes it
+    appear in the Console, no code change required.
+    """
+
+    __tablename__ = "stored_templates"
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
+    name: Mapped[str] = mapped_column(Text, unique=True, nullable=False)
+    description: Mapped[str] = mapped_column(Text, nullable=False)
+    kind: Mapped[str] = mapped_column(Text, nullable=False)
+    definition: Mapped[str] = mapped_column(Text, nullable=False)
+    creator: Mapped[str] = mapped_column(Text, nullable=False)
+    repo_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    sources: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    is_bundled: Mapped[bool] = mapped_column(
+        Boolean, server_default="false", nullable=False
+    )
+    created_at: Mapped[str] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[str] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+
 # `create_all` builds the schema for tests; the trigger has to come with it or
 # the delivery tests would exercise a table that announces nothing. Real
 # databases get the same DDL from a migration.

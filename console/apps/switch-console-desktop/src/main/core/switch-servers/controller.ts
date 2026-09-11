@@ -103,12 +103,16 @@ import {
   fetchRoomGroups,
   fetchRoomRoles,
   fetchRooms,
+  fetchTemplateDetail,
+  fetchTemplates,
   GatewayError,
   ownsOwnerAddressedAgent,
   releaseBridgeIdentity,
   createRoomFromTemplate,
   fetchTemplateSchema,
   removeRoomAgent,
+  type StoredTemplateDetail,
+  type StoredTemplateSummary,
   type TemplateProvisionResult,
   updateAddressingPolicy,
   updateAgentIcon,
@@ -560,6 +564,18 @@ export const switchServersController = createRPCController({
 
   fetchTemplateSchema: async (serverId: string): Promise<Record<string, unknown> | null> =>
     fetchTemplateSchema(await requireServer(serverId)),
+
+  listTemplates: async (params: {
+    serverId: string;
+    kind?: string;
+  }): Promise<StoredTemplateSummary[]> =>
+    fetchTemplates(await requireServer(params.serverId), params.kind),
+
+  getTemplateDetail: async (params: {
+    serverId: string;
+    templateId: string;
+  }): Promise<StoredTemplateDetail> =>
+    fetchTemplateDetail(await requireServer(params.serverId), params.templateId),
 
   listAgentRooms: async (params: {
     serverId: string;

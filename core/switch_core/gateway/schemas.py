@@ -1006,3 +1006,36 @@ class PackageMemberRemoveResponse(BaseModel):
     member_id: str
     affected_room_ids: list[str]
     affected_room_names: list[str]
+
+
+# ── Templates ────────────────────────────────────────────────────────────────
+
+
+class SourceEntry(BaseModel):
+    url: str
+    label: str
+
+
+class StoredTemplateSummary(BaseModel):
+    id: str
+    name: str
+    description: str
+    kind: str
+    creator: str
+    repo_url: str | None
+    sources: list[SourceEntry] | None
+    is_bundled: bool
+    created_at: str
+
+
+class StoredTemplateDetail(BaseModel):
+    id: str
+    name: str
+    description: str
+    kind: str
+    definition: str
+    creator: str
+    repo_url: str | None
+    sources: list[SourceEntry] | None
+    is_bundled: bool
+    created_at: str

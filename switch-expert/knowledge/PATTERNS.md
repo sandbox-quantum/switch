@@ -3,8 +3,8 @@
 _Last checked against: 2026-08-20._
 
 Reusable ways of shaping a Switch setup, grouped by the question they answer. These are
-judgement, not mechanics — for how the tools actually work, read the connector skill at
-`connectors/*/skills/switch/SKILL.md`.
+judgement, not mechanics — for how the tools actually work, use the connector skill you
+already have in context.
 
 Read the group that matches the question in front of you. Most designs are a variation on
 something here; start from the nearest pattern rather than a blank page.

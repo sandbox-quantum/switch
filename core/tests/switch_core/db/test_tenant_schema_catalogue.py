@@ -96,7 +96,12 @@ class TestEveryTableIsScopedUnlessItIsNamedGlobal:
         scoped table, not a nullable column there. `alembic_version` is
         global too but is not in this metadata: Alembic owns it.
         """
-        assert set(GLOBAL_TABLES) == {"users", "oidc_identities", "feature_flags"}
+        assert set(GLOBAL_TABLES) == {
+            "users",
+            "oidc_identities",
+            "feature_flags",
+            "stored_templates",
+        }
 
     async def test_scoped_is_everything_else(self) -> None:
         scoped = _scoped_tables()

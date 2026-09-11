@@ -6,22 +6,12 @@
   <img src="assets/agent-switch-wordmark.svg" alt="Agent Switch" width="200">
 </picture>
 
-**Bring humans and AI agents together in the tools where your team already works**
 
-<a href="https://www.producthunt.com/products/switch-11?embed=true&utm_source=badge-top-post-badge&utm_medium=badge&utm_campaign=badge-switch-14" target="_blank" rel="noopener noreferrer"><img alt="Switch - #1 Product of the Day on Product Hunt" width="250" height="54" src="https://api.producthunt.com/widgets/embed-image/v1/top-post-badge.svg?post_id=1233670&theme=neutral&period=daily"></a>
+**The harness for building your team where humans and agents work side by side**
 
-[![Website](https://img.shields.io/badge/website-flintai.dev-FF895E)](https://www.flintai.dev/products/switch)
-[![Product Hunt](https://img.shields.io/badge/Product%20Hunt-%231%20Product%20of%20the%20Day-FF6154?logo=producthunt&logoColor=white)](https://www.producthunt.com/products/switch-11?launch=switch-14)
 [![License: Apache 2.0 + Commons Clause](https://img.shields.io/badge/license-Apache%202.0%20%2B%20Commons%20Clause-blue)](LICENSE)
 [![Documentation](https://img.shields.io/badge/docs-read-FF895E)](https://docs.flintai.dev/flintai/switch/getting-started)
 [![PRs welcome](https://img.shields.io/badge/PRs-welcome-brightgreen)](CONTRIBUTING.md)
-[![Release](https://img.shields.io/github/v/release/sandbox-quantum/switch?label=release&color=FF895E)](https://github.com/sandbox-quantum/switch/releases)
-[![CI](https://github.com/sandbox-quantum/switch/actions/workflows/pr-ci.yml/badge.svg)](https://github.com/sandbox-quantum/switch/actions/workflows/pr-ci.yml)
-[![Discord](https://img.shields.io/badge/Discord-join%20the%20community-5865F2?logo=discord&logoColor=white)](https://discord.com/invite/zGQQQbSQx)
-
-<a href="#watch-it-work">
-  <img src="https://github.com/user-attachments/assets/00370621-6e0b-45b6-a59a-99f3cba849d0" alt="Switch demo — agents and humans collaborating in Slack" width="860">
-</a>
 
 </div>
 
@@ -30,47 +20,8 @@ Switch is the underlying infrastructure and framework that allows you to build t
 - 💬 **Bring your agents where your team already collaborates**. Your agents join the conversation in Slack, Microsoft Teams, Discord, Telegram and Mattermost. Nobody has to learn a new tool or move anywhere.
 - 🌍 **Any agent, any provider, any framework, running anywhere**. Your Claude Code agent on your laptop, a teammate's Codex agent on theirs, a LangChain HR agent on your servers. If it speaks the protocol, it can join.
 - 🧩 **Design how humans and agents work together**. Set the instructions a channel runs under, hand out roles, and pass work as tracked tasks. How your team operates is something you design, not something a model improvises.
-- 🛡️ **Run your team with confidence**. Define who can talk to which agent and in what context. Guardrails and cost reporting are coming next, Flint AI among the ways to get them.
+- 🛡️ **Run your team with confidence**. Define who can talk to which agent and in what context. Guardrails and cost reporting are coming next, Flint AI among the ways to get them.   
 
-
-<div align="center">
-<img src="assets/switch-overview.jpg" alt="Switch architecture — agents and platforms connected through Switch" width="860">
-</div>
-
-## Watch it work
-
-The same incident, in the apps teams already use. Someone reports checkout failing, an agent opens an incident channel, pulls the error rate and finds the deploy behind it — with a second agent doing the charting. Under a minute each, no narration.
-
-<!-- ADDING A RECORDING: do not commit the file. Open a pull request comment, drag the
-     .mp4 in, and GitHub uploads it and hands you a github.com/user-attachments/assets/...
-     URL. Put that URL on a line of its own inside the platform's <details> block and it
-     renders as a player. A committed video costs every clone forever; an attachment
-     costs nothing and is served from GitHub's CDN.
-
-     A <video> tag does not survive the README sanitizer, and neither does a link to a
-     file in this repository - both come out as plain links. The bare attachment URL is
-     the only form that plays. -->
-
-<details open>
-<summary><b>Slack</b></summary>
-
-https://github.com/user-attachments/assets/d7db7859-c1e0-4d2c-9675-1cc3966a1bfd
-
-</details>
-
-<details>
-<summary><b>Discord</b></summary>
-
-https://github.com/user-attachments/assets/e114cf81-41b0-4cce-a06f-5e78830bf99d
-
-</details>
-
-<details>
-<summary><b>Mattermost</b></summary>
-
-https://github.com/user-attachments/assets/51918de4-4283-4717-bdfa-d63f9da8eae1
-
-</details>
 
 ## Why Switch
 
@@ -89,10 +40,10 @@ You do not have to start big. Each level builds on the one before it, the first 
 </details>
 
 <details open>
-<summary><b>⚡⚡ Level 2</b>. You start encoding how the work runs.</summary>
+<summary><b>⚡⚡ Level 2</b>. you start encoding how the work runs.</summary>
 
-- A bootstrap channel where anyone asks a manager agent to start a piece of work. It opens the channel, brings in the right people and agents, attaches the context they need, and gets it moving.
-- A feature request channel where an agent triages what comes in, asks the questions you would have asked, and files it in Jira, Confluence or Notion.
+- A bootstrap channel where anyone asks a manager agent to start a piece of work. it opens the channel, brings in the right people and agents, attaches the context they need, and gets it moving.
+- A feature request channel where an agent triages what comes in, asks the questions you would have asked, and files it in jira, confluence or notion.
 - A bug report channel where an agent reproduces what it can, collects the logs and versions, and either files the ticket or tells the reporter what is still missing.
 
 </details>
@@ -100,15 +51,15 @@ You do not have to start big. Each level builds on the one before it, the first 
 <details>
 <summary><b>⚡⚡⚡ Level 3</b>. Your team runs on Switch.</summary>
 
-- Someone reports a bug, the triage agent reproduces it, a coding agent fixes it in a channel of its own, a person reviews the fix, and the deployment agent puts it on the test environment.
-- The triage agent files a feature request, a coding agent builds it in a work channel with the ticket and design already in it, and whoever asked for it signs it off.
-- An alert lands in the on-call channel, whoever holds the role that week picks it up, it goes down the same path as any bug, and an agent writes up what happened into the team's knowledge.
-- Someone asks a question in the support channel, the support agent answers from the runbooks, and when a runbook turns out to be wrong that agent corrects it in the channel that owns it.
+- A bug is reported and reproduced in the bug channel, fixed by a coding agent in a channel of its own, reviewed by a person, then put on the test environment by the deployment agent.
+- A feature request is triaged and filed, built in a work channel with the ticket and design already in it, and signed off by whoever asked for it.
+- An alert is caught in the on-call channel by whoever holds the role that week, fixed down the same path as any bug, and written up into the team's knowledge.
+- A question is asked in the support channel and answered from the runbooks, and when the runbook turns out to be wrong it is corrected in the channel that owns it.
 
 </details>
 
 <details>
-<summary><b>⚡⚡⚡⚡ Level 4</b>. Your company runs on Switch.</summary>
+<summary><b>⚡⚡⚡⚡ Level 4</b> Your company runs on Switch.</summary>
 
 Every person, team and department works alongside agents, and work crosses between them the same way it crosses between channels.
 
@@ -116,30 +67,30 @@ Every person, team and department works alongside agents, and work crosses betwe
 
 ## What Switch is not
 
-Most tools in this space want to become the place your team works. Switch does not replace the stack you already have. It connects it.
+Most tools in this space want to become the place your team works. Switch does not replace the stack you already have, it connects it.
 
 - ❌ **Not a messaging app**. Slack, Teams, Discord, Telegram and Mattermost stay where they are. Switch brings your agents and the workflows you define into them, so nobody has to move.
 - ❌ **Not an agent provider**. Switch ships no agents and no models. You keep Claude Code, Codex, OpenCode or whatever you already run, and Switch is what lets them work with your team.
-- ❌ **Not a black box self-service platform**. Switch's code is here for everyone to see and contribute to. It is designed to be self-hostable and for your data to stay where it is.
+- ❌ **Not a black box self service platform**. Switch's code is here for everyone to see and contribute. It is designed to be self-hostable and for your data to stay where it is !
 
 Getting humans and agents to work as one team is the part nobody has solved yet. That is where our effort goes, rather than into rebuilding chat apps and coding agents that already work well.
 
 ## Getting started
 
-### Let an agent walk you through the onboarding
-
+### Let an agent walk ou through the onboarding
+ 
 
 Rather than working through the documentation yourself, connect an agent to it
 and have it take you through the steps, answering your questions as they come
 up. The docs are served over MCP at https://docs.flintai.dev/mcp.
 
-Connect your agent to the MCP server and ask it:
-> How do I get started with Switch?
+Connect your agent to the MCP server and ask it: 
+> How do I get started with Switch? 
 
 
 #### Claude Code
 
-Run the following command in a terminal.
+Run the following command in a terminal
 
 ```bash
 claude mcp add switch-docs --transport http https://docs.flintai.dev/mcp
@@ -147,7 +98,7 @@ claude mcp add switch-docs --transport http https://docs.flintai.dev/mcp
 
 #### OpenAI Codex CLI
 
-Run the following command in a terminal.
+Run the following command in a terminal
 
 ```bash
 codex mcp add switch-docs --url https://docs.flintai.dev/mcp
@@ -155,12 +106,12 @@ codex mcp add switch-docs --url https://docs.flintai.dev/mcp
 
 #### OpenCode
 
-Run the following command in a terminal.
+Run the following command in a terminal
 
 ```bash
 opencode mcp add
 ```
-Then follow the procedure and provide `https://docs.flintai.dev/mcp` as the MCP server URL.
+Then follow the procedure and provide `https://docs.flintai.dev/mcp` as the MCP server URL
 
 
 
@@ -169,7 +120,7 @@ Then follow the procedure and provide `https://docs.flintai.dev/mcp` as the MCP 
 **Follow the [getting started guide](https://docs.flintai.dev/flintai/switch/getting-started).**
 It covers the whole path properly. The short version:
 
-1. Download the Switch Console app for your platform and install it.
+1. Download Switch Console App for your platform and install it.
 2. Start a local server from the app.
 3. Add your first agent: a name, a working directory, and the provider you use.
 4. Create a channel and talk to it.
@@ -178,67 +129,31 @@ It covers the whole path properly. The short version:
 |---|---|
 | macOS (Apple Silicon) | [.dmg](https://github.com/sandbox-quantum/switch/releases/latest/download/switch-console-arm64.dmg) |
 | macOS (Intel) | [.dmg](https://github.com/sandbox-quantum/switch/releases/latest/download/switch-console-x64.dmg) |
-| Linux (x64) — **early access** | [.AppImage](https://github.com/sandbox-quantum/switch/releases/latest/download/switch-console-x86_64.AppImage) · [.deb](https://github.com/sandbox-quantum/switch/releases/latest/download/switch-console-amd64.deb) |
-| Linux (arm64) — **early access** | [.AppImage](https://github.com/sandbox-quantum/switch/releases/latest/download/switch-console-arm64.AppImage) · [.deb](https://github.com/sandbox-quantum/switch/releases/latest/download/switch-console-arm64.deb) |
-| Windows (x64) — **early access** | [.exe](https://github.com/sandbox-quantum/switch/releases/latest/download/switch-console-x64.exe) |
-
-**Early access means the Windows and Linux builds of Switch Console are ready to use and still changing.** Expect rough edges, and behavior that can differ from one release to the next. When you hit one, [open an issue](https://github.com/sandbox-quantum/switch/issues) — a report is what moves it up the list. This is about the desktop app only: running a Switch server on Linux is the primary deployment path and carries no such label.
+| Linux (x64) | [.AppImage](https://github.com/sandbox-quantum/switch/releases/latest/download/switch-console-x86_64.AppImage) · [.deb](https://github.com/sandbox-quantum/switch/releases/latest/download/switch-console-amd64.deb) |
+| Linux (arm64) | [.AppImage](https://github.com/sandbox-quantum/switch/releases/latest/download/switch-console-arm64.AppImage) · [.deb](https://github.com/sandbox-quantum/switch/releases/latest/download/switch-console-arm64.deb) |
+| Windows (x64) | [.exe](https://github.com/sandbox-quantum/switch/releases/latest/download/switch-console-x64.exe) |
 
 
 ### I want to deploy Switch for my team
 
-Read [hosting remotely](https://docs.flintai.dev/flintai/switch/deploy/host-remotely).
+Read [hosting remotely](https://docs.flintai.dev/flintai/switch/deploy/host-remotely)
+first, then pick one.
 
 
 ## Architecture at a glance
 
 
-### Switch Core
+### Switch Core 
 
-```mermaid
-flowchart LR
-  subgraph people["People"]
-    slack["Slack"]
-    teams["Teams"]
-    discord["Discord"]
-    telegram["Telegram"]
-    mattermost["Mattermost"]
-  end
-
-  subgraph core["Switch Core"]
-    collab["Collaboration Bridge"]
-    rooms[("Rooms in PostgreSQL<br/>messages · media · LISTEN/NOTIFY")]
-    agentbridge["Agent Bridge<br/>HTTP + SSE · MCP"]
-    gateway["Gateway API"]
-  end
-
-  subgraph agents["Agents"]
-    cli["CLI agents<br/>via Switch Console"]
-    custom["Custom agents<br/>via Agent Protocol"]
-  end
-
-  dashboard["Operator Dashboard"]
-
-  slack --- collab
-  teams --- collab
-  discord --- collab
-  telegram --- collab
-  mattermost --- collab
-
-  collab <--> rooms
-  rooms <--> agentbridge
-  rooms --- gateway
-  gateway --- dashboard
-
-  agentbridge <--> cli
-  agentbridge <--> custom
-```
+<div align="center">
+  <img src="assets/switch-architecture.png" alt="Switch Core sits between human messaging apps and AI agents: a collaboration bridge relays Slack, Teams, Discord and Telegram; an agent bridge serves the HTTP API and MCP server to agents; both meet at a Tuwunel Matrix homeserver, with a room service, gateway API, PostgreSQL and the operator dashboard alongside" width="800">
+</div>
 
 Switch Core is the infrastructure that joins your agents and your collaboration
 apps together.
 
-At its centre are rooms, held in PostgreSQL, where everyone meets. Every
-participant is a client of that store: people arriving through a bridged
+At its centre is a Matrix homeserver (Tuwunel) hosting the rooms where everyone
+meets. Every participant is a Matrix client: people arriving through a bridged
 channel, agents connected through the Agent Bridge, and Switch's own services.
 
 **Agent Bridge.** Agents speak the Switch Agent Protocol: HTTP for what they
@@ -250,8 +165,7 @@ manage and connect CLI-based agents.
 
 **Collaboration Bridge.** Each chat platform connects through its own adapter,
 with its own transport: Socket Mode for Slack, an HTTP listener for Teams, the
-gateway websocket for Discord, long polling for Telegram, a websocket for
-Mattermost. It relays both ways,
+gateway websocket for Discord, long polling for Telegram. It relays both ways,
 maps each channel to a room, and gives every agent its own name and avatar in
 the channel.
 
@@ -260,7 +174,7 @@ instructions, permissions, attached knowledge and connected messaging apps. The
 Gateway API is the control plane behind the operator dashboard, and PostgreSQL
 holds the state.
 
-### Switch Console
+### Switch Console 
 
 Switch Console is the desktop app on the other side of the Agent Bridge. It does
 three jobs.
@@ -279,13 +193,12 @@ dashboard covers the rest.
 one up for you, on this machine or on a host you own, without you writing any
 Compose or Helm configuration.
 
+
 ## Contributing
 
-Switch is being built in the open, with the people who use it. Nobody knows yet
-what an organization looks like once agents are part of it, we certainly do not
-have all the right answers, and we would rather work them out with you than
-guess. There is a lot still to shape here, so come and join in: questions,
-ideas, arguments and pull requests are all welcome.
+This project is trying to work out what an organization looks like once agents
+are part of it. We do not have all the answers and will not get every call
+right, so outside contributions are genuinely welcome.
 
 [CONTRIBUTING.md](CONTRIBUTING.md) covers the development setup, the repository
 layout and how to get a change merged. Participation is governed by our

@@ -1050,6 +1050,89 @@ export type TemplateProvisionResult = {
   failedAttachments: Array<{ kind: string; id: string; error: string }>;
 };
 
+// ── Stored templates ────────────────────────────────────────────────────────
+
+export type SourceEntry = {
+  url: string;
+  label: string;
+};
+
+export type StoredTemplateSummary = {
+  id: string;
+  name: string;
+  description: string;
+  kind: string;
+  creator: string;
+  repoUrl: string | null;
+  sources: SourceEntry[] | null;
+  isBundled: boolean;
+};
+
+export type StoredTemplateDetail = StoredTemplateSummary & {
+  definition: string;
+};
+
+export async function fetchTemplates(
+  server: SwitchServer,
+  kind?: string
+): Promise<StoredTemplateSummary[]> {
+  const qs = kind ? `?kind=${encodeURIComponent(kind)}` : '';
+  const res = await gatewayFetch(server, `/templates${qs}`, {
+    authenticated: true,
+  });
+  const json = (await res.json()) as Array<{
+    id: string;
+    name: string;
+    description: string;
+    kind: string;
+    creator: string;
+    repo_url: string | null;
+    sources: SourceEntry[] | null;
+    is_bundled: boolean;
+  }>;
+  return json.map((t) => ({
+    id: t.id,
+    name: t.name,
+    description: t.description,
+    kind: t.kind,
+    creator: t.creator,
+    repoUrl: t.repo_url,
+    sources: t.sources,
+    isBundled: t.is_bundled,
+  }));
+}
+
+export async function fetchTemplateDetail(
+  server: SwitchServer,
+  templateId: string
+): Promise<StoredTemplateDetail> {
+  const res = await gatewayFetch(server, `/templates/${encodeURIComponent(templateId)}`, {
+    authenticated: true,
+  });
+  const t = (await res.json()) as {
+    id: string;
+    name: string;
+    description: string;
+    kind: string;
+    definition: string;
+    creator: string;
+    repo_url: string | null;
+    sources: SourceEntry[] | null;
+    is_bundled: boolean;
+  };
+  return {
+    id: t.id,
+    name: t.name,
+    description: t.description,
+    kind: t.kind,
+    definition: t.definition,
+    creator: t.creator,
+    repoUrl: t.repo_url,
+    sources: t.sources,
+    isBundled: t.is_bundled,
+  };
+}
+
 /**
  * Create a room from a YAML template (`POST /rooms/from-yaml`). Sends the
  * template as a JSON body with the YAML text and any user-supplied inputs.
