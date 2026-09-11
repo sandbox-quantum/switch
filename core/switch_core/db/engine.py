@@ -13,6 +13,12 @@ from sqlalchemy.pool import NullPool
 
 from switch_core.config import SwitchConfig
 
+# Imported for its side effect: it registers the `after_begin` hook that stamps
+# the bound tenant onto every session's transaction. Here rather than at a
+# factory call site, so a process that builds an `async_sessionmaker` by hand
+# is covered too — it still needs an engine, and an engine comes from here.
+from switch_core.db import tenant_session  # noqa: F401
+
 logger = logging.getLogger(__name__)
 
 

@@ -4,11 +4,12 @@ from types import SimpleNamespace
 
 import pytest
 from fastapi import HTTPException
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 import switch_core.gateway.oidc_routes as oidc_routes
 from switch_core.config import SwitchConfig
-from switch_core.db.models import OidcIdentity, User
+from switch_core.db.models import TENANT_ZERO_ID, OidcIdentity, TenantMember, User
 from switch_core.db.stores.user_store import OidcIdentityRaceError, UserStore
 from switch_core.gateway.auth import hash_password
 from switch_core.gateway.auth_routes import auth_config
@@ -410,6 +411,130 @@ class TestOidcCallback:
                     user_store=UserStore(),
                 )
             assert exc.value.status_code == 401
+
+
+class TestTheCallbackPlacesTheUserInATenant:
+    """Sign-in provisions accounts, and an account with no membership can
+    never sign in again (`gateway/auth.py` refuses to guess one). The callback
+    binds tenant zero explicitly rather than letting `TenantScoped`'s fallback
+    supply it — the same row today, but a decision rather than an accident,
+    and the line a later sign-up phase changes.
+    """
+
+    async def _memberships(
+        self, session: AsyncSession, user_id: str
+    ) -> list[TenantMember]:
+        result = await session.execute(
+            select(TenantMember).where(TenantMember.user_id == user_id)
+        )
+        return list(result.scalars().all())
+
+    async def test_just_in_time_provisioning_creates_exactly_one_membership(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        token = {
+            "userinfo": {
+                "email": "jit@example.com",
+                "email_verified": True,
+                "sub": "okta|jit",
+                "name": "Jit",
+            }
+        }
+        monkeypatch.setattr(oidc_routes, "_client", lambda: _FakeClient(token))
+
+        async with session_factory() as session:
+            await oidc_routes.oidc_callback(
+                request=SimpleNamespace(),  # type: ignore[arg-type]
+                config=_config(),
+                session=session,
+                user_store=UserStore(),
+            )
+            user = await UserStore().get_by_email(session, "jit@example.com")
+            assert user is not None
+            memberships = await self._memberships(session, user.id)
+
+        assert [m.tenant_id for m in memberships] == [TENANT_ZERO_ID]
+        assert memberships[0].role == "member"
+
+    async def test_linking_to_an_account_with_no_membership_repairs_it(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # An account that predates memberships: inserted directly, so it has
+        # none. Linking is the only thing that reaches it, so if linking does
+        # not give it one, nothing ever will.
+        async with session_factory() as session:
+            existing = User(
+                name="Legacy",
+                email="legacy@example.com",
+                role="user",
+                password_hash=hash_password("pw"),
+            )
+            session.add(existing)
+            await session.commit()
+            user_id = existing.id
+
+        token = {
+            "userinfo": {
+                "email": "legacy@example.com",
+                "email_verified": True,
+                "sub": "okta|legacy",
+                "name": "Legacy",
+            }
+        }
+        monkeypatch.setattr(oidc_routes, "_client", lambda: _FakeClient(token))
+
+        async with session_factory() as session:
+            await oidc_routes.oidc_callback(
+                request=SimpleNamespace(),  # type: ignore[arg-type]
+                config=_config(),
+                session=session,
+                user_store=UserStore(),
+            )
+            memberships = await self._memberships(session, user_id)
+
+        assert [m.tenant_id for m in memberships] == [TENANT_ZERO_ID]
+
+    async def test_linking_to_an_account_that_has_one_does_not_add_a_second(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # Two memberships is as broken as none: resolution refuses to pick.
+        async with session_factory() as session:
+            existing = User(
+                name="Member",
+                email="member@example.com",
+                role="user",
+                password_hash=hash_password("pw"),
+            )
+            await UserStore().create(session, existing)
+            await session.commit()
+            user_id = existing.id
+
+        token = {
+            "userinfo": {
+                "email": "member@example.com",
+                "email_verified": True,
+                "sub": "okta|member",
+                "name": "Member",
+            }
+        }
+        monkeypatch.setattr(oidc_routes, "_client", lambda: _FakeClient(token))
+
+        async with session_factory() as session:
+            await oidc_routes.oidc_callback(
+                request=SimpleNamespace(),  # type: ignore[arg-type]
+                config=_config(),
+                session=session,
+                user_store=UserStore(),
+            )
+            memberships = await self._memberships(session, user_id)
+
+        assert [m.tenant_id for m in memberships] == [TENANT_ZERO_ID]
 
 
 class TestAuthConfigEndpoint:

@@ -28,6 +28,7 @@ from switch_core.db.notify_ddl import (
     CREATE_NOTIFY_TRIGGER,
     DROP_NOTIFY_TRIGGER,
 )
+from switch_core.tenant_context import current_tenant_id
 
 
 def _uuid() -> str:
@@ -87,13 +88,23 @@ class TenantMember(Base):
 TENANT_ZERO_ID = "00000000-0000-0000-0000-000000000000"
 
 
+def _tenant_id_default() -> str:
+    """The tenant a new scoped row lands in when nothing tells it otherwise.
+
+    Prefers the tenant bound to the current request/session context; falls
+    back to tenant zero only when nothing is bound. The fallback is still
+    load-bearing: the ~206 background call sites that open a session from the
+    factory directly (`docs/old/multi-tenancy-phase1-db.md`, "Setting the
+    tenant") bind no tenant at all today, and removing this fallback before
+    they are converted — and before the row-level-security policies land to
+    make an unscoped write fail loudly instead — would break every one of
+    them. Remove it once both have shipped.
+    """
+    return current_tenant_id() or TENANT_ZERO_ID
+
+
 class TenantScoped:
     """Mixin carrying the tenant column shared by every per-tenant table.
-
-    The Python-side default returns tenant zero — the only tenant that exists
-    today — so an ordinary ORM insert needs no change to land in the right
-    place. A later PR replaces this default with a value read from the
-    request/session context; nothing here reads from a contextvar yet.
 
     The foreign key is named explicitly (`fk_<table>_tenant`) rather than left
     for the dialect to default, because `declared_attr` gives each subclass
@@ -113,7 +124,7 @@ class TenantScoped:
                 name=f"fk_{cls.__tablename__}_tenant",  # type: ignore[attr-defined]
             ),
             nullable=False,
-            default=TENANT_ZERO_ID,
+            default=_tenant_id_default,
         )
 
 

@@ -23,6 +23,7 @@ from switch_core.db.stores.external_user_store import ExternalUserStore
 from switch_core.db.stores.room_group_store import RoomGroupStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.server_connector_store import ServerConnectorStore
+from switch_core.db.stores.tenant_member_store import TenantMemberStore
 from switch_core.db.stores.user_store import UserStore
 from switch_core.room_service import RoomService
 from switch_core.rooms_yaml import RoomYamlService
@@ -46,6 +47,7 @@ def init_dependencies(
     user_store: UserStore,
     external_user_store: ExternalUserStore,
     api_key_store: ApiKeyStore,
+    tenant_member_store: TenantMemberStore,
     resource_service: ResourceService,
     protocol: ProtocolService,
     config: SwitchConfig,
@@ -64,12 +66,57 @@ def init_dependencies(
     _state["user_store"] = user_store
     _state["external_user_store"] = external_user_store
     _state["api_key_store"] = api_key_store
+    _state["tenant_member_store"] = tenant_member_store
     _state["resource_service"] = resource_service
     _state["protocol"] = protocol
     _state["config"] = config
 
 
 async def get_session() -> AsyncIterator[AsyncSession]:
+    """The tenant-scoped session for an authenticated endpoint handler.
+
+    Opening it does no I/O: the transaction — and with it the `after_begin`
+    hook that stamps `app.tenant_id` (`db/tenant_session.py`) — only begins on
+    the first query someone issues on it. `get_current_user` takes *this*
+    session (not one of its own) and binds the caller's tenant before its
+    first query on it, so the transaction is stamped from the moment it opens,
+    and the `User` an endpoint receives belongs to the session that endpoint
+    commits.
+
+    Resolution order is load-bearing, so do not read the paragraph above as
+    "order doesn't matter". FastAPI resolves an endpoint's dependencies in
+    declaration order, and a sibling dependency declared *before*
+    `get_current_user` that queries this session during its own resolution
+    would open the transaction with no tenant bound and keep it that way for
+    the rest of the request. None does today — every other dependency is a
+    plain accessor — and
+    `tests/switch_core/gateway/test_session_requires_authentication.py` keeps
+    the weaker, checkable half of that true: every route reaching this
+    dependency also reaches `get_current_user`.
+
+    A request with no authenticated caller must not use this — see
+    `get_system_session`.
+    """
+    async with _state["session_factory"]() as session:
+        yield session
+
+
+async def get_system_session() -> AsyncIterator[AsyncSession]:
+    """The session for a request that has no authenticated caller yet.
+
+    Password login and the OIDC callback are the whole list: both run before
+    anyone is signed in, so neither can bind a tenant from a principal the way
+    `get_current_user` does. Named separately from `get_session` so that
+    reads as a deliberate, reviewable exception rather than an
+    accidentally-unscoped session, and so the guard test above can hold for
+    `get_session` without exemptions. Nothing about opening it differs from
+    `get_session` today, since row-level security is not enforced yet; the two
+    must stay interchangeable in behaviour only, never in name.
+
+    "No tenant bound" is not the same as "writes land nowhere in particular":
+    the OIDC callback provisions a user and picks its tenant explicitly (see
+    `oidc_routes.py`).
+    """
     async with _state["session_factory"]() as session:
         yield session
 
@@ -134,6 +181,10 @@ def get_external_user_store() -> ExternalUserStore:
 
 def get_api_key_store() -> ApiKeyStore:
     return _state["api_key_store"]  # type: ignore[no-any-return]
+
+
+def get_tenant_member_store() -> TenantMemberStore:
+    return _state["tenant_member_store"]  # type: ignore[no-any-return]
 
 
 def get_connector_lifecycle() -> ServerSideConnectorLifecycleService:

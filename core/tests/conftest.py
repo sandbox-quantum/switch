@@ -17,6 +17,7 @@ from testcontainers.postgres import PostgresContainer
 # create_all provisions the full schema (rooms, room_groups, FKs, …).
 import switch_core.db.models  # noqa: F401
 from switch_core.db.base import Base
+from switch_core.db.engine import create_session_factory
 from switch_core.db.models import TENANT_ZERO_ID, Tenant
 
 
@@ -59,7 +60,10 @@ async def session_factory(
         await conn.run_sync(Base.metadata.create_all)
         await _seed_tenant_zero(conn)
     try:
-        yield async_sessionmaker(bind=engine, expire_on_commit=False)
+        # Goes through the same factory constructor production wiring uses,
+        # so this fixture — which backs most of the store test suite — differs
+        # from production in as little as possible.
+        yield create_session_factory(engine)
     finally:
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.drop_all)

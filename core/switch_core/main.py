@@ -94,6 +94,7 @@ from switch_core.db.stores.room_role_store import RoomRoleStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.server_connector_store import ServerConnectorStore
 from switch_core.db.stores.task_store import TaskStore
+from switch_core.db.stores.tenant_member_store import TenantMemberStore
 from switch_core.db.stores.user_store import UserStore
 from switch_core.gateway.app import create_gateway_app
 from switch_core.gateway.auth import hash_password
@@ -204,6 +205,7 @@ async def run(config: SwitchConfig) -> None:
     bridge_message_map_store = BridgeMessageMapStore()
     user_store = UserStore()
     api_key_store = ApiKeyStore()
+    tenant_member_store = TenantMemberStore()
     reference_store = ReferenceStore()
     reference_type_store = ReferenceTypeStore()
     document_store = DocumentStore()
@@ -382,6 +384,7 @@ async def run(config: SwitchConfig) -> None:
         user_store=user_store,
         external_user_store=external_user_store,
         api_key_store=api_key_store,
+        tenant_member_store=tenant_member_store,
         resource_service=resource_service,
         protocol=protocol,
         config=config,

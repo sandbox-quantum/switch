@@ -91,13 +91,11 @@ class SwitchConfig(BaseSettings):
     service_name: str = "switch-core"
     environment: str | None = None
 
-    # The tenant every log line is attributed to. Switch is single-tenant: one
-    # deployment serves one organisation, so the tenant is a deployment-wide
-    # constant and there is nothing per-request to read it from. Setting it per
-    # deployment now means the logs of two deployments can be told apart in one
-    # pipeline today, and that when the tenant model lands the only change is
-    # where the value comes from — the field is already on every line, and on
-    # every log call written between now and then.
+    # The tenant a log line is attributed to when nothing bound a real one.
+    # An authenticated request binds the caller's actual tenant
+    # (`gateway/auth.py`, `bridges/agent/auth.py`); this is only what a
+    # background task, a startup script, or anything else with no request
+    # in flight falls back to.
     tenant_id: str = "default"
 
     server_host: str = "0.0.0.0"
