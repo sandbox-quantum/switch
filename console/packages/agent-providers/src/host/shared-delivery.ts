@@ -38,7 +38,7 @@ export class SharedDelivery {
             record.event.hostSequence !== this.events.length + 1
           )
             throw new Error('Shared delivery journal has an invalid event identity or sequence.');
-          this.events.push(record.event);
+          this.events.push({ ...record.event, body: this.currentGeneration(record.event.body) });
         }
       } else {
         this.validateAck(record.sequence);
@@ -82,7 +82,7 @@ export class SharedDelivery {
       source.body.type === 'session.connectivity'
     )
       body = null;
-    else body = source.body;
+    else body = this.currentGeneration(source.body);
     const event = body
       ? hostEventSchema.parse({
           contractVersion: 1,
@@ -104,6 +104,26 @@ export class SharedDelivery {
     if (sequence === this.acknowledged) return;
     await this.journal.append({ type: 'ack', sequence });
     this.acknowledged = sequence;
+  }
+
+  /**
+   * Session state from an earlier epoch describes a generation Switch reconciled during
+   * recovery. Replaying it would re-assert that generation's status under the new epoch,
+   * so the transcript records the omission instead.
+   */
+  private currentGeneration(body: HostBody): HostBody {
+    if (
+      body.type !== 'session.upsert' ||
+      body.session.sessionId !== this.session.sessionId ||
+      body.session.epoch === this.session.epoch
+    )
+      return body;
+    return {
+      type: 'notice',
+      level: 'info',
+      code: 'PRIOR_GENERATION_STATE_SKIPPED',
+      message: `Session state from generation ${body.session.epoch} was not replayed into generation ${this.session.epoch}.`,
+    };
   }
 
   private validateAck(sequence: number): void {

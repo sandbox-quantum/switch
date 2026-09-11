@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdtemp, rm, writeFile, unlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { parseHostEvent } from '@switch-console/shared/session-v1';
 import type { Command, HostEvent, Session, Snapshot } from '@switch-console/shared/session-v1';
 import { afterEach, expect, it, vi } from 'vitest';
 import type { ProviderAdapter } from '../adapter';
@@ -356,4 +357,81 @@ it('retains an unverified room event when server replay evidence is unavailable'
   expect((await SharedRoomInbox.open(f.root)).pending()).toMatchObject([
     { sequence: 1, messageId: 'message' },
   ]);
+});
+
+it('reconciles a journal whose saved state belongs to an earlier generation', async () => {
+  const f = await fixture();
+  const line = (value: unknown) => JSON.stringify(value) + '\n';
+  await writeFile(
+    join(f.root, 'shared-state.jsonl'),
+    line({
+      type: 'identity',
+      session: f.options.session,
+      apiUrl: 'http://127.0.0.1/agent',
+      cwd: f.root,
+      operationId: randomUUID(),
+    }) +
+      line({
+        type: 'lease',
+        sourceBase: 1,
+        snapshot: {
+          contractVersion: 1,
+          throughSequence: 1,
+          session: { ...f.options.session, epoch: 'epoch-1' },
+          turns: [],
+          items: [],
+          requests: [],
+          commandStatuses: [],
+          nextPageToken: null,
+        },
+      })
+  );
+  await writeFile(
+    join(f.root, 'events.jsonl'),
+    line({
+      contractVersion: 1,
+      eventId: randomUUID(),
+      sessionId: 'session',
+      sequence: 2,
+      occurredAt: new Date().toISOString(),
+      body: {
+        type: 'session.upsert',
+        session: { ...f.options.session, epoch: 'epoch-0', status: 'error' },
+      },
+    })
+  );
+  await writeFile(
+    join(f.root, 'inbox.jsonl'),
+    line({ type: 'native', nativeSessionId: 'saved-native' })
+  );
+  const original = f.fetchMock.getMockImplementation()!;
+  f.fetchMock.mockImplementation(async (url, options) => {
+    const path = new URL(url).pathname;
+    if (path.endsWith('/events') || path.endsWith('/reconcile'))
+      try {
+        parseHostEvent(JSON.parse(options.body as string));
+      } catch (error) {
+        return Response.json({ code: 'INVALID_EVENT', message: String(error) }, { status: 422 });
+      }
+    return original(url, options);
+  });
+  const stop = new AbortController();
+  const running = runSharedHost(f.options, f.adapter, stop.signal);
+  try {
+    await vi.waitFor(() => expect(f.adapter.startSession).toHaveBeenCalledTimes(1), {
+      timeout: 10_000,
+    });
+    expect(
+      f.events.some(
+        (event) =>
+          event.body.type === 'notice' && event.body.code === 'PRIOR_GENERATION_STATE_SKIPPED'
+      )
+    ).toBe(true);
+    expect(
+      f.events.some((event) => event.body.type === 'session.upsert' && event.epoch === 'epoch-2')
+    ).toBe(true);
+  } finally {
+    stop.abort();
+    await running;
+  }
 });
