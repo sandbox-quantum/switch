@@ -259,6 +259,63 @@ class ApiKey(TenantScoped, Base):
     )
 
 
+# ── Invitations ────────────────────────────────────────────────────────────────
+
+
+class Invitation(TenantScoped, Base):
+    """A credential that grants membership in a tenant (CHOO-2722).
+
+    `email` is null for a shareable link and set for an invitation addressed
+    to one person; nothing at this layer refuses acceptance by a different
+    address, which is a decision for whatever accepts the invitation, not for
+    the row that describes it.
+
+    `token_hash` is unique across the whole deployment rather than per tenant,
+    the same reasoning as `api_keys.key_hash`: accepting an invitation is
+    exactly the credential-resolution shape that runs before any tenant is
+    bound, so the hash has to be resolvable on its own. `tenant_of_invitation`
+    (`db/tenant_lookup.py`) is the lookup that does it. The hash, never the
+    token: nothing in this schema, this store, or anything built on either
+    holds the plaintext once `InvitationStore.create` has returned it.
+
+    `role` is a checked string rather than an enum type, matching
+    `tenant_members.role` — the role an acceptance would grant, not one held
+    by anything yet.
+
+    `uses_remaining` and `expires_at` bound how long and how many times the
+    token works; `revoked_at` is a third, independent way to stop it early.
+    None of the three are optional here — a table that could not expire or be
+    revoked would not be a credential, and the design this implements is
+    explicit that expiry and revocation are not optional.
+    """
+
+    __tablename__ = "invitations"
+    __table_args__ = (
+        CheckConstraint(
+            "role IN ('owner', 'admin', 'member')", name="ck_invitations_role"
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
+    role: Mapped[str] = mapped_column(Text, nullable=False)
+    email: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Global on purpose, like api_keys.key_hash: accepting an invitation
+    # resolves the hash before a tenant is known, so it cannot be scoped by
+    # one.
+    token_hash: Mapped[str] = mapped_column(Text, unique=True, nullable=False)
+    expires_at: Mapped[str] = mapped_column(DateTime(timezone=True), nullable=False)
+    uses_remaining: Mapped[int] = mapped_column(Integer, nullable=False)
+    revoked_at: Mapped[str | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_by: Mapped[str] = mapped_column(
+        Text, ForeignKey("users.id"), nullable=False
+    )
+    created_at: Mapped[str] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
 # ── Clients ────────────────────────────────────────────────────────────────────
 
 
