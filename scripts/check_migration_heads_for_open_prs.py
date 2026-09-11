@@ -65,17 +65,17 @@ VERSIONS_DIR = REPO_ROOT / "core" / "switch_core" / "migrations" / "versions"
 VERSIONS_PATH = "core/switch_core/migrations/versions"
 STATUS_CONTEXT = "migration-heads-on-merge"
 
-# Everything below reaches a `git` or `gh` argument list, and the two values
-# that a pull request's author controls — the repository slug from the
-# environment and the tracked path from `git ls-tree` — are checked against
-# these before they get there. Nothing runs through a shell, so this is not
-# about metavariables; it is about a leading dash, which `git` would read as
-# an option rather than a path, and about keeping the reachable surface to
-# files that could actually be migrations.
-SAFE_REPO_RE = re.compile(r"\A[A-Za-z0-9._-]+/[A-Za-z0-9._-]+\Z")
+# The repository is never named in an argument list: `gh` takes it from the
+# checkout, and its `{owner}/{repo}` placeholder fills it in for an API path.
+# That leaves two values reaching `git` or `gh` that come from outside this
+# script — a tracked path from `git ls-tree`, and a commit id from `gh` — and
+# both are matched against a pattern first. Nothing runs through a shell, so
+# this is not about metavariables; it is about a leading dash, which `git`
+# would read as an option rather than a path.
 SAFE_VERSION_PATH_RE = re.compile(
     rf"\A{re.escape(VERSIONS_PATH)}/[A-Za-z0-9._-]+\.py\Z"
 )
+SAFE_SHA_RE = re.compile(r"\A[0-9a-f]{7,40}\Z")
 
 # Matches the two assignments Alembic's revision template generates, with or
 # without the type annotation it has carried across template versions
@@ -140,13 +140,16 @@ def run(
     )
 
 
-def open_prs_touching_migrations(repo: str) -> list[dict[str, Any]]:
+def open_prs_touching_migrations() -> list[dict[str, Any]]:
+    """Open pull requests that add or change a migration.
+
+    No `--repo`: `gh` resolves it from the checkout this runs in, which keeps
+    the repository out of the argument list entirely.
+    """
     listing = run(
         "gh",
         "pr",
         "list",
-        "--repo",
-        repo,
         "--state",
         "open",
         "--json",
@@ -154,7 +157,7 @@ def open_prs_touching_migrations(repo: str) -> list[dict[str, Any]]:
     )
     candidates = []
     for pr in json.loads(listing.stdout):
-        diff = run("gh", "pr", "diff", str(pr["number"]), "--repo", repo, "--name-only")
+        diff = run("gh", "pr", "diff", str(pr["number"]), "--name-only")
         if any(line.startswith(VERSIONS_PATH) for line in diff.stdout.splitlines()):
             candidates.append(pr)
     return candidates
@@ -214,13 +217,15 @@ def describe_chain_problem(revisions: list[RevisionFile]) -> str:
     return ""
 
 
-def post_status(
-    repo: str, sha: str, state: str, description: str, run_url: str
-) -> None:
+def post_status(sha: str, state: str, description: str, run_url: str) -> None:
+    if not SAFE_SHA_RE.match(sha):
+        raise ValueError(f"not a commit id: {sha!r}")
     run(
         "gh",
         "api",
-        f"repos/{repo}/statuses/{sha}",
+        # `{owner}` and `{repo}` are gh's own placeholders, filled from the
+        # checkout — not f-string fields.
+        f"repos/{{owner}}/{{repo}}/statuses/{sha}",
         "-f",
         f"state={state}",
         "-f",
@@ -233,7 +238,7 @@ def post_status(
 
 
 def check_pr(
-    pr: dict[str, Any], base_revisions: list[RevisionFile], repo: str, run_url: str
+    pr: dict[str, Any], base_revisions: list[RevisionFile], run_url: str
 ) -> bool:
     number = pr["number"]
     sha = pr["headRefOid"]
@@ -247,23 +252,18 @@ def check_pr(
         print(
             f"::error::PR #{number} would break the migration chain if merged now: {problem}"
         )
-    post_status(
-        repo, str(sha), "success" if passed else "failure", description, run_url
-    )
+    post_status(str(sha), "success" if passed else "failure", description, run_url)
     return passed
 
 
 def main() -> int:
-    repo = os.environ["GITHUB_REPOSITORY"]
-    if not SAFE_REPO_RE.match(repo):
-        raise ValueError(f"GITHUB_REPOSITORY is not an owner/name slug: {repo!r}")
     run_url = os.environ["RUN_URL"]
-    prs = open_prs_touching_migrations(repo)
+    prs = open_prs_touching_migrations()
     if not prs:
         print("No open PRs touch the migrations directory.")
         return 0
     base_revisions = read_base_revisions()
-    results = [check_pr(pr, base_revisions, repo, run_url) for pr in prs]
+    results = [check_pr(pr, base_revisions, run_url) for pr in prs]
     return 0 if all(results) else 1
 
 

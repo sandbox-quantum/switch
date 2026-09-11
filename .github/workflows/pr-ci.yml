@@ -283,6 +283,9 @@ jobs:
       - name: Re-check open PRs that touch migrations
         env:
           GH_TOKEN: ${{ github.token }}
+          # gh takes the repository from its own environment, so the script
+          # never assembles it into a command line.
+          GH_REPO: ${{ github.repository }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: python3 scripts/check_migration_heads_for_open_prs.py
 
