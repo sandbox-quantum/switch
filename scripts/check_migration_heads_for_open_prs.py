@@ -133,10 +133,26 @@ def read_base_revisions() -> list[RevisionFile]:
 
 
 def run(
-    *args: str, cwd: Path = REPO_ROOT, check: bool = True
+    *args: str,
+    cwd: Path = REPO_ROOT,
+    check: bool = True,
+    stdin: str | None = None,
 ) -> subprocess.CompletedProcess[str]:
+    """Run a command with a fixed argument list — never a shell, never a
+    string.
+
+    `stdin` is how anything variable-length or free-text gets in. Keeping such
+    values off the command line is not about shell metacharacters, which
+    cannot apply here; it is that an argument list is the one place a value
+    can be mistaken for an option.
+    """
     return subprocess.run(
-        list(args), cwd=cwd, check=check, capture_output=True, text=True
+        list(args),
+        cwd=cwd,
+        check=check,
+        capture_output=True,
+        text=True,
+        input=stdin,
     )
 
 
@@ -220,20 +236,25 @@ def describe_chain_problem(revisions: list[RevisionFile]) -> str:
 def post_status(sha: str, state: str, description: str, run_url: str) -> None:
     if not SAFE_SHA_RE.match(sha):
         raise ValueError(f"not a commit id: {sha!r}")
+    body = json.dumps(
+        {
+            "state": state,
+            "context": STATUS_CONTEXT,
+            "description": description,
+            "target_url": run_url,
+        }
+    )
     run(
         "gh",
         "api",
         # `{owner}` and `{repo}` are gh's own placeholders, filled from the
         # checkout — not f-string fields.
         f"repos/{{owner}}/{{repo}}/statuses/{sha}",
-        "-f",
-        f"state={state}",
-        "-f",
-        f"context={STATUS_CONTEXT}",
-        "-f",
-        f"description={description}",
-        "-f",
-        f"target_url={run_url}",
+        "--method",
+        "POST",
+        "--input",
+        "-",
+        stdin=body,
     )
 
 
