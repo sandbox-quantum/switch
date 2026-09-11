@@ -221,6 +221,8 @@ class RoomSpec(BaseModel):
     roles: list[RoleSpec] = []
     references: list[ExternalReferenceEntry] = []
     docs: list[DocSpec] = []
+    # Message posted to the room after creation to kick off work.
+    kickoff: str | None = None
 
 
 class TemplateDocument(BaseModel):
@@ -393,6 +395,11 @@ class RoomYamlService:
         created_doc_ids = await self._create_inline_docs(
             room_id, spec.docs, user_id=user_id, failures=failures
         )
+
+        if spec.kickoff:
+            await self._rooms._matrix_admin.send_message(
+                result.room.matrix_room_id, spec.kickoff, format="markdown"
+            )
 
         return ProvisionResult(
             room_id=room_id,

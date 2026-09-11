@@ -971,6 +971,10 @@ class BridgeCore:
         Only resolvable names appear in the returned dict; names with no
         matching external user on this bridge are omitted (and logged), so the
         caller can diff against the input to learn which ones failed.
+
+        When the DB lookup misses, falls back to a proactive platform directory
+        search so that users who exist on the platform but have never messaged
+        through Switch can still be resolved.
         """
         async with self._session_factory() as session:
             users = await self._external_user_store.get_by_bridge(
@@ -983,6 +987,18 @@ class BridgeCore:
             if ext_id:
                 resolved[name] = ext_id
             else:
+                # Proactive platform lookup — search by name or email
+                try:
+                    results = await self.adapter.search_directory_users(name)
+                    match = next(
+                        (r for r in results if r.username == name or r.email == name),
+                        None,
+                    )
+                    if match:
+                        resolved[name] = match.external_user_id
+                        continue
+                except NotImplementedError:
+                    pass
                 logger.warning(
                     "No external user found for username '%s' on bridge %s",
                     name,

@@ -405,6 +405,7 @@ async def create_room_from_yaml(
             inputs=inputs,
             builtins={
                 "$creator": user.name,
+                "$creator_email": user.email,
                 "$date": str(date.today()),
                 "$timestamp": str(int(time.time())),
             },

@@ -138,6 +138,23 @@ class PostgresProvisioning:
         this has none.
         """
 
+    async def send_message(
+        self, room_id: str, body: str, *, format: str = "markdown"
+    ) -> str | None:
+        """Post a system message into a room."""
+        from switch_core.db.models import Message
+
+        msg = Message(
+            room_id=room_id,
+            sender_id="system",
+            body=body,
+            content={"msgtype": "m.text", "body": body, "format": format},
+        )
+        async with self._session_factory() as session:
+            created = await self._message_store.create(session, msg, [])
+            await session.commit()
+        return created.id
+
     async def close(self) -> None:
         """Nothing held open."""
 
