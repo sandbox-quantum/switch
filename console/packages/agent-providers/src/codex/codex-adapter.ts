@@ -43,7 +43,6 @@ import {
   type CodexItemNotification,
   type CodexMcpElicitationParams,
   type CodexPermissionsApprovalParams,
-  type CodexSandboxMode,
   type CodexThreadItem,
   type CodexThreadOpenResponse,
   type CodexThreadStatusChangedNotification,
@@ -189,7 +188,7 @@ export class CodexAdapter implements ProviderAdapter {
     steering: true,
     resume: true,
     approvals: true,
-    userInput: true,
+    userInput: false,
   };
 
   private readonly sessions = new Map<string, CodexSessionState>();

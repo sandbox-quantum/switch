@@ -212,6 +212,23 @@ describe('session-v1 client transport', () => {
     await client.reconcile();
     expect(client.hasPendingCommand()).toBe(false);
   });
+  it('acknowledges an unknown outcome without resending or changing its receipt', async () => {
+    const wire = transport();
+    const client = new SessionChatClient('session-demo', wire.api);
+    await client.connect();
+    vi.mocked(wire.api.submit).mockResolvedValueOnce({ ...wire.receipt, status: 'unknown' });
+    await expect(client.send('Hello', 'send')).rejects.toThrow('unknown');
+    expect(client.hasUnknownCommand()).toBe(true);
+    vi.mocked(wire.api.commandStatus).mockResolvedValueOnce({ ...wire.receipt, status: 'unknown' });
+    await client.acknowledgeUnknown();
+    expect(client.hasPendingCommand()).toBe(false);
+    expect(wire.api.submit).toHaveBeenCalledTimes(1);
+    expect(
+      client.getSnapshot().snapshot?.commandStatuses.find((status) => status.commandId === 'send')
+        ?.status
+    ).toBe('unknown');
+    client.dispose();
+  });
   it('ignores events from a disconnected subscription until reconnect', async () => {
     const wire = transport();
     const client = new SessionChatClient('session-demo', wire.api);

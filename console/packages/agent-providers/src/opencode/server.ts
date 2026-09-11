@@ -1,5 +1,6 @@
 import { type ChildProcess, spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
+import { rm } from 'node:fs/promises';
 import { createServer } from 'node:net';
 import { ProviderUnavailableError } from '../adapter';
 import type { OpencodeConfigFile } from './config';
@@ -56,8 +57,8 @@ async function findFreePort(): Promise<number> {
 
 export async function startOpencodeServer(input: StartServerInput): Promise<OpencodeServerHandle> {
   const password = randomBytes(24).toString('base64url');
-  const configHome = await prepareOpencodeHome(input.config, input.skills, input.env);
   const port = await findFreePort();
+  const configHome = await prepareOpencodeHome(input.config, input.skills, input.env);
 
   const child = spawn(input.binaryPath, ['serve', '--hostname=127.0.0.1', `--port=${port}`], {
     cwd: input.cwd,
@@ -69,60 +70,92 @@ export async function startOpencodeServer(input: StartServerInput): Promise<Open
     stdio: ['ignore', 'pipe', 'pipe'],
   });
 
-  const url = await new Promise<string>((resolve, reject) => {
-    let output = '';
-    let settled = false;
-    const finish = (run: () => void) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      run();
-    };
-    const timer = setTimeout(() => {
-      finish(() => {
-        child.kill('SIGKILL');
-        reject(
-          new ProviderUnavailableError(
-            'opencode',
-            `server did not start within ${input.startupTimeoutMs}ms: ${output.trim()}`
+  try {
+    const url = await new Promise<string>((resolve, reject) => {
+      let output = '';
+      let settled = false;
+      const finish = (run: () => void) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        run();
+      };
+      const timer = setTimeout(() => {
+        finish(() => {
+          child.kill('SIGKILL');
+          reject(
+            new ProviderUnavailableError(
+              'opencode',
+              `server did not start within ${input.startupTimeoutMs}ms: ${output.trim()}`
+            )
+          );
+        });
+      }, input.startupTimeoutMs);
+
+      child.stdout?.on('data', (chunk: Buffer) => {
+        output = (output + chunk.toString()).slice(-8000);
+        for (const line of output.split('\n')) {
+          if (!line.startsWith(READY_PREFIX)) continue;
+          const match = line.match(/on\s+(https?:\/\/\S+)/);
+          if (!match?.[1]) continue;
+          finish(() => resolve(match[1] as string));
+          return;
+        }
+      });
+      child.stderr?.on('data', (chunk: Buffer) => {
+        output = (output + chunk.toString()).slice(-8000);
+      });
+      child.on('error', (error) => {
+        finish(() =>
+          reject(new ProviderUnavailableError('opencode', 'could not spawn', { cause: error }))
+        );
+      });
+      child.on('exit', (code) => {
+        finish(() =>
+          reject(
+            new ProviderUnavailableError(
+              'opencode',
+              `server exited with code ${code}: ${output.trim()}`
+            )
           )
         );
       });
-    }, input.startupTimeoutMs);
+    });
 
-    child.stdout?.on('data', (chunk: Buffer) => {
-      output += chunk.toString();
-      for (const line of output.split('\n')) {
-        if (!line.startsWith(READY_PREFIX)) continue;
-        const match = line.match(/on\s+(https?:\/\/\S+)/);
-        if (!match?.[1]) continue;
-        finish(() => resolve(match[1] as string));
-        return;
-      }
-    });
-    child.stderr?.on('data', (chunk: Buffer) => {
-      output += chunk.toString();
-    });
-    child.on('error', (error) => {
-      finish(() =>
-        reject(new ProviderUnavailableError('opencode', 'could not spawn', { cause: error }))
-      );
-    });
-    child.on('exit', (code) => {
-      finish(() =>
-        reject(
-          new ProviderUnavailableError(
-            'opencode',
-            `server exited with code ${code}: ${output.trim()}`
-          )
-        )
-      );
-    });
-  });
+    const authorization = `Basic ${Buffer.from(`opencode:${password}`).toString('base64')}`;
+    await waitForHealth(url, authorization, input.startupTimeoutMs);
+    return { url, authorization, process: child, configHome };
+  } catch (error) {
+    await stopOpencodeServer({ process: child, configHome });
+    throw error;
+  }
+}
 
-  const authorization = `Basic ${Buffer.from(`opencode:${password}`).toString('base64')}`;
-  await waitForHealth(url, authorization, input.startupTimeoutMs);
-  return { url, authorization, process: child, configHome };
+export async function stopOpencodeServer(
+  server: Pick<OpencodeServerHandle, 'process' | 'configHome'>
+): Promise<void> {
+  const child = server.process;
+  if (child.pid && child.exitCode === null && child.signalCode === null) {
+    await new Promise<void>((resolve, reject) => {
+      const kill = setTimeout(() => child.kill('SIGKILL'), 2000);
+      const timeout = setTimeout(() => {
+        cleanup();
+        reject(new Error('OpenCode process did not exit after termination.'));
+      }, 5000);
+      const cleanup = () => {
+        clearTimeout(kill);
+        clearTimeout(timeout);
+        child.removeListener('exit', exited);
+      };
+      const exited = () => {
+        cleanup();
+        resolve();
+      };
+      child.once('exit', exited);
+      child.kill('SIGTERM');
+    });
+  }
+  await rm(server.configHome, { recursive: true, force: true });
 }
 
 async function waitForHealth(url: string, authorization: string, timeoutMs: number): Promise<void> {
@@ -130,7 +163,10 @@ async function waitForHealth(url: string, authorization: string, timeoutMs: numb
   let lastError = 'no attempt made';
   while (Date.now() < deadline) {
     try {
-      const response = await fetch(`${url}/global/health`, { headers: { authorization } });
+      const response = await fetch(`${url}/global/health`, {
+        headers: { authorization },
+        signal: AbortSignal.timeout(Math.min(5000, Math.max(1, deadline - Date.now()))),
+      });
       if (response.ok) {
         const body = (await response.json()) as { healthy?: boolean };
         if (body.healthy === true) return;

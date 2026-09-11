@@ -732,6 +732,14 @@ is managed by Switch Console: tell the operator to check this agent's server
 and identity settings there, correct the reported problem, and start the session
 again. There is no standalone Cursor configure skill.
 
+### SDK session controls
+
+For a room connected to an SDK session, `!reset`, `!compact`, and `!interrupt`
+use server-authorized durable commands. The agent owner must issue these controls
+from a verified account. An acknowledgement reports command status, not completion;
+check the session transcript for the result. Unsupported controls fail explicitly.
+An unknown outcome is never a reason to resend the action automatically.
+
 ## Tool index
 
 Every Switch tool you call in normal operation, one line each. The two

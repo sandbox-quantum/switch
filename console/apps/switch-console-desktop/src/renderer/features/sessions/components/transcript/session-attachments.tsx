@@ -33,9 +33,7 @@ export function useSessionAttachments(client: SessionChatClient, mimeTypes: stri
       )
     );
     try {
-      const mimeType = mimeTypes.includes(entry.file.type)
-        ? entry.file.type
-        : 'application/octet-stream';
+      const mimeType = entry.file.type || 'application/octet-stream';
       if (!mimeTypes.includes(mimeType)) throw new Error('This file type is not supported.');
       const attachment = await client.uploadAttachment({
         attachmentId: entry.id,

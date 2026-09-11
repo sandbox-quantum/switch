@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import type { ISwitchSetupFilesBehavior, PluginFs } from '@switch-console/core/agents/plugins';
 import { resolveCommandPath } from '@switch-console/core/deps/runtime';
 import { type ArtifactName, artifactVersion } from '@switch-console/shared';
+import { providerAdapterRegistry } from '@main/core/agent-runtime/impl/provider-adapter-registry';
 import { LocalExecutionContext } from '@main/core/execution-context/local-execution-context';
 import { agentTypeOf } from '@main/core/telemetry/agent-type';
 import { trackEvent } from '@main/core/telemetry/telemetry-service';
@@ -310,6 +311,18 @@ class SwitchSetupService {
 
     const availability: AgentTypeAvailability[] = [];
     for (const agentId of types) {
+      if (process.platform === 'win32' || !providerAdapterRegistry.supports(agentId)) {
+        availability.push({
+          agentId,
+          available: false,
+          blockedReason:
+            process.platform === 'win32'
+              ? 'SDK sessions require a POSIX SSH execution host.'
+              : 'This provider has no SDK session adapter.',
+        });
+        continue;
+      }
+
       if (agentId === 'gemini' || agentId === 'cursor') {
         const installed = await resolveCommandPath(
           agentId === 'cursor' ? 'agent' : 'gemini',

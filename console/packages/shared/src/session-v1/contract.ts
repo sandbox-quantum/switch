@@ -31,6 +31,7 @@ export type Attachment = {
   name: string;
   mimeType: string;
   bytes: number;
+  sha256?: string | null;
 };
 export type Item = {
   itemId: Id;
@@ -76,6 +77,7 @@ export type ModelChoice = {
   imageInput?: boolean | null;
 };
 export type Session = {
+  roomIds?: Id[];
   sessionId: Id;
   agentId: Id;
   provider: Provider;

@@ -203,6 +203,28 @@ export class SessionChatClient {
     return status;
   }
 
+  hasUnknownCommand(): boolean {
+    return Boolean(
+      this.pending &&
+      this.view.snapshot?.commandStatuses.some(
+        (status) => status.commandId === this.pending?.commandId && status.status === 'unknown'
+      )
+    );
+  }
+
+  async acknowledgeUnknown(): Promise<void> {
+    if (!this.pending) throw new Error('No uncertain command.');
+    const id = this.pending.commandId;
+    const status = commandStatusSchema.parse(
+      await this.transport.commandStatus(this.sessionId, id)
+    );
+    if (status.commandId !== id || status.status !== 'unknown')
+      throw new Error('Check command status before acknowledging an unknown outcome.');
+    this.replica?.recordReceipt(status);
+    this.pending = null;
+    this.publish(this.view.connected, null);
+  }
+
   dispose(): void {
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     this.reconnectTimer = null;
@@ -214,8 +236,11 @@ export class SessionChatClient {
 
   private acceptReceipt(status: CommandStatus, commandId: string): void {
     if (status.commandId !== commandId) throw new Error('Command receipt identity mismatch.');
-    if (status.status === 'unknown')
-      throw new Error('Command outcome is unknown; keep the original command ID.');
+    if (status.status === 'unknown') {
+      this.replica?.recordReceipt(status);
+      this.publish(this.view.connected, null);
+      throw new Error('Command outcome is unknown. It will not be resent automatically.');
+    }
     if (status.status === 'rejected') {
       this.pending = null;
       throw new Error(status.message ?? status.code ?? 'Message rejected.');

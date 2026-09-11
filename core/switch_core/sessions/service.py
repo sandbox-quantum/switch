@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import hashlib
+import json
+import time
 import uuid
 from datetime import UTC, datetime, timedelta
 from typing import get_args
@@ -7,6 +10,7 @@ from typing import get_args
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from switch_core.bridges.agent.protocol.connections import ConnectionRegistry
 from switch_core.bridges.agent.protocol.event_buffer import (
     CursorExpiredError,
     EventBuffer,
@@ -82,6 +86,7 @@ class SessionAuthority:
     ) -> Snapshot:
         if session.agent_id != agent_id:
             raise SessionError("NOT_AUTHORIZED", "Session belongs to another agent.")
+        session = session.model_copy(update={"room_ids": []})
         async with self._sessions() as db, db.begin():
             # The agent row also serializes the first lease, before a session row exists.
             agent = await db.scalar(
@@ -333,7 +338,20 @@ class SessionAuthority:
                     "IDEMPOTENCY_CONFLICT", "Event ID has already been used."
                 )
             await self._validate_event(db, row, event)
-            await self._append(db, row, event.body, event)
+            body = event.body
+            if isinstance(body, SessionUpsert):
+                body = body.model_copy(
+                    update={
+                        "session": body.session.model_copy(
+                            update={
+                                "room_ids": Snapshot.model_validate(
+                                    row.snapshot
+                                ).session.room_ids
+                            }
+                        )
+                    }
+                )
+            await self._append(db, row, body, event)
             row.host_sequence = event.host_sequence
             if isinstance(event.body, CommandResult):
                 stored = await db.get(
@@ -420,6 +438,30 @@ class SessionAuthority:
                     "ROOM_EVENT_UNAVAILABLE", "The verified room event is unavailable."
                 )
             payload = entry.event.payload
+            if entry.event.type == "room_join" or entry.event.type.startswith("task_"):
+                canonical = json.dumps(
+                    payload.model_dump(mode="json"),
+                    sort_keys=True,
+                    separators=(",", ":"),
+                    ensure_ascii=False,
+                )
+                expected_id = (
+                    f"{entry.event.type}:"
+                    + hashlib.sha256(canonical.encode()).hexdigest()
+                )
+                if not entry.notifiable or message_id != expected_id:
+                    raise SessionError(
+                        "NOT_AUTHORIZED",
+                        "Only the verified subscribed event can be submitted.",
+                    )
+                payload = MessagePayload(
+                    addressed=True,
+                    sender="switch",
+                    sender_name="Switch",
+                    message_id=expected_id,
+                    body=f"{entry.event.type}: {canonical}",
+                    timestamp=0,
+                )
             if (
                 not isinstance(payload, MessagePayload)
                 or not payload.addressed
@@ -442,10 +484,62 @@ class SessionAuthority:
                 raise SessionError(
                     "NOT_AUTHORIZED", "The room event has no verified platform origin."
                 )
-            if payload.attachments:
-                raise SessionError(
-                    "UNSUPPORTED_CAPABILITY", "Room attachment staging is unavailable."
-                )
+            attachments = []
+            attachment_notices = []
+            capabilities = Snapshot.model_validate(row.snapshot).session.capabilities
+            for index, reference in enumerate(payload.attachments):
+                try:
+                    if index >= MAX_ATTACHMENTS:
+                        raise ValueError(
+                            "At most eight attachments can be delivered per message."
+                        )
+                    source = await db.scalar(
+                        select(MediaBlob).where(MediaBlob.uri == reference.mxc)
+                    )
+                    if source is None:
+                        raise ValueError(
+                            "The room attachment bytes are unavailable; ask the sender to upload the file again."
+                        )
+                    mime_type = source.content_type or reference.mimetype
+                    validate_attachment(reference.filename, mime_type, source.data)
+                    if mime_type not in capabilities.attachment_mime_types:
+                        raise ValueError(
+                            "The selected provider model does not support this attachment type."
+                        )
+                    if (
+                        source.sha256
+                        and hashlib.sha256(source.data).hexdigest() != source.sha256
+                    ):
+                        raise ValueError(
+                            "The room attachment failed its integrity check."
+                        )
+                    attachment_id = str(
+                        uuid.uuid5(
+                            uuid.NAMESPACE_URL,
+                            f"{room_id}:{message_id}:{index}:{reference.mxc}",
+                        )
+                    )
+                    uri = attachment_uri(session_id, attachment_id)
+                    blob = await db.scalar(
+                        select(MediaBlob).where(MediaBlob.uri == uri)
+                    )
+                    if blob is None:
+                        blob = MediaBlob(
+                            uri=uri,
+                            filename=reference.filename,
+                            content_type=mime_type,
+                            size=len(source.data),
+                            data=source.data,
+                            sdk_session_id=session_id,
+                            sha256=hashlib.sha256(source.data).hexdigest(),
+                        )
+                        db.add(blob)
+                        await db.flush()
+                    attachments.append(attachment_metadata(attachment_id, blob))
+                except ValueError as exc:
+                    attachment_notices.append(
+                        f"Attachment {reference.filename!r} was not delivered: {exc}"
+                    )
             command = Command(
                 contract_version=1,
                 command_id=command_id,
@@ -462,8 +556,13 @@ class SessionAuthority:
                 ),
                 body=MessageSend(
                     type="message.send",
-                    text=f"[Switch] {payload.sender_name} addressed you in room {room_id} (message_id {message_id}, thread_id {payload.thread_id or 'none'}):\n{payload.body}",
-                    attachments=[],
+                    text=f"[Switch] {payload.sender_name} addressed you in room {room_id} (message_id {message_id}, thread_id {payload.thread_id or 'none'}):\n{payload.body}"
+                    + (
+                        "\n\n" + "\n".join(attachment_notices)
+                        if attachment_notices
+                        else ""
+                    ),
+                    attachments=attachments,
                     delivery="queue",
                 ),
             )
@@ -670,6 +769,167 @@ class SessionAuthority:
                     await self._append(db, row, status)
             return pending
 
+    async def submit_room_control(
+        self,
+        agent_id: str,
+        room_id: str,
+        action: str,
+        actor_id: str,
+        message_id: str | None,
+        connections: ConnectionRegistry,
+    ) -> CommandStatus | None:
+        async with self._sessions() as db, db.begin():
+            candidates = list(
+                (
+                    await db.scalars(
+                        select(SdkSession)
+                        .where(
+                            SdkSession.agent_id == agent_id,
+                            SdkSession.connection_id.is_not(None),
+                        )
+                        .with_for_update()
+                    )
+                ).all()
+            )
+            live = [
+                row
+                for row in candidates
+                if row.connection_id is not None
+                and (connection := connections.get(row.connection_id)) is not None
+                and connection.agent_id == agent_id
+                and connection.is_alive(time.monotonic())
+                and room_id in connection.rooms
+            ]
+            if not live:
+                return None
+            if len(live) != 1:
+                raise SessionError(
+                    "FENCING_REQUIRED", "More than one SDK session claims this room."
+                )
+            row = live[0]
+            if not message_id:
+                raise SessionError(
+                    "INVALID_COMMAND", "The room command has no stable message ID."
+                )
+            room = await db.get(Room, room_id)
+            if room is None:
+                raise SessionError("NOT_FOUND", "The room no longer exists.")
+            bridge = (
+                await db.get(CollaborationBridge, room.bridge_id)
+                if room.bridge_id
+                else None
+            )
+            origin = Origin(
+                surface=bridge.type if bridge else "switch-web",
+                actor_id=actor_id,
+                room_id=room_id,
+                thread_id=message_id,
+                message_id=message_id,
+            )
+            await self._authorize(
+                db,
+                row,
+                origin,
+                None if bridge else actor_id,
+                bridge.id if bridge else None,
+            )
+            command_id = str(
+                uuid.uuid5(
+                    uuid.NAMESPACE_URL,
+                    f"sdk-control:{agent_id}:{room_id}:{message_id}:{action}",
+                )
+            )
+            previous = await db.get(SdkSessionCommand, (row.id, command_id))
+            if previous is not None:
+                return CommandStatus.model_validate(previous.status)
+            snapshot = Snapshot.model_validate(row.snapshot)
+            body: SessionReset | SessionCompact | TurnInterrupt
+            if action == "reset":
+                body = SessionReset(type="session.reset")
+            elif action == "compact":
+                body = SessionCompact(type="session.compact")
+            elif action == "interrupt":
+                turn = next(
+                    (turn for turn in snapshot.turns if turn.status == "running"), None
+                )
+                if turn is None:
+                    raise SessionError(
+                        "TURN_NOT_ACTIVE", "There is no running turn to interrupt."
+                    )
+                body = TurnInterrupt(type="turn.interrupt", turn_id=turn.turn_id)
+            else:
+                raise SessionError(
+                    "UNSUPPORTED_CAPABILITY", "This room command is unsupported."
+                )
+            return await self._accept(
+                db,
+                row,
+                Command(
+                    contract_version=1,
+                    command_id=command_id,
+                    session_id=row.id,
+                    epoch=row.epoch,
+                    origin=origin,
+                    body=body,
+                ),
+                bridge.id if bridge else None,
+            )
+
+    async def bind_connection(
+        self,
+        agent_id: str,
+        session_id: str,
+        host_id: str,
+        epoch: str,
+        connection_id: str,
+        connections: ConnectionRegistry,
+    ) -> list[str]:
+        async with self._sessions() as db, db.begin():
+            agent = await db.scalar(
+                select(Agent).where(Agent.id == agent_id).with_for_update()
+            )
+            row = await self._host(db, agent_id, session_id, host_id, epoch)
+            connection = connections.get(connection_id)
+            if (
+                agent is None
+                or connection is None
+                or connection.agent_id != agent_id
+                or connection.scope != "single"
+                or not connection.is_alive(time.monotonic())
+            ):
+                raise SessionError(
+                    "NOT_AUTHORIZED",
+                    "The SDK room connection is not live or belongs to another agent.",
+                )
+            previous = await db.scalar(
+                select(SdkSession.id).where(
+                    SdkSession.connection_id == connection_id,
+                    SdkSession.id != session_id,
+                )
+            )
+            if previous is not None:
+                raise SessionError(
+                    "FENCING_REQUIRED", "Another SDK session owns this room connection."
+                )
+            rooms = sorted(connection.rooms)
+            for room_id in rooms:
+                if await db.get(ClientRoom, (agent.client_id, room_id)) is None:
+                    raise SessionError(
+                        "NOT_AUTHORIZED", "The agent is no longer a room member."
+                    )
+            row.connection_id = connection_id
+            snapshot = Snapshot.model_validate(row.snapshot)
+            if snapshot.session.room_ids != rooms:
+                await self._append(
+                    db,
+                    row,
+                    SessionUpsert(
+                        type="session.upsert",
+                        session=snapshot.session.model_copy(update={"room_ids": rooms}),
+                    ),
+                )
+            return rooms
+
     async def upload_attachment(
         self,
         session_id: str,
@@ -700,6 +960,8 @@ class SessionAuthority:
             else:
                 blob = MediaBlob(
                     uri=uri,
+                    sha256=hashlib.sha256(data).hexdigest(),
+                    sdk_session_id=session_id,
                     filename=name,
                     content_type=mime_type,
                     size=len(data),
@@ -732,6 +994,13 @@ class SessionAuthority:
         if blob is None:
             raise SessionError(
                 "NOT_FOUND", "Attachment does not belong to this session."
+            )
+        if (
+            blob.sha256 is not None
+            and hashlib.sha256(blob.data).hexdigest() != blob.sha256
+        ):
+            raise SessionError(
+                "INVALID_ATTACHMENT", "Stored attachment failed its integrity check."
             )
         return blob
 

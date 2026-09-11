@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { z } from 'zod';
 import { releaseOwner, replaceOwner, withOwnershipLock } from './ownership-lock';
+import { fenceDeadOwner } from './process-fence';
 
 function alive(pid: number): boolean {
   try {
@@ -71,6 +72,16 @@ export async function superviseSharedHost(input: {
         [code, signal] = await exited;
       } finally {
         input.signal.removeEventListener('abort', stop);
+      }
+      if (child.pid) {
+        await fenceDeadOwner(child.pid, child.pid);
+        const workerPath = join(input.root, 'shared-owner.lock');
+        try {
+          const owner = JSON.parse(await readFile(workerPath, 'utf8'));
+          if (owner.pid === child.pid) await releaseOwner(input.root, workerPath, owner);
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+        }
       }
       if (input.signal.aborted) return;
       if (code === 0) return;

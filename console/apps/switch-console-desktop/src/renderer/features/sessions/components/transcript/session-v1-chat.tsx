@@ -102,6 +102,7 @@ export function SessionV1Chat({
                 sending ||
                 client.hasPendingCommand() ||
                 Boolean(runningTurn) ||
+                Boolean(view.snapshot?.turns.some((turn) => turn.status === 'queued')) ||
                 Boolean(session?.pendingRequestIds.length)
               }
               onClick={() => {
@@ -245,6 +246,28 @@ export function SessionV1Chat({
         {sendError && (
           <div role="alert" className="mb-2 text-sm text-foreground-destructive">
             {sendError}
+            {client.hasUnknownCommand() && (
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={sending}
+                onClick={() => {
+                  setSending(true);
+                  void client
+                    .acknowledgeUnknown()
+                    .then(() => {
+                      setDraft('');
+                      uploads.clear();
+                      setPendingId(null);
+                      setSendError(null);
+                    })
+                    .catch((error: unknown) => setSendError(String(error)))
+                    .finally(() => setSending(false));
+                }}
+              >
+                Acknowledge unknown outcome and clear draft
+              </Button>
+            )}
             {client.hasPendingCommand() && (
               <Button
                 size="sm"

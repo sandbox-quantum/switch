@@ -13,13 +13,7 @@ import { superviseSharedHost } from './supervisor';
 const [root, configPath, mode] = process.argv.slice(2);
 if (!root || !configPath)
   throw new Error('Shared SDK host requires a state directory and configuration file.');
-const config = sharedConfigSchema.parse(
-  JSON.parse(
-    mode === '--ensure' || mode === '--ensure-watch' || mode === '--restart'
-      ? Buffer.from(configPath, 'base64').toString('utf8')
-      : await readFile(configPath, 'utf8')
-  )
-);
+const config = sharedConfigSchema.parse(JSON.parse(await readFile(configPath, 'utf8')));
 if (mode === '--ensure' || mode === '--ensure-watch' || mode === '--restart') {
   console.log(
     JSON.stringify(

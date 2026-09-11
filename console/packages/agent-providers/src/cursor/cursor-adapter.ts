@@ -100,7 +100,7 @@ export class CursorAdapter implements ProviderAdapter {
     steering: false,
     resume: true,
     approvals: true,
-    userInput: true,
+    userInput: false,
   };
   private readonly sessions = new Map<string, State>();
   private readonly listeners = new Set<(event: ProviderRuntimeEvent) => void>();

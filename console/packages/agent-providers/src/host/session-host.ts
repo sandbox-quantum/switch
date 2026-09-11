@@ -195,6 +195,7 @@ export class HostedSession {
           throw new Error('Cannot recover a session without its native provider ID.');
         if (config.epochAuthority !== 'server') config.session.epoch = randomUUID();
         const next = host.replica.snapshot();
+        config.session.models = next.session.models;
         next.session = structuredClone(config.session);
         host.replica = new SessionReplica(next);
       }
@@ -224,7 +225,18 @@ export class HostedSession {
       await this.publish({ type: 'session.upsert', session: structuredClone(this.config.session) });
       return;
     }
-    const models = await this.adapter.listModels(this.config.session.sessionId);
+    let models = await this.adapter.listModels(this.config.session.sessionId);
+    const previousModels = this.replica.snapshot().session.models;
+    if (!models.length && previousModels?.length) {
+      models = previousModels;
+      await this.publish({
+        type: 'notice',
+        level: 'warning',
+        code: 'MODEL_CATALOG_CACHED',
+        message:
+          'The provider did not return a model catalog on resume. Showing the last known choices; the provider will validate each change.',
+      });
+    }
     this.config.session.models = models;
     this.config.session.model = this.config.input.model
       ? { id: this.config.input.model.id, options: this.config.input.model.options ?? {} }

@@ -108,6 +108,7 @@ class Attachment(_Model):
     name: str
     mime_type: str
     bytes: Counter
+    sha256: str | None = None
 
 
 class Item(_Model):
@@ -206,6 +207,7 @@ class ModelChoice(_Model):
 
 
 class Session(_Model):
+    room_ids: list[Id] = Field(default_factory=list)
     session_id: Id
     agent_id: Id
     provider: Provider

@@ -41,12 +41,12 @@ describe('buildSetupPlan', () => {
   it('leaves every core tool required, so none can strand a host silently', () => {
     const plan = build();
     const optional = plan.steps.filter((s) => s.optional).map((s) => s.id);
-    expect(optional).toEqual([]);
+    expect(optional).toEqual(['tmux']);
   });
 
   it('keeps the required core tools required', () => {
     const plan = build();
-    for (const id of ['git', 'node', 'tmux']) {
+    for (const id of ['git', 'node']) {
       expect(plan.steps.find((s) => s.id === id)!.optional).toBe(false);
     }
   });

@@ -418,7 +418,7 @@ export class OpencodeAdapter implements ProviderAdapter {
     try {
       for await (const event of record.transport.events) {
         try {
-          this.handleEvent(record, event);
+          await this.handleEvent(record, event);
         } catch (error) {
           this.logger.error('opencode: event handling failed', {
             sessionId: record.sessionId,
@@ -436,7 +436,7 @@ export class OpencodeAdapter implements ProviderAdapter {
     }
   }
 
-  private handleEvent(record: SessionRecord, event: OpencodeEvent): void {
+  private async handleEvent(record: SessionRecord, event: OpencodeEvent): Promise<void> {
     const properties = (event as { properties?: Record<string, unknown> }).properties ?? {};
     const sessionId = properties['sessionID'];
     if (typeof sessionId === 'string' && sessionId !== record.nativeSessionId) return;
@@ -458,7 +458,7 @@ export class OpencodeAdapter implements ProviderAdapter {
         this.handleDelta(record, event);
         return;
       case 'permission.asked':
-        void this.handlePermissionAsked(record, event);
+        await this.handlePermissionAsked(record, event);
         return;
       case 'permission.replied': {
         const { requestID, reply } = event.properties;
@@ -471,7 +471,7 @@ export class OpencodeAdapter implements ProviderAdapter {
         return;
       }
       case 'question.asked':
-        this.handleQuestionAsked(record, event);
+        await this.handleQuestionAsked(record, event);
         return;
       case 'question.replied':
       case 'question.rejected': {
@@ -611,6 +611,14 @@ export class OpencodeAdapter implements ProviderAdapter {
     event: Extract<OpencodeEvent, { type: 'permission.asked' }>
   ): Promise<void> {
     const { id, permission, patterns, metadata } = event.properties;
+    if (record.activeTurnId === undefined) {
+      await record.transport.replyPermission(id, 'reject');
+      this.emit(record, {
+        type: 'runtime.warning',
+        message: 'Rejected a provider permission request with no active turn.',
+      });
+      return;
+    }
     if (record.runtimeMode === 'full-access') {
       // Doom-loop detection and subagent sessions are evaluated against rules
       // that never include the session ruleset, so full access still has to
@@ -651,12 +659,19 @@ export class OpencodeAdapter implements ProviderAdapter {
     );
   }
 
-  private handleQuestionAsked(
+  private async handleQuestionAsked(
     record: SessionRecord,
     event: Extract<OpencodeEvent, { type: 'question.asked' }>
-  ): void {
+  ): Promise<void> {
     const turnId = record.activeTurnId;
-    if (turnId === undefined) return;
+    if (turnId === undefined) {
+      await record.transport.rejectQuestion(event.properties.id);
+      this.emit(record, {
+        type: 'runtime.warning',
+        message: 'Rejected a provider question with no active turn.',
+      });
+      return;
+    }
     const { id, questions } = event.properties;
     record.pendingQuestions.set(id, { turnId });
     this.emit(

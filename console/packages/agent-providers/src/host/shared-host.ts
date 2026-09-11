@@ -189,7 +189,8 @@ export async function runSharedHost(
         );
       }
     }
-    await state.unlock();
+    // The supervisor reaps the isolated group after this worker exits.
+    // Retain its owner record so a replacement supervisor can fence it too.
   };
   try {
     // Complete a recovery whose response may have been lost before doing anything else.
@@ -375,8 +376,19 @@ export async function runSharedHost(
       for (const event of host!.replay(delivery!.cursor).events) await delivery!.capture(event);
       await upload(false);
     };
+    let roomBinding: string | null = null;
     while (!executionSignal.aborted) {
       await flush();
+      if (rooms && options.roomConnection) {
+        const current = JSON.stringify(rooms.currentRooms());
+        if (current !== roomBinding) {
+          await request(`${sessionPath}/room-connection`, {
+            ...hostLease,
+            connection_id: options.roomConnection.connectionId,
+          });
+          roomBinding = current;
+        }
+      }
       if (host.snapshot().session.status === 'stopped') break;
       if (
         host.snapshot().session.status === 'ready' ||

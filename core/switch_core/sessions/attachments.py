@@ -65,4 +65,5 @@ def attachment_metadata(attachment_id: str, blob: MediaBlob) -> Attachment:
         name=blob.filename or "attachment",
         mime_type=blob.content_type or "application/octet-stream",
         bytes=blob.size,
+        sha256=blob.sha256,
     )

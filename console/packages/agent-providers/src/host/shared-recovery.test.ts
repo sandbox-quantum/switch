@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile, unlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Command, HostEvent, Session, Snapshot } from '@switch-console/shared/session-v1';
@@ -177,6 +177,8 @@ it('retries lost acknowledgements and duplicate commands, then resumes the same 
   expect(f.events[0]).toEqual(f.events[1]);
   expect(f.adapter.sendTurn).toHaveBeenCalledTimes(1);
   stop = new AbortController();
+  // This in-process fake has no worker to exit; simulate supervisor reclamation.
+  await unlink(join(f.root, 'shared-owner.lock'));
   running = runSharedHost(f.options, f.adapter, stop.signal);
   try {
     await vi.waitFor(() => expect(f.adapter.startSession).toHaveBeenCalledTimes(2), {
@@ -224,6 +226,7 @@ it('stops an expired lease and resumes without repeating the accepted turn', asy
   expect(await outcome).toMatchObject({ name: 'SharedHostLeaseExpiredError' });
   expect(f.adapter.stopSession).toHaveBeenCalledTimes(1);
   f.setExpired(false);
+  await unlink(join(f.root, 'shared-owner.lock'));
   const resumed = runSharedHost(f.options, f.adapter, stop.signal);
   try {
     await vi.waitFor(() => expect(f.adapter.startSession).toHaveBeenCalledTimes(2));

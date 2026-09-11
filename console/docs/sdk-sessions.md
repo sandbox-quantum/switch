@@ -35,7 +35,9 @@ its initial prompt is not automatically sent again.
   before recovery. The transcript reconnects without resending commands.
 - A command dispatched before a crash can have an unknown outcome. Recovery
   marks affected work unknown or interrupted. It does not repeat the action or
-  report success without evidence. Use **Check command status** when available.
+  report success without evidence. Use **Check command status** when available. If the server confirms an unknown
+  outcome, **Acknowledge unknown outcome and clear draft** releases the composer
+  without resending the action or changing its recorded outcome.
 - Pending approvals and questions remain subject to the server's first-answer
   arbitration. A callback whose outcome is uncertain is not invoked again.
 - Room replay gaps stop automatic delivery with a visible error. Review room
@@ -138,3 +140,23 @@ checks; they do not run authenticated providers remotely.
 requires native project-skill discovery, real MCP invocation, staged document
 contents and image recognition when the selected model supports images. Cursor
 requires an account with available usage.
+
+## Room discovery and supported execution hosts
+
+A host binds its live room connection to its SDK session through the server.
+Console refreshes this binding for existing and newly discovered sessions, including
+room detachment. Owner-issued room controls use the same durable command path as
+Console controls. Addressed messages, subscribed join notifications, and task events
+retain durable delivery identities. Room attachments are copied from authenticated
+server media into session-owned storage; missing media is reported alongside the
+message instead of silently dropping the text.
+
+Attachment hashes are stored at upload and checked during download and staging.
+Deleting the SDK session also removes its attachment blobs. Older uploads without
+a stored digest receive transport checks but have no original-upload integrity proof.
+
+Local Windows execution is currently unavailable because process-group fencing
+requires a POSIX host. Use a POSIX SSH execution host. Tmux is optional and applies
+only to user terminals and lifecycle scripts; it does not execute SDK sessions.
+Codex and Cursor do not advertise interactive questions until their native execution
+mode can support that interaction. Approvals remain separate capabilities.

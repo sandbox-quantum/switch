@@ -55,6 +55,7 @@ export async function stageAttachment(
   const { data, sha256 } = downloaded;
   if (
     data.byteLength !== attachment.bytes ||
+    (attachment.sha256 != null && sha256 !== attachment.sha256) ||
     createHash('sha256').update(data).digest('hex') !== sha256
   )
     throw new Error('Attachment download failed its integrity check.');

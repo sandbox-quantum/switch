@@ -55,3 +55,24 @@ it('reports a fatal worker failure instead of restarting it repeatedly', async (
     JSON.parse(await readFile(join(root, 'supervisor', 'failure.json'), 'utf8')).message
   ).toContain('worker.log');
 });
+
+it('reaps provider descendants even after a clean worker exit', async () => {
+  const root = await fixture();
+  const script = `
+    const fs = require('node:fs');
+    const child = require('node:child_process').spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });
+    fs.writeFileSync(${JSON.stringify(root)} + '/provider.pid', String(child.pid));
+    fs.writeFileSync(${JSON.stringify(root)} + '/shared-owner.lock', JSON.stringify({ pid: process.pid, group: process.pid, token: 'test-owner' }));
+    child.unref();
+  `;
+  await superviseSharedHost({
+    root,
+    executable: process.execPath,
+    args: ['-e', script],
+    env: process.env,
+    signal: new AbortController().signal,
+  });
+  const pid = Number(await readFile(join(root, 'provider.pid'), 'utf8'));
+  expect(() => process.kill(pid, 0)).toThrow();
+  await expect(readFile(join(root, 'shared-owner.lock'))).rejects.toMatchObject({ code: 'ENOENT' });
+});

@@ -1,8 +1,37 @@
+import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 import { SwitchEventStream } from '@sandboxaq/switch-agent-runtime';
-import type { SwitchCredentials } from '@sandboxaq/switch-agent-runtime';
+import type { AgentBridgeEvent, SwitchCredentials } from '@sandboxaq/switch-agent-runtime';
 import { z } from 'zod';
 import { Journal } from './journal';
+
+export function roomInputId(event: AgentBridgeEvent): string | null {
+  if (event.type === 'message')
+    return 'addressed' in event.payload &&
+      event.payload.addressed === true &&
+      'message_id' in event.payload
+      ? String(event.payload.message_id)
+      : null;
+  if (
+    event.type === 'room_join' &&
+    (!('listening' in event.payload) || event.payload.listening !== true)
+  )
+    return null;
+  if (event.type !== 'room_join' && !event.type.startsWith('task_')) return null;
+  const sorted = (value: unknown): unknown =>
+    Array.isArray(value)
+      ? value.map(sorted)
+      : value !== null && typeof value === 'object'
+        ? Object.fromEntries(
+            Object.entries(value)
+              .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+              .map(([key, entry]) => [key, sorted(entry)])
+          )
+        : value;
+  return `${event.type}:${createHash('sha256')
+    .update(JSON.stringify(sorted(event.payload)))
+    .digest('hex')}`;
+}
 
 export const roomConnectionSchema = z.strictObject({
   connectionId: z.string().min(1),
@@ -60,18 +89,13 @@ export class SharedRoomInbox {
         signal,
         log: console,
         onEvent: async (event) => {
-          if (event.type !== 'message') {
-            console.warn(`Shared SDK room delivery does not support event type ${event.type}.`);
-            return;
-          }
-          const payload = z
-            .object({ message_id: z.string().min(1), addressed: z.literal(true) })
-            .parse(event.payload);
+          const messageId = roomInputId(event);
+          if (!messageId) return;
           const received = receivedSchema.parse({
             type: 'received',
             sequence: event.sequence,
             roomId: event.room_id,
-            messageId: payload.message_id,
+            messageId,
           });
           const previous = this.journal.records.find(
             (record) => record.type === 'received' && record.sequence === received.sequence
@@ -85,7 +109,7 @@ export class SharedRoomInbox {
         },
         onRooms: (next) => {
           void (async () => {
-            if (JSON.stringify(next) !== JSON.stringify(rooms)) {
+            if (!savedRooms || JSON.stringify(next) !== JSON.stringify(rooms)) {
               await this.journal.append({ type: 'rooms', rooms: next });
               rooms = next;
             }
@@ -108,6 +132,11 @@ export class SharedRoomInbox {
       });
       stream.start();
     });
+  }
+
+  currentRooms(): string[] {
+    const record = [...this.journal.records].reverse().find((record) => record.type === 'rooms');
+    return record?.rooms ?? [];
   }
 
   pending(): Received[] {

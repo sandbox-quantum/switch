@@ -1,4 +1,4 @@
-import { deploySharedHost } from './shared-host-deployment';
+import { deploySharedHost, runSharedHostCommand } from './shared-host-deployment';
 export { deploySharedHost } from './shared-host-deployment';
 import { randomUUID } from 'node:crypto';
 import { join, posix } from 'node:path';
@@ -81,13 +81,13 @@ export class SharedAgentRuntime implements AgentRuntimeProvider {
       session.id,
       false
     );
-    const launched = await ctx.exec('node', [
-      entrypoint,
-      root,
-      Buffer.from(JSON.stringify(config)).toString('base64'),
+    const launched = await runSharedHostCommand(
+      this.transport,
+      { ctx, root, entrypoint },
+      config,
       restart ? '--restart' : '--ensure',
-      String(isResuming),
-    ]);
+      isResuming
+    );
     const created = JSON.parse(launched.stdout).created === true;
     let snapshot;
     const deadline = Date.now() + 120000;

@@ -60,7 +60,10 @@ class RemoteSessionReconciler {
           continue;
         const snapshot = snapshotSchema.parse(await fetchSdkSnapshot(server, session.sessionId));
         const roomId =
-          [...snapshot.items].reverse().find((item) => item.origin?.roomId)?.origin?.roomId ?? null;
+          snapshot.session.roomIds !== undefined
+            ? (snapshot.session.roomIds[0] ?? null)
+            : ([...snapshot.items].reverse().find((item) => item.origin?.roomId)?.origin?.roomId ??
+              null);
         if (roomId)
           switchRoomService.mirrorRemoteSessionRoom(
             {
@@ -71,6 +74,8 @@ class RemoteSessionReconciler {
             roomId,
             agent.switchAgentId
           );
+        if (!roomId && snapshot.session.roomIds !== undefined)
+          switchRoomService.clearSession(session.sessionId);
         if (local.has(session.sessionId)) continue;
         const result = await sessionService.createSession({
           id: session.sessionId,

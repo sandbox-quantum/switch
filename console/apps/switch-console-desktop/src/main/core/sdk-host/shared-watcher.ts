@@ -3,7 +3,8 @@ import { getAgentById } from '@main/core/agents/getAgentById';
 import { locationManager } from '@main/core/locations/location-manager';
 import { resolveSessionEnv } from '@main/core/locations/location-runtime-factory';
 import { locationTransport } from '@main/core/locations/location-transport';
-import { buildSharedHostConfig, deploySharedHost } from './shared-agent-runtime';
+import { buildSharedHostConfig } from './shared-agent-runtime';
+import { deploySharedHost, runSharedHostCommand } from './shared-host-deployment';
 
 export async function configureSharedWatcher(
   agentId: string,
@@ -70,11 +71,5 @@ export async function configureSharedWatcher(
     ]);
     return;
   }
-  await ctx.exec('node', [
-    entrypoint,
-    root,
-    Buffer.from(JSON.stringify(config)).toString('base64'),
-    '--ensure-watch',
-    'false',
-  ]);
+  await runSharedHostCommand(transport, { ctx, root, entrypoint }, config, '--ensure-watch', false);
 }

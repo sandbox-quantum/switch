@@ -7,6 +7,7 @@ import { z } from 'zod';
 import { Journal } from './journal';
 import { ensureSharedProcess, sharedSessionRoot } from './launch';
 import { releaseOwner, replaceOwner, withOwnershipLock } from './ownership-lock';
+import { roomInputId } from './room-inbox';
 import { readSharedCredentials, sharedConfigSchema, type SharedHostConfig } from './shared-config';
 
 const assignmentSchema = z.strictObject({
@@ -167,19 +168,14 @@ export async function runSharedWatcher(
       log: console,
       onEvent: (event) => {
         pending = pending.then(async () => {
-          if (event.type !== 'message')
-            throw new Error(
-              `Shared SDK auto-start does not support ${event.type}; open a session to handle this event.`
-            );
-          const payload = z
-            .object({ message_id: z.string().min(1), addressed: z.literal(true) })
-            .parse(event.payload);
+          const messageId = roomInputId(event);
+          if (!messageId) return;
           const config = await assignments.assign(
             sharedConfigSchema.parse(JSON.parse(await readFile(join(root, 'config.json'), 'utf8'))),
             {
               sequence: z.number().int().positive().parse(event.sequence),
               roomId: event.room_id,
-              messageId: payload.message_id,
+              messageId,
             }
           );
           await launch(config);

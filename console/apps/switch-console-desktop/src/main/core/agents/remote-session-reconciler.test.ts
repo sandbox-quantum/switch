@@ -8,6 +8,7 @@ const mocks = vi.hoisted(() => ({
   provision: vi.fn(async () => ({ success: true })),
   error: vi.fn(),
   mirror: vi.fn(),
+  clear: vi.fn(),
   rows: [] as { id: string }[],
 }));
 vi.mock('./getAgentById', () => ({
@@ -30,7 +31,7 @@ vi.mock('@main/core/sessions/session-service', () => ({
   sessionService: { createSession: mocks.create, provisionSession: mocks.provision },
 }));
 vi.mock('@main/core/switch-rooms/switch-room-service', () => ({
-  switchRoomService: { mirrorRemoteSessionRoom: mocks.mirror },
+  switchRoomService: { mirrorRemoteSessionRoom: mocks.mirror, clearSession: mocks.clear },
 }));
 vi.mock('@main/db/client', () => ({
   db: { select: () => ({ from: () => ({ where: async () => mocks.rows }) }) },
@@ -137,4 +138,29 @@ it('refreshes room associations for sessions that already exist in Console', asy
     'room',
     'agent'
   );
+});
+
+it('uses authoritative room bindings and clears an explicitly detached room', async () => {
+  mocks.rows = [{ id: 'shared' }];
+  mocks.list.mockResolvedValue([session]);
+  const snapshot = {
+    contractVersion: 1,
+    throughSequence: 1,
+    session: { ...session, roomIds: ['room'] },
+    turns: [],
+    requests: [],
+    commandStatuses: [],
+    nextPageToken: null,
+    items: [],
+  };
+  mocks.snapshot.mockResolvedValue(snapshot);
+  await tick();
+  expect(mocks.mirror).toHaveBeenCalledWith(
+    expect.objectContaining({ sessionId: 'shared' }),
+    'room',
+    'agent'
+  );
+  mocks.snapshot.mockResolvedValue({ ...snapshot, session: { ...session, roomIds: [] } });
+  await tick();
+  expect(mocks.clear).toHaveBeenCalledWith('shared');
 });
