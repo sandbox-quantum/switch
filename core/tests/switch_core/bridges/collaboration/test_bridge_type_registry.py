@@ -100,7 +100,11 @@ def test_get_config_schema_exposes_required_fields() -> None:
         "agent_usergroups",
         "agent_sessions",
     }
-    assert set(schema["required"]) == {"bot_token", "app_token", "workspace_id"}
+    # app_token is offered but not required by the schema: a bridge whose
+    # events arrive over HTTP has none. What enforces it for a Socket Mode
+    # bridge — which receives nothing at all without one — is the model
+    # validator, not this form.
+    assert set(schema["required"]) == {"bot_token", "workspace_id"}
 
 
 def test_get_config_schema_unknown_type_raises() -> None:

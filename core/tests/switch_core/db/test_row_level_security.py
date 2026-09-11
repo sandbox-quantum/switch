@@ -65,7 +65,10 @@ _RLS_REVISION = "265ed188ad6f"
 # migration's list is a subset", which passes just as happily for a table that
 # has a policy from `create_all` and none in any migration at all — a
 # deployment with an unprotected table and a green suite.
-_POLICIED_SINCE = {"messaging_installs": "c8a4e21f6d30"}
+_POLICIED_SINCE = {
+    "messaging_installs": "c8a4e21f6d30",
+    "messaging_install_states": "d3f6b0c95a17",
+}
 
 
 async def _make_tenant(owner: async_sessionmaker, tenant_id: str) -> None:

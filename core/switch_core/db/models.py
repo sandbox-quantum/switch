@@ -1092,6 +1092,59 @@ class MessagingInstall(TenantScoped, Base):
     )
 
 
+class MessagingInstallState(TenantScoped, Base):
+    """One in-flight install: minted when the flow starts, burnt when it lands.
+
+    An install is two requests with a trip through the platform in between. The
+    first is an authenticated operator asking to install; the second is a
+    browser arriving back at a public endpoint from the platform, carrying an
+    authorization code and a `state` we chose. Nothing else ties the two
+    together, so `state` has to carry the whole of what the second request may
+    not be trusted to assert: which tenant, and on whose behalf.
+
+    **The row is not what carries the tenant across.** The `state` parameter is
+    a signed token naming the tenant, so the callback binds a tenant it can
+    verify without reading anything first. That is the point of the design:
+    every other unauthenticated entry point resolves its tenant through a
+    `SECURITY DEFINER` lookup, and this one does not have to, so it does not —
+    the closed list in `db/tenant_lookup.py` stays as short as it is. What this
+    row adds is the one property a signature cannot have: **single use.** A
+    signed token is valid until it expires and a captured one can be replayed;
+    the redemption below happens once because `consumed_at` is set in the same
+    statement that checks it is null.
+
+    Which makes the failure this prevents worth naming. Replaying a captured
+    state completes an install of the attacker's own workspace against the
+    victim's tenant — that workspace's messages then arrive in the victim's
+    rooms, which is message injection, not a leak. Single use and a short
+    expiry are what close it.
+
+    Redemption is a scoped write like any other, run after the signature has
+    bound the tenant, so row-level security is a second check on the first: a
+    token whose signed tenant disagrees with the row's finds no row at all.
+
+    The two timestamps are both needed and mean different things. `expires_at`
+    is a bound on how long the platform's round trip may take; `consumed_at`
+    is the fact of redemption, kept rather than deleted so an operator asking
+    why a link stopped working can see it was used rather than lost.
+    """
+
+    __tablename__ = "messaging_install_states"
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
+    platform: Mapped[str] = mapped_column(Text, nullable=False)
+    created_by_user_id: Mapped[str] = mapped_column(
+        Text, ForeignKey("users.id"), nullable=False
+    )
+    created_at: Mapped[str] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    expires_at: Mapped[str] = mapped_column(DateTime(timezone=True), nullable=False)
+    consumed_at: Mapped[str | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+
 # ── Server-Side Connectors ────────────────────────────────────────────────────
 
 

@@ -6,6 +6,11 @@ avatar overrides. Inbound events arrive over **Socket Mode** — an outbound
 WebSocket the bot opens to Slack — so **no public ingress is required**. Outbound
 messages go through the Slack Web API.
 
+This page is about the app **you** register and hold the tokens for. There is
+also a distributed app that we register and you install by clicking a button;
+it is a different Slack app with different requirements, described in
+[`SLACK_DISTRIBUTED_APP.md`](SLACK_DISTRIBUTED_APP.md).
+
 ## Prerequisites
 
 - A Slack workspace where you can install a custom app (workspace admin approval
