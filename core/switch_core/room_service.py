@@ -1139,48 +1139,24 @@ class RoomService:
         self,
         room_id: str,
         text: str,
-        *,
-        user_id: str,
-        user_name: str | None,
-        user_email: str | None,
-    ) -> str:
+    ) -> str | None:
         """Post a template's kickoff message into a just-created room.
 
-        Sent as the creating user's platform identity, through their puppet,
-        so it takes the same path as a message they typed themselves: it is
-        relayed to the platform and it addresses the agents it mentions. A
-        Switch-generated notice never addresses anyone, which is why this
-        cannot be a system message. Raises ValueError with the reason when
-        the room has no bridge, the bridge is not running, or the creator has
-        no resolvable identity on it.
+        Sent as the admin client (the platform bot account, e.g. "Agent Switch"
+        on Slack), not as the creating user's puppet. The kickoff is a platform
+        action — it dispatches work to agents the same way "set the channel
+        topic" does — and should not impersonate a human.
         """
         async with self._session_factory() as session:
             room = await self._room_store.get(session, room_id)
         if room is None:
             raise ValueError(f"Room not found: {room_id}")
-        if room.bridge_id is None:
-            raise ValueError(
-                "the room has no collaboration bridge — a kickoff is posted "
-                "as the creating user, who lives on a bridge"
-            )
-        bridge_core = self._collab_lifecycle.get(room.bridge_id)
-        if bridge_core is None:
-            raise ValueError("the room's bridge is not running")
-        external_user = await bridge_core.resolve_switch_user(
-            user_id, name=user_name, email=user_email
-        )
-        if external_user is None:
-            raise ValueError(
-                "you have no account on this room's bridge that Switch can "
-                "recognise — link your platform account under Identities, "
-                "then recreate from the template"
-            )
-        return await bridge_core.post_as_user(
-            external_user=external_user,
-            room_id=room.id,
-            matrix_room_id=room.matrix_room_id,
-            text=text,
-        )
+        admin_clients = self._client_lifecycle.get_by_type("admin")
+        if not admin_clients:
+            logger.warning("No admin client available to post kickoff")
+            return None
+        admin = admin_clients[0]
+        return await admin.send_message(room.matrix_room_id, text)
 
     async def ensure_client_in_room(self, room_id: str, client_id: str) -> None:
         """Invite a single running client to the room (it auto-joins) and record

@@ -76,22 +76,10 @@ class FakeRoomService:
         self,
         room_id: str,
         text: str,
-        *,
-        user_id: str,
-        user_name: str | None,
-        user_email: str | None,
-    ) -> str:
+    ) -> str | None:
         if self.kickoff_error is not None:
             raise self.kickoff_error
-        self.kickoffs.append(
-            {
-                "room_id": room_id,
-                "text": text,
-                "user_id": user_id,
-                "user_name": user_name,
-                "user_email": user_email,
-            }
-        )
+        self.kickoffs.append({"room_id": room_id, "text": text})
         return f"ev-{len(self.kickoffs)}"
 
     async def create_room(self, config: RoomCreateConfig) -> RoomCreateResult:
@@ -1173,9 +1161,8 @@ kickoff: |
 
 
 @pytest.mark.asyncio
-async def test_provision_kickoff_posts_as_creator(env):
-    """A template kickoff is handed to the room service with the creator's
-    identity, after interpolation."""
+async def test_provision_kickoff_posts_as_admin(env):
+    """A template kickoff is posted via the admin client, after interpolation."""
     svc = _svc(env)
     spec, kickoff = svc.parse(KICKOFF_TEMPLATE, inputs={"coder": "claude-code.alice"})
     result = await svc.provision(
@@ -1191,9 +1178,6 @@ async def test_provision_kickoff_posts_as_creator(env):
         {
             "room_id": result.room_id,
             "text": "@claude-code.alice start on the brief.\n",
-            "user_id": env["user_id"],
-            "user_name": "alice",
-            "user_email": "alice@example.com",
         }
     ]
 
