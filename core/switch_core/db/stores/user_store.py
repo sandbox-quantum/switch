@@ -6,7 +6,12 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from switch_core.db.models import OidcIdentity, User
+from switch_core.db.models import (
+    OidcIdentity,
+    TenantMember,
+    User,
+    require_tenant_id,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -43,11 +48,81 @@ class OidcIdentityRaceError(Exception):
 
 class UserStore:
     async def create(self, session: AsyncSession, user: User) -> None:
+        """Create the user, and the membership that lets them ever sign in.
+
+        Tenant resolution (`gateway/auth.py`) raises rather than guessing when
+        a user has no membership, so every path that creates a user — this
+        one, reached by the admin "create user" endpoint, JIT OIDC
+        provisioning, and startup admin seeding — must leave exactly one
+        `tenant_members` row behind, or that user's first login cannot be
+        placed in a tenant at all.
+        """
         session.add(user)
         await session.flush()
+        await self.ensure_membership(session, user)
+
+    async def ensure_membership(self, session: AsyncSession, user: User) -> bool:
+        """Give `user` a membership if they have none; leave any they have.
+
+        Returns whether one was written, so a repair path can say it repaired
+        something instead of logging on every boot.
+
+        Called from every path that can produce, or inherit, a user who would
+        otherwise have zero: creation, linking an identity to an account that
+        predates memberships existing, and the startup admin seeding
+        (`main.py`), which reaches accounts none of the others do. Idempotent
+        because most of those run against accounts that already have one, and
+        adding a second would be worse than adding none — resolution refuses
+        to pick between two.
+
+        Public for the sake of that last caller. An account with no membership
+        cannot sign in at all (`gateway/auth.py` answers 403), and until this
+        was reachable from seeding, the only thing that ever repaired one was
+        an OIDC login — so a password-only account in that state had no remedy
+        inside the product and needed direct SQL.
+
+        Joins the tenant bound to the caller's context, so an admin creating a
+        user joins them to their own tenant. There is no fallback: `tenant_id`
+        is not nullable and nothing else in this schema fills it in, so an
+        unbound caller would otherwise get whichever tenant this function
+        happened to name — the same silent write into a real tenant that
+        `require_tenant_id` exists to refuse, and this is the one scoped write
+        the model default cannot cover because `TenantMember` is addressed by
+        its whole primary key. The seeding paths that legitimately run with
+        nothing bound name tenant zero themselves (`main.py`,
+        `gateway/oidc_routes.py`).
+
+        The role mirrors the migration's own mapping for pre-existing users:
+        `owner` for the global admin role, `member` otherwise.
+        """
+        existing = await session.execute(
+            select(TenantMember.tenant_id).where(TenantMember.user_id == user.id)
+        )
+        if existing.first() is not None:
+            return False
+        session.add(
+            TenantMember(
+                tenant_id=require_tenant_id(),
+                user_id=user.id,
+                role="owner" if user.role == "admin" else "member",
+            )
+        )
+        await session.flush()
+        return True
 
     async def get(self, session: AsyncSession, user_id: str) -> User | None:
         return await session.get(User, user_id)
+
+    async def exists(self, session: AsyncSession, user_id: str) -> bool:
+        """Whether this id names a real account, without loading the row.
+
+        Tenant resolution needs the answer on a session it closes immediately
+        (`gateway/auth.py`), and a `User` loaded there would be attached to a
+        session nobody can commit — the exact shape of bug this replaced. It
+        needs no attribute of the row, only that there is one.
+        """
+        result = await session.execute(select(User.id).where(User.id == user_id))
+        return result.first() is not None
 
     async def get_by_email(self, session: AsyncSession, email: str) -> User | None:
         """Case-insensitive: an IdP and a person typing a password don't
@@ -213,6 +288,11 @@ class UserStore:
         logger.warning(
             "Linking OIDC identity (iss=%r, sub=%r) to user %s", iss, sub, user.id
         )
+        # Linking reaches accounts this store did not create, including any
+        # that predate memberships — and an account with none can never sign
+        # in again. The startup admin seeding repairs the deployment's own
+        # admin; this repairs anyone else who signs in through an IdP.
+        await self.ensure_membership(session, user)
 
     async def get_all(self, session: AsyncSession) -> list[User]:
         result = await session.execute(select(User))

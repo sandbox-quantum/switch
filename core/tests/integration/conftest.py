@@ -58,6 +58,7 @@ from switch_core.db.engine import (
     create_unpooled_engine,
 )
 from switch_core.db.models import TENANT_ZERO_ID, Tenant, User
+from switch_core.db.runtime_role import grant_runtime_role, verify_restricted_role
 from switch_core.db.stores.agent_session_store import AgentSessionStore
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.api_key_store import ApiKeyStore
@@ -74,17 +75,29 @@ from switch_core.db.stores.room_link_store import RoomLinkStore
 from switch_core.db.stores.room_role_store import RoomRoleStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.task_store import TaskStore
+from switch_core.db.stores.tenant_store import TenantStore
 from switch_core.db.stores.user_store import UserStore
 from switch_core.main import _seed_agent_registration_bootstrap_key
 from switch_core.messages.notify import MessageListener
 from switch_core.provisioning import Provisioning
 from switch_core.provisioning.postgres import PostgresProvisioning
 from switch_core.room_service import RoomService
+from switch_core.tenant_context import tenant_scope
 from switch_core.transport.ephemeral import EphemeralBus
 from switch_core.transport.invites import InviteBus
 
 # ── Mirrors deploy/local/docker-compose.yml — keep in sync ──────────────────────
 POSTGRES_IMAGE = "postgres:16-alpine"
+
+# Prefix for the role the application runs as here. `deploy/local/docker-compose.yml`
+# creates a fixed-name `switch_app`, and this suite's role is the same shape —
+# a plain restricted LOGIN role, granted the same way — but not the same name:
+# roles are cluster-wide, and a crashed session that never reached its own
+# teardown would otherwise leave `switch_app` behind for the next run's
+# `CREATE ROLE` to collide with. Each session gets its own `switch_app_<hex>`
+# instead, the same shape `rls_harness` (`core/tests/conftest.py`) already uses
+# for the same reason.
+RUNTIME_ROLE_PREFIX = "switch_app"
 
 # ── Throwaway test constants (not secrets — local ephemeral infra) ──────────────
 SERVER_NAME = "localhost"
@@ -117,12 +130,21 @@ class StackInfo:
 
 @dataclass
 class SessionEnv:
-    """Session-scoped pieces shared by every test: the engine/schema and the
+    """Session-scoped pieces shared by every test: the engines/schema and the
     (stateless) stores. The per-test `harness` fixture builds the in-memory
-    services on top of these."""
+    services on top of these.
+
+    Two engines, and which is which matters. `engine` is the restricted
+    runtime role every service here is wired to — the row-level-security
+    policies apply to it, so what this suite exercises is what a deployment
+    runs. `owner_engine` is the schema owner, used only for the two things
+    that need DDL and that the application never does: building the schema and
+    truncating it between tests.
+    """
 
     config: SwitchConfig
     engine: AsyncEngine
+    owner_engine: AsyncEngine
     session_factory: object
     agent_store: AgentStore
     agent_session_store: AgentSessionStore
@@ -178,13 +200,22 @@ def switch_stack() -> Iterator[StackInfo]:
         yield StackInfo(pg=pg)
 
 
-def _build_config(stack: StackInfo, db_name: str) -> SwitchConfig:
+def _build_config(
+    stack: StackInfo,
+    db_name: str,
+    *,
+    user: str | None = None,
+    password: str | None = None,
+) -> SwitchConfig:
+    """Config for one of the two roles. Defaults to the container's own —
+    the schema owner — and is given the runtime role explicitly for the config
+    the application is actually wired with."""
     pg = stack.pg
     return SwitchConfig(
         db_host=pg.get_container_host_ip(),
         db_port=str(pg.get_exposed_port(5432)),
-        db_user=pg.username,
-        db_password=pg.password,
+        db_user=user or pg.username,
+        db_password=password or pg.password,
         db_name=db_name,
         matrix_server_name=SERVER_NAME,
         agent_registration_token=REGISTRATION_TOKEN,
@@ -340,6 +371,22 @@ async def _truncate_all(engine: AsyncEngine) -> None:
 
 @pytest_asyncio.fixture(scope="session", loop_scope="session")
 async def session_env(switch_stack: StackInfo) -> AsyncIterator[SessionEnv]:
+    """The database, and the two roles that reach it.
+
+    **The application runs as a restricted role here, not as the owner**, and
+    that is the point of this fixture rather than an implementation detail of
+    it. Every row-level-security policy in this schema is inert against a
+    superuser or the tables' owner, so an integration suite connected as
+    either exercises the real code against a database with no isolation in it
+    — which is exactly how nineteen call sites came to depend on reads a
+    deployed system refuses, and why several of them were invisible until a
+    row existed. Wiring the app to a restricted role of its own makes this
+    suite the thing that catches the twentieth.
+
+    The owner connection stays, for the two jobs that genuinely need DDL and
+    that the application never does: building the schema, and truncating it
+    between tests.
+    """
     # One database for the whole session; tests reset it with TRUNCATE rather than
     # CREATE/DROP DATABASE. DROP at teardown uses FORCE to evict any still-open
     # sync connections.
@@ -349,21 +396,52 @@ async def session_env(switch_stack: StackInfo) -> AsyncIterator[SessionEnv]:
     await admin_conn.execute(f'CREATE DATABASE "{db_name}"')
     await admin_conn.close()
 
-    config = _build_config(switch_stack, db_name)
-    engine = create_engine_from_config(config)
-    session_factory = create_session_factory(engine)
+    owner_engine = create_engine_from_config(_build_config(switch_stack, db_name))
 
     # Schema is built directly from the SQLAlchemy models (not Alembic). This is
     # fast and always matches the current models, but means the integration suite
     # does NOT exercise the migration chain — model↔migration drift is caught
     # separately by `just migrate`, not here.
-    async with engine.begin() as conn:
+    async with owner_engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
-    await _seed_tenant_zero(engine)
+    await _seed_tenant_zero(owner_engine)
+
+    # Cluster-wide and unique per session, not the fixed name Compose creates
+    # (see `RUNTIME_ROLE_PREFIX` above): a session that crashes before its own
+    # teardown runs must not leave a role behind for the next run's `CREATE
+    # ROLE` to collide with.
+    runtime_role = f"{RUNTIME_ROLE_PREFIX}_{uuid.uuid4().hex[:12]}"
+    runtime_password = uuid.uuid4().hex
+    async with owner_engine.begin() as conn:
+        # CREATE ROLE takes no bind parameter for PASSWORD, so a fresh random
+        # throwaway is interpolated. Granted through `grant_runtime_role`, the
+        # same function a deployment runs at boot, so nothing here can pass on
+        # a privilege production has not got.
+        await conn.execute(
+            text(
+                f'CREATE ROLE "{runtime_role}" LOGIN '
+                f"PASSWORD '{runtime_password}' "
+                "NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS"
+            )
+        )
+        await grant_runtime_role(conn, runtime_role)
+
+    config = _build_config(
+        switch_stack, db_name, user=runtime_role, password=runtime_password
+    )
+    engine = create_engine_from_config(config)
+    session_factory = create_session_factory(engine)
+
+    # The same check `main.run()` makes before it serves a request: not a
+    # superuser, owns nothing policied, and cannot read a scoped table with no
+    # tenant bound. If this ever passed for the wrong reason, every isolation
+    # claim the suite below makes would be worth nothing.
+    await verify_restricted_role(engine)
 
     env = SessionEnv(
         config=config,
         engine=engine,
+        owner_engine=owner_engine,
         session_factory=session_factory,
         agent_store=AgentStore(),
         agent_session_store=AgentSessionStore(),
@@ -387,155 +465,177 @@ async def session_env(switch_stack: StackInfo) -> AsyncIterator[SessionEnv]:
         yield env
     finally:
         await engine.dispose()
+        # The role outlives the database it was granted in — roles are
+        # cluster-wide — so its privileges have to go before it can. `DROP
+        # OWNED BY` revokes what survives the database drop; it owns nothing,
+        # so there is nothing for it to drop.
+        async with owner_engine.begin() as conn:
+            await conn.execute(text(f'DROP OWNED BY "{runtime_role}"'))
+        await owner_engine.dispose()
         admin_conn = await asyncpg.connect(admin_dsn)
         try:
             await admin_conn.execute(
                 f'DROP DATABASE IF EXISTS "{db_name}" WITH (FORCE)'
             )
+            await admin_conn.execute(f'DROP ROLE IF EXISTS "{runtime_role}"')
         finally:
             await admin_conn.close()
 
 
 @pytest_asyncio.fixture(loop_scope="session")
 async def harness(session_env: SessionEnv) -> AsyncIterator[Harness]:
-    await _truncate_all(session_env.engine)
+    # Truncation is DDL-adjacent and crosses every tenant, so it runs as
+    # the owner. Nothing the application does goes through this engine.
+    await _truncate_all(session_env.owner_engine)
 
     config = session_env.config
     session_factory = session_env.session_factory
 
-    # Owner user for agent registration (api keys are owned by a user); recreated
-    # each test because the users table was just truncated.
-    owner = User(name="Admin", email=GATEWAY_ADMIN_EMAIL, role="admin")
-    async with session_factory() as session:  # type: ignore[operator]
-        await session_env.user_store.create(session, owner)
-        await session.commit()
-    owner_id = owner.id
+    # A real deployment always has a tenant bound by the time application code
+    # runs — an authenticated request or one of the background call sites
+    # `db/session_scope.py` covers. This harness stands in for both, so it binds
+    # tenant zero itself for the whole test (the same role `core/tests/conftest.py`'s
+    # `session_factory` fixture plays for the unit suite) rather than leaving every
+    # scoped write here and in the tests that use this fixture to hit
+    # `TenantNotBoundError`. Held open across the `yield`: the fixture and the
+    # test body run as one continuation, and the tests exercise ordinary
+    # request-shaped code that assumes a tenant is already bound, not the
+    # tenant-context machinery itself.
+    with tenant_scope(TENANT_ZERO_ID):
+        # Owner user for agent registration (api keys are owned by a user); recreated
+        # each test because the users table was just truncated.
+        owner = User(name="Admin", email=GATEWAY_ADMIN_EMAIL, role="admin")
+        async with session_factory() as session:  # type: ignore[operator]
+            await session_env.user_store.create(session, owner)
+            await session.commit()
+        owner_id = owner.id
 
-    # Seeds the same deployment-wide bootstrap key `main.py` would on a real
-    # boot, so a test can register through REGISTRATION_TOKEN exactly as a
-    # standalone agent does, without duplicating that seeding logic here.
-    await _seed_agent_registration_bootstrap_key(
-        session_factory,
-        session_env.user_store,
-        session_env.api_key_store,
-        session_env.agent_store,
-        config,
-    )
+        # Seeds the same deployment-wide bootstrap key `main.py` would on a real
+        # boot, so a test can register through REGISTRATION_TOKEN exactly as a
+        # standalone agent does, without duplicating that seeding logic here.
+        await _seed_agent_registration_bootstrap_key(
+            session_factory,
+            session_env.user_store,
+            session_env.api_key_store,
+            session_env.agent_store,
+            config,
+        )
 
-    # Per-test in-memory wiring: a fresh EventBuffer / client registry so queued
-    # events and client registrations never leak across tests.
-    event_buffer = EventBuffer()
-    connections = ConnectionRegistry()
-    collab_lifecycle = _NoBridges()
+        # Per-test in-memory wiring: a fresh EventBuffer / client registry so queued
+        # events and client registrations never leak across tests.
+        event_buffer = EventBuffer()
+        connections = ConnectionRegistry()
+        collab_lifecycle = _NoBridges()
 
-    # The transport's wake-up path: rows are announced over LISTEN/NOTIFY, so
-    # nothing is delivered to a client until this connection is up.
-    message_listener = MessageListener(lambda: create_unpooled_engine(config))
-    await message_listener.start()
-    invites = InviteBus()
-    ephemeral = EphemeralBus()
+        # The transport's wake-up path: rows are announced over LISTEN/NOTIFY, so
+        # nothing is delivered to a client until this connection is up.
+        message_listener = MessageListener(lambda: create_unpooled_engine(config))
+        await message_listener.start()
+        invites = InviteBus()
+        ephemeral = EphemeralBus()
 
-    resource_service = ResourceService(
-        reference_store=session_env.reference_store,
-        reference_type_store=session_env.reference_type_store,
-        document_store=session_env.document_store,
-        package_store=session_env.package_store,
-        room_link_store=session_env.room_link_store,
-        session_factory=session_factory,
-    )
+        resource_service = ResourceService(
+            reference_store=session_env.reference_store,
+            reference_type_store=session_env.reference_type_store,
+            document_store=session_env.document_store,
+            package_store=session_env.package_store,
+            room_link_store=session_env.room_link_store,
+            session_factory=session_factory,
+        )
 
-    provisioning: Provisioning = PostgresProvisioning(
-        session_factory=session_factory,
-        room_store=session_env.room_store,
-        client_store=session_env.client_store,
-        message_store=session_env.message_store,
-        invites=invites,
-    )
+        provisioning: Provisioning = PostgresProvisioning(
+            session_factory=session_factory,
+            room_store=session_env.room_store,
+            client_store=session_env.client_store,
+            message_store=session_env.message_store,
+            invites=invites,
+        )
 
-    client_factory = ClientFactory(
-        client_store=session_env.client_store,
-        session_factory=session_factory,
-        config=config,
-        room_store=session_env.room_store,
-        message_store=session_env.message_store,
-        media_store=session_env.media_store,
-        listener=message_listener,
-        invites=invites,
-        ephemeral=ephemeral,
-    )
-    client_factory.register(
-        "agent",
-        AgentClient,
-        event_buffer=event_buffer,
-        agent_store=session_env.agent_store,
-        room_store=session_env.room_store,
-        bridge_store=session_env.bridge_store,
-        document_store=session_env.document_store,
-        reference_store=session_env.reference_store,
-        agent_session_store=session_env.agent_session_store,
-        room_role_store=session_env.room_role_store,
-        external_user_store=session_env.external_user_store,
-        connections=connections,
-        frontend_base_url=config.frontend_base_url,
-    )
-    client_factory.register("user", ClientBase)
-    client_factory.register("bridge", ClientBase)
+        client_factory = ClientFactory(
+            client_store=session_env.client_store,
+            session_factory=session_factory,
+            config=config,
+            room_store=session_env.room_store,
+            message_store=session_env.message_store,
+            media_store=session_env.media_store,
+            listener=message_listener,
+            invites=invites,
+            ephemeral=ephemeral,
+        )
+        client_factory.register(
+            "agent",
+            AgentClient,
+            event_buffer=event_buffer,
+            agent_store=session_env.agent_store,
+            room_store=session_env.room_store,
+            bridge_store=session_env.bridge_store,
+            document_store=session_env.document_store,
+            reference_store=session_env.reference_store,
+            agent_session_store=session_env.agent_session_store,
+            room_role_store=session_env.room_role_store,
+            external_user_store=session_env.external_user_store,
+            connections=connections,
+            frontend_base_url=config.frontend_base_url,
+        )
+        client_factory.register("user", ClientBase)
+        client_factory.register("bridge", ClientBase)
 
-    client_lifecycle = ClientLifecycleService(
-        matrix_admin=provisioning,
-        client_store=session_env.client_store,
-        client_factory=client_factory,
-        session_factory=session_factory,
-        config=config,
-    )
+        client_lifecycle = ClientLifecycleService(
+            matrix_admin=provisioning,
+            client_store=session_env.client_store,
+            tenant_store=TenantStore(),
+            client_factory=client_factory,
+            session_factory=session_factory,
+            config=config,
+        )
 
-    room_service = RoomService(
-        matrix_admin=provisioning,
-        room_store=session_env.room_store,
-        agent_store=session_env.agent_store,
-        client_lifecycle=client_lifecycle,
-        collab_lifecycle=collab_lifecycle,  # type: ignore[arg-type]
-        collab_bridge_store=session_env.bridge_store,
-        resource_service=resource_service,
-        session_factory=session_factory,
-    )
+        room_service = RoomService(
+            matrix_admin=provisioning,
+            room_store=session_env.room_store,
+            agent_store=session_env.agent_store,
+            client_lifecycle=client_lifecycle,
+            collab_lifecycle=collab_lifecycle,  # type: ignore[arg-type]
+            collab_bridge_store=session_env.bridge_store,
+            resource_service=resource_service,
+            session_factory=session_factory,
+        )
 
-    protocol = ProtocolService(
-        agent_store=session_env.agent_store,
-        agent_session_store=session_env.agent_session_store,
-        room_store=session_env.room_store,
-        room_service=room_service,
-        client_lifecycle=client_lifecycle,
-        collab_lifecycle=collab_lifecycle,  # type: ignore[arg-type]
-        event_buffer=event_buffer,
-        task_store=session_env.task_store,
-        resource_service=resource_service,
-        api_key_store=session_env.api_key_store,
-        api_key_cache=ApiKeyCache(
-            ttl_seconds=config.agent_auth_cache_ttl_seconds,
-            max_entries=config.agent_auth_cache_max_entries,
-        ),
-        external_user_store=session_env.external_user_store,
-        bridge_store=session_env.bridge_store,
-        session_factory=session_factory,
-        config=config,
-        connections=connections,
-    )
+        protocol = ProtocolService(
+            agent_store=session_env.agent_store,
+            agent_session_store=session_env.agent_session_store,
+            room_store=session_env.room_store,
+            room_service=room_service,
+            client_lifecycle=client_lifecycle,
+            collab_lifecycle=collab_lifecycle,  # type: ignore[arg-type]
+            event_buffer=event_buffer,
+            task_store=session_env.task_store,
+            resource_service=resource_service,
+            api_key_store=session_env.api_key_store,
+            api_key_cache=ApiKeyCache(
+                ttl_seconds=config.agent_auth_cache_ttl_seconds,
+                max_entries=config.agent_auth_cache_max_entries,
+            ),
+            external_user_store=session_env.external_user_store,
+            bridge_store=session_env.bridge_store,
+            session_factory=session_factory,
+            config=config,
+            connections=connections,
+        )
 
-    h = Harness(
-        protocol=protocol,
-        room_service=room_service,
-        client_lifecycle=client_lifecycle,
-        room_store=session_env.room_store,
-        event_buffer=event_buffer,
-        owner_id=owner_id,
-        session_factory=session_factory,
-    )
-    try:
-        yield h
-    finally:
-        # Stop the agents' receive loops before the next test truncates, so none
-        # is mid-query against a table being cleared.
-        await client_lifecycle.stop_all()
-        await message_listener.stop()
-        await provisioning.close()
+        h = Harness(
+            protocol=protocol,
+            room_service=room_service,
+            client_lifecycle=client_lifecycle,
+            room_store=session_env.room_store,
+            event_buffer=event_buffer,
+            owner_id=owner_id,
+            session_factory=session_factory,
+        )
+        try:
+            yield h
+        finally:
+            # Stop the agents' receive loops before the next test truncates, so none
+            # is mid-query against a table being cleared.
+            await client_lifecycle.stop_all()
+            await message_listener.stop()
+            await provisioning.close()

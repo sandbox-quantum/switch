@@ -49,6 +49,7 @@ async def test_ensure_channel_captures_forwards_valid_channels() -> None:
         _room_store=_RoomStore(),
         _adapter=_Adapter(),
         _bridge_id="bridge-1",
+        _bridge_tenant_id="tenant-1",
     )
 
     await BridgeCore._ensure_channel_captures(bridge)
@@ -79,6 +80,7 @@ async def test_ensure_channel_captures_noop_without_channels() -> None:
         _room_store=_RoomStore(),
         _adapter=_Adapter(),
         _bridge_id="bridge-1",
+        _bridge_tenant_id="tenant-1",
     )
 
     await BridgeCore._ensure_channel_captures(bridge)

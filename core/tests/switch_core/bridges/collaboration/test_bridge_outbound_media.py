@@ -134,6 +134,9 @@ def _fake_bridge(
     async def _record_message_map(**kwargs: str) -> None:
         recorded.append(kwargs)
 
+    async def _room_tenant(room_id: str) -> str:
+        return "tenant-1"
+
     ns = SimpleNamespace(
         _adapter=adapter,
         _puppet_matrix_ids={"@puppet:s"},
@@ -145,6 +148,8 @@ def _fake_bridge(
         _outbound_groups={},
         _outbound_group_timers={},
         _indicator_move_timers={},
+        _channel_to_room={"chan-1": ("room-uuid", "!room:s")},
+        _room_tenant=_room_tenant,
     )
     ns._find_channel = lambda room_id=None, matrix_room_id=None: (
         "chan-1" if matrix_room_id == "!room:s" else None
@@ -158,6 +163,7 @@ def _fake_bridge(
         ns
     )
     ns._relay_outbound_group = BridgeCore._relay_outbound_group.__get__(ns)
+    ns._relay_outbound_media = BridgeCore._relay_outbound_media.__get__(ns)
     ns._move_indicator_for_sender = BridgeCore._move_indicator_for_sender.__get__(ns)
     ns._schedule_indicator_move = BridgeCore._schedule_indicator_move.__get__(ns)
     ns._flush_incomplete_outbound_group = (

@@ -28,6 +28,9 @@ from switch_core.db.notify_ddl import (
     CREATE_NOTIFY_TRIGGER,
     DROP_NOTIFY_TRIGGER,
 )
+from switch_core.db.rls_ddl import attach_row_level_security
+from switch_core.db.tenant_lookup import attach_tenant_lookups
+from switch_core.tenant_context import current_tenant_id
 
 
 def _uuid() -> str:
@@ -87,13 +90,53 @@ class TenantMember(Base):
 TENANT_ZERO_ID = "00000000-0000-0000-0000-000000000000"
 
 
+class TenantNotBoundError(RuntimeError):
+    """A scoped row was constructed with no tenant bound to write it under.
+
+    Raised from Python, before the row ever reaches the database, so the
+    failure points at the write that forgot to bind rather than at whatever
+    row-level-security error Postgres would otherwise raise first. There is no
+    longer any such thing as a cross-tenant write: work that spans tenants
+    enumerates them through `db/tenant_lookup.py` and then binds each in turn,
+    so every write has a tenant by the time it is constructed.
+    """
+
+
+def require_tenant_id() -> str:
+    """The tenant bound to this unit of work, raising when nothing is bound.
+
+    The Python-side default on every scoped column, and the answer for the one
+    store whose primary key includes the tenant and so has to name it in a
+    `session.get` (`ReferenceTypeStore`). Named after the SQL function of the
+    same name in `db/rls_ddl.py` because it is the same rule on the other side
+    of the wire, and it fails the same way.
+
+    This used to prefer the bound tenant and fall back to tenant zero. That
+    fallback is gone: with the row-level-security policies in place, a write
+    into tenant zero on behalf of a caller who forgot to bind is not a safe
+    default any more — it is a write into a real tenant that happens to be
+    wrong the day a second one exists, and `with check` cannot tell it apart
+    from a write tenant zero actually intended. Every writer is expected to
+    bind one by now: the long-lived background tasks unbind deliberately
+    (`switch_core.tenant_context.no_tenant`) and then bind the tenant of the
+    row they are about to act on before they act on it, and the raw-session
+    inventory in `tests/switch_core/db/test_tenant_exemption_allowlist.py`
+    pins which modules may still open a session with nothing bound at all.
+    A write reached from one of those without an explicit `tenant_id` is
+    exactly the gap this now refuses to paper over.
+    """
+    tenant_id = current_tenant_id()
+    if tenant_id is None:
+        raise TenantNotBoundError(
+            "no tenant is bound to this session; pass tenant_id explicitly "
+            "if this write is genuinely cross-tenant (system seeding), or "
+            "bind one before writing otherwise"
+        )
+    return tenant_id
+
+
 class TenantScoped:
     """Mixin carrying the tenant column shared by every per-tenant table.
-
-    The Python-side default returns tenant zero — the only tenant that exists
-    today — so an ordinary ORM insert needs no change to land in the right
-    place. A later PR replaces this default with a value read from the
-    request/session context; nothing here reads from a contextvar yet.
 
     The foreign key is named explicitly (`fk_<table>_tenant`) rather than left
     for the dialect to default, because `declared_attr` gives each subclass
@@ -113,7 +156,7 @@ class TenantScoped:
                 name=f"fk_{cls.__tablename__}_tenant",  # type: ignore[attr-defined]
             ),
             nullable=False,
-            default=TENANT_ZERO_ID,
+            default=require_tenant_id,
         )
 
 
@@ -389,7 +432,7 @@ agent_skills = Table(
         Text,
         ForeignKey("tenants.id", name="fk_agent_skills_tenant"),
         nullable=False,
-        default=TENANT_ZERO_ID,
+        default=require_tenant_id,
     ),
     Column("agent_id", Text, primary_key=True),
     Column("skill_id", Text, primary_key=True),
@@ -444,7 +487,7 @@ room_agents = Table(
         Text,
         ForeignKey("tenants.id", name="fk_room_agents_tenant"),
         nullable=False,
-        default=TENANT_ZERO_ID,
+        default=require_tenant_id,
     ),
     Column("room_id", Text, primary_key=True),
     Column("agent_id", Text, primary_key=True),
@@ -478,7 +521,7 @@ room_skills = Table(
         Text,
         ForeignKey("tenants.id", name="fk_room_skills_tenant"),
         nullable=False,
-        default=TENANT_ZERO_ID,
+        default=require_tenant_id,
     ),
     Column("room_id", Text, primary_key=True),
     Column("skill_id", Text, primary_key=True),
@@ -698,7 +741,7 @@ room_references = Table(
         Text,
         ForeignKey("tenants.id", name="fk_room_references_tenant"),
         nullable=False,
-        default=TENANT_ZERO_ID,
+        default=require_tenant_id,
     ),
     Column("room_id", Text, primary_key=True),
     Column("reference_id", Text, primary_key=True),
@@ -722,7 +765,7 @@ room_documents = Table(
         Text,
         ForeignKey("tenants.id", name="fk_room_documents_tenant"),
         nullable=False,
-        default=TENANT_ZERO_ID,
+        default=require_tenant_id,
     ),
     Column("room_id", Text, primary_key=True),
     Column("document_id", Text, primary_key=True),
@@ -775,7 +818,7 @@ class ReferenceType(TenantScoped, Base):
         Text,
         ForeignKey("tenants.id", name="fk_reference_types_tenant"),
         primary_key=True,
-        default=TENANT_ZERO_ID,
+        default=require_tenant_id,
     )
     type: Mapped[str] = mapped_column(Text, primary_key=True)
     owner_id: Mapped[str] = mapped_column(Text, ForeignKey("users.id"), nullable=False)
@@ -842,7 +885,7 @@ room_packages = Table(
         Text,
         ForeignKey("tenants.id", name="fk_room_packages_tenant"),
         nullable=False,
-        default=TENANT_ZERO_ID,
+        default=require_tenant_id,
     ),
     Column("room_id", Text, primary_key=True),
     Column("package_id", Text, primary_key=True),
@@ -866,7 +909,7 @@ package_references = Table(
         Text,
         ForeignKey("tenants.id", name="fk_package_references_tenant"),
         nullable=False,
-        default=TENANT_ZERO_ID,
+        default=require_tenant_id,
     ),
     Column("package_id", Text, primary_key=True),
     Column("reference_id", Text, primary_key=True),
@@ -890,7 +933,7 @@ package_documents = Table(
         Text,
         ForeignKey("tenants.id", name="fk_package_documents_tenant"),
         nullable=False,
-        default=TENANT_ZERO_ID,
+        default=require_tenant_id,
     ),
     Column("package_id", Text, primary_key=True),
     Column("document_id", Text, primary_key=True),
@@ -1538,3 +1581,16 @@ event.listen(
     "before_drop",
     DDL(DROP_NOTIFY_TRIGGER).execute_if(dialect="postgresql"),
 )
+
+# Same reasoning as the notify trigger above: `create_all` has to build the
+# row-level-security policies too, or the isolation test would pass against a
+# schema that has none. See `db/rls_ddl.py` for the DDL and why it takes this
+# shape; a migration carries its own frozen copy for the same reason the
+# notify trigger's migration does.
+attach_row_level_security(Base.metadata)
+
+# And the seven functions that are exempt from those policies, on the same
+# reasoning again: a restricted role cannot boot without them, so a schema
+# `create_all` built without them is not the schema the server runs against.
+# After the tables, not before — see `db/tenant_lookup.py`.
+attach_tenant_lookups(Base.metadata)
