@@ -52,7 +52,7 @@ from switch_core.gateway.schemas import (
     RoomUsersRequest,
 )
 from switch_core.room_service import RoleSpec, RoomCreateConfig, RoomService
-from switch_core.rooms_yaml import ProvisionResult, RoomYamlService
+from switch_core.rooms_yaml import ProvisionResult, RoomYamlService, TemplateDocument
 
 logger = logging.getLogger(__name__)
 
@@ -398,9 +398,17 @@ async def create_room_from_yaml(
         else:
             text = (await request.body()).decode("utf-8")
             inputs = None
-        spec = rooms_yaml.parse(text, inputs=inputs)
+        builtins = await rooms_yaml.builtins_for(
+            user_id=user.id, name=user.name, email=user.email, text=text
+        )
+        spec, kickoff = rooms_yaml.parse(text, inputs=inputs, builtins=builtins)
         return await rooms_yaml.provision(
-            spec, user_id=user.id, is_admin=user.role == "admin"
+            spec,
+            kickoff=kickoff,
+            user_id=user.id,
+            is_admin=user.role == "admin",
+            creator_name=user.name,
+            creator_email=user.email,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
@@ -408,6 +416,14 @@ async def create_room_from_yaml(
         raise HTTPException(status_code=403, detail=str(e)) from e
     except BridgeOperationError as e:
         raise HTTPException(status_code=502, detail=str(e)) from e
+
+
+@router.get("/template-schema")
+async def get_template_schema(
+    _user: Annotated[User, Depends(get_current_user)],
+) -> dict:
+    """Return the JSON Schema describing a valid room template document."""
+    return TemplateDocument.model_json_schema()
 
 
 @router.get("/{room_id}/yaml")
