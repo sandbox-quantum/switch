@@ -673,6 +673,48 @@ class TenantMembershipResponse(BaseModel):
     role: str
 
 
+class TenantCreateRequest(BaseModel):
+    name: str
+
+
+class InvitationCreateRequest(BaseModel):
+    role: str = "member"
+    # None mints a shareable link; set, the invitation is addressed to one
+    # email and accepting it with any other is refused.
+    email: str | None = None
+    expires_in_hours: int = Field(default=168, gt=0)
+    uses_remaining: int = Field(default=1, ge=1)
+
+
+class InvitationDetail(BaseModel):
+    id: str
+    role: str
+    email: str | None
+    expires_at: str
+    uses_remaining: int
+    revoked_at: str | None
+    created_by: str
+    created_at: str
+
+
+class InvitationCreateResponse(InvitationDetail):
+    # The plaintext token. Present only here — see
+    # `InvitationStore.create`, which is the one call that can hand it back.
+    token: str
+
+
+class MemberDetail(BaseModel):
+    user_id: str
+    name: str
+    email: str
+    role: str
+    created_at: str
+
+
+class MemberUpdateRequest(BaseModel):
+    role: str
+
+
 class AuthConfigResponse(BaseModel):
     # Read unauthenticated by the login page to decide which login methods to
     # show. `oidc_provider_label` is the button text (e.g. "Okta").

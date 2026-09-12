@@ -18,6 +18,7 @@ from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.api_key_store import ApiKeyStore
 from switch_core.db.stores.collaboration_bridge_store import CollaborationBridgeStore
 from switch_core.db.stores.external_user_store import ExternalUserStore
+from switch_core.db.stores.invitation_store import InvitationStore
 from switch_core.db.stores.room_group_store import RoomGroupStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.server_connector_store import ServerConnectorStore
@@ -59,6 +60,7 @@ def create_gateway_app(
     user_store: UserStore,
     external_user_store: ExternalUserStore,
     api_key_store: ApiKeyStore,
+    invitation_store: InvitationStore,
     template_store: TemplateStore,
     resource_service: ResourceService,
     protocol: ProtocolService,
@@ -79,6 +81,7 @@ def create_gateway_app(
         user_store=user_store,
         external_user_store=external_user_store,
         api_key_store=api_key_store,
+        invitation_store=invitation_store,
         template_store=template_store,
         resource_service=resource_service,
         protocol=protocol,

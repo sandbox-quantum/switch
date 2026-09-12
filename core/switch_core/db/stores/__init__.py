@@ -5,6 +5,7 @@ from switch_core.db.stores.client_store import ClientStore
 from switch_core.db.stores.collaboration_bridge_store import CollaborationBridgeStore
 from switch_core.db.stores.document_store import DocumentStore
 from switch_core.db.stores.external_user_store import ExternalUserStore
+from switch_core.db.stores.invitation_store import InvitationStore
 from switch_core.db.stores.message_store import MessageStore
 from switch_core.db.stores.reference_store import ReferenceStore
 from switch_core.db.stores.reference_type_store import ReferenceTypeStore
@@ -25,6 +26,7 @@ __all__ = [
     "CollaborationBridgeStore",
     "DocumentStore",
     "ExternalUserStore",
+    "InvitationStore",
     "MessageStore",
     "ReferenceStore",
     "ReferenceTypeStore",

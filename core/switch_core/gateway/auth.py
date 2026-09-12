@@ -3,6 +3,7 @@ from __future__ import annotations
 import datetime
 import logging
 from collections.abc import AsyncIterator
+from dataclasses import dataclass
 from typing import Annotated
 
 import bcrypt
@@ -16,7 +17,7 @@ from switch_core.db.models import Room, Tenant, User
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.user_store import UserStore
-from switch_core.db.tenant_lookup import tenants_of_user
+from switch_core.db.tenant_lookup import tenant_of_invitation, tenants_of_user
 from switch_core.gateway.dependencies import (
     get_config,
     get_session,
@@ -151,6 +152,56 @@ async def get_authenticated_user_id(
     """
     payload = await _authenticate(request, session_factory, user_store, config)
     return payload["sub"]  # type: ignore[no-any-return]
+
+
+@dataclass(frozen=True)
+class AuthenticatedCaller:
+    """An authenticated caller with no tenant bound — id and email, read from
+    `users`, which carries neither a tenant nor a policy."""
+
+    id: str
+    email: str
+
+
+async def get_authenticated_caller(
+    request: Request,
+    session_factory: Annotated[
+        async_sessionmaker[AsyncSession], Depends(get_session_factory)
+    ],
+    user_store: Annotated[UserStore, Depends(get_user_store)],
+    config: Annotated[SwitchConfig, Depends(get_config)],
+) -> AuthenticatedCaller:
+    """Like `get_authenticated_user_id`, but with the caller's own email too.
+
+    Backs `POST /invitations/{token}/accept` (`gateway/tenants.py`), which has
+    to check an email-bound invitation against the caller's *current* address
+    before any tenant is bound — the same "no tenant chosen yet" shape as
+    `get_authenticated_user_id`, plus one more column of the same global,
+    unscoped `users` row. Reads the row fresh rather than trusting the JWT's
+    own `email` claim, which is a snapshot from login and can go stale.
+    """
+    payload = await _authenticate(request, session_factory, user_store, config)
+    async with session_factory() as system_session:
+        user = await user_store.get(system_session, payload["sub"])
+    if user is None:
+        raise HTTPException(status_code=401, detail="User not found")
+    return AuthenticatedCaller(id=user.id, email=user.email)
+
+
+async def tenant_of_invitation_token(
+    session_factory: async_sessionmaker[AsyncSession], token_hash: str
+) -> str | None:
+    """Which tenant an invitation token belongs to, or `None` if it names none.
+
+    A thin wrapper around `db.tenant_lookup.tenant_of_invitation`, kept here
+    rather than called directly from `gateway/tenants.py`: the exemption from
+    row-level security is meant to be reachable through this one module,
+    never through a store or lookup any endpoint could reach for itself (see
+    `db/tenant_lookup.py` and `test_tenant_exemption_allowlist.py`) — the same
+    reason `_resolve_tenant_id` and `list_tenant_memberships` live here rather
+    than being called from the gateway directly.
+    """
+    return await tenant_of_invitation(session_factory, token_hash)
 
 
 async def is_tenant_member(
