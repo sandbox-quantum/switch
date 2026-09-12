@@ -90,3 +90,15 @@ class InvitationStore:
         invitation.revoked_at = datetime.now(UTC)  # type: ignore[assignment]
         await session.flush()
         return invitation
+
+    async def consume(
+        self, session: AsyncSession, invitation: Invitation
+    ) -> Invitation:
+        """Record one use of `invitation`.
+
+        Called only after every validity check (expiry, revocation, email,
+        remaining uses) has already passed; it does not repeat any of them.
+        """
+        invitation.uses_remaining -= 1
+        await session.flush()
+        return invitation

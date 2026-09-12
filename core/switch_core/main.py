@@ -97,6 +97,7 @@ from switch_core.db.stores.client_store import ClientStore
 from switch_core.db.stores.collaboration_bridge_store import CollaborationBridgeStore
 from switch_core.db.stores.document_store import DocumentStore
 from switch_core.db.stores.external_user_store import ExternalUserStore
+from switch_core.db.stores.invitation_store import InvitationStore
 from switch_core.db.stores.media_store import MediaStore
 from switch_core.db.stores.message_store import MessageStore
 from switch_core.db.stores.package_store import PackageStore
@@ -281,6 +282,7 @@ async def run(config: SwitchConfig) -> None:
     bridge_message_map_store = BridgeMessageMapStore()
     user_store = UserStore()
     api_key_store = ApiKeyStore()
+    invitation_store = InvitationStore()
     tenant_store = TenantStore()
     reference_store = ReferenceStore()
     reference_type_store = ReferenceTypeStore()
@@ -489,6 +491,7 @@ async def run(config: SwitchConfig) -> None:
         user_store=user_store,
         external_user_store=external_user_store,
         api_key_store=api_key_store,
+        invitation_store=invitation_store,
         template_store=template_store,
         resource_service=resource_service,
         protocol=protocol,

@@ -89,6 +89,16 @@ class AgentStore:
         result = await session.execute(select(Agent))
         return list(result.scalars().all())
 
+    async def get_by_owner(self, session: AsyncSession, owner_id: str) -> list[Agent]:
+        """Every agent `owner_id` owns in the bound tenant.
+
+        Backs member removal: an owner's agents authenticate with a key that
+        carries the same `user_id`, so this is what a removal cascade walks
+        to find them.
+        """
+        result = await session.execute(select(Agent).where(Agent.owner_id == owner_id))
+        return list(result.scalars().all())
+
     async def get_children(
         self, session: AsyncSession, parent_agent_ids: list[str]
     ) -> list[Agent]:

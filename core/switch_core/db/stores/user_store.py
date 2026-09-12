@@ -300,6 +300,26 @@ class UserStore:
         result = await session.execute(select(User))
         return list(result.scalars().all())
 
+    async def add_membership(
+        self, session: AsyncSession, *, tenant_id: str, user_id: str, role: str
+    ) -> TenantMember:
+        """Insert a `role` membership for `user_id` in `tenant_id`.
+
+        Distinct from `ensure_membership`, which derives the role from the
+        caller's global bit and is a no-op when a membership already exists:
+        this is the explicit write for the two places that grant a *specific*
+        role by a caller's own action — creating a workspace (the creator
+        becomes its `owner`) and accepting an invitation (the invited role).
+        It does not check for an existing row first; a caller that needs that
+        checks before calling. Kept as the one place `TenantMember` is
+        constructed (`tests/switch_core/test_seed_admin_membership.py` pins
+        that), so a route never writes one directly.
+        """
+        membership = TenantMember(tenant_id=tenant_id, user_id=user_id, role=role)
+        session.add(membership)
+        await session.flush()
+        return membership
+
     async def tenant_role(
         self, session: AsyncSession, tenant_id: str, user_id: str
     ) -> str | None:
@@ -311,6 +331,34 @@ class UserStore:
         """
         membership = await session.get(TenantMember, (tenant_id, user_id))
         return membership.role if membership is not None else None
+
+    async def list_tenant_members(
+        self, session: AsyncSession
+    ) -> list[tuple[User, TenantMember]]:
+        """Every member of the session's bound tenant, joined with their user row.
+
+        No `WHERE tenant_id = …` of its own: the policy on `tenant_members` is
+        what narrows this, the same as `InvitationStore.list_for_tenant`.
+        """
+        result = await session.execute(
+            select(User, TenantMember).join(
+                TenantMember, TenantMember.user_id == User.id
+            )
+        )
+        return [(row[0], row[1]) for row in result.all()]
+
+    async def count_owners(self, session: AsyncSession) -> int:
+        """How many `owner` memberships exist in the session's bound tenant.
+
+        Backs "a workspace must always have an owner": removing or demoting a
+        member is refused when they are the one row this counts.
+        """
+        result = await session.execute(
+            select(func.count())
+            .select_from(TenantMember)
+            .where(TenantMember.role == "owner")
+        )
+        return result.scalar_one()
 
     async def administers(self, session: AsyncSession, user: User) -> bool:
         """Whether `user` may administer the tenant bound to `session`'s
