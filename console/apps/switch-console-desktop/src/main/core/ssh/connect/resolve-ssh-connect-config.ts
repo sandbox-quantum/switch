@@ -17,8 +17,10 @@ import {
   type ProxyTokens,
   type TransportResult,
 } from '../transport/transports';
+import { splitKnownHostsFiles, type KnownHostsDeps } from './known-hosts';
 import { buildAuthConfig } from './ssh-connect-auth';
 import { applyForwardAgent } from './ssh-connect-forward-agent';
+import { createHostVerifier, normalizeStrictHostKeyChecking } from './ssh-connect-host-key';
 
 const { createAgent } = ssh2;
 
@@ -45,7 +47,12 @@ export interface SshConnectDeps {
   ) => Omit<TransportResult, 'process'>;
   createAgent: (socketPath: string) => BaseAgent;
   env: Record<string, string | undefined>;
+  knownHosts?: Partial<KnownHostsDeps>;
 }
+
+// What OpenSSH uses when no ssh-config alias resolved these for us.
+const DEFAULT_USER_KNOWN_HOSTS_FILE = '~/.ssh/known_hosts';
+const DEFAULT_GLOBAL_KNOWN_HOSTS_FILES = '/etc/ssh/ssh_known_hosts';
 
 function defaultDeps(): SshConnectDeps {
   return {
@@ -57,6 +64,37 @@ function defaultDeps(): SshConnectDeps {
     createAgent,
     env: process.env,
   };
+}
+
+function buildHostVerifier(
+  host: string,
+  port: number,
+  resolved: ResolvedSshConfig | undefined,
+  deps: SshConnectDeps,
+  onDebug: (message: string) => void
+) {
+  const userFiles = splitKnownHostsFiles(
+    resolved?.userKnownHostsFile ?? DEFAULT_USER_KNOWN_HOSTS_FILE
+  );
+  const globalFiles = splitKnownHostsFiles(
+    resolved?.globalKnownHostsFile ?? DEFAULT_GLOBAL_KNOWN_HOSTS_FILES
+  );
+
+  return createHostVerifier(
+    {
+      host,
+      port,
+      knownHostsFiles: [...userFiles, ...globalFiles],
+      // OpenSSH records a first-use key in the first user file only. With
+      // `UserKnownHostsFile none` there is nowhere to record it, so the key is
+      // checked but never pinned.
+      writeToFile: userFiles[0],
+      strictHostKeyChecking: normalizeStrictHostKeyChecking(resolved?.strictHostKeyChecking),
+      hashKnownHosts: resolved?.hashKnownHosts === true,
+      onDebug,
+    },
+    deps.knownHosts ?? {}
+  );
 }
 
 export async function resolveSshConnectConfig(
@@ -92,6 +130,13 @@ export async function resolveSshConnectConfig(
   applyForwardAgent(config, forwardAgent, resolved, authResult, deps);
 
   let debugLogs: string[] = [];
+  // ssh2 trusts any host key unless a hostVerifier says otherwise, so this is
+  // what stops the Console handing credentials and a forwarded agent to whoever
+  // answers the address. It reads the same known_hosts OpenSSH would.
+  config.hostVerifier = buildHostVerifier(host, port, resolved, deps, (message) =>
+    debugLogs.push(message)
+  );
+
   let cleanup = () => {};
   const tokens: ProxyTokens = { host, port, username, originalHost: alias ?? base.host };
   const proxyCommand = alias ? resolved?.proxyCommand : undefined;
