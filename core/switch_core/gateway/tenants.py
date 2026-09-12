@@ -418,21 +418,21 @@ async def remove_member(
     Removal also revokes what the member's own credentials in this tenant let
     them do here, in the same transaction as the membership row going away —
     a bearer credential resolves its tenant from its own row and never
-    consults membership, so leaving the row behind would leave the person
-    with working, invisible access (`docs/old/multi-tenancy-phase2-tenants.md`,
-    §3). Concretely: every agent this user owns here is deleted outright —
-    there is no "disabled" flag on `Agent` to set instead, and an agent's own
-    bearer key (`agents.api_key_id`) is a `NOT NULL` column with no `ON
-    DELETE` action, so the key cannot be revoked while the agent still
-    references it. Deleting the agent first, through `AgentStore.delete`
-    rather than `ProtocolService.delete_agent`, frees that key to be deleted
-    with the rest of this user's keys right after — `delete_agent` spans
-    several sessions and commits of its own and reaches out to the live
-    Matrix client and collaboration bridges, none of which can be folded into
-    one transaction, so it is deliberately not used here. What this does not
-    do is tear down a live Matrix session such an agent already holds; its
-    next call to Switch fails at authentication instead, since the credential
-    behind it is gone.
+    consults membership, so leaving it behind would leave the person with
+    working, invisible access (`docs/old/multi-tenancy-phase2-tenants.md`,
+    §3). Concretely, this deletes every personal API key the member holds
+    here.
+
+    It does **not** touch any agent the member owns — it refuses instead, 409,
+    naming them. An agent is not that member's private property to lose along
+    with their membership: it sits in rooms with other people, it may be the
+    only copy of a working configuration, and its name is something other
+    members already depend on. A personal key is trivially recoverable — mint
+    another — but deleting an agent is not, and a member removal is routine
+    enough, including by mistake, that it must not be the thing that makes an
+    irreversible call about shared infrastructure. An admin who hits this
+    reassigns or deletes those agents deliberately, with the agent in front of
+    them, then removes the member.
     """
     _require_bound_tenant(tenant_id)
     membership = await session.get(TenantMember, (tenant_id, user_id))
@@ -442,9 +442,16 @@ async def remove_member(
     if membership.role == "owner" and await user_store.count_owners(session) <= 1:
         raise HTTPException(status_code=409, detail="Cannot remove the last owner")
 
-    revoked_agent_ids = [a.id for a in await agent_store.get_by_owner(session, user_id)]
-    for agent_id in revoked_agent_ids:
-        await agent_store.delete(session, agent_id)
+    owned_agents = await agent_store.get_by_owner(session, user_id)
+    if owned_agents:
+        names = ", ".join(sorted(agent.name for agent in owned_agents))
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Cannot remove: this member owns agents in this tenant — "
+                f"reassign or delete them first: {names}"
+            ),
+        )
 
     keys = await api_key_store.get_by_user(session, user_id)
     revoked_key_hashes = [key.key_hash for key in keys]
@@ -454,8 +461,6 @@ async def remove_member(
     await session.delete(membership)
     await session.commit()
 
-    for agent_id in revoked_agent_ids:
-        protocol.api_key_cache.invalidate_agent(agent_id)
     for key_hash in revoked_key_hashes:
         protocol.api_key_cache.invalidate(key_hash)
 

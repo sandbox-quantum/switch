@@ -166,14 +166,15 @@ async def _make_agent_with_key(
     *,
     tenant_id: str,
     owner_id: str,
-) -> tuple[str, str]:
+) -> tuple[str, str, str]:
     """An agent owned by `owner_id`, plus the `agents`-type key backing it.
 
-    Returns `(agent_id, key_hash)`. The agent's own client and api_key rows
-    are constructed first — `agents.client_id` and `agents.api_key_id` are
-    both foreign keys, not free-form strings.
+    Returns `(agent_id, agent_name, key_hash)`. The agent's own client and
+    api_key rows are constructed first — `agents.client_id` and
+    `agents.api_key_id` are both foreign keys, not free-form strings.
     """
     key_hash = uuid.uuid4().hex
+    name = f"agent-{uuid.uuid4().hex[:8]}"
     async with session_factory() as session:
         client = Client(
             tenant_id=tenant_id,
@@ -197,7 +198,7 @@ async def _make_agent_with_key(
 
         agent = Agent(
             tenant_id=tenant_id,
-            name=f"agent-{uuid.uuid4().hex[:8]}",
+            name=name,
             description="test agent",
             agent_type="other",
             connector_type="claude-code",
@@ -208,7 +209,7 @@ async def _make_agent_with_key(
         )
         session.add(agent)
         await session.commit()
-        return agent.id, key_hash
+        return agent.id, name, key_hash
 
 
 class TestCreateTenant:
@@ -675,9 +676,16 @@ class TestMemberRoutes:
         async with session_factory() as session:
             assert await ApiKeyStore().get_by_hash(session, key_hash) is None
 
-    async def test_removing_a_member_deletes_the_agents_they_own_here(
+    async def test_a_member_who_owns_an_agent_here_cannot_be_removed(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
+        """An agent is not the member's private property to lose along with
+        their membership — it sits in rooms with other people, and deleting it
+        is not recoverable the way reminting a key is. Removal must refuse,
+        naming the agent, and this must not be a partial write: not the
+        membership, not the member's unrelated personal key, not the agent's
+        own key may be touched when the route 409s.
+        """
         await _make_tenant(session_factory, TENANT_A)
         owner_id = await _make_member(
             session_factory, name="agent-remover", tenant_id=TENANT_A, role="owner"
@@ -685,18 +693,27 @@ class TestMemberRoutes:
         target_id = await _make_member(
             session_factory, name="agent-owner", tenant_id=TENANT_A, role="member"
         )
-        agent_id, agent_key_hash = await _make_agent_with_key(
+        agent_id, agent_name, agent_key_hash = await _make_agent_with_key(
             session_factory, tenant_id=TENANT_A, owner_id=target_id
+        )
+        personal_key_hash = await _make_api_key(
+            session_factory, tenant_id=TENANT_A, user_id=target_id
         )
         token = _token(owner_id, "agent-remover@example.invalid", TENANT_A)
 
         async with _client(_app(session_factory), token) as client:
             response = await client.delete(f"/tenants/{TENANT_A}/members/{target_id}")
-        assert response.status_code == 200, response.text
+
+        assert response.status_code == 409, response.text
+        assert agent_name in response.json()["detail"]
 
         async with session_factory() as session:
-            assert await AgentStore().get(session, agent_id) is None
-            assert await ApiKeyStore().get_by_hash(session, agent_key_hash) is None
+            assert await session.get(TenantMember, (TENANT_A, target_id)) is not None
+            assert await AgentStore().get(session, agent_id) is not None
+            assert await ApiKeyStore().get_by_hash(session, agent_key_hash) is not None
+            assert (
+                await ApiKeyStore().get_by_hash(session, personal_key_hash) is not None
+            )
 
     async def test_a_plain_member_cannot_remove_anyone(
         self, session_factory: async_sessionmaker[AsyncSession]
