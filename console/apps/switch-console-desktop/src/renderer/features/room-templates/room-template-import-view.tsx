@@ -5,7 +5,6 @@ import { observer } from 'mobx-react-lite';
 import { useCallback, useMemo, useRef, useState } from 'react';
 import { toast } from 'sonner';
 import type { ParamSpec, ParsedTemplate } from '@main/core/room-templates/controller';
-import { isEntityParamType } from '@main/core/room-templates/controller';
 import type { GuardResult, ViewDefinition } from '@renderer/app/view-registry';
 import { refreshSidebarRoomState } from '@renderer/features/sidebar/sidebar-tree-data';
 import { ServerPage } from '@renderer/features/switch-servers/server-page';
@@ -21,6 +20,7 @@ import { Button } from '@renderer/lib/ui/button';
 import { Field, FieldGroup, FieldLabel } from '@renderer/lib/ui/field';
 import { Input } from '@renderer/lib/ui/input';
 import { Textarea } from '@renderer/lib/ui/textarea';
+import { isEntityParamType } from '@shared/core/switch-servers/room-template-params';
 import { RpcError } from '@shared/lib/ipc/rpc-error';
 import {
   AgentField,

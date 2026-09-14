@@ -1,22 +1,7 @@
 import Ajv from 'ajv';
 import { dump, load } from 'js-yaml';
+import { PARAM_TYPES, type ParamType } from '@shared/core/switch-servers/room-template-params';
 import { createRPCController } from '@shared/lib/ipc/rpc';
-
-/** Param types whose value names something that exists on the server. The
- * form offers a picker over the matching list, and the server checks the
- * value before provisioning. Mirrors `ENTITY_PARAM_TYPES` in core. */
-export const ENTITY_PARAM_TYPES = ['agent', 'bridge', 'room', 'user'] as const;
-export type EntityParamType = (typeof ENTITY_PARAM_TYPES)[number];
-
-export type ParamType = 'string' | 'number' | 'boolean' | 'enum' | EntityParamType;
-
-const PARAM_TYPES: readonly ParamType[] = [
-  'string',
-  'number',
-  'boolean',
-  'enum',
-  ...ENTITY_PARAM_TYPES,
-];
 
 export type ParamSpec = {
   name: string;
@@ -28,10 +13,6 @@ export type ParamSpec = {
    * would strip pasted newlines). Declared in the template: `multiline: true`. */
   multiline: boolean;
 };
-
-export function isEntityParamType(type: ParamType): type is EntityParamType {
-  return (ENTITY_PARAM_TYPES as readonly string[]).includes(type);
-}
 
 export type ParsedTemplate = {
   params: ParamSpec[];
