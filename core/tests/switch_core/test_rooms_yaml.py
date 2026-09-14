@@ -71,6 +71,15 @@ class FakeRoomService:
         self._agents = agent_store
         self.kickoffs: list[dict[str, str | None]] = []
         self.kickoff_error: Exception | None = None
+        #: username → external id, the people a bridge would resolve.
+        self.bridge_users: dict[str, str] = {}
+        self.bridge_user_lookups: list[tuple[str, list[str]]] = []
+
+    async def resolve_bridge_users(
+        self, bridge_id: str, names: list[str]
+    ) -> dict[str, str]:
+        self.bridge_user_lookups.append((bridge_id, names))
+        return {n: self.bridge_users[n] for n in names if n in self.bridge_users}
 
     async def post_kickoff(
         self,
@@ -1372,3 +1381,153 @@ def test_parse_multiline_param_option(env):
 
     schema = TemplateDocument.model_json_schema()
     assert "multiline" in schema["$defs"]["ParamSpec"]["properties"]
+
+
+# ── entity params ───────────────────────────────────────────────────────────
+
+
+def test_resolve_params_entity_types_coerce_to_string():
+    """agent/bridge/room/user are string-valued: the entity's name."""
+    declared = {
+        "coder": ParamSpec(type="agent"),
+        "app": ParamSpec(type="bridge"),
+        "escalate_to": ParamSpec(type="room"),
+        "owner": ParamSpec(type="user"),
+    }
+    resolved = resolve_params(
+        declared,
+        {
+            "coder": "claude-code.alice",
+            "app": "Slack",
+            "escalate_to": "ops",
+            "owner": 7,
+        },
+    )
+    assert resolved == {
+        "coder": "claude-code.alice",
+        "app": "Slack",
+        "escalate_to": "ops",
+        "owner": "7",
+    }
+
+
+def test_template_schema_advertises_entity_types():
+    """The Console reads the allowed types off the schema, so the new ones
+    must be in it or every typed template is rejected client-side."""
+    from switch_core.rooms_yaml import TemplateDocument
+
+    schema = TemplateDocument.model_json_schema()
+    allowed = schema["$defs"]["ParamSpec"]["properties"]["type"]["enum"]
+    assert {"agent", "bridge", "room", "user"} <= set(allowed)
+
+
+def _entity_template(param_type: str, extra_room: str = "") -> str:
+    return (
+        "params:\n"
+        "  pick:\n"
+        f"    type: {param_type}\n"
+        "room:\n"
+        "  name: n\n"
+        "  description: d\n"
+        f"{extra_room}"
+        "  instructions: 'uses {pick}'\n"
+    )
+
+
+@pytest.mark.asyncio
+async def test_check_entity_params_agent_must_exist(env):
+    svc = _svc(env)
+    ok = svc.parse_template(
+        _entity_template("agent"), inputs={"pick": "claude-code.alice"}
+    )
+    await svc.check_entity_params(ok)
+
+    bad = svc.parse_template(_entity_template("agent"), inputs={"pick": "nobody"})
+    with pytest.raises(ValueError, match=r"param 'pick': no agent named 'nobody'"):
+        await svc.check_entity_params(bad)
+
+
+@pytest.mark.asyncio
+async def test_check_entity_params_bridge_must_exist_and_run(env):
+    svc = _svc(env)
+    await _seed_bridge_with_claim(
+        env["session_factory"],
+        display_name="Slack",
+        is_default=True,
+        claimed_by=None,
+        external_username="someone",
+    )
+    ok = svc.parse_template(_entity_template("bridge"), inputs={"pick": "Slack"})
+    await svc.check_entity_params(ok)
+
+    bad = svc.parse_template(_entity_template("bridge"), inputs={"pick": "Teams"})
+    with pytest.raises(
+        ValueError, match=r"param 'pick': no messaging app named 'Teams'"
+    ):
+        await svc.check_entity_params(bad)
+
+    async with env["session_factory"]() as session:
+        bridge = (await session.execute(select(CollaborationBridge))).scalar_one()
+        bridge.status = "stopped"
+        await session.commit()
+    stopped = svc.parse_template(_entity_template("bridge"), inputs={"pick": "Slack"})
+    with pytest.raises(
+        ValueError, match=r"param 'pick': messaging app 'Slack' is not running"
+    ):
+        await svc.check_entity_params(stopped)
+
+
+@pytest.mark.asyncio
+async def test_check_entity_params_room_must_exist(env):
+    svc = _svc(env)
+    spec, _ = svc.parse("room:\n  name: ops\n  description: d\n")
+    await svc.provision(spec, user_id=env["user_id"], is_admin=False)
+
+    ok = svc.parse_template(_entity_template("room"), inputs={"pick": "ops"})
+    await svc.check_entity_params(ok)
+
+    bad = svc.parse_template(_entity_template("room"), inputs={"pick": "nowhere"})
+    with pytest.raises(ValueError, match=r"param 'pick': no room named 'nowhere'"):
+        await svc.check_entity_params(bad)
+
+
+@pytest.mark.asyncio
+async def test_check_entity_params_user_resolves_on_the_rooms_bridge(env):
+    svc = _svc(env)
+    bridge_id = await _seed_bridge_with_claim(
+        env["session_factory"],
+        display_name="Slack",
+        is_default=False,
+        claimed_by=None,
+        external_username="someone",
+    )
+    env["rooms"].bridge_users = {"bob": "U-bob"}
+    text = _entity_template("user", extra_room='  bridge: "Slack"\n')
+
+    ok = svc.parse_template(text, inputs={"pick": "bob"})
+    await svc.check_entity_params(ok)
+    assert env["rooms"].bridge_user_lookups == [(bridge_id, ["bob"])]
+
+    bad = svc.parse_template(text, inputs={"pick": "eve"})
+    with pytest.raises(ValueError, match=r"param 'pick': no user named 'eve'"):
+        await svc.check_entity_params(bad)
+
+
+@pytest.mark.asyncio
+async def test_check_entity_params_user_needs_a_bridge(env):
+    """No bridge named and no default: a user param has nowhere to look."""
+    svc = _svc(env)
+    parsed = svc.parse_template(_entity_template("user"), inputs={"pick": "bob"})
+    with pytest.raises(ValueError, match=r"param 'pick': a user can only be looked up"):
+        await svc.check_entity_params(parsed)
+
+
+@pytest.mark.asyncio
+async def test_check_entity_params_ignores_plain_params(env):
+    """Nothing to check means no store access and no error."""
+    svc = _svc(env)
+    parsed = svc.parse_template(
+        "params:\n  label:\n    type: string\nroom:\n  name: '{label}'\n  description: d\n",
+        inputs={"label": "anything"},
+    )
+    await svc.check_entity_params(parsed)

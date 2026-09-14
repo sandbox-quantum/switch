@@ -401,10 +401,11 @@ async def create_room_from_yaml(
         builtins = await rooms_yaml.builtins_for(
             user_id=user.id, name=user.name, email=user.email, text=text
         )
-        spec, kickoff = rooms_yaml.parse(text, inputs=inputs, builtins=builtins)
+        parsed = rooms_yaml.parse_template(text, inputs=inputs, builtins=builtins)
+        await rooms_yaml.check_entity_params(parsed)
         return await rooms_yaml.provision(
-            spec,
-            kickoff=kickoff,
+            parsed.spec,
+            kickoff=parsed.kickoff,
             user_id=user.id,
             is_admin=user.role == "admin",
             creator_name=user.name,

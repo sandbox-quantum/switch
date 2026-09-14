@@ -1237,6 +1237,22 @@ class RoomService:
                 await session.commit()
             logger.info("Reconciled %d client(s) into room %s", len(missing), room.id)
 
+    async def resolve_bridge_users(
+        self, bridge_id: str, names: list[str]
+    ) -> dict[str, str]:
+        """Which of ``names`` are people on the bridge, as name → external id.
+
+        The same resolution room creation applies to a template's ``users:``
+        (known users first, then an exact directory match), exposed so a
+        ``user``-typed template param can be checked before the room exists.
+        Raises when the bridge is not running, since nothing can be looked up
+        on it then.
+        """
+        bridge_core = self._collab_lifecycle.get(bridge_id)
+        if bridge_core is None:
+            raise ValueError("the room's messaging app is not running")
+        return await bridge_core.resolve_external_user_id_map(names)
+
     async def post_kickoff(
         self,
         room_id: str,

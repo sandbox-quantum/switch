@@ -23,6 +23,7 @@ from __future__ import annotations
 import logging
 import re
 import time
+from dataclasses import dataclass
 from datetime import date
 from typing import TYPE_CHECKING, Any, Literal, cast
 
@@ -52,10 +53,22 @@ logger = logging.getLogger(__name__)
 
 PLACEHOLDER_RE = re.compile(r"\{(\$?[A-Za-z_][A-Za-z0-9_]*)\}")
 
+# Param types whose value names something that already exists on the server.
+# They interpolate as plain strings; what sets them apart is that the value is
+# checked against the server before provisioning (``check_entity_params``)
+# and that the Console offers a picker over the matching list instead of a
+# text box. The value is the entity's name as a template would spell it: an
+# agent's name, a bridge's display name, a room's name, a platform username.
+ENTITY_PARAM_TYPES = ("agent", "bridge", "room", "user")
+
+ParamType = Literal[
+    "string", "number", "boolean", "enum", "agent", "bridge", "room", "user"
+]
+
 
 class ParamSpec(BaseModel):
     model_config = {"extra": "forbid"}
-    type: Literal["string", "number", "boolean", "enum"] = "string"
+    type: ParamType = "string"
     description: str | None = None
     default: str | int | float | bool | None = None
     enum: list[str] | None = None
@@ -68,7 +81,7 @@ class ParamSpec(BaseModel):
 def _coerce(value: Any, spec: ParamSpec, name: str) -> str | int | float | bool:
     """Coerce a raw input value to the declared type."""
     t = spec.type
-    if t == "string":
+    if t == "string" or t in ENTITY_PARAM_TYPES:
         return str(value)
     if t == "number":
         if isinstance(value, bool):
@@ -237,6 +250,18 @@ class TemplateDocument(BaseModel):
     kickoff: str | None = None
 
 
+@dataclass(frozen=True)
+class ParsedTemplate:
+    """What ``parse_template`` makes of one template plus one set of inputs."""
+
+    spec: RoomSpec
+    kickoff: str | None
+    #: The template's declared params, by name.
+    params: dict[str, ParamSpec]
+    #: The value each declared param resolved to (input or default), coerced.
+    values: dict[str, str | int | float | bool]
+
+
 class ProvisionResult(BaseModel):
     room_id: str
     room_name: str
@@ -297,6 +322,21 @@ class RoomYamlService:
     ) -> tuple[RoomSpec, str | None]:
         """Parse a YAML template into a ``RoomSpec`` and optional kickoff message.
 
+        The short form of ``parse_template`` for callers that only need the
+        room; the gateway uses the long form so it can also check the
+        entity-typed params before provisioning.
+        """
+        parsed = self.parse_template(text, inputs=inputs, builtins=builtins)
+        return parsed.spec, parsed.kickoff
+
+    def parse_template(
+        self,
+        text: str,
+        inputs: dict[str, Any] | None = None,
+        builtins: dict[str, str] | None = None,
+    ) -> ParsedTemplate:
+        """Parse a YAML template into its room spec, kickoff, and resolved params.
+
         ``builtins`` are server-injected variables (e.g. ``{creator}``) that
         are always available for interpolation alongside user-supplied
         ``inputs``.  They are resolved first and never collide with declared
@@ -340,8 +380,10 @@ class RoomYamlService:
 
         # Build the interpolation values: builtins first, then params override
         values: dict[str, str | int | float | bool] = dict(builtins or {})
+        resolved: dict[str, str | int | float | bool] = {}
         if declared:
-            values.update(resolve_params(declared, inputs))
+            resolved = resolve_params(declared, inputs)
+            values.update(resolved)
 
         if values:
             room_data = interpolate(data["room"], values)
@@ -361,7 +403,81 @@ class RoomYamlService:
             spec = RoomSpec.model_validate(room_data)
         except ValidationError as e:
             raise ValueError(f"Invalid room spec: {e}") from e
-        return spec, kickoff
+        return ParsedTemplate(
+            spec=spec, kickoff=kickoff, params=declared, values=resolved
+        )
+
+    # ── Entity params ─────────────────────────────────────────────────────
+
+    async def check_entity_params(self, parsed: ParsedTemplate) -> None:
+        """Every entity-typed param must name something this server has.
+
+        Raises ``ValueError`` naming the param and what was looked for, in
+        the ``param 'x': ...`` form the Console maps back onto the form
+        field. Runs after ``parse_template`` and before ``provision`` so a
+        typo in a picked name fails at the input rather than as a half-built
+        room. A ``user`` param is resolved on the bridge the room will land
+        on, which is why the interpolated spec is needed and not only the
+        raw inputs.
+        """
+        wanted: dict[str, list[tuple[str, str]]] = {}
+        for name, spec in parsed.params.items():
+            if spec.type in ENTITY_PARAM_TYPES:
+                wanted.setdefault(spec.type, []).append(
+                    (name, str(parsed.values[name]))
+                )
+        if not wanted:
+            return
+
+        async with self._session_factory() as session:
+            if "agent" in wanted:
+                names = [value for _, value in wanted["agent"]]
+                agents = await self._agent_store.get_by_names(session, names)
+                known = {a.name for a in agents}
+                for param, value in wanted["agent"]:
+                    if value not in known:
+                        raise ValueError(
+                            f"param {param!r}: no agent named {value!r} on this server"
+                        )
+            if "bridge" in wanted:
+                bridges = {
+                    b.display_name: b for b in await self._bridge_store.get_all(session)
+                }
+                for param, value in wanted["bridge"]:
+                    bridge = bridges.get(value)
+                    if bridge is None:
+                        raise ValueError(
+                            f"param {param!r}: no messaging app named {value!r} "
+                            "on this server"
+                        )
+                    if bridge.status != "active":
+                        raise ValueError(
+                            f"param {param!r}: messaging app {value!r} is not running"
+                        )
+            if "room" in wanted:
+                rooms = {r.name for r in await self._room_store.get_all(session)}
+                for param, value in wanted["room"]:
+                    if value not in rooms:
+                        raise ValueError(
+                            f"param {param!r}: no room named {value!r} on this server"
+                        )
+
+        if "user" in wanted:
+            bridge_id = await self._resolve_bridge_id(parsed.spec.bridge)
+            if bridge_id is None:
+                param = wanted["user"][0][0]
+                raise ValueError(
+                    f"param {param!r}: a user can only be looked up on a messaging "
+                    "app, and this template has none"
+                )
+            names = [value for _, value in wanted["user"]]
+            found = await self._rooms.resolve_bridge_users(bridge_id, names)
+            for param, value in wanted["user"]:
+                if value not in found:
+                    raise ValueError(
+                        f"param {param!r}: no user named {value!r} on the "
+                        "room's messaging app"
+                    )
 
     async def builtins_for(
         self, *, user_id: str, name: str, email: str, text: str

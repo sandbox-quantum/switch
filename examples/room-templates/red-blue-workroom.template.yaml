@@ -4,8 +4,12 @@
 # demonstrates:
 #
 #   params:      Typed inputs the Console's "Create from template" wizard
-#                collects. A string param named `agent` or ending in `_agent`
-#                gets an agent picker, validated against the server's agents.
+#                collects. Besides string, number, boolean and enum, a param
+#                can be typed `agent`, `bridge`, `room` or `user`: the wizard
+#                then offers a picker over what the server has, and the
+#                server checks the chosen name exists before creating
+#                anything. The value is the entity's name as the template
+#                would spell it.
 #
 #   {$creator}:  Server-injected builtin — the creating user's name on the
 #                room's bridge (their linked identity when they have claimed
@@ -23,10 +27,10 @@ params:
     type: string
     description: Short name for the task (used in the room name)
   coder_agent:
-    type: string
+    type: agent
     description: Agent that implements the task
   reviewer_agent:
-    type: string
+    type: agent
     description: Agent that reviews and drives the acceptance loop
   brief:
     type: string
