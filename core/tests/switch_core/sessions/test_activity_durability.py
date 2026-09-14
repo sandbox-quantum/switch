@@ -4,7 +4,9 @@ import asyncio
 from datetime import UTC, datetime, timedelta
 
 import pytest
+from mattermostdriver.exceptions import NotEnoughPermissions
 
+from switch_core.bridges.collaboration.adapter import RichContentThrottled
 from switch_core.bridges.collaboration.session.activity_journal import ActivityJournal
 from switch_core.bridges.collaboration.session.outbound import SessionTurnActivity
 from switch_core.bridges.collaboration.slack.adapter import (
@@ -14,6 +16,11 @@ from switch_core.bridges.collaboration.slack.adapter import (
 from switch_core.db.models import SdkSession, require_tenant_id
 from switch_core.sessions.publication import SessionPublisher
 
+from ..bridges.collaboration.test_mattermost_sdk_only import (
+    _adapter as mattermost_adapter,
+)
+from ..bridges.collaboration.test_mattermost_sdk_only import _http_error
+from ..bridges.collaboration.test_mattermost_sdk_only import _posts as mm_posts
 from ..bridges.collaboration.test_session_activity import _items, _turn
 from .test_authority import opened, setup
 from .test_publication import Platform
@@ -586,3 +593,83 @@ async def test_publisher_reserves_activity_before_an_early_request(session_facto
     assert "Working" in messages[0].text
     assert "No tool calls yet" in messages[1].text
     assert any(block["type"] == "actions" for block in messages[2].blocks)
+
+
+# ── The real Mattermost adapter, not a stand-in ──────────────────────────────
+#
+# Everything above replaces `post_rich` on a platform object, so it exercises
+# the reservation machinery against whatever exception the test chose to
+# raise. What decides the reservation's fate in production is the adapter's
+# own reading of what the driver threw, and that is not covered by a
+# stand-in. These run the same machinery over `MattermostAdapter`.
+
+
+def mattermost(*, agent="Agent"):
+    adapter = mattermost_adapter(agent)
+    posts = mm_posts(adapter)
+
+    def remember(post, created):
+        """Keep what was posted where recovery will look for it."""
+        root = post.get("root_id")
+        record = {
+            "id": created["id"],
+            "user_id": f"bot-{agent}",
+            "props": post.get("props") or {},
+            "create_at": len(posts.created),
+        }
+        (posts.thread if root else posts.channel)[created["id"]] = record
+
+    return adapter, posts, remember
+
+
+async def test_a_lost_mattermost_response_keeps_its_reservation(session_factory):
+    """A timeout is not a refusal. The reservation stands, the post is found
+    again by the marker that travelled in its props, and the channel is left
+    with one status rather than two."""
+    await setup(session_factory)
+    adapter, posts, remember = mattermost()
+    accepted = posts.create_post
+
+    def lose_the_response(post):
+        created = accepted(post)
+        remember(post, created)
+        raise TimeoutError("accepted on the server, response lost")
+
+    posts.create_post = lose_the_response
+    with pytest.raises(TimeoutError):
+        await publish(activity(session_factory, adapter))
+
+    posts.create_post = accepted
+    assert await publish(activity(session_factory, adapter))
+    assert len(posts.created) == 1
+
+
+async def test_a_mattermost_rate_limit_retries_without_a_second_post(session_factory):
+    await setup(session_factory)
+    adapter, posts, _ = mattermost()
+    posts.create_error = _http_error(429, **{"Retry-After": "5"})
+    renderer = activity(session_factory, adapter)
+
+    with pytest.raises(RichContentThrottled):
+        await publish(renderer)
+
+    posts.create_error = None
+    assert await publish(renderer)
+    assert len(posts.created) == 1
+
+
+async def test_a_post_mattermost_refused_is_reserved_again_and_retried(
+    session_factory,
+):
+    """The other half of the contract: a refusal really does release the
+    reservation, so the turn is posted rather than waiting for a post that
+    was never made."""
+    await setup(session_factory)
+    adapter, posts, _ = mattermost()
+    posts.create_error = NotEnoughPermissions("403 permission denied")
+
+    assert not await publish(activity(session_factory, adapter))
+
+    posts.create_error = None
+    assert await publish(activity(session_factory, adapter))
+    assert len(posts.created) == 1

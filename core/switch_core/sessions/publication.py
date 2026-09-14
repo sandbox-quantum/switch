@@ -4,6 +4,7 @@ import time
 from collections import OrderedDict
 from collections.abc import Callable
 from datetime import UTC, datetime
+from typing import Any
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -174,6 +175,7 @@ async def refresh_cards(
                     origin=origin,
                     agent=agent,
                     thread_id=thread_id,
+                    prefer_owner=cards.notifies_only_by_mention,
                 )
                 if post is None and request.state == "open"
                 else None
@@ -502,7 +504,7 @@ async def refresh_activity(
                 continue
             items = [item for item in snapshot.items if item.turn_id == turn.turn_id]
             revisions = tuple(item.revision for item in items)
-            if turn.status == "running":
+            if turn.status == "running" and activity.redraws_for_elapsed_time:
                 revisions += (int(time.monotonic() // 5),)
             error_summary = activity_error_summary(
                 turn, snapshot.session, online=online
@@ -580,22 +582,32 @@ async def refresh_activity(
                 )
                 or thread_root_id
             )
-            metadata = {
+            recipient = (
+                await notification_recipient(
+                    db,
+                    bridge_id=bridge_id,
+                    room_id=room.id,
+                    origin=origin,
+                    agent=agent,
+                    thread_id=thread_root_id,
+                    prefer_owner=activity.notifies_only_by_mention,
+                )
+                if error_summary
+                else None
+            )
+            metadata: dict[str, Any] = {
                 key: value
                 for key, value in {
                     "session_url": session_console_url(
                         gateway_public_url, agent.id, room.id, row.id
                     ),
-                    "notify_external_id": await notification_recipient(
-                        db,
-                        bridge_id=bridge_id,
-                        room_id=room.id,
-                        origin=origin,
-                        agent=agent,
-                        thread_id=thread_root_id,
-                    )
-                    if error_summary
-                    else None,
+                    "notify_external_id": recipient,
+                    # Somebody has to act on this and there is nobody here to
+                    # name. Only worth saying where a mention is the whole
+                    # notification; elsewhere the platform reaches them anyway.
+                    "notify_unreachable": bool(error_summary)
+                    and recipient is None
+                    and activity.notifies_only_by_mention,
                     "error_summary": error_summary,
                 }.items()
                 if value is not None

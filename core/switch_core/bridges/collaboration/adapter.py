@@ -134,6 +134,11 @@ class TurnActivity:
     publication_token: str | None = None
     session_url: str | None = None
     notify_external_id: str | None = None
+    # There was someone who should be told and nobody here to name: the agent
+    # has no owner, or an owner who has claimed no account on this platform.
+    # Distinct from `notify_external_id` being None on a redraw, which means
+    # the mention has already been made and must not be repeated.
+    notify_unreachable: bool = False
     # Canned, room-safe attention message. Never raw host/provider output.
     error_summary: str | None = None
 
@@ -215,6 +220,31 @@ class CollaborationAdapter(ABC):
     #: reader is notified about rather than as an edit to a message they have
     #: already scrolled past.
     separate_attention_slot: ClassVar[bool] = False
+
+    #: Whether a mention is the only way an attention post reaches anyone.
+    #:
+    #: True where nobody follows a thread they are not already in, so a post
+    #: that names no one is read by no one. Two things follow from that. The
+    #: agent's owner leads the naming — they are the person who can open
+    #: Console and act on a stalled session, where whoever happened to type
+    #: the command may be able to do nothing about it. And an attention post
+    #: with nobody to name says so, because one that notified no one otherwise
+    #: looks exactly like one that notified the right person.
+    #:
+    #: False where the platform's own following does that work: a Slack
+    #: participant gets the threaded reply without being named, and naming
+    #: them is a notification they already had.
+    notifies_only_by_mention: ClassVar[bool] = False
+
+    #: Whether a ticking clock is reason enough to redraw a running turn.
+    #:
+    #: True where the status is a small line of its own that a reader watches
+    #: for exactly that, so the seconds advancing is the message doing its job.
+    #: False where the status is the turn's one post: there the elapsed time
+    #: rides along with the next real change — a tool, a state, the ending —
+    #: rather than rewriting the post a reader is in the middle of, and the
+    #: final update still shows what the turn actually took.
+    redraws_for_elapsed_time: ClassVar[bool] = False
 
     supports_activity_reactions: ClassVar[bool] = False
 
@@ -717,6 +747,26 @@ class CollaborationAdapter(ABC):
         would be a caller that cannot serve the per-agent platforms at all.
         """
 
+    async def notify_working(
+        self, channel_id: str, agent_name: str, thread_root_id: str | None
+    ) -> None:
+        """Signal once, where the work was asked for, that the agent has begun.
+
+        A platform's own ephemeral "typing" affordance, which expires by itself
+        and so is a nudge rather than a state to switch off. Called once as a
+        turn opens and never on a redraw: repeated, it would claim the agent
+        was typing for as long as the turn ran.
+
+        `thread_root_id` is where the *asking* happened, which is not
+        necessarily where the status went — someone who wrote at the channel
+        root is watching the root, not a thread they have not opened yet. None
+        means the channel root.
+
+        Best effort by nature. Nothing is waiting on it and the posted status
+        carries the state from here on, so an adapter that cannot send one
+        does nothing and says nothing.
+        """
+
     def _runtime_lock(self, channel_id: str, agent_name: str) -> asyncio.Lock:
         """The lock serialising runtime-indicator work for one agent in one
         channel.
@@ -958,6 +1008,19 @@ class CollaborationAdapter(ABC):
             )
         body = self.translate_outbound(text + self._deeplink_suffix(deeplink_url))
         return await self.send_message(channel_id, agent_name, body, thread_root_id)
+
+    def unnotified_notice(self) -> str:
+        """Why an attention post named nobody, for a platform that says so.
+
+        The same explanation `_ping_operator` gives, for the SDK publication
+        that replaces it: the reader is told this reached no one and what to
+        do so the next one does, rather than being left to assume the person
+        who can act has already seen it.
+        """
+        return (
+            "Nobody here is linked to this agent's owner, so this notified no one. "
+            f"Link your {self.platform_name} account in Switch Console to be notified."
+        )
 
     @abstractmethod
     async def create_channel(

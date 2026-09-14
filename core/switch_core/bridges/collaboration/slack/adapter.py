@@ -163,6 +163,7 @@ class SlackAdapter(CollaborationAdapter):
     publishes_sdk_sessions: ClassVar[bool] = True
     separate_activity_log: ClassVar[bool] = True
     separate_attention_slot: ClassVar[bool] = True
+    redraws_for_elapsed_time: ClassVar[bool] = True
     supports_activity_reactions: ClassVar[bool] = True
     renders_legacy_runtime_state: ClassVar[bool] = False
 

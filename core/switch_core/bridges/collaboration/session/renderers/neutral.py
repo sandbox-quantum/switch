@@ -35,6 +35,7 @@ from collections.abc import Callable
 from switch_core.sessions.contract import (
     TURN_ENDED,
     ApprovalContent,
+    ApprovalOption,
     ApprovalResult,
     DecidedBy,
     Item,
@@ -65,8 +66,19 @@ _LINK_SCHEMES = ("https://", "http://", "switchdash://")
 _CONSOLE = "Open in Switch Console"
 
 # What a card says when it could not show all of itself. The reader is told the
-# count rather than left to notice, and pointed somewhere the whole of it is.
-_CUT = "…{left} more not shown. {console} to see the rest."
+# count rather than left to notice; where the rest of it is comes from the
+# footer, which a cut body always replaces with `_TOO_BIG`.
+_CUT = "…{left} more not shown."
+
+# What an open request says in place of "Reply with `R42 1`" when it could not
+# be shown faithfully — an option cut short of what distinguishes it, a
+# question left out. Answering by number means answering the numbers on the
+# screen, so a form that is not all on the screen stops asking to be answered
+# there and names the place it can be.
+_TOO_BIG = (
+    "Too long to show in full here, so it cannot be answered from this "
+    f"message. {_CONSOLE} to read and answer it."
+)
 
 # How a tool call went, in one character: read at a glance and down the left
 # edge of a line rather than as a sentence. The same glyphs `slack.py` uses,
@@ -91,6 +103,11 @@ _HEADINGS = {
     "resolved": "Permission answered",
     "closed": "Permission request closed",
 }
+
+# How far an "accept for this session" option reaches. One copy, because the
+# open form and the answered one are describing the same thing and a reader
+# comparing them should not have to work out that they agree.
+_FOR_SESSION = " (applies for the rest of this session)"
 
 _QUESTION_HEADINGS = {
     "open": "Questions",
@@ -269,20 +286,34 @@ def request_summary(
     exists for a card that cannot be answered where it is showing, and leaving
     "Reply with `R42 1`" underneath would invite exactly the answer that is
     about to be refused.
+
+    A form that does not fit refuses the same way, and for the same reason.
+    An instruction to answer by number under options a reader can only see
+    part of invites the wrong number: the form drops the instruction, says it
+    is too long, and names Console. Only an instruction is replaced this way
+    — a card that already says why it cannot be answered says it better than
+    this would.
     """
     content = request.content
     if isinstance(content, ApprovalContent):
-        head, body, footer = _approval_form(
+        head, body, footer, invites_answer = _approval_form(
             request, content, reference, escape=escape, limit=limit, responder=responder
         )
     else:
-        head, body, footer = _questions_form(
+        head, body, footer, invites_answer = _questions_form(
             request, content, reference, escape=escape, limit=limit, responder=responder
         )
     if unavailable_reason and request.state in {"open", "submitting"}:
         body = []
         footer = _fit(unavailable_reason, max(1, limit // 3), escape=escape)
-    return _compose(head, body, footer, limit=limit)
+        invites_answer = False
+    return _compose(
+        head,
+        body,
+        footer,
+        limit=limit,
+        if_cut=_TOO_BIG if invites_answer else footer,
+    )
 
 
 def _approval_form(
@@ -293,7 +324,7 @@ def _approval_form(
     escape: Callable[[str], str],
     limit: int,
     responder: str | None,
-) -> tuple[list[str], list[str], str]:
+) -> tuple[list[str], list[str], str, bool]:
     handle = escape(reference.handle)
     head = [f"**{_HEADINGS[request.state]}** · request `{handle}`"]
     head.append(_fit(content.title, _share(limit, 1500, 3), escape=escape))
@@ -301,17 +332,29 @@ def _approval_form(
         head.append(_fit(content.detail, _share(limit, 1200, 4), escape=escape))
 
     body: list[str] = []
+    whole = True
     if request.state == "open":
+        budget = _label_budget(limit)
+        whole = all(
+            _shows_whole(option.label, budget, escape=escape)
+            for option in content.options
+        )
         body = [
-            f"{index}. {_fit(option.label, _share(limit, 150, 8), escape=escape)}"
+            f"{index}. {_fit(option.label, budget, escape=escape)}{_scope(option)}"
             for index, option in enumerate(content.options, start=1)
         ]
+    # The one state whose footer is an instruction. `_approval_footer` says
+    # why the others are not: nothing to choose, or already answered.
+    invites_answer = request.state == "open" and bool(content.options)
+    if invites_answer and not whole:
+        return (head, body, _TOO_BIG, False)
     return (
         head,
         body,
         _approval_footer(
             request, content, handle, escape=escape, limit=limit, responder=responder
         ),
+        invites_answer,
     )
 
 
@@ -366,11 +409,7 @@ def _approval_answer(
         _share(limit, 150, 8),
         escape=escape,
     )
-    scope = (
-        " (applies for the rest of this session)"
-        if chosen and chosen.decision == "acceptForSession"
-        else ""
-    )
+    scope = _scope(chosen) if chosen else ""
     return f"{label}{scope} — chosen{by}." if by else f"{label}{scope}."
 
 
@@ -382,7 +421,7 @@ def _questions_form(
     escape: Callable[[str], str],
     limit: int,
     responder: str | None,
-) -> tuple[list[str], list[str], str]:
+) -> tuple[list[str], list[str], str, bool]:
     handle = escape(reference.handle)
     head = [
         f"**{_QUESTION_HEADINGS[request.state]}** · request `{handle}`",
@@ -390,26 +429,30 @@ def _questions_form(
     ]
 
     body: list[str] = []
+    whole = True
     if request.state == "open":
+        budget = _label_budget(limit)
         for position, question in enumerate(content.questions, start=1):
             title = (
-                _fit(question.title, _share(limit, 150, 8), escape=escape)
-                if question.title
-                else ""
+                _fit(question.title, budget, escape=escape) if question.title else ""
             )
+            whole = whole and _shows_whole(question.title, budget, escape=escape)
             body.append(f"**{position}. {title}**" if title else f"**{position}.**")
             if question.prompt:
                 body.append(_fit(question.prompt, _share(limit, 800, 4), escape=escape))
-            body += [
-                _option_line(index, option, escape=escape, limit=limit)
-                for index, option in enumerate(question.options, start=1)
-            ]
+            for index, option in enumerate(question.options, start=1):
+                body.append(_option_line(index, option, escape=escape, limit=limit))
+                whole = whole and _shows_whole(option.label, budget, escape=escape)
+    invites_answer = request.state == "open" and unanswerable(content.questions) is None
+    if invites_answer and not whole:
+        return (head, body, _TOO_BIG, False)
     return (
         head,
         body,
         _questions_footer(
             request, content, handle, escape=escape, limit=limit, responder=responder
         ),
+        invites_answer,
     )
 
 
@@ -420,7 +463,7 @@ def _option_line(
     escape: Callable[[str], str],
     limit: int,
 ) -> str:
-    line = f"{index}. {_fit(option.label, _share(limit, 150, 8), escape=escape)}"
+    line = f"{index}. {_fit(option.label, _label_budget(limit), escape=escape)}"
     if option.description:
         line += f" — {_fit(option.description, _share(limit, 200, 8), escape=escape)}"
     return line
@@ -589,17 +632,26 @@ def _actor(
     return f"{_fit(decided_by.actor_id, _share(limit, 200, 8), escape=escape)} from {where}"
 
 
-def _compose(head: list[str], body: list[str], footer: str, *, limit: int) -> str:
+def _compose(
+    head: list[str], body: list[str], footer: str, *, limit: int, if_cut: str
+) -> str:
     """Head, as much of the body as fits, then the footer — which always survives.
 
     The body is what gets dropped because it is the part a reader can recover
     elsewhere: an option they cannot see is still an option, and the notice
-    says where the whole list is. The footer is not recoverable that way — it
-    is the instruction for answering *here* — so it is measured first and the
+    says how many are missing. The footer is not recoverable that way — it is
+    the instruction for answering *here* — so it is measured first and the
     rest is spent around it.
+
+    A body that had to be cut changes what the footer can honestly say, which
+    is what `if_cut` is: answering by number means answering the numbers on
+    the screen, and some of them are not. Both footers are measured, so the
+    one that ends up being used is the one there was room for and the choice
+    between them cannot change how much body fits.
     """
     footer = _truncate(footer, limit)
-    spent = len(footer)
+    if_cut = _truncate(if_cut, limit)
+    spent = max(len(footer), len(if_cut))
     lines: list[str] = []
     for line in head:
         if spent + len(line) + 1 > limit:
@@ -613,14 +665,15 @@ def _compose(head: list[str], body: list[str], footer: str, *, limit: int) -> st
             break
         shown.append(line)
         spent += len(line) + 1
-    if len(shown) < len(body):
-        notice = _CUT.format(left=len(body) - len(shown), console=_CONSOLE)
+    cut = len(shown) < len(body)
+    if cut:
+        notice = _CUT.format(left=len(body) - len(shown))
         while shown and spent + len(notice) + 1 > limit:
             spent -= len(shown.pop()) + 1
-            notice = _CUT.format(left=len(body) - len(shown), console=_CONSOLE)
+            notice = _CUT.format(left=len(body) - len(shown))
         if spent + len(notice) + 1 <= limit:
             shown.append(notice)
-    return "\n".join([*lines, *shown, footer])
+    return "\n".join([*lines, *shown, if_cut if cut else footer])
 
 
 def _mentioned(mention: str | None, body: str) -> str:
@@ -639,6 +692,34 @@ def _link(label: str, url: str | None) -> str:
     # the URL into the body as text. Percent-encoding is the one transform that
     # keeps the link working and cannot be read as syntax.
     return f"[{label}]({url.replace(')', '%29')})"
+
+
+def _label_budget(limit: int) -> int:
+    """How much room a thing a reader picks between gets.
+
+    Generous where the short ceilings elsewhere are not, because this is the
+    text the choice is made on: a permission label is routinely a whole
+    command line, and two options that differ only past a short ceiling render
+    as the same choice under two numbers. What the message can hold still
+    bounds it — and a label that does not fit even this stops the card
+    inviting an answer at all, rather than being quietly shortened into one.
+    """
+    return _share(limit, 1500, 3)
+
+
+def _shows_whole(text: str, limit: int, *, escape: Callable[[str], str]) -> bool:
+    """Whether `_fit` will show all of `text`, or have to cut it."""
+    return len(escape(text)) <= limit
+
+
+def _scope(option: ApprovalOption) -> str:
+    """How far an approval reaches, where the label may not have said.
+
+    The same wording the answered card uses, on the form itself: two options
+    can be labelled the same and mean "this once" and "from now on", and a
+    reader choosing between them by number needs the difference said.
+    """
+    return _FOR_SESSION if option.decision == "acceptForSession" else ""
 
 
 def _share(limit: int, most: int, denominator: int) -> int:

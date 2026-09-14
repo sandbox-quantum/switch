@@ -100,6 +100,7 @@ async def test_activity_layout_is_an_adapter_capability_not_a_slack_type_check()
         post_rich=AsyncMock(side_effect=["C1:status", "C1:log"]),
         update_rich=AsyncMock(),
         mark_activity=AsyncMock(),
+        notify_working=AsyncMock(),
     )
     activity = SessionTurnActivity(platform)
     kwargs = dict(

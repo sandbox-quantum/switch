@@ -161,6 +161,8 @@ class SessionTurnActivity:
         self._reactions_per_agent = getattr(
             adapter, "activity_reactions_per_agent", False
         )
+        self._timer_redraws = getattr(adapter, "redraws_for_elapsed_time", False)
+        self._only_mentions_notify = getattr(adapter, "notifies_only_by_mention", False)
         self._anchors: OrderedDict[tuple[str, str], _Anchor] = OrderedDict()
         self._thread_turns: dict[tuple[str, str, str], set[tuple[str, str]]] = {}
         self._attention: OrderedDict[tuple[str, str], tuple[str, str]] = OrderedDict()
@@ -168,6 +170,47 @@ class SessionTurnActivity:
     @property
     def durable(self) -> bool:
         return self._journal is not None
+
+    @property
+    def notifies_only_by_mention(self) -> bool:
+        """Whether naming someone is the only way this platform reaches them.
+
+        Read by the caller that resolves who to name, which is where the
+        agent's owner is preferred to whoever started the turn and where an
+        unreachable owner becomes something the post admits to.
+        """
+        return self._only_mentions_notify
+
+    @property
+    def redraws_for_elapsed_time(self) -> bool:
+        """Whether a running turn is worth redrawing for the clock alone.
+
+        Read by the caller that decides how often to publish at all, so a
+        platform that does not redraw for the clock is not asked to.
+        """
+        return self._timer_redraws
+
+    def _status_state(
+        self,
+        turn: TurnUpsert,
+        items: list[Item],
+        elapsed_seconds: float | None,
+        session_url: str | None,
+    ) -> tuple[str, str, str | None]:
+        """What the status message is already showing.
+
+        Two publishes with the same answer would draw the same message, and
+        the second is an edit nobody would see. The clock counts only where
+        the platform redraws for it; elsewhere what the status shows is the
+        turn's state and its tools, and the elapsed time goes out with the
+        next change to either.
+        """
+        drawn = (
+            f"{int(elapsed_seconds) if elapsed_seconds is not None else ''}"
+            if self._timer_redraws
+            else ",".join(f"{item.item_id}:{item.revision}" for item in items)
+        )
+        return (turn.turn_id, f"{turn.status}:{drawn}", session_url)
 
     async def recorded_commands(self, session_id: str) -> set[str]:
         return (
@@ -189,6 +232,7 @@ class SessionTurnActivity:
         elapsed_seconds: float | None,
         session_url: str | None = None,
         notify_external_id: str | None = None,
+        notify_unreachable: bool = False,
         error_summary: str | None = None,
     ) -> bool:
         async def draw() -> bool:
@@ -211,6 +255,7 @@ class SessionTurnActivity:
                     thread_root_id,
                     turn,
                     notify_external_id,
+                    notify_unreachable,
                     error_summary,
                 )
             return drawn
@@ -273,6 +318,7 @@ class SessionTurnActivity:
         thread_root_id: str | None,
         turn: TurnUpsert,
         notify_external_id: str | None,
+        notify_unreachable: bool,
         error_summary: str | None,
     ) -> None:
         """One attention reply per command; update it when the problem clears."""
@@ -297,6 +343,7 @@ class SessionTurnActivity:
             [],
             turn,
             status_only=True,
+            notify_unreachable=notify_unreachable,
             error_summary=error_summary,
         )
         if ref is None:
@@ -516,7 +563,24 @@ class SessionTurnActivity:
         The platform can refuse it, and then the channel is told rather than
         left with a turn that silently never appeared, and `None` says so to
         the caller.
+
+        Runs once per turn, which is why the "agent has started" nudge belongs
+        here: an anchor that already exists is a turn already announced, and a
+        platform told again on every redraw would show the agent as typing for
+        as long as it ran.
         """
+        if turn.status not in TURN_ENDED:
+            await self._adapter.notify_working(
+                channel_id,
+                agent_name,
+                # The asking message and the thread the status goes into are
+                # the same message exactly when the command was addressed at
+                # the channel root — the turn threads under what was said. So
+                # whoever is waiting is watching the root, not a thread they
+                # have not opened; anything else means they are watching the
+                # thread the command came from.
+                None if asked_on == thread_root_id else thread_root_id,
+            )
         try:
             posted = await self._post_activity(
                 channel_id,
@@ -551,12 +615,8 @@ class SessionTurnActivity:
             reaction_ref=asked_on,
             agent_name=agent_name,
             session_url=session_url,
-            status_state=(
-                turn.turn_id,
-                f"{turn.status}:{int(elapsed_seconds) if elapsed_seconds is not None else ''}",
-                session_url,
-            )
-            if self._separate_activity_log and self._journal is None
+            status_state=self._status_state(turn, items, elapsed_seconds, session_url)
+            if self._journal is None
             else None,
             log_state=tuple((item.item_id, item.revision) for item in items)
             + ((turn.status, 0),),
@@ -573,14 +633,12 @@ class SessionTurnActivity:
         elapsed_seconds: float | None,
     ) -> bool:
         """Rewrite the posted message with the turn as it now stands."""
-        state = (
-            turn.turn_id,
-            f"{turn.status}:{int(elapsed_seconds) if elapsed_seconds is not None else ''}",
-            anchor.session_url,
-        )
-        if self._separate_activity_log and not ended and anchor.status_state == state:
-            # The timer and visible link share a compact status line. Tool-only
-            # changes belong to the separate log, not another status edit.
+        state = self._status_state(turn, items, elapsed_seconds, anchor.session_url)
+        if not ended and anchor.status_state == state:
+            # Nothing this message shows has changed. Where the status is a
+            # line of its own, tool-only changes belong to the separate log;
+            # where it is the turn's one post, a clock that has moved on its
+            # own is not a change a reader wanted the post rewritten for.
             return True
         try:
             await self._adapter.update_rich(
@@ -610,7 +668,7 @@ class SessionTurnActivity:
                 else "The next change to the turn will try the same message.",
             )
             return False
-        if self._separate_activity_log and not ended:
+        if not ended:
             anchor.status_state = state
         return True
 
@@ -793,6 +851,16 @@ class SessionRequestCards:
         which one is two places to say it differently.
         """
         return self._surface
+
+    @property
+    def notifies_only_by_mention(self) -> bool:
+        """Whether naming someone is the only way this platform reaches them.
+
+        Read where a card's one notification is resolved, for the same reason
+        `SessionTurnActivity` exposes it: the agent's owner leads on a
+        platform where an unnamed reader is an unnotified one.
+        """
+        return bool(getattr(self._adapter, "notifies_only_by_mention", False))
 
     async def post(
         self,
