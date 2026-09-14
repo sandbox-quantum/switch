@@ -1726,23 +1726,24 @@ class MattermostAdapter(CollaborationAdapter):
         return resp.json()  # type: ignore[no-any-return]
 
     async def _find_existing_bot(self, username: str) -> dict[str, Any] | None:
-        try:
-            page = 0
-            per_page = 200
-            while True:
-                result = self._mm_api(
-                    "get",
-                    f"/bots?include_deleted=true&page={page}&per_page={per_page}",
-                )
-                bots: list[dict[str, Any]] = result  # type: ignore[assignment]
-                for bot in bots:
-                    if bot.get("username") == username:
-                        if bot.get("delete_at", 0) > 0:
-                            self._mm_api("post", f"/bots/{bot['user_id']}/enable")
-                        return bot
-                if len(bots) < per_page:
-                    break
-                page += 1
-        except Exception:
-            pass
+        """Return the Mattermost bot with this username, or None if there is no
+        such bot. Raises if the lookup itself fails — a failed lookup must not
+        be reported as "the bot does not exist", which would make the caller
+        try to create a bot that is already there."""
+        page = 0
+        per_page = 200
+        while True:
+            result = self._mm_api(
+                "get",
+                f"/bots?include_deleted=true&page={page}&per_page={per_page}",
+            )
+            bots: list[dict[str, Any]] = result  # type: ignore[assignment]
+            for bot in bots:
+                if bot.get("username") == username:
+                    if bot.get("delete_at", 0) > 0:
+                        self._mm_api("post", f"/bots/{bot['user_id']}/enable")
+                    return bot
+            if len(bots) < per_page:
+                break
+            page += 1
         return None
