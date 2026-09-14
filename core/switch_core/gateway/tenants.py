@@ -197,17 +197,67 @@ async def list_tenants(
     return await list_tenant_memberships(session_factory, user_store, user_id)
 
 
+async def _require_workspace_allowance(
+    session_factory: async_sessionmaker[AsyncSession],
+    user_store: UserStore,
+    caller: AuthenticatedCaller,
+    limit: int,
+) -> None:
+    """Raise 403 unless `caller` may own one more workspace.
+
+    Creating a workspace is not just a row: `all_tenant_ids()` drives a fan-out
+    per tenant at boot and a sweep every few seconds, so unbounded creation
+    buys the deployment steady-state work
+    (`docs/old/multi-tenancy-phase2-tenants.md`, §5). A limit of 0 closes the
+    route entirely, which is how a deployment that is not ready to offer
+    self-service says so.
+
+    Operators are exempt before anything is read, both because the bypass is
+    what `is_operator` means everywhere else in this codebase (`authz.py`) and
+    because the person provisioning workspaces for other people is the one
+    caller a self-service bound must not stop.
+
+    Counts `owner` memberships, not memberships: an invitation into someone
+    else's workspace must not spend an allowance, since the invitee cannot get
+    it back without being removed. The count reuses `list_tenant_memberships`
+    rather than asking the database for a number — there is no exemption that
+    returns a caller's *roles* across tenants, only `tenants_of_user`, and
+    adding one would mean a tenth `SECURITY DEFINER` lookup and a migration for
+    an answer this bounds to a handful of rows by construction.
+    """
+    if caller.is_operator:
+        return
+    if limit == 0:
+        raise HTTPException(
+            status_code=403,
+            detail="Workspace creation is disabled on this deployment",
+        )
+    memberships = await list_tenant_memberships(session_factory, user_store, caller.id)
+    owned = sum(1 for membership in memberships if membership.role == "owner")
+    if owned >= limit:
+        raise HTTPException(
+            status_code=403,
+            detail=(f"You own {owned} workspaces, and this deployment allows {limit}"),
+        )
+
+
 @router.post("/tenants", status_code=201)
 async def create_tenant(
     req: TenantCreateRequest,
-    user_id: Annotated[str, Depends(get_authenticated_user_id)],
+    caller: Annotated[AuthenticatedCaller, Depends(get_authenticated_caller)],
     session_factory: Annotated[
         async_sessionmaker[AsyncSession], Depends(get_session_factory)
     ],
     user_store: Annotated[UserStore, Depends(get_user_store)],
     client_lifecycle: Annotated[ClientLifecycleService, Depends(get_client_lifecycle)],
+    config: Annotated[SwitchConfig, Depends(get_config)],
 ) -> TenantMembershipResponse:
     """Create a workspace. The caller becomes its `owner`.
+
+    How many workspaces one person may own is bounded, and the bound is checked
+    before anything is provisioned — see `_require_workspace_allowance`. This
+    is the only route in this file with no tenant to authorize against, so the
+    limit is what stands in for the role check its neighbours have.
 
     Provisioning goes through `ClientLifecycleService.create_tenant` — "the
     one seam a tenant comes into existence through" — rather than inserting a
@@ -226,6 +276,9 @@ async def create_tenant(
     — a 500 with the orphan unrecorded — is the silent degradation this
     codebase refuses. An operator repairs it by inserting the membership.
     """
+    await _require_workspace_allowance(
+        session_factory, user_store, caller, config.gateway_max_workspaces_per_user
+    )
     slug = _derive_slug(req.name)
     try:
         tenant = await client_lifecycle.create_tenant(req.name, slug)
@@ -237,7 +290,7 @@ async def create_tenant(
     try:
         async with tenant_session(session_factory, tenant.id) as session:
             await user_store.add_membership(
-                session, tenant_id=tenant.id, user_id=user_id, role="owner"
+                session, tenant_id=tenant.id, user_id=caller.id, role="owner"
             )
             await session.commit()
     except Exception:
@@ -247,7 +300,7 @@ async def create_tenant(
             "taken. Insert the membership to repair it.",
             tenant.id,
             slug,
-            user_id,
+            caller.id,
         )
         raise
 
