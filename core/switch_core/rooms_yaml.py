@@ -772,6 +772,12 @@ class RoomYamlService:
         exactly the agents the creator could have addressed by hand. Nobody is
         impersonated and no agent is granted anything past this one event.
 
+        Two messages: a one-line headline in the channel saying whose kickoff
+        this is, and the kickoff text itself as a reply in that headline's
+        thread. The agents it mentions are addressed by the threaded message,
+        so their session notices, plans and hand-offs stay in the thread and
+        the channel keeps one line per kickoff.
+
         Best-effort like references and docs: the room exists, so a kickoff
         that cannot be posted is reported in ``failures``, not fatal. The
         agents are waited for first, because a client drops events that land
@@ -799,17 +805,23 @@ class RoomYamlService:
         if "the platform" in late:
             return
 
+        person = OnBehalfOf(user_id, user_name or user_id)
+        headline = f"Template kickoff on behalf of @{person.name}"
         try:
+            root_id = await admin.send_platform_message(
+                room.matrix_room_id, headline, on_behalf_of=person
+            )
+            if root_id is None:
+                fail("the platform could not post the kickoff")
+                return
             event_id = await admin.send_platform_message(
-                room.matrix_room_id,
-                text,
-                on_behalf_of=OnBehalfOf(user_id, user_name or user_id),
+                room.matrix_room_id, text, thread_root_id=root_id, on_behalf_of=person
             )
         except Exception as e:
             fail(str(e))
             return
         if event_id is None:
-            fail("the platform could not post the kickoff")
+            fail("the platform posted the kickoff headline but not its thread")
 
     async def _wait_for_kickoff_audience(
         self,

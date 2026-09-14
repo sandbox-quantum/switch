@@ -69,14 +69,19 @@ def _bridge(adapter: _RecordingAdapter) -> BridgeCore:
     return core
 
 
-def _event(marker: dict[str, Any]) -> InboundMessage:
+def _event(
+    marker: dict[str, Any], body: str = BODY, threaded: bool = False
+) -> InboundMessage:
+    content: dict[str, Any] = {PLATFORM_MARKER: marker}
+    if threaded:
+        content["m.relates_to"] = {"rel_type": "m.thread", "event_id": "$root"}
     return InboundMessage(
         room_id="!r:switch.local",
         event_id="$e1",
         sender="@switch-admin:switch.local",
         timestamp=1700000000000,
-        content={PLATFORM_MARKER: marker},
-        body=BODY,
+        content=content,
+        body=body,
         sender_name=None,
     )
 
@@ -98,3 +103,24 @@ async def test_a_message_on_someones_behalf_says_so() -> None:
     )
     assert adapter.admin_calls == [f"On behalf of @Abel:\n\n{BODY}"]
     assert adapter.message_calls == []
+
+
+async def test_a_body_that_already_names_the_person_is_left_alone() -> None:
+    # The kickoff headline is that body: one line, no second attribution.
+    adapter = _RecordingAdapter()
+    marker = {"on_behalf_of": {"user_id": "user-9", "name": "Abel"}}
+    await _bridge(adapter).handle_outbound_message(
+        RoomRef("!r:switch.local"),
+        _event(marker, body="Template kickoff on behalf of @Abel"),
+    )
+    assert adapter.admin_calls == ["Template kickoff on behalf of @Abel"]
+
+
+async def test_a_thread_reply_is_not_prefixed() -> None:
+    # It sits under a root that said whose it is.
+    adapter = _RecordingAdapter()
+    marker = {"on_behalf_of": {"user_id": "user-9", "name": "Abel"}}
+    await _bridge(adapter).handle_outbound_message(
+        RoomRef("!r:switch.local"), _event(marker, threaded=True)
+    )
+    assert adapter.admin_calls == [BODY]

@@ -4,7 +4,7 @@ import asyncio
 import logging
 import re
 import uuid
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, TypeVar
 
@@ -80,6 +80,11 @@ PUPPET_JOIN_TIMEOUT = 30.0
 # How long to hold an incomplete outbound attachment group before relaying the
 # parts that arrived, flagged as incomplete (see _schedule_outbound_group_flush).
 OUTBOUND_GROUP_TIMEOUT_SECONDS = 5.0
+
+
+def _is_thread_reply(content: Mapping[str, object]) -> bool:
+    relates = content.get("m.relates_to")
+    return isinstance(relates, dict) and relates.get("rel_type") == "m.thread"
 
 
 @dataclass
@@ -1519,10 +1524,16 @@ class BridgeCore:
             # arrived showing its own `<b>` tags.
             # A platform message sent for a person says so in the text, so
             # the room sees whose authority it carries rather than a bare
-            # notice from the app.
+            # notice from the app. A reply inside a thread sits under a root
+            # that already said it, and a body that names the person itself
+            # (the kickoff headline) needs no second line.
             body = event.body
             person = platform_on_behalf_of(event_content)
-            if person is not None:
+            if (
+                person is not None
+                and not _is_thread_reply(event_content)
+                and f"@{person.name}" not in body
+            ):
                 body = f"On behalf of @{person.name}:\n\n{body}"
             message_ref = await self._adapter.admin_message(
                 channel_id,

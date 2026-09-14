@@ -1181,7 +1181,12 @@ class FakeAdminClient(AdminClient):
         if self.send_error is not None:
             raise self.send_error
         self.sent.append(
-            {"room_id": room_id, "body": body, "on_behalf_of": on_behalf_of}
+            {
+                "room_id": room_id,
+                "body": body,
+                "on_behalf_of": on_behalf_of,
+                "thread_root_id": thread_root_id,
+            }
         )
         return self.send_returns
 
@@ -1245,12 +1250,20 @@ async def test_provision_kickoff_posts_as_platform_on_behalf_of_creator(env):
         creator_name="alice",
     )
     assert result.failed_attachments == []
+    person = OnBehalfOf(env["user_id"], "alice")
     assert admin.sent == [
         {
             "room_id": ANY_ROOM,
+            "body": "Template kickoff on behalf of @alice",
+            "on_behalf_of": person,
+            "thread_root_id": None,
+        },
+        {
+            "room_id": ANY_ROOM,
             "body": "@claude-code.alice start on the brief.\n",
-            "on_behalf_of": OnBehalfOf(env["user_id"], "alice"),
-        }
+            "on_behalf_of": person,
+            "thread_root_id": "$kickoff",
+        },
     ]
 
 
@@ -1301,7 +1314,7 @@ async def test_provision_kickoff_waits_for_agents_and_reports_the_late(env):
     assert [f["error"] for f in result.failed_attachments] == [
         "did not join the room in time to see the kickoff: claude-code.alice"
     ]
-    assert len(admin.sent) == 1
+    assert len(admin.sent) == 2
 
 
 @pytest.mark.asyncio

@@ -444,8 +444,9 @@ function SummaryPanel({
         <div className="rounded-lg border border-border p-4">
           <h4 className="mb-1 text-xs font-semibold text-foreground-muted">Kickoff message</h4>
           <p className="mb-2 text-xs text-foreground-muted">
-            Posted by Switch on your behalf. Each agent it mentions checks whether you may address
-            it, the same as if you had typed it.
+            Posted by Switch on your behalf: a one-line headline in the channel, with this text in
+            its thread. Each agent it mentions checks whether you may address it, the same as if you
+            had typed it, and answers in that thread.
           </p>
           <pre className="max-h-40 overflow-y-auto text-xs whitespace-pre-wrap text-foreground-muted">
             {kickoffPreview}
