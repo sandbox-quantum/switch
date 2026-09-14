@@ -38,7 +38,6 @@ from switch_core.bridges.collaboration.session.outbound import (
     SessionRequestCards,
     SessionTurnActivity,
 )
-from switch_core.bridges.collaboration.slack.adapter import SlackAdapter
 from switch_core.clients.admin_messages import ADMIN_MARKER, AdminMessageType
 from switch_core.clients.client_base import ClientBase, ClientConfig
 from switch_core.clients.mentions import mention_regex, strip_emphasis
@@ -243,14 +242,14 @@ class BridgeCore:
                 posts=session_request_post_store,
                 session_factory=session_factory,
             )
-            if isinstance(adapter, SlackAdapter)
+            if adapter.publishes_sdk_sessions
             else None
         )
         self._session_activity = (
             SessionTurnActivity(
                 adapter, journal=ActivityJournal(session_factory, bridge_id)
             )
-            if isinstance(adapter, SlackAdapter)
+            if adapter.publishes_sdk_sessions
             else None
         )
         self._session_publisher = (
@@ -279,7 +278,7 @@ class BridgeCore:
     ) -> SessionDemo | None:
         if not enabled:
             return None
-        if not isinstance(self._adapter, SlackAdapter):
+        if not self._adapter.publishes_sdk_sessions:
             logger.warning(
                 "SESSION_DEMO_ENABLED is set, but %s posts no request cards, so "
                 "the demo trigger does nothing on this bridge",

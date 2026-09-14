@@ -60,7 +60,7 @@ from switch_core.db.models import (
 from switch_core.db.stores.session_request_post_store import SessionRequestPostStore
 from switch_core.sessions.contract import SnapshotRequest
 
-from .test_slack_agent_sessions import FakeResponse, FakeWebClient
+from .slack_fakes import FakeResponse, FakeWebClient
 
 REPO_ROOT = Path(__file__).resolve().parents[5]
 EXAMPLES_PATH = REPO_ROOT / "console/packages/shared/src/session-v1/examples.json"

@@ -51,7 +51,6 @@ from switch_core.bridges.collaboration.adapter import (
     RichContentThrottled,
     TurnActivity,
 )
-from switch_core.bridges.collaboration.slack.adapter import SlackAdapter
 from switch_core.db.models import Client, ExternalUser, SessionRequestPost
 from switch_core.db.stores.session_request_post_store import SessionRequestPostStore
 from switch_core.sessions.contract import TURN_ENDED, Item, SnapshotRequest, TurnUpsert
@@ -155,7 +154,7 @@ class SessionTurnActivity:
             "activity_record", default=None
         )
         self._adapter = adapter
-        self._slack_activity = isinstance(adapter, SlackAdapter)
+        self._separate_activity_log = getattr(adapter, "separate_activity_log", False)
         self._anchors: OrderedDict[tuple[str, str], _Anchor] = OrderedDict()
         self._thread_turns: dict[tuple[str, str], set[tuple[str, str]]] = {}
         self._attention: OrderedDict[tuple[str, str], tuple[str, str]] = OrderedDict()
@@ -198,7 +197,7 @@ class SessionTurnActivity:
                 elapsed_seconds=elapsed_seconds,
                 session_url=session_url,
             )
-            if self._slack_activity:
+            if self._separate_activity_log:
                 await self._refresh_attention(
                     session_id,
                     channel_id,
@@ -471,7 +470,7 @@ class SessionTurnActivity:
                 elapsed_seconds=elapsed_seconds,
             )
 
-        if self._slack_activity:
+        if self._separate_activity_log:
             drawn = await self._draw_log(anchor, items, turn) and drawn
             await self._save_anchor(anchor)
         if ended:
@@ -520,7 +519,7 @@ class SessionTurnActivity:
                     items,
                     turn,
                     elapsed_seconds,
-                    status_only=self._slack_activity,
+                    status_only=self._separate_activity_log,
                     session_url=session_url,
                 ),
                 thread_root_id,
@@ -551,7 +550,7 @@ class SessionTurnActivity:
                 f"{turn.status}:{int(elapsed_seconds) if elapsed_seconds is not None else ''}",
                 session_url,
             )
-            if self._slack_activity and self._journal is None
+            if self._separate_activity_log and self._journal is None
             else None,
             log_state=tuple((item.item_id, item.revision) for item in items)
             + ((turn.status, 0),),
@@ -573,7 +572,7 @@ class SessionTurnActivity:
             f"{turn.status}:{int(elapsed_seconds) if elapsed_seconds is not None else ''}",
             anchor.session_url,
         )
-        if self._slack_activity and not ended and anchor.status_state == state:
+        if self._separate_activity_log and not ended and anchor.status_state == state:
             # The timer and visible link share a compact status line. Tool-only
             # changes belong to the separate log, not another status edit.
             return True
@@ -585,7 +584,7 @@ class SessionTurnActivity:
                     items,
                     turn,
                     elapsed_seconds,
-                    status_only=self._slack_activity,
+                    status_only=self._separate_activity_log,
                     session_url=anchor.session_url,
                 ),
             )
@@ -605,7 +604,7 @@ class SessionTurnActivity:
                 else "The next change to the turn will try the same message.",
             )
             return False
-        if self._slack_activity and not ended:
+        if self._separate_activity_log and not ended:
             anchor.status_state = state
         return True
 
@@ -699,11 +698,13 @@ class SessionTurnActivity:
 
         Not necessarily the thread root — a turn threaded under a reply deep
         in the thread reacts to that reply, resolved once by `_begin` and
-        kept on the anchor as `reaction_ref` for exactly this. Slack only,
+        kept on the anchor as `reaction_ref` for exactly this. Adapter-owned
         and best effort: errors do not interrupt rendering. Return whether it worked so
         callers can retry a failed claim or unfinished terminal cleanup.
         """
-        if anchor.reaction_ref is None or not isinstance(self._adapter, SlackAdapter):
+        if anchor.reaction_ref is None or not getattr(
+            self._adapter, "supports_activity_reactions", False
+        ):
             return True
         try:
             await self._adapter.mark_activity(

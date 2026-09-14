@@ -10,6 +10,9 @@ superseded message ref. The entry then points at a message the move has just
 deleted, and the message the move posted is referenced by nothing — so the
 end-of-turn clear cannot remove it and it stays in the channel forever.
 
+Telegram still uses this shared runtime-indicator path. Slack now uses SDK
+publication and does not participate in these races.
+
 The invariant each test asserts is the same: whatever is still posted on the
 platform is exactly what the adapter thinks is posted.
 """
@@ -21,9 +24,9 @@ import time
 from typing import Any
 
 from switch_core.bridges.collaboration.adapter import LiveRuntimeIndicator
-from switch_core.bridges.collaboration.slack.adapter import (
-    SlackAdapter,
-    SlackConnectionConfig,
+from switch_core.bridges.collaboration.telegram.adapter import (
+    TelegramAdapter,
+    TelegramConnectionConfig,
 )
 
 CHANNEL = "chan-1"
@@ -38,7 +41,7 @@ class _Platform:
     stands in for the network round trip each of these calls really makes.
     """
 
-    def __init__(self, adapter: SlackAdapter, seeded_ref: str) -> None:
+    def __init__(self, adapter: TelegramAdapter, seeded_ref: str) -> None:
         self.live: set[str] = {seeded_ref}
         self.edits: list[tuple[str, str]] = []
         self._next = iter(f"msg-{n}" for n in range(2, 20))
@@ -69,10 +72,10 @@ class _Platform:
         adapter.delete_message = delete_message  # type: ignore[method-assign]
 
 
-def _adapter() -> tuple[SlackAdapter, _Platform]:
-    adapter = SlackAdapter(
-        config=SlackConnectionConfig(
-            bot_token="xoxb-test", app_token="xapp-test", workspace_id="T-test"
+def _adapter() -> tuple[TelegramAdapter, _Platform]:
+    adapter = TelegramAdapter(
+        config=TelegramConnectionConfig(
+            bot_token="test", bot_username="test_bot"
         )
     )
     adapter._working_msg[KEY] = LiveRuntimeIndicator(
@@ -84,7 +87,7 @@ def _adapter() -> tuple[SlackAdapter, _Platform]:
     return adapter, _Platform(adapter, "msg-1")
 
 
-def _refresh(adapter: SlackAdapter, detail: str) -> Any:
+def _refresh(adapter: TelegramAdapter, detail: str) -> Any:
     return adapter.apply_runtime_state(
         CHANNEL,
         AGENT,
@@ -95,7 +98,7 @@ def _refresh(adapter: SlackAdapter, detail: str) -> Any:
     )
 
 
-def _assert_consistent(adapter: SlackAdapter, platform: _Platform) -> None:
+def _assert_consistent(adapter: TelegramAdapter, platform: _Platform) -> None:
     live = adapter._working_msg.get(KEY)
     tracked = {live.message_ref} if live is not None else set()
     assert platform.live == tracked, (

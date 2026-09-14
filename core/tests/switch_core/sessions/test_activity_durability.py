@@ -32,7 +32,6 @@ class ActivitySlack(SlackAdapter):
         self.edit_refs = []
         self.reactions = set()
         self.fail_after_post = False
-        self.fail_delete = False
 
     async def post_rich(self, channel, agent, content, thread):
         self.post_count += 1
@@ -56,12 +55,6 @@ class ActivitySlack(SlackAdapter):
             ):
                 return ref
         return None
-
-    async def delete_activity_message(self, channel, ref):
-        if self.fail_delete:
-            self.fail_delete = False
-            raise TimeoutError("Delete failed")
-        self.messages.pop(ref, None)
 
     async def mark_activity(self, channel, ref, *, working, force=False):
         if working:

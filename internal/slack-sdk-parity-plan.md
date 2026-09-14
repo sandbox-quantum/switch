@@ -8,7 +8,7 @@
 4. On explicit rejection of Block Kit formatting, retry with compact text in the same thread. Preserve typed request handles, stable recovery markers, and edits to the same message. Never retry an uncertain network outcome as a new post.
 5. Run focused rendering, publication, and fallback tests. Record exact local and manual Slack test steps below when implementation is complete.
 
-No legacy deletion or architectural refactoring is included. Role restoration and reset/compact confirmation remain with the SDK developer.
+The initial parity change excluded legacy deletion and architectural refactoring. The follow-up cleanup is recorded below. Role restoration and reset/compact confirmation remain with the SDK developer.
 
 ## Research
 
@@ -100,4 +100,36 @@ Mypy passed for all eight changed source files. Ruff and `git diff --check` pass
 
 The user accepted the rendered layout and repeated the smoke test after the review cleanup. Existing completed threads are not rewritten.
 
-The separate Console startup/session recovery workarounds and nginx DNS change remain untouched and outside the Slack commit scope. Other pre-existing internal notes also remain outside that scope. Legacy deletion, platform expansion, and the upstream reset/compact work are still deferred.
+The separate Console startup/session recovery workarounds and nginx DNS change remain untouched and outside the Slack commit scope. Other pre-existing internal notes also remain outside that scope. Platform expansion and the upstream reset/compact work remain separate follow-ups.
+
+## Legacy rendering removal
+
+After the user accepted SDK parity, the Slack native stream driver, runtime-state renderer, ownership and stream maps, legacy stop handler, and obsolete `agent_sessions` configuration field were removed. SDK activity still uses the same status and tool-log messages, request cards, Console link, delivery journal, and text fallback.
+
+The shared adapter now declares SDK publication, separate tool-log layout, and activity-reaction capabilities. Slack enables these capabilities and disables legacy runtime-state rendering. Other platforms retain their current behaviour. The shared publisher no longer imports or checks the concrete Slack adapter class.
+
+Slack explicitly ignores legacy runtime-state publication and repositioning, preventing the base renderer from posting duplicate indicators. Native stop events no longer dispatch commands; `!interrupt @agent-name` continues through global command routing. The separate explicit typing API is retained.
+
+Tests for the retired output were removed. Shared Slack API fakes now live in `slack_fakes.py`, independent of legacy tests. Runtime-indicator race tests use Telegram, which still depends on that shared code. New checks cover ignored legacy events, retained reaction error handling, global interrupt routing, and adapter capability selection. Agent display-name tests now exercise SDK status publication.
+
+Validation:
+
+- All collaboration and SDK session tests passed: **1,626 tests**.
+- The final focused identity, SDK-only Slack, and global-control run passed **130 tests**, including three newly added cases.
+- Mypy passed for the four changed source files. Ruff and `git diff --check` passed.
+
+Run the broad regression suite from the repository root:
+
+```sh
+DOCKER_HOST="unix://${HOME}/.docker/run/docker.sock" TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE=/var/run/docker.sock core/.venv/bin/python -m pytest core/tests/switch_core/bridges/collaboration core/tests/switch_core/sessions -q --tb=short
+```
+
+### Smoke-test the removal
+
+1. Rebuild and restart Switch core from this checkout using the Console server page.
+2. Start a fresh Slack thread. Ask the agent to run a tool that needs approval, approve it, and let the turn finish.
+3. Check that the timer and Console link remain first, the expandable tool log remains second, and request cards stay below without duplicate links. The final runtime must replace the top status in place.
+4. Start a longer task and send `!interrupt @agent-name` in its thread. Check that work stops and the eyes reaction clears.
+5. Click the Console link and confirm that it opens the correct session.
+
+The user accepted the live smoke test and approved committing and pushing this cleanup. The separate Console and nginx changes remain untouched.

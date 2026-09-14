@@ -30,7 +30,7 @@ from switch_core.bridges.collaboration.slack.adapter import (
 from switch_core.sessions.contract import Item, TurnUpsert
 from switch_core.sessions.projection import SessionProjection
 
-from .test_slack_agent_sessions import FakeWebClient
+from .slack_fakes import FakeWebClient
 
 REPO_ROOT = Path(__file__).resolve().parents[5]
 ACTIVITY_PATH = (

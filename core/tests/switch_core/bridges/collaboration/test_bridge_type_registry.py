@@ -99,7 +99,6 @@ def test_get_config_schema_exposes_required_fields() -> None:
         "app_token",
         "workspace_id",
         "agent_usergroups",
-        "agent_sessions",
     }
     assert set(schema["required"]) == {"bot_token", "app_token", "workspace_id"}
 

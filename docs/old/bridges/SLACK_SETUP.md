@@ -1,5 +1,8 @@
 # Slack collaboration bridge setup
 
+> Historical setup guide. The native stream renderer and `agent_sessions` setting described below have been removed. Use the [current Slack setup guide](../../official/deploy/messaging-apps/slack.md) for SDK activity and permission cards.
+
+
 Connects a Slack workspace to Switch. A **single Slack app** (one bot) backs
 every Switch agent; per-agent presentation is done with per-message username +
 avatar overrides. Inbound events arrive over **Socket Mode** — an outbound

@@ -200,6 +200,13 @@ class RichContentThrottled(RichContentFailed):
 
 
 class CollaborationAdapter(ABC):
+    # Platforms opt in only when their SDK request and activity rendering is ready.
+    publishes_sdk_sessions: ClassVar[bool] = False
+    # Keep the ticking status and expandable tool log in separate messages.
+    separate_activity_log: ClassVar[bool] = False
+    supports_activity_reactions: ClassVar[bool] = False
+    renders_legacy_runtime_state: ClassVar[bool] = True
+
     #: Whether this platform can create a channel from Switch at all.
     #:
     #: A ceiling, not a preference: an operator may withhold channel creation
@@ -660,6 +667,11 @@ class CollaborationAdapter(ABC):
         self, channel_id: str, sender_name: str, is_typing: bool
     ) -> None: ...
 
+    async def mark_activity(
+        self, channel_id: str, message_ref: str, *, working: bool, force: bool = False
+    ) -> None:
+        """Update a platform work indicator when the adapter supports one."""
+
     def _runtime_lock(self, channel_id: str, agent_name: str) -> asyncio.Lock:
         """The lock serialising runtime-indicator work for one agent in one
         channel.
@@ -689,6 +701,8 @@ class CollaborationAdapter(ABC):
     ) -> None:
         """Serialise against any other runtime-indicator work for this agent,
         then apply the state. Adapters override ``_apply_runtime_state``."""
+        if not self.renders_legacy_runtime_state:
+            return
         async with self._runtime_lock(channel_id, agent_name):
             await self._apply_runtime_state(
                 channel_id,
@@ -708,6 +722,8 @@ class CollaborationAdapter(ABC):
         """Serialise against any other runtime-indicator work for this agent,
         then move the indicator. Adapters override
         ``_reposition_runtime_state``."""
+        if not self.renders_legacy_runtime_state:
+            return
         async with self._runtime_lock(channel_id, agent_name):
             await self._reposition_runtime_state(channel_id, agent_name, thread_root_id)
 
@@ -727,9 +743,9 @@ class CollaborationAdapter(ABC):
         """Surface a Switch Console-managed agent's runtime state on the channel.
 
         How a state is rendered is the adapter's choice — this default uses the
-        typing indicator for ``working``. Slack and Mattermost override this to
-        show a persistent status message they remove (Slack) or edit to a
-        terminal marker (Mattermost, whose delete leaves a tombstone).
+        typing indicator for ``working``. Mattermost overrides this to edit a
+        persistent status message, since deletion leaves a tombstone.
+        Slack disables this path and renders SDK session activity instead.
 
         ``thread_root_id``, when set, is the external thread the state belongs
         in; the state surfaces there.
