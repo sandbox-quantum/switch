@@ -18,7 +18,14 @@ from switch_core.bridges.agent.protocol.types import (
     MessagePayload,
     RoomJoinPayload,
 )
-from switch_core.db.models import ClientRoom, MediaBlob, Room, SdkSessionCommand
+from switch_core.db.models import (
+    ClientRoom,
+    MediaBlob,
+    RoleLease,
+    Room,
+    RoomRole,
+    SdkSessionCommand,
+)
 from switch_core.sessions.service import SessionError
 from tests.switch_core.sessions.test_authority import host_event, setup
 
@@ -279,7 +286,7 @@ async def test_room_binding_is_authorized_and_control_delivery_is_durable(
         update={
             "status": "ready",
             "capabilities": snapshot.session.capabilities.model_copy(
-                update={"reset": True}
+                update={"reset": True, "compact": True}
             ),
         }
     )
@@ -429,7 +436,7 @@ async def ready_control_session(session_factory):
         update={
             "status": "ready",
             "capabilities": snapshot.session.capabilities.model_copy(
-                update={"reset": True}
+                update={"reset": True, "compact": True}
             ),
         }
     )
@@ -509,3 +516,151 @@ async def test_redelivered_control_returns_the_stored_status(session_factory):
         ) == 1
     pending = await service.pending("agent-demo", "session-demo", "host-demo", epoch)
     assert [command.command_id for command in pending] == [receipt.command_id]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("action", ["reset", "compact"])
+@pytest.mark.parametrize("outcome", ["applied", "rejected", "unknown"])
+async def test_room_control_followup_requires_success_and_keeps_context(
+    session_factory, action, outcome
+):
+    service, epoch, connections = await ready_control_session(session_factory)
+    async with session_factory() as db, db.begin():
+        db.add(
+            RoomRole(
+                id="role-demo",
+                room_id="room-demo",
+                name="reviewer",
+                instructions="Review changes.",
+            )
+        )
+        await db.flush()
+        db.add(
+            RoleLease(role_id="role-demo", room_id="room-demo", agent_id="agent-demo")
+        )
+    receipt = await service.submit_room_control(
+        "agent-demo",
+        "room-demo",
+        action,
+        "@owner:example.test",
+        "control-message",
+        "thread-root",
+        connections,
+    )
+    pending = await service.pending("agent-demo", "session-demo", "host-demo", epoch)
+    assert [c.body.type for c in pending] == [f"session.{action}"]
+    async with session_factory() as db, db.begin():
+        lease = await db.scalar(select(RoleLease))
+        await db.delete(lease)
+    result = host_event(
+        epoch,
+        2,
+        {
+            "type": "command.result",
+            "commandId": receipt.command_id,
+            "status": outcome,
+            "code": None,
+            "message": None,
+        },
+    )
+    await service.ingest("agent-demo", "host-demo", result)
+    await service.ingest("agent-demo", "host-demo", result)
+    pending = await service.pending("agent-demo", "session-demo", "host-demo", epoch)
+    if outcome != "applied":
+        assert pending == []
+        return
+    assert len(pending) == 1
+    followup = pending[0]
+    assert followup.body.type == "message.send"
+    assert 'previous role "reviewer"' in followup.body.text
+    assert 'to "Owner" in thread "thread-root"' in followup.body.text
+    assert 'room "room-demo"' in followup.body.text
+    assert followup.origin.room_id == "room-demo"
+    assert followup.origin.thread_id == "thread-root"
+    assert followup.command_id != receipt.command_id
+    assert (
+        await service.pending("agent-demo", "session-demo", "host-demo", epoch)
+        == pending
+    )
+    await service.ingest(
+        "agent-demo",
+        "host-demo",
+        host_event(
+            epoch,
+            3,
+            {
+                "type": "command.result",
+                "commandId": followup.command_id,
+                "status": "unknown",
+                "code": "OUTCOME_UNKNOWN",
+                "message": "Execution interrupted.",
+            },
+        ),
+    )
+    assert await service.pending("agent-demo", "session-demo", "host-demo", epoch) == []
+    async with session_factory() as db:
+        assert await db.scalar(select(func.count()).select_from(SdkSessionCommand)) == 2
+
+
+@pytest.mark.asyncio
+async def test_control_followup_waits_for_recovery_and_uses_fresh_epoch(
+    session_factory,
+):
+    service, epoch, connections = await ready_control_session(session_factory)
+    receipt = await service.submit_room_control(
+        "agent-demo",
+        "room-demo",
+        "reset",
+        "@owner:example.test",
+        "control-message",
+        "thread-root",
+        connections,
+    )
+    await service.pending("agent-demo", "session-demo", "host-demo", epoch)
+    await service.quiesce("agent-demo", "session-demo", "host-demo", epoch)
+    await service.ingest(
+        "agent-demo",
+        "host-demo",
+        host_event(
+            epoch,
+            2,
+            {
+                "type": "command.result",
+                "commandId": receipt.command_id,
+                "status": "applied",
+                "code": None,
+                "message": None,
+            },
+        ),
+        reconcile=True,
+    )
+    async with session_factory() as db:
+        assert await db.scalar(select(func.count()).select_from(SdkSessionCommand)) == 1
+    recovered = await service.recover(
+        "agent-demo", "session-demo", "host-demo", epoch, "recover-operation", 2
+    )
+    fresh = recovered.session.epoch
+    assert fresh != epoch
+    assert await service.pending("agent-demo", "session-demo", "host-demo", fresh) == []
+    await service.ingest(
+        "agent-demo",
+        "host-demo",
+        host_event(
+            fresh,
+            1,
+            {
+                "type": "session.upsert",
+                "session": recovered.session.model_copy(
+                    update={"status": "ready"}
+                ).model_dump(by_alias=True),
+            },
+        ).model_copy(update={"event_id": "recovered-ready"}),
+    )
+    pending = await service.pending("agent-demo", "session-demo", "host-demo", fresh)
+    assert len(pending) == 1
+    assert pending[0].epoch == fresh
+    assert pending[0].body.type == "message.send"
+    assert "previous role" not in pending[0].body.text
+    assert (
+        await service.command_status("session-demo", receipt.command_id, "owner")
+    ).status == "applied"
