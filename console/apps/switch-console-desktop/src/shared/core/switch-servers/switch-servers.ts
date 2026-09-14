@@ -625,6 +625,15 @@ export type AddressingRule = {
    * Optional for the same reason as `owner`: absent reads as false.
    */
   owner_agents?: boolean;
+  /**
+   * Admit the Switch platform speaking on its own account (CHOO-2719). Denied
+   * by default, even by an open policy, so an agent has to opt in here. A
+   * platform message sent on a person's behalf, such as a template kickoff,
+   * is judged as that person instead and needs no opt-in.
+   *
+   * Optional for the same reason as `owner`: absent reads as false.
+   */
+  platform?: boolean;
 };
 
 export type AddressingPolicy = {

@@ -102,6 +102,14 @@ export interface AddressingRule {
   room_groups: AddressingDimension;
   users: AddressingDimension;
   agents: AddressingDimension;
+  // Symbolic subjects, resolved when a message arrives (CHOO-2137). Absent
+  // reads as false, as it does server-side.
+  owner?: boolean;
+  owner_agents?: boolean;
+  // Admit the Switch platform on its own account (CHOO-2719). Denied by
+  // default even for an open policy. A platform message sent for a person is
+  // judged as that person instead.
+  platform?: boolean;
 }
 
 export interface AddressingPolicy {
