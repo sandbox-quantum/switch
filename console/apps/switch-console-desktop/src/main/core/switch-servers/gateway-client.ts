@@ -1043,6 +1043,63 @@ export async function deleteAgent(server: SwitchServer, agentId: string): Promis
   });
 }
 
+/** The result of provisioning a room from a YAML template. */
+export type TemplateProvisionResult = {
+  roomId: string;
+  roomName: string;
+  failedAttachments: Array<{ kind: string; id: string; error: string }>;
+};
+
+/**
+ * Create a room from a YAML template (`POST /rooms/from-yaml`). Sends the
+ * template as a JSON body with the YAML text and any user-supplied inputs.
+ * The server parses the template, interpolates inputs, and provisions
+ * everything in one call.
+ *
+ * A 400 carries a `detail` naming the bad input; the caller maps it back to
+ * the form field.
+ */
+export async function createRoomFromTemplate(
+  server: SwitchServer,
+  yamlText: string,
+  inputs: Record<string, string | number | boolean>
+): Promise<TemplateProvisionResult> {
+  const res = await gatewayFetch(server, '/rooms/from-yaml', {
+    authenticated: true,
+    method: 'POST',
+    body: { yaml: yamlText, inputs },
+  });
+  const json = (await res.json()) as {
+    room_id: string;
+    room_name: string;
+    failed_attachments?: Array<{ kind: string; id: string; error: string }>;
+  };
+  return {
+    roomId: json.room_id,
+    roomName: json.room_name,
+    failedAttachments: json.failed_attachments ?? [],
+  };
+}
+
+/**
+ * Fetch the JSON Schema describing a valid room template. Returns null when
+ * the server does not support the endpoint (404) — older servers that lack
+ * `params:` support.
+ */
+export async function fetchTemplateSchema(
+  server: SwitchServer
+): Promise<Record<string, unknown> | null> {
+  try {
+    const res = await gatewayFetch(server, '/rooms/template-schema', {
+      authenticated: true,
+    });
+    return (await res.json()) as Record<string, unknown>;
+  } catch (e) {
+    if (e instanceof GatewayError && e.status === 404) return null;
+    throw e;
+  }
+}
+
 export async function fetchRoomRoles(
   server: SwitchServer,
   roomId: string

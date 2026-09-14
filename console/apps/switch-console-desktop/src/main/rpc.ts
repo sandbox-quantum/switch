@@ -11,6 +11,7 @@ import { providersController } from './core/providers/controller';
 import { ptyController } from './core/pty/controller';
 import { remoteHostsController } from './core/remote-hosts/controller';
 import { resourceMonitorController } from './core/resource-monitor/controller';
+import { roomTemplatesController } from './core/room-templates/controller';
 import { searchController } from './core/search/controller';
 import { sessionController } from './core/sessions/controller';
 import { appSettingsController } from './core/settings/controller';
@@ -44,6 +45,7 @@ export const rpcRouter = createRPCRouter({
   localSwitchServer: localSwitchServerController,
   remoteSwitchServer: remoteSwitchServerController,
   remoteHosts: remoteHostsController,
+  roomTemplates: roomTemplatesController,
   sidecar: sidecarController,
   telemetry: telemetryController,
   fs: createRPCNamespace({
