@@ -80,7 +80,7 @@ export default function RegistrationKeysPage() {
     if (!q) return all;
     return all.filter(
       (k) =>
-        k.label.toLowerCase().includes(q) || k.key_prefix.toLowerCase().includes(q),
+        k.label.toLowerCase().includes(q) || k.key_hash_prefix.toLowerCase().includes(q),
     );
   }, [keys, agentSearch]);
 
@@ -88,8 +88,8 @@ export default function RegistrationKeysPage() {
     () => [
       { field: "label", headerName: "Label", flex: 1, minWidth: 200 },
       {
-        field: "key_prefix",
-        headerName: "Key Prefix",
+        field: "key_hash_prefix",
+        headerName: "Key Hash Prefix",
         width: 180,
         renderCell: ({ value }) => (
           <Typography component="span" sx={MONO_SX}>
@@ -135,8 +135,8 @@ export default function RegistrationKeysPage() {
     () => [
       { field: "label", headerName: "Agent", flex: 1, minWidth: 200 },
       {
-        field: "key_prefix",
-        headerName: "Key Prefix",
+        field: "key_hash_prefix",
+        headerName: "Key Hash Prefix",
         width: 180,
         renderCell: ({ value }) => (
           <Typography component="span" sx={MONO_SX}>

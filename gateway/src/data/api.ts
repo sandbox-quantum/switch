@@ -691,7 +691,7 @@ export interface ApiKeyDetail {
   id: string;
   label: string;
   type: string;
-  key_prefix: string;
+  key_hash_prefix: string;
   created_at: string;
 }
 

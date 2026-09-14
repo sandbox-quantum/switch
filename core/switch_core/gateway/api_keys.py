@@ -43,7 +43,7 @@ async def list_api_keys(
             id=k.id,
             label=k.label,
             type=k.type,
-            key_prefix=k.key_hash[:12],
+            key_hash_prefix=k.key_hash[:12],
             created_at=str(k.created_at),
         )
         for k in keys

@@ -437,7 +437,7 @@ class ApiKeyDetail(BaseModel):
     id: str
     label: str
     type: str
-    key_prefix: str
+    key_hash_prefix: str
     created_at: str
 
 
