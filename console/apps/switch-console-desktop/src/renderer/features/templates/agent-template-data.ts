@@ -17,6 +17,7 @@ export type AgentTemplateData = {
   instructions: string;
   repoUrl: string | null;
   sources: ParsedAgentTemplate['sources'];
+  addressing: ParsedAgentTemplate['addressing'];
   /** Room-template YAML for the companion room, or null when the template has none. */
   roomYaml: string | null;
   roomName: string | null;
@@ -39,6 +40,7 @@ async function fromContent(
     instructions: parsed.instructions,
     repoUrl: parsed.repoUrl,
     sources: parsed.sources,
+    addressing: parsed.addressing,
     roomYaml,
     roomName: parsed.room?.name ?? null,
     warnings: parsed.warnings,

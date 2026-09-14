@@ -1,6 +1,6 @@
-import { Bot, FileText, Loader2, Upload } from 'lucide-react';
+import { Bot, ChevronDown, ChevronUp, CircleAlert, FileText, Loader2, Upload } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import type { StoredTemplateSummary } from '@main/core/switch-servers/gateway-client';
 import type { GuardResult, ViewDefinition } from '@renderer/app/view-registry';
 import { ServerPage } from '@renderer/features/switch-servers/server-page';
@@ -11,8 +11,11 @@ import { toast } from '@renderer/lib/hooks/use-toast';
 import { rpc } from '@renderer/lib/ipc';
 import { useNavigate, useParams } from '@renderer/lib/layout/navigation-provider';
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
+import { useAgentTypeAvailability } from '@renderer/lib/stores/use-switch-setup';
+import { Alert, AlertAction, AlertDescription } from '@renderer/lib/ui/alert';
 import { Button } from '@renderer/lib/ui/button';
-import { loadAgentTemplateData } from './agent-template-data';
+import { Input } from '@renderer/lib/ui/input';
+import { type AgentTemplateData, loadAgentTemplateData } from './agent-template-data';
 import { bundledTemplates } from './bundled-templates';
 
 function useServerId(): string {
@@ -23,15 +26,72 @@ const TemplatesTitlebar = observer(function TemplatesTitlebar() {
   return <ServerSectionTitlebar serverId={useServerId()} icon={FileText} label="Templates" />;
 });
 
+const ADDRESSING_LABEL = {
+  owner: 'answers only you',
+  'owner-agents': 'answers you and your agents',
+  anyone: 'answers anyone in its rooms',
+} as const;
+
+/** What a template will do, in one glance, from its parsed document. */
+function TemplateDetails({ data }: { data: AgentTemplateData }) {
+  const firstLines = data.instructions.split('\n').filter((l) => l.trim().length > 0);
+  return (
+    <div className="mt-3 flex flex-col gap-1.5 border-t border-border pt-3 text-xs text-foreground-muted">
+      {data.repoUrl && <span>Works from {data.repoUrl.replace(/^https?:\/\//, '')}</span>}
+      {data.sources.length > 0 && (
+        <span>Reads {data.sources.map((s) => s.label ?? s.url).join(', ')}</span>
+      )}
+      <span>
+        {data.roomName
+          ? `Starts in a room called "${data.roomName.replace('{agent}', data.agentName ?? 'it')}" with you`
+          : 'Created on its own, in no room'}
+        {data.addressing ? `, ${ADDRESSING_LABEL[data.addressing]}` : ', answers only you'}
+      </span>
+      <span>
+        Instructions, {data.instructions.split('\n').length} lines:{' '}
+        <span className="text-foreground">{firstLines.slice(0, 2).join(' ')}</span>
+      </span>
+    </div>
+  );
+}
+
 function TemplateCard({
   template,
   busy,
   onUse,
+  loadDetails,
 }: {
   template: StoredTemplateSummary;
   busy: boolean;
   onUse: () => void;
+  loadDetails: () => Promise<AgentTemplateData>;
 }) {
+  const [details, setDetails] = useState<AgentTemplateData | null>(null);
+  const [open, setOpen] = useState(false);
+  const [loadingDetails, setLoadingDetails] = useState(false);
+
+  const toggleDetails = async () => {
+    if (open) {
+      setOpen(false);
+      return;
+    }
+    setOpen(true);
+    if (details) return;
+    setLoadingDetails(true);
+    try {
+      setDetails(await loadDetails());
+    } catch (error) {
+      setOpen(false);
+      toast({
+        title: `Could not read "${template.name}"`,
+        description: failureText(error, 'The template document did not parse.'),
+        variant: 'destructive',
+      });
+    } finally {
+      setLoadingDetails(false);
+    }
+  };
+
   return (
     <div className="flex min-h-[184px] flex-col rounded-[11px] border border-border bg-background p-4 transition-colors hover:border-border-1">
       <div className="mb-2 flex items-center gap-2">
@@ -43,10 +103,23 @@ function TemplateCard({
       </p>
       <div className="flex items-center justify-between">
         <span className="text-xs text-foreground-muted">by {template.creator}</span>
-        <Button size="sm" variant="outline" onClick={onUse} disabled={busy}>
-          {busy ? 'Opening…' : 'Use'}
-        </Button>
+        <div className="flex items-center gap-1">
+          <Button size="sm" variant="ghost" onClick={() => void toggleDetails()}>
+            {loadingDetails ? (
+              <Loader2 className="size-3.5 animate-spin" />
+            ) : open ? (
+              <ChevronUp className="size-3.5" />
+            ) : (
+              <ChevronDown className="size-3.5" />
+            )}
+            Details
+          </Button>
+          <Button size="sm" variant="outline" onClick={onUse} disabled={busy}>
+            {busy ? 'Opening…' : 'Use'}
+          </Button>
+        </div>
       </div>
+      {open && details && <TemplateDetails data={details} />}
     </div>
   );
 }
@@ -60,6 +133,13 @@ const TemplatesPanel = observer(function TemplatesPanel() {
   const [templates, setTemplates] = useState<StoredTemplateSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [opening, setOpening] = useState<string | null>(null);
+  const [query, setQuery] = useState('');
+
+  // Templates create agents that run on this computer, so a computer with no
+  // usable provider cannot use any of them. Say so above the listing rather
+  // than three clicks later, greyed out inside the dialog.
+  const { data: availability } = useAgentTypeAvailability();
+  const noProvider = availability !== undefined && !availability.some((a) => a.available);
 
   useEffect(() => {
     let cancelled = false;
@@ -100,18 +180,28 @@ const TemplatesPanel = observer(function TemplatesPanel() {
     }
   };
 
-  const agentTemplates: StoredTemplateSummary[] = [
-    ...bundledTemplates
-      .filter((b) => b.kind === 'agent')
-      .map(({ id, name, description, kind, creator }) => ({
-        id,
-        name,
-        description,
-        kind,
-        creator,
-      })),
-    ...templates.filter((t) => t.kind === 'agent'),
-  ];
+  const agentTemplates: StoredTemplateSummary[] = useMemo(() => {
+    const all = [
+      ...bundledTemplates
+        .filter((b) => b.kind === 'agent')
+        .map(({ id, name, description, kind, creator }) => ({
+          id,
+          name,
+          description,
+          kind,
+          creator,
+        })),
+      ...templates.filter((t) => t.kind === 'agent'),
+    ];
+    const needle = query.trim().toLowerCase();
+    if (needle.length === 0) return all;
+    return all.filter(
+      (t) =>
+        t.name.toLowerCase().includes(needle) ||
+        t.description.toLowerCase().includes(needle) ||
+        t.creator.toLowerCase().includes(needle)
+    );
+  }, [templates, query]);
 
   return (
     <ServerPage
@@ -124,21 +214,52 @@ const TemplatesPanel = observer(function TemplatesPanel() {
         </div>
       ) : (
         <div className="space-y-6">
-          {agentTemplates.length > 0 && (
-            <section>
-              <h3 className="mb-3 text-sm font-medium text-foreground-muted">Agent templates</h3>
-              <div className="grid grid-cols-[repeat(auto-fill,minmax(220px,1fr))] gap-[14px]">
+          {noProvider && (
+            <Alert>
+              <CircleAlert />
+              <AlertDescription>
+                No agent provider is set up on this computer yet. A template creates an agent that
+                runs here, so it needs Claude Code, Codex or OpenCode installed with its Switch
+                connector first.
+              </AlertDescription>
+              <AlertAction>
+                <Button
+                  variant="outline"
+                  size="xs"
+                  onClick={() => navigate('settings', { tab: 'clis-models' })}
+                >
+                  Set up agent providers
+                </Button>
+              </AlertAction>
+            </Alert>
+          )}
+
+          <section>
+            <div className="mb-3 flex items-center justify-between gap-3">
+              <h3 className="text-sm font-medium text-foreground-muted">Agent templates</h3>
+              <Input
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                placeholder="Search templates"
+                className="h-8 max-w-[260px]"
+              />
+            </div>
+            {agentTemplates.length > 0 ? (
+              <div className="grid grid-cols-[repeat(auto-fill,minmax(260px,1fr))] gap-[14px]">
                 {agentTemplates.map((t) => (
                   <TemplateCard
                     key={t.id}
                     template={t}
                     busy={opening === t.id}
                     onUse={() => void handleUseTemplate(t)}
+                    loadDetails={() => loadAgentTemplateData(serverId, t)}
                   />
                 ))}
               </div>
-            </section>
-          )}
+            ) : (
+              <p className="text-sm text-foreground-muted">No template matches “{query}”.</p>
+            )}
+          </section>
 
           <section>
             <h3 className="mb-3 text-sm font-medium text-foreground-muted">Room templates</h3>

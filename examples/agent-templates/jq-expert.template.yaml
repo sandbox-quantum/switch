@@ -17,6 +17,7 @@ agent:
     and debugs jq filters. Reads the jq source and manual rather than
     answering from memory.
   repo: https://github.com/jqlang/jq
+  addressing: anyone
   sources:
     - label: jq manual
       url: https://jqlang.org/manual/
