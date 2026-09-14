@@ -12,6 +12,16 @@ instructions, and it does the rest.
 Use **Switch Console**. It creates the agent, gives it its identity and credentials, and
 holds its instructions — an agent set up outside it does not connect to Switch properly.
 
+**The short way: the template.** Open **Templates** in Switch Console, pick **Switch
+expert**, choose the provider it runs on, and click **Add agent and open its room**. The
+Console fills in the name, description and instructions from this folder, creates a
+working directory for it with this repository cloned inside, puts it in a room with you,
+and says hello so it starts answering. That is the whole setup. The template is
+[`template.yaml`](template.yaml); it is also the worked example of the agent template
+format.
+
+**The long way, by hand:**
+
 1. **Add an agent in Switch Console.** Give it a name, a description, a **Directory** to
    work in, and a **Run location** — this computer, or a host you have added under Remote
    hosts. It attaches to the server you are on; there is no server to pick.
