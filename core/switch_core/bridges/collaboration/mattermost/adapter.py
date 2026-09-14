@@ -1726,9 +1726,15 @@ class MattermostAdapter(CollaborationAdapter):
         return resp.json()  # type: ignore[no-any-return]
 
     async def _find_existing_bot(self, username: str) -> dict[str, Any] | None:
+        """Return the bot registered under ``username``, or None if there is none.
+
+        Raises on a failed lookup. "The lookup broke" is not "the bot does not
+        exist": the callers create a bot when they get None, and that create
+        then fails with a username-taken error that hides the real cause.
+        """
+        page = 0
+        per_page = 200
         try:
-            page = 0
-            per_page = 200
             while True:
                 result = self._mm_api(
                     "get",
@@ -1743,6 +1749,8 @@ class MattermostAdapter(CollaborationAdapter):
                 if len(bots) < per_page:
                     break
                 page += 1
-        except Exception:
-            pass
+        except Exception as e:
+            raise RuntimeError(
+                f"Mattermost bot lookup for '{username}' failed: {e}"
+            ) from e
         return None
