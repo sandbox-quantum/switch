@@ -959,6 +959,27 @@ export async function releaseBridgeIdentity(
  * unreachable by that owner on any bridge missing from this list, so this is
  * what the addressing UI checks before letting a policy seal an agent off.
  */
+/**
+ * Who the signed-in user is on one bridge, as the server would decide it for
+ * a kickoff (`GET /collaborations/{id}/me`): a claimed identity, else a match
+ * of the account's name or email on the platform. Null when neither holds.
+ */
+export async function fetchMyIdentityOnBridge(
+  server: SwitchServer,
+  bridgeId: string
+): Promise<{ externalUserId: string; externalUsername: string } | null> {
+  const res = await gatewayFetch(server, `/collaborations/${encodeURIComponent(bridgeId)}/me`, {
+    authenticated: true,
+  });
+  const json = (await res.json()) as {
+    external_user_id: string;
+    external_username: string;
+  } | null;
+  return json
+    ? { externalUserId: json.external_user_id, externalUsername: json.external_username }
+    : null;
+}
+
 export async function fetchMyIdentities(server: SwitchServer): Promise<LinkedIdentity[]> {
   const res = await gatewayFetch(server, '/auth/me/identities', { authenticated: true });
   const json = (await res.json()) as Array<{

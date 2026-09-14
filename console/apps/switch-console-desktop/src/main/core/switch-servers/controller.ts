@@ -104,6 +104,7 @@ import {
   fetchRoomRoles,
   fetchRooms,
   createTemplate,
+  fetchMyIdentityOnBridge,
   fetchTemplateDetail,
   fetchTemplates,
   GatewayError,
@@ -574,6 +575,13 @@ export const switchServersController = createRPCController({
     templateId: string;
   }): Promise<StoredTemplateDetail> =>
     fetchTemplateDetail(await requireServer(params.serverId), params.templateId),
+
+  /** Who the signed-in user is on a bridge, as a kickoff would resolve them. */
+  myIdentityOnBridge: async (params: {
+    serverId: string;
+    bridgeId: string;
+  }): Promise<{ externalUserId: string; externalUsername: string } | null> =>
+    fetchMyIdentityOnBridge(await requireServer(params.serverId), params.bridgeId),
 
   saveTemplate: async (params: {
     serverId: string;

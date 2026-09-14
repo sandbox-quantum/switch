@@ -308,19 +308,24 @@ export const AddAgentModal = observer(function AddAgentModal({
     queryFn: () => rpc.switchServers.listRemoteBridges(pickState.serverId as string),
     enabled: !!pickState.serverId && willCreateRoom,
   });
-  const { data: myIdentities } = useQuery({
-    queryKey: ['my-identities', pickState.serverId],
-    queryFn: () => rpc.switchServers.listMyIdentities(pickState.serverId as string),
-    enabled: !!pickState.serverId && willCreateRoom,
-  });
   const roomBridge = useMemo(() => {
     if (!bridges) return undefined;
     return bridges.find((b) => b.isDefault) ?? (bridges.length === 1 ? bridges[0] : null);
   }, [bridges]);
-  const creatorIdentity =
-    roomBridge && myIdentities
-      ? (myIdentities.find((i) => i.bridgeId === roomBridge.id) ?? null)
-      : undefined;
+  // Asked of the server per bridge rather than read from the claims list: the
+  // server also matches the account's name and email on the platform, so a
+  // person with no explicit claim is often still known, and warning them
+  // would be wrong.
+  const { data: resolvedIdentity } = useQuery({
+    queryKey: ['my-identity-on-bridge', pickState.serverId, roomBridge?.id],
+    queryFn: () =>
+      rpc.switchServers.myIdentityOnBridge({
+        serverId: pickState.serverId as string,
+        bridgeId: roomBridge?.id as string,
+      }),
+    enabled: !!pickState.serverId && !!roomBridge && willCreateRoom,
+  });
+  const creatorIdentity = roomBridge ? resolvedIdentity : undefined;
   const linkIdentity = () => {
     if (!pickState.serverId || !roomBridge) return;
     const serverId = pickState.serverId;

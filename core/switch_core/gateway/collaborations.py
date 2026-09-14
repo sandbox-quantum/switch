@@ -521,6 +521,42 @@ async def _require_directory_account(
         )
 
 
+@router.get("/{bridge_id}/me")
+async def resolve_my_bridge_identity(
+    bridge_id: str,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    bridge_store: Annotated[CollaborationBridgeStore, Depends(get_bridge_store)],
+    external_user_store: Annotated[ExternalUserStore, Depends(get_external_user_store)],
+    user_store: Annotated[UserStore, Depends(get_user_store)],
+    collab_lifecycle: Annotated[
+        CollaborationBridgeLifecycleService, Depends(get_collab_lifecycle)
+    ],
+    user: Annotated[User, Depends(get_current_user)],
+) -> ExternalUserSummary | None:
+    """Who the caller is on this bridge, the way a kickoff would decide it.
+
+    A claimed identity first, then the account's name and email matched
+    against the platform, exactly as `post_kickoff` resolves the sender. A
+    form that asks this before creating a room warns only when the server
+    itself would fail, rather than whenever no explicit claim exists. Null
+    when nothing matches or the bridge is not running.
+    """
+    bridge = await bridge_store.get(session, bridge_id)
+    if bridge is None:
+        raise HTTPException(status_code=404, detail="Bridge not found")
+    bridge_core = collab_lifecycle.get(bridge_id)
+    if bridge_core is None:
+        return None
+    external_user = await bridge_core.resolve_switch_user(
+        user.id, name=user.name, email=user.email
+    )
+    if external_user is None:
+        return None
+    return await _identity_summary(
+        session, external_user_store, user_store, external_user
+    )
+
+
 @router.post("/{bridge_id}/identities")
 async def claim_bridge_identity(
     bridge_id: str,
