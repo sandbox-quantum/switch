@@ -1,6 +1,6 @@
 import type { Command, SessionChatClient } from '@switch-console/shared/session-v1';
 import { Loader2, Paperclip, Wrench } from 'lucide-react';
-import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { Button } from '@renderer/lib/ui/button';
 import { MarkdownRenderer } from '@renderer/lib/ui/markdown-renderer';
 import { Textarea } from '@renderer/lib/ui/textarea';
@@ -22,6 +22,23 @@ export function SessionV1Chat({
   retireHost?: (epoch: string) => Promise<void>;
 }) {
   const view = useSyncExternalStore(client.subscribe, client.getSnapshot);
+  const transcript = useRef<HTMLDivElement>(null);
+  const transcriptContent = useRef<HTMLDivElement>(null);
+  const followingBottom = useRef(true);
+  useLayoutEffect(() => {
+    const viewport = transcript.current;
+    const content = transcriptContent.current;
+    if (!viewport || !content) return;
+    followingBottom.current = true;
+    const follow = () => {
+      if (followingBottom.current) viewport.scrollTop = viewport.scrollHeight;
+    };
+    follow();
+    const observer = new ResizeObserver(follow);
+    observer.observe(viewport);
+    observer.observe(content);
+    return () => observer.disconnect();
+  }, [client]);
   const [draft, setDraft] = useState('');
   const [pendingId, setPendingId] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
@@ -265,8 +282,16 @@ export function SessionV1Chat({
           </Button>
         </div>
       )}
-      <div className="min-h-0 flex-1 overflow-y-auto">
-        <div className="mx-auto flex max-w-3xl flex-col gap-5 px-5 py-6">
+      <div
+        ref={transcript}
+        className="min-h-0 flex-1 overflow-y-auto [overflow-anchor:none]"
+        onScroll={(event) => {
+          const viewport = event.currentTarget;
+          followingBottom.current =
+            viewport.scrollHeight - viewport.clientHeight - viewport.scrollTop <= 24;
+        }}
+      >
+        <div ref={transcriptContent} className="mx-auto flex max-w-3xl flex-col gap-5 px-5 py-6">
           {view.snapshot?.items.map((item) => (
             <div key={item.itemId}>
               {item.kind === 'user-message' ? (
