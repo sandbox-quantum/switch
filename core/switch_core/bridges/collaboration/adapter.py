@@ -132,6 +132,10 @@ class TurnActivity:
     status_only: bool = False
     # Stable recovery marker for a reserved platform post, not an answer token.
     publication_token: str | None = None
+    session_url: str | None = None
+    notify_external_id: str | None = None
+    # Canned, room-safe attention message. Never raw host/provider output.
+    error_summary: str | None = None
 
 
 @dataclass(frozen=True)
@@ -158,6 +162,7 @@ class RequestCard:
     responder_external_id: str | None = None
     # Presentation only: never changes the SDK request or its authorization.
     unavailable_reason: str | None = None
+    notify_external_id: str | None = None
 
 
 RichContent = TurnActivity | RequestCard

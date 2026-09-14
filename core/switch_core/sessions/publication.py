@@ -30,6 +30,11 @@ from switch_core.sessions.contract import (
     Snapshot,
     TurnUpsert,
 )
+from switch_core.sessions.presentation import (
+    activity_error_summary,
+    notification_recipient,
+    session_console_url,
+)
 from switch_core.sessions.service import SessionError
 
 logger = logging.getLogger(__name__)
@@ -161,15 +166,27 @@ async def refresh_cards(
                     origin.thread_id or origin.message_id,
                 )
             )
+            recipient = (
+                await notification_recipient(
+                    db,
+                    bridge_id=bridge_id,
+                    room_id=room.id,
+                    origin=origin,
+                    agent=agent,
+                    thread_id=thread_id,
+                )
+                if post is None and request.state == "open"
+                else None
+            )
             publications.append(
-                (request, post, room.id, room.external_channel_id, thread_id)
+                (request, post, room.id, room.external_channel_id, thread_id, recipient)
             )
         epoch = row.epoch
         agent_name = agent.name
         db.expunge_all()
     errors: list[BaseException] = []
     backed_off = 0
-    for request, post, room_id, channel_id, thread_id in publications:
+    for request, post, room_id, channel_id, thread_id, recipient in publications:
         state = (
             request.revision,
             request.state
@@ -191,6 +208,7 @@ async def refresh_cards(
                     session_id=session_id,
                     epoch=epoch,
                     agent_name=agent_name,
+                    **({"notify_external_id": recipient} if recipient else {}),
                     **(
                         {"unavailable_reason": unavailable_reason}
                         if unavailable_reason
@@ -386,6 +404,7 @@ async def refresh_activity(
     session_id: str,
     activity: SessionTurnActivity,
     *,
+    gateway_public_url: str | None = None,
     retry_allowed: Callable[[str], bool] = _always_recover,
     retry_succeeded: Callable[[str], None] = _ignore_recovery,
     retry_delayed: Callable[[str, float], None] = _ignore_delay,
@@ -428,6 +447,10 @@ async def refresh_activity(
         if row is None:
             raise SessionError("NOT_FOUND", "Session not found.")
         snapshot = Snapshot.model_validate(row.snapshot)
+        now = (await db.execute(select(func.now()))).scalar_one()
+        online = (
+            row.lease_expires_at > now and snapshot.session.connectivity == "online"
+        )
         agent = await db.get(Agent, row.agent_id)
         if agent is None:
             raise SessionError("NOT_FOUND", "Session agent not found.")
@@ -476,7 +499,13 @@ async def refresh_activity(
             revisions = tuple(item.revision for item in items)
             if turn.status == "running":
                 revisions += (int(time.monotonic() // 5),)
-            state = (turn.status, revisions)
+            error_summary = activity_error_summary(
+                turn, snapshot.session, online=online
+            )
+            state = (
+                turn.status + (":" + error_summary if error_summary else ""),
+                revisions,
+            )
             if (
                 first_sweep
                 and turn.command_id not in recorded
@@ -546,6 +575,26 @@ async def refresh_activity(
                 )
                 or thread_root_id
             )
+            metadata = {
+                key: value
+                for key, value in {
+                    "session_url": session_console_url(
+                        gateway_public_url, agent.id, room.id, row.id
+                    ),
+                    "notify_external_id": await notification_recipient(
+                        db,
+                        bridge_id=bridge_id,
+                        room_id=room.id,
+                        origin=origin,
+                        agent=agent,
+                        thread_id=thread_root_id,
+                    )
+                    if error_summary
+                    else None,
+                    "error_summary": error_summary,
+                }.items()
+                if value is not None
+            }
             publications.append(
                 (
                     turn,
@@ -555,6 +604,7 @@ async def refresh_activity(
                     asked_on,
                     state,
                     elapsed_seconds,
+                    metadata,
                 )
             )
         agent_name = agent.name
@@ -569,6 +619,7 @@ async def refresh_activity(
         asked_on,
         state,
         elapsed_seconds,
+        metadata,
     ) in publications:
         token = f"{session_id}:{turn.turn_id}"
         if not retry_allowed(token):
@@ -584,6 +635,7 @@ async def refresh_activity(
                 asked_on=asked_on,
                 agent_name=agent_name,
                 elapsed_seconds=elapsed_seconds,
+                **metadata,
             )
         except RichContentThrottled as error:
             retry_delayed(token, error.retry_after)
@@ -753,8 +805,11 @@ class SessionPublisher:
         bridge_id: str,
         cards: SessionRequestCards,
         activity: SessionTurnActivity | None = None,
+        *,
+        gateway_public_url: str | None = None,
     ) -> None:
         self._sessions = session_factory
+        self._gateway_public_url = gateway_public_url
         self._bridge_id = bridge_id
         self._cards = cards
         self._activity = activity
@@ -792,50 +847,7 @@ class SessionPublisher:
             if unchanged and session_id not in self._clock_sessions:
                 continue
             ok = True
-            try:
-                if not unchanged:
-                    # Lease expiry can change without a new snapshot event.
-                    await refresh_cards(
-                        self._sessions,
-                        self._bridge_id,
-                        session_id,
-                        self._cards,
-                        recovery_allowed=self._recovery.allowed,
-                        recovery_succeeded=self._recovery.succeeded,
-                        refresh_needed=self._redraw.needed,
-                        refreshed=self._redraw.drawn,
-                    )
-            except PublicationIncomplete as incomplete:
-                ok = False
-                if incomplete.errors:
-                    logger.exception(
-                        "Session %s card publication failed on bridge %s "
-                        "(%d failed, %d waiting on a recovery backoff); "
-                        "will retry.",
-                        session_id,
-                        self._bridge_id,
-                        len(incomplete.errors),
-                        incomplete.backed_off,
-                    )
-                else:
-                    # Every one of these is a request deliberately not
-                    # searched for again yet, not a new failure — logging it
-                    # as one would put a real broken-and-continuing signal in
-                    # the same stream as a wait that is working as designed.
-                    logger.warning(
-                        "Session %s has %d request(s) waiting out a recovery "
-                        "backoff on bridge %s.",
-                        session_id,
-                        incomplete.backed_off,
-                        self._bridge_id,
-                    )
-            except Exception:
-                ok = False
-                logger.exception(
-                    "Session %s card publication failed on bridge %s; will retry.",
-                    session_id,
-                    self._bridge_id,
-                )
+            # Establish status and tool-log replies before posting request cards.
             if self._activity is not None and (
                 not unchanged or session_id in self._clock_sessions
             ):
@@ -847,6 +859,11 @@ class SessionPublisher:
                         self._bridge_id,
                         session_id,
                         self._activity,
+                        **(
+                            {"gateway_public_url": self._gateway_public_url}
+                            if self._gateway_public_url
+                            else {}
+                        ),
                         retry_allowed=self._activity_retry.allowed,
                         retry_succeeded=self._activity_retry.succeeded,
                         retry_delayed=self._activity_retry.delay,
@@ -903,6 +920,50 @@ class SessionPublisher:
                     )
                 if swept:
                     self._activity_seen.add(session_id)
+            try:
+                if not unchanged:
+                    # Lease expiry can change without a new snapshot event.
+                    await refresh_cards(
+                        self._sessions,
+                        self._bridge_id,
+                        session_id,
+                        self._cards,
+                        recovery_allowed=self._recovery.allowed,
+                        recovery_succeeded=self._recovery.succeeded,
+                        refresh_needed=self._redraw.needed,
+                        refreshed=self._redraw.drawn,
+                    )
+            except PublicationIncomplete as incomplete:
+                ok = False
+                if incomplete.errors:
+                    logger.exception(
+                        "Session %s card publication failed on bridge %s "
+                        "(%d failed, %d waiting on a recovery backoff); "
+                        "will retry.",
+                        session_id,
+                        self._bridge_id,
+                        len(incomplete.errors),
+                        incomplete.backed_off,
+                    )
+                else:
+                    # Every one of these is a request deliberately not
+                    # searched for again yet, not a new failure — logging it
+                    # as one would put a real broken-and-continuing signal in
+                    # the same stream as a wait that is working as designed.
+                    logger.warning(
+                        "Session %s has %d request(s) waiting out a recovery "
+                        "backoff on bridge %s.",
+                        session_id,
+                        incomplete.backed_off,
+                        self._bridge_id,
+                    )
+            except Exception:
+                ok = False
+                logger.exception(
+                    "Session %s card publication failed on bridge %s; will retry.",
+                    session_id,
+                    self._bridge_id,
+                )
             if ok:
                 self._published[session_id] = published_state
 

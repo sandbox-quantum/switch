@@ -602,9 +602,11 @@ async def test_running_the_recording_to_the_end_edits_what_is_already_there(
     assert await demo.handle(f"{TRIGGER} end", CHANNEL, room_id) is True
 
     assert len(client.posted) == 3
-    turn, card = (
+    turn, log, card = (
         json.dumps(call["blocks"], ensure_ascii=False) for call in client.updated
     )
+    assert "9 tool calls" in log
+    assert not client.deleted
     assert "Turn interrupted. 1 step left unfinished." in turn
     assert "Permission request closed" in card
     assert "Interrupted before it was answered." in card
@@ -628,9 +630,11 @@ async def test_ending_carries_on_the_demo_already_in_the_channel(
     assert await demo.handle(f"{TRIGGER} end", CHANNEL, room_id) is True
 
     assert len(client.posted) == posted
-    turn, card = (
+    turn, log, card = (
         json.dumps(call["blocks"], ensure_ascii=False) for call in client.updated
     )
+    assert "9 tool calls" in log
+    assert not client.deleted
     assert "Turn interrupted. 1 step left unfinished." in turn
     assert "Permission request closed" in card
 
@@ -652,7 +656,7 @@ async def test_ending_a_channel_with_no_demo_in_it_runs_one_through(
 
     assert len(client.posted) == 3
     assert "Permission request closed" in json.dumps(
-        client.updated[1]["blocks"], ensure_ascii=False
+        client.updated[-1]["blocks"], ensure_ascii=False
     )
 
 

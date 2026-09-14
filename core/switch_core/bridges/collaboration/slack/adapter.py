@@ -46,8 +46,10 @@ from switch_core.bridges.collaboration.models import (
 from switch_core.bridges.collaboration.session.renderers.slack import (
     SlackMessage,
     render_activity,
+    render_attention,
     render_request,
     render_turn_with_request,
+    with_session_context,
 )
 from switch_core.bridges.collaboration.slack.agent_groups import (
     SlackAgentGroupDirectory,
@@ -65,6 +67,24 @@ _AGENT_GROUP_MARKER = "Switch agent — "
 # retries connection errors but not throttling.
 _RATE_LIMIT_MAX_ATTEMPTS = 5
 _RATE_LIMIT_DEFAULT_DELAY = 30
+
+# These responses confirm that Slack rejected the format before publication.
+# Never retry an uncertain delivery as another message merely to change format.
+_BLOCK_FORMAT_ERRORS = {"invalid_blocks", "invalid_blocks_format", "block_mismatch"}
+
+
+def _publication_metadata(blocks: list[dict[str, Any]]) -> dict[str, Any]:
+    for block in blocks:
+        marker = block.get("block_id", "")
+        if isinstance(marker, str) and marker.startswith("switch-request:"):
+            return {
+                "metadata": {
+                    "event_type": "switch_publication",
+                    "event_payload": {"token": marker.removeprefix("switch-request:")},
+                }
+            }
+    return {}
+
 
 # Slack refusals that mean this workspace cannot host agent user groups at all,
 # rather than that one particular call went wrong. Each maps to what an operator
@@ -468,17 +488,30 @@ class SlackAdapter(CollaborationAdapter):
             else thread_root_id
         )
         agent = await self.agent_rendering(sender_name)
+        arguments: dict[str, Any] = dict(
+            channel=channel_id,
+            text=text,
+            blocks=blocks,
+            username=agent.field_label,
+            icon_url=agent.icon_url,
+            thread_ts=thread_ts,
+            unfurl_links=False,
+            unfurl_media=False,
+            **_publication_metadata(blocks),
+        )
         try:
-            result = await self._web_client.chat_postMessage(
-                channel=channel_id,
-                text=text,
-                blocks=blocks,
-                username=agent.field_label,
-                icon_url=agent.icon_url,
-                thread_ts=thread_ts,
-                unfurl_links=False,
-                unfurl_media=False,
-            )
+            try:
+                result = await self._web_client.chat_postMessage(**arguments)
+            except SlackApiError as exc:
+                if exc.response.get("error") not in _BLOCK_FORMAT_ERRORS:
+                    raise
+                logger.warning(
+                    "Slack rejected card blocks in %s (%s); sending its text fallback",
+                    channel_id,
+                    exc.response.get("error"),
+                )
+                arguments.pop("blocks")
+                result = await self._web_client.chat_postMessage(**arguments)
             ts = result.get("ts", "")
             if not ts:
                 raise RuntimeError(
@@ -514,6 +547,7 @@ class SlackAdapter(CollaborationAdapter):
                 channel=channel_id,
                 oldest=str(created_at.timestamp()),
                 inclusive=True,
+                include_all_metadata=True,
                 limit=100,
                 cursor=cursor,
             )
@@ -535,7 +569,11 @@ class SlackAdapter(CollaborationAdapter):
                     or (self._bot_id and message.get("bot_id") == self._bot_id)
                 ):
                     continue
-                if any(
+                marker = message.get("metadata") or {}
+                if (
+                    marker.get("event_type") == "switch_publication"
+                    and (marker.get("event_payload") or {}).get("token") == token
+                ) or any(
                     block.get("block_id") == f"switch-request:{token}"
                     for block in message.get("blocks", [])
                 ):
@@ -566,9 +604,26 @@ class SlackAdapter(CollaborationAdapter):
             raise ValueError(
                 f"Cannot update blocks: invalid message ref {message_ref}."
             )
-        await self._web_client.chat_update(
-            channel=channel_id, ts=ts, text=text, blocks=blocks
+        arguments: dict[str, Any] = dict(
+            channel=channel_id,
+            ts=ts,
+            text=text,
+            blocks=blocks,
+            **_publication_metadata(blocks),
         )
+        try:
+            await self._web_client.chat_update(**arguments)
+        except SlackApiError as exc:
+            if exc.response.get("error") not in _BLOCK_FORMAT_ERRORS:
+                raise
+            logger.warning(
+                "Slack rejected updated card blocks in %s (%s); using its text fallback",
+                channel_id,
+                exc.response.get("error"),
+            )
+            # Clear stale interactive controls without creating a second post.
+            arguments["blocks"] = []
+            await self._web_client.chat_update(**arguments)
 
     async def post_rich(
         self,
@@ -608,7 +663,10 @@ class SlackAdapter(CollaborationAdapter):
         if isinstance(content, RequestCard) and content.responder_external_id:
             user = await self._resolve_user_name(content.responder_external_id)
             responder_name = user.display_name
-        message = self._render_rich(content, responder_name=responder_name)
+        # Mention only on first publication, never on redraw or settlement.
+        message = self._render_rich(
+            replace(content, notify_external_id=None), responder_name=responder_name
+        )
         try:
             await self.update_blocks(
                 channel_id, message_ref, message.text, message.blocks
@@ -639,12 +697,30 @@ class SlackAdapter(CollaborationAdapter):
         self, content: RichContent, *, responder_name: str | None = None
     ) -> SlackMessage:
         if isinstance(content, TurnActivity):
-            message = render_activity(
-                content.items,
-                content.turn,
-                elapsed_seconds=content.elapsed_seconds,
-                tool_log=content.tool_log,
-                status_only=content.status_only,
+            message = (
+                render_attention(content.error_summary)
+                if content.error_summary
+                else render_activity(
+                    content.items,
+                    content.turn,
+                    elapsed_seconds=content.elapsed_seconds,
+                    tool_log=content.tool_log,
+                    status_only=content.status_only,
+                )
+            )
+            if content.tool_log and not content.error_summary:
+                # Notifications/text-only clients get the compact plan header;
+                # the expandable blocks retain the complete displayed tool log.
+                message = SlackMessage(
+                    text=message.text.split("\n", 1)[0], blocks=message.blocks
+                )
+            message = with_session_context(
+                message,
+                session_url=content.session_url
+                if content.status_only and not content.error_summary
+                else None,
+                notify_external_id=content.notify_external_id,
+                inline_link=content.status_only and not content.error_summary,
             )
             if content.publication_token and message.blocks:
                 message.blocks[0]["block_id"] = (
@@ -653,19 +729,26 @@ class SlackAdapter(CollaborationAdapter):
             return message
         assert isinstance(content, RequestCard)
         if content.turn is not None:
-            return render_turn_with_request(
+            message = render_turn_with_request(
                 content.items,
                 content.turn,
                 content.request,
                 content.reference,
                 elapsed_seconds=content.elapsed_seconds,
             )
-        return render_request(
-            content.request,
-            content.reference,
-            responder_external_id=content.responder_external_id,
-            responder_name=responder_name,
-            unavailable_reason=content.unavailable_reason,
+        else:
+            message = render_request(
+                content.request,
+                content.reference,
+                responder_external_id=content.responder_external_id,
+                responder_name=responder_name,
+                unavailable_reason=content.unavailable_reason,
+            )
+        return with_session_context(
+            message,
+            notify_external_id=content.notify_external_id
+            if content.request.state == "open"
+            else None,
         )
 
     async def is_first_reply(

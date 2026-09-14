@@ -523,6 +523,7 @@ class CollaborationBridgeLifecycleService:
             bridge_client_matrix_user_id=bridge_client_record.matrix_user_id,
             max_attachment_bytes=self._config.agent_media_max_bytes,
             session_demo_enabled=self._config.session_demo_enabled,
+            gateway_public_url=self._config.gateway_public_url,
         )
 
         bridge_client = BridgeClient(

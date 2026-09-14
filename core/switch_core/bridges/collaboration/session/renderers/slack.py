@@ -31,6 +31,7 @@ import re
 from dataclasses import dataclass
 from html import unescape
 from typing import Any
+from urllib.parse import urlsplit
 
 from switch_core.bridges.collaboration.slack.mrkdwn import escape_mrkdwn, plain_text
 from switch_core.sessions.contract import (
@@ -898,6 +899,55 @@ def _answered_questions(request: SnapshotRequest, content: QuestionsContent) -> 
 # ── Activity ─────────────────────────────────────────────────────────────────
 
 
+def with_session_context(
+    message: SlackMessage,
+    *,
+    session_url: str | None = None,
+    notify_external_id: str | None = None,
+    inline_link: bool = False,
+) -> SlackMessage:
+    """Add compact status navigation and mentions on attention posts only."""
+    text = message.text
+    if session_url and urlsplit(session_url).scheme in {"https", "http", "switchdash"}:
+        if inline_link:
+            text = f"{text} · <{session_url}|Console app>"
+            return SlackMessage(
+                text=text,
+                blocks=[
+                    {
+                        "type": "context",
+                        "elements": [{"type": "mrkdwn", "text": text}],
+                    }
+                ],
+            )
+    if notify_external_id and re.fullmatch(r"[UW][A-Z0-9]+", notify_external_id):
+        mention = f"<@{notify_external_id}>"
+        message.blocks.append(
+            {
+                "type": "context",
+                "elements": [{"type": "mrkdwn", "text": f"Needs attention: {mention}"}],
+            }
+        )
+        text = f"{mention} {text}"
+    return SlackMessage(text=text, blocks=message.blocks)
+
+
+def render_attention(summary: str) -> SlackMessage:
+    """One visible sentence for a turn or host error."""
+    title = _fit(plain_text(summary), _MAX_PLAN_TASK_TITLE)
+    return SlackMessage(
+        text=escape_mrkdwn(title),
+        blocks=[
+            {
+                "type": "task_card",
+                "task_id": "switch-attention",
+                "title": title,
+                "status": "error",
+            }
+        ],
+    )
+
+
 def render_activity(
     items: list[Item],
     turn: TurnUpsert,
@@ -959,14 +1009,13 @@ def render_activity(
     if tool_log:
         did = [item for item in items if item.kind == "tool-activity"]
         if not did:
-            state = turn_state(items, turn, elapsed_seconds=elapsed_seconds)
-            return SlackMessage(text=state, blocks=[_context(state)])
+            text = (
+                "No tool calls." if turn.status in TURN_ENDED else "No tool calls yet."
+            )
+            return SlackMessage(text=text, blocks=[_context(text)])
         plan = _plan(did, did, turn)
         count = len(did)
         title = f"{count} tool {'call' if count == 1 else 'calls'}"
-        state = turn_state(items, turn, elapsed_seconds=elapsed_seconds)
-        if turn.status in TURN_ENDED:
-            title = state if elapsed_seconds is not None else f"{state} {title}"
         hidden = max(0, count - _MAX_PLAN_TASKS)
         if hidden:
             title += f" · {hidden} earlier not shown"

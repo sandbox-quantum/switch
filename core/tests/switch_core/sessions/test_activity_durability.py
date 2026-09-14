@@ -98,10 +98,10 @@ async def test_restart_reuses_status_and_log_and_does_not_repost_completion(
     before = len(platform.edit_refs)
     await publish(activity(session_factory, platform))
     assert platform.post_count == 2
-    # Timer-only refresh must not collapse the unchanged log, even after restart.
-    assert platform.edit_refs[before:] == ["channel-demo:1"]
+    # Restart/timer-only refresh must not collapse either unchanged disclosure.
+    assert platform.edit_refs[before:] == []
     await publish(activity(session_factory, platform), "completed")
-    assert set(platform.messages) == {"channel-demo:2"}
+    assert set(platform.messages) == {"channel-demo:1", "channel-demo:2"}
     assert not platform.reactions
     await publish(activity(session_factory, platform), "completed")
     assert platform.post_count == 2
@@ -111,25 +111,41 @@ async def test_restart_reuses_status_and_log_and_does_not_repost_completion(
 async def test_lost_post_response_is_recovered_without_duplicate(session_factory, slot):
     await setup(session_factory)
     platform = ActivitySlack()
-    if slot == "log":
-        await publish(activity(session_factory, platform), tools=False)
-    platform.fail_after_post = True
+    original_post = platform.post_rich
+
+    async def lose_response(channel, agent, content, thread):
+        if content.tool_log == (slot == "log"):
+            platform.fail_after_post = True
+        return await original_post(channel, agent, content, thread)
+
+    platform.post_rich = lose_response
     with pytest.raises(TimeoutError):
         await publish(activity(session_factory, platform))
+    platform.post_rich = original_post
     await publish(activity(session_factory, platform))
     assert platform.post_count == 2
     assert len(platform.messages) == 2
 
 
-async def test_cleanup_failure_is_retried_after_restart(session_factory):
+async def test_final_log_edit_failure_is_retried_after_restart(
+    session_factory, monkeypatch
+):
     await setup(session_factory)
     platform = ActivitySlack()
     await publish(activity(session_factory, platform))
-    platform.fail_delete = True
-    with pytest.raises(TimeoutError):
-        await publish(activity(session_factory, platform), "completed")
+    original = platform.update_rich
+
+    async def fail_log(channel, ref, content):
+        if content.tool_log:
+            raise TimeoutError("Final log edit failed")
+        return await original(channel, ref, content)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(platform, "update_rich", fail_log)
+        with pytest.raises(TimeoutError):
+            await publish(activity(session_factory, platform), "completed")
     await publish(activity(session_factory, platform), "completed")
-    assert set(platform.messages) == {"channel-demo:2"}
+    assert set(platform.messages) == {"channel-demo:1", "channel-demo:2"}
     assert platform.post_count == 2
     assert not platform.reactions
 
@@ -238,9 +254,9 @@ async def test_existing_older_turn_is_finished_after_restart_without_replaying_h
         activity(session_factory, platform),
     )
     await publisher.publish_pending()
-    assert "channel-demo:1" not in platform.messages
+    assert "channel-demo:1" in platform.messages
     assert "channel-demo:2" in platform.messages
-    assert platform.post_count == 3  # Only the new turn created a new status.
+    assert platform.post_count == 4  # New turn creates a status and reserved tool log.
     publisher = SessionPublisher(
         session_factory,
         "bridge",
@@ -248,7 +264,7 @@ async def test_existing_older_turn_is_finished_after_restart_without_replaying_h
         activity(session_factory, platform),
     )
     await publisher.publish_pending()
-    assert platform.post_count == 3
+    assert platform.post_count == 4
 
 
 async def test_unknown_delivery_without_a_match_never_blindly_reposts(session_factory):
@@ -307,10 +323,10 @@ async def test_provisional_error_receipt_becomes_real_turn_in_place(
     if restart:
         renderer = activity(session_factory, platform)
     await publish(renderer, real_status, tools=False)
-    assert platform.post_count == 1
-    assert set(platform.messages) == {"channel-demo:1"}
+    assert platform.post_count == 2
+    assert set(platform.messages) == {"channel-demo:1", "channel-demo:2"}
     assert "errored" not in platform.messages["channel-demo:1"].text.lower()
-    assert platform.edit_refs[-1] == "channel-demo:1"
+    assert "channel-demo:1" in platform.edit_refs
 
 
 @pytest.mark.parametrize("durable", [True, False])
@@ -373,13 +389,13 @@ async def test_pending_command_cannot_hide_recorded_completion_or_replay_stale_e
         )
         await publisher.publish_pending()
     if durable:
-        assert "channel-demo:1" not in platform.messages
+        assert "channel-demo:1" in platform.messages
         assert "channel-demo:2" in platform.messages
-        assert platform.post_count == (3 if pending_status == "accepted" else 2)
+        assert platform.post_count == (4 if pending_status == "accepted" else 2)
     else:
         # Each fresh demo publisher redraws the latest real completion. Pending
         # errors are not replayed, and a queued receipt cannot hide that completion.
-        assert platform.post_count == (6 if pending_status == "accepted" else 4)
+        assert platform.post_count == (10 if pending_status == "accepted" else 6)
 
 
 async def test_reaction_failure_retries_without_blocking_log(session_factory):
@@ -487,3 +503,21 @@ async def test_completed_journal_discards_anchors_but_keeps_replay_receipt(
         }
     await publish(activity(session_factory, platform), "completed")
     assert platform.post_count == 2
+
+
+async def test_publisher_reserves_activity_before_an_early_request(session_factory):
+    service, epoch = await setup(session_factory)
+    await opened(service, epoch)
+    platform = ActivitySlack()
+    publisher = SessionPublisher(
+        session_factory,
+        "bridge",
+        cards_for(session_factory, platform),
+        activity(session_factory, platform),
+    )
+    await publisher.publish_pending()
+    messages = list(platform.messages.values())
+    assert len(messages) == 3
+    assert "Working" in messages[0].text
+    assert "No tool calls yet" in messages[1].text
+    assert any(block["type"] == "actions" for block in messages[2].blocks)

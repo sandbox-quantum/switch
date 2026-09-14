@@ -160,6 +160,7 @@ class BridgeCore:
         bridge_client_matrix_user_id: str,
         max_attachment_bytes: int,
         session_demo_enabled: bool,
+        gateway_public_url: str | None = None,
     ) -> None:
         self._bridge_id = bridge_id
         # The tenant of this bridge's own row. Read once here because it is
@@ -258,6 +259,7 @@ class BridgeCore:
                 bridge_id,
                 self._session_cards,
                 self._session_activity,
+                gateway_public_url=gateway_public_url,
             )
             if self._session_cards is not None
             else None

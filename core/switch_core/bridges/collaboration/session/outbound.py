@@ -102,6 +102,8 @@ class _Anchor:
     agent_name: str = ""
     log_ref: str | None = None
     log_state: tuple[tuple[str, int], ...] | None = None
+    session_url: str | None = None
+    status_state: tuple[str, str, str | None] | None = None
 
 
 def _violates(error: IntegrityError, constraint: str) -> bool:
@@ -156,6 +158,7 @@ class SessionTurnActivity:
         self._slack_activity = isinstance(adapter, SlackAdapter)
         self._anchors: OrderedDict[tuple[str, str], _Anchor] = OrderedDict()
         self._thread_turns: dict[tuple[str, str], set[tuple[str, str]]] = {}
+        self._attention: OrderedDict[tuple[str, str], tuple[str, str]] = OrderedDict()
 
     @property
     def durable(self) -> bool:
@@ -179,9 +182,12 @@ class SessionTurnActivity:
         asked_on: str | None,
         agent_name: str,
         elapsed_seconds: float | None,
+        session_url: str | None = None,
+        notify_external_id: str | None = None,
+        error_summary: str | None = None,
     ) -> bool:
         async def draw() -> bool:
-            return await self._publish(
+            drawn = await self._publish(
                 items,
                 turn,
                 session_id=session_id,
@@ -190,7 +196,19 @@ class SessionTurnActivity:
                 asked_on=asked_on,
                 agent_name=agent_name,
                 elapsed_seconds=elapsed_seconds,
+                session_url=session_url,
             )
+            if self._slack_activity:
+                await self._refresh_attention(
+                    session_id,
+                    channel_id,
+                    agent_name,
+                    thread_root_id,
+                    turn,
+                    notify_external_id,
+                    error_summary,
+                )
+            return drawn
 
         if self._journal is None:
             return await draw()
@@ -221,6 +239,12 @@ class SessionTurnActivity:
                         if saved.get("log_state") is not None
                         else None
                     )
+                    if saved.get("status_state") is not None:
+                        anchor.status_state = (
+                            saved["status_state"][0],
+                            saved["status_state"][1],
+                            saved["status_state"][2],
+                        )
                     self._anchors[key] = anchor
                     if turn.status in TURN_ENDED:
                         await self._release_thread(key, anchor)
@@ -235,6 +259,63 @@ class SessionTurnActivity:
                 return drawn
             finally:
                 self._record.reset(token)
+
+    async def _refresh_attention(
+        self,
+        session_id: str,
+        channel_id: str,
+        agent_name: str,
+        thread_root_id: str | None,
+        turn: TurnUpsert,
+        notify_external_id: str | None,
+        error_summary: str | None,
+    ) -> None:
+        """One attention reply per command; update it when the problem clears."""
+        key = (session_id, turn.command_id or turn.turn_id)
+        record = self._record.get()
+        saved = record.data.get("attention", {}) if record else {}
+        previous = self._attention.get(key)
+        ref = saved.get("ref") if record else previous[0] if previous else None
+        last_state = (
+            record.data.get("attention_state")
+            if record
+            else previous[1]
+            if previous
+            else None
+        )
+        if not error_summary and not ref and not saved:
+            return
+        state = error_summary or turn.status
+        if ref and state == last_state:
+            return
+        content = TurnActivity(
+            [],
+            turn,
+            status_only=True,
+            error_summary=error_summary,
+        )
+        if ref is None:
+            # A post can notify followers; an edit cannot. The durable slot
+            # also recovers a post whose response was lost before a restart.
+            ref = await self._post_activity(
+                channel_id,
+                agent_name,
+                replace(content, notify_external_id=notify_external_id),
+                thread_root_id,
+                "attention",
+            )
+            if saved:
+                await self._adapter.update_rich(channel_id, ref, content)
+        else:
+            await self._adapter.update_rich(channel_id, ref, content)
+        if record:
+            record.data["attention_state"] = state
+            await record.save()
+        else:
+            self._attention[key] = (ref, state)
+            self._attention.move_to_end(key)
+            while len(self._attention) > _MAX_ANCHORS:
+                self._attention.popitem(last=False)
 
     async def _save_anchor(self, anchor: _Anchor) -> None:
         record = self._record.get()
@@ -314,6 +395,7 @@ class SessionTurnActivity:
         asked_on: str | None,
         agent_name: str,
         elapsed_seconds: float | None,
+        session_url: str | None = None,
     ) -> bool:
         """Draw the turn where it already is, or where it is not yet.
 
@@ -356,6 +438,7 @@ class SessionTurnActivity:
                 asked_on=asked_on,
                 agent_name=agent_name,
                 elapsed_seconds=elapsed_seconds,
+                session_url=session_url,
             )
             if anchor is None:
                 return False
@@ -376,6 +459,7 @@ class SessionTurnActivity:
                 else True
             )
         else:
+            anchor.session_url = session_url
             if not ended:
                 await self._claim_thread(key, anchor)
             drawn = await self._edit(
@@ -387,19 +471,10 @@ class SessionTurnActivity:
                 elapsed_seconds=elapsed_seconds,
             )
 
-        if self._slack_activity and not ended:
+        if self._slack_activity:
             drawn = await self._draw_log(anchor, items, turn) and drawn
             await self._save_anchor(anchor)
         if ended:
-            if drawn and anchor.log_ref:
-                if self._journal and isinstance(self._adapter, SlackAdapter):
-                    await self._adapter.delete_activity_message(
-                        anchor.channel_id, anchor.message_ref
-                    )
-                else:
-                    await self._adapter.delete_message(
-                        anchor.channel_id, anchor.message_ref
-                    )
             record = self._record.get()
             if record and drawn:
                 record.data["ended"] = True
@@ -428,6 +503,7 @@ class SessionTurnActivity:
         asked_on: str | None,
         agent_name: str,
         elapsed_seconds: float | None,
+        session_url: str | None = None,
     ) -> _Anchor | None:
         """Post the turn where the caller put it: in a thread, or the channel
         root if there was nothing to thread under.
@@ -444,8 +520,8 @@ class SessionTurnActivity:
                     items,
                     turn,
                     elapsed_seconds,
-                    tool_log=self._slack_activity and turn.status in TURN_ENDED,
-                    status_only=self._slack_activity and turn.status not in TURN_ENDED,
+                    status_only=self._slack_activity,
+                    session_url=session_url,
                 ),
                 thread_root_id,
                 "status",
@@ -469,6 +545,14 @@ class SessionTurnActivity:
             thread_root_id=thread_root_id,
             reaction_ref=asked_on,
             agent_name=agent_name,
+            session_url=session_url,
+            status_state=(
+                turn.turn_id,
+                f"{turn.status}:{int(elapsed_seconds) if elapsed_seconds is not None else ''}",
+                session_url,
+            )
+            if self._slack_activity and self._journal is None
+            else None,
             log_state=tuple((item.item_id, item.revision) for item in items)
             + ((turn.status, 0),),
         )
@@ -484,16 +568,25 @@ class SessionTurnActivity:
         elapsed_seconds: float | None,
     ) -> bool:
         """Rewrite the posted message with the turn as it now stands."""
+        state = (
+            turn.turn_id,
+            f"{turn.status}:{int(elapsed_seconds) if elapsed_seconds is not None else ''}",
+            anchor.session_url,
+        )
+        if self._slack_activity and not ended and anchor.status_state == state:
+            # The timer and visible link share a compact status line. Tool-only
+            # changes belong to the separate log, not another status edit.
+            return True
         try:
             await self._adapter.update_rich(
                 anchor.channel_id,
-                anchor.log_ref if ended and anchor.log_ref else anchor.message_ref,
+                anchor.message_ref,
                 TurnActivity(
                     items,
                     turn,
                     elapsed_seconds,
-                    tool_log=self._slack_activity and turn.status in TURN_ENDED,
-                    status_only=self._slack_activity and turn.status not in TURN_ENDED,
+                    status_only=self._slack_activity,
+                    session_url=anchor.session_url,
                 ),
             )
         except RichContentThrottled:
@@ -512,14 +605,17 @@ class SessionTurnActivity:
                 else "The next change to the turn will try the same message.",
             )
             return False
+        if self._slack_activity and not ended:
+            anchor.status_state = state
         return True
 
     async def _draw_log(
         self, anchor: _Anchor, items: list[Item], turn: TurnUpsert
     ) -> bool:
-        if not items:
-            return True
-        state = tuple((item.item_id, item.revision) for item in items)
+        # Reserve the second reply before requests arrive, even before the first tool.
+        state = tuple((item.item_id, item.revision) for item in items) + (
+            (turn.status, 0),
+        )
         if state == anchor.log_state and anchor.log_ref:
             return True
         content = TurnActivity(items, turn, tool_log=True)
@@ -675,6 +771,7 @@ class SessionRequestCards:
         epoch: str,
         agent_name: str,
         unavailable_reason: str | None = None,
+        notify_external_id: str | None = None,
     ) -> SessionRequestPost:
         """Reserve the card durably, then send it to the platform.
 
@@ -712,7 +809,10 @@ class SessionRequestCards:
                     channel_id,
                     agent_name,
                     RequestCard(
-                        request, reference, unavailable_reason=unavailable_reason
+                        request,
+                        reference,
+                        unavailable_reason=unavailable_reason,
+                        notify_external_id=notify_external_id,
                     ),
                     thread_root_id,
                 )

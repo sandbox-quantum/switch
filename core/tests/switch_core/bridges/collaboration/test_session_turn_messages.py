@@ -133,7 +133,7 @@ async def test_a_turn_is_posted_once_and_edited_every_time_after() -> None:
     await _publish(activity, items.turn_activity(TURN), _turn("completed"))
 
     assert len(client.posted) == 2  # status and tool log
-    assert len(client.updated) == 2  # live status and combined final log
+    assert len(client.updated) == 2  # final status and final tool log
     assert [call["ts"] for call in client.updated] == ["1.0", "2.0"]
 
 
@@ -152,7 +152,7 @@ async def test_the_last_edit_is_the_state_the_turn_ended_in() -> None:
     await _publish(activity, stopped.turn_activity(TURN), _turn("interrupted"))
 
     assert "Working…" in _blocks(client.posted[0])
-    assert [call["ts"] for call in client.deleted] == ["1.0"]
+    assert client.deleted == []
     assert "Turn interrupted. 1 step left unfinished." in _blocks(client.updated[0])
 
 
@@ -168,7 +168,7 @@ async def test_a_second_turn_gets_its_own_message() -> None:
     await _publish(activity, [_item()], _turn("completed"))
     await _publish(activity, [_item("turn-two")], _turn("running", "turn-two"))
 
-    assert len(client.posted) == 2
+    assert len(client.posted) == 4
     assert client.updated == []
 
 
@@ -180,7 +180,7 @@ async def test_two_sessions_with_the_same_turn_id_do_not_share_a_message() -> No
     await _publish(activity, [_item()], _turn("running"))
     await _publish(activity, [_item()], _turn("running"), session_id="session-other")
 
-    assert len(client.posted) == 2
+    assert len(client.posted) == 4
     assert client.updated == []
 
 
@@ -202,7 +202,7 @@ async def test_a_turn_slack_refused_is_posted_afresh_rather_than_edited() -> Non
     adapter._web_client = client  # type: ignore[assignment]
     await _publish(activity, [_item()], _turn("running"))
 
-    assert len(client.posted) == 1
+    assert len(client.posted) == 2
     assert client.updated == []
 
 
@@ -220,13 +220,13 @@ async def test_an_edit_slack_refused_keeps_the_message_for_the_next_change(
 
     client.update_error = "message_not_found"
     with caplog.at_level(logging.ERROR):
-        await _publish(activity, [_item()], _turn("running"))
+        await _publish(activity, [_item()], _turn("queued"))
     client.update_error = None
     await _publish(activity, [_item()], _turn("completed"))
 
     assert "Could not update the activity for turn" in caplog.text
-    assert len(client.posted) == 1
-    assert [call["ts"] for call in client.updated] == ["1.0"]
+    assert len(client.posted) == 2
+    assert [call["ts"] for call in client.updated] == ["1.0", "2.0"]
 
 
 async def test_a_failed_last_edit_says_the_channel_is_left_looking_live(
@@ -263,7 +263,7 @@ async def test_more_live_turns_than_are_held_forgets_the_oldest_and_says_so(
         await _publish(activity, [_item("turn-one")], _turn("running", "turn-one"))
 
     assert "turn turn-one" in caplog.text
-    assert len(client.posted) == 4
+    assert len(client.posted) == 8
     assert client.updated == []
 
 
@@ -342,7 +342,7 @@ async def test_a_reaction_failure_does_not_fail_the_turns_own_draw(
         )
 
     assert drawn is True
-    assert len(client.posted) == 1
+    assert len(client.posted) == 2
     assert "Could not add the working reaction on parent-1 in C1" in caplog.text
 
 
@@ -499,8 +499,10 @@ async def test_plan_log_is_not_redrawn_by_timer_and_preserves_tool_warnings() ->
     failed = tool.model_copy(update={"revision": 2, "status": "failed"})
     await _publish(activity, [failed], _turn("completed"), elapsed_seconds=10)
     task = client.updated[-1]["blocks"][0]["tasks"][0]
-    assert client.updated[-1]["blocks"][0]["title"] == "Worked for 10s. 1 tool call."
+    assert client.updated[-1]["blocks"][0]["title"] == "1 tool call"
     assert task["status"] == "complete"
     assert "Read" in task["title"] and task["title"] != "Read"
-    assert "Worked for 10s" in _blocks(client.updated[-1])
+    assert "Worked for 10s" in _blocks(client.updated[-2])
+    assert client.updated[-2]["ts"] == "1.0"
+    assert client.updated[-1]["ts"] == "2.0"
     assert client.api_calls == []
