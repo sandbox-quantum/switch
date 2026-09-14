@@ -959,6 +959,27 @@ export async function releaseBridgeIdentity(
  * unreachable by that owner on any bridge missing from this list, so this is
  * what the addressing UI checks before letting a policy seal an agent off.
  */
+/**
+ * Who the signed-in user is on one bridge, as the server would decide it for
+ * a kickoff (`GET /collaborations/{id}/me`): a claimed identity, else a match
+ * of the account's name or email on the platform. Null when neither holds.
+ */
+export async function fetchMyIdentityOnBridge(
+  server: SwitchServer,
+  bridgeId: string
+): Promise<{ externalUserId: string; externalUsername: string } | null> {
+  const res = await gatewayFetch(server, `/collaborations/${encodeURIComponent(bridgeId)}/me`, {
+    authenticated: true,
+  });
+  const json = (await res.json()) as {
+    external_user_id: string;
+    external_username: string;
+  } | null;
+  return json
+    ? { externalUserId: json.external_user_id, externalUsername: json.external_username }
+    : null;
+}
+
 export async function fetchMyIdentities(server: SwitchServer): Promise<LinkedIdentity[]> {
   const res = await gatewayFetch(server, '/auth/me/identities', { authenticated: true });
   const json = (await res.json()) as Array<{
@@ -1041,6 +1062,133 @@ export async function deleteAgent(server: SwitchServer, agentId: string): Promis
     authenticated: true,
     method: 'DELETE',
   });
+}
+
+/** The result of provisioning a room from a YAML template. */
+export type TemplateProvisionResult = {
+  roomId: string;
+  roomName: string;
+  failedAttachments: Array<{ kind: string; id: string; error: string }>;
+};
+
+/**
+ * Create a room from a YAML template (`POST /rooms/from-yaml`). Sends the
+ * template as a JSON body with the YAML text and any user-supplied inputs.
+ * The server parses the template, interpolates inputs, and provisions
+ * everything in one call.
+ *
+ * A 400 carries a `detail` naming the bad input; the caller maps it back to
+ * the form field.
+ */
+export async function createRoomFromTemplate(
+  server: SwitchServer,
+  yamlText: string,
+  inputs: Record<string, string | number | boolean>
+): Promise<TemplateProvisionResult> {
+  const res = await gatewayFetch(server, '/rooms/from-yaml', {
+    authenticated: true,
+    method: 'POST',
+    body: { yaml: yamlText, inputs },
+  });
+  const json = (await res.json()) as {
+    room_id: string;
+    room_name: string;
+    failed_attachments?: Array<{ kind: string; id: string; error: string }>;
+  };
+  return {
+    roomId: json.room_id,
+    roomName: json.room_name,
+    failedAttachments: json.failed_attachments ?? [],
+  };
+}
+
+// ── Stored templates (template registry) ────────────────────────────────────
+
+export type StoredTemplateSummary = {
+  id: string;
+  name: string;
+  description: string;
+  kind: string;
+  creator: string;
+};
+
+export type StoredTemplateDetail = StoredTemplateSummary & {
+  definition: string;
+};
+
+type RegistryTemplateSummary = {
+  id: string;
+  owner_id: string;
+  owner_name: string | null;
+  name: string;
+  description: string;
+  kind: string;
+};
+
+function toSummary(t: RegistryTemplateSummary): StoredTemplateSummary {
+  return {
+    id: t.id,
+    name: t.name,
+    description: t.description,
+    kind: t.kind,
+    creator: t.owner_name ?? t.owner_id,
+  };
+}
+
+export async function fetchTemplates(
+  server: SwitchServer,
+  kind?: string
+): Promise<StoredTemplateSummary[]> {
+  const qs = kind ? `?kind=${encodeURIComponent(kind)}` : '';
+  const res = await gatewayFetch(server, `/templates${qs}`, {
+    authenticated: true,
+  });
+  const json = (await res.json()) as RegistryTemplateSummary[];
+  return json.map(toSummary);
+}
+
+/** Store a template document on the server's registry (`POST /templates`). */
+export async function createTemplate(
+  server: SwitchServer,
+  params: { name: string; description: string; kind: string; content: string }
+): Promise<StoredTemplateDetail> {
+  const res = await gatewayFetch(server, '/templates', {
+    authenticated: true,
+    method: 'POST',
+    body: params,
+  });
+  const t = (await res.json()) as RegistryTemplateSummary & { content: string };
+  return { ...toSummary(t), definition: t.content };
+}
+
+export async function fetchTemplateDetail(
+  server: SwitchServer,
+  templateId: string
+): Promise<StoredTemplateDetail> {
+  const res = await gatewayFetch(server, `/templates/${encodeURIComponent(templateId)}`, {
+    authenticated: true,
+  });
+  const t = (await res.json()) as RegistryTemplateSummary & { content: string };
+  return { ...toSummary(t), definition: t.content };
+}
+
+/**
+ * Fetch the JSON Schema describing a valid room template. Returns null when
+ * the server does not support the endpoint (404) — older servers that lack
+ * `params:` support.
+ */
+export async function fetchTemplateSchema(
+  server: SwitchServer
+): Promise<Record<string, unknown> | null> {
+  try {
+    const res = await gatewayFetch(server, '/rooms/template-schema', {
+      authenticated: true,
+    });
+    return (await res.json()) as Record<string, unknown>;
+  } catch (e) {
+    if (e instanceof GatewayError && e.status === 404) return null;
+    throw e;
+  }
 }
 
 export async function fetchRoomRoles(

@@ -1,6 +1,6 @@
 import type { RepoAgentAttributes } from '@switch-console/core/agents/plugins';
 import { useQuery } from '@tanstack/react-query';
-import { Monitor, Server } from 'lucide-react';
+import { ExternalLink, Monitor, Server, TriangleAlert } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { agentsStore } from '@renderer/features/locations/stores/agents-store';
@@ -11,17 +11,25 @@ import {
   HostReadinessNotice,
   useRemoteHostReadiness,
 } from '@renderer/features/remote-hosts/host-readiness-notice';
+import { refreshSidebarRoomState } from '@renderer/features/sidebar/sidebar-tree-data';
+import { openRoom } from '@renderer/features/switch-rooms/open-room';
+import { findSessionForRoom } from '@renderer/features/switch-rooms/session-deeplink-listener';
 import { policyHasDeadRule } from '@renderer/features/switch-servers/addressing-policy-editor';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
+import type { AgentTemplateData } from '@renderer/features/templates/agent-template-data';
 import { describeFailure } from '@renderer/lib/errors/describe-failure';
 import { toast } from '@renderer/lib/hooks/use-toast';
 import { rpc } from '@renderer/lib/ipc';
 import { useNavigate } from '@renderer/lib/layout/navigation-provider';
 import {
+  showModal,
   useModalContext,
   useShowModal,
   type BaseModalProps,
 } from '@renderer/lib/modal/modal-provider';
+import { openExternalUrl } from '@renderer/lib/open-external';
+import { appState } from '@renderer/lib/stores/app-state';
+import { useRemoteAgents } from '@renderer/lib/stores/use-remote-agents';
 import { Button } from '@renderer/lib/ui/button';
 import { ConfirmButton } from '@renderer/lib/ui/confirm-button';
 import {
@@ -40,9 +48,11 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@renderer/lib/ui/select';
+import { Switch } from '@renderer/lib/ui/switch';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@renderer/lib/ui/tooltip';
 import { log } from '@renderer/utils/logger';
 import type { AgentProviderConfig } from '@shared/core/agents/agent-provider-config';
+import { ownerAndMyAgentsPolicy, ownerOnlyPolicy } from '@shared/core/switch-servers/owner-policy';
 import { type ProvisionAgentResult } from '@shared/core/switch-servers/switch-servers';
 import type { UiEntryPoint } from '@shared/core/telemetry/reporting';
 import { AgentAdvancedConfig } from './agent-advanced-config';
@@ -63,7 +73,37 @@ export type AddLocationModalProps = BaseModalProps<void> & {
    * under the same heading as the ones that did not.
    */
   entryPoint: UiEntryPoint;
+  /** When set, the modal pre-fills the agent from this template, prepares its
+   * working directory, and puts it in the template's room once it exists. */
+  template?: AgentTemplateData | null;
+  /** When set, pre-fills the agent name (e.g. from a room template slot). */
+  prefillName?: string | null;
+  /** When set, the new agent is put in this room instead of the template's
+   * own; the person then starts it by mentioning it there. */
+  intoRoomId?: string | null;
 };
+
+/**
+ * Once the kickoff addresses the new agent, the Console starts a session for
+ * it in the room. That session is the thing worth watching, so when it appears
+ * while the person is still looking at the room, open it. Gives up quietly
+ * after a while: no session means no kickoff, and the toast already said so.
+ */
+async function revealSessionWhenItStarts(roomId: string): Promise<void> {
+  for (let i = 0; i < 40; i++) {
+    await new Promise((r) => setTimeout(r, 1000));
+    const stillOnRoom =
+      appState.navigation.currentViewId === 'room' &&
+      (appState.navigation.viewParamsStore.room as { roomId?: string } | undefined)?.roomId ===
+        roomId;
+    if (!stillOnRoom) return;
+    const found = findSessionForRoom(roomId);
+    if (found) {
+      appState.navigation.navigate('session', found);
+      return;
+    }
+  }
+}
 
 /** Sentinel `runHost` value meaning "run on this machine" (no remote host). */
 const LOCAL_RUN_LOCATION = 'local';
@@ -77,17 +117,81 @@ function canonicalDir(dir: string): string {
   return stripped || (trimmed.startsWith('/') ? '/' : '');
 }
 
+/** One line of the template summary: a fixed-width label, the fact, and
+ * whatever control belongs to it on the right. */
+function SummaryRow({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div className="flex items-start gap-3">
+      <span className="w-20 shrink-0 text-foreground-muted">{label}</span>
+      <div className="flex min-w-0 flex-1 items-start justify-between gap-3">{children}</div>
+    </div>
+  );
+}
+
+/** A small labelled switch, for a step the person may decline. */
+function ToggleChip({
+  label,
+  checked,
+  onChange,
+}: {
+  label: string;
+  checked: boolean;
+  onChange: (checked: boolean) => void;
+}) {
+  return (
+    <label className="flex shrink-0 cursor-pointer items-center gap-2 text-xs text-foreground-muted">
+      {label}
+      <Switch checked={checked} onCheckedChange={onChange} />
+    </label>
+  );
+}
+
 export const AddAgentModal = observer(function AddAgentModal({
   onClose,
   entryPoint,
+  template,
+  prefillName,
+  intoRoomId = null,
 }: AddLocationModalProps) {
-  const [submitState, setSubmitState] = useState<'idle' | 'creating'>('idle');
+  // A template adds two steps around the creation itself: the working
+  // directory (and repository clone) before, the room after.
+  const [submitState, setSubmitState] = useState<
+    'idle' | 'preparing' | 'creating' | 'creating-room'
+  >('idle');
   const { navigate } = useNavigate();
-  const { setCloseGuard } = useModalContext();
+  const { setCloseGuard, transitionModal } = useModalContext();
   const showAddServerModal = useShowModal('addServerModal');
 
   const pickState = usePickMode();
   const form = useConfigureAgentForm();
+
+  // Pre-fill form from a template or a prefilled name (once, on mount). A
+  // slot name from the room-template wizard wins over the template's own
+  // suggestion: the wizard is asking for that agent by name.
+  const [templateApplied, setTemplateApplied] = useState(false);
+  useEffect(() => {
+    if (templateApplied) return;
+    if (template) {
+      form.setDescription(template.description);
+      form.setInstructions(template.instructions);
+      if (template.agentName && !prefillName) form.setAgentName(template.agentName);
+      if (template.addressing === 'anyone') form.setAddressingPolicy(null);
+      else if (template.addressing === 'owner-agents') {
+        form.setAddressingPolicy(ownerAndMyAgentsPolicy());
+      } else if (template.addressing === 'owner') form.setAddressingPolicy(ownerOnlyPolicy());
+      setTemplateApplied(true);
+    }
+    if (prefillName) {
+      form.setAgentName(prefillName);
+      setTemplateApplied(true);
+    }
+  }, [template, prefillName, templateApplied, form]);
+
+  // The two things a template does around the agent itself, each of which the
+  // person can decline: the repository clone and the room.
+  const [cloneRepo, setCloneRepo] = useState(true);
+  const [createRoom, setCreateRoom] = useState(true);
+  const willCreateRoom = !!template?.roomYaml && createRoom && intoRoomId === null;
 
   // Run location: 'local' (default) or an onboarded remote host's SSH alias. A
   // remote agent runs its sessions on the host and needs a remote working dir.
@@ -95,6 +199,49 @@ export const AddAgentModal = observer(function AddAgentModal({
   // Typed directly, with no commit step: it used to need one because committing
   // fired the directory scans, and there are none left to fire.
   const [remoteRepoDir, setRemoteRepoDir] = useState('');
+
+  // A template should not stop at "choose a directory": suggest one, named
+  // after the agent, under the directory the Console keeps its locations in.
+  // It is created on submit, not now, so cancelling leaves nothing behind.
+  // The suggestion follows the name until the person picks a directory
+  // themselves; a path they chose is theirs and a rename leaves it alone.
+  // On a host the same layout is suggested under the host's home, into the
+  // typed field; the host answers over SSH, so a suggestion can lag a moment.
+  const lastSuggestedDir = useRef<string | null>(null);
+  const { handlePathChange, path: pickedPath } = pickState;
+  const currentDir = runHost === LOCAL_RUN_LOCATION ? pickedPath : remoteRepoDir;
+  // `hostReachable` is read in render (this is an observer), so the effect
+  // runs again once a host that was still being probed turns out reachable.
+  const hostReachable = runHost === LOCAL_RUN_LOCATION || !hostReachabilityStore.isBlocked(runHost);
+  useEffect(() => {
+    if (!template || !form.nameIsValid || !hostReachable) return;
+    if (currentDir !== '' && currentDir !== lastSuggestedDir.current) return;
+    let stale = false;
+    const sshHost = runHost === LOCAL_RUN_LOCATION ? null : runHost;
+    void rpc.agentTemplates
+      .suggestDirectory({ agentName: form.agentName, sshHost })
+      .then((dir) => {
+        if (stale) return;
+        lastSuggestedDir.current = dir;
+        if (sshHost) setRemoteRepoDir(dir);
+        else handlePathChange(dir);
+      })
+      .catch((error: unknown) => {
+        // A host that cannot say where home is leaves the field to be typed.
+        log.warn('Could not suggest a directory for the template agent', { sshHost, error });
+      });
+    return () => {
+      stale = true;
+    };
+  }, [
+    template,
+    runHost,
+    hostReachable,
+    form.agentName,
+    form.nameIsValid,
+    currentDir,
+    handlePathChange,
+  ]);
   const { data: remoteHosts } = useQuery({
     queryKey: ['remote-hosts'],
     queryFn: () => rpc.remoteHosts.listHosts(),
@@ -129,6 +276,68 @@ export const AddAgentModal = observer(function AddAgentModal({
       setServerId(targetServerId);
     }
   }, [targetServerId, pickedServerId, setServerId]);
+
+  // Names already taken on the server. A template prefills a fixed name, so
+  // the second person to use it would otherwise learn of the clash only after
+  // the directory and clone exist; while the prefill stands untouched it is
+  // moved to the first free variant instead, and a typed clash is refused.
+  const remoteAgents = useRemoteAgents(pickState.serverId);
+  const takenNames = useMemo(
+    () => new Set((remoteAgents.data ?? []).map((a) => a.name)),
+    [remoteAgents.data]
+  );
+  const nameTaken = form.nameIsValid && takenNames.has(form.agentName);
+  const [renamedFrom, setRenamedFrom] = useState<string | null>(null);
+  const { setAgentName } = form;
+  useEffect(() => {
+    const wanted = prefillName ?? template?.agentName ?? null;
+    if (!wanted || !nameTaken || form.agentName !== wanted) return;
+    let candidate = wanted;
+    for (let i = 2; takenNames.has(candidate); i++) candidate = `${wanted}-${i}`;
+    setRenamedFrom(wanted);
+    setAgentName(candidate);
+  }, [template, prefillName, nameTaken, form.agentName, takenNames, setAgentName]);
+
+  // The room's first message is posted as the person, through their linked
+  // account on the room's bridge. Both halves are checked here, before the
+  // click, because after it the agent already exists and only the message is
+  // missing: a server with no messaging app has nowhere to talk to the agent,
+  // and a person the bridge cannot recognise cannot speak to it.
+  const { data: bridges } = useQuery({
+    queryKey: ['remote-bridges', pickState.serverId],
+    queryFn: () => rpc.switchServers.listRemoteBridges(pickState.serverId as string),
+    enabled: !!pickState.serverId && willCreateRoom,
+  });
+  const roomBridge = useMemo(() => {
+    if (!bridges) return undefined;
+    return bridges.find((b) => b.isDefault) ?? (bridges.length === 1 ? bridges[0] : null);
+  }, [bridges]);
+  // Asked of the server per bridge rather than read from the claims list: the
+  // server also matches the account's name and email on the platform, so a
+  // person with no explicit claim is often still known, and warning them
+  // would be wrong.
+  const { data: resolvedIdentity } = useQuery({
+    queryKey: ['my-identity-on-bridge', pickState.serverId, roomBridge?.id],
+    queryFn: () =>
+      rpc.switchServers.myIdentityOnBridge({
+        serverId: pickState.serverId as string,
+        bridgeId: roomBridge?.id as string,
+      }),
+    enabled: !!pickState.serverId && !!roomBridge && willCreateRoom,
+  });
+  const creatorIdentity = roomBridge ? resolvedIdentity : undefined;
+  const linkIdentity = () => {
+    if (!pickState.serverId || !roomBridge) return;
+    const serverId = pickState.serverId;
+    // One dialog at a time, so the claim takes this one's place and hands
+    // back to a fresh copy of it; a template refills everything that matters.
+    transitionModal('claimIdentityModal', {
+      serverId,
+      bridgeId: roomBridge.id,
+      onSuccess: () => showModal('addAgentModal', { entryPoint, template, prefillName }),
+      onClose: () => showModal('addAgentModal', { entryPoint, template, prefillName }),
+    });
+  };
 
   // A managed server is only reachable from certain run locations, so constrain
   // the picker to them: a remote-managed server from this computer or its own
@@ -220,6 +429,7 @@ export const AddAgentModal = observer(function AddAgentModal({
 
   const canSubmit =
     form.isValid &&
+    !nameTaken &&
     !policyHasDeadRule(form.addressingPolicy) &&
     !!pickState.serverId &&
     !!pickState.providerId &&
@@ -238,23 +448,25 @@ export const AddAgentModal = observer(function AddAgentModal({
           ? 'Enter a name for the agent.'
           : !form.nameIsValid
             ? 'Fix the agent name: lowercase letters, digits, . - _, starting with a letter or digit.'
-            : form.description.trim().length === 0
-              ? 'Add a description so people and agents know what this agent is for.'
-              : !runHostReachable
-                ? `${runLocationLabel} can’t be reached right now — pick a run location that can.`
-                : hostReadiness.checking
-                  ? `Checking what ${runLocationLabel} has installed…`
-                  : hostReadiness.blocked
-                    ? `${runLocationLabel} is missing setup this agent needs — the notice below has the details.`
-                    : !pickState.providerId
-                      ? 'Choose an agent type.'
-                      : dir.trim().length === 0
-                        ? isRemoteRun
-                          ? 'Enter the agent’s working directory on the host.'
-                          : 'Choose the agent’s working directory.'
-                        : policyHasDeadRule(form.addressingPolicy)
-                          ? 'One addressing rule can never match — fix it under Settings.'
-                          : null;
+            : nameTaken
+              ? `An agent called ${form.agentName} already exists on this server. Pick another name.`
+              : form.description.trim().length === 0
+                ? 'Add a description so people and agents know what this agent is for.'
+                : !runHostReachable
+                  ? `${runLocationLabel} can’t be reached right now — pick a run location that can.`
+                  : hostReadiness.checking
+                    ? `Checking what ${runLocationLabel} has installed…`
+                    : hostReadiness.blocked
+                      ? `${runLocationLabel} is missing setup this agent needs — the notice below has the details.`
+                      : !pickState.providerId
+                        ? 'Choose an agent type.'
+                        : dir.trim().length === 0
+                          ? isRemoteRun
+                            ? 'Enter the agent’s working directory on the host.'
+                            : 'Choose the agent’s working directory.'
+                          : policyHasDeadRule(form.addressingPolicy)
+                            ? 'One addressing rule can never match — fix it under Settings.'
+                            : null;
 
   /** `agentName` is what picks the agent out of the location — a location can
    * hold several, so navigating on `locationId` alone opens the directory
@@ -319,14 +531,117 @@ export const AddAgentModal = observer(function AddAgentModal({
     }
   };
 
+  /**
+   * Put the agent the template just created into the template's room, and post
+   * its kickoff. The agent already exists at this point, so a failure here is
+   * reported as exactly that — the agent stays, the room did not happen — and
+   * the caller falls back to opening the agent instead.
+   */
+  const createTemplateRoom = async (
+    t: AgentTemplateData,
+    serverId: string,
+    agentName: string
+  ): Promise<string | null> => {
+    if (!t.roomYaml) return null;
+    setSubmitState('creating-room');
+    try {
+      const room = await rpc.switchServers.createRoomFromTemplate(serverId, t.roomYaml, {
+        agent: agentName,
+      });
+      await refreshSidebarRoomState(true);
+      if (room.failedAttachments.length > 0) {
+        const kickoff = room.failedAttachments.find((f) => f.kind === 'kickoff');
+        const others = room.failedAttachments.filter((f) => f.kind !== 'kickoff');
+        toast({
+          title: kickoff
+            ? `${agentName} is in "${room.roomName}", but nobody has spoken to it yet`
+            : `"${room.roomName}" was created with gaps`,
+          description: [
+            kickoff ? `The first message could not be posted: ${kickoff.error}` : null,
+            others.length > 0
+              ? `Could not add: ${others.map((f) => `${f.id} (${f.error})`).join(', ')}`
+              : null,
+          ]
+            .filter(Boolean)
+            .join(' '),
+          variant: 'destructive',
+        });
+      }
+      return room.roomId;
+    } catch (error) {
+      log.error(error);
+      const { headline, detail } = describeFailure(
+        error,
+        `The agent was created, but its room could not be. Create a room and add ${agentName} to it.`
+      );
+      toast({ title: headline, description: detail ?? undefined, variant: 'destructive' });
+      return null;
+    }
+  };
+
+  /**
+   * Put the new agent in the room it was asked for from. Nothing is posted:
+   * only the room's own kickoff path can speak as the person, so the toast
+   * says what to type. The agent exists either way; a failure here is
+   * reported and the caller opens the agent instead.
+   */
+  const addToExistingRoom = async (
+    serverId: string,
+    roomId: string,
+    switchAgentId: string,
+    agentName: string
+  ): Promise<string | null> => {
+    setSubmitState('creating-room');
+    try {
+      await rpc.switchServers.addRoomAgents({
+        serverId,
+        roomId,
+        agentIds: [switchAgentId],
+        direction: 'agents_to_room',
+      });
+      await refreshSidebarRoomState(true);
+      toast({
+        title: `${agentName} is in the room`,
+        description: `Mention @${agentName} there to start it. A message from you is what wakes it.`,
+      });
+      return roomId;
+    } catch (error) {
+      log.error(error);
+      const { headline, detail } = describeFailure(
+        error,
+        `The agent was created, but could not be added to the room. Add ${agentName} from the room's Configuration tab.`
+      );
+      toast({ title: headline, description: detail ?? undefined, variant: 'destructive' });
+      return null;
+    }
+  };
+
   /** Create a brand-new flat agent in the chosen directory (local or remote):
    * mint its identity, write its `.claude/agents/<name>.md` definition + its
    * per-agent credentials, and create the row — all via `addAgent`. */
   const createNewAgent = async () => {
     if (!pickState.serverId || !pickState.providerId) return;
-    setSubmitState('creating');
     setCloseGuard(true);
     try {
+      // The template's working directory may not exist yet (it was only
+      // suggested), and its repository is cloned alongside so the agent reads
+      // current source from its first answer. On a host, both happen over SSH.
+      if (template) {
+        setSubmitState('preparing');
+        const prepared = await rpc.agentTemplates.prepareWorkspace({
+          dir: isRemoteRun ? trimmedRemoteDir : pickState.path,
+          repoUrl: cloneRepo ? template.repoUrl : null,
+          sshHost: isRemoteRun ? runHost : null,
+        });
+        if (prepared.repo?.outcome === 'failed') {
+          toast({
+            title: 'Could not fetch the repository',
+            description: `${prepared.repo.error ?? 'git clone failed'} — the agent will try to clone it itself on its first run.`,
+            variant: 'destructive',
+          });
+        }
+      }
+      setSubmitState('creating');
       const result = await getLocationManagerStore().addAgentAndOpen({
         sshHost: isRemoteRun ? runHost : null,
         dir: isRemoteRun ? trimmedRemoteDir : pickState.path,
@@ -336,6 +651,7 @@ export const AddAgentModal = observer(function AddAgentModal({
         description: form.description.trim(),
         displayName: form.displayName.trim() || null,
         instructions: form.instructions,
+        templateOrigin: template?.origin ?? null,
         iconUrl: form.iconUrl,
         autoSession: form.autoSession,
         autoApprove: form.autoApprove,
@@ -357,6 +673,32 @@ export const AddAgentModal = observer(function AddAgentModal({
         });
       }
       await agentsStore.load();
+      if (intoRoomId && result.agent.switchAgentId) {
+        const roomId = await addToExistingRoom(
+          pickState.serverId,
+          intoRoomId,
+          result.agent.switchAgentId,
+          result.agent.name
+        );
+        if (roomId) {
+          setCloseGuard(false);
+          setSubmitState('idle');
+          onClose();
+          await openRoom(roomId);
+          return;
+        }
+      }
+      if (template?.roomYaml && createRoom && intoRoomId === null) {
+        const roomId = await createTemplateRoom(template, pickState.serverId, result.agent.name);
+        if (roomId) {
+          setCloseGuard(false);
+          setSubmitState('idle');
+          onClose();
+          await openRoom(roomId);
+          void revealSessionWhenItStarts(roomId);
+          return;
+        }
+      }
       finishWith(result.agent);
     } catch (error) {
       log.error(error);
@@ -376,7 +718,7 @@ export const AddAgentModal = observer(function AddAgentModal({
     <ModalLayout
       header={
         <DialogHeader showCloseButton={submitState === 'idle'}>
-          <DialogTitle>New agent</DialogTitle>
+          <DialogTitle>{template ? `New agent from "${template.name}"` : 'New agent'}</DialogTitle>
         </DialogHeader>
       }
       footer={
@@ -405,7 +747,19 @@ export const AddAgentModal = observer(function AddAgentModal({
                       onClick={() => void handleCreate()}
                       disabled={!canSubmit}
                     >
-                      {submitState === 'creating' ? 'Adding…' : 'Add agent'}
+                      {submitState === 'preparing'
+                        ? template?.repoUrl && cloneRepo
+                          ? 'Fetching repository…'
+                          : 'Preparing…'
+                        : submitState === 'creating'
+                          ? 'Adding…'
+                          : submitState === 'creating-room'
+                            ? 'Creating its room…'
+                            : willCreateRoom
+                              ? 'Add agent and open its room'
+                              : intoRoomId
+                                ? 'Add agent to the room'
+                                : 'Add agent'}
                     </ConfirmButton>
                   </span>
                 }
@@ -423,7 +777,113 @@ export const AddAgentModal = observer(function AddAgentModal({
         tabIndex={-1}
         className="max-h-[calc(100dvh-2rem-var(--modal-chrome,8.5rem))] gap-4"
       >
-        <AgentIdentityFields form={form} />
+        <AgentIdentityFields form={form} instructionsFrom={template?.name ?? null} />
+        {renamedFrom && form.agentName !== renamedFrom && (
+          <p className="-mt-2 text-xs text-foreground-muted">
+            An agent called {renamedFrom} already exists on this server, so this one is{' '}
+            {form.agentName}.
+          </p>
+        )}
+
+        {template && (
+          <div className="flex flex-col gap-2 rounded-md border border-border px-3 py-2.5 text-sm">
+            {template.repoUrl && (
+              <SummaryRow label="Repository">
+                <button
+                  type="button"
+                  className="inline-flex items-center gap-1 underline underline-offset-2"
+                  onClick={() =>
+                    void openExternalUrl(template.repoUrl!, 'Could not open the repository')
+                  }
+                >
+                  {template.repoUrl.replace(/^https?:\/\//, '')}
+                  <ExternalLink className="size-3" />
+                </button>
+                <ToggleChip label="Clone now" checked={cloneRepo} onChange={setCloneRepo} />
+              </SummaryRow>
+            )}
+            {template.sources.length > 0 && (
+              <SummaryRow label="Sources">
+                <span className="flex flex-wrap items-center gap-x-1.5">
+                  {template.sources.map((source, i) => (
+                    <span key={source.url} className="inline-flex items-center gap-1">
+                      {i > 0 && <span className="text-foreground-muted">·</span>}
+                      <button
+                        type="button"
+                        className="inline-flex items-center gap-1 underline underline-offset-2"
+                        onClick={() => void openExternalUrl(source.url, 'Could not open the page')}
+                      >
+                        {source.label ?? source.url.replace(/^https?:\/\//, '')}
+                        <ExternalLink className="size-3" />
+                      </button>
+                    </span>
+                  ))}
+                </span>
+              </SummaryRow>
+            )}
+            {intoRoomId && (
+              <SummaryRow label="Room">
+                <span>The room you opened this from. Mention the agent there to start it.</span>
+              </SummaryRow>
+            )}
+            {template.roomYaml && intoRoomId === null && (
+              <SummaryRow label="Room">
+                <span>
+                  {createRoom
+                    ? template.roomName
+                      ? `"${template.roomName.replace('{agent}', form.agentName || 'it')}"`
+                      : 'A new room'
+                    : 'None'}
+                </span>
+                <ToggleChip label="Create" checked={createRoom} onChange={setCreateRoom} />
+              </SummaryRow>
+            )}
+            {template.addressing && template.addressing !== 'owner' && (
+              <SummaryRow label="Answers">
+                <span>
+                  {template.addressing === 'anyone' ? 'Anyone in its rooms' : 'You and your agents'}
+                  <span className="text-foreground-muted">
+                    {' '}
+                    (from the template; change under Settings)
+                  </span>
+                </span>
+              </SummaryRow>
+            )}
+            {willCreateRoom && bridges && !roomBridge && (
+              <p className="flex flex-wrap items-center gap-2 text-amber-500">
+                <TriangleAlert className="size-3.5 shrink-0" />
+                <span>This server has no messaging app, so the room would have no chat.</span>
+                <Button
+                  type="button"
+                  size="xs"
+                  variant="outline"
+                  onClick={() => {
+                    onClose();
+                    if (pickState.serverId) navigate('server', { serverId: pickState.serverId });
+                  }}
+                >
+                  Connect one
+                </Button>
+              </p>
+            )}
+            {willCreateRoom && roomBridge && creatorIdentity === null && (
+              <p className="flex flex-wrap items-center gap-2 text-amber-500">
+                <TriangleAlert className="size-3.5 shrink-0" />
+                <span>
+                  The kickoff needs your {roomBridge.displayName} account linked on this server.
+                </span>
+                <Button type="button" size="xs" variant="outline" onClick={linkIdentity}>
+                  Link account
+                </Button>
+              </p>
+            )}
+            {template.warnings.map((w) => (
+              <p key={w} className="text-xs text-foreground-muted">
+                {w}
+              </p>
+            ))}
+          </div>
+        )}
 
         <Field>
           <FieldLabel>Run location</FieldLabel>

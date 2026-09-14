@@ -22,6 +22,8 @@ from __future__ import annotations
 
 import logging
 import re
+import time
+from datetime import date
 from typing import TYPE_CHECKING, Any, Literal, cast
 
 import yaml
@@ -48,7 +50,7 @@ logger = logging.getLogger(__name__)
 
 # ── Template parameters (v0) ─────────────────────────────────────────────
 
-PLACEHOLDER_RE = re.compile(r"\{([A-Za-z_][A-Za-z0-9_]*)\}")
+PLACEHOLDER_RE = re.compile(r"\{(\$?[A-Za-z_][A-Za-z0-9_]*)\}")
 
 
 class ParamSpec(BaseModel):
@@ -57,6 +59,10 @@ class ParamSpec(BaseModel):
     description: str | None = None
     default: str | int | float | bool | None = None
     enum: list[str] | None = None
+    # Rendering hint for string params that carry long text (a task brief,
+    # instructions): the form shows a textarea instead of a one-line input,
+    # which would strip the pasted text's newlines.
+    multiline: bool = False
 
 
 def _coerce(value: Any, spec: ParamSpec, name: str) -> str | int | float | bool:
@@ -223,6 +229,14 @@ class RoomSpec(BaseModel):
     docs: list[DocSpec] = []
 
 
+class TemplateDocument(BaseModel):
+    """Top-level shape of a room template file (for JSON Schema generation)."""
+
+    room: RoomSpec
+    params: dict[str, ParamSpec] | None = None
+    kickoff: str | None = None
+
+
 class ProvisionResult(BaseModel):
     room_id: str
     room_name: str
@@ -275,7 +289,20 @@ class RoomYamlService:
 
     # ── Parse ─────────────────────────────────────────────────────────────
 
-    def parse(self, text: str, inputs: dict[str, Any] | None = None) -> RoomSpec:
+    def parse(
+        self,
+        text: str,
+        inputs: dict[str, Any] | None = None,
+        builtins: dict[str, str] | None = None,
+    ) -> tuple[RoomSpec, str | None]:
+        """Parse a YAML template into a ``RoomSpec`` and optional kickoff message.
+
+        ``builtins`` are server-injected variables (e.g. ``{creator}``) that
+        are always available for interpolation alongside user-supplied
+        ``inputs``.  They are resolved first and never collide with declared
+        params — a param named ``creator`` would shadow the built-in, which is
+        intentional (the template author owns the namespace).
+        """
         try:
             data = yaml.safe_load(text)
         except yaml.YAMLError as e:
@@ -283,7 +310,7 @@ class RoomYamlService:
         if not isinstance(data, dict) or "room" not in data:
             raise ValueError("YAML must have a single top-level 'room:' mapping")
 
-        allowed_keys = {"room", "params", "version"}
+        allowed_keys = {"room", "params", "version", "kickoff"}
         extra = set(data) - allowed_keys
         if extra:
             raise ValueError(f"Unknown top-level key(s): {', '.join(sorted(extra))}")
@@ -311,21 +338,95 @@ class RoomYamlService:
         if inputs and not declared:
             raise ValueError("Inputs supplied but the template declares no params")
 
+        # Build the interpolation values: builtins first, then params override
+        values: dict[str, str | int | float | bool] = dict(builtins or {})
         if declared:
-            values = resolve_params(declared, inputs)
+            values.update(resolve_params(declared, inputs))
+
+        if values:
             room_data = interpolate(data["room"], values)
+            kickoff_raw = data.get("kickoff")
+            kickoff = (
+                interpolate(kickoff_raw, values)
+                if isinstance(kickoff_raw, str)
+                else None
+            )
         else:
             room_data = data["room"]
+            kickoff = (
+                data.get("kickoff") if isinstance(data.get("kickoff"), str) else None
+            )
 
         try:
-            return RoomSpec.model_validate(room_data)
+            spec = RoomSpec.model_validate(room_data)
         except ValidationError as e:
             raise ValueError(f"Invalid room spec: {e}") from e
+        return spec, kickoff
+
+    async def builtins_for(
+        self, *, user_id: str, name: str, email: str, text: str
+    ) -> dict[str, str]:
+        """The server-injected ``{$...}`` variables for one create call.
+
+        ``$creator`` is the name the creator goes by on the template's bridge
+        when they have linked (claimed) an identity there — the name that
+        ``users:`` resolution and channel invites understand. Without a claim
+        it falls back to the gateway account name, which member resolution
+        then tries to match against the bridge itself.
+        """
+        creator = name
+        bridge_id = await self._peek_bridge_id(text)
+        if bridge_id is not None:
+            async with self._session_factory() as session:
+                claimed = await self._external_users.get_by_user(session, user_id)
+            for ext in claimed:
+                if ext.bridge_id == bridge_id:
+                    creator = ext.external_username
+                    break
+        return {
+            "$creator": creator,
+            "$creator_email": email,
+            "$date": str(date.today()),
+            "$timestamp": str(int(time.time())),
+        }
+
+    async def _peek_bridge_id(self, text: str) -> str | None:
+        """The bridge the template will land on, read before interpolation.
+
+        Best-effort: an unparseable template, an interpolated bridge name, or
+        an unknown bridge all answer None — parse/provision fails loudly later
+        when it matters. A template naming no bridge lands on the default one,
+        same as provisioning."""
+        try:
+            data = yaml.safe_load(text)
+        except yaml.YAMLError:
+            return None
+        if not isinstance(data, dict):
+            return None
+        room = data.get("room")
+        if not isinstance(room, dict):
+            return None
+        bridge = room.get("bridge")
+        if bridge is not None and (
+            not isinstance(bridge, str) or PLACEHOLDER_RE.search(bridge)
+        ):
+            return None
+        try:
+            return await self._resolve_bridge_id(bridge)
+        except ValueError:
+            return None
 
     # ── Provision ───────────────────────────────────────────────────────────
 
     async def provision(
-        self, spec: RoomSpec, *, user_id: str, is_admin: bool
+        self,
+        spec: RoomSpec,
+        *,
+        user_id: str,
+        is_admin: bool,
+        kickoff: str | None = None,
+        creator_name: str | None = None,
+        creator_email: str | None = None,
     ) -> ProvisionResult:
         bridge_id = await self._resolve_bridge_id(spec.bridge)
         if spec.users and bridge_id is None:
@@ -366,6 +467,20 @@ class RoomYamlService:
             room_id, spec.docs, user_id=user_id, failures=failures
         )
 
+        if kickoff:
+            # Best-effort like references and docs: the room exists, so a
+            # kickoff that cannot be posted is reported, not fatal.
+            try:
+                await self._rooms.post_kickoff(
+                    room_id,
+                    kickoff,
+                    user_id=user_id,
+                    user_name=creator_name,
+                    user_email=creator_email,
+                )
+            except Exception as e:
+                failures.append({"kind": "kickoff", "id": "kickoff", "error": str(e)})
+
         return ProvisionResult(
             room_id=room_id,
             room_name=result.room.name,
@@ -378,7 +493,9 @@ class RoomYamlService:
 
     async def _resolve_bridge_id(self, bridge_name: str | None) -> str | None:
         if bridge_name is None:
-            return None
+            async with self._session_factory() as session:
+                default = await self._bridge_store.get_default(session)
+            return default.id if default else None
         async with self._session_factory() as session:
             bridges = await self._bridge_store.get_all(session)
         matches = [b for b in bridges if b.display_name == bridge_name]

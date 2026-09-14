@@ -1,4 +1,4 @@
-import { Bot, ExternalLink, MoreVertical, Plus, RotateCcw, Trash2 } from 'lucide-react';
+import { Bot, ExternalLink, FileText, MoreVertical, Plus, RotateCcw, Trash2 } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useEffect } from 'react';
 import type { GuardResult, ViewDefinition } from '@renderer/app/view-registry';
@@ -40,6 +40,7 @@ const ServerAgentsPanel = observer(function ServerAgentsPanel() {
   const serverId = useServerId();
   const server = switchServersStore.servers.find((s) => s.id === serverId);
   const showAddAgentModal = useShowModal('addAgentModal');
+  const { navigate } = useNavigate();
 
   // The sidebar reads the same two things, but this page must not be right only
   // when the sidebar happened to be open first.
@@ -70,6 +71,17 @@ const ServerAgentsPanel = observer(function ServerAgentsPanel() {
           aria-label="Add agent"
         >
           <Plus className="size-5" />
+        </button>
+        {/* Second tile, same shape: the other way an agent starts here. A
+            template answers the blank-form problem for someone who has never
+            written a brief, so it sits next to the blank form, not in a menu. */}
+        <button
+          type="button"
+          onClick={() => navigate('templates', { serverId })}
+          className="flex min-h-[184px] cursor-pointer flex-col items-center justify-center gap-2 rounded-[11px] border border-dashed border-border text-foreground-muted transition-colors hover:border-border-1 hover:bg-[var(--sel-soft)] hover:text-foreground"
+        >
+          <FileText className="size-5" />
+          <span className="text-sm">From a template</span>
         </button>
         {agents.map((agent) => (
           <AgentCard key={agent.id} agent={agent} serverId={serverId} />

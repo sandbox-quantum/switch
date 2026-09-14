@@ -32,7 +32,9 @@ from switch_core.rooms_yaml import PLACEHOLDER_RE, ParamSpec
 # be in flight — room, group, and the kickoff message that rides beside them.
 # Additive on purpose, and only ever a warning: an unrecognised key is as
 # likely to be a format this server predates as it is to be a typo.
-_KNOWN_TOP_LEVEL = frozenset({"room", "group", "rooms", "params", "version", "kickoff"})
+_KNOWN_TOP_LEVEL = frozenset(
+    {"room", "group", "rooms", "params", "version", "kickoff", "agent"}
+)
 
 # `{$...}` placeholders the server fills in itself. A template does not declare
 # them and must not be told to.
@@ -260,6 +262,11 @@ def lint_template(text: str) -> LintResult:
         if "params" in document
         else set()
     )
+    # An agent template's room half names the agent it was written around as
+    # `{agent}`, and the Console fills that in with the name the agent was
+    # actually given. It is the template's to use, not to declare.
+    if "agent" in document:
+        declared = declared | {"agent"}
 
     # Placeholders are looked for everywhere except the params block, which
     # declares them rather than using them.

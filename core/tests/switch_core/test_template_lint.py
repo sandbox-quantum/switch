@@ -90,17 +90,27 @@ class TestTheCanonicalExample:
         result = lint_template(_CANONICAL_EXAMPLE)
         assert "unused_param" not in _codes(result.warnings)
 
-    def test_a_newer_param_field_is_a_warning_not_an_error(self) -> None:
-        """`multiline` lands with CHOO-2656; this branch predates it.
-
-        Reported so a typo is still visible, but not as an error — a document
-        written for a newer Switch is the ordinary case for a registry, not a
-        broken document.
-        """
+    def test_multiline_is_a_known_param_field(self) -> None:
+        """`multiline` landed with CHOO-2656, so the canonical example is clean."""
         result = lint_template(_CANONICAL_EXAMPLE)
+        assert "unknown_param_field" not in _codes(result.warnings)
+
+    def test_a_newer_param_field_is_a_warning_not_an_error(self) -> None:
+        """A document written for a newer Switch is the ordinary case for a
+        registry, not a broken document: reported so a typo is still visible,
+        but never as an error."""
+        result = lint_template(
+            "params:\n"
+            "  brief:\n"
+            "    type: string\n"
+            "    placeholder: Paste the brief\n"
+            "room:\n"
+            "  name: '{brief}'\n"
+        )
+        assert result.ok
         (warning,) = [w for w in result.warnings if w.code == "unknown_param_field"]
         assert warning.subject == "brief"
-        assert "multiline" in warning.message
+        assert "placeholder" in warning.message
 
 
 class TestWhatBarsTheDoor:
@@ -185,7 +195,7 @@ class TestUnknownParamFields:
             "params:\n"
             "  visibility:\n"
             "    type: enum\n"
-            "    multiline: true\n"
+            "    placeholder: pick one\n"
             "room:\n"
             "  channel_type: '{visibility}'\n"
         )
@@ -197,7 +207,7 @@ class TestUnknownParamFields:
             "params:\n"
             "  owner:\n"
             "    type: nonsense\n"
-            "    multiline: true\n"
+            "    placeholder: who\n"
             "room:\n"
             "  name: '{owner}'\n"
         )
@@ -238,9 +248,34 @@ class TestShapeAgnosticism:
         assert result.warnings == []
 
     def test_a_shape_nobody_has_invented_yet_is_a_warning_not_an_error(self) -> None:
-        result = lint_template("agent:\n  name: helper\n  model: sonnet\n")
+        result = lint_template("workflow:\n  name: helper\n  steps: []\n")
         assert result.ok, "an unknown shape must still be storable"
         assert _codes(result.warnings) == {"unknown_top_level_key"}
+
+    def test_an_agent_template_is_a_known_shape(self) -> None:
+        """Agent templates ride beside room templates: `agent:` plus an
+        optional `room:` and `kickoff:` for the room it is dispatched into."""
+        result = lint_template(
+            "agent:\n"
+            "  name: switch-expert\n"
+            "  description: Answers questions about Switch.\n"
+            "  instructions: You are the Switch expert.\n"
+            "  repo: https://github.com/sandbox-quantum/switch\n"
+            "room:\n"
+            "  name: Ask switch-expert\n"
+            "  agents: ['{agent}']\n"
+            "  users: ['{$creator}']\n"
+            "kickoff: '@{agent} say hello'\n"
+        )
+        assert result.ok, [f.message for f in result.errors]
+        assert "unknown_top_level_key" not in _codes(result.warnings)
+        assert "undeclared_placeholder" not in _codes(result.warnings), (
+            "{agent} is the Console's to fill in an agent template"
+        )
+
+    def test_a_room_template_still_has_to_declare_agent(self) -> None:
+        result = lint_template("room:\n  name: r\n  agents: ['{agent}']\n")
+        assert "undeclared_placeholder" in _codes(result.warnings)
 
     def test_a_document_with_no_recognised_key_is_still_only_warned_about(self) -> None:
         result = lint_template("whatever:\n  - 1\n  - 2\n")

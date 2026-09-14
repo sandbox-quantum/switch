@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { rpc } from '@renderer/lib/ipc';
 import { Button } from '@renderer/lib/ui/button';
 import { cn } from '@renderer/utils/utils';
@@ -19,11 +19,17 @@ export function LocalDirectorySelector({
   placeholder = 'Select a directory',
 }: LocalDirectorySelectorProps) {
   const [path, setPath] = useState<string>(initialPath || '');
+  // The owner can set the path too (a template suggests one), so a changed
+  // prop has to show; the local copy only bridges the dialog's result back.
+  useEffect(() => {
+    setPath(initialPath || '');
+  }, [initialPath]);
 
   const handleOpenFileDialog = async () => {
     const result = await rpc.app.openSelectDirectoryDialog({
       title,
       message,
+      defaultPath: path || undefined,
     });
     if (result) {
       setPath(result);
