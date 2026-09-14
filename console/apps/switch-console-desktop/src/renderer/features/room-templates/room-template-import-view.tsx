@@ -1,3 +1,4 @@
+import Editor from '@monaco-editor/react';
 import { ArrowRight, Check, FileText, Loader2, Upload, X } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -79,6 +80,10 @@ function SourceStep({
     [onYamlChange, onFileSelect]
   );
 
+  // Auto-expand: 18px per line, min 256px, max 600px
+  const lineCount = Math.max(yamlText.split('\n').length, 1);
+  const editorHeight = Math.min(Math.max(lineCount * 18 + 20, 256), 600);
+
   return (
     <div className="flex flex-col gap-4">
       <FieldGroup>
@@ -91,13 +96,28 @@ function SourceStep({
             }}
             onDragLeave={() => setDragging(false)}
             onDrop={handleDrop}
-            className={`rounded-md transition-colors ${dragging ? 'ring-primary ring-2' : ''}`}
+            className={`overflow-hidden rounded-md border border-border transition-colors ${dragging ? 'ring-primary ring-2' : ''}`}
           >
-            <Textarea
-              placeholder="Paste YAML here, or drag and drop a file…"
+            <Editor
+              height={editorHeight}
+              language="yaml"
+              theme="vs-dark"
               value={yamlText}
-              onChange={(e) => onYamlChange(e.target.value)}
-              className="min-h-64 resize-y font-mono text-xs"
+              onChange={(v) => onYamlChange(v ?? '')}
+              options={{
+                minimap: { enabled: false },
+                lineNumbers: 'on',
+                folding: true,
+                tabSize: 2,
+                fontSize: 13,
+                scrollBeyondLastLine: false,
+                wordWrap: 'on',
+                automaticLayout: true,
+                renderLineHighlight: 'none',
+                overviewRulerLanes: 0,
+                hideCursorInOverviewRuler: true,
+                scrollbar: { vertical: 'auto', horizontal: 'auto' },
+              }}
             />
           </div>
         </Field>
