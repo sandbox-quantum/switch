@@ -59,6 +59,10 @@ export default defineConfig({
     },
     server: {
       port: 3000,
+      // The bundled Switch expert template is read from `switch-expert/` at
+      // the repository root, outside this app's directory, so the dev server
+      // has to be allowed to serve it; the production build inlines it.
+      fs: { allow: [resolve('../../..')] },
     },
   },
 });

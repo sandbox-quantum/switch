@@ -8,6 +8,7 @@ import type { GuardResult, ViewDefinition } from '@renderer/app/view-registry';
 import { refreshSidebarRoomState } from '@renderer/features/sidebar/sidebar-tree-data';
 import { ServerPage } from '@renderer/features/switch-servers/server-page';
 import { ServerSectionTitlebar } from '@renderer/features/switch-servers/server-section-titlebar';
+import { bundledTemplateForAgent } from '@renderer/features/templates/agent-template-data';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
 import { useParams } from '@renderer/lib/layout/navigation-provider';
@@ -682,9 +683,15 @@ const TemplateImportPanel = observer(function TemplateImportPanel() {
   const agentNames = useMemo(() => (agents.data ?? []).map((a) => a.name), [agents.data]);
   const showAddAgentModal = useShowModal('addAgentModal');
 
+  // A slot naming an agent that does not exist yet offers to create it. When a
+  // bundled agent template is for exactly that agent (the Switch expert, for
+  // a slot called "switch-expert"), the form opens filled from it; otherwise
+  // it opens with the name and nothing else.
   const handleCreateAgent = useCallback(
     (name: string) => {
-      showAddAgentModal({ entryPoint: 'server_page', prefillName: name });
+      void bundledTemplateForAgent(name).then((template) => {
+        showAddAgentModal({ entryPoint: 'server_page', prefillName: name, template });
+      });
     },
     [showAddAgentModal]
   );
