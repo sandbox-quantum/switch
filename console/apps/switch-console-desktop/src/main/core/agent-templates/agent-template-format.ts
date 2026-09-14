@@ -58,6 +58,16 @@ function extractSources(raw: unknown): AgentTemplateSource[] {
 }
 
 /**
+ * A leading YAML front matter block, as a Claude Code agent file carries it.
+ * The Console renders the agent's definition file itself, front matter
+ * included, so one arriving inside the instructions would be written twice.
+ */
+export function stripFrontMatter(instructions: string): string {
+  const match = /^---\r?\n[\s\S]*?\r?\n---\r?\n?/.exec(instructions);
+  return match ? instructions.slice(match[0].length).replace(/^\s*\n/, '') : instructions;
+}
+
+/**
  * `fallbackInstructions` fills `agent.instructions` when the document leaves
  * it out: the bundled Switch expert keeps its persona in `AGENT.md` rather
  * than inline, so the Console hands it in from there.
@@ -71,10 +81,11 @@ export function parseAgentTemplate(
   if (!agent) {
     throw new Error('Template must have an "agent:" block.');
   }
-  const instructions =
+  const instructions = stripFrontMatter(
     typeof agent.instructions === 'string' && agent.instructions.trim().length > 0
       ? agent.instructions
-      : (fallbackInstructions ?? '');
+      : (fallbackInstructions ?? '')
+  );
   if (instructions.trim().length === 0) {
     throw new Error('The "agent:" block needs "instructions:" — the agent has nothing to go on.');
   }
