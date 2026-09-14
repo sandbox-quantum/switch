@@ -79,6 +79,9 @@ export type AddLocationModalProps = BaseModalProps<void> & {
   template?: AgentTemplateData | null;
   /** When set, pre-fills the agent name (e.g. from a room template slot). */
   prefillName?: string | null;
+  /** When set, the new agent is put in this room instead of the template's
+   * own; the person then starts it by mentioning it there. */
+  intoRoomId?: string | null;
 };
 
 /**
@@ -120,6 +123,7 @@ export const AddAgentModal = observer(function AddAgentModal({
   entryPoint,
   template,
   prefillName,
+  intoRoomId = null,
 }: AddLocationModalProps) {
   // A template adds two steps around the creation itself: the working
   // directory (and repository clone) before, the room after.
@@ -159,7 +163,7 @@ export const AddAgentModal = observer(function AddAgentModal({
   // person can decline: the repository clone and the room.
   const [cloneRepo, setCloneRepo] = useState(true);
   const [createRoom, setCreateRoom] = useState(true);
-  const willCreateRoom = !!template?.roomYaml && createRoom;
+  const willCreateRoom = !!template?.roomYaml && createRoom && intoRoomId === null;
 
   // Run location: 'local' (default) or an onboarded remote host's SSH alias. A
   // remote agent runs its sessions on the host and needs a remote working dir.
@@ -520,6 +524,43 @@ export const AddAgentModal = observer(function AddAgentModal({
     }
   };
 
+  /**
+   * Put the new agent in the room it was asked for from. Nothing is posted:
+   * only the room's own kickoff path can speak as the person, so the toast
+   * says what to type. The agent exists either way; a failure here is
+   * reported and the caller opens the agent instead.
+   */
+  const addToExistingRoom = async (
+    serverId: string,
+    roomId: string,
+    switchAgentId: string,
+    agentName: string
+  ): Promise<string | null> => {
+    setSubmitState('creating-room');
+    try {
+      await rpc.switchServers.addRoomAgents({
+        serverId,
+        roomId,
+        agentIds: [switchAgentId],
+        direction: 'agents_to_room',
+      });
+      await refreshSidebarRoomState(true);
+      toast({
+        title: `${agentName} is in the room`,
+        description: `Mention @${agentName} there to start it. A message from you is what wakes it.`,
+      });
+      return roomId;
+    } catch (error) {
+      log.error(error);
+      const { headline, detail } = describeFailure(
+        error,
+        `The agent was created, but could not be added to the room. Add ${agentName} from the room's Configuration tab.`
+      );
+      toast({ title: headline, description: detail ?? undefined, variant: 'destructive' });
+      return null;
+    }
+  };
+
   /** Create a brand-new flat agent in the chosen directory (local or remote):
    * mint its identity, write its `.claude/agents/<name>.md` definition + its
    * per-agent credentials, and create the row — all via `addAgent`. */
@@ -555,6 +596,7 @@ export const AddAgentModal = observer(function AddAgentModal({
         description: form.description.trim(),
         displayName: form.displayName.trim() || null,
         instructions: form.instructions,
+        templateOrigin: template?.origin ?? null,
         iconUrl: form.iconUrl,
         autoSession: form.autoSession,
         autoApprove: form.autoApprove,
@@ -576,7 +618,22 @@ export const AddAgentModal = observer(function AddAgentModal({
         });
       }
       await agentsStore.load();
-      if (template?.roomYaml && createRoom) {
+      if (intoRoomId && result.agent.switchAgentId) {
+        const roomId = await addToExistingRoom(
+          pickState.serverId,
+          intoRoomId,
+          result.agent.switchAgentId,
+          result.agent.name
+        );
+        if (roomId) {
+          setCloseGuard(false);
+          setSubmitState('idle');
+          onClose();
+          await openRoom(roomId);
+          return;
+        }
+      }
+      if (template?.roomYaml && createRoom && intoRoomId === null) {
         const roomId = await createTemplateRoom(template, pickState.serverId, result.agent.name);
         if (roomId) {
           setCloseGuard(false);
@@ -645,7 +702,9 @@ export const AddAgentModal = observer(function AddAgentModal({
                             ? 'Creating its room…'
                             : willCreateRoom
                               ? 'Add agent and open its room'
-                              : 'Add agent'}
+                              : intoRoomId
+                                ? 'Add agent to the room'
+                                : 'Add agent'}
                     </ConfirmButton>
                   </span>
                 }
@@ -716,7 +775,13 @@ export const AddAgentModal = observer(function AddAgentModal({
                   ))}
                 </span>
               )}
-              {template.roomYaml && (
+              {intoRoomId && (
+                <span>
+                  Put in the room you opened this from once it exists. Mention it there to start it:
+                  a message from you is what wakes it.
+                </span>
+              )}
+              {template.roomYaml && intoRoomId === null && (
                 <label className="flex cursor-pointer items-start justify-between gap-3">
                   <span>
                     {createRoom ? (
