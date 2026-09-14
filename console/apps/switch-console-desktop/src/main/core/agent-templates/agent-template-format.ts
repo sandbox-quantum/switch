@@ -8,9 +8,14 @@ import { dump, load } from 'js-yaml';
  */
 export type AgentTemplateSource = { url: string; label: string | null };
 
+/** Who may address the agent, as a template declares it. Null means the
+ * Console's default (only its owner). */
+export type AgentTemplateAddressing = 'owner' | 'owner-agents' | 'anyone';
+
 export type ParsedAgentTemplate = {
   /** Suggested agent name; the person can still change it. */
   name: string | null;
+  addressing: AgentTemplateAddressing | null;
   description: string;
   instructions: string;
   /** Repository the agent works from, cloned next to it before it first runs. */
@@ -40,6 +45,8 @@ function asRecord(value: unknown): Record<string, unknown> | null {
     ? (value as Record<string, unknown>)
     : null;
 }
+
+const ADDRESSING_VALUES: ReadonlySet<string> = new Set(['owner', 'owner-agents', 'anyone']);
 
 function optionalString(value: unknown): string | null {
   return typeof value === 'string' && value.trim().length > 0 ? value.trim() : null;
@@ -100,8 +107,18 @@ export function parseAgentTemplate(
     warnings.push('`room:` and `kickoff:` belong at the top level, beside `agent:`.');
   }
 
+  const addressing = optionalString(agent.addressing);
+  if (addressing !== null && !ADDRESSING_VALUES.has(addressing)) {
+    warnings.push(
+      `\`addressing: ${addressing}\` is not one of owner, owner-agents, anyone; the agent will answer only its owner.`
+    );
+  }
+
   return {
     name: optionalString(agent.name),
+    addressing: ADDRESSING_VALUES.has(addressing ?? '')
+      ? (addressing as AgentTemplateAddressing)
+      : null,
     description: typeof agent.description === 'string' ? agent.description.trim() : '',
     instructions,
     repoUrl: optionalString(agent.repo),
@@ -129,6 +146,22 @@ export function agentTemplateRoomDocument(yamlText: string): string | null {
   const out: Record<string, unknown> = { params, room };
   if (typeof doc.kickoff === 'string') out.kickoff = doc.kickoff;
   return dump(out, { lineWidth: -1 });
+}
+
+/**
+ * The document with `agent.instructions` filled in, for a template whose
+ * persona lives beside it rather than inline (the bundled Switch expert). A
+ * copy stored on a server has to carry everything, so this is what gets sent.
+ * Comments do not survive the round trip through the parser; the fields do.
+ */
+export function composeAgentTemplateDocument(yamlText: string, instructions: string): string {
+  const doc = parseYaml(yamlText);
+  const agent = asRecord(doc.agent);
+  if (!agent) throw new Error('Template must have an "agent:" block.');
+  if (typeof agent.instructions !== 'string' || agent.instructions.trim().length === 0) {
+    agent.instructions = stripFrontMatter(instructions);
+  }
+  return dump(doc, { lineWidth: -1 });
 }
 
 /** The directory a clone of `repoUrl` lands in: the repository's name, inside `dir`. */

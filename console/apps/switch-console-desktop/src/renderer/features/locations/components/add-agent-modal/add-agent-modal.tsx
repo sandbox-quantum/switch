@@ -26,6 +26,7 @@ import {
   type BaseModalProps,
 } from '@renderer/lib/modal/modal-provider';
 import { openExternalUrl } from '@renderer/lib/open-external';
+import { useRemoteAgents } from '@renderer/lib/stores/use-remote-agents';
 import { Alert, AlertDescription } from '@renderer/lib/ui/alert';
 import { Button } from '@renderer/lib/ui/button';
 import { ConfirmButton } from '@renderer/lib/ui/confirm-button';
@@ -45,6 +46,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@renderer/lib/ui/select';
+import { Switch } from '@renderer/lib/ui/switch';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@renderer/lib/ui/tooltip';
 import { log } from '@renderer/utils/logger';
 import type { AgentProviderConfig } from '@shared/core/agents/agent-provider-config';
@@ -123,6 +125,12 @@ export const AddAgentModal = observer(function AddAgentModal({
     }
   }, [template, prefillName, templateApplied, form]);
 
+  // The two things a template does around the agent itself, each of which the
+  // person can decline: the repository clone and the room.
+  const [cloneRepo, setCloneRepo] = useState(true);
+  const [createRoom, setCreateRoom] = useState(true);
+  const willCreateRoom = !!template?.roomYaml && createRoom;
+
   // Run location: 'local' (default) or an onboarded remote host's SSH alias. A
   // remote agent runs its sessions on the host and needs a remote working dir.
   const [runHost, setRunHost] = useState<string>(LOCAL_RUN_LOCATION);
@@ -184,6 +192,27 @@ export const AddAgentModal = observer(function AddAgentModal({
       setServerId(targetServerId);
     }
   }, [targetServerId, pickedServerId, setServerId]);
+
+  // Names already taken on the server. A template prefills a fixed name, so
+  // the second person to use it would otherwise learn of the clash only after
+  // the directory and clone exist; while the prefill stands untouched it is
+  // moved to the first free variant instead, and a typed clash is refused.
+  const remoteAgents = useRemoteAgents(pickState.serverId);
+  const takenNames = useMemo(
+    () => new Set((remoteAgents.data ?? []).map((a) => a.name)),
+    [remoteAgents.data]
+  );
+  const nameTaken = form.nameIsValid && takenNames.has(form.agentName);
+  const [renamedFrom, setRenamedFrom] = useState<string | null>(null);
+  const { setAgentName } = form;
+  useEffect(() => {
+    const wanted = prefillName ?? template?.agentName ?? null;
+    if (!wanted || !nameTaken || form.agentName !== wanted) return;
+    let candidate = wanted;
+    for (let i = 2; takenNames.has(candidate); i++) candidate = `${wanted}-${i}`;
+    setRenamedFrom(wanted);
+    setAgentName(candidate);
+  }, [template, prefillName, nameTaken, form.agentName, takenNames, setAgentName]);
 
   // A managed server is only reachable from certain run locations, so constrain
   // the picker to them: a remote-managed server from this computer or its own
@@ -275,6 +304,7 @@ export const AddAgentModal = observer(function AddAgentModal({
 
   const canSubmit =
     form.isValid &&
+    !nameTaken &&
     !policyHasDeadRule(form.addressingPolicy) &&
     !!pickState.serverId &&
     !!pickState.providerId &&
@@ -293,23 +323,25 @@ export const AddAgentModal = observer(function AddAgentModal({
           ? 'Enter a name for the agent.'
           : !form.nameIsValid
             ? 'Fix the agent name: lowercase letters, digits, . - _, starting with a letter or digit.'
-            : form.description.trim().length === 0
-              ? 'Add a description so people and agents know what this agent is for.'
-              : !runHostReachable
-                ? `${runLocationLabel} can’t be reached right now — pick a run location that can.`
-                : hostReadiness.checking
-                  ? `Checking what ${runLocationLabel} has installed…`
-                  : hostReadiness.blocked
-                    ? `${runLocationLabel} is missing setup this agent needs — the notice below has the details.`
-                    : !pickState.providerId
-                      ? 'Choose an agent type.'
-                      : dir.trim().length === 0
-                        ? isRemoteRun
-                          ? 'Enter the agent’s working directory on the host.'
-                          : 'Choose the agent’s working directory.'
-                        : policyHasDeadRule(form.addressingPolicy)
-                          ? 'One addressing rule can never match — fix it under Settings.'
-                          : null;
+            : nameTaken
+              ? `An agent called ${form.agentName} already exists on this server. Pick another name.`
+              : form.description.trim().length === 0
+                ? 'Add a description so people and agents know what this agent is for.'
+                : !runHostReachable
+                  ? `${runLocationLabel} can’t be reached right now — pick a run location that can.`
+                  : hostReadiness.checking
+                    ? `Checking what ${runLocationLabel} has installed…`
+                    : hostReadiness.blocked
+                      ? `${runLocationLabel} is missing setup this agent needs — the notice below has the details.`
+                      : !pickState.providerId
+                        ? 'Choose an agent type.'
+                        : dir.trim().length === 0
+                          ? isRemoteRun
+                            ? 'Enter the agent’s working directory on the host.'
+                            : 'Choose the agent’s working directory.'
+                          : policyHasDeadRule(form.addressingPolicy)
+                            ? 'One addressing rule can never match — fix it under Settings.'
+                            : null;
 
   /** `agentName` is what picks the agent out of the location — a location can
    * hold several, so navigating on `locationId` alone opens the directory
@@ -437,7 +469,7 @@ export const AddAgentModal = observer(function AddAgentModal({
         setSubmitState('preparing');
         const prepared = await rpc.agentTemplates.prepareWorkspace({
           dir: pickState.path,
-          repoUrl: template.repoUrl,
+          repoUrl: cloneRepo ? template.repoUrl : null,
         });
         if (prepared.repo?.outcome === 'failed') {
           toast({
@@ -478,7 +510,7 @@ export const AddAgentModal = observer(function AddAgentModal({
         });
       }
       await agentsStore.load();
-      if (template?.roomYaml) {
+      if (template?.roomYaml && createRoom) {
         const roomId = await createTemplateRoom(template, pickState.serverId, result.agent.name);
         if (roomId) {
           setCloseGuard(false);
@@ -537,14 +569,14 @@ export const AddAgentModal = observer(function AddAgentModal({
                       disabled={!canSubmit}
                     >
                       {submitState === 'preparing'
-                        ? template?.repoUrl
+                        ? template?.repoUrl && cloneRepo
                           ? 'Fetching repository…'
                           : 'Preparing…'
                         : submitState === 'creating'
                           ? 'Adding…'
                           : submitState === 'creating-room'
                             ? 'Creating its room…'
-                            : template?.roomYaml
+                            : willCreateRoom
                               ? 'Add agent and open its room'
                               : 'Add agent'}
                     </ConfirmButton>
@@ -564,27 +596,40 @@ export const AddAgentModal = observer(function AddAgentModal({
         tabIndex={-1}
         className="max-h-[calc(100dvh-2rem-var(--modal-chrome,8.5rem))] gap-4"
       >
-        <AgentIdentityFields form={form} />
+        <AgentIdentityFields form={form} instructionsFrom={template?.name ?? null} />
+        {renamedFrom && form.agentName !== renamedFrom && (
+          <p className="-mt-2 text-xs text-foreground-muted">
+            An agent called {renamedFrom} already exists on this server, so this one is{' '}
+            {form.agentName}.
+          </p>
+        )}
 
         {template && (
           <Alert>
             <FileText />
             <AlertDescription className="flex flex-col gap-1">
               {template.repoUrl && (
-                <span>
-                  Works from{' '}
-                  <button
-                    type="button"
-                    className="inline-flex items-center gap-1 underline underline-offset-2"
-                    onClick={() =>
-                      void openExternalUrl(template.repoUrl!, 'Could not open the repository')
-                    }
-                  >
-                    {template.repoUrl.replace(/^https?:\/\//, '')}
-                    <ExternalLink className="size-3" />
-                  </button>
-                  , cloned into its directory before it first runs.
-                </span>
+                <label className="flex cursor-pointer items-start justify-between gap-3">
+                  <span>
+                    Works from{' '}
+                    <button
+                      type="button"
+                      className="inline-flex items-center gap-1 underline underline-offset-2"
+                      onClick={() =>
+                        void openExternalUrl(template.repoUrl!, 'Could not open the repository')
+                      }
+                    >
+                      {template.repoUrl.replace(/^https?:\/\//, '')}
+                      <ExternalLink className="size-3" />
+                    </button>
+                    {cloneRepo && !isRemoteRun
+                      ? ', fetched into its directory now so its first answer reads current source.'
+                      : '. The agent fetches it on its first run.'}
+                  </span>
+                  {!isRemoteRun && (
+                    <Switch className="mt-0.5" checked={cloneRepo} onCheckedChange={setCloneRepo} />
+                  )}
+                </label>
               )}
               {template.sources.length > 0 && (
                 <span>
@@ -605,13 +650,22 @@ export const AddAgentModal = observer(function AddAgentModal({
                 </span>
               )}
               {template.roomYaml && (
-                <span>
-                  Once it exists it is put in a room
-                  {template.roomName
-                    ? ` called "${template.roomName.replace('{agent}', form.agentName || 'it')}"`
-                    : ''}{' '}
-                  with you, and spoken to, so it starts working right away.
-                </span>
+                <label className="flex cursor-pointer items-start justify-between gap-3">
+                  <span>
+                    {createRoom ? (
+                      <>
+                        Once it exists it is put in a room
+                        {template.roomName
+                          ? ` called "${template.roomName.replace('{agent}', form.agentName || 'it')}"`
+                          : ''}{' '}
+                        with you, and spoken to, so it starts working right away.
+                      </>
+                    ) : (
+                      'Created on its own, in no room. Add it to a room and mention it to start it.'
+                    )}
+                  </span>
+                  <Switch className="mt-0.5" checked={createRoom} onCheckedChange={setCreateRoom} />
+                </label>
               )}
               {template.warnings.map((w) => (
                 <span key={w} className="text-foreground-muted">

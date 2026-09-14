@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   agentTemplateRoomDocument,
   cloneTargetFor,
+  composeAgentTemplateDocument,
   parseAgentTemplate,
   stripFrontMatter,
 } from './agent-template-format';
@@ -51,6 +52,16 @@ describe('parseAgentTemplate', () => {
     expect(t.repoUrl).toBeNull();
     expect(t.sources).toEqual([]);
     expect(t.room).toBeNull();
+  });
+
+  it('reads who may address the agent, and warns about a value it does not know', () => {
+    expect(parseAgentTemplate('agent:\n  instructions: i\n  addressing: anyone\n').addressing).toBe(
+      'anyone'
+    );
+    expect(parseAgentTemplate('agent:\n  instructions: i\n').addressing).toBeNull();
+    const odd = parseAgentTemplate('agent:\n  instructions: i\n  addressing: everyone\n');
+    expect(odd.addressing).toBeNull();
+    expect(odd.warnings[0]).toMatch(/addressing/);
   });
 
   it('refuses a document with no agent block', () => {
@@ -119,6 +130,25 @@ describe('agentTemplateRoomDocument', () => {
 
   it('is null when the template has no room', () => {
     expect(agentTemplateRoomDocument('agent:\n  instructions: i\n')).toBeNull();
+  });
+});
+
+describe('composeAgentTemplateDocument', () => {
+  it('inlines the persona, minus its front matter, and keeps the rest of the document', () => {
+    const out = composeAgentTemplateDocument(
+      'agent:\n  name: a\n  repo: https://x/y\nroom:\n  name: r\n',
+      '---\nname: a\n---\nBody.\n'
+    );
+    const doc = load(out) as { agent: Record<string, unknown>; room: Record<string, unknown> };
+    expect(doc.agent.instructions).toBe('Body.\n');
+    expect(doc.agent.repo).toBe('https://x/y');
+    expect(doc.room).toEqual({ name: 'r' });
+    expect(parseAgentTemplate(out).instructions).toBe('Body.\n');
+  });
+
+  it('leaves inline instructions alone', () => {
+    const out = composeAgentTemplateDocument('agent:\n  instructions: mine\n', 'other');
+    expect((load(out) as { agent: { instructions: string } }).agent.instructions).toBe('mine');
   });
 });
 

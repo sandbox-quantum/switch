@@ -232,12 +232,25 @@ export const AgentSettingsSection = observer(function AgentSettingsSection({
  * agents — so the two halves can sit in different places in the dialog without
  * the identity fields waiting on four queries they do not use.
  */
-export function AgentIdentityFields({ form }: { form: ConfigureAgentFormState }) {
+export function AgentIdentityFields({
+  form,
+  instructionsFrom = null,
+}: {
+  form: ConfigureAgentFormState;
+  /** Where prefilled instructions came from (a template's name). When set,
+   * the instructions start folded to one line: they are the template's
+   * business, and a page of text nobody wrote is not something to review
+   * before clicking. Edit unfolds them. */
+  instructionsFrom?: string | null;
+}) {
   const nameId = useId();
   const displayNameId = useId();
   const descriptionId = useId();
   const instructionsId = useId();
   const nameRef = useRef<HTMLInputElement>(null);
+  const [instructionsOpen, setInstructionsOpen] = useState(instructionsFrom === null);
+  const instructionLines =
+    form.instructions.length === 0 ? 0 : form.instructions.split('\n').length;
 
   return (
     <FieldGroup>
@@ -343,13 +356,30 @@ export function AgentIdentityFields({ form }: { form: ConfigureAgentFormState })
         <FieldLabel htmlFor={instructionsId}>
           Agent instructions <span className="text-foreground-muted">(optional)</span>
         </FieldLabel>
-        <Textarea
-          id={instructionsId}
-          rows={4}
-          placeholder="How this agent should work"
-          value={form.instructions}
-          onChange={(e) => form.setInstructions(e.target.value)}
-        />
+        {instructionsOpen ? (
+          <Textarea
+            id={instructionsId}
+            rows={4}
+            placeholder="How this agent should work"
+            value={form.instructions}
+            onChange={(e) => form.setInstructions(e.target.value)}
+          />
+        ) : (
+          <div className="flex h-9 items-center gap-2 rounded-md border border-border pr-1 pl-3">
+            <span className="min-w-0 flex-1 truncate text-sm text-foreground-muted">
+              From &quot;{instructionsFrom}&quot; · {instructionLines} lines
+            </span>
+            <Button
+              type="button"
+              variant="secondary"
+              size="sm"
+              className="cursor-pointer text-foreground"
+              onClick={() => setInstructionsOpen(true)}
+            >
+              Edit
+            </Button>
+          </div>
+        )}
       </Field>
     </FieldGroup>
   );
