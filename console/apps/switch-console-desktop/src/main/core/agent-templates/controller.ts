@@ -122,10 +122,14 @@ export const agentTemplatesController = createRPCController({
       try {
         const home = await resolveRemoteHome(ctx);
         const base = `${home.replace(/\/+$/, '')}/${REMOTE_LOCATIONS_DIR}/${params.agentName}`;
-        return firstFreeDirectory(base, async (dir) => {
+        // `await` matters: a bare `return` would run the `finally` (and
+        // dispose the context) before the probes had finished.
+        return await firstFreeDirectory(base, async (dir) => {
+          // Both branches exit 0: a non-zero exit is a failed command to the
+          // runner, and "free" is not a failure.
           const probe = await ctx.exec('sh', [
             '-c',
-            'test -e "$1/.switch" && echo taken',
+            'test -e "$1/.switch" && echo taken || echo free',
             'sh',
             dir,
           ]);

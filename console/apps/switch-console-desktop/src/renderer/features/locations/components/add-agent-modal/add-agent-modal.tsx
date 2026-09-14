@@ -182,10 +182,12 @@ export const AddAgentModal = observer(function AddAgentModal({
   const lastSuggestedDir = useRef<string | null>(null);
   const { handlePathChange, path: pickedPath } = pickState;
   const currentDir = runHost === LOCAL_RUN_LOCATION ? pickedPath : remoteRepoDir;
+  // `hostReachable` is read in render (this is an observer), so the effect
+  // runs again once a host that was still being probed turns out reachable.
+  const hostReachable = runHost === LOCAL_RUN_LOCATION || !hostReachabilityStore.isBlocked(runHost);
   useEffect(() => {
-    if (!template || !form.nameIsValid) return;
+    if (!template || !form.nameIsValid || !hostReachable) return;
     if (currentDir !== '' && currentDir !== lastSuggestedDir.current) return;
-    if (runHost !== LOCAL_RUN_LOCATION && hostReachabilityStore.isBlocked(runHost)) return;
     let stale = false;
     const sshHost = runHost === LOCAL_RUN_LOCATION ? null : runHost;
     void rpc.agentTemplates
@@ -196,13 +198,22 @@ export const AddAgentModal = observer(function AddAgentModal({
         if (sshHost) setRemoteRepoDir(dir);
         else handlePathChange(dir);
       })
-      .catch(() => {
+      .catch((error: unknown) => {
         // A host that cannot say where home is leaves the field to be typed.
+        log.warn('Could not suggest a directory for the template agent', { sshHost, error });
       });
     return () => {
       stale = true;
     };
-  }, [template, runHost, form.agentName, form.nameIsValid, currentDir, handlePathChange]);
+  }, [
+    template,
+    runHost,
+    hostReachable,
+    form.agentName,
+    form.nameIsValid,
+    currentDir,
+    handlePathChange,
+  ]);
   const { data: remoteHosts } = useQuery({
     queryKey: ['remote-hosts'],
     queryFn: () => rpc.remoteHosts.listHosts(),
