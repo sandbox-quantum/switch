@@ -52,3 +52,6 @@ export type { SharedHostOptions } from './host/shared-host';
 export { prepareCodexSessionHome } from './codex/home';
 export { sharedConfigSchema } from './host/shared-config';
 export type { SharedHostConfig } from './host/shared-config';
+
+export { providerReadinessSchema } from './host/provider-readiness';
+export type { ProviderReadiness } from './host/provider-readiness';

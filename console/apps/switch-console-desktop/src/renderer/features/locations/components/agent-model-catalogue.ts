@@ -54,7 +54,17 @@ export function fieldCatalogueState(
   }
 
   if (field.catalogue.kind === 'model') {
-    return modelFieldState(String(form[field.key] ?? '').trim(), catalogue.models);
+    const state = modelFieldState(String(form[field.key] ?? '').trim(), catalogue.models);
+    return field.type === 'select'
+      ? {
+          ...state,
+          suggestions: undefined,
+          options: [
+            UNSET_OPTION,
+            ...catalogue.models.map((model) => ({ value: model.id, label: model.id })),
+          ],
+        }
+      : state;
   }
   return variantFieldState(
     String(form[field.catalogue.modelField] ?? '').trim(),
@@ -78,7 +88,7 @@ function modelFieldState(value: string, models: LaunchProfileModel[]): FieldCata
   return {
     ...suggestions,
     warning: true,
-    note: `This host doesn't currently offer "${value}". It'll be saved anyway — check the name, or add the model to your OpenCode config first.`,
+    note: `This host doesn't currently offer "${value}". It'll be saved anyway — check the name, or check the provider configuration first.`,
   };
 }
 

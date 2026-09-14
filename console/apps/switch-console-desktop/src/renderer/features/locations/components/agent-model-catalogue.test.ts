@@ -183,3 +183,23 @@ describe('fieldWithCatalogue', () => {
     expect(fieldWithCatalogue(modelField, {})).toBe(modelField);
   });
 });
+
+it('renders catalogue-bound selects as choices without a second suggestion menu', () => {
+  const field = {
+    key: 'model',
+    label: 'Model',
+    type: 'select' as const,
+    catalogue: { kind: 'model' as const },
+    options: [],
+  };
+  const state = fieldCatalogueState(
+    field,
+    {},
+    { kind: 'available', models: [{ id: 'example-model', variants: [] }] }
+  );
+  expect(state.options).toEqual([
+    { value: '', label: 'Default' },
+    { value: 'example-model', label: 'example-model' },
+  ]);
+  expect(state.suggestions).toBeUndefined();
+});

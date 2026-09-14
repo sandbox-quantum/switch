@@ -244,3 +244,20 @@ applies its settings precedence, trust rules and mode availability. Requests tha
 need a human are sent to Console through the SDK permission callback. Enabling
 bypass explicitly selects `bypassPermissions`. Restart the host after changing
 permission settings.
+
+
+### Provider sign-in checks
+
+Add Agent checks the selected provider on its execution machine and offers a retry.
+The shared worker checks again with the session environment before starting execution.
+A confirmed missing login blocks startup and names the sign-in command to run on
+that machine. An inconclusive check produces a warning; it is not treated as a
+missing login. Existing sessions are not stopped when a setup check fails.
+
+Claude uses its native auth status command. Codex uses app-server account status.
+Cursor uses its native account status output. Gemini initializes an empty ACP
+session without sending a prompt, and uses the returned model list for its model
+picker. OpenCode checks connected backends; a local or free backend may need no
+login. These checks do not prove quota or access to every model, and credentials
+can expire after a check. Complete sign-in in the provider CLI, then select
+Check again. Console does not capture passwords or OAuth tokens in this form.

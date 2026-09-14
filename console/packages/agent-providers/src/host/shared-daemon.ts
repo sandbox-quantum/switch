@@ -5,6 +5,7 @@ import { LEASE_EXPIRED_EXIT_CODE } from './exit-codes';
 import { ensureSharedProcess } from './launch';
 import { replaceOwner } from './ownership-lock';
 import { ownProcessGroup } from './process-fence';
+import { checkProviderReadiness } from './provider-readiness';
 import { adapterFor } from './server';
 import { prepareSharedConfig, sharedConfigSchema } from './shared-config';
 import { runSharedHost, SharedHostLeaseExpiredError } from './shared-host';
@@ -15,6 +16,23 @@ const [root, configPath, mode] = process.argv.slice(2);
 if (!root || !configPath)
   throw new Error('Shared SDK host requires a state directory and configuration file.');
 async function main(): Promise<void> {
+  if (root === '--probe') {
+    console.log(
+      JSON.stringify(
+        await checkProviderReadiness({
+          provider: configPath,
+          cwd: mode,
+          binaryPath: process.argv[5],
+          env: Object.fromEntries(
+            Object.entries(process.env).filter(
+              (entry): entry is [string, string] => entry[1] !== undefined
+            )
+          ),
+        })
+      )
+    );
+    return;
+  }
   const config = sharedConfigSchema.parse(JSON.parse(await readFile(configPath, 'utf8')));
   if (mode === '--ensure' || mode === '--ensure-watch' || mode === '--restart') {
     console.log(
@@ -66,6 +84,16 @@ async function main(): Promise<void> {
     });
   } else {
     const { agentApiUrl, token, input } = await prepareSharedConfig(root, config);
+    const readiness = await checkProviderReadiness({
+      provider: config.start.provider,
+      binaryPath:
+        config.execution?.binaryPath ??
+        (config.start.provider === 'cursor' ? 'agent' : config.start.provider),
+      cwd: input.cwd,
+      env: input.env,
+    });
+    if (readiness.status === 'unauthenticated') throw new Error(readiness.message);
+    if (readiness.status === 'unknown') console.warn(readiness.message);
     const stop = new AbortController();
     process.on('SIGTERM', () => stop.abort());
     process.on('SIGINT', () => stop.abort());
@@ -97,7 +125,7 @@ async function main(): Promise<void> {
 try {
   await main();
 } catch (error) {
-  if (mode !== '--supervise' && mode !== '--watch-supervise') {
+  if (root !== '--probe' && mode !== '--supervise' && mode !== '--watch-supervise') {
     await mkdir(join(root, 'supervisor'), { recursive: true, mode: 0o700 });
     await replaceOwner(join(root, 'supervisor', 'failure.json'), {
       message: error instanceof Error ? error.message : String(error),
