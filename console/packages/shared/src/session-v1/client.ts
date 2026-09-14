@@ -1,6 +1,7 @@
 import { isDeepEqual } from '../deep-equal';
-import type { Attachment, Command, ServerEvent, Snapshot } from './contract';
+import type { Attachment, Command, Snapshot } from './contract';
 import { SessionReplica } from './replica';
+import type { TranscriptNotice } from './replica';
 import { commandStatusSchema, snapshotSchema } from './validation';
 
 export type ClientCommand = Omit<Command, 'origin'>;
@@ -30,7 +31,7 @@ export type ChatView = {
   snapshot: Snapshot | null;
   connected: boolean;
   error: string | null;
-  notices: Extract<ServerEvent['body'], { type: 'notice' }>[];
+  notices: TranscriptNotice[];
 };
 
 /** Client transport disconnects preserve execution state and command identity. */

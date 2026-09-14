@@ -62,6 +62,25 @@ export function SessionV1Chat({
       .filter((turn) => turn.status === 'interrupted' || turn.status === 'error')
       .map((turn) => [turn.turnId, turn.status])
   );
+  const noticesAfter = (itemId: string | null) =>
+    view.notices
+      .filter((notice) => notice.afterItemId === itemId)
+      .map((notice, index) => (
+        <p
+          role="status"
+          key={`${notice.code}-${index}`}
+          className="text-sm text-foreground-warning"
+        >
+          {notice.message}
+        </p>
+      ));
+  const waitingTurn = view.snapshot?.turns.find(
+    (turn) =>
+      (turn.status === 'queued' || turn.status === 'running') &&
+      !view.snapshot?.items.some(
+        (item) => item.turnId === turn.turnId && item.kind !== 'user-message'
+      )
+  );
   const control = async (body: Command['body']) => {
     setSending(true);
     setSendError(null);
@@ -138,7 +157,7 @@ export function SessionV1Chat({
                   .finally(() => setSending(false));
               }}
             >
-              Restart host
+              Restart session process
             </Button>
           )}
           {runningTurn && session?.capabilities.interrupt && (
@@ -292,6 +311,7 @@ export function SessionV1Chat({
         }}
       >
         <div ref={transcriptContent} className="mx-auto flex max-w-3xl flex-col gap-5 px-5 py-6">
+          {noticesAfter(null)}
           {view.snapshot?.items.map((item) => (
             <div key={item.itemId}>
               {item.kind === 'user-message' ? (
@@ -337,16 +357,19 @@ export function SessionV1Chat({
                   Attachments: {item.attachments.map((a) => a.name).join(', ')}
                 </p>
               )}
+              {lastItems.get(item.turnId) === item.itemId &&
+                view.snapshot?.requests
+                  .filter((request) => request.turnId === item.turnId)
+                  .map((request) => (
+                    <SessionV1Request
+                      key={request.requestId}
+                      request={request}
+                      client={client}
+                      connected={view.connected}
+                    />
+                  ))}
+              {noticesAfter(item.itemId)}
             </div>
-          ))}
-          {view.notices.map((notice, index) => (
-            <p
-              role="status"
-              key={`${notice.code}-${index}`}
-              className="text-sm text-foreground-warning"
-            >
-              {notice.message}
-            </p>
           ))}
           {view.snapshot?.commandStatuses
             .filter((command) => command.status !== 'applied')
@@ -356,14 +379,16 @@ export function SessionV1Chat({
                 {command.message ? `: ${command.message}` : ''}
               </p>
             ))}
-          {view.snapshot?.requests.map((request) => (
-            <SessionV1Request
-              key={request.requestId}
-              request={request}
-              client={client}
-              connected={view.connected}
-            />
-          ))}
+          {(waitingTurn || (sending && pendingId)) && (
+            <p role="status" className="flex items-center gap-2 text-sm text-foreground-muted">
+              <Loader2 className="size-3 animate-spin" />
+              {sending && pendingId
+                ? 'Sending message…'
+                : waitingTurn?.status === 'queued'
+                  ? 'Message queued…'
+                  : 'Waiting for the agent…'}
+            </p>
+          )}
         </div>
       </div>
       <div className="mx-auto w-full max-w-3xl px-5 pb-5">

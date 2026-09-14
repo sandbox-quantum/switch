@@ -77,6 +77,18 @@ export function SessionV1Request({
       setBusy(false);
     }
   };
+  if (request.state === 'resolved' || request.state === 'closed') {
+    return (
+      <details className="mt-2 text-xs text-foreground-muted">
+        <summary className="cursor-pointer">
+          {request.state === 'resolved' ? settledLabel : 'Request closed'} · {request.content.title}
+        </summary>
+        <p className="mt-2 whitespace-pre-wrap">
+          {request.content.kind === 'approval' ? request.content.detail : request.content.title}
+        </p>
+      </details>
+    );
+  }
   return (
     <section className="rounded-xl border border-border bg-background-1 p-4">
       <h3 className="font-medium">{request.content.title}</h3>
