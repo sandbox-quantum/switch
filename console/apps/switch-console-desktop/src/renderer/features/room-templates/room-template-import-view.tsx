@@ -1,5 +1,5 @@
 import Editor from '@monaco-editor/react';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { ArrowRight, Check, FileText, Loader2, Upload } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useCallback, useMemo, useRef, useState } from 'react';
@@ -13,8 +13,9 @@ import { useMyIdentities } from '@renderer/features/switch-servers/use-my-identi
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
 import { useParams } from '@renderer/lib/layout/navigation-provider';
+import { useModalContext } from '@renderer/lib/modal/modal-provider';
 import { appState } from '@renderer/lib/stores/app-state';
-import { useRemoteAgents } from '@renderer/lib/stores/use-remote-agents';
+import { remoteAgentsQueryKey, useRemoteAgents } from '@renderer/lib/stores/use-remote-agents';
 import { Alert, AlertDescription } from '@renderer/lib/ui/alert';
 import { Button } from '@renderer/lib/ui/button';
 import { Field, FieldGroup, FieldLabel } from '@renderer/lib/ui/field';
@@ -22,6 +23,7 @@ import { Input } from '@renderer/lib/ui/input';
 import { Textarea } from '@renderer/lib/ui/textarea';
 import { isEntityParamType } from '@shared/core/switch-servers/room-template-params';
 import { RpcError } from '@shared/lib/ipc/rpc-error';
+import { type BlockedHandoff, blockedHandoffs } from './agent-handoff';
 import {
   AgentField,
   AgentListField,
@@ -330,6 +332,7 @@ function SummaryPanel({
   sourceName,
   creatorIdentity,
   bridgeName,
+  onLinkAccount,
 }: {
   parsed: ParsedTemplate;
   values: Record<string, string | number | boolean>;
@@ -338,6 +341,9 @@ function SummaryPanel({
   creatorIdentity: string | null;
   /** The bridge the room will land on, when known. */
   bridgeName: string | null;
+  /** Opens the link-account flow for the template's bridge; null when the
+   * bridge is not known, so there is nothing to link to yet. */
+  onLinkAccount: (() => void) | null;
 }) {
   const preview = (s: string) => interpolate(s, { ...values, $creator: creatorIdentity ?? 'you' });
   const roomNamePreview = parsed.roomName ? preview(parsed.roomName) : null;
@@ -414,12 +420,22 @@ function SummaryPanel({
               <strong>{creatorIdentity}</strong> <Check className="inline size-3" />
             </p>
           ) : (
-            <p className="text-sm text-amber-500">
-              This template invites you into the room, but you haven&apos;t linked your messaging
-              account on this server. The server will try to match your account name; if that fails
-              you won&apos;t be invited to the channel. Link your account under the server&apos;s
-              Identities settings first.
-            </p>
+            <div className="flex flex-col gap-2">
+              <p className="text-sm text-amber-600 dark:text-amber-500">
+                This template puts you in the room, and the server does not know which account is
+                yours{bridgeName ? ` on ${bridgeName}` : ''}. Link it first; the room cannot be
+                created until then, or you would end up with a channel you cannot enter.
+              </p>
+              {onLinkAccount ? (
+                <Button variant="outline" size="sm" className="self-start" onClick={onLinkAccount}>
+                  Link your account
+                </Button>
+              ) : (
+                <p className="text-xs text-foreground-muted">
+                  Pick the messaging app first, then link your account there.
+                </p>
+              )}
+            </div>
           )}
         </div>
       )}
@@ -468,6 +484,11 @@ function InputsStep({
   onEditedUsersChange,
   creatorIdentity,
   bridgeName,
+  creatorBlocked,
+  onLinkAccount,
+  handoffBlocked,
+  onAllowHandoffs,
+  allowingHandoffs,
 }: {
   parsed: ParsedTemplate;
   values: Record<string, string | number | boolean>;
@@ -484,6 +505,14 @@ function InputsStep({
   onEditedUsersChange: (users: string[]) => void;
   creatorIdentity: string | null;
   bridgeName: string | null;
+  /** The template needs the creator's account on the bridge and none is linked. */
+  creatorBlocked: boolean;
+  onLinkAccount: (() => void) | null;
+  /** Agents in this room that will not hear each other. */
+  handoffBlocked: BlockedHandoff[];
+  /** Widen the blocked agents' policies so the hand-offs go through. */
+  onAllowHandoffs: () => void;
+  allowingHandoffs: boolean;
 }) {
   // The template's fixed members are editable only when it has any: a
   // template that names no agents gets no empty "Agents" section to puzzle
@@ -505,6 +534,29 @@ function InputsStep({
         {createError && (
           <Alert variant="destructive">
             <AlertDescription>{createError}</AlertDescription>
+          </Alert>
+        )}
+        {handoffBlocked.length > 0 && (
+          <Alert>
+            <AlertDescription>
+              <div className="flex flex-col gap-2">
+                <span>
+                  These agents will not hear each other:{' '}
+                  {handoffBlocked.map((b) => `${b.to} ignores ${b.from}`).join(', ')}. An agent
+                  created from the Console answers only its owner, so the hand-offs in this template
+                  would bounce.
+                </span>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="self-start"
+                  disabled={allowingHandoffs}
+                  onClick={onAllowHandoffs}
+                >
+                  {allowingHandoffs ? 'Updating…' : 'Let them hear each other'}
+                </Button>
+              </div>
+            </AlertDescription>
           </Alert>
         )}
         <FieldGroup>
@@ -553,9 +605,14 @@ function InputsStep({
           <Button variant="outline" className="w-full" onClick={onBack}>
             Back to template
           </Button>
-          <Button className="w-full" onClick={onSubmit}>
+          <Button className="w-full" onClick={onSubmit} disabled={creatorBlocked}>
             Create room
           </Button>
+          {creatorBlocked && (
+            <p className="text-center text-xs text-foreground-muted">
+              Link your messaging account first, on the right.
+            </p>
+          )}
         </div>
       </div>
 
@@ -567,6 +624,7 @@ function InputsStep({
           sourceName={sourceName}
           creatorIdentity={creatorIdentity}
           bridgeName={bridgeName}
+          onLinkAccount={onLinkAccount}
         />
       </div>
     </div>
@@ -606,7 +664,8 @@ const TemplateImportPanel = observer(function TemplateImportPanel() {
     queryKey: ['template-schema', serverId],
     queryFn: () => rpc.switchServers.fetchTemplateSchema(serverId),
   });
-  const { identities } = useMyIdentities(serverId);
+  const { identities, refresh: refreshIdentities } = useMyIdentities(serverId);
+  const { showModal } = useModalContext();
   const bridges = useMemo(() => bridgesQuery.data ?? [], [bridgesQuery.data]);
   const templateSchema = schemaQuery.data ?? null;
 
@@ -644,6 +703,79 @@ const TemplateImportPanel = observer(function TemplateImportPanel() {
     }
     return identities[0]?.externalUsername ?? null;
   }, [identities, templateBridge]);
+
+  // The room cannot be created while the template needs the creator on the
+  // bridge and the server has no account of theirs there: the server refuses
+  // it too, but the person should hear it before filling the form, with the
+  // fix one click away. Unknown identities (still loading) do not block.
+  const creatorBlocked =
+    parsed?.usesCreator === true && identities !== null && creatorIdentity === null;
+  const onLinkAccount = useMemo(() => {
+    if (!templateBridge) return null;
+    return () =>
+      showModal('claimIdentityModal', {
+        serverId,
+        bridgeId: templateBridge.id,
+        onSuccess: () => refreshIdentities(),
+      });
+  }, [templateBridge, serverId, showModal, refreshIdentities]);
+
+  // Every agent the room will hold: the template's fixed ones as edited, and
+  // whatever the agent-typed params have been set to.
+  const handoffBlocked = useMemo(() => {
+    if (!parsed) return [];
+    const names = new Set<string>(editedAgents);
+    for (const param of parsed.params) {
+      if (param.type === 'agent') {
+        const v = values[param.name];
+        if (typeof v === 'string' && v !== '') names.add(v);
+      }
+    }
+    const inRoom = (agents.data ?? []).filter((a) => names.has(a.name));
+    return blockedHandoffs(inRoom);
+  }, [parsed, editedAgents, values, agents.data]);
+
+  // The two-click promise: the template implies these agents talk, so the fix
+  // is offered here rather than found later in each agent's settings. Same
+  // owner gets "my agents" on every rule; a stranger is named outright.
+  const queryClient = useQueryClient();
+  const [allowingHandoffs, setAllowingHandoffs] = useState(false);
+  const allowHandoffs = useCallback(async () => {
+    const byName = new Map((agents.data ?? []).map((a) => [a.name, a]));
+    setAllowingHandoffs(true);
+    try {
+      const targets = new Set(handoffBlocked.map((b) => b.to));
+      for (const targetName of targets) {
+        const target = byName.get(targetName);
+        if (!target) continue;
+        const sources = handoffBlocked
+          .filter((b) => b.to === targetName)
+          .map((b) => byName.get(b.from))
+          .filter((a): a is NonNullable<typeof a> => a !== undefined);
+        const rules = (target.addressingPolicy?.rules ?? []).map((rule) => {
+          const next = { ...rule };
+          for (const source of sources) {
+            if (target.ownerId !== null && source.ownerId === target.ownerId) {
+              next.owner_agents = true;
+            } else if (next.agents !== '*' && !next.agents.includes(source.id)) {
+              next.agents = [...next.agents, source.id];
+            }
+          }
+          return next;
+        });
+        await rpc.switchServers.updateAddressingPolicy({
+          serverId,
+          agentId: target.id,
+          policy: { rules },
+        });
+      }
+      await queryClient.invalidateQueries({ queryKey: remoteAgentsQueryKey(serverId) });
+    } catch (e) {
+      toast.error(failureText(e, 'Could not update the agents.'));
+    } finally {
+      setAllowingHandoffs(false);
+    }
+  }, [agents.data, handoffBlocked, serverId, queryClient]);
 
   const lists = useMemo(
     (): EntityLists => ({
@@ -844,6 +976,11 @@ const TemplateImportPanel = observer(function TemplateImportPanel() {
             onEditedUsersChange={setEditedUsers}
             creatorIdentity={creatorIdentity}
             bridgeName={templateBridge?.displayName ?? parsed.bridge}
+            creatorBlocked={creatorBlocked}
+            onLinkAccount={onLinkAccount}
+            handoffBlocked={handoffBlocked}
+            onAllowHandoffs={() => void allowHandoffs()}
+            allowingHandoffs={allowingHandoffs}
           />
         </>
       )}
