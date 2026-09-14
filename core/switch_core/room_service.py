@@ -427,6 +427,10 @@ class RoomService:
         )
 
     async def create_room(self, config: RoomCreateConfig) -> RoomCreateResult:
+        # Reject an unknown or invariant-violating visibility pair before any
+        # provisioning: a bad value stored here can only be repaired by a PATCH,
+        # which `update_room` would itself refuse.
+        validate_visibility_pair(config.read_visibility, config.write_visibility)
         await self._validate_attachments(config)
         # Validate the group up front so a bad id fails before we provision a
         # Matrix room / external channel.
