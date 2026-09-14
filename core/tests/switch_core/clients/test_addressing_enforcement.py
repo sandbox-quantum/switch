@@ -130,15 +130,29 @@ class TestResolveSenderPrincipal:
         assert result is None
 
     async def test_client_with_no_agent_or_external_user_is_none(self) -> None:
-        # A Client that is neither an agent nor a bridged human (e.g. a system
-        # client) does not resolve to an addressing principal.
+        # A Client that is neither an agent nor a bridged human and is not the
+        # admin (e.g. a bridge client) does not resolve to an addressing principal.
         client = self._client(
-            client=SimpleNamespace(id="c1"), agent=None, external_user=None
+            client=SimpleNamespace(id="c1", type="bridge"),
+            agent=None,
+            external_user=None,
         )
         result = await AddressingResolver.resolve_sender(
             client, object(), "@system:switch.local"
         )
         assert result is None
+
+    async def test_admin_client_resolves_to_platform(self) -> None:
+        # The admin client resolves to sender_kind="platform" (CHOO-2719).
+        client = self._client(
+            client=SimpleNamespace(id="c1", type="admin"),
+            agent=None,
+            external_user=None,
+        )
+        result = await AddressingResolver.resolve_sender(
+            client, object(), "@switch-admin:switch.local"
+        )
+        assert result == ("platform", "c1", [], None)
 
 
 def _allowed_client(

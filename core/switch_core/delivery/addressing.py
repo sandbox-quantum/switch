@@ -333,9 +333,9 @@ class AddressingResolver:
         """Map a sender's mxid to the principal a policy is written about.
 
         Every participant is a Switch client, so the mxid resolves to a Client
-        and from there to either an Agent (an agent-to-agent attempt) or an
-        ExternalUser (a human on a bridge). None means neither, which a
-        restricted agent should not trust.
+        and from there to an Agent, an ExternalUser, or the admin client
+        (the platform). None means none of those, which a restricted agent
+        should not trust.
 
         The two symbolic subjects come from different fields and only one
         applies to any sender: `user_ids` are the Switch users who have claimed
@@ -357,4 +357,6 @@ class AddressingResolver:
                 session, external_user.id
             )
             return SenderPrincipal("user", external_user.id, claimants, None)
+        if client.type == "admin":
+            return SenderPrincipal("platform", client.id, [], None)
         return None

@@ -28,6 +28,7 @@ from switch_core.bridges.agent.protocol.types import (
     TaskFinalisePayload,
     TaskUpdatePayload,
 )
+from switch_core.clients.admin_messages import PLATFORM_MARKER
 from switch_core.clients.client_base import (
     ClientBase,
     ClientBaseKwargs,
@@ -464,6 +465,10 @@ class AgentClient(ClientBase[ClientConfig]):
                 sender_name,
             )
 
+        sender_kind: str | None = None
+        if PLATFORM_MARKER in event.content:
+            sender_kind = "platform"
+
         agent_event = AgentEvent(
             type="message",
             room_id=meta.room_id,
@@ -473,6 +478,7 @@ class AgentClient(ClientBase[ClientConfig]):
                 addressed=is_addressed,
                 sender=event.sender,
                 sender_name=sender_name,
+                sender_kind=sender_kind,
                 message_id=event.event_id,
                 body=text,
                 timestamp=event.timestamp,
@@ -662,6 +668,10 @@ class AgentClient(ClientBase[ClientConfig]):
                     room.room_id, event, gate.refusal, reply_thread_root
                 )
 
+        sender_kind: str | None = None
+        if PLATFORM_MARKER in event.content:
+            sender_kind = "platform"
+
         agent_event = AgentEvent(
             type="message",
             room_id=meta.room_id,
@@ -671,6 +681,7 @@ class AgentClient(ClientBase[ClientConfig]):
                 addressed=is_addressed,
                 sender=event.sender,
                 sender_name=sender_name,
+                sender_kind=sender_kind,
                 message_id=event.event_id,
                 body=body,
                 timestamp=event.timestamp,
