@@ -2,7 +2,12 @@ import { execFile } from 'node:child_process';
 import { mkdir, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
+import { SshExecutionContext } from '@main/core/execution-context/ssh-execution-context';
+import type { IExecutionContext } from '@main/core/execution-context/types';
+import { sshConnectionIdForHost } from '@main/core/locations/location-transport';
 import { appSettingsService } from '@main/core/settings/settings-service';
+import { ensureSshConnected } from '@main/core/ssh/connect/connect-agent-ssh';
+import { resolveRemoteHome } from '@main/core/ssh/lifecycle/remote-shell-profile';
 import { getGitExecutable } from '@main/core/utils/exec';
 import { buildExternalToolEnv } from '@main/utils/childProcessEnv';
 import { createRPCController } from '@shared/lib/ipc/rpc';
@@ -36,6 +41,63 @@ async function isDirectory(path: string): Promise<boolean> {
   }
 }
 
+async function remoteContext(sshHost: string): Promise<IExecutionContext> {
+  const proxy = await ensureSshConnected(sshConnectionIdForHost(sshHost), sshHost);
+  return new SshExecutionContext(proxy);
+}
+
+// The same folder-per-agent layout as this machine, under the host's home:
+// the Console's default locations directory is `~/switchdash/repositories`.
+const REMOTE_LOCATIONS_DIR = 'switchdash/repositories';
+
+function failedRepo(dir: string, target: string, e: unknown): PrepareWorkspaceResult {
+  const stderr = (e as { stderr?: string }).stderr;
+  const message =
+    typeof stderr === 'string' && stderr.trim().length > 0
+      ? stderr.trim()
+      : e instanceof Error
+        ? e.message
+        : String(e);
+  return { dir, repo: { target, outcome: 'failed', error: message } };
+}
+
+/** Make the directory and put a shallow clone inside, on a host reached over SSH. */
+async function prepareRemoteWorkspace(
+  sshHost: string,
+  dir: string,
+  repoUrl: string | null
+): Promise<PrepareWorkspaceResult> {
+  const ctx = await remoteContext(sshHost);
+  try {
+    await ctx.exec('mkdir', ['-p', dir]);
+    if (!repoUrl) return { dir, repo: null };
+    const target = cloneTargetFor(dir, repoUrl);
+    const probe = await ctx.exec('sh', [
+      '-c',
+      `test -d "$1" && echo present || echo absent`,
+      'sh',
+      target,
+    ]);
+    if (probe.stdout.trim() === 'present') {
+      return { dir, repo: { target, outcome: 'present', error: null } };
+    }
+    if (!CLONEABLE_URL.test(repoUrl)) {
+      return {
+        dir,
+        repo: { target, outcome: 'failed', error: `Not a URL git can clone: ${repoUrl}` },
+      };
+    }
+    try {
+      await ctx.exec('git', ['clone', '--quiet', '--depth', '1', '--', repoUrl, target]);
+      return { dir, repo: { target, outcome: 'cloned', error: null } };
+    } catch (e) {
+      return failedRepo(dir, target, e);
+    }
+  } finally {
+    ctx.dispose();
+  }
+}
+
 export const agentTemplatesController = createRPCController({
   parse: (params: { yamlText: string; instructions?: string | null }): ParsedAgentTemplate =>
     parseAgentTemplate(params.yamlText, params.instructions ?? null),
@@ -48,8 +110,21 @@ export const agentTemplatesController = createRPCController({
     composeAgentTemplateDocument(params.yamlText, params.instructions),
 
   /** Where an agent of this name would live by default: the same directory
-   * the rest of the Console's locations default to, one folder per agent. */
-  suggestDirectory: async (params: { agentName: string }): Promise<string> => {
+   * the rest of the Console's locations default to, one folder per agent. On
+   * a host, the same layout under the host's home. */
+  suggestDirectory: async (params: {
+    agentName: string;
+    sshHost?: string | null;
+  }): Promise<string> => {
+    if (params.sshHost) {
+      const ctx = await remoteContext(params.sshHost);
+      try {
+        const home = await resolveRemoteHome(ctx);
+        return `${home.replace(/\/+$/, '')}/${REMOTE_LOCATIONS_DIR}/${params.agentName}`;
+      } finally {
+        ctx.dispose();
+      }
+    }
     const { defaultLocationsDirectory } = await appSettingsService.get('localLocation');
     return join(defaultLocationsDirectory, params.agentName);
   },
@@ -63,7 +138,9 @@ export const agentTemplatesController = createRPCController({
   prepareWorkspace: async (params: {
     dir: string;
     repoUrl: string | null;
+    sshHost?: string | null;
   }): Promise<PrepareWorkspaceResult> => {
+    if (params.sshHost) return prepareRemoteWorkspace(params.sshHost, params.dir, params.repoUrl);
     await mkdir(params.dir, { recursive: true });
     if (!params.repoUrl) return { dir: params.dir, repo: null };
     const target = cloneTargetFor(params.dir, params.repoUrl);
@@ -84,14 +161,7 @@ export const agentTemplatesController = createRPCController({
       );
       return { dir: params.dir, repo: { target, outcome: 'cloned', error: null } };
     } catch (e) {
-      const stderr = (e as { stderr?: string }).stderr;
-      const message =
-        typeof stderr === 'string' && stderr.trim().length > 0
-          ? stderr.trim()
-          : e instanceof Error
-            ? e.message
-            : String(e);
-      return { dir: params.dir, repo: { target, outcome: 'failed', error: message } };
+      return failedRepo(params.dir, target, e);
     }
   },
 });
