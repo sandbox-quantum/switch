@@ -55,7 +55,7 @@ def _config() -> SwitchConfig:
         db_name="unused",
         matrix_server_name="test",
         agent_registration_token="unused",
-        jwt_secret_key="test-jwt-secret",
+        jwt_secret_key="unit-test-jwt-key-unit-test-jwt-key-unit-test",
         gateway_admin_email=ADMIN_EMAIL,
         gateway_admin_password="hunter2",
     )
