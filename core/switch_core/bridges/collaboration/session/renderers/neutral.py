@@ -325,28 +325,24 @@ def _approval_form(
     limit: int,
     responder: str | None,
 ) -> tuple[list[str], list[str], str, bool]:
+    fit = _Faithful(escape)
     handle = escape(reference.handle)
     head = [f"**{_HEADINGS[request.state]}** · request `{handle}`"]
-    head.append(_fit(content.title, _share(limit, 1500, 3), escape=escape))
+    head.append(fit(content.title, _share(limit, 1500, 3)))
     if content.detail:
-        head.append(_fit(content.detail, _share(limit, 1200, 4), escape=escape))
+        head.append(fit(content.detail, _share(limit, 1200, 4)))
 
     body: list[str] = []
-    whole = True
     if request.state == "open":
         budget = _label_budget(limit)
-        whole = all(
-            _shows_whole(option.label, budget, escape=escape)
-            for option in content.options
-        )
         body = [
-            f"{index}. {_fit(option.label, budget, escape=escape)}{_scope(option)}"
+            f"{index}. {fit(option.label, budget)}{_scope(option)}"
             for index, option in enumerate(content.options, start=1)
         ]
     # The one state whose footer is an instruction. `_approval_footer` says
     # why the others are not: nothing to choose, or already answered.
     invites_answer = request.state == "open" and bool(content.options)
-    if invites_answer and not whole:
+    if invites_answer and not fit.whole:
         return (head, body, _TOO_BIG, False)
     return (
         head,
@@ -422,29 +418,25 @@ def _questions_form(
     limit: int,
     responder: str | None,
 ) -> tuple[list[str], list[str], str, bool]:
+    fit = _Faithful(escape)
     handle = escape(reference.handle)
     head = [
         f"**{_QUESTION_HEADINGS[request.state]}** · request `{handle}`",
-        _fit(content.title, _share(limit, 1500, 3), escape=escape),
+        fit(content.title, _share(limit, 1500, 3)),
     ]
 
     body: list[str] = []
-    whole = True
     if request.state == "open":
         budget = _label_budget(limit)
         for position, question in enumerate(content.questions, start=1):
-            title = (
-                _fit(question.title, budget, escape=escape) if question.title else ""
-            )
-            whole = whole and _shows_whole(question.title, budget, escape=escape)
+            title = fit(question.title, budget) if question.title else ""
             body.append(f"**{position}. {title}**" if title else f"**{position}.**")
             if question.prompt:
-                body.append(_fit(question.prompt, _share(limit, 800, 4), escape=escape))
+                body.append(fit(question.prompt, _share(limit, 800, 4)))
             for index, option in enumerate(question.options, start=1):
-                body.append(_option_line(index, option, escape=escape, limit=limit))
-                whole = whole and _shows_whole(option.label, budget, escape=escape)
+                body.append(_option_line(index, option, fit=fit, limit=limit))
     invites_answer = request.state == "open" and unanswerable(content.questions) is None
-    if invites_answer and not whole:
+    if invites_answer and not fit.whole:
         return (head, body, _TOO_BIG, False)
     return (
         head,
@@ -460,12 +452,19 @@ def _option_line(
     index: int,
     option: QuestionOption,
     *,
-    escape: Callable[[str], str],
+    fit: _Faithful,
     limit: int,
 ) -> str:
-    line = f"{index}. {_fit(option.label, _label_budget(limit), escape=escape)}"
+    """One numbered choice, label and the description that distinguishes it.
+
+    The description gets the same budget as the label, because it is doing the
+    same job: two options can share a label and differ only in the description
+    under it, and clipping that is clipping the difference the reader is being
+    asked to choose on.
+    """
+    line = f"{index}. {fit(option.label, _label_budget(limit))}"
     if option.description:
-        line += f" — {_fit(option.description, _share(limit, 200, 8), escape=escape)}"
+        line += f" — {fit(option.description, _label_budget(limit))}"
     return line
 
 
@@ -665,8 +664,11 @@ def _compose(
             break
         shown.append(line)
         spent += len(line) + 1
-    cut = len(shown) < len(body)
-    if cut:
+    # A head line that did not fit is dropped silently — there is no count to
+    # report for a title — but it is still the form failing to show itself,
+    # and `if_cut` is as much the answer for that as for a dropped option.
+    cut = len(shown) < len(body) or len(lines) < len(head)
+    if len(shown) < len(body):
         notice = _CUT.format(left=len(body) - len(shown))
         while shown and spent + len(notice) + 1 > limit:
             spent -= len(shown.pop()) + 1
@@ -707,9 +709,29 @@ def _label_budget(limit: int) -> int:
     return _share(limit, 1500, 3)
 
 
-def _shows_whole(text: str, limit: int, *, escape: Callable[[str], str]) -> bool:
-    """Whether `_fit` will show all of `text`, or have to cut it."""
-    return len(escape(text)) <= limit
+class _Faithful:
+    """`_fit`, remembering whether it ever had to cut.
+
+    Every piece of a form a reader decides on goes through one of these, so
+    "did this show itself whole" is answered by the fitting itself rather than
+    by a second set of checks kept in step with it by hand. That pairing is
+    the point: a budget added later without a matching check is how a form
+    comes to clip the sentence naming a second operation and still ask for a
+    number.
+
+    Whole means every one of them fitted. A title cut short is as good a
+    reason not to invite an answer as an option cut short — the reader is
+    choosing on what is in front of them, and a question they can only see
+    part of is not one a number answers.
+    """
+
+    def __init__(self, escape: Callable[[str], str]) -> None:
+        self._escape = escape
+        self.whole = True
+
+    def __call__(self, text: str, limit: int) -> str:
+        self.whole = self.whole and len(self._escape(text)) <= limit
+        return _fit(text, limit, escape=self._escape)
 
 
 def _scope(option: ApprovalOption) -> str:

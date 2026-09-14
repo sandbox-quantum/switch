@@ -27,7 +27,12 @@ def _identity(text: str) -> str:
     return text
 
 
-def _approval(*options: ApprovalOption, state: str = "open") -> SnapshotRequest:
+def _approval(
+    *options: ApprovalOption,
+    state: str = "open",
+    title: str = "Run a command?",
+    detail: str | None = None,
+) -> SnapshotRequest:
     return SnapshotRequest.model_validate(
         {
             "requestId": "req-1",
@@ -39,8 +44,8 @@ def _approval(*options: ApprovalOption, state: str = "open") -> SnapshotRequest:
             "decidedBy": None,
             "content": ApprovalContent(
                 kind="approval",
-                title="Run a command?",
-                detail=None,
+                title=title,
+                detail=detail,
                 options=list(options),
             ).model_dump(by_alias=True),
         }
@@ -143,7 +148,37 @@ def test_a_settled_form_that_was_cut_still_says_what_was_decided():
     assert "Closed without being answered." in text
 
 
-def _question(title: str, *labels: str) -> Question:
+def test_a_detail_that_names_a_second_operation_is_not_cut_off_mid_form():
+    """The options say "Allow" and "Deny"; what is being allowed is in the
+    detail. Cutting it there is cutting the whole of the decision."""
+    text = _render(
+        _approval(
+            _option("yes", "Allow"),
+            _option("no", "Deny", decision="decline"),
+            detail="Delete the build cache. " + "x" * 4000 + " Also drop the database.",
+        )
+    )
+
+    assert "Reply with" not in text
+    assert "Switch Console" in text
+
+
+def test_a_title_the_message_had_no_room_for_stops_the_form_asking():
+    """A head line `_compose` cannot fit is dropped with no count to report —
+    there is no "1 more" for a title. Silence is still the reader being asked
+    to decide on something they cannot see."""
+    title = "Should I " + "z" * 50 + "?"
+    text = _render(_approval(_option("yes", "Allow"), title=title), limit=200)
+
+    assert title not in text
+    assert "Reply with" not in text
+    assert "Switch Console" in text
+    assert len(text) <= 200
+
+
+def _question(
+    title: str, *labels: str, descriptions: list[str] | None = None
+) -> Question:
     return Question.model_validate(
         {
             "questionId": "q-1",
@@ -151,7 +186,13 @@ def _question(title: str, *labels: str) -> Question:
             "prompt": "",
             "options": [
                 QuestionOption.model_validate(
-                    {"optionId": f"o{n}", "label": label, "description": None}
+                    {
+                        "optionId": f"o{n}",
+                        "label": label,
+                        "description": (
+                            descriptions[n - 1] if descriptions is not None else None
+                        ),
+                    }
                 )
                 for n, label in enumerate(labels, start=1)
             ],
@@ -181,3 +222,49 @@ def test_a_question_that_fits_is_still_answered_by_number():
     text = _render(_questions(_question("Which branch?", "main", "release")))
 
     assert "Reply with `R42 1`." in text
+
+
+def test_options_told_apart_only_by_their_descriptions_are_not_cut_there():
+    """The labels are the same on purpose; the description is the difference.
+    A ceiling that clips it clips the choice."""
+    shared = "Deploy the service. " + "d" * 400
+    text = _render(
+        _questions(
+            _question(
+                "Which one?",
+                "Deploy",
+                "Deploy",
+                descriptions=[f"{shared} to staging", f"{shared} to production"],
+            )
+        )
+    )
+
+    assert "to staging" in text
+    assert "to production" in text
+    assert "Reply with `R42 1`." in text
+
+
+def test_a_description_too_long_for_even_that_stops_the_form_asking():
+    text = _render(
+        _questions(
+            _question(
+                "Which one?",
+                "Deploy",
+                "Deploy",
+                descriptions=["y" * 4000 + " to staging", "y" * 4000 + " to live"],
+            )
+        )
+    )
+
+    assert "Reply with" not in text
+    assert "Switch Console" in text
+
+
+def test_a_prompt_cut_short_is_not_answered_by_number_either():
+    """The prompt is where a question says what it actually means."""
+    question = _question("Which one?", "main", "release")
+    question = question.model_copy(update={"prompt": "Note that " + "p" * 4000})
+    text = _render(_questions(question))
+
+    assert "Reply with" not in text
+    assert "Switch Console" in text

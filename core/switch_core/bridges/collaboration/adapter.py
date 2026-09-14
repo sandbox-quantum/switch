@@ -168,6 +168,10 @@ class RequestCard:
     # Presentation only: never changes the SDK request or its authorization.
     unavailable_reason: str | None = None
     notify_external_id: str | None = None
+    # As on `TurnActivity`, and for the same reason: a card being asked of
+    # nobody is not the same as a redraw of one already asked, and only the
+    # first is worth saying out loud.
+    notify_unreachable: bool = False
 
 
 RichContent = TurnActivity | RequestCard

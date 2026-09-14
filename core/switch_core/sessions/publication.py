@@ -167,6 +167,11 @@ async def refresh_cards(
                     origin.thread_id or origin.message_id,
                 )
             )
+            # Only the first post of an open card asks anyone. A redraw leaves
+            # the recipient unset on purpose — the mention has been made and
+            # repeating it is a second notification — so "nobody to name" is
+            # only meaningful here, where naming someone was the intent.
+            asking = post is None and request.state == "open"
             recipient = (
                 await notification_recipient(
                     db,
@@ -177,18 +182,34 @@ async def refresh_cards(
                     thread_id=thread_id,
                     prefer_owner=cards.notifies_only_by_mention,
                 )
-                if post is None and request.state == "open"
+                if asking
                 else None
             )
             publications.append(
-                (request, post, room.id, room.external_channel_id, thread_id, recipient)
+                (
+                    request,
+                    post,
+                    room.id,
+                    room.external_channel_id,
+                    thread_id,
+                    recipient,
+                    asking and recipient is None and cards.notifies_only_by_mention,
+                )
             )
         epoch = row.epoch
         agent_name = agent.name
         db.expunge_all()
     errors: list[BaseException] = []
     backed_off = 0
-    for request, post, room_id, channel_id, thread_id, recipient in publications:
+    for (
+        request,
+        post,
+        room_id,
+        channel_id,
+        thread_id,
+        recipient,
+        unreachable,
+    ) in publications:
         state = (
             request.revision,
             request.state
@@ -210,12 +231,9 @@ async def refresh_cards(
                     session_id=session_id,
                     epoch=epoch,
                     agent_name=agent_name,
-                    **({"notify_external_id": recipient} if recipient else {}),
-                    **(
-                        {"unavailable_reason": unavailable_reason}
-                        if unavailable_reason
-                        else {}
-                    ),
+                    notify_external_id=recipient,
+                    notify_unreachable=unreachable,
+                    unavailable_reason=unavailable_reason,
                 )
                 refreshed(new_post.token, state)
             elif post.external_post_id == post.token:

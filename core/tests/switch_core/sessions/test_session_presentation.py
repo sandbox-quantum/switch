@@ -231,6 +231,57 @@ async def test_request_publication_metadata_and_refresh(
     assert len(platform.contents) == 2
     assert platform.contents[0].notify_external_id == recipient
     assert platform.contents[1].notify_external_id is None
+    # `Capture` does not claim to notify only by mention, so there is nothing
+    # for an unnamed card to admit to — see the mention-only case below.
+    assert not any(content.notify_unreachable for content in platform.contents)
+
+
+async def test_a_card_nobody_could_be_named_in_says_so_once_not_on_redraws(
+    session_factory,
+):
+    """The mention is made on the first post and deliberately left off every
+    redraw, so "nobody to name" is only ever a question about the first."""
+    from switch_core.db.models import ExternalUserClaim, SdkSessionCommand
+    from switch_core.sessions.publication import refresh_cards
+
+    from .test_authority import opened, setup
+    from .test_publication_retries import cards_for
+
+    service, epoch = await setup(session_factory)
+    await opened(service, epoch)
+    async with session_factory() as db, db.begin():
+        from sqlalchemy import delete, select
+
+        stored = await db.scalar(select(SdkSessionCommand))
+        command = dict(stored.command)
+        command["origin"] = {**command["origin"], "actorId": "nobody-linked-here"}
+        stored.command = command
+        # Nobody in this room has linked the owner's account, and the asker is
+        # not a platform user either: there is genuinely no one to name.
+        await db.execute(delete(ExternalUserClaim))
+
+    class MentionOnly:
+        notifies_only_by_mention = True
+
+        def __init__(self):
+            self.contents = []
+
+        async def post_rich(self, channel, agent, content, thread):
+            self.contents.append(content)
+            return "channel-demo:111.0"
+
+        async def update_rich(self, channel, post, content):
+            self.contents.append(content)
+
+    platform = MentionOnly()
+    cards = cards_for(session_factory, platform)
+    for _ in range(2):
+        await refresh_cards(session_factory, "bridge", "session-demo", cards)
+
+    assert [content.notify_unreachable for content in platform.contents] == [
+        True,
+        False,
+    ]
 
 
 async def test_live_session_fault_redraws_activity_with_safe_summary(session_factory):

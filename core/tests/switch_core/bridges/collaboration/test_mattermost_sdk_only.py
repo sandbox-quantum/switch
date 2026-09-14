@@ -774,6 +774,41 @@ async def test_the_unnotified_notice_is_not_what_pushes_a_post_over_the_limit() 
     assert message.endswith(adapter.unnotified_notice())
 
 
+async def test_a_request_asked_of_nobody_admits_it_too() -> None:
+    """A card is the one post that exists to be answered. Unanswered because
+    nobody saw it looks exactly like unanswered because nobody has decided."""
+    adapter = _adapter()
+
+    await adapter.post_rich("chan-1", "worker", await _card(notify_unreachable=True))
+
+    message = _posts(adapter).created[0]["message"]
+    assert "notified no one" in message
+    assert "Reply with" in message
+
+
+async def test_a_card_redrawn_without_a_mention_does_not_claim_it_reached_nobody() -> (
+    None
+):
+    """Every redraw drops the mention on purpose — it has already notified.
+    That is not the same as there having been nobody to name."""
+    adapter = _adapter()
+
+    await adapter.post_rich("chan-1", "worker", await _card())
+
+    assert "notified no one" not in _posts(adapter).created[0]["message"]
+
+
+async def test_the_card_notice_is_not_what_pushes_a_post_over_the_limit() -> None:
+    adapter = _adapter()
+    card = await _card(notify_unreachable=True, notify_external_id="u-owner")
+
+    await adapter.post_rich("chan-1", "worker", card)
+
+    message = _posts(adapter).created[0]["message"]
+    assert len(message) <= adapter.rich_fallback_limit()
+    assert message.endswith(adapter.unnotified_notice())
+
+
 async def test_a_reachable_recipient_is_named_and_told_nothing_about_linking() -> None:
     adapter = _adapter(**{"u-owner": "owner"})
     content = replace(

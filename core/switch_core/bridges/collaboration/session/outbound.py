@@ -874,6 +874,7 @@ class SessionRequestCards:
         agent_name: str,
         unavailable_reason: str | None = None,
         notify_external_id: str | None = None,
+        notify_unreachable: bool = False,
     ) -> SessionRequestPost:
         """Reserve the card durably, then send it to the platform.
 
@@ -915,6 +916,7 @@ class SessionRequestCards:
                         reference,
                         unavailable_reason=unavailable_reason,
                         notify_external_id=notify_external_id,
+                        notify_unreachable=notify_unreachable,
                     ),
                     thread_root_id,
                 )

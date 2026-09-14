@@ -671,17 +671,20 @@ class MattermostAdapter(CollaborationAdapter):
         # The handle goes on its own line rather than in front of the heading:
         # a card is a block, and a handle wedged before "**Permission needed**"
         # reads as part of the heading. It is charged to the same budget, or a
-        # form that just fits becomes a post Mattermost refuses.
+        # form that just fits becomes a post Mattermost refuses. So is the
+        # notice below it, which is the same admission the turn status makes:
+        # a request nobody was named in is a request nobody was asked.
         lead = f"{mention}\n" if mention else ""
+        tail = f"\n{self.unnotified_notice()}" if content.notify_unreachable else ""
         body = request_summary(
             content.request,
             content.reference,
             escape=escape,
-            limit=max(1, limit - len(lead)),
+            limit=max(1, limit - len(lead) - len(tail)),
             responder=responder,
             unavailable_reason=content.unavailable_reason,
         )
-        return f"{lead}{body}"
+        return f"{lead}{body}{tail}"
 
     async def _render_rich(self, content: RichContent) -> str:
         mention = await self._mention(content.notify_external_id)
