@@ -1,6 +1,6 @@
 import type { RepoAgentAttributes } from '@switch-console/core/agents/plugins';
 import { useQuery } from '@tanstack/react-query';
-import { ExternalLink, FileText, Monitor, Server } from 'lucide-react';
+import { ExternalLink, Monitor, Server, TriangleAlert } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { agentsStore } from '@renderer/features/locations/stores/agents-store';
@@ -30,7 +30,6 @@ import {
 import { openExternalUrl } from '@renderer/lib/open-external';
 import { appState } from '@renderer/lib/stores/app-state';
 import { useRemoteAgents } from '@renderer/lib/stores/use-remote-agents';
-import { Alert, AlertDescription } from '@renderer/lib/ui/alert';
 import { Button } from '@renderer/lib/ui/button';
 import { ConfirmButton } from '@renderer/lib/ui/confirm-button';
 import {
@@ -116,6 +115,35 @@ function canonicalDir(dir: string): string {
   const trimmed = dir.trim();
   const stripped = trimmed.replace(/\/+$/, '');
   return stripped || (trimmed.startsWith('/') ? '/' : '');
+}
+
+/** One line of the template summary: a fixed-width label, the fact, and
+ * whatever control belongs to it on the right. */
+function SummaryRow({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div className="flex items-start gap-3">
+      <span className="w-20 shrink-0 text-foreground-muted">{label}</span>
+      <div className="flex min-w-0 flex-1 items-start justify-between gap-3">{children}</div>
+    </div>
+  );
+}
+
+/** A small labelled switch, for a step the person may decline. */
+function ToggleChip({
+  label,
+  checked,
+  onChange,
+}: {
+  label: string;
+  checked: boolean;
+  onChange: (checked: boolean) => void;
+}) {
+  return (
+    <label className="flex shrink-0 cursor-pointer items-center gap-2 text-xs text-foreground-muted">
+      {label}
+      <Switch checked={checked} onCheckedChange={onChange} />
+    </label>
+  );
 }
 
 export const AddAgentModal = observer(function AddAgentModal({
@@ -753,36 +781,28 @@ export const AddAgentModal = observer(function AddAgentModal({
         )}
 
         {template && (
-          <Alert>
-            <FileText />
-            <AlertDescription className="flex flex-col gap-1">
-              {template.repoUrl && (
-                <label className="flex cursor-pointer items-start justify-between gap-3">
-                  <span>
-                    Works from{' '}
-                    <button
-                      type="button"
-                      className="inline-flex items-center gap-1 underline underline-offset-2"
-                      onClick={() =>
-                        void openExternalUrl(template.repoUrl!, 'Could not open the repository')
-                      }
-                    >
-                      {template.repoUrl.replace(/^https?:\/\//, '')}
-                      <ExternalLink className="size-3" />
-                    </button>
-                    {cloneRepo
-                      ? ', fetched into its directory now so its first answer reads current source.'
-                      : '. The agent fetches it on its first run.'}
-                  </span>
-                  <Switch className="mt-0.5" checked={cloneRepo} onCheckedChange={setCloneRepo} />
-                </label>
-              )}
-              {template.sources.length > 0 && (
-                <span>
-                  Reads:{' '}
+          <div className="flex flex-col gap-2 rounded-md border border-border px-3 py-2.5 text-sm">
+            {template.repoUrl && (
+              <SummaryRow label="Repository">
+                <button
+                  type="button"
+                  className="inline-flex items-center gap-1 underline underline-offset-2"
+                  onClick={() =>
+                    void openExternalUrl(template.repoUrl!, 'Could not open the repository')
+                  }
+                >
+                  {template.repoUrl.replace(/^https?:\/\//, '')}
+                  <ExternalLink className="size-3" />
+                </button>
+                <ToggleChip label="Clone now" checked={cloneRepo} onChange={setCloneRepo} />
+              </SummaryRow>
+            )}
+            {template.sources.length > 0 && (
+              <SummaryRow label="Sources">
+                <span className="flex flex-wrap items-center gap-x-1.5">
                   {template.sources.map((source, i) => (
-                    <span key={source.url}>
-                      {i > 0 && ', '}
+                    <span key={source.url} className="inline-flex items-center gap-1">
+                      {i > 0 && <span className="text-foreground-muted">·</span>}
                       <button
                         type="button"
                         className="inline-flex items-center gap-1 underline underline-offset-2"
@@ -794,63 +814,67 @@ export const AddAgentModal = observer(function AddAgentModal({
                     </span>
                   ))}
                 </span>
-              )}
-              {intoRoomId && (
+              </SummaryRow>
+            )}
+            {intoRoomId && (
+              <SummaryRow label="Room">
+                <span>The room you opened this from. Mention the agent there to start it.</span>
+              </SummaryRow>
+            )}
+            {template.roomYaml && intoRoomId === null && (
+              <SummaryRow label="Room">
                 <span>
-                  Put in the room you opened this from once it exists. Mention it there to start it:
-                  a message from you is what wakes it.
+                  {createRoom ? (
+                    <>
+                      {template.roomName
+                        ? `"${template.roomName.replace('{agent}', form.agentName || 'it')}"`
+                        : 'A new room'}
+                      , with you, kickoff sent as you
+                      {creatorIdentity
+                        ? ` (${creatorIdentity.externalUsername} on ${roomBridge?.displayName})`
+                        : ''}
+                    </>
+                  ) : (
+                    'None. Add it to a room and mention it to start it.'
+                  )}
                 </span>
-              )}
-              {template.roomYaml && intoRoomId === null && (
-                <label className="flex cursor-pointer items-start justify-between gap-3">
-                  <span>
-                    {createRoom ? (
-                      <>
-                        Once it exists it is put in a room
-                        {template.roomName
-                          ? ` called "${template.roomName.replace('{agent}', form.agentName || 'it')}"`
-                          : ''}{' '}
-                        with you, and spoken to, so it starts working right away.
-                      </>
-                    ) : (
-                      'Created on its own, in no room. Add it to a room and mention it to start it.'
-                    )}
+                <ToggleChip label="Create" checked={createRoom} onChange={setCreateRoom} />
+              </SummaryRow>
+            )}
+            {template.addressing && template.addressing !== 'owner' && (
+              <SummaryRow label="Answers">
+                <span>
+                  {template.addressing === 'anyone' ? 'Anyone in its rooms' : 'You and your agents'}
+                  <span className="text-foreground-muted">
+                    {' '}
+                    (from the template; change under Settings)
                   </span>
-                  <Switch className="mt-0.5" checked={createRoom} onCheckedChange={setCreateRoom} />
-                </label>
-              )}
-              {willCreateRoom && bridges && !roomBridge && (
-                <span className="text-amber-500">
-                  No messaging app is connected to this server, so the room would have nowhere for
-                  you to talk to the agent. Connect one on the server page first, or turn the room
-                  off above.
                 </span>
-              )}
-              {willCreateRoom && roomBridge && creatorIdentity === null && (
-                <span className="flex flex-wrap items-center gap-2 text-amber-500">
-                  <span>
-                    The first message is posted as you on {roomBridge.displayName}, but this server
-                    does not know which {roomBridge.displayName} account is yours, so nobody would
-                    speak to the agent.
-                  </span>
-                  <Button type="button" size="xs" variant="outline" onClick={linkIdentity}>
-                    Link my {roomBridge.displayName} account
-                  </Button>
+              </SummaryRow>
+            )}
+            {willCreateRoom && bridges && !roomBridge && (
+              <p className="flex flex-wrap items-center gap-2 text-amber-500">
+                <TriangleAlert className="size-3.5 shrink-0" />
+                No messaging app is connected to this server, so nobody could talk in the room.
+              </p>
+            )}
+            {willCreateRoom && roomBridge && creatorIdentity === null && (
+              <p className="flex flex-wrap items-center gap-2 text-amber-500">
+                <TriangleAlert className="size-3.5 shrink-0" />
+                <span>
+                  The kickoff needs your {roomBridge.displayName} account linked on this server.
                 </span>
-              )}
-              {willCreateRoom && roomBridge && creatorIdentity && (
-                <span className="text-foreground-muted">
-                  The first message is posted as you: {creatorIdentity.externalUsername} on{' '}
-                  {roomBridge.displayName}.
-                </span>
-              )}
-              {template.warnings.map((w) => (
-                <span key={w} className="text-foreground-muted">
-                  {w}
-                </span>
-              ))}
-            </AlertDescription>
-          </Alert>
+                <Button type="button" size="xs" variant="outline" onClick={linkIdentity}>
+                  Link account
+                </Button>
+              </p>
+            )}
+            {template.warnings.map((w) => (
+              <p key={w} className="text-xs text-foreground-muted">
+                {w}
+              </p>
+            ))}
+          </div>
         )}
 
         <Field>
