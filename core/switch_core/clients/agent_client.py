@@ -471,7 +471,11 @@ class AgentClient(ClientBase[ClientConfig]):
         if PLATFORM_MARKER in event.content:
             sender_kind = "platform"
             person = platform_on_behalf_of(event.content)
-            on_behalf_of = person.name if person is not None else None
+            if person is not None:
+                # The agent answers the person the platform spoke for, not
+                # the admin client that carried the message.
+                on_behalf_of = person.name
+                sender_name = person.name
 
         agent_event = AgentEvent(
             type="message",
@@ -678,7 +682,11 @@ class AgentClient(ClientBase[ClientConfig]):
         if PLATFORM_MARKER in event.content:
             sender_kind = "platform"
             person = platform_on_behalf_of(event.content)
-            on_behalf_of = person.name if person is not None else None
+            if person is not None:
+                # The agent answers the person the platform spoke for, not
+                # the admin client that carried the message.
+                on_behalf_of = person.name
+                sender_name = person.name
 
         agent_event = AgentEvent(
             type="message",
@@ -1351,6 +1359,9 @@ class AgentClient(ClientBase[ClientConfig]):
         (paired with `mentions=[event.sender]` so Matrix renders a pill).
         """
         content = event.content
+        person = platform_on_behalf_of(content)
+        if person is not None:
+            return person.name
         name = content.get("sender_name")
         if name:
             return str(name)

@@ -493,21 +493,33 @@ class RoomYamlService:
     ) -> dict[str, str]:
         """The server-injected ``{$...}`` variables for one create call.
 
-        ``$creator`` is the name the creator goes by on the template's bridge
-        when they have linked (claimed) an identity there — the name that
-        ``users:`` resolution and channel invites understand. Without a claim
-        it falls back to the gateway account name, which member resolution
-        then tries to match against the bridge itself.
+        ``$creator`` is the name the creator goes by on the template's bridge:
+        the identity they have linked (claimed) there, which is what ``users:``
+        resolution and channel invites understand. A template that uses
+        ``{$creator}`` on a bridged room is refused when there is no such
+        claim, rather than guessing from the gateway account name: the guess
+        rarely matches a platform account, and the result was a private
+        channel the creator could not enter. Without a bridge there is nobody
+        to invite, so the gateway name stands in.
         """
         creator = name
         bridge_id = await self._peek_bridge_id(text)
         if bridge_id is not None:
             async with self._session_factory() as session:
                 claimed = await self._external_users.get_by_user(session, user_id)
-            for ext in claimed:
-                if ext.bridge_id == bridge_id:
-                    creator = ext.external_username
-                    break
+                bridge = await self._bridge_store.get(session, bridge_id)
+            claim = next((ext for ext in claimed if ext.bridge_id == bridge_id), None)
+            if claim is not None:
+                creator = claim.external_username
+            elif "{$creator}" in text:
+                app = (
+                    bridge.display_name if bridge is not None else "this messaging app"
+                )
+                raise ValueError(
+                    f"this template puts you in the room as {{$creator}}, but you "
+                    f"have no linked account on {app}. Link your account under "
+                    "Identities, then create the room again"
+                )
         return {
             "$creator": creator,
             "$creator_email": email,

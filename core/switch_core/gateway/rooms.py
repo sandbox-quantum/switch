@@ -416,7 +416,7 @@ async def create_room_from_yaml(
             kickoff=parsed.kickoff,
             user_id=user.id,
             is_admin=is_admin,
-            creator_name=user.name,
+            creator_name=builtins["$creator"],
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e

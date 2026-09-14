@@ -1523,7 +1523,7 @@ class BridgeCore:
             body = event.body
             person = platform_on_behalf_of(event_content)
             if person is not None:
-                body = f"On behalf of {person.name}:\n\n{body}"
+                body = f"On behalf of @{person.name}:\n\n{body}"
             message_ref = await self._adapter.admin_message(
                 channel_id,
                 body,

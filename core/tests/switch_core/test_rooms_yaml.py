@@ -1445,6 +1445,27 @@ async def test_builtins_creator_ignores_unclaimed_identity(env):
 
 
 @pytest.mark.asyncio
+async def test_builtins_refuses_unclaimed_creator_when_the_template_needs_one(env):
+    """A bridged template that uses {$creator} needs a linked account: the
+    gateway name is not a platform handle, and guessing produced private
+    channels the creator could not enter."""
+    await _seed_bridge_with_claim(
+        env["session_factory"],
+        display_name="Slack",
+        is_default=True,
+        claimed_by=None,
+        external_username="abel.dantas",
+    )
+    with pytest.raises(ValueError, match=r"no linked account on Slack"):
+        await _svc(env).builtins_for(
+            user_id=env["user_id"],
+            name="alice",
+            email="alice@example.com",
+            text='room:\n  name: n\n  description: d\n  users: ["{$creator}"]\n',
+        )
+
+
+@pytest.mark.asyncio
 async def test_builtins_creator_resolves_named_bridge(env):
     """A template naming a non-default bridge resolves the claim on THAT
     bridge."""

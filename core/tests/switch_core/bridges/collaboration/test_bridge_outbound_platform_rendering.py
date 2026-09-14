@@ -96,5 +96,5 @@ async def test_a_message_on_someones_behalf_says_so() -> None:
     await _bridge(adapter).handle_outbound_message(
         RoomRef("!r:switch.local"), _event(marker)
     )
-    assert adapter.admin_calls == [f"On behalf of Abel:\n\n{BODY}"]
+    assert adapter.admin_calls == [f"On behalf of @Abel:\n\n{BODY}"]
     assert adapter.message_calls == []
