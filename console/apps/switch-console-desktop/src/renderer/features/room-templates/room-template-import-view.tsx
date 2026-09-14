@@ -385,7 +385,7 @@ function SummaryPanel({
     );
   }
   if (kickoffPreview) {
-    steps.push(<span>A kickoff message, posted as you, starts the agents</span>);
+    steps.push(<span>Switch posts the kickoff on your behalf to start the agents</span>);
   }
 
   return (
@@ -415,9 +415,9 @@ function SummaryPanel({
             </p>
           ) : (
             <p className="text-sm text-amber-500">
-              This template includes you, but you haven't linked your messaging account on this
-              server. The server will try to match your account name; if that fails you won't be
-              invited and the kickoff can't be posted. Link your account under the server's
+              This template invites you into the room, but you haven&apos;t linked your messaging
+              account on this server. The server will try to match your account name; if that fails
+              you won&apos;t be invited to the channel. Link your account under the server&apos;s
               Identities settings first.
             </p>
           )}
@@ -427,6 +427,10 @@ function SummaryPanel({
       {kickoffPreview && (
         <div className="rounded-lg border border-border p-4">
           <h4 className="mb-1 text-xs font-semibold text-foreground-muted">Kickoff message</h4>
+          <p className="mb-2 text-xs text-foreground-muted">
+            Posted by Switch on your behalf. Each agent it mentions checks whether you may address
+            it, the same as if you had typed it.
+          </p>
           <pre className="max-h-40 overflow-y-auto text-xs whitespace-pre-wrap text-foreground-muted">
             {kickoffPreview}
           </pre>
@@ -632,7 +636,7 @@ const TemplateImportPanel = observer(function TemplateImportPanel() {
   }, [bridges, parsed, values]);
 
   // How the signed-in user resolves on that bridge: what `{$creator}`
-  // becomes, and whether the kickoff can be posted as them.
+  // becomes.
   const creatorIdentity = useMemo(() => {
     if (identities === null) return null;
     if (templateBridge) {
