@@ -57,6 +57,7 @@ from switch_core.bridges.agent.registration_bootstrap import (
 )
 from switch_core.bridges.resource.service import ResourceService
 from switch_core.clients.admin_messages import PLATFORM_MARKER as _PLATFORM_MARKER
+from switch_core.clients.admin_messages import platform_on_behalf_of
 from switch_core.crypto import encrypt_token
 from switch_core.db.models import (
     Agent,
@@ -1762,6 +1763,9 @@ class ProtocolService:
         }
         if sender_kind is not None:
             entry["sender_kind"] = sender_kind
+        person = platform_on_behalf_of(message.content or {})
+        if person is not None:
+            entry["on_behalf_of"] = person.name
         return entry
 
     @staticmethod
@@ -1789,8 +1793,10 @@ class ProtocolService:
             {"root": <entry>, "replies": [<entry>, ...]}
 
         An <entry> is {"id", "kind", "sender", "sender_name", "body",
-        "timestamp", "attachments"}. `kind` is "message" for something someone
-        said and "room_join" for an arrival. Top-level entries are roots with
+        "timestamp", "attachments"}, plus "sender_kind" ("platform" for a
+        message the Switch app posted) and "on_behalf_of" (the person a
+        platform message spoke for) when they apply. `kind` is "message" for
+        something someone said and "room_join" for an arrival. Top-level entries are roots with
         an empty replies list; replies are ordered oldest-first within a
         thread. A root that falls outside the fetched window but has a reply
         inside it is fetched alongside; if no record of it exists it is

@@ -91,16 +91,21 @@ class TestTheCanonicalExample:
         assert "unused_param" not in _codes(result.warnings)
 
     def test_a_newer_param_field_is_a_warning_not_an_error(self) -> None:
-        """`multiline` lands with CHOO-2656; this branch predates it.
+        """A param field this Switch does not know yet.
 
         Reported so a typo is still visible, but not as an error — a document
         written for a newer Switch is the ordinary case for a registry, not a
         broken document.
         """
-        result = lint_template(_CANONICAL_EXAMPLE)
+        text = _CANONICAL_EXAMPLE.replace(
+            "    multiline: true\n",
+            "    multiline: true\n    placeholder: Paste it here\n",
+        )
+        assert text != _CANONICAL_EXAMPLE
+        result = lint_template(text)
         (warning,) = [w for w in result.warnings if w.code == "unknown_param_field"]
         assert warning.subject == "brief"
-        assert "multiline" in warning.message
+        assert "placeholder" in warning.message
 
 
 class TestWhatBarsTheDoor:
@@ -185,7 +190,7 @@ class TestUnknownParamFields:
             "params:\n"
             "  visibility:\n"
             "    type: enum\n"
-            "    multiline: true\n"
+            "    placeholder: Paste it here\n"
             "room:\n"
             "  channel_type: '{visibility}'\n"
         )
@@ -197,7 +202,7 @@ class TestUnknownParamFields:
             "params:\n"
             "  owner:\n"
             "    type: nonsense\n"
-            "    multiline: true\n"
+            "    placeholder: Paste it here\n"
             "room:\n"
             "  name: '{owner}'\n"
         )

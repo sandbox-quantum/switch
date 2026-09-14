@@ -10,6 +10,7 @@ from switch_core.clients.admin_messages import (
     ADMIN_MARKER,
     PLATFORM_MARKER,
     AdminMessageType,
+    OnBehalfOf,
     admin_extra_content,
 )
 from switch_core.clients.client_base import (
@@ -134,23 +135,27 @@ class AdminClient(ClientBase[ClientConfig]):
         body: str,
         *,
         thread_root_id: str | None = None,
-        on_behalf_of: str | None = None,
+        on_behalf_of: OnBehalfOf | None = None,
     ) -> str | None:
         """Send an addressed message as the Switch platform.
 
-        Unlike admin messages, platform messages carry no ADMIN_MARKER and ARE
-        addressed to agents — they expect a response. The PLATFORM_MARKER
-        identifies them as platform-sourced so the bridge renders them as the
-        Switch app and resolve_sender maps them to sender_kind="platform".
+        Unlike admin notices, a platform message carries no ADMIN_MARKER and
+        IS addressed to agents: it expects a response. The PLATFORM_MARKER
+        tells the bridge to render it as the Switch app and lets the receive
+        path resolve it to sender_kind="platform".
 
-        ``on_behalf_of``, when set, is the name of the user the platform is
-        impersonating (creator impersonation). The marker carries it so every
-        layer can distinguish a direct platform message from an impersonated
-        one.
+        ``on_behalf_of`` names the person whose authority the message carries.
+        Each addressed agent then applies its policy to that person, so the
+        platform can say what they could have said in that room and nothing
+        more. Without it the message is the platform's own, which agents deny
+        unless a rule opts them in.
         """
         marker_value: dict[str, object] = {}
         if on_behalf_of is not None:
-            marker_value["on_behalf_of"] = on_behalf_of
+            marker_value["on_behalf_of"] = {
+                "user_id": on_behalf_of.user_id,
+                "name": on_behalf_of.name,
+            }
         return await self.send_message(
             room_id,
             body,

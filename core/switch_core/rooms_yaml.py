@@ -32,6 +32,8 @@ from pydantic import BaseModel, ValidationError, model_validator
 
 from switch_core.bridges.collaboration.models import ChannelType
 from switch_core.bridges.resource.registry import validate_reference_value
+from switch_core.clients.admin_client import AdminClient
+from switch_core.clients.admin_messages import OnBehalfOf
 from switch_core.room_service import RoleSpec, RoomCreateConfig
 
 if TYPE_CHECKING:
@@ -52,6 +54,9 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 # ── Template parameters (v0) ─────────────────────────────────────────────
+
+# How long a kickoff waits for the room's members to join before posting.
+KICKOFF_JOIN_TIMEOUT = 30.0
 
 PLACEHOLDER_RE = re.compile(r"\{(\$?[A-Za-z_][A-Za-z0-9_]*)\}")
 
@@ -228,18 +233,6 @@ class DocSpec(BaseModel):
     content: str
 
 
-class KickoffSpec(BaseModel):
-    """The message sent into the room after provisioning (CHOO-2719).
-
-    Defaults to posting as the platform; ``sender: "creator"`` is explicit,
-    visible creator impersonation.
-    """
-
-    message: str
-    targets: list[str] = []
-    sender: Literal["platform", "creator"] = "platform"
-
-
 class RoomSpec(BaseModel):
     name: str
     description: str
@@ -254,7 +247,6 @@ class RoomSpec(BaseModel):
     roles: list[RoleSpec] = []
     references: list[ExternalReferenceEntry] = []
     docs: list[DocSpec] = []
-    kickoff: KickoffSpec | None = None
 
 
 class TemplateDocument(BaseModel):
@@ -559,8 +551,13 @@ class RoomYamlService:
         is_admin: bool,
         kickoff: str | None = None,
         creator_name: str | None = None,
-        creator_email: str | None = None,
     ) -> ProvisionResult:
+        """Create the room and everything the spec attaches to it.
+
+        ``kickoff`` is posted once the room exists, by the platform on the
+        creator's behalf (see ``_send_kickoff``); ``creator_name`` is how the
+        message names them.
+        """
         bridge_id = await self._resolve_bridge_id(spec.bridge)
         if spec.users and bridge_id is None:
             raise ValueError(
@@ -601,25 +598,12 @@ class RoomYamlService:
         )
 
         if kickoff:
-            # Best-effort like references and docs: the room exists, so a
-            # kickoff that cannot be posted is reported, not fatal.
-            try:
-                await self._rooms.post_kickoff(
-                    room_id,
-                    kickoff,
-                    user_id=user_id,
-                    user_name=creator_name,
-                    user_email=creator_email,
-                )
-            except Exception as e:
-                failures.append({"kind": "kickoff", "id": "kickoff", "error": str(e)})
-
-        if spec.kickoff is not None:
             await self._send_kickoff(
                 result.room,
-                spec.kickoff,
+                kickoff,
                 agent_names=spec.agents,
                 user_id=user_id,
+                user_name=creator_name,
                 failures=failures,
             )
 
@@ -756,82 +740,97 @@ class RoomYamlService:
             await session.commit()
         return created
 
-    # ── Kickoff (CHOO-2719) ─────────────────────────────────────────────
+    # ── Kickoff ───────────────────────────────────────────────────────────
 
     async def _send_kickoff(
         self,
         room: Room,
-        kickoff: KickoffSpec,
+        text: str,
         *,
         agent_names: list[str],
         user_id: str,
+        user_name: str | None,
         failures: list[dict[str, Any]],
     ) -> None:
-        """Post the kickoff message into the newly provisioned room.
+        """Post the kickoff into the room the template just created.
 
-        ``sender="platform"`` (default) sends via the admin client with the
-        platform marker — visible as the Switch app, subject to platform
-        addressing policy.
+        The platform posts it, on the creator's behalf: the message renders as
+        the Switch app and says who it speaks for, and each agent it mentions
+        applies its addressing policy to that person, so the kickoff reaches
+        exactly the agents the creator could have addressed by hand. Nobody is
+        impersonated and no agent is granted anything past this one event.
 
-        ``sender="creator"`` sends via the admin client with ``on_behalf_of``
-        set to the creator — explicit, visible creator impersonation.
+        Best-effort like references and docs: the room exists, so a kickoff
+        that cannot be posted is reported in ``failures``, not fatal. The
+        agents are waited for first, because a client drops events that land
+        before its own join; one that does not turn up in time is reported
+        too, since it will not have seen the message.
         """
+
+        def fail(error: str) -> None:
+            failures.append({"kind": "kickoff", "id": "kickoff", "error": error})
+
         if self._client_lifecycle is None:
-            failures.append(
-                {
-                    "kind": "kickoff",
-                    "id": "kickoff",
-                    "error": "no client lifecycle — cannot send kickoff",
-                }
-            )
+            fail("kickoff posting is not configured on this server")
+            return
+        admins = self._client_lifecycle.get_by_type("admin", room.tenant_id)
+        admin = next((c for c in admins if isinstance(c, AdminClient)), None)
+        if admin is None:
+            fail("the platform has no client to post with")
             return
 
-        from switch_core.clients.admin_client import AdminClient
-
-        admin_clients = self._client_lifecycle.get_by_type("admin", room.tenant_id)
-        if not admin_clients:
-            failures.append(
-                {
-                    "kind": "kickoff",
-                    "id": "kickoff",
-                    "error": "no admin client available for this tenant",
-                }
-            )
+        late = await self._wait_for_kickoff_audience(
+            room.matrix_room_id, admin, agent_names
+        )
+        if late:
+            fail("did not join the room in time to see the kickoff: " + ", ".join(late))
+        if "the platform" in late:
             return
-
-        admin = admin_clients[0]
-        if not isinstance(admin, AdminClient):
-            failures.append(
-                {
-                    "kind": "kickoff",
-                    "id": "kickoff",
-                    "error": "admin client is not an AdminClient instance",
-                }
-            )
-            return
-
-        targets = kickoff.targets or list(agent_names)
-        body = kickoff.message
-        if targets:
-            prefix = " ".join(f"@{t}" for t in targets)
-            body = f"{prefix} {body}"
 
         try:
-            on_behalf_of: str | None = None
-            if kickoff.sender == "creator":
-                from switch_core.db.stores.user_store import UserStore
-
-                user_store = UserStore()
-                async with self._session_factory() as session:
-                    user = await user_store.get(session, user_id)
-                on_behalf_of = user.name if user else user_id
-            await admin.send_platform_message(
+            event_id = await admin.send_platform_message(
                 room.matrix_room_id,
-                body,
-                on_behalf_of=on_behalf_of,
+                text,
+                on_behalf_of=OnBehalfOf(user_id, user_name or user_id),
             )
         except Exception as e:
-            failures.append({"kind": "kickoff", "id": "kickoff", "error": str(e)})
+            fail(str(e))
+            return
+        if event_id is None:
+            fail("the platform could not post the kickoff")
+
+    async def _wait_for_kickoff_audience(
+        self,
+        matrix_room_id: str,
+        admin: AdminClient,
+        agent_names: list[str],
+    ) -> list[str]:
+        """Wait for the sender and the template's agents to be in the room.
+
+        Returns the names of those that were not joined within the timeout:
+        "the platform" for the sender itself, else the agent's name. An agent
+        with no running client is not waited for; it is not in the room to
+        miss anything.
+        """
+        late: list[str] = []
+        if not await admin.wait_joined(matrix_room_id, KICKOFF_JOIN_TIMEOUT):
+            late.append("the platform")
+        if not agent_names or self._client_lifecycle is None:
+            return late
+        async with self._session_factory() as session:
+            agents = await self._agent_store.get_by_names(session, agent_names)
+        for agent in agents:
+            client = self._client_lifecycle.get_by_agent_id(agent.id)
+            if client is None:
+                continue
+            try:
+                joined = await client.wait_joined(matrix_room_id, KICKOFF_JOIN_TIMEOUT)
+            except RuntimeError:
+                # Not connected: it is not receiving anything either way.
+                continue
+            if not joined:
+                late.append(agent.name)
+        return late
 
     # ── Export ────────────────────────────────────────────────────────────
 

@@ -4,7 +4,7 @@ resolves to their platform identity claims-first.
 A directory hit used to answer the caller and leave no record, so the next
 step that read the database (room membership, addressing, export) did not see
 the person the resolution had just found. These tests pin the persisted-hit
-behaviour and the claims-first `resolve_switch_user` path.
+behaviour.
 """
 
 from __future__ import annotations
@@ -18,9 +18,6 @@ from switch_core.db.models import (
     TENANT_ZERO_ID,
     Client,
     CollaborationBridge,
-    ExternalUser,
-    ExternalUserClaim,
-    User,
 )
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.external_user_store import ExternalUserStore
@@ -144,73 +141,3 @@ async def test_directory_matches_email_case_insensitively(session_factory):
 
     resolved = await core.resolve_external_user_id_map(["Carol@Example.COM"])
     assert resolved == {"Carol@Example.COM": "U-carol"}
-
-
-@pytest.mark.asyncio
-async def test_resolve_switch_user_prefers_claimed_identity(session_factory):
-    bridge_id = await _seed_bridge(session_factory)
-    adapter = _DirectoryAdapter([CAROL])
-    core = _core(session_factory, bridge_id, adapter)
-
-    async with session_factory() as session:
-        user = User(name="alice", email="alice@example.com", role="member")
-        user_client = Client(
-            matrix_user_id="@abel:test.local",
-            display_name="abel.dantas",
-            type="external_user",
-        )
-        session.add_all([user, user_client])
-        await session.flush()
-        ext = ExternalUser(
-            bridge_id=bridge_id,
-            external_user_id="U-abel",
-            external_username="abel.dantas",
-            client_id=user_client.id,
-        )
-        session.add(ext)
-        await session.flush()
-        session.add(ExternalUserClaim(external_user_id=ext.id, user_id=user.id))
-        await session.commit()
-        user_id = user.id
-
-    found = await core.resolve_switch_user(
-        user_id, name="alice", email="alice@example.com"
-    )
-    assert found is not None
-    assert found.external_username == "abel.dantas"
-    # The claim answered; the platform was never asked.
-    assert adapter.searches == []
-
-
-@pytest.mark.asyncio
-async def test_resolve_switch_user_falls_back_to_name_then_email(session_factory):
-    bridge_id = await _seed_bridge(session_factory)
-    core = _core(session_factory, bridge_id, _DirectoryAdapter([CAROL]))
-
-    async with session_factory() as session:
-        user = User(name="nomatch", email="carol@example.com", role="member")
-        session.add(user)
-        await session.commit()
-        user_id = user.id
-
-    found = await core.resolve_switch_user(
-        user_id, name="nomatch", email="carol@example.com"
-    )
-    assert found is not None
-    assert found.external_user_id == "U-carol"
-
-
-@pytest.mark.asyncio
-async def test_resolve_switch_user_none_when_unknown(session_factory):
-    bridge_id = await _seed_bridge(session_factory)
-    core = _core(session_factory, bridge_id, _DirectoryAdapter([]))
-
-    async with session_factory() as session:
-        user = User(name="ghost", email="ghost@example.com", role="member")
-        session.add(user)
-        await session.commit()
-        user_id = user.id
-
-    assert (
-        await core.resolve_switch_user(user_id, name="ghost", email="ghost@example.com")
-    ) is None

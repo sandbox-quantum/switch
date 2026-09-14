@@ -30,6 +30,7 @@ from switch_core.clients.admin_messages import (
     ADMIN_MARKER,
     PLATFORM_MARKER,
     AdminMessageType,
+    platform_on_behalf_of,
 )
 from switch_core.clients.client_base import ClientBase, ClientConfig
 from switch_core.clients.mentions import mention_regex, strip_emphasis
@@ -79,13 +80,6 @@ PUPPET_JOIN_TIMEOUT = 30.0
 # How long to hold an incomplete outbound attachment group before relaying the
 # parts that arrived, flagged as incomplete (see _schedule_outbound_group_flush).
 OUTBOUND_GROUP_TIMEOUT_SECONDS = 5.0
-
-# Marks a puppet-sent event as originating in Switch rather than relayed in
-# from the platform. The outbound relay skips puppet senders — their messages
-# came FROM the platform, and echoing them back would duplicate — and this is
-# the exception: `post_as_user` sends on a person's behalf from the Switch
-# side, so the platform has not seen the message yet and must receive it.
-SWITCH_ORIGINATED_MARKER = "com.switch.switch_originated"
 
 
 @dataclass
@@ -1181,70 +1175,6 @@ class BridgeCore:
                 matrix_room_id=matrix_room_id,
             )
 
-    async def resolve_switch_user(
-        self, user_id: str, *, name: str | None, email: str | None
-    ) -> ExternalUser | None:
-        """The platform identity a Switch user goes by on this bridge.
-
-        A claimed identity wins — the user linked it themselves. Otherwise
-        the gateway account's name and email are matched against the bridge's
-        known users and platform directory, which persists a hit, so a match
-        found once stays found.
-        """
-        async with self._session_factory() as session:
-            claimed = await self._external_user_store.get_by_user(session, user_id)
-        for ext in claimed:
-            if ext.bridge_id == self._bridge_id:
-                return ext
-        for candidate in (name, email):
-            if not candidate:
-                continue
-            resolved = await self.resolve_external_user_id_map([candidate])
-            if candidate not in resolved:
-                continue
-            async with self._session_factory() as session:
-                row = await self._external_user_store.get_by_external_id(
-                    session, self._bridge_id, resolved[candidate]
-                )
-            if row is not None:
-                return row
-        return None
-
-    async def post_as_user(
-        self,
-        *,
-        external_user: ExternalUser,
-        room_id: str,
-        matrix_room_id: str,
-        text: str,
-    ) -> str:
-        """Post a message into a room as this external user's puppet.
-
-        The message takes the same path as one the person typed on the
-        platform, so it is relayed outward and can address agents — unlike a
-        Switch-generated notice, which never addresses anyone. Raises when
-        the puppet cannot be brought up and joined, or the send fails."""
-        puppet = await self._ensure_user_in_matrix_room(
-            external_user_id=external_user.external_user_id,
-            external_username=external_user.external_username,
-            room_id=room_id,
-            matrix_room_id=matrix_room_id,
-        )
-        if puppet is None:
-            raise ValueError(
-                f"Could not join {external_user.external_username!r} to the room "
-                "to post as them"
-            )
-        event_id = await puppet.send_message(
-            matrix_room_id,
-            text,
-            format="markdown",
-            extra_content={SWITCH_ORIGINATED_MARKER: True},
-        )
-        if event_id is None:
-            raise ValueError(f"Posting as {external_user.external_username!r} failed")
-        return event_id
-
     async def _ensure_user_in_matrix_room(
         self,
         *,
@@ -1533,10 +1463,7 @@ class BridgeCore:
             room.room_id,
             event.body[:80] if event.body else "",
         )
-        if (
-            event.sender in self._puppet_matrix_ids
-            and SWITCH_ORIGINATED_MARKER not in event.content
-        ):
+        if event.sender in self._puppet_matrix_ids:
             logger.debug("[BRIDGE-OUT] skipping puppet message from %s", event.sender)
             return
         if event.sender == self._bridge_client_matrix_user_id:
@@ -1590,9 +1517,16 @@ class BridgeCore:
             # here as well ran the body through twice, and the second pass
             # escapes the markup the first one produced — a command reply
             # arrived showing its own `<b>` tags.
+            # A platform message sent for a person says so in the text, so
+            # the room sees whose authority it carries rather than a bare
+            # notice from the app.
+            body = event.body
+            person = platform_on_behalf_of(event_content)
+            if person is not None:
+                body = f"On behalf of {person.name}:\n\n{body}"
             message_ref = await self._adapter.admin_message(
                 channel_id,
-                event.body,
+                body,
                 thread_root_ref,
                 message_type=message_type,
             )

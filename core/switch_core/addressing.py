@@ -47,7 +47,10 @@ Defaults / precedence:
     `owner_only_policy`) rather than open.
   - **Platform senders are always deny-by-default** (CHOO-2719), even for an
     open policy. An agent must have at least one rule with ``platform=True``
-    to receive platform messages.
+    to receive the platform's own messages. A platform message sent on a
+    person's behalf is a different case: it is judged as that person (see
+    `allows_on_behalf_of`), so the platform never reaches an agent the person
+    could not.
 
 This module is deliberately pure (no DB, no I/O) so it is trivially testable
 and reusable from the receive path, the protocol service, and the gateway.
@@ -285,6 +288,41 @@ def platform_allowed_policy() -> AddressingPolicy:
                 platform=True,
             )
         ]
+    )
+
+
+def allows_on_behalf_of(
+    policy: AddressingPolicy,
+    *,
+    room_id: str,
+    group_id: str | None,
+    user_id: str,
+    external_user_ids: list[str],
+    owner_user_id: str | None,
+) -> bool:
+    """Whether the platform may address this agent with `user_id`'s authority.
+
+    The answer is exactly what the policy would say to that person speaking
+    in the room themselves: an open policy admits them, an owner rule admits
+    them when they own the agent, and a ``users`` list admits them when one
+    of the platform accounts they have claimed (`external_user_ids`) is in
+    it. A person with no claimed account can still pass ``users: "*"`` and an
+    owner rule, which is what they could do as a human sender too.
+    """
+    if policy.is_open():
+        return True
+    candidates = external_user_ids or [""]
+    return any(
+        policy.allows(
+            room_id=room_id,
+            group_id=group_id,
+            sender_kind="user",
+            sender_id=external_id,
+            sender_user_ids=[user_id],
+            sender_owner_user_id=None,
+            owner_user_id=owner_user_id,
+        )
+        for external_id in candidates
     )
 
 

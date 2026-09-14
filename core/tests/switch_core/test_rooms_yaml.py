@@ -11,6 +11,7 @@ for real.
 from __future__ import annotations
 
 import uuid
+from typing import Any
 
 import pytest
 import pytest_asyncio
@@ -18,6 +19,8 @@ from sqlalchemy import insert, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.bridges.resource.service import ResourceService
+from switch_core.clients.admin_client import AdminClient
+from switch_core.clients.admin_messages import OnBehalfOf
 from switch_core.db.models import (
     Agent,
     ApiKey,
@@ -54,6 +57,17 @@ from switch_core.rooms_yaml import (
 )
 
 
+class _AnyStr:
+    def __eq__(self, other: object) -> bool:
+        return isinstance(other, str)
+
+    def __repr__(self) -> str:
+        return "<any str>"
+
+
+ANY_ROOM = _AnyStr()
+
+
 class FakeRoomService:
     """DB-only stand-in for RoomService.create_room.
 
@@ -69,8 +83,6 @@ class FakeRoomService:
     ) -> None:
         self._sf = session_factory
         self._agents = agent_store
-        self.kickoffs: list[dict[str, str | None]] = []
-        self.kickoff_error: Exception | None = None
         #: username → external id, the people a bridge would resolve.
         self.bridge_users: dict[str, str] = {}
         self.bridge_user_lookups: list[tuple[str, list[str]]] = []
@@ -80,27 +92,6 @@ class FakeRoomService:
     ) -> dict[str, str]:
         self.bridge_user_lookups.append((bridge_id, names))
         return {n: self.bridge_users[n] for n in names if n in self.bridge_users}
-
-    async def post_kickoff(
-        self,
-        room_id: str,
-        text: str,
-        *,
-        user_id: str | None = None,
-        user_name: str | None = None,
-        user_email: str | None = None,
-    ) -> str | None:
-        if self.kickoff_error is not None:
-            raise self.kickoff_error
-        self.kickoffs.append(
-            {
-                "room_id": room_id,
-                "text": text,
-                "user_id": user_id,
-                "user_name": user_name,
-            }
-        )
-        return f"ev-{len(self.kickoffs)}"
 
     async def create_room(self, config: RoomCreateConfig) -> RoomCreateResult:
         async with self._sf() as session:
@@ -1049,53 +1040,6 @@ def test_parse_unknown_top_level_key_rejected(env):
         )
 
 
-# ── kickoff spec (CHOO-2719) ─────────────────────────────────────────────
-
-
-def test_parse_kickoff_defaults(env):
-    spec, _ = _svc(env).parse(
-        """
-        room:
-          name: "R"
-          description: "d"
-          kickoff:
-            message: "Hello agents!"
-        """
-    )
-    assert spec.kickoff is not None
-    assert spec.kickoff.message == "Hello agents!"
-    assert spec.kickoff.sender == "platform"
-    assert spec.kickoff.targets == []
-
-
-def test_parse_kickoff_with_targets_and_creator(env):
-    spec, _ = _svc(env).parse(
-        """
-        room:
-          name: "R"
-          description: "d"
-          kickoff:
-            message: "Get to work"
-            targets: ["agent-a", "agent-b"]
-            sender: "creator"
-        """
-    )
-    assert spec.kickoff is not None
-    assert spec.kickoff.targets == ["agent-a", "agent-b"]
-    assert spec.kickoff.sender == "creator"
-
-
-def test_parse_no_kickoff(env):
-    spec, _ = _svc(env).parse(
-        """
-        room:
-          name: "R"
-          description: "d"
-        """
-    )
-    assert spec.kickoff is None
-
-
 # ── provision with params (integration) ────────────────────────────────────
 
 
@@ -1219,12 +1163,66 @@ async def test_endpoint_json_body(env):
 # ── kickoff ─────────────────────────────────────────────────────────────────
 
 
+class FakeAdminClient(AdminClient):
+    """Records platform sends; never touches a transport."""
+
+    def __init__(self) -> None:  # noqa: D107 - test double, no super().__init__
+        self.sent: list[dict[str, Any]] = []
+        self.joined = True
+        self.send_error: Exception | None = None
+        self.send_returns: str | None = "$kickoff"
+
+    async def wait_joined(self, room_id: str, timeout: float) -> bool:
+        return self.joined
+
+    async def send_platform_message(  # type: ignore[override]
+        self, room_id: str, body: str, *, thread_root_id=None, on_behalf_of=None
+    ) -> str | None:
+        if self.send_error is not None:
+            raise self.send_error
+        self.sent.append(
+            {"room_id": room_id, "body": body, "on_behalf_of": on_behalf_of}
+        )
+        return self.send_returns
+
+
+class FakeAgentClient:
+    def __init__(self, joined: bool = True) -> None:
+        self.joined = joined
+
+    async def wait_joined(self, room_id: str, timeout: float) -> bool:
+        return self.joined
+
+
+class FakeLifecycle:
+    def __init__(self, admin: AdminClient | None) -> None:
+        self.admin = admin
+        self.agent_clients: dict[str, FakeAgentClient] = {}
+
+    def get_by_type(self, client_type: str, tenant_id: str) -> list:
+        if self.admin is not None and client_type == "admin":
+            return [self.admin]
+        return []
+
+    def get_by_agent_id(self, agent_id: str):
+        return self.agent_clients.get(agent_id)
+
+
+def _with_kickoff(
+    env, admin: AdminClient | None
+) -> tuple[RoomYamlService, FakeLifecycle]:
+    lifecycle = FakeLifecycle(admin)
+    svc = _svc(env)
+    svc._client_lifecycle = lifecycle  # type: ignore[assignment]
+    return svc, lifecycle
+
+
 KICKOFF_TEMPLATE = """
 params:
   coder:
-    type: string
+    type: agent
 room:
-  name: "Kickoff room"
+  name: "kick"
   description: "d"
   agents: ["{coder}"]
 kickoff: |
@@ -1233,9 +1231,11 @@ kickoff: |
 
 
 @pytest.mark.asyncio
-async def test_provision_kickoff_posts_as_admin(env):
-    """A template kickoff is posted via the admin client, after interpolation."""
-    svc = _svc(env)
+async def test_provision_kickoff_posts_as_platform_on_behalf_of_creator(env):
+    """The kickoff goes out through the admin client with the creator named
+    in the marker, after interpolation, and the room reports no failure."""
+    admin = FakeAdminClient()
+    svc, _ = _with_kickoff(env, admin)
     spec, kickoff = svc.parse(KICKOFF_TEMPLATE, inputs={"coder": "claude-code.alice"})
     result = await svc.provision(
         spec,
@@ -1243,46 +1243,104 @@ async def test_provision_kickoff_posts_as_admin(env):
         user_id=env["user_id"],
         is_admin=False,
         creator_name="alice",
-        creator_email="alice@example.com",
     )
     assert result.failed_attachments == []
-    assert env["rooms"].kickoffs == [
+    assert admin.sent == [
         {
-            "room_id": result.room_id,
-            "text": "@claude-code.alice start on the brief.\n",
-            "user_id": env["user_id"],
-            "user_name": "alice",
+            "room_id": ANY_ROOM,
+            "body": "@claude-code.alice start on the brief.\n",
+            "on_behalf_of": OnBehalfOf(env["user_id"], "alice"),
         }
     ]
 
 
 @pytest.mark.asyncio
-async def test_provision_kickoff_failure_is_reported_not_fatal(env):
-    """A kickoff that cannot be posted lands in failed_attachments; the room
-    still provisions."""
-    env["rooms"].kickoff_error = ValueError("the room's bridge is not running")
-    svc = _svc(env)
+async def test_provision_kickoff_send_failure_is_reported_not_fatal(env):
+    admin = FakeAdminClient()
+    admin.send_error = RuntimeError("transport down")
+    svc, _ = _with_kickoff(env, admin)
     spec, kickoff = svc.parse(KICKOFF_TEMPLATE, inputs={"coder": "claude-code.alice"})
     result = await svc.provision(
         spec, kickoff=kickoff, user_id=env["user_id"], is_admin=False
     )
     assert result.room_id
     assert result.failed_attachments == [
+        {"kind": "kickoff", "id": "kickoff", "error": "transport down"}
+    ]
+
+
+@pytest.mark.asyncio
+async def test_provision_kickoff_none_event_id_is_a_failure(env):
+    """The admin client answers None when the send did not happen; that is a
+    failure, not a silent success."""
+    admin = FakeAdminClient()
+    admin.send_returns = None
+    svc, _ = _with_kickoff(env, admin)
+    spec, kickoff = svc.parse(KICKOFF_TEMPLATE, inputs={"coder": "claude-code.alice"})
+    result = await svc.provision(
+        spec, kickoff=kickoff, user_id=env["user_id"], is_admin=False
+    )
+    assert [f["error"] for f in result.failed_attachments] == [
+        "the platform could not post the kickoff"
+    ]
+
+
+@pytest.mark.asyncio
+async def test_provision_kickoff_waits_for_agents_and_reports_the_late(env):
+    """An agent whose client has not joined by the timeout is named in the
+    failure; the kickoff is still posted for the ones that did."""
+    admin = FakeAdminClient()
+    svc, lifecycle = _with_kickoff(env, admin)
+    async with env["session_factory"]() as session:
+        agent = await AgentStore().get_by_name(session, "claude-code.alice")
+    lifecycle.agent_clients[agent.id] = FakeAgentClient(joined=False)
+    spec, kickoff = svc.parse(KICKOFF_TEMPLATE, inputs={"coder": "claude-code.alice"})
+    result = await svc.provision(
+        spec, kickoff=kickoff, user_id=env["user_id"], is_admin=False
+    )
+    assert [f["error"] for f in result.failed_attachments] == [
+        "did not join the room in time to see the kickoff: claude-code.alice"
+    ]
+    assert len(admin.sent) == 1
+
+
+@pytest.mark.asyncio
+async def test_provision_kickoff_not_posted_when_platform_never_joins(env):
+    admin = FakeAdminClient()
+    admin.joined = False
+    svc, _ = _with_kickoff(env, admin)
+    spec, kickoff = svc.parse(KICKOFF_TEMPLATE, inputs={"coder": "claude-code.alice"})
+    result = await svc.provision(
+        spec, kickoff=kickoff, user_id=env["user_id"], is_admin=False
+    )
+    assert admin.sent == []
+    assert result.failed_attachments[0]["error"].startswith("did not join")
+
+
+@pytest.mark.asyncio
+async def test_provision_kickoff_without_admin_client_is_reported(env):
+    svc, _ = _with_kickoff(env, None)
+    spec, kickoff = svc.parse(KICKOFF_TEMPLATE, inputs={"coder": "claude-code.alice"})
+    result = await svc.provision(
+        spec, kickoff=kickoff, user_id=env["user_id"], is_admin=False
+    )
+    assert result.failed_attachments == [
         {
             "kind": "kickoff",
             "id": "kickoff",
-            "error": "the room's bridge is not running",
+            "error": "the platform has no client to post with",
         }
     ]
 
 
 @pytest.mark.asyncio
 async def test_provision_without_kickoff_posts_nothing(env):
-    svc = _svc(env)
+    admin = FakeAdminClient()
+    svc, _ = _with_kickoff(env, admin)
     spec, kickoff = svc.parse("room:\n  name: quiet\n  description: d\n")
     assert kickoff is None
     await svc.provision(spec, kickoff=kickoff, user_id=env["user_id"], is_admin=False)
-    assert env["rooms"].kickoffs == []
+    assert admin.sent == []
 
 
 # ── builtins_for ────────────────────────────────────────────────────────────

@@ -217,6 +217,9 @@ class MessagePayload(BaseModel):
     # "agent" (another agent), or "platform" (the Switch app itself,
     # CHOO-2719). None for messages sent before sender_kind was tracked.
     sender_kind: str | None = None
+    # For a platform message: the display name of the person whose authority
+    # it carries (a template's creator behind its kickoff), else None.
+    on_behalf_of: str | None = None
     message_id: str
     body: str
     timestamp: int

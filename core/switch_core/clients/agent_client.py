@@ -4,6 +4,7 @@ import asyncio
 import logging
 import random
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal, NamedTuple, Unpack
 
@@ -28,7 +29,7 @@ from switch_core.bridges.agent.protocol.types import (
     TaskFinalisePayload,
     TaskUpdatePayload,
 )
-from switch_core.clients.admin_messages import PLATFORM_MARKER
+from switch_core.clients.admin_messages import PLATFORM_MARKER, platform_on_behalf_of
 from switch_core.clients.client_base import (
     ClientBase,
     ClientBaseKwargs,
@@ -466,8 +467,11 @@ class AgentClient(ClientBase[ClientConfig]):
             )
 
         sender_kind: str | None = None
+        on_behalf_of: str | None = None
         if PLATFORM_MARKER in event.content:
             sender_kind = "platform"
+            person = platform_on_behalf_of(event.content)
+            on_behalf_of = person.name if person is not None else None
 
         agent_event = AgentEvent(
             type="message",
@@ -479,6 +483,7 @@ class AgentClient(ClientBase[ClientConfig]):
                 sender=event.sender,
                 sender_name=sender_name,
                 sender_kind=sender_kind,
+                on_behalf_of=on_behalf_of,
                 message_id=event.event_id,
                 body=text,
                 timestamp=event.timestamp,
@@ -669,8 +674,11 @@ class AgentClient(ClientBase[ClientConfig]):
                 )
 
         sender_kind: str | None = None
+        on_behalf_of: str | None = None
         if PLATFORM_MARKER in event.content:
             sender_kind = "platform"
+            person = platform_on_behalf_of(event.content)
+            on_behalf_of = person.name if person is not None else None
 
         agent_event = AgentEvent(
             type="message",
@@ -682,6 +690,7 @@ class AgentClient(ClientBase[ClientConfig]):
                 sender=event.sender,
                 sender_name=sender_name,
                 sender_kind=sender_kind,
+                on_behalf_of=on_behalf_of,
                 message_id=event.event_id,
                 body=body,
                 timestamp=event.timestamp,
@@ -1236,7 +1245,12 @@ class AgentClient(ClientBase[ClientConfig]):
         )
 
     async def _addressing_allowed(
-        self, session: AsyncSession, agent: Agent, matrix_sender: str, room_id: str
+        self,
+        session: AsyncSession,
+        agent: Agent,
+        matrix_sender: str,
+        room_id: str,
+        content: Mapping[str, object] | None = None,
     ) -> AddressingDecision:
         """Whether `matrix_sender` may address this agent in `room_id`, per the
         agent's scoped addressing policy.
@@ -1244,9 +1258,15 @@ class AgentClient(ClientBase[ClientConfig]):
         `agent` is the freshly-read row rather than the cached snapshot: the
         policy is the thing being enforced, and enforcing a stale copy of it is
         the one way this check can be wrong in the dangerous direction.
+        `content` is the event's content when there is one: a platform message
+        says there whose authority it carries.
         """
         return await self._addressing.permitted(
-            session, agent=agent, room_id=room_id, sender=matrix_sender
+            session,
+            agent=agent,
+            room_id=room_id,
+            sender=matrix_sender,
+            content=content,
         )
 
     async def _gate_addressed(
@@ -1265,7 +1285,7 @@ class AgentClient(ClientBase[ClientConfig]):
         tag this agent are ever checked, and open policies short-circuit.
         """
         decision = await self._addressing_allowed(
-            session, agent, event.sender, meta.room_id
+            session, agent, event.sender, meta.room_id, event.content
         )
         if decision.allowed:
             return _GateOutcome(addressed=True, refusal=None)

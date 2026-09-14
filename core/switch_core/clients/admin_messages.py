@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from enum import StrEnum
+from typing import NamedTuple
 
 # Marker stamped on the content of an admin/system `m.room.message`. Two jobs,
 # mirroring AUTO_REPLY_FLAG:
@@ -21,9 +23,37 @@ ADMIN_MARKER = "com.switch.admin"
 # identify it as sender_kind="platform". Carried as a content field on a
 # plain m.room.message whose body is the human-readable default text.
 #
-# Value is a dict: {"on_behalf_of": "<name>"} when the platform is
-# impersonating a creator, or {} for a direct platform message.
+# Value is a dict: {} for a message the platform sends on its own account, or
+# {"on_behalf_of": {"user_id": ..., "name": ...}} when it speaks with a
+# person's authority (a template kickoff, posted for whoever created the
+# room). The authority is per message: an agent's addressing policy is
+# evaluated for that user when this event arrives, and nothing is granted
+# beyond it. Only server-side code writes the marker; an agent or a bridge
+# relay never can.
 PLATFORM_MARKER = "com.switch.platform"
+
+
+class OnBehalfOf(NamedTuple):
+    """The person a platform message carries the authority of."""
+
+    user_id: str
+    name: str
+
+
+def platform_on_behalf_of(content: Mapping[str, object]) -> OnBehalfOf | None:
+    """The person behind a platform-marked event, or None for a bare platform
+    message or an event without the marker."""
+    marker = content.get(PLATFORM_MARKER)
+    if not isinstance(marker, dict):
+        return None
+    person = marker.get("on_behalf_of")
+    if not isinstance(person, dict):
+        return None
+    user_id = person.get("user_id")
+    name = person.get("name")
+    if not isinstance(user_id, str) or not user_id:
+        return None
+    return OnBehalfOf(user_id, name if isinstance(name, str) and name else user_id)
 
 
 class AdminMessageType(StrEnum):

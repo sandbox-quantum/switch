@@ -18,10 +18,12 @@
 #                Other builtins: {$creator_email}, {$date}, {$timestamp}.
 #
 #   kickoff:     Top-level key beside room: and params:. Posted into the room
-#                as the creating user once provisioning completes. Agents
-#                only start working when a message addresses them, so
-#                mention them here — this is what turns a provisioned room
-#                into running work.
+#                by Switch on the creator's behalf once provisioning
+#                completes: each agent it mentions applies its addressing
+#                policy to the creator, as if they had typed it. Agents only
+#                start working when a message addresses them, so mention
+#                them here. This is what turns a provisioned room into
+#                running work.
 params:
   task_name:
     type: string

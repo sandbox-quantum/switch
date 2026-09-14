@@ -24,11 +24,21 @@ rewrite to expose it.
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, NamedTuple
 
-from switch_core.addressing import SenderKind, can_address, parse_policy
-from switch_core.clients.admin_messages import ADMIN_MARKER
+from switch_core.addressing import (
+    SenderKind,
+    allows_on_behalf_of,
+    can_address,
+    parse_policy,
+)
+from switch_core.clients.admin_messages import (
+    ADMIN_MARKER,
+    PLATFORM_MARKER,
+    platform_on_behalf_of,
+)
 from switch_core.clients.mentions import mention_regex, strip_emphasis
 
 if TYPE_CHECKING:
@@ -101,6 +111,10 @@ class SenderPrincipal(NamedTuple):
     id: str
     user_ids: list[str]
     owner_user_id: str | None
+    #: For a platform sender: the Switch user whose authority the message
+    #: carries, read from the event's marker. None for the platform's own
+    #: message and for every other kind.
+    on_behalf_of: str | None = None
 
 
 class AddressingResolver:
@@ -257,7 +271,13 @@ class AddressingResolver:
     # ── Permitted ─────────────────────────────────────────────────────────────
 
     async def permitted(
-        self, session: AsyncSession, *, agent: Agent, room_id: str, sender: str
+        self,
+        session: AsyncSession,
+        *,
+        agent: Agent,
+        room_id: str,
+        sender: str,
+        content: Mapping[str, object] | None = None,
     ) -> AddressingDecision:
         """Whether `sender` may address this agent in this room.
 
@@ -266,15 +286,29 @@ class AddressingResolver:
         that resolves to nothing is refused rather than given the benefit of
         the doubt, because an identity nobody can name is exactly what a
         restricted agent is restricted against.
+
+        `content` is the event's content. A platform-marked event is the one
+        case an open policy does not settle up front: the platform's own
+        message is denied unless a rule admits it, and a message it sends on
+        a person's behalf is judged as that person. Checking the marker is a
+        dict lookup, so the open-policy fast path stays free for everyone
+        else.
         """
         policy = parse_policy(agent.addressing_policy)
-        if policy.is_open():
+        content = content or {}
+        if policy.is_open() and PLATFORM_MARKER not in content:
             return AddressingDecision(allowed=True, refusal="")
 
-        principal = await self.resolve_sender(session, sender)
+        principal = await self.resolve_sender(session, sender, content)
         room = await self._room_store.get(session, room_id)
+        group_id = room.group_id if room is not None else None
 
         if principal is None:
+            if policy.is_open():
+                # The marker was on an event from a sender that is not the
+                # platform. It carries no authority, so the sender is treated
+                # as anyone else the open policy already admits.
+                return AddressingDecision(allowed=True, refusal="")
             logger.warning(
                 "Addressing denied for %s: unresolvable sender %s in room %s",
                 agent.name,
@@ -283,16 +317,31 @@ class AddressingResolver:
             )
             return AddressingDecision(allowed=False, refusal=ADDRESSING_DENIED_MESSAGE)
 
-        allowed = can_address(
-            policy,
-            room_id=room_id,
-            group_id=room.group_id if room is not None else None,
-            sender_kind=principal.kind,
-            sender_id=principal.id,
-            sender_user_ids=principal.user_ids,
-            sender_owner_user_id=principal.owner_user_id,
-            owner_user_id=agent.owner_id,
-        )
+        if principal.kind == "platform" and principal.on_behalf_of is not None:
+            claimed = await self._external_user_store.get_by_user(
+                session, principal.on_behalf_of
+            )
+            allowed = allows_on_behalf_of(
+                policy,
+                room_id=room_id,
+                group_id=group_id,
+                user_id=principal.on_behalf_of,
+                external_user_ids=[ext.id for ext in claimed],
+                owner_user_id=agent.owner_id,
+            )
+        elif policy.is_open() and principal.kind != "platform":
+            allowed = True
+        else:
+            allowed = can_address(
+                policy,
+                room_id=room_id,
+                group_id=group_id,
+                sender_kind=principal.kind,
+                sender_id=principal.id,
+                sender_user_ids=principal.user_ids,
+                sender_owner_user_id=principal.owner_user_id,
+                owner_user_id=agent.owner_id,
+            )
         if allowed:
             return AddressingDecision(allowed=True, refusal="")
 
@@ -328,7 +377,10 @@ class AddressingResolver:
         )
 
     async def resolve_sender(
-        self, session: AsyncSession, matrix_user_id: str
+        self,
+        session: AsyncSession,
+        matrix_user_id: str,
+        content: Mapping[str, object] | None = None,
     ) -> SenderPrincipal | None:
         """Map a sender's mxid to the principal a policy is written about.
 
@@ -336,6 +388,11 @@ class AddressingResolver:
         and from there to an Agent, an ExternalUser, or the admin client
         (the platform). None means none of those, which a restricted agent
         should not trust.
+
+        `content` matters only for the admin client: its platform marker may
+        name the person the message speaks for. The marker is read for no
+        other sender, so a copy of it on an agent's or a human's message
+        changes nothing.
 
         The two symbolic subjects come from different fields and only one
         applies to any sender: `user_ids` are the Switch users who have claimed
@@ -358,5 +415,12 @@ class AddressingResolver:
             )
             return SenderPrincipal("user", external_user.id, claimants, None)
         if client.type == "admin":
-            return SenderPrincipal("platform", client.id, [], None)
+            person = platform_on_behalf_of(content or {})
+            return SenderPrincipal(
+                "platform",
+                client.id,
+                [],
+                None,
+                on_behalf_of=person.user_id if person is not None else None,
+            )
         return None

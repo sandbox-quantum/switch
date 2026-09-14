@@ -1253,50 +1253,6 @@ class RoomService:
             raise ValueError("the room's messaging app is not running")
         return await bridge_core.resolve_external_user_id_map(names)
 
-    async def post_kickoff(
-        self,
-        room_id: str,
-        text: str,
-        *,
-        user_id: str,
-        user_name: str | None = None,
-        user_email: str | None = None,
-    ) -> str | None:
-        """Post a template's kickoff message into a just-created room.
-
-        Sent as the creating user's platform identity, through their puppet.
-        The admin client cannot be used here because the addressing system
-        does not treat it as a "user" sender — agents with any addressing
-        policy (even ``users: '*'``) reject admin-posted messages. The
-        creator puppet is the only sender kind that passes addressing
-        checks as the agent's owner.
-        """
-        room = await self._load_room(room_id)
-        if room.bridge_id is None:
-            # Internal-only room — post via admin as a best-effort fallback
-            admin_clients = self._client_lifecycle.get_by_type("admin", room.tenant_id)
-            if admin_clients:
-                return await admin_clients[0].send_message(room.matrix_room_id, text)
-            return None
-        bridge_core = self._collab_lifecycle.get(room.bridge_id)
-        if bridge_core is None:
-            raise ValueError("the room's bridge is not running")
-        external_user = await bridge_core.resolve_switch_user(
-            user_id, name=user_name, email=user_email
-        )
-        if external_user is None:
-            raise ValueError(
-                "you have no account on this room's bridge that Switch can "
-                "recognise — link your platform account under Identities, "
-                "then recreate from the template"
-            )
-        return await bridge_core.post_as_user(
-            external_user=external_user,
-            room_id=room.id,
-            matrix_room_id=room.matrix_room_id,
-            text=text,
-        )
-
     async def ensure_client_in_room(self, room_id: str, client_id: str) -> None:
         """Invite a single running client to the room (it auto-joins) and record
         its membership. Idempotent — safe to call repeatedly, e.g. on every
