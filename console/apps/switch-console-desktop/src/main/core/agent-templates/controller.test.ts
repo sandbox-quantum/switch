@@ -4,6 +4,7 @@ import {
   agentTemplateRoomDocument,
   cloneTargetFor,
   parseAgentTemplate,
+  stripFrontMatter,
 } from './agent-template-format';
 
 const SWITCH_EXPERT = `
@@ -70,6 +71,25 @@ describe('parseAgentTemplate', () => {
     const t = parseAgentTemplate('agent:\n  instructions: i\nkickoff: hi\n');
     expect(t.warnings).toHaveLength(1);
     expect(t.warnings[0]).toMatch(/kickoff/);
+  });
+});
+
+describe('stripFrontMatter', () => {
+  it('drops a leading front matter block and keeps the body', () => {
+    expect(stripFrontMatter('---\nname: x\ndescription: y\n---\n\nYou are x.\n')).toBe(
+      'You are x.\n'
+    );
+  });
+
+  it('leaves instructions without front matter alone', () => {
+    expect(stripFrontMatter('You are x.\n---\nnot front matter\n')).toBe(
+      'You are x.\n---\nnot front matter\n'
+    );
+  });
+
+  it('applies to the fallback instructions too', () => {
+    const t = parseAgentTemplate('agent:\n  description: d\n', '---\nname: a\n---\nBody.\n');
+    expect(t.instructions).toBe('Body.\n');
   });
 });
 
