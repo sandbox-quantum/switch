@@ -1,0 +1,59 @@
+# Switch expert, as an agent template.
+#
+# An agent template is the agent-shaped counterpart of a room template: pick
+# it in Switch Console's Templates view, choose where it runs and on which
+# provider, click "Add agent", and you have a working agent. The document
+# declares everything the agent depends on as data, so a second expert on a
+# different subject is a different document, not different code.
+#
+#   agent:        Who the agent is. `name` is offered as the default agent
+#                 name (people address it as @name), `description` is what
+#                 others read to know what it is for, `instructions` is its
+#                 brief. `repo` is the repository it works from: Switch
+#                 Console clones it (shallow) into a subdirectory of the
+#                 agent's working directory before the agent first runs.
+#                 `sources` are the pages it should read; they are shown to
+#                 the person creating the agent and are the agent's to fetch.
+#
+#   room:         Optional. A room to put the agent in as soon as it exists,
+#                 in the same shape as a room template. `{agent}` is the name
+#                 the agent was actually given; `{$creator}` is the person
+#                 creating it. A template with no `room:` creates the agent
+#                 and stops there.
+#
+#   kickoff:      Optional, needs `room:`. Posted into the room as the
+#                 creating person once it exists. Agents only start working
+#                 when a message addresses them, so mention the agent here;
+#                 this is what turns "created" into "answering".
+#
+# Switch Console bundles this template and fills `agent.instructions` from
+# AGENT.md next to this file, so the persona is written once. A template
+# uploaded to a server's registry carries its instructions inline instead.
+version: 1
+agent:
+  name: switch-expert
+  description: >-
+    Answers questions about Switch and helps you design and build things with
+    it. Grounded in a local clone of the Switch repository, which it re-reads
+    rather than answering from memory.
+  repo: https://github.com/sandbox-quantum/switch
+  sources:
+    - label: Stand up a Switch expert
+      url: https://docs.flintai.dev/flintai/switch/getting-started/switch-expert
+    - label: Switch documentation
+      url: https://docs.flintai.dev/flintai/switch/getting-started
+room:
+  name: "Ask {agent}"
+  description: >-
+    Where {$creator} asks {agent} about Switch: how it works, how to set
+    something up, why something is not behaving.
+  channel_type: channel_private
+  agents: ["{agent}"]
+  users: ["{$creator}"]
+  instructions: |
+    This room is for asking {agent} about Switch. Answer here, briefly and
+    concretely, in the plainest words that are still true. When you do not
+    know, say so and say where the answer would live.
+kickoff: |
+  @{agent} hi. Introduce yourself in two lines, then tell me the first thing
+  you would check if an agent in a room stopped answering.
