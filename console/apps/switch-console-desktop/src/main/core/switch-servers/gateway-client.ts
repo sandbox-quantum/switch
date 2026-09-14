@@ -1126,6 +1126,20 @@ export async function fetchTemplates(
   return json.map(toSummary);
 }
 
+/** Store a template document on the server's registry (`POST /templates`). */
+export async function createTemplate(
+  server: SwitchServer,
+  params: { name: string; description: string; kind: string; content: string }
+): Promise<StoredTemplateDetail> {
+  const res = await gatewayFetch(server, '/templates', {
+    authenticated: true,
+    method: 'POST',
+    body: params,
+  });
+  const t = (await res.json()) as RegistryTemplateSummary & { content: string };
+  return { ...toSummary(t), definition: t.content };
+}
+
 export async function fetchTemplateDetail(
   server: SwitchServer,
   templateId: string

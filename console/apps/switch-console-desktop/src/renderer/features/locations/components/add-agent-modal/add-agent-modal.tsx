@@ -13,6 +13,7 @@ import {
 } from '@renderer/features/remote-hosts/host-readiness-notice';
 import { refreshSidebarRoomState } from '@renderer/features/sidebar/sidebar-tree-data';
 import { openRoom } from '@renderer/features/switch-rooms/open-room';
+import { findSessionForRoom } from '@renderer/features/switch-rooms/session-deeplink-listener';
 import { policyHasDeadRule } from '@renderer/features/switch-servers/addressing-policy-editor';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
 import type { AgentTemplateData } from '@renderer/features/templates/agent-template-data';
@@ -21,11 +22,13 @@ import { toast } from '@renderer/lib/hooks/use-toast';
 import { rpc } from '@renderer/lib/ipc';
 import { useNavigate } from '@renderer/lib/layout/navigation-provider';
 import {
+  showModal,
   useModalContext,
   useShowModal,
   type BaseModalProps,
 } from '@renderer/lib/modal/modal-provider';
 import { openExternalUrl } from '@renderer/lib/open-external';
+import { appState } from '@renderer/lib/stores/app-state';
 import { useRemoteAgents } from '@renderer/lib/stores/use-remote-agents';
 import { Alert, AlertDescription } from '@renderer/lib/ui/alert';
 import { Button } from '@renderer/lib/ui/button';
@@ -50,6 +53,7 @@ import { Switch } from '@renderer/lib/ui/switch';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@renderer/lib/ui/tooltip';
 import { log } from '@renderer/utils/logger';
 import type { AgentProviderConfig } from '@shared/core/agents/agent-provider-config';
+import { ownerAndMyAgentsPolicy, ownerOnlyPolicy } from '@shared/core/switch-servers/owner-policy';
 import { type ProvisionAgentResult } from '@shared/core/switch-servers/switch-servers';
 import type { UiEntryPoint } from '@shared/core/telemetry/reporting';
 import { AgentAdvancedConfig } from './agent-advanced-config';
@@ -77,6 +81,28 @@ export type AddLocationModalProps = BaseModalProps<void> & {
   prefillName?: string | null;
 };
 
+/**
+ * Once the kickoff addresses the new agent, the Console starts a session for
+ * it in the room. That session is the thing worth watching, so when it appears
+ * while the person is still looking at the room, open it. Gives up quietly
+ * after a while: no session means no kickoff, and the toast already said so.
+ */
+async function revealSessionWhenItStarts(roomId: string): Promise<void> {
+  for (let i = 0; i < 40; i++) {
+    await new Promise((r) => setTimeout(r, 1000));
+    const stillOnRoom =
+      appState.navigation.currentViewId === 'room' &&
+      (appState.navigation.viewParamsStore.room as { roomId?: string } | undefined)?.roomId ===
+        roomId;
+    if (!stillOnRoom) return;
+    const found = findSessionForRoom(roomId);
+    if (found) {
+      appState.navigation.navigate('session', found);
+      return;
+    }
+  }
+}
+
 /** Sentinel `runHost` value meaning "run on this machine" (no remote host). */
 const LOCAL_RUN_LOCATION = 'local';
 
@@ -101,7 +127,7 @@ export const AddAgentModal = observer(function AddAgentModal({
     'idle' | 'preparing' | 'creating' | 'creating-room'
   >('idle');
   const { navigate } = useNavigate();
-  const { setCloseGuard } = useModalContext();
+  const { setCloseGuard, transitionModal } = useModalContext();
   const showAddServerModal = useShowModal('addServerModal');
 
   const pickState = usePickMode();
@@ -117,6 +143,10 @@ export const AddAgentModal = observer(function AddAgentModal({
       form.setDescription(template.description);
       form.setInstructions(template.instructions);
       if (template.agentName && !prefillName) form.setAgentName(template.agentName);
+      if (template.addressing === 'anyone') form.setAddressingPolicy(null);
+      else if (template.addressing === 'owner-agents') {
+        form.setAddressingPolicy(ownerAndMyAgentsPolicy());
+      } else if (template.addressing === 'owner') form.setAddressingPolicy(ownerOnlyPolicy());
       setTemplateApplied(true);
     }
     if (prefillName) {
@@ -213,6 +243,42 @@ export const AddAgentModal = observer(function AddAgentModal({
     setRenamedFrom(wanted);
     setAgentName(candidate);
   }, [template, prefillName, nameTaken, form.agentName, takenNames, setAgentName]);
+
+  // The room's first message is posted as the person, through their linked
+  // account on the room's bridge. Both halves are checked here, before the
+  // click, because after it the agent already exists and only the message is
+  // missing: a server with no messaging app has nowhere to talk to the agent,
+  // and a person the bridge cannot recognise cannot speak to it.
+  const { data: bridges } = useQuery({
+    queryKey: ['remote-bridges', pickState.serverId],
+    queryFn: () => rpc.switchServers.listRemoteBridges(pickState.serverId as string),
+    enabled: !!pickState.serverId && willCreateRoom,
+  });
+  const { data: myIdentities } = useQuery({
+    queryKey: ['my-identities', pickState.serverId],
+    queryFn: () => rpc.switchServers.listMyIdentities(pickState.serverId as string),
+    enabled: !!pickState.serverId && willCreateRoom,
+  });
+  const roomBridge = useMemo(() => {
+    if (!bridges) return undefined;
+    return bridges.find((b) => b.isDefault) ?? (bridges.length === 1 ? bridges[0] : null);
+  }, [bridges]);
+  const creatorIdentity =
+    roomBridge && myIdentities
+      ? (myIdentities.find((i) => i.bridgeId === roomBridge.id) ?? null)
+      : undefined;
+  const linkIdentity = () => {
+    if (!pickState.serverId || !roomBridge) return;
+    const serverId = pickState.serverId;
+    // One dialog at a time, so the claim takes this one's place and hands
+    // back to a fresh copy of it; a template refills everything that matters.
+    transitionModal('claimIdentityModal', {
+      serverId,
+      bridgeId: roomBridge.id,
+      onSuccess: () => showModal('addAgentModal', { entryPoint, template, prefillName }),
+      onClose: () => showModal('addAgentModal', { entryPoint, template, prefillName }),
+    });
+  };
 
   // A managed server is only reachable from certain run locations, so constrain
   // the picker to them: a remote-managed server from this computer or its own
@@ -517,6 +583,7 @@ export const AddAgentModal = observer(function AddAgentModal({
           setSubmitState('idle');
           onClose();
           await openRoom(roomId);
+          void revealSessionWhenItStarts(roomId);
           return;
         }
       }
@@ -666,6 +733,31 @@ export const AddAgentModal = observer(function AddAgentModal({
                   </span>
                   <Switch className="mt-0.5" checked={createRoom} onCheckedChange={setCreateRoom} />
                 </label>
+              )}
+              {willCreateRoom && bridges && !roomBridge && (
+                <span className="text-amber-500">
+                  No messaging app is connected to this server, so the room would have nowhere for
+                  you to talk to the agent. Connect one on the server page first, or turn the room
+                  off above.
+                </span>
+              )}
+              {willCreateRoom && roomBridge && creatorIdentity === null && (
+                <span className="flex flex-wrap items-center gap-2 text-amber-500">
+                  <span>
+                    The first message is posted as you on {roomBridge.displayName}, but this server
+                    does not know which {roomBridge.displayName} account is yours, so nobody would
+                    speak to the agent.
+                  </span>
+                  <Button type="button" size="xs" variant="outline" onClick={linkIdentity}>
+                    Link my {roomBridge.displayName} account
+                  </Button>
+                </span>
+              )}
+              {willCreateRoom && roomBridge && creatorIdentity && (
+                <span className="text-foreground-muted">
+                  The first message is posted as you: {creatorIdentity.externalUsername} on{' '}
+                  {roomBridge.displayName}.
+                </span>
               )}
               {template.warnings.map((w) => (
                 <span key={w} className="text-foreground-muted">
