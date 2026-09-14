@@ -1,4 +1,6 @@
+import { serverEventSchema, snapshotSchema } from '@switch-console/shared/session-v1';
 import type { AttachmentUpload, ClientCommand } from '@switch-console/shared/session-v1';
+import { z } from 'zod';
 import { getAgentById } from '@main/core/agents/getAgentById';
 import { remoteSessionReconciler } from '@main/core/agents/remote-session-reconciler';
 import { createRPCController } from '@shared/lib/ipc/rpc';
@@ -14,6 +16,7 @@ import {
 } from '../switch-servers/gateway-client';
 import { getServer } from '../switch-servers/servers-store';
 import { sharedAgentDiagnostics } from './diagnostics';
+import { syncSdkSessionActivity } from './session-activity';
 async function sharedServer(serverId: string) {
   const server = await getServer(serverId);
   if (!server) throw new Error('Switch server not found.');
@@ -33,10 +36,21 @@ export const sdkHostController = createRPCController({
     return agent.serverId;
   },
   sharedList: async (serverId: string) => fetchSdkSessions(await sharedServer(serverId)),
-  sharedSnapshot: async (serverId: string, sessionId: string) =>
-    fetchSdkSnapshot(await sharedServer(serverId), sessionId),
-  sharedEvents: async (serverId: string, sessionId: string, after: number) =>
-    fetchSdkEvents(await sharedServer(serverId), sessionId, after),
+  sharedSnapshot: async (serverId: string, sessionId: string) => {
+    const snapshot = snapshotSchema.parse(
+      await fetchSdkSnapshot(await sharedServer(serverId), sessionId)
+    );
+    await syncSdkSessionActivity(snapshot.session);
+    return snapshot;
+  },
+  sharedEvents: async (serverId: string, sessionId: string, after: number) => {
+    const batch = z
+      .array(serverEventSchema)
+      .parse(await fetchSdkEvents(await sharedServer(serverId), sessionId, after));
+    const latest = batch.filter((event) => event.body.type === 'session.upsert').at(-1);
+    if (latest?.body.type === 'session.upsert') await syncSdkSessionActivity(latest.body.session);
+    return batch;
+  },
   sharedSubmit: async (serverId: string, command: ClientCommand) =>
     submitSdkCommand(await sharedServer(serverId), command),
   sharedReconcile: async (serverId: string, command: ClientCommand) =>

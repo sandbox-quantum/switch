@@ -1,5 +1,6 @@
 import { sessionSchema, snapshotSchema } from '@switch-console/shared/session-v1';
 import { eq } from 'drizzle-orm';
+import { syncSdkSessionActivity } from '@main/core/sdk-host/session-activity';
 import { sessionService } from '@main/core/sessions/session-service';
 import { switchRoomService } from '@main/core/switch-rooms/switch-room-service';
 import { fetchSdkSessions, fetchSdkSnapshot } from '@main/core/switch-servers/gateway-client';
@@ -77,6 +78,7 @@ class RemoteSessionReconciler {
           const session = sessionSchema.parse(value);
           if (session.agentId !== agent.switchAgentId || this.deleted.has(session.sessionId))
             continue;
+          if (local.has(session.sessionId)) await syncSdkSessionActivity(session);
           if (
             local.has(session.sessionId) &&
             (session.status === 'stopped' || session.status === 'error' || session.retired)
