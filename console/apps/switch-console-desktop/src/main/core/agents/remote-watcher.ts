@@ -111,6 +111,9 @@ export async function ensureRemoteWatcher(agentId: string): Promise<void> {
   }
 
   const { ctx, connectionId, remoteRepoDir, host } = await connectRemoteAgent(agent);
+  // Reap stale sidecars BEFORE deploying, so a leftover generation from a
+  // renamed agent does not collide with the new one (CHOO-2653).
+  await reapStaleSidecarsForAgent(agent, host, remoteRepoDir);
   await ensureAgentSidecar({
     providerId: agent.providerId,
     repoDir: remoteRepoDir,
@@ -124,7 +127,6 @@ export async function ensureRemoteWatcher(agentId: string): Promise<void> {
     host,
   });
   await writeWatchEnabled(host, agent.name ?? agent.id, true);
-  await reapStaleSidecarsForAgent(agent, host, remoteRepoDir);
   log.info('ensureRemoteWatcher: sidecar deployed + watching', {
     agentId,
     switchAgentId: agent.switchAgentId,
