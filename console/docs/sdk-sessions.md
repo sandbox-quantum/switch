@@ -231,3 +231,13 @@ requires a POSIX host. Use a POSIX SSH execution host. Tmux is optional and appl
 only to user terminals and lifecycle scripts; it does not execute SDK sessions.
 Codex and Cursor do not advertise interactive questions until their native execution
 mode can support that interaction. Approvals remain separate capabilities.
+
+### Claude permission settings
+
+With Bypass permissions off, Claude resolves the permission mode from its own
+user, project and local settings on the execution host. Switch does not force
+`default` or add a hook that overrides native permission decisions. Claude still
+applies its settings precedence, trust rules and mode availability. Requests that
+need a human are sent to Console through the SDK permission callback. Enabling
+bypass explicitly selects `bypassPermissions`. Restart the host after changing
+permission settings.
