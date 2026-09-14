@@ -82,6 +82,24 @@ describe('SSE framing', () => {
     await expect(parse(['event: message\ndata: {not json}\n\n'])).rejects.toThrow();
   });
 
+  it('ends a read already in flight when the signal aborts', async () => {
+    // Open and idle, which is what an SSE stream is between events: nothing
+    // will arrive, so the abort is the only thing that can end this. Checking
+    // the signal between reads is not enough — the read has to be settled.
+    const idle = new ReadableStream<Uint8Array>({ start() {} });
+    const aborter = new AbortController();
+    const drained = (async () => {
+      for await (const _ of readSse(idle, aborter.signal)) void _;
+    })();
+
+    await Promise.resolve();
+    aborter.abort();
+
+    const stalled = Symbol('stalled');
+    const settle = new Promise((r) => setTimeout(() => r(stalled), 50));
+    expect(await Promise.race([drained.then(() => 'ended'), settle])).toBe('ended');
+  });
+
   it('stops when the signal aborts', async () => {
     const abort = new AbortController();
     abort.abort();

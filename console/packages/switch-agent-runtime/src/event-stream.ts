@@ -112,6 +112,9 @@ export class SwitchEventStream {
   /** Aborts only the current socket, so a reconnect can replace it without
    * tearing down the connection. */
   private socketAbort: AbortController | null = null;
+  /** Ends the stream loop's backoff wait early. Set only while it is waiting;
+   * at any other moment there is a live socket for a reopen to abort instead. */
+  private endBackoff: (() => void) | null = null;
   private rooms: string[];
 
   constructor(deps: SwitchEventStreamDeps) {
@@ -138,8 +141,36 @@ export class SwitchEventStream {
     this.reopen();
   }
 
+  /**
+   * Ask for a fresh socket, from either of the two states the loop can be in.
+   *
+   * Aborting the current socket covers an open or opening stream. It does
+   * nothing at all when the loop is serving a backoff between attempts — the
+   * controller it holds is the failed one, already aborted — and that is the
+   * state a connection the server has dropped settles into, where the reopen
+   * is most needed and would otherwise be swallowed: the heartbeat rejects,
+   * asks for a reopen, and the loop sleeps through it to the end of a wait as
+   * long as thirty seconds, every time.
+   */
   private reopen(): void {
     this.socketAbort?.abort();
+    this.endBackoff?.();
+  }
+
+  /** Back off, unless the connection ends or a reopen is asked for first. */
+  private backoff(ms: number): Promise<void> {
+    return new Promise<void>((resolve) => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const done = (): void => {
+        clearTimeout(timer);
+        this.deps.signal.removeEventListener('abort', done);
+        if (this.endBackoff === done) this.endBackoff = null;
+        resolve();
+      };
+      timer = setTimeout(done, ms);
+      this.deps.signal.addEventListener('abort', done, { once: true });
+      this.endBackoff = done;
+    });
   }
 
   /**
@@ -306,7 +337,7 @@ export class SwitchEventStream {
               backoffMs: backoff,
             });
           }
-          await new Promise((r) => setTimeout(r, backoff));
+          await this.backoff(backoff);
           backoff = Math.min(backoff * 2, MAX_BACKOFF_MS);
         }
       }
