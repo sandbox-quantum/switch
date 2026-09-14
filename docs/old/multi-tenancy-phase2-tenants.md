@@ -184,7 +184,8 @@ this phase must prove it has removed.
 - `GET /tenants` — the caller's workspaces: id, slug, name, their role. §7 is
   about how this reads across the boundary.
 - `POST /tenants` — create one; the creator becomes `owner` (meaningful only
-  once §2 lands). Slug derived from the name; a taken slug is a 409.
+  once §2 lands). Slug derived from the name; a taken slug is a 409. Bounded —
+  see below.
 - `POST /tenants/{id}/switch` — verify membership, re-mint the cookie.
 - `POST /tenants/{id}/invitations`, `GET`, `DELETE …/{token_id}` — mint, list,
   revoke. `owner` and `admin` only.
@@ -194,6 +195,18 @@ this phase must prove it has removed.
 - `GET /tenants/{id}/members`, `PATCH …/{user_id}`, `DELETE …/{user_id}` —
   list, change a role, remove. The original design omitted these and then
   assumed the role-change route existed.
+
+**Creating a workspace is bounded, because it is an amplification vector
+rather than a row.** `all_tenant_ids()` drives a fan-out per tenant at boot and
+a sweep every few seconds, across clients, collaboration bridges, server
+connectors and rooms, so unbounded self-service creation buys steady-state work
+in the deployment, not storage. `GATEWAY_MAX_WORKSPACES_PER_USER` is both the
+cap and the gate: at the limit `POST /tenants` is a 403, and `0` closes the
+route outright. It counts `owner` memberships only, so being invited into
+someone else's workspace never spends an allowance the invitee cannot get back.
+Deployment operators are exempt, on the same grounds as every other operator
+bypass — this bounds self-service, and an operator provisioning workspaces for
+other people is not that.
 
 **A workspace must always have an owner.** Removing or demoting the last one
 is refused; deletion of a workspace is not in this phase, so there is no
@@ -306,11 +319,13 @@ self-service should mint one.
 ## 9. What this does not cover
 
 Per-tenant agent registration credentials, tenant switching in Console, the
-workspace-versus-server vocabulary question, workspace deletion, and quotas on
-workspace creation. That last one deserves a note: `all_tenant_ids()` drives
-fan-outs at boot and a sweep every few seconds, so unbounded self-service
-creation is an amplification vector. Either cap creation per user or gate the
-route by config.
+workspace-versus-server vocabulary question, and workspace deletion.
+
+The quota on workspace creation that this section used to defer is now in §5.
+What remains uncovered there is everything downstream of creation: a workspace
+that exists still costs its fan-out whether or not anyone uses it, and nothing
+reclaims an abandoned one — the cap bounds how many a person can open, not how
+many a deployment ends up carrying.
 
 ## 10. Done when
 
@@ -326,3 +341,5 @@ route by config.
 - A domain cannot be claimed by two tenants, nor by an account that cannot
   prove it uses it.
 - The last owner of a workspace cannot be removed or demoted.
+- A person at the workspace limit is refused a new one and nothing is
+  provisioned for them, and a limit of zero closes the route.
