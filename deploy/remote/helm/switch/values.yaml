@@ -45,6 +45,7 @@ ingress:
     - /mcp
     - /oauth
     - /.well-known
+    - /messaging
     - /health
   # Path prefixes served by the Teams bridge listener rather than the FastAPI
   # app, because that listener is a separate HTTP server on its own port. Used

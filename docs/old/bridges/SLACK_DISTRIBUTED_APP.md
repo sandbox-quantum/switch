@@ -9,6 +9,11 @@ requires them to see a token at all.
 They are two separate Slack apps and they will both exist. Nothing here
 replaces the other page.
 
+The install connects a workspace to a tenant that **already exists**. Creating
+a tenant is Switch Console's job and is not reachable from Slack: the flow
+begins with an authenticated admin inside the tenant they are installing into,
+so no amount of clicking in Slack brings a tenant into being.
+
 ## Why it cannot be the same app
 
 The self-registered app uses **Socket Mode**: Switch dials out to Slack and
