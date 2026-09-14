@@ -43,18 +43,13 @@ async def notification_recipient(
     origin: Origin,
     agent: Agent,
     thread_id: str | None,
-    prefer_owner: bool,
 ) -> str | None:
     """Slack participants follow replies by default; mention only other origins.
 
-    `prefer_owner` names the agent's owner ahead of whoever started the turn.
-    It is for the platforms where a mention is the whole notification: the
-    owner is the person who can open Console and act on a stalled session,
-    and whoever typed the command may not be able to do anything about it.
-    Where the platform's own following reaches the participants anyway, the
-    person who asked leads instead — they are the one waiting on an answer.
-    Either way the other is the fallback, so an agent with no owner, or an
-    owner who has claimed no account here, still reaches somebody.
+    Whoever asked is named first. They are the one waiting on the answer, and
+    on a platform where a mention is the whole notification they are also the
+    one most likely to be looking. The agent's owner is the fallback, so a turn
+    started by someone who has claimed no account here still reaches somebody.
 
     Membership and bridge checks prevent mentioning identities from another
     room or workspace. No follower API is needed for the usual threaded case.
@@ -71,7 +66,7 @@ async def notification_recipient(
         # Console commands identify their user directly rather than a puppet.
         if not user_id:
             return None
-        return await db.scalar(
+        claimant: str | None = await db.scalar(
             members.join(
                 ExternalUserClaim, ExternalUserClaim.external_user_id == ExternalUser.id
             )
@@ -79,6 +74,7 @@ async def notification_recipient(
             .order_by(ExternalUser.id)
             .limit(1)
         )
+        return claimant
 
     async def initiator() -> str | None:
         actor = await db.scalar(
@@ -89,8 +85,6 @@ async def notification_recipient(
         )
         return actor or await claimed_by(origin.actor_id)
 
-    if prefer_owner:
-        return await claimed_by(agent.owner_id) or await initiator()
     return await initiator() or await claimed_by(agent.owner_id)
 
 

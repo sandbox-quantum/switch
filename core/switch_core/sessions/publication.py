@@ -180,7 +180,6 @@ async def refresh_cards(
                     origin=origin,
                     agent=agent,
                     thread_id=thread_id,
-                    prefer_owner=cards.notifies_only_by_mention,
                 )
                 if asking
                 else None
@@ -608,7 +607,6 @@ async def refresh_activity(
                     origin=origin,
                     agent=agent,
                     thread_id=thread_root_id,
-                    prefer_owner=activity.notifies_only_by_mention,
                 )
                 if error_summary
                 else None

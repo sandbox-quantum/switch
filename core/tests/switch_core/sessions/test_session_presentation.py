@@ -41,10 +41,7 @@ def origin(surface="slack"):
     )
 
 
-@pytest.mark.parametrize("prefer_owner", [False, True])
-async def test_slack_thread_participant_needs_no_mention_or_identity_lookup(
-    prefer_owner,
-):
+async def test_slack_thread_participant_needs_no_mention_or_identity_lookup():
     db = AsyncMock()
     assert (
         await notification_recipient(
@@ -54,7 +51,6 @@ async def test_slack_thread_participant_needs_no_mention_or_identity_lookup(
             origin=origin(),
             agent=SimpleNamespace(owner_id="owner"),
             thread_id="123.456",
-            prefer_owner=prefer_owner,
         )
         is None
     )
@@ -72,7 +68,6 @@ async def test_other_origin_prefers_actor_and_scopes_mapping_to_bridge_and_membe
             origin=origin("console"),
             agent=SimpleNamespace(owner_id="owner"),
             thread_id="123.456",
-            prefer_owner=False,
         )
         == "UACTOR"
     )
@@ -96,7 +91,6 @@ async def test_missing_actor_falls_back_to_claimed_owner_in_same_room():
             origin=origin("console"),
             agent=SimpleNamespace(owner_id="owner"),
             thread_id=None,
-            prefer_owner=False,
         )
         == "UOWNER"
     )
@@ -108,11 +102,15 @@ async def test_missing_actor_falls_back_to_claimed_owner_in_same_room():
     assert "client_rooms.room_id = 'room'" in query
 
 
-async def test_mention_only_platform_names_the_owner_ahead_of_the_asker():
-    """On a platform where the mention is the whole notification, the person
-    who can act on a stalled session is named, not whoever typed the command."""
+async def test_the_asker_leads_even_where_a_mention_is_the_whole_notification():
+    """The person waiting on the answer is named, not the agent's owner.
+
+    A platform that only notifies by mention is the tempting place to name the
+    owner instead — they are the one who can open Console — but the mention is
+    also how the asker learns their own turn needs them, and naming somebody
+    else leaves them watching a channel that never says their name."""
     db = AsyncMock()
-    db.scalar.return_value = "UOWNER"
+    db.scalar.return_value = "UACTOR"
 
     assert (
         await notification_recipient(
@@ -122,20 +120,19 @@ async def test_mention_only_platform_names_the_owner_ahead_of_the_asker():
             origin=origin("mattermost"),
             agent=SimpleNamespace(owner_id="owner"),
             thread_id="root-1",
-            prefer_owner=True,
         )
-        == "UOWNER"
+        == "UACTOR"
     )
     query = str(
         db.scalar.call_args.args[0].compile(compile_kwargs={"literal_binds": True})
     )
-    assert "external_user_claims.user_id = 'owner'" in query
+    assert "clients.matrix_user_id = '@actor:switch'" in query
     assert db.scalar.call_count == 1
 
 
-async def test_an_unclaimed_owner_still_falls_back_to_whoever_asked():
+async def test_an_asker_with_no_account_here_still_reaches_the_owner():
     db = AsyncMock()
-    db.scalar.side_effect = [None, "UACTOR"]
+    db.scalar.side_effect = [None, None, "UOWNER"]
 
     assert (
         await notification_recipient(
@@ -145,9 +142,8 @@ async def test_an_unclaimed_owner_still_falls_back_to_whoever_asked():
             origin=origin("mattermost"),
             agent=SimpleNamespace(owner_id="owner"),
             thread_id="root-1",
-            prefer_owner=True,
         )
-        == "UACTOR"
+        == "UOWNER"
     )
 
 
