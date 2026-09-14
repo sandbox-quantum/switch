@@ -23,7 +23,11 @@ from switch_core.bridges.collaboration.models import (
     InboundUserJoin,
     OutboundAttachment,
 )
-from switch_core.bridges.collaboration.session.renderers import RequestReference
+from switch_core.bridges.collaboration.session.renderers import (
+    MARKDOWN,
+    Markup,
+    RequestReference,
+)
 from switch_core.bridges.collaboration.session.renderers.neutral import (
     request_summary,
     turn_summary,
@@ -309,6 +313,18 @@ class CollaborationAdapter(ABC):
     #: rather than inline, moving the status out of the channel hides it, and
     #: that trade is the platform's to make.
     runtime_state_follows_anchor: ClassVar[bool] = False
+
+    #: Whether `find_request_card` can actually search this platform.
+    #:
+    #: False here because the base `find_request_card` returns `None` for
+    #: every call: it has nowhere to look. An adapter that implements the
+    #: search sets this True, and the difference is not cosmetic — `None`
+    #: from a platform that searched means "not there yet, ask again", while
+    #: `None` from a platform that cannot search means "never, however long
+    #: you wait". Retrying the second one forever leaves a card visible in
+    #: the chat that silently refuses the answer it asks for, which is the
+    #: outcome the publisher discloses instead.
+    recovers_uncertain_posts: ClassVar[bool] = False
 
     def __init__(self) -> None:
         self._on_message: Callable[[InboundMessage], Awaitable[None]] | None = None
@@ -616,7 +632,11 @@ class CollaborationAdapter(ABC):
         return ref
 
     async def update_rich(
-        self, channel_id: str, message_ref: str, content: RichContent
+        self,
+        channel_id: str,
+        agent_name: str,
+        message_ref: str,
+        content: RichContent,
     ) -> None:
         """Redraw what `post_rich` posted, in place.
 
@@ -626,6 +646,12 @@ class CollaborationAdapter(ABC):
         raises on any non-2xx status), so this catches broadly rather than
         trusting the convention: whichever it does, a caller of `update_rich`
         sees `RichContentFailed` or nothing.
+
+        `agent_name` is the same name `post_rich` was given, and is here for
+        the platform that writes it into the body: one bot identity means the
+        name is part of what was drawn, so a redraw that did not know it would
+        quietly rewrite the message as somebody else. Passing it on every call
+        keeps that out of an in-memory map that a restart empties.
         """
         text = self.rich_fallback_text(content)
         try:
@@ -680,8 +706,19 @@ class CollaborationAdapter(ABC):
             content.reference,
             escape=escape,
             limit=self.rich_fallback_limit(),
+            markup=self.rich_markup(),
             unavailable_reason=content.unavailable_reason,
         )
+
+    def rich_markup(self) -> Markup:
+        """How this platform spells emphasis, a copyable literal and a link.
+
+        Markdown by default, which is what every platform reaching the neutral
+        renderer today parses. A platform whose message body is something else
+        — Telegram's is HTML — overrides this rather than carrying a renderer
+        of its own, so the budget and faithfulness logic stays in one copy.
+        """
+        return MARKDOWN
 
     def _rich_escape(self, label: str) -> str:
         """`rich_fallback_text`'s host text, neutralised and then rendered.

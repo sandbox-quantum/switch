@@ -20,12 +20,14 @@ Three renderings live here:
   with the typed-answer grammar the card is asking for spelled out against
   this particular form.
 
-`escape` and `limit` are the platform's: every value that came from a host is
-host text and needs neutralising the way that platform's body text does, and
-the result has to fit inside one message rather than assume there is room to
-spare. Markdown is assumed — emphasis, a numbered list, an inline link — which
-is what the platforms without a card renderer render today; a platform that
-parses something else supplies its own renderer rather than bending this one.
+`escape`, `limit` and `markup` are the platform's: every value that came from a
+host is host text and needs neutralising the way that platform's body text
+does, the result has to fit inside one message rather than assume there is room
+to spare, and emphasis, a copyable literal and a link are spelled the way the
+platform spells them. A numbered list is plain text either way. What is still
+assumed of a platform arriving here is only that it renders those three marks
+somehow; one that renders none of them is better served by a renderer of its
+own than by a `Markup` that returns its argument.
 """
 
 from __future__ import annotations
@@ -51,6 +53,7 @@ from . import (
     CLOSED,
     NO_OPTIONS,
     SURFACES,
+    Markup,
     RequestReference,
     example_value,
     turn_state,
@@ -160,6 +163,7 @@ def turn_status(
     *,
     escape: Callable[[str], str],
     limit: int,
+    markup: Markup,
     elapsed_seconds: float | None = None,
     session_url: str | None = None,
     mention: str | None = None,
@@ -196,8 +200,8 @@ def turn_status(
 
     budget = _room(limit, mention)
     state = turn_state(items, turn, elapsed_seconds=elapsed_seconds)
-    head = f"**{state}**"
-    link = _link(_CONSOLE, session_url)
+    head = markup.bold(state)
+    link = _link(_CONSOLE, session_url, markup)
     if link and len(head) + 3 + len(link) <= budget:
         head = f"{head} · {link}"
 
@@ -261,6 +265,7 @@ def request_summary(
     *,
     escape: Callable[[str], str],
     limit: int,
+    markup: Markup,
     responder: str | None = None,
     unavailable_reason: str | None = None,
 ) -> str:
@@ -297,11 +302,23 @@ def request_summary(
     content = request.content
     if isinstance(content, ApprovalContent):
         head, body, footer, invites_answer = _approval_form(
-            request, content, reference, escape=escape, limit=limit, responder=responder
+            request,
+            content,
+            reference,
+            escape=escape,
+            limit=limit,
+            markup=markup,
+            responder=responder,
         )
     else:
         head, body, footer, invites_answer = _questions_form(
-            request, content, reference, escape=escape, limit=limit, responder=responder
+            request,
+            content,
+            reference,
+            escape=escape,
+            limit=limit,
+            markup=markup,
+            responder=responder,
         )
     if unavailable_reason and request.state in {"open", "submitting"}:
         body = []
@@ -323,11 +340,12 @@ def _approval_form(
     *,
     escape: Callable[[str], str],
     limit: int,
+    markup: Markup,
     responder: str | None,
 ) -> tuple[list[str], list[str], str, bool]:
     fit = _Faithful(escape)
     handle = escape(reference.handle)
-    head = [f"**{_HEADINGS[request.state]}** · request `{handle}`"]
+    head = [f"{markup.bold(_HEADINGS[request.state])} · request {markup.code(handle)}"]
     head.append(fit(content.title, _share(limit, 1500, 3)))
     if content.detail:
         head.append(fit(content.detail, _share(limit, 1200, 4)))
@@ -348,7 +366,13 @@ def _approval_form(
         head,
         body,
         _approval_footer(
-            request, content, handle, escape=escape, limit=limit, responder=responder
+            request,
+            content,
+            handle,
+            escape=escape,
+            limit=limit,
+            markup=markup,
+            responder=responder,
         ),
         invites_answer,
     )
@@ -361,6 +385,7 @@ def _approval_footer(
     *,
     escape: Callable[[str], str],
     limit: int,
+    markup: Markup,
     responder: str | None,
 ) -> str:
     if request.state == "open":
@@ -370,7 +395,7 @@ def _approval_footer(
         # around it are not part of the answer: `"R42 1"` parses as a handle of
         # `"R42`, which resolves to nothing and changes nothing on the card.
         # The grammar strips the backticks the span is drawn from.
-        return f"Reply with `{handle} 1`."
+        return f"Reply with {markup.code(f'{handle} 1')}."
     if request.state == "submitting":
         return _in_flight(request, responder=responder, limit=limit, escape=escape)
     if request.state == "resolved":
@@ -416,12 +441,14 @@ def _questions_form(
     *,
     escape: Callable[[str], str],
     limit: int,
+    markup: Markup,
     responder: str | None,
 ) -> tuple[list[str], list[str], str, bool]:
     fit = _Faithful(escape)
     handle = escape(reference.handle)
     head = [
-        f"**{_QUESTION_HEADINGS[request.state]}** · request `{handle}`",
+        f"{markup.bold(_QUESTION_HEADINGS[request.state])} · request "
+        f"{markup.code(handle)}",
         fit(content.title, _share(limit, 1500, 3)),
     ]
 
@@ -430,7 +457,9 @@ def _questions_form(
         budget = _label_budget(limit)
         for position, question in enumerate(content.questions, start=1):
             title = fit(question.title, budget) if question.title else ""
-            body.append(f"**{position}. {title}**" if title else f"**{position}.**")
+            body.append(
+                markup.bold(f"{position}. {title}" if title else f"{position}.")
+            )
             if question.prompt:
                 body.append(fit(question.prompt, _share(limit, 800, 4)))
             for index, option in enumerate(question.options, start=1):
@@ -442,7 +471,13 @@ def _questions_form(
         head,
         body,
         _questions_footer(
-            request, content, handle, escape=escape, limit=limit, responder=responder
+            request,
+            content,
+            handle,
+            escape=escape,
+            limit=limit,
+            markup=markup,
+            responder=responder,
         ),
         invites_answer,
     )
@@ -475,13 +510,14 @@ def _questions_footer(
     *,
     escape: Callable[[str], str],
     limit: int,
+    markup: Markup,
     responder: str | None,
 ) -> str:
     if request.state == "open":
         stuck = unanswerable(content.questions)
         if stuck is not None:
             return stuck
-        example = f"`{_example(handle, content.questions)}`"
+        example = markup.code(_example(handle, content.questions))
         if len(content.questions) > 1:
             return f"Reply with {example} — every question needs an answer."
         return f"Reply with {example}."
@@ -686,14 +722,11 @@ def _room(limit: int, mention: str | None) -> int:
     return max(1, limit - (len(mention) + 1 if mention else 0))
 
 
-def _link(label: str, url: str | None) -> str:
-    """`url` as Markdown, or nothing at all if it is not a scheme worth linking."""
+def _link(label: str, url: str | None, markup: Markup) -> str:
+    """`url` as a link, or nothing at all if it is not a scheme worth linking."""
     if not url or not url.startswith(_LINK_SCHEMES):
         return ""
-    # A `)` inside the destination closes the link early and spills the rest of
-    # the URL into the body as text. Percent-encoding is the one transform that
-    # keeps the link working and cannot be read as syntax.
-    return f"[{label}]({url.replace(')', '%29')})"
+    return markup.link(label, url)
 
 
 def _label_budget(limit: int) -> int:

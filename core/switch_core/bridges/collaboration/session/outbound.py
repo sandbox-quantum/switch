@@ -163,6 +163,7 @@ class SessionTurnActivity:
         )
         self._timer_redraws = getattr(adapter, "redraws_for_elapsed_time", False)
         self._only_mentions_notify = getattr(adapter, "notifies_only_by_mention", False)
+        self._recovers_posts = getattr(adapter, "recovers_uncertain_posts", False)
         self._anchors: OrderedDict[tuple[str, str], _Anchor] = OrderedDict()
         self._thread_turns: dict[tuple[str, str, str], set[tuple[str, str]]] = {}
         self._attention: OrderedDict[tuple[str, str], tuple[str, str]] = OrderedDict()
@@ -369,9 +370,9 @@ class SessionTurnActivity:
                 "attention",
             )
             if saved:
-                await self._adapter.update_rich(channel_id, ref, content)
+                await self._adapter.update_rich(channel_id, agent_name, ref, content)
         else:
-            await self._adapter.update_rich(channel_id, ref, content)
+            await self._adapter.update_rich(channel_id, agent_name, ref, content)
         if record:
             record.data["attention_state"] = state
             await record.save()
@@ -399,6 +400,23 @@ class SessionTurnActivity:
         if record is None:
             return await self._adapter.post_rich(channel, agent, content, thread)
         delivery = record.data.get(slot)
+        if delivery and not delivery.get("ref") and not self._recovers_posts:
+            # Nothing will ever find this one, so holding the reservation holds
+            # the turn's only voice shut: no status, and no attention message
+            # when something goes wrong later. A second status message is worth
+            # more than a permanently silent turn, so the reservation is given
+            # up and this slot starts again.
+            logger.warning(
+                "Activity delivery for %s in %s was never confirmed and this "
+                "platform cannot search for it. Posting a new %s message, which "
+                "may duplicate one already in the channel.",
+                delivery["token"],
+                delivery["channel"],
+                slot,
+            )
+            del record.data[slot]
+            await record.save()
+            delivery = None
         if delivery:
             saved_ref = delivery.get("ref")
             if saved_ref:
@@ -656,6 +674,7 @@ class SessionTurnActivity:
         try:
             await self._adapter.update_rich(
                 anchor.channel_id,
+                anchor.agent_name,
                 anchor.message_ref,
                 TurnActivity(
                     items,
@@ -706,7 +725,7 @@ class SessionTurnActivity:
                 )
             else:
                 await self._adapter.update_rich(
-                    anchor.channel_id, anchor.log_ref, content
+                    anchor.channel_id, anchor.agent_name, anchor.log_ref, content
                 )
         except RichContentThrottled:
             raise
@@ -875,6 +894,26 @@ class SessionRequestCards:
         """
         return bool(getattr(self._adapter, "notifies_only_by_mention", False))
 
+    @property
+    def renders_custom_url_schemes(self) -> bool:
+        """Whether this platform makes a `switchdash://` link clickable.
+
+        Read where a Console link is put in front of someone, for the same
+        reason `SessionTurnActivity` reads it: where it is False the link has
+        to be rewritten as the gateway's https redirect or it is dead text.
+        """
+        return bool(getattr(self._adapter, "renders_custom_url_schemes", True))
+
+    @property
+    def recovers_uncertain_posts(self) -> bool:
+        """Whether a card whose send was never acknowledged can be found again.
+
+        Where it is False there is nothing to wait for: the publisher stops
+        searching and discloses the card as unanswerable in the channel rather
+        than re-asking a question the platform cannot answer.
+        """
+        return bool(getattr(self._adapter, "recovers_uncertain_posts", False))
+
     async def post(
         self,
         request: SnapshotRequest,
@@ -980,6 +1019,57 @@ class SessionRequestCards:
             await session.commit()
             return stored
 
+    async def disclose_unconfirmed(
+        self, post: SessionRequestPost, *, console_url: str | None
+    ) -> None:
+        """Say in the channel that this card cannot be answered there.
+
+        For the platform that cannot search its own history, an unconfirmed
+        delivery never resolves: the card may be sitting in the chat asking a
+        question, and `command_for_text` refuses every typed answer to it
+        because nothing can prove the card exists. Left alone that is the worst
+        of the failure modes — it looks like it is working. So the channel is
+        told once, in a separate message, and pointed at Console, which can
+        answer the request without needing the card at all.
+
+        Exactly one attempt is ever made, and the row records it before the
+        message is sent rather than after. A second notice would say nothing
+        the first did not, and this is reached on every publication cycle for
+        as long as the request stays open — so the durable mark has to be in
+        place before anything can go wrong, even at the cost of losing the
+        notice entirely if this process dies mid-send.
+
+        The reservation itself is kept. It is what stops the card being posted
+        a second time, and the handle it holds is the one printed on whatever
+        did arrive.
+        """
+        async with self._session_factory() as session:
+            stored = await session.get(
+                SessionRequestPost, post.id, with_for_update=True
+            )
+            if stored is None or stored.unconfirmed_notice_at is not None:
+                return
+            stored.unconfirmed_notice_at = datetime.now(UTC)
+            await session.commit()
+        console = (
+            f"[Switch Console]({console_url})" if console_url else "Switch Console"
+        )
+        sent = await self._adapter.admin_message(
+            post.external_channel_id,
+            f"Switch could not confirm that request **{post.handle}** reached "
+            "this chat. If a card for it is here, answering it here will not "
+            f"work — answer it in {console} instead.",
+            post.thread_id,
+        )
+        if sent is None:
+            logger.error(
+                "Could not tell channel %s that card %s was never confirmed. The "
+                "request can still be answered in Console, but nothing in the "
+                "channel says so, and this is not attempted again.",
+                post.external_channel_id,
+                post.handle,
+            )
+
     async def _reserve(
         self,
         session: AsyncSession,
@@ -1084,9 +1174,15 @@ class SessionRequestCards:
         post: SessionRequestPost,
         request: SnapshotRequest,
         *,
+        agent_name: str,
         unavailable_reason: str | None = None,
     ) -> None:
         """Redraw the card for `request` where it was posted.
+
+        `agent_name` is the agent whose session asked, the same name the card
+        was posted under. A platform that writes the name into the body needs
+        it again to redraw the card as the same agent, and the row does not
+        carry it: the session does, and every caller here has the session.
 
         When the edit fails the outcome is posted into the thread instead. A
         stale card is the one failure that cannot be left silent: it goes on
@@ -1137,6 +1233,7 @@ class SessionRequestCards:
         try:
             await self._adapter.update_rich(
                 post.external_channel_id,
+                agent_name,
                 post.external_post_id,
                 RequestCard(
                     request,

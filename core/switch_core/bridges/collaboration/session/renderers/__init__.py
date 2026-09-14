@@ -196,6 +196,38 @@ def parse_answer_action(action_id: str) -> str | None:
     return option_id or None
 
 
+class Markup:
+    """The three marks the neutral renderer makes, in one platform's spelling.
+
+    Emphasis, a literal a reader is meant to copy, and a link. Everything else
+    the renderer writes is plain text. They live behind this rather than being
+    written into the renderer because a platform that does not parse Markdown
+    is otherwise forced to choose between a renderer of its own — the whole of
+    the budget and faithfulness logic, copied and left to drift — and shipping
+    `**Working…**` to a reader as those characters.
+
+    Not an escaper. Host text is neutralised by the adapter's own escape before
+    it reaches here, and what these produce is measured against the message
+    budget like anything else, so a spelling that costs more characters costs
+    them out of the same allowance.
+    """
+
+    def bold(self, text: str) -> str:
+        return f"**{text}**"
+
+    def code(self, text: str) -> str:
+        return f"`{text}`"
+
+    def link(self, label: str, url: str) -> str:
+        # A `)` inside the destination closes the link early and spills the
+        # rest of the URL into the body as text. Percent-encoding is the one
+        # transform that keeps the link working and cannot be read as syntax.
+        return f"[{label}]({url.replace(')', '%29')})"
+
+
+MARKDOWN = Markup()
+
+
 @dataclass(frozen=True)
 class RequestReference:
     """How a platform refers back to a request, without carrying the session.

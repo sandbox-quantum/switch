@@ -116,9 +116,9 @@ async def test_activity_layout_is_an_adapter_capability_not_a_slack_type_check()
     status, log = platform.post_rich.call_args_list
     assert status.args[2].status_only
     assert log.args[2].tool_log
-    assert [call.args[1] for call in platform.update_rich.call_args_list] == [
-        "C1:status",
-        "C1:log",
+    assert [call.args[1:3] for call in platform.update_rich.call_args_list] == [
+        ("worker", "C1:status"),
+        ("worker", "C1:log"),
     ]
     assert [
         call.kwargs["working"] for call in platform.mark_activity.call_args_list

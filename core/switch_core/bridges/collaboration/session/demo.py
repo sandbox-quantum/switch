@@ -235,7 +235,11 @@ class SessionDemo:
                 f"The recording lost request {showing.request_id} on the way to "
                 f"the end of its turn, so there is nothing to redraw the card from."
             )
-        await self._cards.refresh(showing.post, settled)
+        await self._cards.refresh(
+            showing.post,
+            settled,
+            agent_name=showing.projection.snapshot.session.agent_id,
+        )
         return showing.post
 
     async def _publish(

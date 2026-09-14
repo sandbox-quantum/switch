@@ -81,11 +81,6 @@ _MAX_GUILD_ROLES_CODE = 30005
 # mentioned still resolves.
 _NO_MASS_MENTIONS = discord.AllowedMentions(everyone=False)
 
-# The `**agent**: ` a DM post carries in place of the sender identity a webhook
-# would have given it. Bounded and single-line so that a body opening with bold
-# text of its own cannot be read as one.
-_BODY_LABEL = re.compile(r"^\*\*[^*\n]{1,80}\*\*: ")
-
 # Inserted after the `<` of anything that looks like a Discord entity. Discord
 # has no escape for `<`, so the syntax is broken rather than escaped — the same
 # technique discord.py uses on `@`.
@@ -309,6 +304,11 @@ class DiscordAdapter(CollaborationAdapter):
     # retained, not reachable — removing it is its own task.
     renders_legacy_runtime_state: ClassVar[bool] = False
 
+    # `find_request_card` reads a channel's history back and matches a card by
+    # the handle printed on it, so an unacknowledged send can still be bound to
+    # the message it produced.
+    recovers_uncertain_posts: ClassVar[bool] = True
+
     def __init__(self, *, config: DiscordConnectionConfig) -> None:
         super().__init__()
         self._config = config
@@ -334,11 +334,6 @@ class DiscordAdapter(CollaborationAdapter):
         # marked several messages.
         self._eyes: set[str] = set()
         self._agent_eyes: dict[tuple[str, str], set[str]] = {}
-        # Which agent a published status or card was posted as. Needed only in
-        # a DM, where the name is inlined in the body and an edit has to write
-        # it again; a webhook post keeps its identity through an edit by itself.
-        self._rich_agents: OrderedDict[str, str] = OrderedDict()
-        self._rich_agents_max = 1000
         # Publications this adapter has taken down at the end of a turn, so a
         # later redraw of one is recognised as finished rather than reported as
         # a message Discord has lost.
@@ -866,6 +861,7 @@ class DiscordAdapter(CollaborationAdapter):
     ) -> str:
         escape = self._rich_escape
         limit = max(1, self.rich_fallback_limit() - len(prefix))
+        markup = self.rich_markup()
         if isinstance(content, TurnActivity):
             # Charged to the same budget as the status it follows: a message
             # that just fits, plus a line saying it reached nobody, is a
@@ -877,6 +873,7 @@ class DiscordAdapter(CollaborationAdapter):
                     content.turn,
                     escape=escape,
                     limit=max(1, limit - len(tail)),
+                    markup=markup,
                     elapsed_seconds=content.elapsed_seconds,
                     session_url=content.session_url,
                     mention=mention,
@@ -895,6 +892,7 @@ class DiscordAdapter(CollaborationAdapter):
             content.reference,
             escape=escape,
             limit=max(1, limit - len(lead) - len(tail)),
+            markup=markup,
             responder=responder,
             unavailable_reason=content.unavailable_reason,
         )
@@ -996,7 +994,7 @@ class DiscordAdapter(CollaborationAdapter):
                 raise self._rich_failure(
                     error, f"Discord refused the post in DM {channel_id}", text
                 ) from error
-            return self._remember_rich(f"{sent.channel.id}:{sent.id}", agent_name)
+            return f"{sent.channel.id}:{sent.id}"
 
         thread: Any = None
         if thread_root_id:
@@ -1023,7 +1021,7 @@ class DiscordAdapter(CollaborationAdapter):
             raise self._rich_failure(
                 error, f"Discord refused the post in channel {channel_id}", text
             ) from error
-        return self._remember_rich(f"{sent.channel.id}:{sent.id}", agent_name)
+        return f"{sent.channel.id}:{sent.id}"
 
     async def _publication_thread(
         self, channel_id: int, thread_root_id: str, content: RichContent, text: str
@@ -1109,7 +1107,11 @@ class DiscordAdapter(CollaborationAdapter):
             ) from error
 
     async def update_rich(
-        self, channel_id: str, message_ref: str, content: RichContent
+        self,
+        channel_id: str,
+        agent_name: str,
+        message_ref: str,
+        content: RichContent,
     ) -> None:
         """Redraw a publication in place — or take it down, where it has served
         its purpose and staying would just be clutter.
@@ -1126,6 +1128,11 @@ class DiscordAdapter(CollaborationAdapter):
         status line nobody is waiting on and wrong here: a card that failed to
         redraw is still showing a settled request as open, and the caller has a
         reply to post about that — but only if it is told.
+
+        `agent_name` is what a DM redraw writes back into the body. A webhook
+        message keeps its sender through an edit because Discord keeps it; a DM
+        has no webhook, so the name is part of the message and an edit that
+        forgot it would publish the turn as the bot.
         """
         _, message_id = self._parse_message_ref(message_ref)
         if not message_id:
@@ -1147,9 +1154,7 @@ class DiscordAdapter(CollaborationAdapter):
             ) from error
 
         lobby = self._channel_type_of(target) == "lobby"
-        prefix = (
-            await self._lobby_prefix(target, message_ref, message_id) if lobby else ""
-        )
+        prefix = f"**{await self.agent_label_for_body(agent_name)}**: " if lobby else ""
         # A post notifies; an edit does not. Repeating the mention on every
         # redraw would be a handle in the channel that never reaches anybody
         # it has not already reached.
@@ -1160,42 +1165,6 @@ class DiscordAdapter(CollaborationAdapter):
             await self._retire_rich(channel_id, message_ref, text, lobby=lobby)
             return
         await self._edit_rich(channel_id, message_ref, text, lobby=lobby)
-
-    async def _lobby_prefix(
-        self, target: Any, message_ref: str, message_id: str
-    ) -> str:
-        """The `**agent**: ` a DM redraw has to write again.
-
-        A webhook message keeps its sender through an edit because Discord
-        keeps it; a DM has no webhook, so the name lives in the body and an
-        edit that forgets it publishes the turn as the bot. This process
-        remembers which agent posted what, but only until it restarts, so the
-        message that already carries the name is asked for it: the prefix on
-        the post is the durable record of who made it, and reading it back
-        costs one fetch on a path that is about to edit that message anyway.
-        """
-        remembered = self._rich_agents.get(message_ref)
-        if remembered is not None:
-            return f"**{await self.agent_label_for_body(remembered)}**: "
-        try:
-            existing = await target.fetch_message(int(message_id))
-            match = _BODY_LABEL.match(str(existing.content or ""))
-        except Exception as e:
-            logger.warning(
-                "Could not read the Discord DM publication %s to recover which "
-                "agent posted it: %s.",
-                message_ref,
-                e,
-            )
-            return ""
-        if match is None:
-            logger.warning(
-                "The Discord DM publication %s carries no agent name, so its "
-                "redraw cannot restore one.",
-                message_ref,
-            )
-            return ""
-        return match.group(0)
 
     def _is_flat(self, channel_id: str, message_ref: str) -> bool:
         """Whether a publication is sitting in the channel rather than a thread.
@@ -1564,15 +1533,7 @@ class DiscordAdapter(CollaborationAdapter):
                 e,
             )
 
-    def _remember_rich(self, message_ref: str, agent_name: str) -> str:
-        self._rich_agents[message_ref] = agent_name
-        self._rich_agents.move_to_end(message_ref)
-        while len(self._rich_agents) > self._rich_agents_max:
-            self._rich_agents.popitem(last=False)
-        return message_ref
-
     def _retire_ref(self, message_ref: str) -> None:
-        self._rich_agents.pop(message_ref, None)
         self._rich_retired[message_ref] = None
         self._rich_retired.move_to_end(message_ref)
         while len(self._rich_retired) > self._rich_retired_max:

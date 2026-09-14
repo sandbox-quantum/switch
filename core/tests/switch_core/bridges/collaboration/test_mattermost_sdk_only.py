@@ -52,6 +52,10 @@ class _FakePosts:
     def __init__(self) -> None:
         self.created: list[dict[str, Any]] = []
         self.patched: list[tuple[str, dict[str, Any]]] = []
+        # Whose driver made each call, in order. One shared log across the
+        # drivers, because which bot Mattermost saw is the thing under test.
+        self.created_by: list[str] = []
+        self.patched_by: list[str] = []
         self.thread: dict[str, dict[str, Any]] = {}
         self.channel: dict[str, dict[str, Any]] = {}
         self.create_error: Exception | None = None
@@ -140,9 +144,28 @@ class _FakeClient:
         return {"status": "OK"}
 
 
+class _DriverPosts:
+    """One driver's view of the shared post log, tagged with whose it is."""
+
+    def __init__(self, posts: _FakePosts, owner: str) -> None:
+        self._posts = posts
+        self._owner = owner
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._posts, name)
+
+    def create_post(self, post: dict[str, Any]) -> dict[str, str]:
+        self._posts.created_by.append(self._owner)
+        return self._posts.create_post(post)
+
+    def patch_post(self, post_id: str, body: dict[str, Any]) -> dict[str, str]:
+        self._posts.patched_by.append(self._owner)
+        return self._posts.patch_post(post_id, body)
+
+
 class _FakeDriver:
-    def __init__(self, posts: _FakePosts, users: _FakeUsers) -> None:
-        self.posts = posts
+    def __init__(self, posts: _FakePosts, users: _FakeUsers, owner: str) -> None:
+        self.posts = _DriverPosts(posts, owner)
         self.users = users
         self.reactions = _FakeReactions()
         self.client = _FakeClient()
@@ -161,16 +184,16 @@ def _adapter(*agents: str, **users: str) -> MattermostAdapter:
     directory = _FakeUsers(**users)
     for name in agents or ("worker",):
         adapter._agent_bots[name] = {"user_id": f"bot-{name}"}
-        adapter._bot_drivers[name] = _FakeDriver(posts, directory)  # type: ignore[assignment]
+        adapter._bot_drivers[name] = _FakeDriver(posts, directory, name)  # type: ignore[assignment]
         adapter._bridge_bot_ids.add(f"bot-{name}")
-    adapter._admin_driver = _FakeDriver(posts, directory)  # type: ignore[assignment]
+    adapter._admin_driver = _FakeDriver(posts, directory, "admin")  # type: ignore[assignment]
     adapter._main_loop = asyncio.get_event_loop()
     return adapter
 
 
 def _posts(adapter: MattermostAdapter) -> _FakePosts:
     driver: Any = adapter._admin_driver
-    return driver.posts
+    return driver.posts._posts
 
 
 def _users(adapter: MattermostAdapter) -> _FakeUsers:
@@ -228,7 +251,8 @@ async def test_a_publication_is_posted_by_the_agents_own_bot_in_its_thread() -> 
     assert len(created) == 1
     assert created[0]["channel_id"] == "chan-1"
     assert created[0]["root_id"] == "root-1"
-    assert adapter._rich_authors[ref] == "worker"
+    assert _posts(adapter).created_by == ["worker"]
+    assert ref
 
 
 async def test_the_recovery_marker_travels_in_props_where_no_reader_sees_it() -> None:
@@ -349,10 +373,22 @@ async def test_a_redraw_is_patched_by_the_bot_that_posted_it() -> None:
     adapter = _adapter("worker", "other")
     ref = await adapter.post_rich("chan-1", "worker", _activity())
 
-    await adapter.update_rich("chan-1", ref, _activity())
+    await adapter.update_rich("chan-1", "worker", ref, _activity())
 
-    driver: Any = adapter._bot_drivers["worker"]
-    assert driver.posts.patched[0][0] == ref
+    assert _posts(adapter).patched[0][0] == ref
+    assert _posts(adapter).patched_by == ["worker"]
+
+
+async def test_a_redraw_is_still_the_agents_own_bot_after_a_restart() -> None:
+    """The name comes with the call, so nothing about a redraw depends on this
+    process having been the one that posted the card."""
+    adapter = _adapter("worker", "other")
+    ref = await adapter.post_rich("chan-1", "worker", _activity())
+
+    restarted = _adapter("worker", "other")
+    await restarted.update_rich("chan-1", "worker", ref, _activity())
+
+    assert _posts(restarted).patched_by == ["worker"]
 
 
 async def test_a_failed_redraw_raises_rather_than_leaving_a_stale_card() -> None:
@@ -363,7 +399,7 @@ async def test_a_failed_redraw_raises_rather_than_leaving_a_stale_card() -> None
     _posts(adapter).patch_error = ResourceNotFound("404 post not found")
 
     with pytest.raises(RichContentFailed) as excinfo:
-        await adapter.update_rich("chan-1", ref, await _card())
+        await adapter.update_rich("chan-1", "worker", ref, await _card())
 
     assert isinstance(excinfo.value.__cause__, ResourceNotFound)
     assert excinfo.value.text
@@ -378,7 +414,7 @@ async def test_a_redraw_that_may_have_landed_is_not_reported_as_refused() -> Non
     _posts(adapter).patch_error = _http_error(503)
 
     with pytest.raises(requests.HTTPError):
-        await adapter.update_rich("chan-1", ref, await _card())
+        await adapter.update_rich("chan-1", "worker", ref, await _card())
 
 
 async def test_a_rate_limited_redraw_carries_the_wait_back_to_the_caller() -> None:
@@ -387,7 +423,7 @@ async def test_a_rate_limited_redraw_carries_the_wait_back_to_the_caller() -> No
     _posts(adapter).patch_error = _http_error(429, **{"Retry-After": "8"})
 
     with pytest.raises(RichContentThrottled) as excinfo:
-        await adapter.update_rich("chan-1", ref, await _card())
+        await adapter.update_rich("chan-1", "worker", ref, await _card())
 
     assert excinfo.value.retry_after == 8
 
@@ -400,7 +436,7 @@ async def test_a_redraw_does_not_mention_the_recipient_a_second_time() -> None:
     ref = await adapter.post_rich("chan-1", "worker", card)
     assert "@owner" in _posts(adapter).created[0]["message"]
 
-    await adapter.update_rich("chan-1", ref, card)
+    await adapter.update_rich("chan-1", "worker", ref, card)
 
     assert "@owner" not in _posts(adapter).patched[0][1]["message"]
 

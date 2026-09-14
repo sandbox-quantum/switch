@@ -91,6 +91,7 @@ async def refresh_cards(
     session_id: str,
     cards: SessionRequestCards,
     *,
+    gateway_public_url: str | None = None,
     recovery_allowed: Callable[[str], bool] = _always_recover,
     recovery_succeeded: Callable[[str], None] = _ignore_recovery,
     refresh_needed: Callable[[str, tuple[int, str]], bool] = _always_refresh,
@@ -117,6 +118,11 @@ async def refresh_cards(
     process, which has no memory to trust yet) get the defaults for both,
     which always act and track nothing: every confirmed card is compared
     against what is actually recorded for it, every time.
+
+    `gateway_public_url` is here for one message: the notice sent when a card's
+    delivery can never be confirmed, which is only useful if it can say where
+    the request *can* be answered. It may be None, and then the notice names
+    Console without linking to it.
     """
     posts = SessionRequestPostStore()
     async with session_factory() as db:
@@ -194,6 +200,13 @@ async def refresh_cards(
                     thread_id,
                     recipient,
                     asking and recipient is None and cards.notifies_only_by_mention,
+                    deeplink_for_platform(
+                        session_console_url(
+                            gateway_public_url, agent.id, room.id, row.id
+                        ),
+                        gateway_public_url,
+                        cards.renders_custom_url_schemes,
+                    ),
                 )
             )
         epoch = row.epoch
@@ -209,6 +222,7 @@ async def refresh_cards(
         thread_id,
         recipient,
         unreachable,
+        console_url,
     ) in publications:
         state = (
             request.revision,
@@ -237,6 +251,16 @@ async def refresh_cards(
                 )
                 refreshed(new_post.token, state)
             elif post.external_post_id == post.token:
+                if post.unconfirmed_notice_at is not None:
+                    # Already disclosed as undeliverable. There is no message
+                    # to edit and nothing further to try, and treating it as a
+                    # failure again on every cycle would keep the session
+                    # reporting an error that has already been dealt with as
+                    # well as it can be.
+                    continue
+                if not cards.recovers_uncertain_posts:
+                    await cards.disclose_unconfirmed(post, console_url=console_url)
+                    continue
                 if not recovery_allowed(post.token):
                     backed_off += 1
                     continue
@@ -245,6 +269,7 @@ async def refresh_cards(
                 await cards.refresh(
                     post,
                     request,
+                    agent_name=agent_name,
                     **(
                         {"unavailable_reason": unavailable_reason}
                         if unavailable_reason
@@ -256,6 +281,7 @@ async def refresh_cards(
                 await cards.refresh(
                     post,
                     request,
+                    agent_name=agent_name,
                     **(
                         {"unavailable_reason": unavailable_reason}
                         if unavailable_reason
@@ -971,6 +997,7 @@ class SessionPublisher:
                         self._bridge_id,
                         session_id,
                         self._cards,
+                        gateway_public_url=self._gateway_public_url,
                         recovery_allowed=self._recovery.allowed,
                         recovery_succeeded=self._recovery.succeeded,
                         refresh_needed=self._redraw.needed,

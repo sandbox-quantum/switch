@@ -323,7 +323,7 @@ async def test_the_card_is_edited_in_place_rather_than_reposted() -> None:
     adapter, client = _adapter()
     post = _post()
 
-    await _cards(adapter, post).refresh(post, request)
+    await _cards(adapter, post).refresh(post, request, agent_name="agent")
 
     assert len(client.updated) == 1
     edit = client.updated[0]
@@ -361,7 +361,7 @@ async def test_a_failed_edit_puts_the_outcome_in_the_thread_instead() -> None:
     cards = _cards(adapter, post)
     for _ in range(2):
         with pytest.raises(RichContentFailed):
-            await cards.refresh(post, request)
+            await cards.refresh(post, request, agent_name="agent")
 
     assert client.updated == []
     assert len(client.posted) == 1
@@ -382,6 +382,7 @@ async def test_resolved_plan_uses_display_name_and_keeps_slack_mention_in_detail
     )
     await adapter.update_rich(
         "C1",
+        "agent",
         "C1:111.0",
         RequestCard(request, REFERENCE, responder_external_id="UOWNER123"),
     )

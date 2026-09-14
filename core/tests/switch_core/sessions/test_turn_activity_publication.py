@@ -37,7 +37,7 @@ class ActivityPlatform:
         self.posts.append((channel, content, thread))
         return f"{channel}:activity.1"
 
-    async def update_rich(self, channel, post, content):
+    async def update_rich(self, channel, agent, post, content):
         self.edits.append((channel, post, content))
 
     async def notify_working(self, channel, agent, thread_root_id):

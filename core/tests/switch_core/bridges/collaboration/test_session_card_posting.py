@@ -520,7 +520,7 @@ async def test_a_redrawn_card_is_answered_at_the_revision_it_now_shows(
     cards, bridge_id, room_id = await _cards(session_factory, client)
     post = await _post_one(cards, room_id)
 
-    await cards.refresh(post, await _revised_request())
+    await cards.refresh(post, await _revised_request(), agent_name="agent")
 
     command = await _interactions(session_factory, bridge_id).command_for_text(
         InboundMessage(
@@ -556,7 +556,7 @@ async def test_a_redraw_slack_refused_leaves_the_row_on_what_is_on_screen(
     client.update_error = "message_not_found"
 
     with pytest.raises(RichContentFailed):
-        await cards.refresh(post, await _revised_request())
+        await cards.refresh(post, await _revised_request(), agent_name="agent")
 
     async with session_factory() as session:
         row = await SessionRequestPostStore().get_by_token(

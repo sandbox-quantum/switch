@@ -46,11 +46,13 @@ class _FakeChat:
         chat_type: str = "supergroup",
         title: str | None = "general",
         username: str | None = None,
+        is_forum: bool = False,
     ) -> None:
         self.id = chat_id
         self.type = chat_type
         self.title = title
         self.username = username
+        self.is_forum = is_forum
 
 
 class _FakeUser:
@@ -163,6 +165,8 @@ class _FakeBot:
         self.send_message_error: Exception | None = None
         self.send_photo_error: Exception | None = None
         self.send_album_error: Exception | None = None
+        # Set to an exception to make the next edit_message_text raise it once.
+        self.edit_error: Exception | None = None
 
     def _mint(self, chat_id: Any) -> _FakeSentMessage:
         self._next_id += 1
@@ -197,6 +201,10 @@ class _FakeBot:
         return [self._mint(kwargs["chat_id"]) for _ in kwargs["media"]]
 
     async def edit_message_text(self, **kwargs: Any) -> None:
+        if self.edit_error is not None:
+            error = self.edit_error
+            self.edit_error = None
+            raise error
         self.edits.append(kwargs)
 
     async def delete_message(self, **kwargs: Any) -> None:
@@ -1141,12 +1149,20 @@ def test_a_rejected_album_still_delivers_the_files() -> None:
 
 # ── Runtime state ────────────────────────────────────────────────────────────
 
+# These drive `_apply_runtime_state` rather than the public entry point because
+# the public one no longer reaches it: Telegram now publishes SDK sessions and
+# declares `renders_legacy_runtime_state = False`, so the base class stops the
+# legacy path before the adapter sees it. The implementation is still here and
+# still correct; what it no longer has is a caller. Removing it is its own task
+# — until then these keep it honest, and `test_telegram_sdk_only.py` covers
+# what replaced it.
+
 
 def test_working_posts_a_status_message() -> None:
     adapter = _adapter()
 
     _run(
-        adapter.apply_runtime_state(
+        adapter._apply_runtime_state(
             str(CHAT_ID), "scout", "working", mention_handle=None, thread_root_id=None
         )
     )
@@ -1158,13 +1174,13 @@ def test_working_posts_a_status_message() -> None:
 def test_working_again_edits_the_status_rather_than_reposting() -> None:
     adapter = _adapter()
     _run(
-        adapter.apply_runtime_state(
+        adapter._apply_runtime_state(
             str(CHAT_ID), "scout", "working", mention_handle=None, thread_root_id=None
         )
     )
 
     _run(
-        adapter.apply_runtime_state(
+        adapter._apply_runtime_state(
             str(CHAT_ID),
             "scout",
             "working",
@@ -1182,7 +1198,7 @@ def test_awaiting_input_pings_the_operator() -> None:
     adapter = _adapter()
 
     _run(
-        adapter.apply_runtime_state(
+        adapter._apply_runtime_state(
             str(CHAT_ID),
             "scout",
             "awaiting-input",
@@ -1198,12 +1214,12 @@ def test_awaiting_input_pings_the_operator() -> None:
 def test_going_idle_removes_the_status_and_the_pings() -> None:
     adapter = _adapter()
     _run(
-        adapter.apply_runtime_state(
+        adapter._apply_runtime_state(
             str(CHAT_ID), "scout", "working", mention_handle=None, thread_root_id=None
         )
     )
     _run(
-        adapter.apply_runtime_state(
+        adapter._apply_runtime_state(
             str(CHAT_ID),
             "scout",
             "awaiting-input",
@@ -1213,7 +1229,7 @@ def test_going_idle_removes_the_status_and_the_pings() -> None:
     )
 
     _run(
-        adapter.apply_runtime_state(
+        adapter._apply_runtime_state(
             str(CHAT_ID), "scout", "idle", mention_handle=None, thread_root_id=None
         )
     )
@@ -1228,13 +1244,13 @@ def test_the_status_message_follows_the_conversation() -> None:
     # the indicator — this asserts Telegram does.
     adapter = _adapter()
     _run(
-        adapter.apply_runtime_state(
+        adapter._apply_runtime_state(
             str(CHAT_ID), "scout", "working", mention_handle=None, thread_root_id=None
         )
     )
     original = adapter._working_msg[(str(CHAT_ID), "scout")].message_ref
 
-    _run(adapter.reposition_runtime_state(str(CHAT_ID), "scout", "88"))
+    _run(adapter._reposition_runtime_state(str(CHAT_ID), "scout", "88"))
 
     moved = adapter._working_msg[(str(CHAT_ID), "scout")]
     assert moved.message_ref != original
@@ -1261,7 +1277,7 @@ def test_working_puts_the_eyes_on_the_message_that_asked() -> None:
     _ask(adapter, message_id=11)
 
     _run(
-        adapter.apply_runtime_state(
+        adapter._apply_runtime_state(
             str(CHAT_ID), "scout", "working", mention_handle=None, thread_root_id=None
         )
     )
@@ -1274,13 +1290,13 @@ def test_the_eyes_come_off_when_the_turn_ends() -> None:
     adapter = _adapter()
     _ask(adapter, message_id=11)
     _run(
-        adapter.apply_runtime_state(
+        adapter._apply_runtime_state(
             str(CHAT_ID), "scout", "working", mention_handle=None, thread_root_id=None
         )
     )
 
     _run(
-        adapter.apply_runtime_state(
+        adapter._apply_runtime_state(
             str(CHAT_ID), "scout", "idle", mention_handle=None, thread_root_id=None
         )
     )
@@ -1295,7 +1311,7 @@ def test_the_eyes_go_up_once_however_often_the_activity_changes() -> None:
 
     for detail in ("reading", "editing", "running tests"):
         _run(
-            adapter.apply_runtime_state(
+            adapter._apply_runtime_state(
                 str(CHAT_ID),
                 "scout",
                 "working",
@@ -1313,13 +1329,13 @@ def test_the_eyes_stay_up_while_the_agent_waits_for_input() -> None:
     adapter = _adapter()
     _ask(adapter, message_id=11)
     _run(
-        adapter.apply_runtime_state(
+        adapter._apply_runtime_state(
             str(CHAT_ID), "scout", "working", mention_handle=None, thread_root_id=None
         )
     )
 
     _run(
-        adapter.apply_runtime_state(
+        adapter._apply_runtime_state(
             str(CHAT_ID),
             "scout",
             "awaiting-input",
@@ -1337,19 +1353,19 @@ def test_the_eyes_follow_the_newest_question_in_the_chat() -> None:
     adapter = _adapter()
     _ask(adapter, message_id=11)
     _run(
-        adapter.apply_runtime_state(
+        adapter._apply_runtime_state(
             str(CHAT_ID), "scout", "working", mention_handle=None, thread_root_id=None
         )
     )
     _run(
-        adapter.apply_runtime_state(
+        adapter._apply_runtime_state(
             str(CHAT_ID), "scout", "idle", mention_handle=None, thread_root_id=None
         )
     )
 
     _ask(adapter, message_id=12)
     _run(
-        adapter.apply_runtime_state(
+        adapter._apply_runtime_state(
             str(CHAT_ID), "scout", "working", mention_handle=None, thread_root_id=None
         )
     )
@@ -1363,7 +1379,7 @@ def test_a_reply_is_marked_on_itself_not_on_what_it_replied_to() -> None:
     _ask(adapter, message_id=12, reply_to_message=_FakeInbound(message_id=11))
 
     _run(
-        adapter.apply_runtime_state(
+        adapter._apply_runtime_state(
             str(CHAT_ID), "scout", "working", mention_handle=None, thread_root_id="11"
         )
     )
@@ -1379,14 +1395,14 @@ def test_every_message_an_agent_marked_is_cleared_by_the_one_turn_ending() -> No
     _ask(adapter, message_id=21, chat=_FakeChat(chat_id=-100999))
     for channel in (str(CHAT_ID), other):
         _run(
-            adapter.apply_runtime_state(
+            adapter._apply_runtime_state(
                 channel, "scout", "working", mention_handle=None, thread_root_id=None
             )
         )
 
     for channel in (str(CHAT_ID), other):
         _run(
-            adapter.apply_runtime_state(
+            adapter._apply_runtime_state(
                 channel, "scout", "idle", mention_handle=None, thread_root_id=None
             )
         )
@@ -1400,7 +1416,7 @@ def test_a_chat_that_never_spoke_is_not_reacted_to() -> None:
     adapter = _adapter()
 
     _run(
-        adapter.apply_runtime_state(
+        adapter._apply_runtime_state(
             str(CHAT_ID), "scout", "working", mention_handle=None, thread_root_id=None
         )
     )
@@ -1419,7 +1435,7 @@ def test_a_refused_reaction_is_logged_and_the_turn_carries_on(
 
     with caplog.at_level(logging.WARNING):
         _run(
-            adapter.apply_runtime_state(
+            adapter._apply_runtime_state(
                 str(CHAT_ID),
                 "scout",
                 "working",

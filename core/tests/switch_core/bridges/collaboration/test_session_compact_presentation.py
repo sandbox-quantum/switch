@@ -121,7 +121,7 @@ async def test_attention_post_mentions_once_and_edit_removes_mention():
     assert client.posted[0]["text"].startswith("<@UOWNER>")
     assert client.posted[0]["thread_ts"] == "root"
     assert not client.posted[0].get("reply_broadcast")
-    await adapter.update_rich("C1", ref, content)
+    await adapter.update_rich("C1", "Agent", ref, content)
     assert "<@UOWNER>" not in client.updated[0]["text"]
 
 

@@ -229,6 +229,11 @@ class MattermostAdapter(CollaborationAdapter):
     #: what the flag describes.
     runtime_state_follows_anchor: ClassVar[bool] = True
 
+    #: `find_request_card` reads the channel's recent posts back, so a card
+    #: whose send was never acknowledged can be bound to what is actually
+    #: there instead of being disclosed as lost.
+    recovers_uncertain_posts: ClassVar[bool] = True
+
     def __init__(self, *, config: MattermostConnectionConfig) -> None:
         super().__init__()
         self._config = config
@@ -270,14 +275,6 @@ class MattermostAdapter(CollaborationAdapter):
         # the marks are cleared together rather than only on the last thread
         # touched.
         self._agent_eyes: dict[tuple[str, str], set[str]] = {}
-
-        # post id -> the agent whose bot posted it, for editing a publication
-        # back as itself. Bounded because it grows with every turn, and an
-        # entry only matters while the message it names is still being redrawn;
-        # past that the admin driver can patch it and Mattermost keeps the
-        # original author either way.
-        self._rich_authors: OrderedDict[str, str] = OrderedDict()
-        self._rich_authors_max = 1000
 
         # Mattermost user id -> username, because a mention is written with the
         # handle and Switch stores the id. Stable for the life of a user, so a
@@ -650,6 +647,7 @@ class MattermostAdapter(CollaborationAdapter):
     ) -> str:
         escape = self._rich_escape
         limit = self.rich_fallback_limit()
+        markup = self.rich_markup()
         if isinstance(content, TurnActivity):
             # Charged to the same budget as the status it follows: a post that
             # just fits, plus a line saying it reached nobody, is a post
@@ -661,6 +659,7 @@ class MattermostAdapter(CollaborationAdapter):
                     content.turn,
                     escape=escape,
                     limit=max(1, limit - len(tail)),
+                    markup=markup,
                     elapsed_seconds=content.elapsed_seconds,
                     session_url=content.session_url,
                     mention=mention,
@@ -681,6 +680,7 @@ class MattermostAdapter(CollaborationAdapter):
             content.reference,
             escape=escape,
             limit=max(1, limit - len(lead) - len(tail)),
+            markup=markup,
             responder=responder,
             unavailable_reason=content.unavailable_reason,
         )
@@ -746,11 +746,14 @@ class MattermostAdapter(CollaborationAdapter):
             if failure is None:
                 raise
             raise failure from error
-        self._remember_author(ref, agent_name)
         return ref
 
     async def update_rich(
-        self, channel_id: str, message_ref: str, content: RichContent
+        self,
+        channel_id: str,
+        agent_name: str,
+        message_ref: str,
+        content: RichContent,
     ) -> None:
         """Redraw a publication in place, and say so when it did not happen.
 
@@ -759,11 +762,11 @@ class MattermostAdapter(CollaborationAdapter):
         failed to redraw is still showing a settled request as open, and the
         caller has a reply to post about it — but only if it is told.
 
-        Edited as the bot that posted it where that is still known. Mattermost
-        keeps the original author through a patch either way, so the fallback
-        to the admin driver changes who a reader sees the post from not at all;
-        what it changes is the permission the edit is made with, and an agent
-        bot editing its own post is the narrower of the two.
+        Edited as the agent's own bot where there is one. Mattermost keeps the
+        original author through a patch either way, so the fallback to the
+        admin driver changes who a reader sees the post from not at all; what
+        it changes is the permission the edit is made with, and an agent bot
+        editing its own post is the narrower of the two.
 
         Says "did not happen" only where Mattermost refused the edit. An edit
         whose outcome is unknown may well have landed, and reporting it as a
@@ -773,10 +776,7 @@ class MattermostAdapter(CollaborationAdapter):
         # redraw would be a handle in the channel that never resolves to
         # anything new for the person it names.
         text = await self._render_rich(replace(content, notify_external_id=None))
-        driver = (
-            self._bot_drivers.get(self._rich_authors.get(message_ref, ""))
-            or self._admin_driver
-        )
+        driver = self._bot_drivers.get(agent_name) or self._admin_driver
         loop = self._main_loop
         if driver is None or loop is None:
             raise RichContentFailed(
@@ -946,12 +946,6 @@ class MattermostAdapter(CollaborationAdapter):
         nothing and it is the only signal that arrives before the first post.
         """
         await self._post_typing(channel_id, agent_name, thread_root_id)
-
-    def _remember_author(self, post_id: str, agent_name: str) -> None:
-        self._rich_authors[post_id] = agent_name
-        self._rich_authors.move_to_end(post_id)
-        while len(self._rich_authors) > self._rich_authors_max:
-            self._rich_authors.popitem(last=False)
 
     async def _mention(self, external_user_id: str | None) -> str | None:
         """`@handle` for a Mattermost user id, or None if it cannot be resolved.

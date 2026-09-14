@@ -162,7 +162,7 @@ async def test_update_rich_falls_back_the_same_way() -> None:
     items = [_item(kind="assistant-message", title="", text="Looking now.")]
     turn = _turn("completed")
 
-    await adapter.update_rich("C1", "C1:1.0", TurnActivity(items, turn))
+    await adapter.update_rich("C1", "agent", "C1:1.0", TurnActivity(items, turn))
 
     assert len(adapter.updated) == 1
     channel_id, message_ref, content = adapter.updated[0]
@@ -182,7 +182,9 @@ async def test_update_rich_does_not_raise_when_the_platform_only_swallows() -> N
     adapter = _BareAdapter()
     items = [_item(kind="assistant-message", title="", text="Looking now.")]
 
-    await adapter.update_rich("C1", "C1:1.0", TurnActivity(items, _turn("completed")))
+    await adapter.update_rich(
+        "C1", "agent", "C1:1.0", TurnActivity(items, _turn("completed"))
+    )
 
 
 async def test_update_rich_raises_when_the_platform_raises() -> None:
@@ -199,7 +201,7 @@ async def test_update_rich_raises_when_the_platform_raises() -> None:
 
     with pytest.raises(RichContentFailed) as excinfo:
         await adapter.update_rich(
-            "C1", "C1:1.0", TurnActivity(items, _turn("completed"))
+            "C1", "agent", "C1:1.0", TurnActivity(items, _turn("completed"))
         )
 
     assert isinstance(excinfo.value.__cause__, RuntimeError)

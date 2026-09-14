@@ -166,6 +166,7 @@ class SlackAdapter(CollaborationAdapter):
     redraws_for_elapsed_time: ClassVar[bool] = True
     supports_activity_reactions: ClassVar[bool] = True
     renders_legacy_runtime_state: ClassVar[bool] = False
+    recovers_uncertain_posts: ClassVar[bool] = True
 
     # Every Slack bridge in this process shares one, because resolving a
     # mention that crossed a workspace boundary means reading a group another
@@ -517,9 +518,16 @@ class SlackAdapter(CollaborationAdapter):
         return ref
 
     async def update_rich(
-        self, channel_id: str, message_ref: str, content: RichContent
+        self,
+        channel_id: str,
+        agent_name: str,
+        message_ref: str,
+        content: RichContent,
     ) -> None:
         """Redraw what `post_rich` posted, in place.
+
+        `agent_name` is not read: a Slack message carries its sender's name
+        and face, so the name is never part of what was drawn.
 
         Chains `SlackApiError` as `RichContentFailed` rather than letting it
         through raw, so a caller that no longer imports this module still

@@ -9,7 +9,10 @@ it, a scope the label never mentioned, an option that did not fit at all.
 
 from __future__ import annotations
 
-from switch_core.bridges.collaboration.session.renderers import RequestReference
+from switch_core.bridges.collaboration.session.renderers import (
+    MARKDOWN,
+    RequestReference,
+)
 from switch_core.bridges.collaboration.session.renderers.neutral import request_summary
 from switch_core.sessions.contract import (
     ApprovalContent,
@@ -76,7 +79,9 @@ def _option(option_id: str, label: str, decision: str = "accept") -> ApprovalOpt
 
 
 def _render(request: SnapshotRequest, *, limit: int = 4000) -> str:
-    return request_summary(request, REFERENCE, escape=_identity, limit=limit)
+    return request_summary(
+        request, REFERENCE, escape=_identity, limit=limit, markup=MARKDOWN
+    )
 
 
 def test_a_permission_label_is_shown_whole_rather_than_cut_to_a_short_ceiling():

@@ -40,6 +40,15 @@ from .test_publication import Platform
 
 
 class RecoverablePlatform(Platform):
+    """A platform that can read its own history back, as Slack's adapter can.
+
+    The flag is what the publisher reads before deciding whether an uncertain
+    delivery is worth searching for again, so a fake that implements the search
+    has to declare it too or it is treated as a platform that cannot look.
+    """
+
+    recovers_uncertain_posts = True
+
     async def find_request_card(self, channel, thread, token, created_at, handle):
         for posted_channel, text, blocks, posted_thread in self.posts:
             if (
@@ -266,6 +275,163 @@ async def test_uncertain_delivery_is_not_blindly_reposted(session_factory, monke
     async with session_factory() as db:
         post = (await db.scalars(select(SessionRequestPost))).one()
         assert post.external_post_id == post.token
+
+
+class UnsearchablePlatform(Platform):
+    """A platform with no way to look for a message it may have posted.
+
+    Telegram is the real one: a bot cannot read a chat's history, so a send
+    whose response was lost can never be matched to what is in the chat. It
+    also declines to linkify a `switchdash://` URL, so the Console link in the
+    notice has to be the gateway's https redirect to be a link at all.
+    """
+
+    renders_custom_url_schemes = False
+
+    def __init__(self):
+        super().__init__()
+        self.notices = []
+
+    async def admin_message(self, channel, content, thread=None, *, message_type=None):
+        self.notices.append((channel, content, thread))
+        return f"{channel}:333.0"
+
+
+async def _lose_the_card(session_factory, platform, monkeypatch):
+    """Reserve a card, then lose the response to the post that would confirm it."""
+    service, epoch = await setup(session_factory)
+    await opened(service, epoch)
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            platform,
+            "post_rich",
+            AsyncMock(side_effect=TimeoutError("response lost")),
+        )
+        with pytest.raises(TimeoutError):
+            await refresh_cards(
+                session_factory,
+                "bridge",
+                "session-demo",
+                cards_for(session_factory, platform),
+            )
+
+
+async def test_a_card_that_can_never_be_found_is_disclosed_rather_than_left_silent(
+    session_factory, monkeypatch
+):
+    """The reservation stays, the card is not posted twice, and Console is named.
+
+    On a platform that can search, an unconfirmed delivery is a wait. Here it
+    is permanent, and the card — if it arrived at all — asks a question that
+    typing an answer to does nothing about. That is the failure mode the error
+    rules rank worst, so the channel is told once and pointed somewhere the
+    request can actually be answered.
+    """
+    platform = UnsearchablePlatform()
+    await _lose_the_card(session_factory, platform, monkeypatch)
+
+    await refresh_cards(
+        session_factory,
+        "bridge",
+        "session-demo",
+        cards_for(session_factory, platform),
+        gateway_public_url="https://switch.example",
+    )
+
+    assert platform.posts == []
+    channel, notice, thread = platform.notices[0]
+    assert channel == "channel-demo"
+    assert "R1" in notice
+    assert "https://switch.example/deeplink/session?" in notice
+    async with session_factory() as db:
+        post = (await db.scalars(select(SessionRequestPost))).one()
+        # Retained, and still its own token: the handle stays held, no second
+        # card is ever posted, and a typed answer is still refused.
+        assert post.external_post_id == post.token
+        assert post.unconfirmed_notice_at is not None
+
+
+async def test_the_channel_is_told_once_however_many_times_the_session_republishes(
+    session_factory, monkeypatch, caplog
+):
+    """A second notice would say nothing the first did not.
+
+    This runs on every publication cycle for as long as the request is open,
+    so "once" has to survive both the loop and a bridge that restarts and
+    remembers nothing — which is why the record of it is on the row.
+    """
+    platform = UnsearchablePlatform()
+    await _lose_the_card(session_factory, platform, monkeypatch)
+
+    for _ in range(3):
+        await refresh_cards(
+            session_factory,
+            "bridge",
+            "session-demo",
+            cards_for(session_factory, platform),
+        )
+
+    assert len(platform.notices) == 1
+    assert platform.posts == []
+    # Disclosed is a settled state, not a failure to report again every cycle.
+    assert "will retry" not in caplog.text
+
+
+async def test_a_notice_that_cannot_be_sent_is_not_retried_into_a_cascade(
+    session_factory, monkeypatch, caplog
+):
+    """The notice can fail too, and its failure must not become the new loop.
+
+    One attempt is made, and the row records that it was made before it is
+    tried: a notice lost this way is a card that stays undisclosed, which is
+    where this started, rather than a message the publisher keeps re-sending.
+    """
+    platform = UnsearchablePlatform()
+    await _lose_the_card(session_factory, platform, monkeypatch)
+    refused = AsyncMock(return_value=None)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(platform, "admin_message", refused)
+        await refresh_cards(
+            session_factory,
+            "bridge",
+            "session-demo",
+            cards_for(session_factory, platform),
+        )
+    await refresh_cards(
+        session_factory,
+        "bridge",
+        "session-demo",
+        cards_for(session_factory, platform),
+    )
+
+    refused.assert_awaited_once()
+    assert platform.notices == []
+    assert "nothing in the channel says so" in caplog.text
+
+
+async def test_a_platform_that_can_search_still_waits_for_its_card(
+    session_factory, monkeypatch
+):
+    """The disclosure is for platforms with nowhere to look, and only those.
+
+    Slack's lookup finds the card the lost response belonged to, so nothing is
+    disclosed and nothing is posted twice — the same outcome as before.
+    """
+    platform = RecoverablePlatform()
+    await _lose_the_card(session_factory, platform, monkeypatch)
+
+    with pytest.raises(CardNotPosted, match="unconfirmed"):
+        await refresh_cards(
+            session_factory,
+            "bridge",
+            "session-demo",
+            cards_for(session_factory, platform),
+        )
+
+    async with session_factory() as db:
+        post = (await db.scalars(select(SessionRequestPost))).one()
+        assert post.unconfirmed_notice_at is None
 
 
 @pytest.mark.parametrize("thread", [None, "channel:100.0"])

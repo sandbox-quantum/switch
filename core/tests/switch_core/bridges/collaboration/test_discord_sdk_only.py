@@ -590,7 +590,7 @@ async def test_a_failed_edit_is_reported_rather_than_logged_and_forgotten() -> N
 
     with pytest.raises(RichContentFailed):
         await adapter.update_rich(
-            str(CHANNEL_ID), f"{ROOT_MESSAGE_ID}:901", await _card()
+            str(CHANNEL_ID), "my-agent", f"{ROOT_MESSAGE_ID}:901", await _card()
         )
 
 
@@ -600,7 +600,9 @@ async def test_a_failed_edit_is_reported_rather_than_logged_and_forgotten() -> N
 async def test_a_running_turn_is_redrawn_in_place_inside_its_thread() -> None:
     adapter, _channel, _thread, webhook = _guild_setup()
 
-    await adapter.update_rich(str(CHANNEL_ID), f"{ROOT_MESSAGE_ID}:901", _activity())
+    await adapter.update_rich(
+        str(CHANNEL_ID), "my-agent", f"{ROOT_MESSAGE_ID}:901", _activity()
+    )
 
     assert webhook.deletes == []
     assert webhook.edits[0]["message_id"] == 901
@@ -610,7 +612,9 @@ async def test_a_running_turn_is_redrawn_in_place_inside_its_thread() -> None:
 async def test_a_thread_keeps_the_finished_turn_as_its_record() -> None:
     adapter, _channel, _thread, webhook = _guild_setup()
 
-    await adapter.update_rich(str(CHANNEL_ID), f"{ROOT_MESSAGE_ID}:901", _ended())
+    await adapter.update_rich(
+        str(CHANNEL_ID), "my-agent", f"{ROOT_MESSAGE_ID}:901", _ended()
+    )
 
     assert webhook.deletes == []
     assert webhook.edits[0]["message_id"] == 901
@@ -619,7 +623,9 @@ async def test_a_thread_keeps_the_finished_turn_as_its_record() -> None:
 async def test_a_flat_channel_loses_the_status_when_the_turn_ends() -> None:
     adapter, _channel, _thread, webhook = _guild_setup()
 
-    await adapter.update_rich(str(CHANNEL_ID), f"{CHANNEL_ID}:901", _ended())
+    await adapter.update_rich(
+        str(CHANNEL_ID), "my-agent", f"{CHANNEL_ID}:901", _ended()
+    )
 
     assert webhook.edits == []
     assert webhook.deletes[0]["message_id"] == 901
@@ -630,7 +636,9 @@ async def test_a_dm_loses_it_too_and_never_asks_for_a_webhook() -> None:
     adapter = _adapter({DM_CHANNEL_ID: dm})
     dm.messages[501] = _Message(dm, 501)
 
-    await adapter.update_rich(str(DM_CHANNEL_ID), f"{DM_CHANNEL_ID}:501", _ended())
+    await adapter.update_rich(
+        str(DM_CHANNEL_ID), "my-agent", f"{DM_CHANNEL_ID}:501", _ended()
+    )
 
     assert dm.deleted_ids == [501]
 
@@ -640,46 +648,26 @@ async def test_a_dm_redraw_writes_the_agent_name_back_into_the_body() -> None:
     adapter = _adapter({DM_CHANNEL_ID: dm})
 
     ref = await adapter.post_rich(str(DM_CHANNEL_ID), "my-agent", _activity(), None)
-    await adapter.update_rich(str(DM_CHANNEL_ID), ref, _activity())
+    await adapter.update_rich(str(DM_CHANNEL_ID), "my-agent", ref, _activity())
 
     assert dm.messages[501].edited is not None
     assert dm.messages[501].edited.startswith("**my-agent**: ")
 
 
-async def test_a_dm_redraw_reads_the_agent_name_back_off_the_message() -> None:
-    """The in-memory note of who posted what does not survive a restart.
-
-    In a DM the name is in the body rather than on the sender, so the message
-    itself is the durable record — and a redraw that forgot it would republish
-    somebody's turn as the bot.
+async def test_a_dm_redraw_still_names_the_agent_after_a_restart() -> None:
+    """In a DM the name is in the body rather than on the sender, so a redraw
+    that did not know it would republish somebody's turn as the bot. It comes
+    with the call, so nothing here depends on this process having posted it.
     """
     dm = _DMChannel()
     adapter = _adapter({DM_CHANNEL_ID: dm})
-
     ref = await adapter.post_rich(str(DM_CHANNEL_ID), "my-agent", _activity(), None)
-    adapter._rich_agents.clear()
-    await adapter.update_rich(str(DM_CHANNEL_ID), ref, _activity())
+
+    restarted = _adapter({DM_CHANNEL_ID: dm})
+    await restarted.update_rich(str(DM_CHANNEL_ID), "my-agent", ref, _activity())
 
     assert dm.messages[501].edited is not None
     assert dm.messages[501].edited.startswith("**my-agent**: ")
-
-
-async def test_a_dm_redraw_that_cannot_recover_the_name_says_so(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    """Better a turn published without a name than a silently wrong one."""
-    dm = _DMChannel()
-    adapter = _adapter({DM_CHANNEL_ID: dm})
-    dm.messages[501] = _Message(dm, 501, "no name here")
-
-    with caplog.at_level(logging.WARNING):
-        await adapter.update_rich(
-            str(DM_CHANNEL_ID), f"{DM_CHANNEL_ID}:501", _activity()
-        )
-
-    assert "carries no agent name" in caplog.text
-    assert dm.messages[501].edited is not None
-    assert not dm.messages[501].edited.startswith("**my-agent**")
 
 
 async def test_a_settled_card_is_never_taken_down() -> None:
@@ -687,7 +675,7 @@ async def test_a_settled_card_is_never_taken_down() -> None:
     adapter, _channel, _thread, webhook = _guild_setup()
     card = await _card()
 
-    await adapter.update_rich(str(CHANNEL_ID), f"{CHANNEL_ID}:901", card)
+    await adapter.update_rich(str(CHANNEL_ID), "my-agent", f"{CHANNEL_ID}:901", card)
 
     assert webhook.deletes == []
     assert webhook.edits[0]["message_id"] == 901
@@ -700,7 +688,9 @@ async def test_a_status_that_cannot_be_removed_is_left_saying_what_happened(
     webhook.delete_error = _http_error(403)
 
     with caplog.at_level(logging.WARNING):
-        await adapter.update_rich(str(CHANNEL_ID), f"{CHANNEL_ID}:901", _ended())
+        await adapter.update_rich(
+            str(CHANNEL_ID), "my-agent", f"{CHANNEL_ID}:901", _ended()
+        )
 
     assert "leaving its final state" in caplog.text
     assert webhook.edits[0]["message_id"] == 901
@@ -709,8 +699,12 @@ async def test_a_status_that_cannot_be_removed_is_left_saying_what_happened(
 async def test_redrawing_a_retired_status_is_not_reported_as_a_lost_message() -> None:
     adapter, _channel, _thread, webhook = _guild_setup()
 
-    await adapter.update_rich(str(CHANNEL_ID), f"{CHANNEL_ID}:901", _ended())
-    await adapter.update_rich(str(CHANNEL_ID), f"{CHANNEL_ID}:901", _ended())
+    await adapter.update_rich(
+        str(CHANNEL_ID), "my-agent", f"{CHANNEL_ID}:901", _ended()
+    )
+    await adapter.update_rich(
+        str(CHANNEL_ID), "my-agent", f"{CHANNEL_ID}:901", _ended()
+    )
 
     assert len(webhook.deletes) == 1
     assert webhook.edits == []

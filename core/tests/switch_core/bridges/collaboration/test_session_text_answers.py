@@ -30,6 +30,7 @@ from switch_core.bridges.collaboration.telegram.adapter import TelegramAdapter
 
 from .test_session_answers import (
     EXAMPLES_PATH,
+    TOKEN,
     _approval_form,
     _interactions,
     _post,
@@ -230,6 +231,20 @@ def test_a_number_the_card_has_no_option_at_answers_nothing() -> None:
     interactions = _interactions(_post())
 
     assert isinstance(_run(interactions.command_for_text(_typed("R42 9"))), Refused)
+
+
+def test_a_card_whose_delivery_was_never_confirmed_answers_nothing() -> None:
+    """A reservation still holding its own token is a card nothing can prove.
+
+    It may be in the channel and it may not, and an answer accepted against a
+    card that was never posted decides something nobody asked. On a platform
+    that can search its history the reservation is bound to the real message
+    and this stops applying; on one that cannot, the channel is told to answer
+    in Console instead — the notice is the way out, not a loosening of this.
+    """
+    interactions = _interactions(_post(external_post_id=TOKEN))
+
+    assert _run(interactions.command_for_text(_typed("R42 1"))) is None
 
 
 def test_a_handle_from_another_channel_names_no_request_here() -> None:

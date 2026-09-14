@@ -49,7 +49,7 @@ class ActivitySlack(SlackAdapter):
             raise TimeoutError("Response lost after Slack accepted the post")
         return ref
 
-    async def update_rich(self, channel, ref, content):
+    async def update_rich(self, channel, agent, ref, content):
         assert ref in self.messages
         self.edit_refs.append(ref)
         self.messages[ref] = self._render_rich(content)
@@ -68,6 +68,18 @@ class ActivitySlack(SlackAdapter):
             self.reactions.add(ref)
         else:
             self.reactions.discard(ref)
+
+
+class UnsearchablePlatform(ActivitySlack):
+    """A platform that cannot read its own history back, as Telegram cannot.
+
+    Everything else about it is the Slack fake above: what changes is only the
+    answer to "can an unacknowledged post be found again", and that is what
+    decides whether an uncertain delivery is something to wait for or something
+    that will never resolve.
+    """
+
+    recovers_uncertain_posts = False
 
 
 class PerAgentSlack(ActivitySlack):
@@ -159,10 +171,10 @@ async def test_final_log_edit_failure_is_retried_after_restart(
     await publish(activity(session_factory, platform))
     original = platform.update_rich
 
-    async def fail_log(channel, ref, content):
+    async def fail_log(channel, agent, ref, content):
         if content.tool_log:
             raise TimeoutError("Final log edit failed")
-        return await original(channel, ref, content)
+        return await original(channel, agent, ref, content)
 
     with monkeypatch.context() as patch:
         patch.setattr(platform, "update_rich", fail_log)
@@ -303,6 +315,83 @@ async def test_unknown_delivery_without_a_match_never_blindly_reposts(session_fa
     with pytest.raises(CardNotPosted):
         await publish(activity(session_factory, platform))
     assert platform.post_count == 1
+
+
+async def test_a_turn_a_platform_cannot_search_starts_again_rather_than_going_quiet(
+    session_factory, caplog
+):
+    """The other half of the test above, for a platform with nowhere to look.
+
+    There the reservation is held because the lookup may yet find the message.
+    Here no lookup exists, so holding it means this turn never says anything
+    again — not its status, and not the attention message that goes out when
+    something has gone wrong. A second status message in the channel is a
+    smaller fault than a turn that silently stops reporting, and the warning
+    is what makes the trade visible rather than invisible.
+    """
+    await setup(session_factory)
+    platform = UnsearchablePlatform()
+    platform.fail_after_post = True
+    with pytest.raises(TimeoutError):
+        await publish(activity(session_factory, platform))
+    platform.messages.clear()
+    assert await publish(activity(session_factory, platform))
+    # A fresh status to replace the one nothing can find, and the tool log
+    # that the abandoned turn never got as far as posting.
+    assert len(platform.messages) == 2
+    assert "may duplicate" in caplog.text
+
+
+async def test_an_unconfirmed_status_does_not_swallow_the_attention_message(
+    session_factory,
+):
+    """A problem still reaches the channel after a status delivery is lost.
+
+    The attention message has its own durable slot, and it is posted rather
+    than edited precisely so it can notify. If an unconfirmed reservation in
+    that slot could never be given up, the one message whose whole job is to
+    say "somebody has to act on this" would be the one guaranteed never to
+    arrive.
+    """
+    await setup(session_factory)
+    platform = UnsearchablePlatform()
+    original_post = platform.post_rich
+
+    async def lose_the_attention_post(channel, agent, content, thread):
+        if content.status_only:
+            platform.fail_after_post = True
+        return await original_post(channel, agent, content, thread)
+
+    platform.post_rich = lose_the_attention_post
+    renderer = activity(session_factory, platform)
+    with pytest.raises(TimeoutError):
+        await renderer.publish(
+            [],
+            _turn("running").model_copy(update={"command_id": "message-demo"}),
+            session_id="session-demo",
+            channel_id="channel-demo",
+            thread_root_id="channel-demo:root",
+            asked_on="channel-demo:question",
+            agent_name="Agent",
+            elapsed_seconds=12,
+            error_summary="The host went away.",
+        )
+    platform.post_rich = original_post
+    platform.messages.clear()
+    assert await activity(session_factory, platform).publish(
+        [],
+        _turn("running").model_copy(update={"command_id": "message-demo"}),
+        session_id="session-demo",
+        channel_id="channel-demo",
+        thread_root_id="channel-demo:root",
+        asked_on="channel-demo:question",
+        agent_name="Agent",
+        elapsed_seconds=12,
+        error_summary="The host went away.",
+    )
+    assert any(
+        "The host went away." in str(message) for message in platform.messages.values()
+    )
 
 
 async def test_definite_post_rejection_can_be_retried(session_factory, monkeypatch):

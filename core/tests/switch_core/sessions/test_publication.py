@@ -44,7 +44,7 @@ class Platform:
         self.posts.append((channel, message.text, message.blocks, thread))
         return f"{channel}:111.0"
 
-    async def update_rich(self, channel, post, content: RequestCard):
+    async def update_rich(self, channel, agent, post, content: RequestCard):
         message = render_request(
             content.request,
             content.reference,

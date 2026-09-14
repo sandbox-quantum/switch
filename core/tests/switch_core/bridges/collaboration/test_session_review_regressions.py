@@ -136,14 +136,14 @@ async def test_slack_update_cooldown_honors_retry_after_across_messages(monkeypa
     monkeypatch.setattr(adapter, "update_blocks", update)
     content = TurnActivity([], _turn(), status_only=True)
     with pytest.raises(RichContentThrottled) as first:
-        await adapter.update_rich("C1", "C1:1", content)
+        await adapter.update_rich("C1", "Agent", "C1:1", content)
     assert first.value.retry_after == 17
     clock[0] += 16
     with pytest.raises(RichContentThrottled):
-        await adapter.update_rich("C1", "C1:2", content)
+        await adapter.update_rich("C1", "Agent", "C1:2", content)
     assert update.await_count == 1
     clock[0] += 1
-    await adapter.update_rich("C1", "C1:2", content)
+    await adapter.update_rich("C1", "Agent", "C1:2", content)
     assert update.await_count == 2
 
 
