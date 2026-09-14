@@ -1,9 +1,15 @@
-import switchExpertInstructions from './switch-expert.md?raw';
+import switchExpertInstructions from '@root/../../../switch-expert/AGENT.md?raw';
+import switchExpertTemplate from '@root/../../../switch-expert/template.yaml?raw';
 
 /**
  * Templates that ship inside the Console. They render in the same listing as
  * server templates but never touch the network — local-first, usable before
  * the server has a registry (or a connection) at all.
+ *
+ * The Switch expert is read straight from `switch-expert/` at the repository
+ * root: the template document from `template.yaml`, the persona from
+ * `AGENT.md`. One source, so the expert the Console offers is the one the
+ * repository documents.
  */
 export type BundledTemplate = {
   id: string;
@@ -11,9 +17,10 @@ export type BundledTemplate = {
   description: string;
   kind: string;
   creator: string;
-  definition: string;
-  repoUrl: string | null;
-  sources: Array<{ url: string; label: string }> | null;
+  /** The agent template document (YAML). */
+  content: string;
+  /** Fills `agent.instructions` when the document leaves it out. */
+  instructions: string | null;
 };
 
 export const bundledTemplates: BundledTemplate[] = [
@@ -24,12 +31,11 @@ export const bundledTemplates: BundledTemplate[] = [
       'An agent that knows Switch inside out: rooms, agents, bridges, templates. Ask it how to set things up or why something is not working.',
     kind: 'agent',
     creator: 'Switch',
-    definition: switchExpertInstructions,
-    repoUrl: 'https://github.com/sandbox-quantum/switch',
-    sources: [
-      { url: 'https://docs.flintai.dev', label: 'Switch documentation' },
-      { url: 'https://docs.flintai.dev/getting-started', label: 'Getting started guide' },
-      { url: 'https://docs.flintai.dev/working-in-switch', label: 'Working in Switch' },
-    ],
+    content: switchExpertTemplate,
+    instructions: switchExpertInstructions,
   },
 ];
+
+export function findBundledTemplate(id: string): BundledTemplate | undefined {
+  return bundledTemplates.find((t) => t.id === id);
+}

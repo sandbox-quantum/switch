@@ -1,6 +1,6 @@
 import type { RepoAgentAttributes } from '@switch-console/core/agents/plugins';
 import { useQuery } from '@tanstack/react-query';
-import { Monitor, Server } from 'lucide-react';
+import { ExternalLink, FileText, Monitor, Server } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { agentsStore } from '@renderer/features/locations/stores/agents-store';
@@ -11,8 +11,11 @@ import {
   HostReadinessNotice,
   useRemoteHostReadiness,
 } from '@renderer/features/remote-hosts/host-readiness-notice';
+import { refreshSidebarRoomState } from '@renderer/features/sidebar/sidebar-tree-data';
+import { openRoom } from '@renderer/features/switch-rooms/open-room';
 import { policyHasDeadRule } from '@renderer/features/switch-servers/addressing-policy-editor';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
+import type { AgentTemplateData } from '@renderer/features/templates/agent-template-data';
 import { describeFailure } from '@renderer/lib/errors/describe-failure';
 import { toast } from '@renderer/lib/hooks/use-toast';
 import { rpc } from '@renderer/lib/ipc';
@@ -22,6 +25,8 @@ import {
   useShowModal,
   type BaseModalProps,
 } from '@renderer/lib/modal/modal-provider';
+import { openExternalUrl } from '@renderer/lib/open-external';
+import { Alert, AlertDescription } from '@renderer/lib/ui/alert';
 import { Button } from '@renderer/lib/ui/button';
 import { ConfirmButton } from '@renderer/lib/ui/confirm-button';
 import {
@@ -56,13 +61,6 @@ import { useConfigureAgentForm, usePickMode } from './modes';
 // switch-connector `configure` skill has set up (its `.claude/settings.local.json`
 // carries the SWITCH_* env block). The richer Switch Console flows — SSH, clone, create
 // new GitHub repo — are out of scope for v0, so this modal is local + pick only.
-/** Pre-filled values from a stored agent template. */
-export type AgentTemplateData = {
-  name: string;
-  description: string;
-  instructions: string;
-};
-
 export type AddLocationModalProps = BaseModalProps<void> & {
   /**
    * Which control opened this dialog. Required rather than defaulted: four
@@ -70,7 +68,8 @@ export type AddLocationModalProps = BaseModalProps<void> & {
    * under the same heading as the ones that did not.
    */
   entryPoint: UiEntryPoint;
-  /** When set, the modal pre-fills identity fields from this template. */
+  /** When set, the modal pre-fills the agent from this template, prepares its
+   * working directory, and puts it in the template's room once it exists. */
   template?: AgentTemplateData | null;
   /** When set, pre-fills the agent name (e.g. from a room template slot). */
   prefillName?: string | null;
@@ -94,7 +93,11 @@ export const AddAgentModal = observer(function AddAgentModal({
   template,
   prefillName,
 }: AddLocationModalProps) {
-  const [submitState, setSubmitState] = useState<'idle' | 'creating'>('idle');
+  // A template adds two steps around the creation itself: the working
+  // directory (and repository clone) before, the room after.
+  const [submitState, setSubmitState] = useState<
+    'idle' | 'preparing' | 'creating' | 'creating-room'
+  >('idle');
   const { navigate } = useNavigate();
   const { setCloseGuard } = useModalContext();
   const showAddServerModal = useShowModal('addServerModal');
@@ -102,13 +105,16 @@ export const AddAgentModal = observer(function AddAgentModal({
   const pickState = usePickMode();
   const form = useConfigureAgentForm();
 
-  // Pre-fill form from a template or a prefilled name (once, on mount).
+  // Pre-fill form from a template or a prefilled name (once, on mount). A
+  // slot name from the room-template wizard wins over the template's own
+  // suggestion: the wizard is asking for that agent by name.
   const [templateApplied, setTemplateApplied] = useState(false);
   useEffect(() => {
     if (templateApplied) return;
     if (template) {
       form.setDescription(template.description);
       form.setInstructions(template.instructions);
+      if (template.agentName && !prefillName) form.setAgentName(template.agentName);
       setTemplateApplied(true);
     }
     if (prefillName) {
@@ -123,6 +129,27 @@ export const AddAgentModal = observer(function AddAgentModal({
   // Typed directly, with no commit step: it used to need one because committing
   // fired the directory scans, and there are none left to fire.
   const [remoteRepoDir, setRemoteRepoDir] = useState('');
+
+  // A template should not stop at "choose a directory": suggest one, named
+  // after the agent, under the directory the Console keeps its locations in.
+  // It is created on submit, not now, so cancelling leaves nothing behind.
+  // The suggestion follows the name until the person picks a directory
+  // themselves; a path they chose is theirs and a rename leaves it alone.
+  const lastSuggestedDir = useRef<string | null>(null);
+  const { handlePathChange, path: pickedPath } = pickState;
+  useEffect(() => {
+    if (!template || runHost !== LOCAL_RUN_LOCATION || !form.nameIsValid) return;
+    if (pickedPath !== '' && pickedPath !== lastSuggestedDir.current) return;
+    let stale = false;
+    void rpc.agentTemplates.suggestDirectory({ agentName: form.agentName }).then((dir) => {
+      if (stale) return;
+      lastSuggestedDir.current = dir;
+      handlePathChange(dir);
+    });
+    return () => {
+      stale = true;
+    };
+  }, [template, runHost, form.agentName, form.nameIsValid, pickedPath, handlePathChange]);
   const { data: remoteHosts } = useQuery({
     queryKey: ['remote-hosts'],
     queryFn: () => rpc.remoteHosts.listHosts(),
@@ -347,14 +374,80 @@ export const AddAgentModal = observer(function AddAgentModal({
     }
   };
 
+  /**
+   * Put the agent the template just created into the template's room, and post
+   * its kickoff. The agent already exists at this point, so a failure here is
+   * reported as exactly that — the agent stays, the room did not happen — and
+   * the caller falls back to opening the agent instead.
+   */
+  const createTemplateRoom = async (
+    t: AgentTemplateData,
+    serverId: string,
+    agentName: string
+  ): Promise<string | null> => {
+    if (!t.roomYaml) return null;
+    setSubmitState('creating-room');
+    try {
+      const room = await rpc.switchServers.createRoomFromTemplate(serverId, t.roomYaml, {
+        agent: agentName,
+      });
+      await refreshSidebarRoomState(true);
+      if (room.failedAttachments.length > 0) {
+        const kickoff = room.failedAttachments.find((f) => f.kind === 'kickoff');
+        const others = room.failedAttachments.filter((f) => f.kind !== 'kickoff');
+        toast({
+          title: kickoff
+            ? `${agentName} is in "${room.roomName}", but nobody has spoken to it yet`
+            : `"${room.roomName}" was created with gaps`,
+          description: [
+            kickoff ? `The first message could not be posted: ${kickoff.error}` : null,
+            others.length > 0
+              ? `Could not add: ${others.map((f) => `${f.id} (${f.error})`).join(', ')}`
+              : null,
+          ]
+            .filter(Boolean)
+            .join(' '),
+          variant: 'destructive',
+        });
+      }
+      return room.roomId;
+    } catch (error) {
+      log.error(error);
+      const { headline, detail } = describeFailure(
+        error,
+        `The agent was created, but its room could not be. Create a room and add ${agentName} to it.`
+      );
+      toast({ title: headline, description: detail ?? undefined, variant: 'destructive' });
+      return null;
+    }
+  };
+
   /** Create a brand-new flat agent in the chosen directory (local or remote):
    * mint its identity, write its `.claude/agents/<name>.md` definition + its
    * per-agent credentials, and create the row — all via `addAgent`. */
   const createNewAgent = async () => {
     if (!pickState.serverId || !pickState.providerId) return;
-    setSubmitState('creating');
     setCloseGuard(true);
     try {
+      // The template's working directory may not exist yet (it was only
+      // suggested), and its repository is cloned alongside so the agent reads
+      // current source from its first answer. Local only: a remote directory
+      // is typed by hand and the agent clones for itself there.
+      if (template && !isRemoteRun) {
+        setSubmitState('preparing');
+        const prepared = await rpc.agentTemplates.prepareWorkspace({
+          dir: pickState.path,
+          repoUrl: template.repoUrl,
+        });
+        if (prepared.repo?.outcome === 'failed') {
+          toast({
+            title: 'Could not fetch the repository',
+            description: `${prepared.repo.error ?? 'git clone failed'} — the agent will try to clone it itself on its first run.`,
+            variant: 'destructive',
+          });
+        }
+      }
+      setSubmitState('creating');
       const result = await getLocationManagerStore().addAgentAndOpen({
         sshHost: isRemoteRun ? runHost : null,
         dir: isRemoteRun ? trimmedRemoteDir : pickState.path,
@@ -385,6 +478,16 @@ export const AddAgentModal = observer(function AddAgentModal({
         });
       }
       await agentsStore.load();
+      if (template?.roomYaml) {
+        const roomId = await createTemplateRoom(template, pickState.serverId, result.agent.name);
+        if (roomId) {
+          setCloseGuard(false);
+          setSubmitState('idle');
+          onClose();
+          await openRoom(roomId);
+          return;
+        }
+      }
       finishWith(result.agent);
     } catch (error) {
       log.error(error);
@@ -433,7 +536,17 @@ export const AddAgentModal = observer(function AddAgentModal({
                       onClick={() => void handleCreate()}
                       disabled={!canSubmit}
                     >
-                      {submitState === 'creating' ? 'Adding…' : 'Add agent'}
+                      {submitState === 'preparing'
+                        ? template?.repoUrl
+                          ? 'Fetching repository…'
+                          : 'Preparing…'
+                        : submitState === 'creating'
+                          ? 'Adding…'
+                          : submitState === 'creating-room'
+                            ? 'Creating its room…'
+                            : template?.roomYaml
+                              ? 'Add agent and open its room'
+                              : 'Add agent'}
                     </ConfirmButton>
                   </span>
                 }
@@ -452,6 +565,62 @@ export const AddAgentModal = observer(function AddAgentModal({
         className="max-h-[calc(100dvh-2rem-var(--modal-chrome,8.5rem))] gap-4"
       >
         <AgentIdentityFields form={form} />
+
+        {template && (
+          <Alert>
+            <FileText />
+            <AlertDescription className="flex flex-col gap-1">
+              {template.repoUrl && (
+                <span>
+                  Works from{' '}
+                  <button
+                    type="button"
+                    className="inline-flex items-center gap-1 underline underline-offset-2"
+                    onClick={() =>
+                      void openExternalUrl(template.repoUrl!, 'Could not open the repository')
+                    }
+                  >
+                    {template.repoUrl.replace(/^https?:\/\//, '')}
+                    <ExternalLink className="size-3" />
+                  </button>
+                  , cloned into its directory before it first runs.
+                </span>
+              )}
+              {template.sources.length > 0 && (
+                <span>
+                  Reads:{' '}
+                  {template.sources.map((source, i) => (
+                    <span key={source.url}>
+                      {i > 0 && ', '}
+                      <button
+                        type="button"
+                        className="inline-flex items-center gap-1 underline underline-offset-2"
+                        onClick={() => void openExternalUrl(source.url, 'Could not open the page')}
+                      >
+                        {source.label ?? source.url.replace(/^https?:\/\//, '')}
+                        <ExternalLink className="size-3" />
+                      </button>
+                    </span>
+                  ))}
+                </span>
+              )}
+              {template.roomYaml && (
+                <span>
+                  Once it exists it is put in a room
+                  {template.roomName
+                    ? ` called "${template.roomName.replace('{agent}', form.agentName || 'it')}"`
+                    : ''}{' '}
+                  with you, and spoken to, so it starts working right away.
+                </span>
+              )}
+              {template.warnings.map((w) => (
+                <span key={w} className="text-foreground-muted">
+                  {w}
+                </span>
+              ))}
+            </AlertDescription>
+          </Alert>
+        )}
 
         <Field>
           <FieldLabel>Run location</FieldLabel>
