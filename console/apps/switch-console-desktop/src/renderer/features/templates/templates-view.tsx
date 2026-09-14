@@ -16,7 +16,7 @@ import { Alert, AlertAction, AlertDescription } from '@renderer/lib/ui/alert';
 import { Button } from '@renderer/lib/ui/button';
 import { Input } from '@renderer/lib/ui/input';
 import { type AgentTemplateData, loadAgentTemplateData } from './agent-template-data';
-import { bundledTemplates } from './bundled-templates';
+import { bundledTemplates, findBundledTemplate } from './bundled-templates';
 
 function useServerId(): string {
   return useParams('templates').params.serverId;
@@ -59,11 +59,14 @@ function TemplateCard({
   template,
   busy,
   onUse,
+  onSave,
   loadDetails,
 }: {
   template: StoredTemplateSummary;
   busy: boolean;
   onUse: () => void;
+  /** Store a bundled template on the server, so the whole server sees it. */
+  onSave: (() => void) | null;
   loadDetails: () => Promise<AgentTemplateData>;
 }) {
   const [details, setDetails] = useState<AgentTemplateData | null>(null);
@@ -104,6 +107,11 @@ function TemplateCard({
       <div className="flex items-center justify-between">
         <span className="text-xs text-foreground-muted">by {template.creator}</span>
         <div className="flex items-center gap-1">
+          {onSave && (
+            <Button size="sm" variant="ghost" onClick={onSave} disabled={busy}>
+              Save to server
+            </Button>
+          )}
           <Button size="sm" variant="ghost" onClick={() => void toggleDetails()}>
             {loadingDetails ? (
               <Loader2 className="size-3.5 animate-spin" />
@@ -134,6 +142,7 @@ const TemplatesPanel = observer(function TemplatesPanel() {
   const [loading, setLoading] = useState(true);
   const [opening, setOpening] = useState<string | null>(null);
   const [query, setQuery] = useState('');
+  const [reloadKey, setReloadKey] = useState(0);
 
   // Templates create agents that run on this computer, so a computer with no
   // usable provider cannot use any of them. Say so above the listing rather
@@ -159,7 +168,39 @@ const TemplatesPanel = observer(function TemplatesPanel() {
     return () => {
       cancelled = true;
     };
-  }, [serverId]);
+  }, [serverId, reloadKey]);
+
+  // A bundled template lives in this Console only. Saving it puts the same
+  // document (persona inlined) on the server's registry, where everyone on
+  // the server finds it and the gateway can edit it.
+  const handleSaveTemplate = async (template: StoredTemplateSummary) => {
+    const bundled = findBundledTemplate(template.id);
+    if (!bundled) return;
+    setOpening(template.id);
+    try {
+      const content = await rpc.agentTemplates.compose({
+        yamlText: bundled.content,
+        instructions: bundled.instructions ?? '',
+      });
+      await rpc.switchServers.saveTemplate({
+        serverId,
+        name: bundled.name,
+        description: bundled.description,
+        kind: bundled.kind,
+        content,
+      });
+      toast({ title: `"${bundled.name}" is now on ${server?.name ?? 'the server'}` });
+      setReloadKey((k) => k + 1);
+    } catch (error) {
+      toast({
+        title: `Could not save "${template.name}" to the server`,
+        description: failureText(error, 'Check the server connection and try again.'),
+        variant: 'destructive',
+      });
+    } finally {
+      setOpening(null);
+    }
+  };
 
   // Fetch (for a server template), parse, and hand the result to the
   // add-agent modal. Parsing happens here rather than in the modal so a
@@ -252,6 +293,11 @@ const TemplatesPanel = observer(function TemplatesPanel() {
                     template={t}
                     busy={opening === t.id}
                     onUse={() => void handleUseTemplate(t)}
+                    onSave={
+                      findBundledTemplate(t.id) && !templates.some((s) => s.name === t.name)
+                        ? () => void handleSaveTemplate(t)
+                        : null
+                    }
                     loadDetails={() => loadAgentTemplateData(serverId, t)}
                   />
                 ))}

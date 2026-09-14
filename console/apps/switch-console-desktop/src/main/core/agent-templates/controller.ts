@@ -9,6 +9,7 @@ import { createRPCController } from '@shared/lib/ipc/rpc';
 import {
   agentTemplateRoomDocument,
   cloneTargetFor,
+  composeAgentTemplateDocument,
   parseAgentTemplate,
   type ParsedAgentTemplate,
 } from './agent-template-format';
@@ -41,6 +42,10 @@ export const agentTemplatesController = createRPCController({
 
   roomDocument: (params: { yamlText: string }): string | null =>
     agentTemplateRoomDocument(params.yamlText),
+
+  /** The document with its persona inlined, ready to store on a server. */
+  compose: (params: { yamlText: string; instructions: string }): string =>
+    composeAgentTemplateDocument(params.yamlText, params.instructions),
 
   /** Where an agent of this name would live by default: the same directory
    * the rest of the Console's locations default to, one folder per agent. */
