@@ -4,6 +4,7 @@ import {
   agentTemplateRoomDocument,
   cloneTargetFor,
   composeAgentTemplateDocument,
+  firstFreeDirectory,
   parseAgentTemplate,
   stripFrontMatter,
 } from './agent-template-format';
@@ -160,5 +161,13 @@ describe('cloneTargetFor', () => {
     expect(cloneTargetFor('/w', 'https://github.com/jqlang/jq.git')).toBe('/w/jq');
     expect(cloneTargetFor('/w', 'git@github.com:jqlang/jq.git')).toBe('/w/jq');
     expect(cloneTargetFor('/w', 'https://example.com/repo/')).toBe('/w/repo');
+  });
+});
+
+describe('firstFreeDirectory', () => {
+  it('keeps the base when nothing lives there, and steps past folders that hold an agent', async () => {
+    expect(await firstFreeDirectory('/w/a', async () => false)).toBe('/w/a');
+    const taken = new Set(['/w/a', '/w/a-2']);
+    expect(await firstFreeDirectory('/w/a', async (d) => taken.has(d))).toBe('/w/a-3');
   });
 });

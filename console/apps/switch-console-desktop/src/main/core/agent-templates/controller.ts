@@ -15,6 +15,7 @@ import {
   agentTemplateRoomDocument,
   cloneTargetFor,
   composeAgentTemplateDocument,
+  firstFreeDirectory,
   parseAgentTemplate,
   type ParsedAgentTemplate,
 } from './agent-template-format';
@@ -120,13 +121,24 @@ export const agentTemplatesController = createRPCController({
       const ctx = await remoteContext(params.sshHost);
       try {
         const home = await resolveRemoteHome(ctx);
-        return `${home.replace(/\/+$/, '')}/${REMOTE_LOCATIONS_DIR}/${params.agentName}`;
+        const base = `${home.replace(/\/+$/, '')}/${REMOTE_LOCATIONS_DIR}/${params.agentName}`;
+        return firstFreeDirectory(base, async (dir) => {
+          const probe = await ctx.exec('sh', [
+            '-c',
+            'test -e "$1/.switch" && echo taken',
+            'sh',
+            dir,
+          ]);
+          return probe.stdout.trim() === 'taken';
+        });
       } finally {
         ctx.dispose();
       }
     }
     const { defaultLocationsDirectory } = await appSettingsService.get('localLocation');
-    return join(defaultLocationsDirectory, params.agentName);
+    return firstFreeDirectory(join(defaultLocationsDirectory, params.agentName), (dir) =>
+      isDirectory(join(dir, '.switch'))
+    );
   },
 
   /**

@@ -169,3 +169,18 @@ export function cloneTargetFor(dir: string, repoUrl: string): string {
   const name = basename(repoUrl.replace(/\/+$/, '')).replace(/\.git$/, '');
   return join(dir, name || 'repo');
 }
+
+/**
+ * `base`, or `base-2`, `base-3`… when `base` already holds an agent (a
+ * `.switch/` directory). A leftover from an earlier install carries that
+ * agent's credentials, and the add-agent pre-flight refuses to overwrite
+ * them; better to land next door than to fail after the click.
+ */
+export async function firstFreeDirectory(
+  base: string,
+  isTaken: (dir: string) => Promise<boolean>
+): Promise<string> {
+  let candidate = base;
+  for (let i = 2; await isTaken(candidate); i++) candidate = `${base}-${i}`;
+  return candidate;
+}
