@@ -406,25 +406,53 @@ class TestCatalogueCoverage:
             f"{wrong_predicate}"
         )
 
-    async def test_the_migrations_frozen_table_list_matches_the_models(self) -> None:
+    async def test_the_migrations_frozen_table_list_names_no_table_the_models_lost(
+        self,
+    ) -> None:
         """`265ed188ad6f` carries its own copy of the scoped-table list, on
-        purpose — a migration must not change meaning because a model did. The
-        cost of a frozen copy is that it can silently fall behind: a table
-        added to the models gets a policy from `create_all`, so every test in
-        this file still passes, while a real deployment built by Alembic has
-        none. Nothing compared the two before this; they agree at 38 today.
+        purpose — a migration must not change meaning because a model did.
 
-        A deliberate divergence is still expressible — it just has to be a
-        new migration, which is the point.
+        Only one direction of that comparison can be asserted here. A table
+        added to the models *after* this revision cannot appear in its list:
+        the revision runs before the table exists, so an `ALTER TABLE` naming
+        it would abort `upgrade head` on a fresh database. Such a table brings
+        its own `ENABLE ROW LEVEL SECURITY` and policy in its own revision,
+        which is what this revision's own prose means by "a deliberate
+        divergence just has to be a new migration".
+
+        So this asserts the direction that stays meaningful: the frozen list
+        must name nothing the models have since dropped, which would leave the
+        chain policing a table that is no longer there.
+
+        The direction it cannot check — that every scoped model table really
+        does end up policed — is not left uncovered. It is checked against a
+        database rather than a source list, by
+        `test_frozen_ddl_matches_create_all.py`, which replays the whole chain
+        and compares the policies and RLS-enabled sets it produces against the
+        ones `create_all` builds from `rls_ddl.py`. That is the stronger
+        statement, and it sees every later revision.
         """
         from_models = scoped_tables(Base.metadata)
         from_migration = dict(_migration_module().SCOPED_TABLES)
 
-        assert from_migration == from_models, (
-            "the frozen SCOPED_TABLES in migration 265ed188ad6f no longer "
-            "matches the models: only in the migration "
-            f"{sorted(set(from_migration) - set(from_models))}, only in the "
-            f"models {sorted(set(from_models) - set(from_migration))}"
+        stale = {
+            table: column
+            for table, column in from_migration.items()
+            if table not in from_models
+        }
+        assert stale == {}, (
+            "the frozen SCOPED_TABLES in migration 265ed188ad6f names tables "
+            f"the models no longer have: {sorted(stale)}"
+        )
+        disagreeing = {
+            table: (column, from_models[table])
+            for table, column in from_migration.items()
+            if table in from_models and from_models[table] != column
+        }
+        assert disagreeing == {}, (
+            "the frozen SCOPED_TABLES in migration 265ed188ad6f policies a "
+            "different column than the models scope by (migration, models): "
+            f"{disagreeing}"
         )
 
     async def test_global_tables_carry_no_policy(

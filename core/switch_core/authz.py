@@ -8,8 +8,14 @@ Model:
   - The subject of every decision is a **user** (`Principal`). Agent-initiated
     requests resolve to the agent's owner (see the protocol service's
     `_resolve_acting_identity`); an agent inherits exactly its owner's
-    permissions.
-  - `User.role == "admin"` is a global bypass.
+    permissions in the tenant the request is bound to — never more than the
+    owner holds there.
+  - `Principal.is_admin` means "may administer the tenant bound to this
+    request" — the deployment operator bypass (`User.role == "admin"`, global,
+    never granted by anything self-service) OR an `owner`/`admin` membership
+    row for this user in the bound tenant (`tenant_members.role`, granted per
+    tenant, e.g. by creating it). `administers_tenant` below computes it; a
+    caller with a database session should use that rather than re-deriving it.
   - Owned entities carry a nullable owner plus independent `read_visibility`
     and `write_visibility` ("public" | "private").
 
@@ -38,10 +44,28 @@ class Principal:
 
     `id` may be ``None`` for an agent with no owner; such a principal owns
     nothing and is limited to public access.
+
+    `is_admin` is tenant-scoped, not global — see `administers_tenant`.
     """
 
     id: str | None
     is_admin: bool
+
+
+# `tenant_members.role` is a checked string, not an enum type (`db/models.py`).
+TENANT_ADMIN_ROLES = ("owner", "admin")
+
+
+def administers_tenant(*, is_operator: bool, tenant_role: str | None) -> bool:
+    """Whether a caller may administer the tenant they hold `tenant_role` in.
+
+    True for a deployment operator (the global bypass), regardless of
+    membership — an operator administers every tenant. Otherwise true only if
+    the membership role itself is `owner` or `admin`; a plain `member`, or no
+    membership row at all, is false. This is the one function that should ever
+    turn a role into an admin bit — see `Principal.is_admin`.
+    """
+    return is_operator or tenant_role in TENANT_ADMIN_ROLES
 
 
 @runtime_checkable

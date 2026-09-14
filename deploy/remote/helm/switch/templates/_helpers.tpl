@@ -551,8 +551,12 @@ Include with `nindent 12`.
     secretKeyRef:
       name: {{ include "switch.secretName" . }}
       key: GATEWAY_OIDC_CLIENT_SECRET
+{{- $oidcScopes := required "switchCore.oidc.scopes is required when oidc.enabled" .Values.switchCore.oidc.scopes }}
+{{- if not (has "openid" (regexSplit "\\s+" (trim $oidcScopes) -1)) }}
+{{- fail (printf "switchCore.oidc.scopes must include \"openid\" — without it the provider issues no id_token and the gateway falls back to a userinfo call it may not answer. Got %q." $oidcScopes) }}
+{{- end }}
 - name: GATEWAY_OIDC_SCOPES
-  value: {{ .Values.switchCore.oidc.scopes | quote }}
+  value: {{ $oidcScopes | quote }}
 - name: GATEWAY_OIDC_PROVIDER_LABEL
   value: {{ .Values.switchCore.oidc.providerLabel | quote }}
 {{- if .Values.switchCore.oidc.redirectUrl }}

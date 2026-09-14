@@ -108,6 +108,7 @@ from switch_core.db.stores.room_role_store import RoomRoleStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.server_connector_store import ServerConnectorStore
 from switch_core.db.stores.task_store import TaskStore
+from switch_core.db.stores.template_store import TemplateStore
 from switch_core.db.stores.tenant_store import TenantStore
 from switch_core.db.stores.user_store import UserStore
 from switch_core.db.tenant_lookup import all_tenant_ids
@@ -290,6 +291,7 @@ async def run(config: SwitchConfig) -> None:
     room_role_store = RoomRoleStore()
     message_store = MessageStore()
     media_store = MediaStore()
+    template_store = TemplateStore()
 
     # ── Seed admin user + agent-registration bootstrap key ──────────────────
     # A second acquisition of the boot lock, distinct from the one around the
@@ -487,6 +489,7 @@ async def run(config: SwitchConfig) -> None:
         user_store=user_store,
         external_user_store=external_user_store,
         api_key_store=api_key_store,
+        template_store=template_store,
         resource_service=resource_service,
         protocol=protocol,
         config=config,

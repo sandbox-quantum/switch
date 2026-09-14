@@ -7,7 +7,15 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from switch_core.db.models import ApiKey, ServerConnector, User
 from switch_core.db.stores.api_key_store import ApiKeyStore
 from switch_core.db.stores.server_connector_store import ServerConnectorStore
+from switch_core.db.stores.user_store import UserStore
 from switch_core.gateway.connectors import delete_connector
+
+_USER_STORE = UserStore()
+
+
+async def _is_admin(session: AsyncSession, user: User) -> bool:
+    """The bit `get_tenant_is_admin` hands the route, resolved the same way."""
+    return await _USER_STORE.administers(session, user)
 
 
 class _StubLifecycle:
@@ -78,6 +86,7 @@ class TestDeleteConnectorAuthorization:
                     api_key_store=ApiKeyStore(),
                     connector_lifecycle=lifecycle,  # type: ignore[arg-type]
                     user=other,
+                    is_admin=await _is_admin(session, other),
                 )
 
             assert exc.value.status_code == 403
@@ -99,6 +108,7 @@ class TestDeleteConnectorAuthorization:
                 api_key_store=ApiKeyStore(),
                 connector_lifecycle=lifecycle,  # type: ignore[arg-type]
                 user=owner,
+                is_admin=await _is_admin(session, owner),
             )
 
             assert result == {"ok": True}
@@ -121,6 +131,7 @@ class TestDeleteConnectorAuthorization:
                 api_key_store=ApiKeyStore(),
                 connector_lifecycle=lifecycle,  # type: ignore[arg-type]
                 user=admin,
+                is_admin=await _is_admin(session, admin),
             )
 
             assert result == {"ok": True}
@@ -142,6 +153,7 @@ class TestDeleteConnectorAuthorization:
                     api_key_store=ApiKeyStore(),
                     connector_lifecycle=lifecycle,  # type: ignore[arg-type]
                     user=user,
+                    is_admin=await _is_admin(session, user),
                 )
 
             assert exc.value.status_code == 404

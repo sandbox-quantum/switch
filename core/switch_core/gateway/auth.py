@@ -22,7 +22,7 @@ from switch_core.gateway.dependencies import (
     get_session_factory,
     get_user_store,
 )
-from switch_core.logging_context import bind_log_context, unbind_log_context
+from switch_core.logging_context import log_context
 from switch_core.tenant_context import tenant_scope
 
 logger = logging.getLogger(__name__)
@@ -223,23 +223,61 @@ async def get_current_user(
 
     tenant_id = await _resolve_tenant_id(session_factory, user_store, user_id)
 
-    with tenant_scope(tenant_id):
-        log_token = bind_log_context(user_id=user_id, tenant_id=tenant_id)
-        try:
-            user = await user_store.get(session, user_id)
-            if user is None:
-                # Deleted between the two reads; rare, and still not a 500.
-                raise HTTPException(status_code=401, detail="User not found")
-            yield user
-        finally:
-            unbind_log_context(log_token)
+    with tenant_scope(tenant_id), log_context(user_id=user_id, tenant_id=tenant_id):
+        user = await user_store.get(session, user_id)
+        if user is None:
+            # Deleted between the two reads; rare, and still not a 500.
+            raise HTTPException(status_code=401, detail="User not found")
+        yield user
 
 
 async def require_admin(
     user: Annotated[User, Depends(get_current_user)],
 ) -> User:
+    """Raise 403 unless `user` is a deployment operator.
+
+    ``User.role == "admin"`` is deliberately global and deliberately not
+    self-service: it names the person who runs the server, not a role any
+    tenant can grant. Gate deployment-wide actions on this — creating or
+    listing every user in the deployment — never a single tenant's resources.
+    Those use ``require_tenant_admin``.
+    """
     if user.role != "admin":
         raise HTTPException(status_code=403, detail="Admin access required")
+    return user
+
+
+async def get_tenant_is_admin(
+    session: Annotated[AsyncSession, Depends(get_session)],
+    user: Annotated[User, Depends(get_current_user)],
+    user_store: Annotated[UserStore, Depends(get_user_store)],
+) -> bool:
+    """Whether `user` may administer the tenant this request is bound to.
+
+    This is the boolean every ``Principal.is_admin`` in a gateway request
+    should be built from — see ``UserStore.administers`` for what it actually
+    checks.
+
+    Also callable directly (not just as a FastAPI dependency) from any
+    handler or service function that already holds a bound `session`, the
+    caller's `User`, and a `UserStore`.
+    """
+    return await user_store.administers(session, user)
+
+
+async def require_tenant_admin(
+    user: Annotated[User, Depends(get_current_user)],
+    is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
+) -> User:
+    """Raise 403 unless `user` may administer the tenant this request is bound to.
+
+    Unlike ``require_admin``, this is granted by ``tenant_members.role`` as
+    well as the operator bit — use it for routes that manage one tenant's
+    resources (a collaboration bridge, a room) rather than the deployment
+    itself.
+    """
+    if not is_admin:
+        raise HTTPException(status_code=403, detail="Tenant admin access required")
     return user
 
 
@@ -249,6 +287,7 @@ async def require_room_access(
     room_id: str,
     user: User,
     action: Action,
+    is_admin: bool,
 ) -> Room:
     """Load a room (404 if missing) and authorize `action` for `user`,
     raising HTTP 403 if denied.
@@ -257,12 +296,21 @@ async def require_room_access(
     id (attaching references, linking rooms, …) so they cannot operate on a
     room the caller lacks access to. Mirrors the protocol layer's
     ``_require_room_action``.
+
+    `is_admin` comes from ``get_tenant_is_admin``; it is a parameter rather
+    than a read of its own so that a route cannot end up authorizing against
+    a different admin bit than the one its own dependencies resolved.
+
+    This is the widest of the tenant-admin gates: `authz.can` short-circuits
+    on the admin bit, so a workspace owner or admin passes it for every room
+    in their workspace, private ones included. See the phase 2 design note on
+    what that grant covers.
     """
     room = await room_store.get(session, room_id)
     if room is None:
         raise HTTPException(status_code=404, detail="Room not found")
     try:
-        require(Principal(user.id, user.role == "admin"), action, room)
+        require(Principal(user.id, is_admin), action, room)
     except PermissionError as e:
         raise HTTPException(status_code=403, detail=str(e)) from e
     return room

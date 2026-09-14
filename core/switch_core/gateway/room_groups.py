@@ -9,7 +9,7 @@ from switch_core.authz import Principal, require
 from switch_core.db.models import RoomGroup, User
 from switch_core.db.stores.room_group_store import RoomGroupStore
 from switch_core.db.stores.room_store import RoomStore
-from switch_core.gateway.auth import get_current_user
+from switch_core.gateway.auth import get_current_user, get_tenant_is_admin
 from switch_core.gateway.dependencies import (
     get_room_group_store,
     get_room_store,
@@ -109,13 +109,14 @@ async def assign_rooms_to_group(
     room_group_store: Annotated[RoomGroupStore, Depends(get_room_group_store)],
     room_store: Annotated[RoomStore, Depends(get_room_store)],
     user: Annotated[User, Depends(get_current_user)],
+    is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> RoomGroupAssignResponse:
     """Bulk-assign rooms into a group. Requires write access to each room;
     unknown room ids are skipped."""
     if await room_group_store.get(session, group_id) is None:
         raise HTTPException(status_code=404, detail="Room group not found")
 
-    principal = Principal(user.id, user.role == "admin")
+    principal = Principal(user.id, is_admin)
     forbidden: list[str] = []
     allowed: list[str] = []
     for room_id in req.room_ids:

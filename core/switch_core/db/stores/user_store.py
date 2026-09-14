@@ -6,12 +6,14 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from switch_core.authz import administers_tenant
 from switch_core.db.models import (
     OidcIdentity,
     TenantMember,
     User,
     require_tenant_id,
 )
+from switch_core.tenant_context import current_tenant_id
 
 logger = logging.getLogger(__name__)
 
@@ -297,3 +299,40 @@ class UserStore:
     async def get_all(self, session: AsyncSession) -> list[User]:
         result = await session.execute(select(User))
         return list(result.scalars().all())
+
+    async def tenant_role(
+        self, session: AsyncSession, tenant_id: str, user_id: str
+    ) -> str | None:
+        """`user_id`'s membership role in `tenant_id`, or None if not a member.
+
+        `TenantMember` is addressed by its whole primary key, so this is a
+        plain `session.get` rather than a query — same shape as
+        `ensure_membership`'s write.
+        """
+        membership = await session.get(TenantMember, (tenant_id, user_id))
+        return membership.role if membership is not None else None
+
+    async def administers(self, session: AsyncSession, user: User) -> bool:
+        """Whether `user` may administer the tenant bound to `session`'s
+        context — the operator bypass, or an owner/admin membership in it.
+
+        See `authz.administers_tenant`, which this composes with a read of the
+        one membership row that can answer "in *this* tenant".
+
+        Raises:
+            RuntimeError: no tenant is bound. The question has no
+                tenant-independent answer: half of it is a membership row that
+                cannot be read without one. Answering on the operator bit
+                alone would quietly demote a workspace owner to a plain
+                member, and the symptom — a 403 on their own workspace — says
+                nothing about why.
+        """
+        tenant_id = current_tenant_id()
+        if tenant_id is None:
+            raise RuntimeError(
+                "administers requires a bound tenant; whether someone may "
+                "administer a workspace is only answerable about a particular "
+                "one"
+            )
+        role = await self.tenant_role(session, tenant_id, user.id)
+        return administers_tenant(is_operator=user.role == "admin", tenant_role=role)

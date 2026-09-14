@@ -36,6 +36,11 @@ _USER_STORE = UserStore()
 _AGENT_STORE = AgentStore()
 
 
+async def _is_admin(session: AsyncSession, user: User) -> bool:
+    """The bit `get_tenant_is_admin` hands the route, resolved the same way."""
+    return await _USER_STORE.administers(session, user)
+
+
 def _svc(session_factory: async_sessionmaker[AsyncSession]) -> ResourceService:
     return ResourceService(
         reference_store=ReferenceStore(),
@@ -88,6 +93,7 @@ class TestRoomResourceReadAuthz:
                     _AGENT_STORE,
                     _ROOM_STORE,
                     other,
+                    await _is_admin(session, other),
                 )
             assert exc.value.status_code == 403
 
@@ -109,6 +115,7 @@ class TestRoomResourceReadAuthz:
                     _AGENT_STORE,
                     _ROOM_STORE,
                     other,
+                    await _is_admin(session, other),
                 )
             assert exc.value.status_code == 403
 
@@ -123,7 +130,13 @@ class TestRoomResourceReadAuthz:
 
             with pytest.raises(HTTPException) as exc:
                 await detach_document_from_room(
-                    room.id, "any-doc", session, svc, _ROOM_STORE, other
+                    room.id,
+                    "any-doc",
+                    session,
+                    svc,
+                    _ROOM_STORE,
+                    other,
+                    await _is_admin(session, other),
                 )
             assert exc.value.status_code == 403
 
@@ -138,7 +151,13 @@ class TestRoomResourceReadAuthz:
 
             with pytest.raises(HTTPException) as exc:
                 await detach_reference_from_room(
-                    room.id, "any-ref", session, svc, _ROOM_STORE, other
+                    room.id,
+                    "any-ref",
+                    session,
+                    svc,
+                    _ROOM_STORE,
+                    other,
+                    await _is_admin(session, other),
                 )
             assert exc.value.status_code == 403
 
@@ -153,7 +172,13 @@ class TestRoomResourceReadAuthz:
 
             with pytest.raises(HTTPException) as exc:
                 await detach_package_from_room(
-                    room.id, "any-pkg", session, svc, _ROOM_STORE, other
+                    room.id,
+                    "any-pkg",
+                    session,
+                    svc,
+                    _ROOM_STORE,
+                    other,
+                    await _is_admin(session, other),
                 )
             assert exc.value.status_code == 403
 
@@ -176,6 +201,7 @@ class TestRoomResourceReadAuthz:
                     _AGENT_STORE,
                     _ROOM_STORE,
                     owner,
+                    await _is_admin(session, owner),
                 )
                 == []
             )
@@ -189,5 +215,6 @@ class TestRoomResourceReadAuthz:
                     _AGENT_STORE,
                     _ROOM_STORE,
                     owner,
+                    await _is_admin(session, owner),
                 )
             assert exc.value.status_code == 404

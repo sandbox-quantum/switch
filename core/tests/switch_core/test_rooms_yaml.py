@@ -1138,6 +1138,9 @@ async def test_endpoint_json_body(env):
 
     svc = _svc(env)
     user_id = env["user_id"]
+    # Not an administrator of anything: this exercises body parsing, and the
+    # caller owns the room it creates.
+    is_admin = False
     user = User(name="alice", email="alice@example.com", role="member")
     # Poke the id to match the seeded user so provision works.
     object.__setattr__(user, "id", user_id)
@@ -1153,14 +1156,16 @@ async def test_endpoint_json_body(env):
     request.headers = {"content-type": "application/json"}
     request.body.return_value = body
 
-    result = await create_room_from_yaml(request, svc, user)
+    async with env["session_factory"]() as session:
+        result = await create_room_from_yaml(request, session, svc, user, is_admin)
     assert result.room_name == "carol local-deploy"
 
     # Non-string yaml value → 400.
     bad_body = json.dumps({"yaml": 123}).encode()
     request.body.return_value = bad_body
-    with pytest.raises(HTTPException) as exc_info:
-        await create_room_from_yaml(request, svc, user)
+    async with env["session_factory"]() as session:
+        with pytest.raises(HTTPException) as exc_info:
+            await create_room_from_yaml(request, session, svc, user, is_admin)
     assert exc_info.value.status_code == 400
 
 

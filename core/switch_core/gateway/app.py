@@ -21,6 +21,7 @@ from switch_core.db.stores.external_user_store import ExternalUserStore
 from switch_core.db.stores.room_group_store import RoomGroupStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.server_connector_store import ServerConnectorStore
+from switch_core.db.stores.template_store import TemplateStore
 from switch_core.db.stores.user_store import UserStore
 from switch_core.gateway.agents import router as agents_router
 from switch_core.gateway.api_keys import router as api_keys_router
@@ -37,6 +38,7 @@ from switch_core.gateway.references import router as references_router
 from switch_core.gateway.room_groups import router as room_groups_router
 from switch_core.gateway.room_links import router as room_links_router
 from switch_core.gateway.rooms import router as rooms_router
+from switch_core.gateway.templates import router as templates_router
 from switch_core.room_service import RoomService
 
 
@@ -56,6 +58,7 @@ def create_gateway_app(
     user_store: UserStore,
     external_user_store: ExternalUserStore,
     api_key_store: ApiKeyStore,
+    template_store: TemplateStore,
     resource_service: ResourceService,
     protocol: ProtocolService,
     config: SwitchConfig,
@@ -75,6 +78,7 @@ def create_gateway_app(
         user_store=user_store,
         external_user_store=external_user_store,
         api_key_store=api_key_store,
+        template_store=template_store,
         resource_service=resource_service,
         protocol=protocol,
         config=config,
@@ -109,6 +113,7 @@ def create_gateway_app(
     app.include_router(room_links_router, tags=["linked-rooms"])
     app.include_router(documents_router, tags=["documents"])
     app.include_router(packages_router, tags=["packages"])
+    app.include_router(templates_router, tags=["templates"])
     app.include_router(ecosystem_router, prefix="/ecosystem", tags=["ecosystem"])
 
     return app

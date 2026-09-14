@@ -12,6 +12,7 @@ import DocumentDetailPage from "./pages/resources/DocumentDetailPage";
 import PackageDetailPage from "./pages/resources/PackageDetailPage";
 import ReferenceDetailPage from "./pages/resources/ReferenceDetailPage";
 import ResourcesPage from "./pages/resources/ResourcesPage";
+import TemplateDetailPage from "./pages/resources/TemplateDetailPage";
 import CreateRoomPage from "./pages/rooms/CreateRoomPage";
 import GroupsPage from "./pages/rooms/GroupsPage";
 import RoomDetailPage from "./pages/rooms/RoomDetailPage";
@@ -73,6 +74,10 @@ function AppRoutes() {
         <Route
           path="resources/packages/:id"
           element={<PackageDetailPage />}
+        />
+        <Route
+          path="resources/templates/:id"
+          element={<TemplateDetailPage />}
         />
         <Route path="agents" element={<AgentsPage />} />
         <Route path="agents/:agentId" element={<AgentDetailPage />} />
