@@ -76,6 +76,7 @@ async function main(): Promise<void> {
           agentApiUrl,
           token,
           session: config.session,
+          resumeOperationId: config.resumeOperationId,
           input,
           roomConnection: config.roomConnection,
         },

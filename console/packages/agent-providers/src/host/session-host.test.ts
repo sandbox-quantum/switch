@@ -741,3 +741,39 @@ it('does not present authentication or transport failures as a missing conversat
     'Authentication failed'
   );
 });
+
+it('resumes a stopped native conversation only once per explicit operation without replaying work', async () => {
+  const { root, host } = await start('claude');
+  await host.command(message('before-stop'));
+  await host.command({ ...message('stop'), body: { type: 'session.stop' } });
+  await host.shutdown();
+  const fixture = setup('claude');
+  const resumeOperationId = randomUUID();
+  const resumed = await HostedSession.start(
+    root,
+    { ...fixture.config, resumeOperationId },
+    fixture.adapter
+  );
+  hosts.push(resumed);
+  expect(fixture.adapter.startSession).toHaveBeenCalledWith(
+    expect.objectContaining({ resume: { nativeSessionId: 'native' } })
+  );
+  expect(fixture.adapter.sendTurn).not.toHaveBeenCalled();
+  expect(resumed.snapshot().turns.every((turn) => turn.status === 'interrupted')).toBe(true);
+  expect(resumed.snapshot().session.status).toBe('ready');
+  await resumed.command({
+    ...message('stop-again'),
+    epoch: resumed.snapshot().session.epoch,
+    body: { type: 'session.stop' },
+  });
+  await resumed.shutdown();
+  const again = setup('claude');
+  const stopped = await HostedSession.start(
+    root,
+    { ...again.config, resumeOperationId },
+    again.adapter
+  );
+  hosts.push(stopped);
+  expect(stopped.snapshot().session.status).toBe('stopped');
+  expect(again.adapter.startSession).not.toHaveBeenCalled();
+});

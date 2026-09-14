@@ -248,11 +248,6 @@ export class SharedAgentRuntime implements AgentRuntimeProvider {
 
   async restart(session: Session): Promise<void> {
     await this.resolveServer();
-    const snapshot = snapshotSchema.parse(await fetchSdkSnapshot(this.server!, session.id));
-    if (snapshot.session.status === 'stopped')
-      throw new Error(
-        'This session was stopped. Create a new session to start another conversation.'
-      );
     await this.open(session, undefined, true, true);
   }
 

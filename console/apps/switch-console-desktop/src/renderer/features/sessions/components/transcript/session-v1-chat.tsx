@@ -137,7 +137,7 @@ export function SessionV1Chat({
           {session?.retired ? 'Retired' : (session?.status ?? 'Loading')}
         </span>
         <div className="flex items-center gap-2">
-          {restartHost && !session?.retired && session?.status !== 'stopped' && (
+          {restartHost && !session?.retired && (
             <Button
               size="sm"
               variant="outline"
@@ -157,7 +157,7 @@ export function SessionV1Chat({
                   .finally(() => setSending(false));
               }}
             >
-              Restart session process
+              {session?.status === 'stopped' ? 'Resume session' : 'Restart session process'}
             </Button>
           )}
           {runningTurn && session?.capabilities.interrupt && (
@@ -188,10 +188,18 @@ export function SessionV1Chat({
           <span>
             {available || (view.connected && session?.connectivity === 'online')
               ? 'Connected'
-              : 'Offline'}
+              : session?.status === 'stopped'
+                ? 'Stopped'
+                : 'Offline'}
           </span>
         </div>
       </div>
+      {session?.status === 'stopped' && !session.retired && (
+        <p role="status" className="border-b border-border px-5 py-3 text-sm text-foreground-muted">
+          This session is stopped. Resume to continue the saved conversation. Interrupted work will
+          not be repeated.
+        </p>
+      )}
       {(initialPromptDelivery?.state === 'unknown' ||
         initialPromptDelivery?.state === 'rejected') && (
         <div

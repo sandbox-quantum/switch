@@ -11,10 +11,13 @@ child identity. Existing credentials and provider definitions remain on the
 execution machine.
 
 Closing Console leaves the host running. Reopen a session to read its saved
-transcript. **Interrupt** ends the active turn. **Stop session** ends the
-conversation. **Restart host** stops the current host, waits for process cleanup,
-and resumes the saved native conversation under a new server-issued epoch.
-A stopped conversation cannot be reopened as a new conversation. Archiving or
+transcript. **Interrupt** ends the active turn. **Stop session** stops execution
+and preserves the conversation. **Resume session** explicitly reopens its saved
+native conversation after process cleanup and server lease recovery. Interrupted
+or uncertain work is not repeated. An ordinary reconnect keeps a stopped session
+stopped. **Restart session process** performs the same fenced recovery for an
+active session. If the provider can no longer resume its saved conversation,
+Console shows an explicit recovery decision instead of silently creating one. Archiving or
 deleting a session waits for a confirmed server stop, including sessions that
 Console has discovered but never opened. If the stop outcome is unknown, the
 session remains available for inspection.
