@@ -149,6 +149,16 @@ switchCore:
     requireEmailVerified: true
     # Set false to disable password login entirely (OIDC-only).
     passwordLoginEnabled: true
+  # Workspaces (tenants). Invisible to anyone who belongs to exactly one, which
+  # is everybody on a deployment serving a single organisation.
+  tenancy:
+    # Offer the workspace chooser at sign-in. Off by default because turning it
+    # on changes an answer: a person in more than one workspace who has not
+    # picked one is refused today with the same 403 a single-workspace
+    # deployment returns, and with this on they get a 409 listing the
+    # workspaces to choose from instead. Enable it once the client signing in
+    # here knows what to do with that.
+    choiceEnabled: false
   # Bearer-token resolution runs before every authenticated request and agents
   # beat continuously, so a successful resolution is memoised in process for
   # this many seconds. Only successes are cached — an unknown or revoked token
