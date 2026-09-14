@@ -10,6 +10,7 @@ import pytest
 from switch_core.bridges.agent.commands import COMMANDS
 from switch_core.bridges.collaboration.discord import adapter as adapter_module
 from switch_core.bridges.collaboration.discord.adapter import (
+    _WEBHOOK_NAME,
     DiscordAdapter,
     DiscordConnectionConfig,
 )
@@ -560,7 +561,7 @@ def test_send_message_posts_via_webhook_with_agent_identity() -> None:
     channel = _FakeChannel()
     adapter._client = _FakeClient({CHANNEL_ID: channel})
     webhook = _FakeWebhook()
-    adapter._webhooks[CHANNEL_ID] = webhook
+    adapter._webhooks[(CHANNEL_ID, _WEBHOOK_NAME)] = webhook
 
     ref = _run(adapter.send_message(str(CHANNEL_ID), "my-agent", "**hello**"))
 
@@ -580,7 +581,7 @@ def test_long_message_is_split_across_posts_not_dropped() -> None:
     channel = _FakeChannel()
     adapter._client = _FakeClient({CHANNEL_ID: channel})
     webhook = _FakeWebhook()
-    adapter._webhooks[CHANNEL_ID] = webhook
+    adapter._webhooks[(CHANNEL_ID, _WEBHOOK_NAME)] = webhook
     body = "\n".join(f"line {i}" for i in range(1000))
 
     ref = _run(adapter.send_message(str(CHANNEL_ID), "my-agent", body))
@@ -615,7 +616,7 @@ def test_failed_part_leaves_a_visible_truncation_notice() -> None:
     channel = _FakeChannel()
     adapter._client = _FakeClient({CHANNEL_ID: channel})
     webhook = _FakeWebhook()
-    adapter._webhooks[CHANNEL_ID] = webhook
+    adapter._webhooks[(CHANNEL_ID, _WEBHOOK_NAME)] = webhook
     body = "\n".join(f"line {i}" for i in range(1000))
 
     sends = {"n": 0}
@@ -644,7 +645,7 @@ def test_send_message_with_thread_root_posts_into_thread() -> None:
     channel.messages[4000] = root
     adapter._client = _FakeClient({CHANNEL_ID: channel})
     webhook = _FakeWebhook()
-    adapter._webhooks[CHANNEL_ID] = webhook
+    adapter._webhooks[(CHANNEL_ID, _WEBHOOK_NAME)] = webhook
 
     ref = _run(
         adapter.send_message(
@@ -664,7 +665,7 @@ def test_send_message_reuses_existing_thread() -> None:
     thread = _FakeThread(parent=channel, thread_id=4000)
     adapter._client = _FakeClient({CHANNEL_ID: channel, 4000: thread})
     webhook = _FakeWebhook()
-    adapter._webhooks[CHANNEL_ID] = webhook
+    adapter._webhooks[(CHANNEL_ID, _WEBHOOK_NAME)] = webhook
 
     _run(
         adapter.send_message(
@@ -694,7 +695,7 @@ def test_send_attachment_posts_via_webhook_with_agent_identity() -> None:
     channel = _FakeChannel()
     adapter._client = _FakeClient({CHANNEL_ID: channel})
     webhook = _FakeWebhook()
-    adapter._webhooks[CHANNEL_ID] = webhook
+    adapter._webhooks[(CHANNEL_ID, _WEBHOOK_NAME)] = webhook
 
     ref = _run(
         adapter.send_attachment(
@@ -725,7 +726,7 @@ def test_send_attachment_without_caption_sends_empty_content() -> None:
     channel = _FakeChannel()
     adapter._client = _FakeClient({CHANNEL_ID: channel})
     webhook = _FakeWebhook()
-    adapter._webhooks[CHANNEL_ID] = webhook
+    adapter._webhooks[(CHANNEL_ID, _WEBHOOK_NAME)] = webhook
 
     _run(
         adapter.send_attachment(
@@ -743,7 +744,7 @@ def test_send_attachment_into_thread() -> None:
     thread = _FakeThread(parent=channel, thread_id=4000)
     adapter._client = _FakeClient({CHANNEL_ID: channel, 4000: thread})
     webhook = _FakeWebhook()
-    adapter._webhooks[CHANNEL_ID] = webhook
+    adapter._webhooks[(CHANNEL_ID, _WEBHOOK_NAME)] = webhook
 
     ref = _run(
         adapter.send_attachment(
@@ -787,7 +788,7 @@ def test_send_attachment_falls_back_to_text_note_on_http_error() -> None:
     channel = _FakeChannel()
     adapter._client = _FakeClient({CHANNEL_ID: channel})
     webhook = _FileRejectingWebhook()
-    adapter._webhooks[CHANNEL_ID] = webhook
+    adapter._webhooks[(CHANNEL_ID, _WEBHOOK_NAME)] = webhook
 
     ref = _run(
         adapter.send_attachment(
@@ -825,7 +826,7 @@ def test_update_message_edits_via_webhook_with_thread() -> None:
     channel = _FakeChannel()
     adapter._client = _FakeClient({CHANNEL_ID: channel})
     webhook = _FakeWebhook()
-    adapter._webhooks[CHANNEL_ID] = webhook
+    adapter._webhooks[(CHANNEL_ID, _WEBHOOK_NAME)] = webhook
 
     _run(adapter.update_message(str(CHANNEL_ID), "4000:901", "new text"))
 
@@ -843,7 +844,7 @@ def test_update_message_falls_back_to_bot_message_edit() -> None:
     adapter._client = _FakeClient({CHANNEL_ID: channel})
     webhook = _FakeWebhook()
     webhook.edit_raises_not_found = True
-    adapter._webhooks[CHANNEL_ID] = webhook
+    adapter._webhooks[(CHANNEL_ID, _WEBHOOK_NAME)] = webhook
 
     _run(adapter.update_message(str(CHANNEL_ID), f"{CHANNEL_ID}:502", "edited"))
 
@@ -926,7 +927,7 @@ def _runtime_setup() -> tuple[DiscordAdapter, _FakeChannel, _FakeWebhook]:
     channel = _FakeChannel()
     adapter._client = _FakeClient({CHANNEL_ID: channel})
     webhook = _FakeWebhook()
-    adapter._webhooks[CHANNEL_ID] = webhook
+    adapter._webhooks[(CHANNEL_ID, _WEBHOOK_NAME)] = webhook
     return adapter, channel, webhook
 
 

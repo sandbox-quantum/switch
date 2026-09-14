@@ -27,6 +27,8 @@ from switch_core.bridges.collaboration.adapter import (
     TurnActivity,
 )
 from switch_core.bridges.collaboration.discord.adapter import (
+    _PUBLICATION_WEBHOOK_NAME,
+    _WEBHOOK_NAME,
     DiscordAdapter,
     DiscordConnectionConfig,
 )
@@ -46,6 +48,7 @@ CHANNEL_ID = 100
 DM_CHANNEL_ID = 555
 BOT_USER_ID = 42
 WEBHOOK_ID = 77
+PUBLICATION_WEBHOOK_ID = 78
 ROOT_MESSAGE_ID = 321
 ASKER_ID = "60606"
 
@@ -54,13 +57,18 @@ ASKER_ID = "60606"
 
 
 class _Response:
-    status = 400
-    reason = "Bad Request"
+    def __init__(self) -> None:
+        self.status = 400
+        self.reason = "Bad Request"
+        self.headers: dict[str, str] = {}
 
 
-def _http_error(status: int) -> discord.HTTPException:
+def _http_error(
+    status: int, *, headers: dict[str, str] | None = None
+) -> discord.HTTPException:
     response = _Response()
-    response.status = status  # type: ignore[misc]
+    response.status = status
+    response.headers = headers if headers is not None else {}
     if status >= 500:
         return discord.DiscordServerError(response, "upstream")  # type: ignore[arg-type]
     return discord.HTTPException(response, "refused")  # type: ignore[arg-type]
@@ -80,11 +88,17 @@ class _Overwrite:
     view_channel = True
 
 
+class _Author:
+    def __init__(self, user_id: int) -> None:
+        self.id = user_id
+
+
 class _Message:
     def __init__(self, channel: Any, message_id: int, content: str = "") -> None:
         self.id = message_id
         self.channel = channel
         self.content = content
+        self.author = _Author(0)
         self.webhook_id: int | None = None
         self.edited: str | None = None
         self.deleted = False
@@ -97,13 +111,16 @@ class _Message:
         self.channel.deleted_ids.append(self.id)
 
     async def create_thread(self, *, name: str) -> Any:
-        raise AssertionError("nothing in this seam may create a thread")
+        return self.channel.open_thread(self.id, name)
 
 
 class _PartialMessage:
     def __init__(self, channel: Any, message_id: int) -> None:
         self.id = message_id
         self._channel = channel
+
+    async def create_thread(self, *, name: str) -> Any:
+        return self._channel.open_thread(self.id, name)
 
     async def delete(self) -> None:
         if self._channel.delete_error is not None:
@@ -138,9 +155,26 @@ class _Channel:
         self.delete_error: Exception | None = None
         self.existing_webhooks: list[Any] = []
         self.webhook_error: Exception | None = None
+        self.thread_error: Exception | None = None
+        self.client: _Client | None = None
 
     def overwrites_for(self, role: Any) -> _Overwrite:
         return _Overwrite()
+
+    def open_thread(self, message_id: int, name: str) -> Any:
+        """Start a thread under one of this channel's messages.
+
+        Discord gives the thread the message's own id, and the bridge relies on
+        that everywhere, so the fake has to do the same — and has to make the
+        new thread visible to the client, which is where the bridge looks for
+        it next.
+        """
+        if self.thread_error is not None:
+            raise self.thread_error
+        thread = _Thread(self, message_id)
+        if self.client is not None:
+            self.client.add(thread)
+        return thread
 
     async def send(self, content: str, **kwargs: Any) -> Any:
         if self.send_error is not None:
@@ -168,7 +202,7 @@ class _Channel:
         return self.existing_webhooks
 
     async def create_webhook(self, *, name: str) -> Any:
-        webhook = _Webhook()
+        webhook = _Webhook(name)
         self.existing_webhooks.append(webhook)
         return webhook
 
@@ -206,10 +240,16 @@ class _Thread(_Channel):
         self.parent_id = parent.id
 
 
+_WEBHOOK_IDS = {
+    _WEBHOOK_NAME: WEBHOOK_ID,
+    _PUBLICATION_WEBHOOK_NAME: PUBLICATION_WEBHOOK_ID,
+}
+
+
 class _Webhook:
-    def __init__(self) -> None:
-        self.id = WEBHOOK_ID
-        self.name = "Switch Bridge"
+    def __init__(self, name: str) -> None:
+        self.id = _WEBHOOK_IDS[name]
+        self.name = name
         self.token = "tok"
         self.sent: list[dict[str, Any]] = []
         self.edits: list[dict[str, Any]] = []
@@ -241,11 +281,23 @@ class _Client:
     def __init__(self, channels: dict[int, Any]) -> None:
         self._channels = channels
         self.user = object()
+        # What Discord says instead of answering, keyed by channel id. A thread
+        # the bot cannot open answers here, not with "unknown channel".
+        self.fetch_errors: dict[int, Exception] = {}
+        for channel in channels.values():
+            channel.client = self
+
+    def add(self, channel: Any) -> None:
+        self._channels[channel.id] = channel
+        channel.client = self
 
     def get_channel(self, channel_id: int) -> Any | None:
         return self._channels.get(channel_id)
 
     async def fetch_channel(self, channel_id: int) -> Any:
+        error = self.fetch_errors.get(channel_id)
+        if error is not None:
+            raise error
         channel = self._channels.get(channel_id)
         if channel is None:
             raise discord.NotFound(_Response(), "unknown channel")  # type: ignore[arg-type]
@@ -262,13 +314,21 @@ def _adapter(channels: dict[int, Any]) -> DiscordAdapter:
 
 
 def _guild_setup() -> tuple[DiscordAdapter, _Channel, _Thread, _Webhook]:
+    """A guild channel carrying both of the bridge's webhooks, and a thread.
+
+    The publication webhook is the one returned, because everything here that
+    inspects what was sent is inspecting a publication. The agents' webhook
+    exists in every one of these channels for the same reason it does in a real
+    one — and so that a test can post an agent's own words through it.
+    """
     channel = _Channel()
     thread = _Thread(channel)
     adapter = _adapter({CHANNEL_ID: channel, ROOT_MESSAGE_ID: thread})
-    webhook = _Webhook()
-    adapter._webhooks[CHANNEL_ID] = webhook
-    adapter._webhook_ids.add(webhook.id)
-    return adapter, channel, thread, webhook
+    channel.existing_webhooks = [
+        _Webhook(_WEBHOOK_NAME),
+        _Webhook(_PUBLICATION_WEBHOOK_NAME),
+    ]
+    return adapter, channel, thread, channel.existing_webhooks[1]
 
 
 def _activity(**kwargs: Any) -> TurnActivity:
@@ -364,12 +424,36 @@ async def test_a_dm_inlines_the_agent_name_because_there_is_no_webhook() -> None
     assert ref == f"{DM_CHANNEL_ID}:501"
 
 
+def _no_thread_yet() -> tuple[DiscordAdapter, _Channel, _Webhook]:
+    """A channel whose root message has no reply thread hanging from it."""
+    channel = _Channel()
+    adapter = _adapter({CHANNEL_ID: channel})
+    channel.existing_webhooks = [
+        _Webhook(_WEBHOOK_NAME),
+        _Webhook(_PUBLICATION_WEBHOOK_NAME),
+    ]
+    return adapter, channel, channel.existing_webhooks[1]
+
+
+async def test_a_turn_opens_the_reply_thread_it_belongs_in() -> None:
+    """The thread a turn is published into is the ordinary reply thread, and
+    the first reply to a channel message is what makes it."""
+    adapter, channel, webhook = _no_thread_yet()
+    channel.messages[ROOT_MESSAGE_ID] = _Message(channel, ROOT_MESSAGE_ID, "do it")
+
+    await adapter.post_rich(
+        str(CHANNEL_ID), "my-agent", _activity(), f"{CHANNEL_ID}:{ROOT_MESSAGE_ID}"
+    )
+
+    assert channel.sent == []
+    assert webhook.sent[0]["thread"].id == ROOT_MESSAGE_ID
+
+
 async def test_progress_is_suppressed_rather_than_spilled_into_the_channel() -> None:
     """The channel shows what the agent was asked and what it answers; a turn
     whose thread cannot be made does not get to narrate itself there instead."""
-    channel = _Channel()
-    adapter = _adapter({CHANNEL_ID: channel})
-    adapter._webhooks[CHANNEL_ID] = _Webhook()
+    adapter, channel, webhook = _no_thread_yet()
+    channel.thread_error = discord.Forbidden(_Response(), "no Create Threads")  # type: ignore[arg-type]
 
     with pytest.raises(RichContentFailed):
         await adapter.post_rich(
@@ -377,16 +461,19 @@ async def test_progress_is_suppressed_rather_than_spilled_into_the_channel() -> 
         )
 
     assert channel.sent == []
+    assert webhook.sent == []
 
 
 async def test_a_card_falls_back_to_the_channel_root_when_its_thread_will_not_open(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """A question in the wrong place is answerable; one nobody can see is not."""
-    channel = _Channel()
-    adapter = _adapter({CHANNEL_ID: channel})
-    webhook = _Webhook()
-    adapter._webhooks[CHANNEL_ID] = webhook
+    """A question in the wrong place is answerable; one nobody can see is not.
+
+    The root is a fallback only because the turn was addressed there: everyone
+    who could read the question can read the card.
+    """
+    adapter, channel, webhook = _no_thread_yet()
+    channel.thread_error = discord.Forbidden(_Response(), "no Create Threads")  # type: ignore[arg-type]
 
     with caplog.at_level(logging.WARNING):
         ref = await adapter.post_rich(
@@ -399,6 +486,32 @@ async def test_a_card_falls_back_to_the_channel_root_when_its_thread_will_not_op
     assert "thread" in caplog.text
     assert "thread" not in webhook.sent[0]
     assert ref.endswith(":901")
+
+
+async def test_a_thread_the_bot_cannot_open_never_becomes_the_whole_channel() -> None:
+    """A private thread's request is not republished to its parent.
+
+    A denied thread and an absent one look alike from outside, and only one of
+    them makes the channel an acceptable substitute. A request carries the
+    agent's question and its options: handing that to the parent channel gives
+    a private conversation an audience, and nothing takes it back.
+    """
+    adapter, channel, webhook = _no_thread_yet()
+    client: Any = adapter._client
+    client.fetch_errors[ROOT_MESSAGE_ID] = discord.Forbidden(  # type: ignore[arg-type]
+        _Response(), "not a member of this thread"
+    )
+
+    with pytest.raises(RichContentFailed):
+        await adapter.post_rich(
+            str(CHANNEL_ID),
+            "my-agent",
+            await _card(),
+            f"{CHANNEL_ID}:{ROOT_MESSAGE_ID}",
+        )
+
+    assert channel.sent == []
+    assert webhook.sent == []
 
 
 # ── Failure semantics ────────────────────────────────────────────────────────
@@ -441,6 +554,34 @@ async def test_being_rate_limited_says_how_long_to_wait() -> None:
         await adapter.post_rich(str(CHANNEL_ID), "my-agent", _activity(), None)
 
     assert raised.value.retry_after == 2.5
+
+
+async def test_the_webhooks_own_shape_of_429_is_a_throttle_too() -> None:
+    """The webhook transport does not raise `RateLimited`.
+
+    It exhausts its own 429 retries and then raises a plain `HTTPException`,
+    which is the shape that actually reaches this seam in production. Read as
+    a refusal it would throw the reservation away and lose the wait Discord
+    asked for, so the status of the response is what decides.
+    """
+    adapter, _channel, _thread, webhook = _guild_setup()
+    webhook.send_error = _http_error(429, headers={"Retry-After": "3.5"})
+
+    with pytest.raises(RichContentThrottled) as raised:
+        await adapter.post_rich(str(CHANNEL_ID), "my-agent", _activity(), None)
+
+    assert raised.value.retry_after == 3.5
+
+
+async def test_a_429_that_says_nothing_still_waits_rather_than_hammering() -> None:
+    """Retrying a throttle immediately is how a throttle becomes a ban."""
+    adapter, _channel, _thread, webhook = _guild_setup()
+    webhook.send_error = _http_error(429, headers={})
+
+    with pytest.raises(RichContentThrottled) as raised:
+        await adapter.post_rich(str(CHANNEL_ID), "my-agent", _activity(), None)
+
+    assert raised.value.retry_after > 0
 
 
 async def test_a_failed_edit_is_reported_rather_than_logged_and_forgotten() -> None:
@@ -505,6 +646,42 @@ async def test_a_dm_redraw_writes_the_agent_name_back_into_the_body() -> None:
     assert dm.messages[501].edited.startswith("**my-agent**: ")
 
 
+async def test_a_dm_redraw_reads_the_agent_name_back_off_the_message() -> None:
+    """The in-memory note of who posted what does not survive a restart.
+
+    In a DM the name is in the body rather than on the sender, so the message
+    itself is the durable record — and a redraw that forgot it would republish
+    somebody's turn as the bot.
+    """
+    dm = _DMChannel()
+    adapter = _adapter({DM_CHANNEL_ID: dm})
+
+    ref = await adapter.post_rich(str(DM_CHANNEL_ID), "my-agent", _activity(), None)
+    adapter._rich_agents.clear()
+    await adapter.update_rich(str(DM_CHANNEL_ID), ref, _activity())
+
+    assert dm.messages[501].edited is not None
+    assert dm.messages[501].edited.startswith("**my-agent**: ")
+
+
+async def test_a_dm_redraw_that_cannot_recover_the_name_says_so(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Better a turn published without a name than a silently wrong one."""
+    dm = _DMChannel()
+    adapter = _adapter({DM_CHANNEL_ID: dm})
+    dm.messages[501] = _Message(dm, 501, "no name here")
+
+    with caplog.at_level(logging.WARNING):
+        await adapter.update_rich(
+            str(DM_CHANNEL_ID), f"{DM_CHANNEL_ID}:501", _activity()
+        )
+
+    assert "carries no agent name" in caplog.text
+    assert dm.messages[501].edited is not None
+    assert not dm.messages[501].edited.startswith("**my-agent**")
+
+
 async def test_a_settled_card_is_never_taken_down() -> None:
     """It is the record of a decision, and it says what became of it."""
     adapter, _channel, _thread, webhook = _guild_setup()
@@ -551,7 +728,9 @@ def _posted_card(channel: Any, message_id: int, content: str, webhook_id: int | 
 async def test_an_uncertainly_delivered_card_is_found_by_its_own_handle() -> None:
     adapter, channel, thread, webhook = _guild_setup()
     thread.history_messages = [
-        _posted_card(thread, 901, "**Permission needed** · request `R7`", WEBHOOK_ID)
+        _posted_card(
+            thread, 901, "**Permission needed** · request `R7`", PUBLICATION_WEBHOOK_ID
+        )
     ]
 
     found = await adapter.find_request_card(
@@ -582,10 +761,93 @@ async def test_somebody_quoting_the_handle_is_not_mistaken_for_the_card() -> Non
     assert found is None
 
 
+async def test_the_mention_above_a_card_does_not_hide_it() -> None:
+    """A card that notifies its asker opens with the mention, not the heading,
+    and it is the one kind of card recovery most needs to find."""
+    adapter, channel, thread, webhook = _guild_setup()
+    thread.history_messages = [
+        _posted_card(
+            thread,
+            901,
+            f"<@{ASKER_ID}>\n**Permission needed** · request `R7`\nDeploy?",
+            PUBLICATION_WEBHOOK_ID,
+        )
+    ]
+
+    found = await adapter.find_request_card(
+        str(CHANNEL_ID),
+        f"{CHANNEL_ID}:{ROOT_MESSAGE_ID}",
+        "tok-1",
+        datetime.now(UTC),
+        "R7",
+    )
+
+    assert found == f"{ROOT_MESSAGE_ID}:901"
+
+
+async def test_an_agent_explaining_a_card_is_not_bound_to_as_one() -> None:
+    """An agent's own words arrive on the bridge's other webhook.
+
+    "the request `R7`" is a phrase an agent can write, and its reply is posted
+    by the bridge, so neither the sender being us nor the handle being present
+    tells a card from a sentence about one. Binding to the sentence would mean
+    every settlement edit overwrites an agent's reply while the real card sits
+    there still saying the request is open.
+    """
+    adapter, channel, thread, webhook = _guild_setup()
+    thread.history_messages = [
+        _posted_card(thread, 902, "I can explain the request `R7`", WEBHOOK_ID),
+        _posted_card(
+            thread, 903, "**Permission needed** · request `R7`", PUBLICATION_WEBHOOK_ID
+        ),
+    ]
+
+    found = await adapter.find_request_card(
+        str(CHANNEL_ID),
+        f"{CHANNEL_ID}:{ROOT_MESSAGE_ID}",
+        "tok-1",
+        datetime.now(UTC),
+        "R7",
+    )
+
+    assert found == f"{ROOT_MESSAGE_ID}:903"
+
+
+async def test_a_dm_card_is_recovered_from_the_bots_own_message() -> None:
+    """A DM has no webhooks, so the bot is the only sender a card can have."""
+    dm = _DMChannel()
+    adapter = _adapter({DM_CHANNEL_ID: dm})
+    card = _posted_card(dm, 501, "**Permission needed** · request `R7`", None)
+    card.author = _Author(BOT_USER_ID)
+    dm.history_messages = [card]
+
+    found = await adapter.find_request_card(
+        str(DM_CHANNEL_ID), None, "tok-1", datetime.now(UTC), "R7"
+    )
+
+    assert found == f"{DM_CHANNEL_ID}:501"
+
+
+async def test_a_dm_reply_from_the_same_bot_is_still_not_the_card() -> None:
+    dm = _DMChannel()
+    adapter = _adapter({DM_CHANNEL_ID: dm})
+    reply = _posted_card(dm, 502, "**my-agent**: about request `R7` — ", None)
+    reply.author = _Author(BOT_USER_ID)
+    dm.history_messages = [reply]
+
+    found = await adapter.find_request_card(
+        str(DM_CHANNEL_ID), None, "tok-1", datetime.now(UTC), "R7"
+    )
+
+    assert found is None
+
+
 async def test_a_card_that_fell_back_to_the_channel_root_is_still_found() -> None:
     adapter, channel, thread, webhook = _guild_setup()
     channel.history_messages = [
-        _posted_card(channel, 903, "**Permission needed** · request `R7`", WEBHOOK_ID)
+        _posted_card(
+            channel, 903, "**Permission needed** · request `R7`", PUBLICATION_WEBHOOK_ID
+        )
     ]
 
     found = await adapter.find_request_card(
@@ -602,7 +864,9 @@ async def test_a_card_that_fell_back_to_the_channel_root_is_still_found() -> Non
 async def test_a_naive_timestamp_is_read_as_utc_rather_than_as_local_time() -> None:
     adapter, _channel, thread, _webhook = _guild_setup()
     thread.history_messages = [
-        _posted_card(thread, 901, "**Permission needed** · request `R7`", WEBHOOK_ID)
+        _posted_card(
+            thread, 901, "**Permission needed** · request `R7`", PUBLICATION_WEBHOOK_ID
+        )
     ]
 
     found = await adapter.find_request_card(
@@ -698,6 +962,31 @@ async def test_a_missing_permission_is_not_retried_for_the_life_of_the_turn(
         )
 
     assert "Add Reactions" in caplog.text
+
+
+async def test_a_mark_that_cannot_be_taken_off_is_an_error_not_a_shrug(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A missing mark is an absence; a stuck one is a false statement.
+
+    The channel goes on showing an agent working on something it finished, and
+    no retry here takes it back, so this is not the same event as a mark that
+    could not be added in the first place.
+    """
+    adapter, channel, _thread, _webhook = _guild_setup()
+    ref = f"{CHANNEL_ID}:{ROOT_MESSAGE_ID}"
+    await adapter.mark_activity(
+        str(CHANNEL_ID), ref, agent_name="my-agent", working=True
+    )
+    channel.reaction_error = discord.Forbidden(_Response(), "cannot see the channel")  # type: ignore[arg-type]
+
+    with caplog.at_level(logging.WARNING):
+        await adapter.mark_activity(
+            str(CHANNEL_ID), ref, agent_name="my-agent", working=False
+        )
+
+    assert [record.levelname for record in caplog.records] == ["ERROR"]
+    assert "will not come off by retrying" in caplog.text
 
 
 async def test_a_transient_reaction_failure_raises_so_the_publisher_retries() -> None:
