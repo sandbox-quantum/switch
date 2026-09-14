@@ -36,6 +36,7 @@ async def list_api_keys(
     session: Annotated[AsyncSession, Depends(get_session)],
     api_key_store: Annotated[ApiKeyStore, Depends(get_api_key_store)],
     user: Annotated[User, Depends(get_current_user)],
+    config: Annotated[SwitchConfig, Depends(get_config)],
 ) -> list[ApiKeyDetail]:
     keys = await api_key_store.get_by_user(session, user.id)
     return [
@@ -43,7 +44,10 @@ async def list_api_keys(
             id=k.id,
             label=k.label,
             type=k.type,
-            key_prefix=k.key_hash[:12],
+            # The opening characters of the key itself, so an operator holding
+            # a key can match it against its row. Only the owner's own keys are
+            # listed, and `/reveal` already hands that owner the plaintext.
+            key_prefix=decrypt_token(k.encrypted_key, config.jwt_secret_key)[:12],
             created_at=str(k.created_at),
         )
         for k in keys
