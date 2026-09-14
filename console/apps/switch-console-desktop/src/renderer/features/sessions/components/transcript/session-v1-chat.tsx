@@ -1,6 +1,6 @@
 import type { Command, SessionChatClient } from '@switch-console/shared/session-v1';
 import { Loader2, Paperclip, Wrench } from 'lucide-react';
-import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { Button } from '@renderer/lib/ui/button';
 import { MarkdownRenderer } from '@renderer/lib/ui/markdown-renderer';
 import { Textarea } from '@renderer/lib/ui/textarea';
@@ -22,6 +22,23 @@ export function SessionV1Chat({
   retireHost?: (epoch: string) => Promise<void>;
 }) {
   const view = useSyncExternalStore(client.subscribe, client.getSnapshot);
+  const transcript = useRef<HTMLDivElement>(null);
+  const transcriptContent = useRef<HTMLDivElement>(null);
+  const followingBottom = useRef(true);
+  useLayoutEffect(() => {
+    const viewport = transcript.current;
+    const content = transcriptContent.current;
+    if (!viewport || !content) return;
+    followingBottom.current = true;
+    const follow = () => {
+      if (followingBottom.current) viewport.scrollTop = viewport.scrollHeight;
+    };
+    follow();
+    const observer = new ResizeObserver(follow);
+    observer.observe(viewport);
+    observer.observe(content);
+    return () => observer.disconnect();
+  }, [client]);
   const [draft, setDraft] = useState('');
   const [pendingId, setPendingId] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
@@ -44,6 +61,25 @@ export function SessionV1Chat({
     view.snapshot?.turns
       .filter((turn) => turn.status === 'interrupted' || turn.status === 'error')
       .map((turn) => [turn.turnId, turn.status])
+  );
+  const noticesAfter = (itemId: string | null) =>
+    view.notices
+      .filter((notice) => notice.afterItemId === itemId)
+      .map((notice, index) => (
+        <p
+          role="status"
+          key={`${notice.code}-${index}`}
+          className="text-sm text-foreground-warning"
+        >
+          {notice.message}
+        </p>
+      ));
+  const waitingTurn = view.snapshot?.turns.find(
+    (turn) =>
+      (turn.status === 'queued' || turn.status === 'running') &&
+      !view.snapshot?.items.some(
+        (item) => item.turnId === turn.turnId && item.kind !== 'user-message'
+      )
   );
   const control = async (body: Command['body']) => {
     setSending(true);
@@ -101,7 +137,7 @@ export function SessionV1Chat({
           {session?.retired ? 'Retired' : (session?.status ?? 'Loading')}
         </span>
         <div className="flex items-center gap-2">
-          {restartHost && !session?.retired && session?.status !== 'stopped' && (
+          {restartHost && !session?.retired && (
             <Button
               size="sm"
               variant="outline"
@@ -121,7 +157,7 @@ export function SessionV1Chat({
                   .finally(() => setSending(false));
               }}
             >
-              Restart host
+              {session?.status === 'stopped' ? 'Resume session' : 'Restart session process'}
             </Button>
           )}
           {runningTurn && session?.capabilities.interrupt && (
@@ -152,10 +188,18 @@ export function SessionV1Chat({
           <span>
             {available || (view.connected && session?.connectivity === 'online')
               ? 'Connected'
-              : 'Offline'}
+              : session?.status === 'stopped'
+                ? 'Stopped'
+                : 'Offline'}
           </span>
         </div>
       </div>
+      {session?.status === 'stopped' && !session.retired && (
+        <p role="status" className="border-b border-border px-5 py-3 text-sm text-foreground-muted">
+          This session is stopped. Resume to continue the saved conversation. Interrupted work will
+          not be repeated.
+        </p>
+      )}
       {(initialPromptDelivery?.state === 'unknown' ||
         initialPromptDelivery?.state === 'rejected') && (
         <div
@@ -265,8 +309,17 @@ export function SessionV1Chat({
           </Button>
         </div>
       )}
-      <div className="min-h-0 flex-1 overflow-y-auto">
-        <div className="mx-auto flex max-w-3xl flex-col gap-5 px-5 py-6">
+      <div
+        ref={transcript}
+        className="min-h-0 flex-1 overflow-y-auto [overflow-anchor:none]"
+        onScroll={(event) => {
+          const viewport = event.currentTarget;
+          followingBottom.current =
+            viewport.scrollHeight - viewport.clientHeight - viewport.scrollTop <= 24;
+        }}
+      >
+        <div ref={transcriptContent} className="mx-auto flex max-w-3xl flex-col gap-5 px-5 py-6">
+          {noticesAfter(null)}
           {view.snapshot?.items.map((item) => (
             <div key={item.itemId}>
               {item.kind === 'user-message' ? (
@@ -312,16 +365,19 @@ export function SessionV1Chat({
                   Attachments: {item.attachments.map((a) => a.name).join(', ')}
                 </p>
               )}
+              {lastItems.get(item.turnId) === item.itemId &&
+                view.snapshot?.requests
+                  .filter((request) => request.turnId === item.turnId)
+                  .map((request) => (
+                    <SessionV1Request
+                      key={request.requestId}
+                      request={request}
+                      client={client}
+                      connected={view.connected}
+                    />
+                  ))}
+              {noticesAfter(item.itemId)}
             </div>
-          ))}
-          {view.notices.map((notice, index) => (
-            <p
-              role="status"
-              key={`${notice.code}-${index}`}
-              className="text-sm text-foreground-warning"
-            >
-              {notice.message}
-            </p>
           ))}
           {view.snapshot?.commandStatuses
             .filter((command) => command.status !== 'applied')
@@ -331,14 +387,16 @@ export function SessionV1Chat({
                 {command.message ? `: ${command.message}` : ''}
               </p>
             ))}
-          {view.snapshot?.requests.map((request) => (
-            <SessionV1Request
-              key={request.requestId}
-              request={request}
-              client={client}
-              connected={view.connected}
-            />
-          ))}
+          {(waitingTurn || (sending && pendingId)) && (
+            <p role="status" className="flex items-center gap-2 text-sm text-foreground-muted">
+              <Loader2 className="size-3 animate-spin" />
+              {sending && pendingId
+                ? 'Sending message…'
+                : waitingTurn?.status === 'queued'
+                  ? 'Message queued…'
+                  : 'Waiting for the agent…'}
+            </p>
+          )}
         </div>
       </div>
       <div className="mx-auto w-full max-w-3xl px-5 pb-5">

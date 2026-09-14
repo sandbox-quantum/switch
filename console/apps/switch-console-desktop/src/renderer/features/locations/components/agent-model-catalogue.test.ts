@@ -35,8 +35,10 @@ describe('fieldCatalogueState', () => {
     expect(fieldCatalogueState(plainField, { instructions: 'hi' }, CATALOGUE)).toEqual({});
   });
 
-  it('says nothing while the catalogue is still loading', () => {
-    expect(fieldCatalogueState(modelField, { model: 'anything' }, undefined)).toEqual({});
+  it('explains that the catalogue is loading while allowing a typed model', () => {
+    expect(fieldCatalogueState(modelField, { model: 'anything' }, undefined).note).toContain(
+      'Loading models'
+    );
   });
 
   describe('the model field', () => {
@@ -182,4 +184,21 @@ describe('fieldWithCatalogue', () => {
   it('leaves the declared type in place when there are no choices to offer', () => {
     expect(fieldWithCatalogue(modelField, {})).toBe(modelField);
   });
+});
+
+it('uses the same editable model suggestions even for a legacy select field', () => {
+  const field = {
+    key: 'model',
+    label: 'Model',
+    type: 'select' as const,
+    catalogue: { kind: 'model' as const },
+    options: [],
+  };
+  const state = fieldCatalogueState(
+    field,
+    {},
+    { kind: 'available', models: [{ id: 'example-model', variants: [] }] }
+  );
+  expect(state.options).toBeUndefined();
+  expect(state.suggestions).toEqual([{ id: 'example-model', variants: [] }]);
 });

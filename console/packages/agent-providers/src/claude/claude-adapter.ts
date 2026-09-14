@@ -6,7 +6,6 @@ import { query as sdkQuery } from '@anthropic-ai/claude-agent-sdk';
 import type {
   CanUseTool,
   EffortLevel,
-  HookCallback,
   McpServerConfig,
   Options,
   PermissionResult,
@@ -55,17 +54,6 @@ import {
 const PROVIDER = 'claude';
 const ASK_USER_QUESTION = 'AskUserQuestion';
 
-/**
- * The tools whose permission this adapter insists on being asked about, as a
- * hook matcher.
- *
- * Deliberately the tools Claude Code already asks about in `default` mode —
- * running a command, changing a file, or delegating execution. A hook decision
- * outranks the permission rules, so widening this would start prompting for
- * reads and searches that nothing asks about today, and a session that asks
- * before every `Read` cannot answer a room.
- */
-const APPROVAL_TOOLS = 'Bash|Edit|Write|MultiEdit|NotebookEdit|Agent|Task';
 const EFFORT_LEVELS: readonly EffortLevel[] = ['low', 'medium', 'high', 'xhigh', 'max'];
 
 /**
@@ -264,27 +252,6 @@ function sessionScoped(suggestions: readonly PermissionUpdate[] | undefined): Pe
   return (suggestions ?? []).map((suggestion) => ({ ...suggestion, destination: 'session' }));
 }
 
-/**
- * Take the permission decision back from whatever else is hooked into this
- * session, so the caller is the one asked.
- *
- * A `PreToolUse` hook's `allow` settles the permission outright: measured
- * against Claude Code 2.1.260, `canUseTool` is then never called and the tool
- * runs. The session loads the user's own settings and plugins, and the Switch
- * connector plugin's hook answers `allow` for every tool Switch's mediation
- * lets proceed — which is right for a session a human is watching in a
- * terminal, and wrong for one whose only human is in a room: it ran shell
- * commands with nobody ever offered the approval card.
- *
- * `ask` from a hook outranks another hook's `allow` (measured the same way) and
- * hands the tool to `canUseTool`, which is where this adapter asks. It does not
- * outrank a `deny`, so a mediation that actually blocks a call still blocks it.
- */
-const reclaimPermission: HookCallback = async (input) => {
-  if (input.hook_event_name !== 'PreToolUse') return {};
-  return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'ask' } };
-};
-
 function turnStatusMessage(result: SDKResultMessage, outcome: TurnOutcome): string | undefined {
   if (outcome === 'completed') return undefined;
   return resultMessageText(result) ?? `Claude turn ended: ${result.subtype}`;
@@ -353,10 +320,12 @@ export class ClaudeAdapter implements ProviderAdapter {
 
     filterShadowedWarningOnce();
 
-    const options: Options = {
+    // SDK 0.3.260 otherwise inserts --permission-mode default before spawning the CLI.
+    const options: Options & { resolvePermissionModeInCli: boolean } = {
+      resolvePermissionModeInCli: true,
       cwd: input.cwd,
       env: input.env,
-      permissionMode,
+      ...(permissionMode ? { permissionMode } : {}),
       strictMcpConfig: false,
       ...(mcpServers.switch
         ? { settings: { enabledPlugins: { 'switch-connector@switch-plugins': false } } }
@@ -374,9 +343,6 @@ export class ClaudeAdapter implements ProviderAdapter {
         preset: 'claude_code',
         ...(input.systemContext ? { append: input.systemContext } : {}),
       },
-      ...(permissionMode === 'bypassPermissions'
-        ? {}
-        : { hooks: { PreToolUse: [{ matcher: APPROVAL_TOOLS, hooks: [reclaimPermission] }] } }),
       includePartialMessages: true,
       stderr: (data) => this.logger?.debug('claude stderr', { sessionId: input.sessionId, data }),
     };

@@ -87,6 +87,7 @@ async function launch(input: LaunchInput): Promise<{ created: boolean }> {
     await replaceOwner(path, {
       ...input.config,
       session: saved.session,
+      resumeOperationId: input.restart ? randomUUID() : saved.resumeOperationId,
       roomConnection: saved.roomConnection,
     });
   }

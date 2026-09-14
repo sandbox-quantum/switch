@@ -10,10 +10,10 @@ const SUBAGENT_TOOLS = new Set(['Agent', 'Task']);
 const MCP_PREFIX = 'mcp__';
 
 export const PERMISSION_MODE_BY_RUNTIME_MODE = {
-  'approval-required': 'default',
+  'approval-required': undefined,
   'auto-accept-edits': 'acceptEdits',
   'full-access': 'bypassPermissions',
-} as const satisfies Record<RuntimeMode, string>;
+} as const satisfies Record<RuntimeMode, string | undefined>;
 
 export function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);

@@ -64,15 +64,16 @@ export const provider = registerPluginBehavior(plugin, {
     launchProfileFields: () => [
       {
         key: 'model',
-        label: 'Model (ACP sessions)',
+        label: 'Model',
         type: 'text',
-        help: 'Blank uses the Gemini CLI default. Applies to local ACP sessions.',
+        catalogue: { kind: 'model' },
+        help: 'Blank uses the Gemini CLI default on the execution machine.',
       },
       {
         key: 'instructions',
-        label: 'Instructions (ACP sessions)',
+        label: 'Instructions',
         type: 'textarea',
-        help: 'Additional instructions for local ACP sessions.',
+        help: 'Additional instructions for SDK sessions.',
       },
     ],
   },

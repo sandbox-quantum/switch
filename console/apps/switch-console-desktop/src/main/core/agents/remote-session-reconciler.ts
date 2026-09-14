@@ -1,5 +1,6 @@
 import { sessionSchema, snapshotSchema } from '@switch-console/shared/session-v1';
 import { eq } from 'drizzle-orm';
+import { syncSdkSessionActivity } from '@main/core/sdk-host/session-activity';
 import { sessionService } from '@main/core/sessions/session-service';
 import { switchRoomService } from '@main/core/switch-rooms/switch-room-service';
 import { fetchSdkSessions, fetchSdkSnapshot } from '@main/core/switch-servers/gateway-client';
@@ -77,11 +78,21 @@ class RemoteSessionReconciler {
           const session = sessionSchema.parse(value);
           if (session.agentId !== agent.switchAgentId || this.deleted.has(session.sessionId))
             continue;
+          if (local.has(session.sessionId)) await syncSdkSessionActivity(session);
           if (
             local.has(session.sessionId) &&
-            (session.status === 'stopped' || session.status === 'error' || session.retired)
+            (session.status === 'stopped' ||
+              session.status === 'error' ||
+              session.retired ||
+              (local.get(session.sessionId) === 'cancelled' &&
+                (session.status === 'ready' || session.status === 'running')))
           ) {
-            const status = session.status === 'stopped' ? 'cancelled' : 'review';
+            const status =
+              session.status === 'stopped'
+                ? 'cancelled'
+                : session.status === 'ready' || session.status === 'running'
+                  ? 'in_progress'
+                  : 'review';
             if (local.get(session.sessionId) !== status) {
               await sessionService.updateSessionStatus(session.sessionId, status);
               events.emit(sessionStatusUpdatedChannel, { sessionId: session.sessionId, status });

@@ -200,7 +200,7 @@ describe('ClaudeAdapter session lifecycle', () => {
 
   it('maps each runtime mode onto a permission mode', async () => {
     for (const [runtimeMode, permissionMode] of [
-      ['approval-required', 'default'],
+      ['approval-required', undefined],
       ['auto-accept-edits', 'acceptEdits'],
       ['full-access', 'bypassPermissions'],
     ] as const) {
@@ -658,26 +658,13 @@ describe('ClaudeAdapter approvals', () => {
     expect(recorder.ofType('request.opened')).toEqual([]);
   });
 
-  it('takes the decision back from a hook that would settle it, except in full access', async () => {
-    // Another hook's `allow` settles a permission outright and `canUseTool` is
-    // never called — which is how the Switch connector plugin's mediation hook
-    // ran shell commands with nobody ever offered the approval card.
+  it('leaves native permission rules and hooks in control when bypass is off', async () => {
     const { sdk } = await startSession();
-    const entry = sdk.options().hooks?.PreToolUse?.find((group) => group.matcher?.includes('Bash'));
-    expect(entry).toBeDefined();
-    expect(entry!.matcher?.split('|')).toContain('Agent');
-    const decision = await entry!.hooks[0](
-      { hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: {} } as never,
-      undefined,
-      { signal: new AbortController().signal }
-    );
-    expect(decision).toEqual({
-      hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'ask' },
-    });
-
-    // In full access nothing is asked, so nothing is reclaimed either.
-    const full = await startSession('full-access');
-    expect(full.sdk.options().hooks).toBeUndefined();
+    expect(sdk.options()).not.toHaveProperty('permissionMode');
+    expect(sdk.options()).toHaveProperty('resolvePermissionModeInCli', true);
+    expect(sdk.options().settingSources).toBeUndefined();
+    expect(sdk.options().hooks).toBeUndefined();
+    expect(sdk.options().canUseTool).toBeTypeOf('function');
   });
 
   it('cancels an open request when the session stops', async () => {

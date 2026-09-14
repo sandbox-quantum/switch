@@ -2,10 +2,14 @@ import { isDeepEqual } from '../deep-equal';
 import type { ServerEvent, Snapshot } from './contract';
 import { commandStatusSchema, serverEventSchema, snapshotSchema } from './validation';
 
+export type TranscriptNotice = Extract<ServerEvent['body'], { type: 'notice' }> & {
+  afterItemId: string | null;
+};
+
 /** The server already filters this projection for the viewer. Sequence gaps are valid. */
 export class SessionReplica {
   private value: Snapshot;
-  readonly notices: Extract<ServerEvent['body'], { type: 'notice' }>[] = [];
+  readonly notices: TranscriptNotice[] = [];
 
   constructor(input: unknown) {
     this.value = snapshotSchema.parse(input);
@@ -87,7 +91,7 @@ export class SessionReplica {
       case 'command.result':
         break; // Only the server confirms shared command status.
       case 'notice':
-        this.notices.push(body);
+        this.notices.push({ ...body, afterItemId: this.value.items.at(-1)?.itemId ?? null });
         break;
     }
     this.value.session.pendingRequestIds = this.value.requests

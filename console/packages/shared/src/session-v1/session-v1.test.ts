@@ -413,3 +413,26 @@ it('releases the composer after a durable stale-epoch rejection', async () => {
   expect(wire.api.submit).toHaveBeenCalledTimes(2);
   client.dispose();
 });
+
+it('keeps a model notice anchored before messages that arrive later', () => {
+  const replica = new SessionReplica(initial());
+  const sequence = replica.snapshot().throughSequence;
+  replica.apply(event(sequence + 1, { type: 'item.upsert', item: item(1, 'Earlier reply') }));
+  replica.apply(
+    event(sequence + 2, {
+      type: 'notice',
+      level: 'info',
+      code: 'MODEL_CHANGED',
+      message: 'Model changed to opus.',
+    })
+  );
+  replica.apply(
+    event(sequence + 3, {
+      type: 'item.upsert',
+      item: { ...item(1, 'Hi there'), itemId: 'next-message', turnId: 'next-turn' },
+    })
+  );
+  expect(replica.notices[0].afterItemId).toBe('assistant');
+  replica.apply(event(sequence + 4, { type: 'item.upsert', item: item(2, 'Updated reply') }));
+  expect(replica.notices[0].afterItemId).toBe('assistant');
+});

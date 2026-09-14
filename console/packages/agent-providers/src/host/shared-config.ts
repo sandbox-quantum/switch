@@ -13,6 +13,7 @@ import { startSchema } from './server';
 
 export const sharedConfigSchema = z.strictObject({
   session: sessionSchema,
+  resumeOperationId: z.string().uuid().optional(),
   start: startSchema,
   roomConnection: roomConnectionSchema.optional(),
   execution: z

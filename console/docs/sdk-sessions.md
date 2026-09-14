@@ -11,10 +11,13 @@ child identity. Existing credentials and provider definitions remain on the
 execution machine.
 
 Closing Console leaves the host running. Reopen a session to read its saved
-transcript. **Interrupt** ends the active turn. **Stop session** ends the
-conversation. **Restart host** stops the current host, waits for process cleanup,
-and resumes the saved native conversation under a new server-issued epoch.
-A stopped conversation cannot be reopened as a new conversation. Archiving or
+transcript. **Interrupt** ends the active turn. **Stop session** stops execution
+and preserves the conversation. **Resume session** explicitly reopens its saved
+native conversation after process cleanup and server lease recovery. Interrupted
+or uncertain work is not repeated. An ordinary reconnect keeps a stopped session
+stopped. **Restart session process** performs the same fenced recovery for an
+active session. If the provider can no longer resume its saved conversation,
+Console shows an explicit recovery decision instead of silently creating one. Archiving or
 deleting a session waits for a confirmed server stop, including sessions that
 Console has discovered but never opened. If the stop outcome is unknown, the
 session remains available for inspection.
@@ -231,3 +234,36 @@ requires a POSIX host. Use a POSIX SSH execution host. Tmux is optional and appl
 only to user terminals and lifecycle scripts; it does not execute SDK sessions.
 Codex and Cursor do not advertise interactive questions until their native execution
 mode can support that interaction. Approvals remain separate capabilities.
+
+### Claude permission settings
+
+With Bypass permissions off, Claude resolves the permission mode from its own
+user, project and local settings on the execution host. Switch does not force
+`default` or add a hook that overrides native permission decisions. Claude still
+applies its settings precedence, trust rules and mode availability. Requests that
+need a human are sent to Console through the SDK permission callback. Enabling
+bypass explicitly selects `bypassPermissions`. Restart the host after changing
+permission settings.
+
+
+### Provider sign-in checks
+
+Add Agent checks the selected provider on its execution machine and offers a retry.
+The shared worker checks again with the session environment before starting execution.
+A confirmed missing login blocks startup and names the sign-in command to run on
+that machine. An inconclusive check produces a warning; it is not treated as a
+missing login. Existing sessions are not stopped when a setup check fails.
+
+Claude uses its native auth status command. Codex uses app-server account status.
+Cursor uses its native account status output. Gemini initializes an empty ACP
+session without sending a prompt, and returns its native model list. OpenCode checks connected backends; a local or free backend may need no
+login. These checks do not prove quota or access to every model, and credentials
+can expire after a check. All model fields use the same editable picker: select a model from the host
+catalogue or enter an ID. Blank uses the provider default. Loading and failed
+catalogue checks are visible and do not prevent text entry. Claude, Codex,
+Cursor and Gemini catalogues come from native SDK initialization without a
+prompt; each metadata session is stopped after the probe. OpenCode uses its
+existing host catalogue.
+
+Complete sign-in in the provider CLI, then select
+Check again. Console does not capture passwords or OAuth tokens in this form.

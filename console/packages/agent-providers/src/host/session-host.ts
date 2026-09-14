@@ -31,6 +31,7 @@ const recordSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('finished'), commandId: z.string() }),
   z.object({ type: z.literal('native'), nativeSessionId: z.string() }),
   z.object({ type: z.literal('stopped') }),
+  z.object({ type: z.literal('resumed'), operationId: z.string() }),
   z.object({ type: z.literal('reset-started') }),
   z.object({ type: z.literal('reset-completed') }),
   z.object({ type: z.literal('model'), id: z.string(), options: z.record(z.string(), z.string()) }),
@@ -38,6 +39,7 @@ const recordSchema = z.discriminatedUnion('type', [
 type RecordEntry = z.infer<typeof recordSchema>;
 export type HostSessionStart = {
   session: Session;
+  resumeOperationId?: string;
   input: ProviderSessionStartInput;
   epochAuthority?: 'server';
   resetEpoch?: () => Promise<string>;
@@ -52,6 +54,7 @@ export class HostedSession {
   private readonly commands = new Map<string, Command>();
   private readonly dispatched = new Set<string>();
   private readonly finished = new Set<string>();
+  private readonly resumeOperations = new Set<string>();
   private readonly queue: Command[] = [];
   private readonly questions = new Map<string, PendingQuestion>();
   private activeTurn: string | null = null;
@@ -107,6 +110,10 @@ export class HostedSession {
       if (record.type === 'finished') this.finished.add(record.commandId);
       if (record.type === 'native') this.nativeId = record.nativeSessionId;
       if (record.type === 'stopped') this.stopped = true;
+      if (record.type === 'resumed') {
+        this.resumeOperations.add(record.operationId);
+        this.stopped = false;
+      }
       if (record.type === 'reset-started') {
         this.nativeId = null;
         this.resetPending = true;
@@ -142,6 +149,11 @@ export class HostedSession {
     );
     const host = new HostedSession(config, adapter, events, inbox);
     try {
+      if (config.resumeOperationId && !host.resumeOperations.has(config.resumeOperationId)) {
+        await inbox.append({ type: 'resumed', operationId: config.resumeOperationId });
+        host.resumeOperations.add(config.resumeOperationId);
+        host.stopped = false;
+      }
       const recovered = events.records.length > 0;
       if (recovered) {
         const snapshot = host.replica.snapshot();
