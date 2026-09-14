@@ -72,7 +72,7 @@ export const agentsController = createRPCController({
     providerId: AgentProviderId;
     sshHost: string | null;
     dir: string;
-  }) => getProviderReadiness(params),
+  }) => getProviderReadiness(params, false),
   modelCatalogue: (params: { providerId: AgentProviderId; sshHost: string | null; dir: string }) =>
     getAgentModelCatalogue(params),
   /**

@@ -518,7 +518,12 @@ export const AddAgentModal = observer(function AddAgentModal({
 
         {canConfigureAgent && !!pickState.providerId && (
           <>
-            <AgentAdvancedConfig providerId={pickState.providerId} onChange={onAdvancedChange} />
+            <AgentAdvancedConfig
+              providerId={pickState.providerId}
+              sshHost={isRemoteRun ? runHost : null}
+              dir={dir}
+              onChange={onAdvancedChange}
+            />
             <LaunchProfileConfig
               providerId={pickState.providerId}
               sshHost={isRemoteRun ? runHost : null}

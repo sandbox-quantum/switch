@@ -42,8 +42,9 @@ export function fieldCatalogueState(
   form: FormState,
   catalogue: ModelCatalogueResult | undefined
 ): FieldCatalogueState {
-  if (!field.catalogue) return {};
-  if (!catalogue) return {};
+  if (field.key !== 'model' && !field.catalogue) return {};
+  if (!catalogue)
+    return { note: 'Loading models from the execution machine. You can also enter a model ID.' };
 
   if (catalogue.kind === 'unavailable') {
     // Degrade visibly. The field still works; it just cannot check itself, and
@@ -53,19 +54,10 @@ export function fieldCatalogueState(
     };
   }
 
-  if (field.catalogue.kind === 'model') {
-    const state = modelFieldState(String(form[field.key] ?? '').trim(), catalogue.models);
-    return field.type === 'select'
-      ? {
-          ...state,
-          suggestions: undefined,
-          options: [
-            UNSET_OPTION,
-            ...catalogue.models.map((model) => ({ value: model.id, label: model.id })),
-          ],
-        }
-      : state;
+  if (field.key === 'model' || field.catalogue?.kind === 'model') {
+    return modelFieldState(String(form[field.key] ?? '').trim(), catalogue.models);
   }
+  if (field.catalogue?.kind !== 'model-variant') return {};
   return variantFieldState(
     String(form[field.catalogue.modelField] ?? '').trim(),
     String(form[field.key] ?? '').trim(),

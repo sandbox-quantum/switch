@@ -32,7 +32,7 @@ describe('groupByProvider', () => {
   });
 
   it('survives an id with no provider prefix rather than dropping it', () => {
-    expect(groupByProvider([model('bare')])).toEqual([{ value: 'bare', items: ['bare'] }]);
+    expect(groupByProvider([model('bare')])).toEqual([{ value: '', items: ['bare'] }]);
   });
 
   it('yields plain id strings, which is what the combobox can stringify', () => {

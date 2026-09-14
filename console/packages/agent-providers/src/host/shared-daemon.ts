@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { mkdir, readFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { LEASE_EXPIRED_EXIT_CODE } from './exit-codes';
@@ -16,6 +17,46 @@ const [root, configPath, mode] = process.argv.slice(2);
 if (!root || !configPath)
   throw new Error('Shared SDK host requires a state directory and configuration file.');
 async function main(): Promise<void> {
+  if (root === '--models') {
+    const provider = sharedConfigSchema.shape.start.shape.provider.parse(configPath);
+    const adapter = adapterFor(provider, process.argv[5]);
+    const sessionId = randomUUID();
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const models = await Promise.race([
+        (async () => {
+          await adapter.startSession({
+            sessionId,
+            cwd: mode,
+            runtimeMode: 'approval-required',
+            mcpServers: {},
+            env: Object.fromEntries(
+              Object.entries(process.env).filter(
+                (entry): entry is [string, string] => entry[1] !== undefined
+              )
+            ),
+          });
+          return (await adapter.listModels?.(sessionId)) ?? [];
+        })(),
+        new Promise<never>((_resolve, reject) => {
+          timeout = setTimeout(() => reject(new Error('Model discovery timed out.')), 60000);
+        }),
+      ]);
+      console.log(
+        JSON.stringify({
+          status: 'unknown',
+          message: models.length
+            ? 'Models loaded.'
+            : 'The provider returned no models. Enter a model ID or leave blank for the provider default.',
+          models: models.map((model) => ({ id: model.id, name: model.label })),
+        })
+      );
+    } finally {
+      if (timeout) clearTimeout(timeout);
+      await adapter.stopAll();
+    }
+    return;
+  }
   if (root === '--probe') {
     console.log(
       JSON.stringify(
@@ -125,7 +166,12 @@ async function main(): Promise<void> {
 try {
   await main();
 } catch (error) {
-  if (root !== '--probe' && mode !== '--supervise' && mode !== '--watch-supervise') {
+  if (
+    root !== '--probe' &&
+    root !== '--models' &&
+    mode !== '--supervise' &&
+    mode !== '--watch-supervise'
+  ) {
     await mkdir(join(root, 'supervisor'), { recursive: true, mode: 0o700 });
     await replaceOwner(join(root, 'supervisor', 'failure.json'), {
       message: error instanceof Error ? error.message : String(error),

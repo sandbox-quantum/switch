@@ -45,8 +45,8 @@ export async function getAgentModelCatalogue(params: {
   sshHost: string | null;
   dir: string;
 }): Promise<AgentModelCatalogue> {
-  if (params.providerId === 'gemini') {
-    const readiness = await getProviderReadiness(params);
+  if (['claude', 'codex', 'cursor', 'gemini'].includes(params.providerId)) {
+    const readiness = await getProviderReadiness(params, true);
     return readiness.models.length
       ? { kind: 'available', models: readiness.models.map((model) => ({ ...model, variants: [] })) }
       : { kind: 'unavailable', reason: readiness.message };
@@ -130,11 +130,14 @@ async function resolveHost(
   };
 }
 
-export async function getProviderReadiness(params: {
-  providerId: AgentProviderId;
-  sshHost: string | null;
-  dir: string;
-}) {
+export async function getProviderReadiness(
+  params: {
+    providerId: AgentProviderId;
+    sshHost: string | null;
+    dir: string;
+  },
+  models: boolean
+) {
   let ctx: IExecutionContext | undefined;
   try {
     const transport = locationTransport(params);
@@ -152,8 +155,8 @@ export async function getProviderReadiness(params: {
     try {
       const { stdout } = await deployed.ctx.exec(
         'node',
-        [deployed.entrypoint, '--probe', params.providerId, params.dir, cli],
-        { timeout: 35000 }
+        [deployed.entrypoint, models ? '--models' : '--probe', params.providerId, params.dir, cli],
+        { timeout: models ? 90000 : 35000 }
       );
       return providerReadinessSchema.parse(JSON.parse(stdout));
     } finally {

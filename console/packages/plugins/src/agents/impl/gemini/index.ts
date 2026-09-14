@@ -65,8 +65,7 @@ export const provider = registerPluginBehavior(plugin, {
       {
         key: 'model',
         label: 'Model',
-        type: 'select',
-        options: [{ value: '', label: 'Default' }],
+        type: 'text',
         catalogue: { kind: 'model' },
         help: 'Blank uses the Gemini CLI default on the execution machine.',
       },

@@ -256,8 +256,14 @@ missing login. Existing sessions are not stopped when a setup check fails.
 
 Claude uses its native auth status command. Codex uses app-server account status.
 Cursor uses its native account status output. Gemini initializes an empty ACP
-session without sending a prompt, and uses the returned model list for its model
-picker. OpenCode checks connected backends; a local or free backend may need no
+session without sending a prompt, and returns its native model list. OpenCode checks connected backends; a local or free backend may need no
 login. These checks do not prove quota or access to every model, and credentials
-can expire after a check. Complete sign-in in the provider CLI, then select
+can expire after a check. All model fields use the same editable picker: select a model from the host
+catalogue or enter an ID. Blank uses the provider default. Loading and failed
+catalogue checks are visible and do not prevent text entry. Claude, Codex,
+Cursor and Gemini catalogues come from native SDK initialization without a
+prompt; each metadata session is stopped after the probe. OpenCode uses its
+existing host catalogue.
+
+Complete sign-in in the provider CLI, then select
 Check again. Console does not capture passwords or OAuth tokens in this form.
