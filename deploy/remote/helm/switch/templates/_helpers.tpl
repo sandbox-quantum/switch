@@ -574,6 +574,10 @@ Include with `nindent 12`.
   value: "false"
 {{- end }}
 {{- end }}
+{{- if .Values.switchCore.tenancy.choiceEnabled }}
+- name: GATEWAY_TENANT_CHOICE_ENABLED
+  value: "true"
+{{- end }}
 - name: GATEWAY_COOKIE_SECURE
   value: {{ .Values.switchCore.cookieSecure | quote }}
 - name: SWITCH_LOG_LEVEL
