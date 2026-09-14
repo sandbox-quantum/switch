@@ -15,6 +15,11 @@ _PG_INTERVAL_RE = re.compile(r"^\d+\s*(us|ms|s|min|h|d)?$")
 # cap matches Postgres's own `NAMEDATALEN` limit.
 _DB_ROLE_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,62}$")
 
+# Characters, not bytes: the value is read from the environment as text and
+# used as text. 32 is the size of the SHA-256 output HS256 keys, and a floor
+# rather than a target — `openssl rand -hex 32` gives 64.
+_JWT_SECRET_MIN_LENGTH = 32
+
 
 class SwitchConfig(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="")
@@ -71,7 +76,12 @@ class SwitchConfig(BaseSettings):
     matrix_server_name: str
     agent_registration_token: str
 
-    # JWT auth
+    # Signs session tokens — and, less obviously, is the key under which agent
+    # API keys are encrypted at rest, the Starlette session secret, and an
+    # input to agent registration. Guessing it is therefore not only a forged
+    # operator session but every stored agent credential, in the database and
+    # in every backup of it. Any signed-in user holds a token signed with it,
+    # so a short one is offline-crackable by anyone who can log in at all.
     jwt_secret_key: str
 
     # Gateway admin seed
@@ -325,6 +335,24 @@ class SwitchConfig(BaseSettings):
                 "DB_USER must be a plain identifier (letters, digits, "
                 "underscore, not starting with a digit, 63 characters or "
                 f"fewer), got {self.db_user!r}."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_jwt_secret_key(self) -> "SwitchConfig":
+        # HS256 keys an algorithm whose output is 32 bytes, and a key shorter
+        # than its own hash adds nothing. Refusing to start is the only place
+        # this can be caught: a weak key produces no error, no log line and no
+        # failing request — it works perfectly until someone cracks it.
+        if len(self.jwt_secret_key) < _JWT_SECRET_MIN_LENGTH:
+            raise ValueError(
+                f"JWT_SECRET_KEY must be at least {_JWT_SECRET_MIN_LENGTH} "
+                f"characters, got {len(self.jwt_secret_key)}. It signs sessions "
+                "and encrypts stored agent API keys, so a guessable one exposes "
+                "both. Generate one with `openssl rand -hex 32`. Replacing an "
+                "existing key signs every user out and makes agent API keys "
+                "created before the change unrevealable, but does not stop "
+                "agents authenticating."
             )
         return self
 
