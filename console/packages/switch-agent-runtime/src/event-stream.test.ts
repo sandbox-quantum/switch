@@ -158,6 +158,22 @@ describe('the heartbeat', () => {
     return beats;
   }
 
+  /** Stream opens in two minutes of (fake) time, with every open refused by the
+   * transport and every beat answered with `beatStatus`. */
+  async function opensWhileStreamRefused(beatStatus: number): Promise<number> {
+    vi.useFakeTimers();
+    const fetchMock = vi.fn(async (url: string) => {
+      if (String(url).includes('/events')) throw new Error('connection refused');
+      return { ok: beatStatus === 200, status: beatStatus, text: async (): Promise<string> => '' };
+    });
+    const { abort } = makeStream(fetchMock, { rooms: [] });
+    await vi.advanceTimersByTimeAsync(120_000);
+    const opens = urlsFor(fetchMock, '/events').length;
+    abort.abort();
+    vi.useRealTimers();
+    return opens;
+  }
+
   it('backs off when the connection is rejected, instead of beating at full rate', async () => {
     const windowMs = 20 * BEAT_INTERVAL_MS;
     // At the base cadence this window holds ~20 beats. Doubling from the base
@@ -181,6 +197,36 @@ describe('the heartbeat', () => {
 
     expect(late).toBeLessThan(early);
     abort.abort();
+  });
+
+  it('reopens the stream, and does not merely say so', async () => {
+    // Measured on a live deployment: every beat rejected, and not one
+    // `GET /events` since the pod started. The stream was open and idle, the
+    // reopen aborted a socket whose reader was parked and could not hear it,
+    // and the agent sat off the bus indefinitely while logging that it was
+    // reconnecting.
+    vi.useFakeTimers();
+    const fetchMock = vi.fn(async (url: string) => {
+      if (String(url).includes('/events')) return { ok: true, status: 200, body: openForever() };
+      return { ok: false, status: 404, text: async (): Promise<string> => '' };
+    });
+    const { abort } = makeStream(fetchMock, { rooms: [] });
+
+    await vi.advanceTimersByTimeAsync(60_000);
+
+    expect(urlsFor(fetchMock, '/events').length).toBeGreaterThan(1);
+    abort.abort();
+  });
+
+  it('does not sleep through a rejection while waiting to retry the stream', async () => {
+    // The other half of the same stall: between attempts the only socket a
+    // reopen could abort is the failed one, so the request has to reach the
+    // wait itself. Held against the same run with the beats landing — the
+    // rejection is the one difference, so it has to be the one that reopens
+    // sooner. Equal counts mean the reopen was swallowed.
+    const rejected = await opensWhileStreamRefused(404);
+    const healthy = await opensWhileStreamRefused(200);
+    expect(rejected).toBeGreaterThan(healthy);
   });
 
   it('returns to the base cadence once a beat lands', async () => {

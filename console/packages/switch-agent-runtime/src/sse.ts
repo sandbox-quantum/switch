@@ -22,6 +22,16 @@ export async function* readSse(
   const decoder = new TextDecoder();
   let buffered = '';
 
+  // An SSE stream is idle between events, and `reader.read()` parks until the
+  // next byte with no knowledge of the signal — so testing `signal.aborted`
+  // between reads only ends a stream the server is still feeding. Cancelling
+  // the reader is what settles a read already in flight: the pending read
+  // resolves done, and the loop ends on the turn it was asked to.
+  const cancel = (): void => {
+    void reader.cancel().catch(() => {});
+  };
+  signal.addEventListener('abort', cancel, { once: true });
+
   try {
     while (!signal.aborted) {
       const { done, value } = await reader.read();
@@ -51,6 +61,7 @@ export async function* readSse(
       }
     }
   } finally {
-    void reader.cancel().catch(() => {});
+    signal.removeEventListener('abort', cancel);
+    cancel();
   }
 }
