@@ -2,17 +2,36 @@ import Ajv from 'ajv';
 import { dump, load } from 'js-yaml';
 import { createRPCController } from '@shared/lib/ipc/rpc';
 
+/** Param types whose value names something that exists on the server. The
+ * form offers a picker over the matching list, and the server checks the
+ * value before provisioning. Mirrors `ENTITY_PARAM_TYPES` in core. */
+export const ENTITY_PARAM_TYPES = ['agent', 'bridge', 'room', 'user'] as const;
+export type EntityParamType = (typeof ENTITY_PARAM_TYPES)[number];
+
+export type ParamType = 'string' | 'number' | 'boolean' | 'enum' | EntityParamType;
+
+const PARAM_TYPES: readonly ParamType[] = [
+  'string',
+  'number',
+  'boolean',
+  'enum',
+  ...ENTITY_PARAM_TYPES,
+];
+
 export type ParamSpec = {
   name: string;
-  type: 'string' | 'number' | 'boolean' | 'enum';
+  type: ParamType;
   description: string | null;
   default: string | number | boolean | null;
   enum: string[] | null;
-  isAgentName: boolean;
   /** String params carrying long text render as a textarea (a one-line input
    * would strip pasted newlines). Declared in the template: `multiline: true`. */
   multiline: boolean;
 };
+
+export function isEntityParamType(type: ParamType): type is EntityParamType {
+  return (ENTITY_PARAM_TYPES as readonly string[]).includes(type);
+}
 
 export type ParsedTemplate = {
   params: ParamSpec[];
@@ -34,11 +53,6 @@ export type ParsedTemplate = {
   warnings: string[];
 };
 
-/** Convention: trigger the agent picker when the param is named exactly "agent" or ends in "_agent". */
-function isAgentParam(name: string): boolean {
-  return name === 'agent' || name.endsWith('_agent');
-}
-
 function extractParams(raw: unknown): ParamSpec[] {
   if (raw === null || raw === undefined || typeof raw !== 'object') return [];
   const params = raw as Record<string, unknown>;
@@ -50,24 +64,20 @@ function extractParams(raw: unknown): ParamSpec[] {
         description: null,
         default: null,
         enum: null,
-        isAgentName: isAgentParam(name),
         multiline: false,
       };
     }
     const s = spec as Record<string, unknown>;
     const type = typeof s.type === 'string' ? s.type : 'string';
-    const validType = (['string', 'number', 'boolean', 'enum'] as const).includes(
-      type as 'string' | 'number' | 'boolean' | 'enum'
-    )
-      ? (type as ParamSpec['type'])
-      : ('string' as const);
+    // An unknown type is read as a string so the form still renders; the
+    // server's schema is what rejects it, with a message naming the type.
+    const validType = PARAM_TYPES.includes(type as ParamType) ? (type as ParamType) : 'string';
     return {
       name,
       type: validType,
       description: typeof s.description === 'string' ? s.description : null,
       default: s.default !== undefined ? (s.default as ParamSpec['default']) : null,
       enum: Array.isArray(s.enum) ? (s.enum as string[]) : null,
-      isAgentName: validType === 'string' && isAgentParam(name),
       multiline: validType === 'string' && s.multiline === true,
     };
   });

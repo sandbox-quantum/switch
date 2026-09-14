@@ -49,7 +49,6 @@ params:
       name: 'label',
       type: 'string',
       default: 'hello',
-      isAgentName: false,
     });
     expect(result.params[1]).toMatchObject({ name: 'count', type: 'number', default: 3 });
     expect(result.params[2]).toMatchObject({ name: 'enabled', type: 'boolean', default: true });
@@ -57,7 +56,7 @@ params:
     expect(result.warnings).toEqual([]);
   });
 
-  it('agent picker: exactly "agent" or ending in "_agent"', () => {
+  it('carries entity param types through instead of guessing from the name', () => {
     const result = parse(
       `
 room:
@@ -65,41 +64,30 @@ room:
 params:
   agent:
     type: string
-  deploy_agent:
-    type: string
-  management:
-    type: string
-  agent_config:
-    type: string
-  my_agent_name:
-    type: string
+  coder:
+    type: agent
+  where:
+    type: bridge
+  escalate_to:
+    type: room
+  owner:
+    type: user
 `,
       PARAMS_SCHEMA
     );
-    const byName = Object.fromEntries(result.params.map((p) => [p.name, p.isAgentName]));
+    const byName = Object.fromEntries(result.params.map((p) => [p.name, p.type]));
     expect(byName).toEqual({
-      agent: true,
-      deploy_agent: true,
-      management: false,
-      agent_config: false,
-      my_agent_name: false,
+      agent: 'string',
+      coder: 'agent',
+      where: 'bridge',
+      escalate_to: 'room',
+      owner: 'user',
     });
   });
 
-  it('non-string params never get isAgentName', () => {
-    const result = parse(
-      `
-room:
-  name: test
-params:
-  agent:
-    type: number
-  deploy_agent:
-    type: boolean
-`,
-      PARAMS_SCHEMA
-    );
-    expect(result.params.every((p) => !p.isAgentName)).toBe(true);
+  it('reads an unknown type as string and leaves the schema to reject it', () => {
+    const result = parse('room:\n  name: test\nparams:\n  x:\n    type: widget\n');
+    expect(result.params[0].type).toBe('string');
   });
 
   it('paramless template returns empty params', () => {
@@ -143,13 +131,11 @@ params:
     expect(result.params[0]).toMatchObject({
       name: 'deploy_agent',
       type: 'string',
-      isAgentName: true,
       default: null,
     });
     expect(result.params[1]).toMatchObject({
       name: 'label',
       type: 'string',
-      isAgentName: false,
     });
   });
 

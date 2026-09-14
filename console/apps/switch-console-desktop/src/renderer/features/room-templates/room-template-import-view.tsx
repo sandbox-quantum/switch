@@ -1,13 +1,16 @@
 import Editor from '@monaco-editor/react';
-import { ArrowRight, Check, FileText, Loader2, Upload, X } from 'lucide-react';
+import { useQuery } from '@tanstack/react-query';
+import { ArrowRight, Check, FileText, Loader2, Upload } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useMemo, useRef, useState } from 'react';
 import { toast } from 'sonner';
 import type { ParamSpec, ParsedTemplate } from '@main/core/room-templates/controller';
+import { isEntityParamType } from '@main/core/room-templates/controller';
 import type { GuardResult, ViewDefinition } from '@renderer/app/view-registry';
 import { refreshSidebarRoomState } from '@renderer/features/sidebar/sidebar-tree-data';
 import { ServerPage } from '@renderer/features/switch-servers/server-page';
 import { ServerSectionTitlebar } from '@renderer/features/switch-servers/server-section-titlebar';
+import { useMyIdentities } from '@renderer/features/switch-servers/use-my-identities';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
 import { useParams } from '@renderer/lib/layout/navigation-provider';
@@ -18,8 +21,16 @@ import { Button } from '@renderer/lib/ui/button';
 import { Field, FieldGroup, FieldLabel } from '@renderer/lib/ui/field';
 import { Input } from '@renderer/lib/ui/input';
 import { Textarea } from '@renderer/lib/ui/textarea';
-import type { LinkedIdentity, RemoteBridge } from '@shared/core/switch-servers/switch-servers';
 import { RpcError } from '@shared/lib/ipc/rpc-error';
+import {
+  AgentField,
+  AgentListField,
+  BridgeField,
+  type EntityLists,
+  RoomField,
+  UserField,
+  UserListField,
+} from './entity-fields';
 
 type Step = 'source' | 'inputs' | 'creating';
 
@@ -158,28 +169,57 @@ function SourceStep({
 
 // ── Param field ────────────────────────────────────────────────────────────
 
+/** The label, description and error every param field shares, around
+ * whatever control the param's type calls for. */
+function ParamFieldShell({
+  param,
+  value,
+  error,
+  children,
+}: {
+  param: ParamSpec;
+  value: string | number | boolean;
+  error: string | null;
+  children: React.ReactNode;
+}) {
+  const isRequired = param.default === null;
+  const defaultKept = param.default !== null && value === param.default;
+  // Label: param name (humanized) + default annotation
+  const nameLabel = param.name.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+  return (
+    <Field>
+      <FieldLabel>
+        {nameLabel}
+        {defaultKept && (
+          <span className="ml-1 font-normal text-foreground-muted">(default kept)</span>
+        )}
+        {isRequired && <span className="ml-1 text-destructive">*</span>}
+      </FieldLabel>
+      {children}
+      {param.description && (
+        <p className="mt-1 text-xs text-foreground-muted">{param.description}</p>
+      )}
+      {error && <p className="text-xs text-destructive">{error}</p>}
+    </Field>
+  );
+}
+
 function ParamField({
   param,
   value,
   onChange,
   error,
-  agentNames,
+  lists,
 }: {
   param: ParamSpec;
   value: string | number | boolean;
   onChange: (v: string | number | boolean) => void;
   error: string | null;
-  agentNames: string[];
+  lists: EntityLists;
 }) {
-  const isRequired = param.default === null;
-  const hasDefault = param.default !== null;
-  const defaultKept = hasDefault && value === param.default;
-
-  // Label: param name (humanized) + default annotation
-  const nameLabel = param.name.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
-  const labelSuffix = defaultKept ? ' (default kept)' : '';
-
   if (param.type === 'boolean') {
+    const isRequired = param.default === null;
+    const nameLabel = param.name.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
     return (
       <Field>
         <label className="flex items-center gap-2">
@@ -201,16 +241,31 @@ function ParamField({
     );
   }
 
+  // Entity-typed params pick from what the server has, the same way the
+  // new-room dialog does; the value is the entity's name as the template
+  // would spell it, and the server checks it again on create.
+  if (isEntityParamType(param.type)) {
+    const strVal = typeof value === 'string' ? value : String(value ?? '');
+    const control =
+      param.type === 'agent' ? (
+        <AgentField value={strVal} onChange={onChange} lists={lists} />
+      ) : param.type === 'room' ? (
+        <RoomField value={strVal} onChange={onChange} lists={lists} />
+      ) : param.type === 'bridge' ? (
+        <BridgeField value={strVal} onChange={onChange} lists={lists} />
+      ) : (
+        <UserField value={strVal} onChange={onChange} lists={lists} />
+      );
+    return (
+      <ParamFieldShell param={param} value={value} error={error}>
+        {control}
+      </ParamFieldShell>
+    );
+  }
+
   if (param.type === 'enum' && param.enum) {
     return (
-      <Field>
-        <FieldLabel>
-          {nameLabel}
-          {labelSuffix && (
-            <span className="ml-1 font-normal text-foreground-muted">{labelSuffix}</span>
-          )}
-          {isRequired && <span className="ml-1 text-destructive">*</span>}
-        </FieldLabel>
+      <ParamFieldShell param={param} value={value} error={error}>
         <select
           value={String(value)}
           onChange={(e) => onChange(e.target.value)}
@@ -224,35 +279,20 @@ function ParamField({
             </option>
           ))}
         </select>
-        {param.description && (
-          <p className="mt-1 text-xs text-foreground-muted">{param.description}</p>
-        )}
-        {error && <p className="text-xs text-destructive">{error}</p>}
-      </Field>
+      </ParamFieldShell>
     );
   }
 
   if (param.type === 'number') {
     return (
-      <Field>
-        <FieldLabel>
-          {nameLabel}
-          {labelSuffix && (
-            <span className="ml-1 font-normal text-foreground-muted">{labelSuffix}</span>
-          )}
-          {isRequired && <span className="ml-1 text-destructive">*</span>}
-        </FieldLabel>
+      <ParamFieldShell param={param} value={value} error={error}>
         <Input
           type="number"
           value={value === '' ? '' : Number(value)}
           onChange={(e) => onChange(e.target.value === '' ? '' : Number(e.target.value))}
           aria-invalid={error ? true : undefined}
         />
-        {param.description && (
-          <p className="mt-1 text-xs text-foreground-muted">{param.description}</p>
-        )}
-        {error && <p className="text-xs text-destructive">{error}</p>}
-      </Field>
+      </ParamFieldShell>
     );
   }
 
@@ -260,83 +300,25 @@ function ParamField({
   // newlines out of a pasted brief.
   if (param.multiline) {
     return (
-      <Field>
-        <FieldLabel>
-          {nameLabel}
-          {labelSuffix && (
-            <span className="ml-1 font-normal text-foreground-muted">{labelSuffix}</span>
-          )}
-          {isRequired && <span className="ml-1 text-destructive">*</span>}
-        </FieldLabel>
+      <ParamFieldShell param={param} value={value} error={error}>
         <Textarea
           value={String(value)}
           onChange={(e) => onChange(e.target.value)}
           className="min-h-40 resize-y font-mono text-xs"
           aria-invalid={error ? true : undefined}
         />
-        {param.description && (
-          <p className="mt-1 text-xs text-foreground-muted">{param.description}</p>
-        )}
-        {error && <p className="text-xs text-destructive">{error}</p>}
-      </Field>
+      </ParamFieldShell>
     );
   }
 
-  // String field — with inline agent validation
-  const strVal = typeof value === 'string' ? value.trim() : '';
-  const agentMatch = param.isAgentName && strVal !== '' ? agentNames.includes(strVal) : null;
-
   return (
-    <Field>
-      <FieldLabel>
-        {nameLabel}
-        {labelSuffix && (
-          <span className="ml-1 font-normal text-foreground-muted">{labelSuffix}</span>
-        )}
-        {isRequired && <span className="ml-1 text-destructive">*</span>}
-      </FieldLabel>
-      <div className="relative">
-        <Input
-          value={String(value)}
-          onChange={(e) => onChange(e.target.value)}
-          placeholder={param.isAgentName ? 'Agent' : undefined}
-          aria-invalid={error || agentMatch === false ? true : undefined}
-          list={param.isAgentName ? `agents-${param.name}` : undefined}
-          className={param.isAgentName ? 'pr-36' : undefined}
-        />
-        {param.isAgentName && strVal !== '' && (
-          <span
-            className={`absolute top-1/2 right-2.5 -translate-y-1/2 text-xs ${
-              agentMatch ? 'text-foreground-muted' : 'text-amber-500'
-            }`}
-          >
-            {agentMatch ? (
-              <>
-                {strVal} · exists <Check className="inline size-3" />
-              </>
-            ) : (
-              `not found`
-            )}
-          </span>
-        )}
-        {param.isAgentName && (
-          <datalist id={`agents-${param.name}`}>
-            {agentNames.map((name) => (
-              <option key={name} value={name} />
-            ))}
-          </datalist>
-        )}
-      </div>
-      {param.description && (
-        <p className="mt-1 text-xs text-foreground-muted">{param.description}</p>
-      )}
-      {param.isAgentName && (
-        <p className="mt-0.5 text-xs text-foreground-muted">
-          Must be an existing agent — resolved against this server's agent list.
-        </p>
-      )}
-      {error && <p className="text-xs text-destructive">{error}</p>}
-    </Field>
+    <ParamFieldShell param={param} value={value} error={error}>
+      <Input
+        value={String(value)}
+        onChange={(e) => onChange(e.target.value)}
+        aria-invalid={error ? true : undefined}
+      />
+    </ParamFieldShell>
   );
 }
 
@@ -464,67 +446,6 @@ function SummaryPanel({
   );
 }
 
-// ── Editable name list ─────────────────────────────────────────────────────
-
-function EditableNameList({
-  label,
-  helperText,
-  items,
-  onChange,
-  knownNames,
-  nameKind,
-  missingLabel = 'not found',
-}: {
-  label: string;
-  helperText: string;
-  items: string[];
-  onChange: (items: string[]) => void;
-  knownNames: string[];
-  nameKind: string;
-  missingLabel?: string;
-}) {
-  if (items.length === 0) return null;
-  return (
-    <Field>
-      <FieldLabel>{label}</FieldLabel>
-      <div className="space-y-1.5">
-        {items.map((item, i) => {
-          const exists = knownNames.includes(item);
-          return (
-            <div key={i} className="flex items-center gap-2">
-              <div className="relative flex-1">
-                <Input value={item} readOnly className="pr-24" />
-                <span
-                  className={`absolute top-1/2 right-2.5 -translate-y-1/2 text-xs ${
-                    exists ? 'text-foreground-muted' : 'text-amber-500'
-                  }`}
-                >
-                  {exists ? (
-                    <>
-                      exists <Check className="inline size-3" />
-                    </>
-                  ) : (
-                    missingLabel
-                  )}
-                </span>
-              </div>
-              <button
-                type="button"
-                onClick={() => onChange(items.filter((_, j) => j !== i))}
-                className="flex size-8 shrink-0 items-center justify-center rounded text-foreground-muted hover:text-destructive"
-                title={`Remove ${nameKind}`}
-              >
-                <X className="size-3.5" />
-              </button>
-            </div>
-          );
-        })}
-      </div>
-      <p className="mt-1 text-xs text-foreground-muted">{helperText}</p>
-    </Field>
-  );
-}
-
 // ── Inputs step ────────────────────────────────────────────────────────────
 
 function InputsStep({
@@ -532,7 +453,7 @@ function InputsStep({
   values,
   onValuesChange,
   fieldErrors,
-  agentNames,
+  lists,
   onBack,
   onSubmit,
   sourceName,
@@ -541,7 +462,6 @@ function InputsStep({
   onEditedAgentsChange,
   editedUsers,
   onEditedUsersChange,
-  knownUserNames,
   creatorIdentity,
   bridgeName,
 }: {
@@ -549,7 +469,7 @@ function InputsStep({
   values: Record<string, string | number | boolean>;
   onValuesChange: (values: Record<string, string | number | boolean>) => void;
   fieldErrors: Record<string, string>;
-  agentNames: string[];
+  lists: EntityLists;
   onBack: () => void;
   onSubmit: () => void;
   sourceName: string | null;
@@ -558,10 +478,15 @@ function InputsStep({
   onEditedAgentsChange: (agents: string[]) => void;
   editedUsers: string[];
   onEditedUsersChange: (users: string[]) => void;
-  knownUserNames: string[];
   creatorIdentity: string | null;
   bridgeName: string | null;
 }) {
+  // The template's fixed members are editable only when it has any: a
+  // template that names no agents gets no empty "Agents" section to puzzle
+  // over, the same way the params list only shows what is declared.
+  const showAgents = parsed.hardcodedAgents.length > 0 || editedAgents.length > 0;
+  const showUsers = parsed.hardcodedUsers.length > 0 || editedUsers.length > 0;
+
   const handleChange = useCallback(
     (name: string, value: string | number | boolean) => {
       onValuesChange({ ...values, [name]: value });
@@ -586,26 +511,39 @@ function InputsStep({
               value={values[param.name] ?? ''}
               onChange={(v) => handleChange(param.name, v)}
               error={fieldErrors[param.name] ?? null}
-              agentNames={agentNames}
+              lists={lists}
             />
           ))}
-          <EditableNameList
-            label="Agents"
-            helperText="Pre-configured agents from the template. Remove any that don't exist on this server."
-            items={editedAgents}
-            onChange={onEditedAgentsChange}
-            knownNames={agentNames}
-            nameKind="agent"
-          />
-          <EditableNameList
-            label="Users"
-            helperText="Pre-configured users from the template. Names the server hasn't seen yet are still looked up in the platform's directory when the room is created."
-            items={editedUsers}
-            onChange={onEditedUsersChange}
-            knownNames={knownUserNames}
-            nameKind="user"
-            missingLabel="not seen yet"
-          />
+          {showAgents && (
+            <Field>
+              <div className="flex items-center justify-between gap-3">
+                <FieldLabel>Agents</FieldLabel>
+                {editedAgents.length > 0 && (
+                  <span className="text-sm text-foreground-muted">{editedAgents.length} added</span>
+                )}
+              </div>
+              <AgentListField items={editedAgents} onChange={onEditedAgentsChange} lists={lists} />
+              <p className="mt-1 text-xs text-foreground-muted">
+                Agents the template puts in the room. Drop any the server does not have, or add
+                more.
+              </p>
+            </Field>
+          )}
+          {showUsers && (
+            <Field>
+              <div className="flex items-center justify-between gap-3">
+                <FieldLabel>Users</FieldLabel>
+                {editedUsers.length > 0 && (
+                  <span className="text-sm text-foreground-muted">{editedUsers.length} added</span>
+                )}
+              </div>
+              <UserListField items={editedUsers} onChange={onEditedUsersChange} lists={lists} />
+              <p className="mt-1 text-xs text-foreground-muted">
+                People the template invites. A name the server has not seen is looked up in the
+                messaging app&apos;s directory when the room is created.
+              </p>
+            </Field>
+          )}
         </FieldGroup>
         <div className="flex flex-col gap-2 pt-2">
           <Button variant="outline" className="w-full" onClick={onBack}>
@@ -646,7 +584,27 @@ const TemplateImportTitlebar = observer(function TemplateImportTitlebar() {
 const TemplateImportPanel = observer(function TemplateImportPanel() {
   const serverId = useServerId();
   const agents = useRemoteAgents(serverId);
-  const agentNames = useMemo(() => (agents.data ?? []).map((a) => a.name), [agents.data]);
+  const roomsQuery = useQuery({
+    queryKey: ['remote-rooms', serverId],
+    queryFn: () => rpc.switchServers.listRemoteRooms(serverId),
+  });
+  const bridgesQuery = useQuery({
+    queryKey: ['remote-bridges', serverId],
+    queryFn: () => rpc.switchServers.listRemoteBridges(serverId),
+  });
+  const knownUsersQuery = useQuery({
+    queryKey: ['remote-external-users', serverId],
+    queryFn: () => rpc.switchServers.listRemoteExternalUsers(serverId),
+  });
+  // Null from a server without the endpoint: the parser then falls back to
+  // its own shape check and the server validates on create.
+  const schemaQuery = useQuery({
+    queryKey: ['template-schema', serverId],
+    queryFn: () => rpc.switchServers.fetchTemplateSchema(serverId),
+  });
+  const { identities } = useMyIdentities(serverId);
+  const bridges = useMemo(() => bridgesQuery.data ?? [], [bridgesQuery.data]);
+  const templateSchema = schemaQuery.data ?? null;
 
   const [step, setStep] = useState<Step>('source');
   const [yamlText, setYamlText] = useState('');
@@ -656,49 +614,57 @@ const TemplateImportPanel = observer(function TemplateImportPanel() {
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
   const [createError, setCreateError] = useState<string | null>(null);
   const [sourceName, setSourceName] = useState<string | null>(null);
-  const [templateSchema, setTemplateSchema] = useState<Record<string, unknown> | null>(null);
   const [editedAgents, setEditedAgents] = useState<string[]>([]);
   const [editedUsers, setEditedUsers] = useState<string[]>([]);
-  const [bridges, setBridges] = useState<RemoteBridge[]>([]);
-  const [myIdentities, setMyIdentities] = useState<LinkedIdentity[]>([]);
-  const [knownUserNames, setKnownUserNames] = useState<string[]>([]);
 
-  useEffect(() => {
-    rpc.switchServers
-      .fetchTemplateSchema(serverId)
-      .then(setTemplateSchema)
-      .catch(() => {});
-    rpc.switchServers
-      .listRemoteBridges(serverId)
-      .then(setBridges)
-      .catch(() => {});
-    rpc.switchServers
-      .listMyIdentities(serverId)
-      .then(setMyIdentities)
-      .catch(() => {});
-    rpc.switchServers
-      .listRemoteExternalUsers(serverId)
-      .then((users) => setKnownUserNames(users.map((u) => u.username)))
-      .catch(() => {});
-  }, [serverId]);
-
-  // The bridge the room will land on: the one the template names, else the
-  // server's default — which is what the server itself falls back to.
+  // The bridge the room will land on: what a bridge-typed param has been set
+  // to, else the one the template names, else the server's default, which is
+  // what the server itself falls back to. Following the param means the
+  // summary and the creator identity move with the pick.
   const templateBridge = useMemo(() => {
-    if (parsed?.bridge) {
-      return bridges.find((b) => b.displayName === parsed.bridge) ?? null;
+    const bridgeParam = parsed?.params.find((p) => p.type === 'bridge');
+    const picked = bridgeParam ? String(values[bridgeParam.name] ?? '') : '';
+    const named = picked !== '' ? picked : (parsed?.bridge ?? null);
+    if (named) {
+      return bridges.find((b) => b.displayName === named) ?? null;
     }
     return bridges.find((b) => b.isDefault) ?? (bridges.length === 1 ? bridges[0] : null);
-  }, [bridges, parsed]);
+  }, [bridges, parsed, values]);
 
-  // How the signed-in user resolves on that bridge — what `{$creator}`
+  // How the signed-in user resolves on that bridge: what `{$creator}`
   // becomes, and whether the kickoff can be posted as them.
   const creatorIdentity = useMemo(() => {
+    if (identities === null) return null;
     if (templateBridge) {
-      return myIdentities.find((i) => i.bridgeId === templateBridge.id)?.externalUsername ?? null;
+      return identities.find((i) => i.bridgeId === templateBridge.id)?.externalUsername ?? null;
     }
-    return myIdentities[0]?.externalUsername ?? null;
-  }, [myIdentities, templateBridge]);
+    return identities[0]?.externalUsername ?? null;
+  }, [identities, templateBridge]);
+
+  const lists = useMemo(
+    (): EntityLists => ({
+      serverId,
+      agents: agents.data ?? [],
+      agentsLoading: agents.isLoading,
+      rooms: roomsQuery.data ?? [],
+      roomsLoading: roomsQuery.isLoading,
+      bridges,
+      identities,
+      knownUsers: knownUsersQuery.data ?? [],
+      bridgeId: templateBridge?.id ?? null,
+    }),
+    [
+      serverId,
+      agents.data,
+      agents.isLoading,
+      roomsQuery.data,
+      roomsQuery.isLoading,
+      bridges,
+      identities,
+      knownUsersQuery.data,
+      templateBridge,
+    ]
+  );
 
   const validateInputs = useCallback((): boolean => {
     if (!parsed) return false;
@@ -863,7 +829,7 @@ const TemplateImportPanel = observer(function TemplateImportPanel() {
             values={values}
             onValuesChange={setValues}
             fieldErrors={fieldErrors}
-            agentNames={agentNames}
+            lists={lists}
             onBack={() => setStep('source')}
             onSubmit={() => handleCreate()}
             sourceName={sourceName}
@@ -872,7 +838,6 @@ const TemplateImportPanel = observer(function TemplateImportPanel() {
             onEditedAgentsChange={setEditedAgents}
             editedUsers={editedUsers}
             onEditedUsersChange={setEditedUsers}
-            knownUserNames={knownUserNames}
             creatorIdentity={creatorIdentity}
             bridgeName={templateBridge?.displayName ?? parsed.bridge}
           />
