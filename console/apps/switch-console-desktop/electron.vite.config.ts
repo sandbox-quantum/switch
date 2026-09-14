@@ -58,7 +58,9 @@ export default defineConfig({
       },
     },
     server: {
-      port: 3000,
+      // Per-instance so two dev builds from different worktrees can run at
+      // once; the main process follows through ELECTRON_RENDERER_URL.
+      port: Number(process.env.SWITCH_CONSOLE_RENDERER_PORT) || 3000,
     },
   },
 });
