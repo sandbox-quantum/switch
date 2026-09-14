@@ -177,21 +177,32 @@ export const AddAgentModal = observer(function AddAgentModal({
   // It is created on submit, not now, so cancelling leaves nothing behind.
   // The suggestion follows the name until the person picks a directory
   // themselves; a path they chose is theirs and a rename leaves it alone.
+  // On a host the same layout is suggested under the host's home, into the
+  // typed field; the host answers over SSH, so a suggestion can lag a moment.
   const lastSuggestedDir = useRef<string | null>(null);
   const { handlePathChange, path: pickedPath } = pickState;
+  const currentDir = runHost === LOCAL_RUN_LOCATION ? pickedPath : remoteRepoDir;
   useEffect(() => {
-    if (!template || runHost !== LOCAL_RUN_LOCATION || !form.nameIsValid) return;
-    if (pickedPath !== '' && pickedPath !== lastSuggestedDir.current) return;
+    if (!template || !form.nameIsValid) return;
+    if (currentDir !== '' && currentDir !== lastSuggestedDir.current) return;
+    if (runHost !== LOCAL_RUN_LOCATION && hostReachabilityStore.isBlocked(runHost)) return;
     let stale = false;
-    void rpc.agentTemplates.suggestDirectory({ agentName: form.agentName }).then((dir) => {
-      if (stale) return;
-      lastSuggestedDir.current = dir;
-      handlePathChange(dir);
-    });
+    const sshHost = runHost === LOCAL_RUN_LOCATION ? null : runHost;
+    void rpc.agentTemplates
+      .suggestDirectory({ agentName: form.agentName, sshHost })
+      .then((dir) => {
+        if (stale) return;
+        lastSuggestedDir.current = dir;
+        if (sshHost) setRemoteRepoDir(dir);
+        else handlePathChange(dir);
+      })
+      .catch(() => {
+        // A host that cannot say where home is leaves the field to be typed.
+      });
     return () => {
       stale = true;
     };
-  }, [template, runHost, form.agentName, form.nameIsValid, pickedPath, handlePathChange]);
+  }, [template, runHost, form.agentName, form.nameIsValid, currentDir, handlePathChange]);
   const { data: remoteHosts } = useQuery({
     queryKey: ['remote-hosts'],
     queryFn: () => rpc.remoteHosts.listHosts(),
@@ -570,13 +581,13 @@ export const AddAgentModal = observer(function AddAgentModal({
     try {
       // The template's working directory may not exist yet (it was only
       // suggested), and its repository is cloned alongside so the agent reads
-      // current source from its first answer. Local only: a remote directory
-      // is typed by hand and the agent clones for itself there.
-      if (template && !isRemoteRun) {
+      // current source from its first answer. On a host, both happen over SSH.
+      if (template) {
         setSubmitState('preparing');
         const prepared = await rpc.agentTemplates.prepareWorkspace({
-          dir: pickState.path,
+          dir: isRemoteRun ? trimmedRemoteDir : pickState.path,
           repoUrl: cloneRepo ? template.repoUrl : null,
+          sshHost: isRemoteRun ? runHost : null,
         });
         if (prepared.repo?.outcome === 'failed') {
           toast({
@@ -748,13 +759,11 @@ export const AddAgentModal = observer(function AddAgentModal({
                       {template.repoUrl.replace(/^https?:\/\//, '')}
                       <ExternalLink className="size-3" />
                     </button>
-                    {cloneRepo && !isRemoteRun
+                    {cloneRepo
                       ? ', fetched into its directory now so its first answer reads current source.'
                       : '. The agent fetches it on its first run.'}
                   </span>
-                  {!isRemoteRun && (
-                    <Switch className="mt-0.5" checked={cloneRepo} onCheckedChange={setCloneRepo} />
-                  )}
+                  <Switch className="mt-0.5" checked={cloneRepo} onCheckedChange={setCloneRepo} />
                 </label>
               )}
               {template.sources.length > 0 && (
