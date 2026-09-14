@@ -824,19 +824,11 @@ export const AddAgentModal = observer(function AddAgentModal({
             {template.roomYaml && intoRoomId === null && (
               <SummaryRow label="Room">
                 <span>
-                  {createRoom ? (
-                    <>
-                      {template.roomName
-                        ? `"${template.roomName.replace('{agent}', form.agentName || 'it')}"`
-                        : 'A new room'}
-                      , with you, kickoff sent as you
-                      {creatorIdentity
-                        ? ` (${creatorIdentity.externalUsername} on ${roomBridge?.displayName})`
-                        : ''}
-                    </>
-                  ) : (
-                    'None. Add it to a room and mention it to start it.'
-                  )}
+                  {createRoom
+                    ? template.roomName
+                      ? `"${template.roomName.replace('{agent}', form.agentName || 'it')}"`
+                      : 'A new room'
+                    : 'None'}
                 </span>
                 <ToggleChip label="Create" checked={createRoom} onChange={setCreateRoom} />
               </SummaryRow>
@@ -855,7 +847,18 @@ export const AddAgentModal = observer(function AddAgentModal({
             {willCreateRoom && bridges && !roomBridge && (
               <p className="flex flex-wrap items-center gap-2 text-amber-500">
                 <TriangleAlert className="size-3.5 shrink-0" />
-                No messaging app is connected to this server, so nobody could talk in the room.
+                <span>This server has no messaging app, so the room would have no chat.</span>
+                <Button
+                  type="button"
+                  size="xs"
+                  variant="outline"
+                  onClick={() => {
+                    onClose();
+                    if (pickState.serverId) navigate('server', { serverId: pickState.serverId });
+                  }}
+                >
+                  Connect one
+                </Button>
               </p>
             )}
             {willCreateRoom && roomBridge && creatorIdentity === null && (
