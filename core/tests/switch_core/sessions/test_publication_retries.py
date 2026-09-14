@@ -40,7 +40,7 @@ from .test_publication import Platform
 
 
 class RecoverablePlatform(Platform):
-    async def find_request_card(self, channel, thread, token, created_at):
+    async def find_request_card(self, channel, thread, token, created_at, handle):
         for posted_channel, text, blocks, posted_thread in self.posts:
             if (
                 posted_channel == channel
@@ -293,7 +293,7 @@ async def test_slack_recovery_pages_and_requires_own_bot(thread):
     adapter._web_client = client
     assert (
         await adapter.find_request_card(
-            "channel", thread, "token", datetime(2026, 1, 1, tzinfo=UTC)
+            "channel", thread, "token", datetime(2026, 1, 1, tzinfo=UTC), "R7"
         )
         == "channel:102.0"
     )

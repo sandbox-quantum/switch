@@ -437,7 +437,7 @@ async def test_an_uncertain_post_is_found_again_by_its_marker() -> None:
     }
 
     found = await adapter.find_request_card(
-        "chan-1", "root-1", "tok-1", datetime.now(UTC)
+        "chan-1", "root-1", "tok-1", datetime.now(UTC), "R7"
     )
 
     assert found == "post-9"
@@ -454,7 +454,9 @@ async def test_a_token_quoted_by_a_person_is_not_the_post_that_carries_it() -> N
     }
 
     assert (
-        await adapter.find_request_card("chan-1", "root-1", "tok-1", datetime.now(UTC))
+        await adapter.find_request_card(
+            "chan-1", "root-1", "tok-1", datetime.now(UTC), "R7"
+        )
         is None
     )
 
@@ -463,7 +465,7 @@ async def test_a_rootless_search_asks_the_channel_from_just_before_the_post() ->
     adapter = _adapter()
     created_at = datetime(2026, 9, 14, 12, 0, tzinfo=UTC)
 
-    await adapter.find_request_card("chan-1", None, "tok-1", created_at)
+    await adapter.find_request_card("chan-1", None, "tok-1", created_at, "R7")
 
     channel_id, params = _posts(adapter).channel_calls[0]
     assert channel_id == "chan-1"
@@ -478,7 +480,9 @@ async def test_a_search_that_could_not_run_is_not_found_rather_than_a_guess() ->
     _posts(adapter).read_error = RuntimeError("500 server error")
 
     assert (
-        await adapter.find_request_card("chan-1", "root-1", "tok-1", datetime.now(UTC))
+        await adapter.find_request_card(
+            "chan-1", "root-1", "tok-1", datetime.now(UTC), "R7"
+        )
         is None
     )
 

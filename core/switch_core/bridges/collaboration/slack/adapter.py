@@ -400,8 +400,14 @@ class SlackAdapter(CollaborationAdapter):
         thread_root_id: str | None,
         token: str,
         created_at: datetime,
+        handle: str | None,
     ) -> str | None:
-        """Find a reserved request or activity post by its shared recovery marker."""
+        """Find a reserved request or activity post by its shared recovery marker.
+
+        `handle` is unused: Slack carries the marker in the message's own
+        `block_id`, which is exact and invisible, so there is nothing the
+        printed handle would add.
+        """
         if self._web_client is None:
             raise RuntimeError(
                 "Cannot recover a request card: Slack client not connected."

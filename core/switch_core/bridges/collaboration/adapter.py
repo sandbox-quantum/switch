@@ -228,12 +228,11 @@ class CollaborationAdapter(ABC):
     #: Whether a mention is the only way an attention post reaches anyone.
     #:
     #: True where nobody follows a thread they are not already in, so a post
-    #: that names no one is read by no one. Two things follow from that. The
-    #: agent's owner leads the naming — they are the person who can open
-    #: Console and act on a stalled session, where whoever happened to type
-    #: the command may be able to do nothing about it. And an attention post
-    #: with nobody to name says so, because one that notified no one otherwise
-    #: looks exactly like one that notified the right person.
+    #: that names no one is read by no one. What follows from that is the
+    #: admission: an attention post with nobody to name says so, because one
+    #: that notified no one otherwise looks exactly like one that notified the
+    #: right person. Who gets named is not decided here — the asker leads
+    #: everywhere, with the agent's owner as the fallback.
     #:
     #: False where the platform's own following does that work: a Slack
     #: participant gets the threaded reply without being named, and naming
@@ -713,14 +712,24 @@ class CollaborationAdapter(ABC):
         thread_root_id: str | None,
         token: str,
         created_at: datetime,
+        handle: str | None,
     ) -> str | None:
-        """Search for a request card already on the platform, by its token.
+        """Search for a publication already on the platform, by its marker.
 
         `recover` calls this when a post's outcome is uncertain, so it can
         bind the reservation to what is actually there instead of risking a
         duplicate. `None` means either nothing was found or, as here, that
-        this platform has no way to look — a card recovers only where an
-        adapter can search for one, which today is only `SlackAdapter`.
+        this platform has no way to look — a publication recovers only where
+        an adapter can search for one.
+
+        `token` is the marker the adapter was given to carry, and is what a
+        platform with somewhere to hide one matches on. `handle` is the
+        request's own name, the one printed in the card for people to type
+        back, and it is here for the platform that has nowhere to hide a
+        marker at all: on Discord a webhook message carries no metadata, so
+        the visible handle is the only durable thing that distinguishes one
+        card from another. It is `None` for an activity publication, which
+        has no handle and so cannot be recovered that way.
         """
         return None
 

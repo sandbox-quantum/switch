@@ -182,6 +182,18 @@ class SessionTurnActivity:
         return self._only_mentions_notify
 
     @property
+    def renders_custom_url_schemes(self) -> bool:
+        """Whether a `switchdash://` link is a link here at all.
+
+        Read by the caller that builds the Console link, which is the only
+        place that holds both the deeplink and the gateway's public URL to
+        rewrite it against. False sends the browser redirect instead, because
+        a platform that linkifies only http(s) shows the raw deeplink as text
+        somebody would have to copy.
+        """
+        return bool(getattr(self._adapter, "renders_custom_url_schemes", True))
+
+    @property
     def redraws_for_elapsed_time(self) -> bool:
         """Whether a running turn is worth redrawing for the clock alone.
 
@@ -400,6 +412,7 @@ class SessionTurnActivity:
                 delivery["thread"],
                 delivery["token"],
                 datetime.fromisoformat(delivery["created_at"]),
+                None,
             )
             if ref is None:
                 raise CardNotPosted(
@@ -942,7 +955,11 @@ class SessionRequestCards:
     async def recover(self, post: SessionRequestPost) -> SessionRequestPost:
         """Bind an uncertain delivery to its existing platform message; never repost."""
         ref = await self._adapter.find_request_card(
-            post.external_channel_id, post.thread_id, post.token, post.created_at
+            post.external_channel_id,
+            post.thread_id,
+            post.token,
+            post.created_at,
+            post.handle,
         )
         if ref is None:
             raise CardNotPosted(

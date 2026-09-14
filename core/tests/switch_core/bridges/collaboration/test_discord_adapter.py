@@ -911,6 +911,14 @@ def test_send_typing_triggers_once_and_off_is_noop() -> None:
 
 
 # ── Runtime state (working-on-it activity) ──────────────────────────────────
+#
+# These drive `_apply_runtime_state` rather than the public entry point because
+# the public one no longer reaches it: Discord now publishes SDK sessions and
+# declares `renders_legacy_runtime_state = False`, so the base class stops the
+# legacy path before the adapter sees it. The implementation is still here and
+# still correct; what it no longer has is a caller. Removing it is its own task
+# — until then these keep it honest, and `test_discord_sdk_only.py` covers the
+# disabled ingress itself.
 
 
 def _runtime_setup() -> tuple[DiscordAdapter, _FakeChannel, _FakeWebhook]:
@@ -926,7 +934,7 @@ def test_runtime_state_working_posts_persistent_indicator() -> None:
     adapter, _, webhook = _runtime_setup()
 
     _run(
-        adapter.apply_runtime_state(
+        adapter._apply_runtime_state(
             str(CHANNEL_ID),
             "my-agent",
             "working",
@@ -948,7 +956,7 @@ def test_runtime_state_detail_edits_message_in_place() -> None:
     adapter, _, webhook = _runtime_setup()
 
     _run(
-        adapter.apply_runtime_state(
+        adapter._apply_runtime_state(
             str(CHANNEL_ID),
             "my-agent",
             "working",
@@ -957,7 +965,7 @@ def test_runtime_state_detail_edits_message_in_place() -> None:
         )
     )
     _run(
-        adapter.apply_runtime_state(
+        adapter._apply_runtime_state(
             str(CHANNEL_ID),
             "my-agent",
             "working",
@@ -981,7 +989,7 @@ def test_runtime_state_idle_clears_working_message() -> None:
     adapter, channel, webhook = _runtime_setup()
 
     _run(
-        adapter.apply_runtime_state(
+        adapter._apply_runtime_state(
             str(CHANNEL_ID),
             "my-agent",
             "working",
@@ -990,7 +998,7 @@ def test_runtime_state_idle_clears_working_message() -> None:
         )
     )
     _run(
-        adapter.apply_runtime_state(
+        adapter._apply_runtime_state(
             str(CHANNEL_ID),
             "my-agent",
             "idle",
@@ -1008,7 +1016,7 @@ def test_runtime_state_awaiting_input_pings_and_resume_clears_pings() -> None:
     adapter, channel, webhook = _runtime_setup()
 
     _run(
-        adapter.apply_runtime_state(
+        adapter._apply_runtime_state(
             str(CHANNEL_ID),
             "my-agent",
             "working",
@@ -1017,7 +1025,7 @@ def test_runtime_state_awaiting_input_pings_and_resume_clears_pings() -> None:
         )
     )
     _run(
-        adapter.apply_runtime_state(
+        adapter._apply_runtime_state(
             str(CHANNEL_ID),
             "my-agent",
             "awaiting-input",
@@ -1035,7 +1043,7 @@ def test_runtime_state_awaiting_input_pings_and_resume_clears_pings() -> None:
     # Resuming work means the input was provided — the ping is deleted, the
     # working indicator is refreshed in place.
     _run(
-        adapter.apply_runtime_state(
+        adapter._apply_runtime_state(
             str(CHANNEL_ID),
             "my-agent",
             "working",
@@ -1269,7 +1277,7 @@ def test_awaiting_input_with_nobody_linked_says_so() -> None:
     adapter, _channel, webhook = _runtime_setup()
 
     _run(
-        adapter.apply_runtime_state(
+        adapter._apply_runtime_state(
             str(CHANNEL_ID),
             "my-agent",
             "awaiting-input",

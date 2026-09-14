@@ -25,6 +25,7 @@ from switch_core.db.models import (
     require_tenant_id,
 )
 from switch_core.db.stores.session_request_post_store import SessionRequestPostStore
+from switch_core.deeplinks import deeplink_for_platform
 from switch_core.sessions.contract import (
     TURN_ENDED,
     Command,
@@ -614,8 +615,15 @@ async def refresh_activity(
             metadata: dict[str, Any] = {
                 key: value
                 for key, value in {
-                    "session_url": session_console_url(
-                        gateway_public_url, agent.id, room.id, row.id
+                    # Rewritten here rather than in the renderer: this is the
+                    # only place holding both the deeplink and the gateway URL
+                    # the redirect has to come from.
+                    "session_url": deeplink_for_platform(
+                        session_console_url(
+                            gateway_public_url, agent.id, room.id, row.id
+                        ),
+                        gateway_public_url,
+                        activity.renders_custom_url_schemes,
                     ),
                     "notify_external_id": recipient,
                     # Somebody has to act on this and there is nobody here to

@@ -71,7 +71,7 @@ async def test_rejected_blocks_publish_one_threaded_recoverable_text_card(
     }
     assert (
         await adapter.find_request_card(
-            "channel-demo", "channel-demo:1.0", "delivery-demo", datetime.now(UTC)
+            "channel-demo", "channel-demo:1.0", "delivery-demo", datetime.now(UTC), "R7"
         )
         == "channel-demo:2.0"
     )

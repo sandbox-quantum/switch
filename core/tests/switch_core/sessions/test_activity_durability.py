@@ -54,7 +54,7 @@ class ActivitySlack(SlackAdapter):
         self.edit_refs.append(ref)
         self.messages[ref] = self._render_rich(content)
 
-    async def find_request_card(self, channel, thread, token, created_at):
+    async def find_request_card(self, channel, thread, token, created_at, handle):
         for ref, message in self.messages.items():
             if any(
                 block.get("block_id") == f"switch-request:{token}"

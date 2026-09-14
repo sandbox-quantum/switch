@@ -806,6 +806,7 @@ class MattermostAdapter(CollaborationAdapter):
         thread_root_id: str | None,
         token: str,
         created_at: datetime,
+        handle: str | None,
     ) -> str | None:
         """Look for a publication this bridge may already have posted.
 
@@ -818,7 +819,8 @@ class MattermostAdapter(CollaborationAdapter):
 
         Matched on the props marker and on the post's author, because a token
         quoted back in somebody's message must not be mistaken for the post
-        that carries it.
+        that carries it. `handle` is unused for the same reason it is on
+        Slack: the props marker is exact, and invisible to a reader.
         """
         driver = self._admin_driver
         loop = self._main_loop
