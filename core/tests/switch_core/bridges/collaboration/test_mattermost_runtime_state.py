@@ -8,6 +8,14 @@ therefore leaves a trail of placeholders behind it, one per removal.
 So the rule these tests hold the adapter to is blunt: nothing it posts is ever
 deleted. The status line is edited into a terminal marker at the end of a turn,
 and it does not move while the turn runs.
+
+These drive `_apply_runtime_state` rather than the public entry point because
+the public one no longer reaches it: Mattermost now publishes SDK sessions and
+declares `renders_legacy_runtime_state = False`, so the base class stops the
+legacy path before the adapter sees it. The implementation is still here and
+still correct; what it no longer has is a caller. Removing it is its own task —
+until then these keep it honest, and
+`test_mattermost_sdk_only.py` covers the disabled ingress itself.
 """
 
 from __future__ import annotations
@@ -109,7 +117,7 @@ def test_the_indicator_stays_put_instead_of_following_the_conversation() -> None
     recorder.install(adapter)
     _seed_indicator(adapter, thread_root_id="root-9")
 
-    _run(adapter.reposition_runtime_state("chan-1", "worker", "root-42"))
+    _run(adapter._reposition_runtime_state("chan-1", "worker", "root-42"))
 
     assert recorder.deletes == []
     assert recorder.sends == []
@@ -125,7 +133,7 @@ def test_a_finished_turn_retires_the_indicator_in_place() -> None:
     _seed_indicator(adapter, age_seconds=134)
 
     _run(
-        adapter.apply_runtime_state(
+        adapter._apply_runtime_state(
             "chan-1", "worker", "idle", mention_handle=None, thread_root_id=None
         )
     )
@@ -145,7 +153,7 @@ def test_the_done_marker_carries_no_session_link() -> None:
     _seed_indicator(adapter, age_seconds=8)
 
     _run(
-        adapter.apply_runtime_state(
+        adapter._apply_runtime_state(
             "chan-1",
             "worker",
             "idle",
@@ -165,7 +173,7 @@ def test_an_operator_ping_is_resolved_rather_than_removed() -> None:
     adapter._input_pings[("chan-1", "worker")] = ["ping-1", "ping-2"]
 
     _run(
-        adapter.apply_runtime_state(
+        adapter._apply_runtime_state(
             "chan-1", "worker", "idle", mention_handle=None, thread_root_id=None
         )
     )
@@ -188,7 +196,7 @@ def test_a_turn_posts_one_status_line_and_deletes_nothing() -> None:
 
     async def turn() -> None:
         for detail in ("Ran tool Bash", "Ran tool Edit", None):
-            await adapter.apply_runtime_state(
+            await adapter._apply_runtime_state(
                 "chan-1",
                 "worker",
                 "working",
@@ -196,7 +204,7 @@ def test_a_turn_posts_one_status_line_and_deletes_nothing() -> None:
                 thread_root_id=None,
                 detail=detail,
             )
-        await adapter.apply_runtime_state(
+        await adapter._apply_runtime_state(
             "chan-1", "worker", "idle", mention_handle=None, thread_root_id=None
         )
 
@@ -217,7 +225,7 @@ def test_idle_without_an_indicator_does_nothing() -> None:
     recorder.install(adapter)
 
     _run(
-        adapter.apply_runtime_state(
+        adapter._apply_runtime_state(
             "chan-1", "worker", "idle", mention_handle=None, thread_root_id=None
         )
     )
@@ -234,7 +242,7 @@ def test_the_turn_opens_with_a_typing_nudge_where_the_message_came_from() -> Non
     recorder.install(adapter)
 
     _run(
-        adapter.apply_runtime_state(
+        adapter._apply_runtime_state(
             "chan-1",
             "worker",
             "working",
@@ -256,7 +264,7 @@ def test_typing_stays_at_the_root_when_that_is_where_the_message_was() -> None:
     recorder.install(adapter)
 
     _run(
-        adapter.apply_runtime_state(
+        adapter._apply_runtime_state(
             "chan-1",
             "worker",
             "working",
@@ -280,7 +288,7 @@ def test_typing_is_not_repeated_on_every_activity_refresh() -> None:
 
     async def turn() -> None:
         for detail in (None, "Ran tool Edit", "Running tests"):
-            await adapter.apply_runtime_state(
+            await adapter._apply_runtime_state(
                 "chan-1",
                 "worker",
                 "working",
@@ -301,7 +309,7 @@ def test_a_retired_turn_does_not_nudge() -> None:
     _seed_indicator(adapter)
 
     _run(
-        adapter.apply_runtime_state(
+        adapter._apply_runtime_state(
             "chan-1", "worker", "idle", mention_handle=None, thread_root_id=None
         )
     )

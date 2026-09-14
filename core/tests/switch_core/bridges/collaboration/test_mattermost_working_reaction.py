@@ -7,6 +7,11 @@ post, it says *which* message was picked up.
 
 It is added by the agent's own bot rather than a shared bridge account, so two
 agents working on one message show as two marks.
+
+The two cases here that come in through `_apply_runtime_state` do so directly:
+the legacy path that used to call it is disabled now that Mattermost publishes
+SDK sessions, and the mark arrives through `mark_activity` instead. Both routes
+end in `_mark_being_read`, which is what these are really about.
 """
 
 from __future__ import annotations
@@ -98,7 +103,7 @@ def _run(adapter: MattermostAdapter, *states: tuple[str, str | None]) -> None:
     async def _body() -> None:
         adapter._main_loop = asyncio.get_running_loop()
         for state, thread_root_id in states:
-            await adapter.apply_runtime_state(
+            await adapter._apply_runtime_state(
                 "chan-1",
                 "worker",
                 state,
@@ -195,7 +200,7 @@ def test_two_agents_on_one_message_each_leave_their_own_mark() -> None:
     async def _body() -> None:
         adapter._main_loop = asyncio.get_running_loop()
         for agent in ("worker", "reviewer"):
-            await adapter.apply_runtime_state(
+            await adapter._apply_runtime_state(
                 "chan-1",
                 agent,
                 "working",

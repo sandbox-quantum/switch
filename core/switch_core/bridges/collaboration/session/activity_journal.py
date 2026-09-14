@@ -67,16 +67,26 @@ class ActivityJournal:
         channel: str,
         ref: str,
         *,
+        agent_name: str | None = None,
         sessions: async_sessionmaker[AsyncSession],
     ) -> bool:
+        """Whether another live turn still wants the mark on this message.
+
+        `agent_name` narrows the question to one agent's own mark, for a
+        platform where each agent reacts as its own bot: another agent holding
+        its own reaction there says nothing about whether this one's should
+        come off. Left None where every agent shares a bot and there is a
+        single reaction between them.
+        """
+        anchor: dict[str, str] = {"channel_id": channel, "reaction_ref": ref}
+        if agent_name is not None:
+            anchor["agent_name"] = agent_name
         async with sessions() as db:
             rows = await db.scalars(
                 select(SessionActivityPost).where(
                     SessionActivityPost.tenant_id == require_tenant_id(),
                     SessionActivityPost.bridge_id == self.bridge_id,
-                    SessionActivityPost.data.contains(
-                        {"anchor": {"channel_id": channel, "reaction_ref": ref}}
-                    ),
+                    SessionActivityPost.data.contains({"anchor": anchor}),
                 )
             )
             return any(

@@ -72,16 +72,18 @@ async def test_native_stop_event_is_acknowledged_without_interrupting_an_sdk_tur
 async def test_reaction_cache_handles_expected_slack_refusals_quietly(error, caplog):
     slack, client = adapter()
     client.reaction_error = error
-    await slack.mark_activity("C1", "C1:1.0", working=True)
+    await slack.mark_activity("C1", "C1:1.0", agent_name="worker", working=True)
     client.reaction_error = None
-    await slack.mark_activity("C1", "1.0", working=True)
+    await slack.mark_activity("C1", "1.0", agent_name="worker", working=True)
     assert not client.reactions
     assert not caplog.records
 
 
 async def test_reaction_force_reconciles_after_restart():
     slack, client = adapter()
-    await slack.mark_activity("C1", "C1:1.0", working=False, force=True)
+    await slack.mark_activity(
+        "C1", "C1:1.0", agent_name="worker", working=False, force=True
+    )
     assert client.reactions == [("remove", "1.0", "eyes")]
 
 

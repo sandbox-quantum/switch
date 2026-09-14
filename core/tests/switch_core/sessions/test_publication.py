@@ -68,7 +68,11 @@ async def test_card_callback_reservation_and_confirmed_settlement(session_factor
     platform = Platform()
     posts = SessionRequestPostStore()
     cards = SessionRequestCards(
-        platform, bridge_id="bridge", posts=posts, session_factory=session_factory
+        platform,
+        bridge_id="bridge",
+        surface="slack",
+        posts=posts,
+        session_factory=session_factory,
     )
     await refresh_cards(session_factory, "bridge", "session-demo", cards)
     await refresh_cards(session_factory, "bridge", "session-demo", cards)
@@ -167,6 +171,7 @@ async def test_permission_uses_activity_thread_and_persists_it(session_factory, 
     cards = SessionRequestCards(
         platform,
         bridge_id="bridge",
+        surface="slack",
         posts=SessionRequestPostStore(),
         session_factory=session_factory,
     )

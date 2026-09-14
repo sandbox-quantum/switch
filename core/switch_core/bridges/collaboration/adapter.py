@@ -204,7 +204,29 @@ class CollaborationAdapter(ABC):
     publishes_sdk_sessions: ClassVar[bool] = False
     # Keep the ticking status and expandable tool log in separate messages.
     separate_activity_log: ClassVar[bool] = False
+
+    #: Whether a problem somebody has to act on gets a message of its own.
+    #:
+    #: One durable reply per turn, reused as the problem changes and cleared
+    #: when it goes away — never a second one. Separate from
+    #: `separate_activity_log` because the two answer different questions: a
+    #: platform can want one compact status carrying its own tool counts (so
+    #: no separate log) and still want a failure to arrive as something a
+    #: reader is notified about rather than as an edit to a message they have
+    #: already scrolled past.
+    separate_attention_slot: ClassVar[bool] = False
+
     supports_activity_reactions: ClassVar[bool] = False
+
+    #: Whether the work reaction belongs to the agent that added it.
+    #:
+    #: True where each agent posts as its own bot, so two agents working on one
+    #: message leave two independent marks and each must be claimed, held and
+    #: removed on its own. False where every agent shares one bot account: the
+    #: platform has one reaction between them, so the first turn to want it
+    #: puts it on and the last to finish takes it off.
+    activity_reactions_per_agent: ClassVar[bool] = False
+
     renders_legacy_runtime_state: ClassVar[bool] = True
 
     #: Whether this platform can create a channel from Switch at all.
@@ -588,11 +610,19 @@ class CollaborationAdapter(ABC):
         own.
 
         A turn falls back to `turn_summary` — the last thing the agent said,
-        and the turn's own state. A request card has no neutral form yet:
-        there is no off-Slack request renderer to write one against, so
-        `request_summary` raises rather than guess at a shape (title, detail,
-        per-option or per-question lines, a footer) nobody has needed yet.
-        Implement that alongside the first one.
+        and the turn's own state. A request falls back to `request_summary`:
+        the question, its numbered options and the typed-answer grammar for
+        this particular form, in whichever state the request is in. Neither
+        is the compact presentation a platform publishing SDK sessions wants
+        (`turn_status` is), which is why an adapter that does publish them
+        overrides this rather than inheriting it.
+
+        The card's own extras go with it. `unavailable_reason` is the notice
+        that replaces the instruction on a card that cannot be answered where
+        it is showing, and dropping it here would leave the reader an
+        instruction that is about to be refused. `responder_external_id` is
+        not passed on: it is a platform id, and an adapter that can turn one
+        into a name renders the card itself.
 
         The result is ready to send as-is — `post_rich` and `update_rich` do
         not run it through `translate_outbound` again. `_rich_escape` already
@@ -617,6 +647,7 @@ class CollaborationAdapter(ABC):
             content.reference,
             escape=escape,
             limit=self.rich_fallback_limit(),
+            unavailable_reason=content.unavailable_reason,
         )
 
     def _rich_escape(self, label: str) -> str:
@@ -668,9 +699,23 @@ class CollaborationAdapter(ABC):
     ) -> None: ...
 
     async def mark_activity(
-        self, channel_id: str, message_ref: str, *, working: bool, force: bool = False
+        self,
+        channel_id: str,
+        message_ref: str,
+        *,
+        agent_name: str,
+        working: bool,
+        force: bool = False,
     ) -> None:
-        """Update a platform work indicator when the adapter supports one."""
+        """Update a platform work indicator when the adapter supports one.
+
+        `agent_name` is which agent is working, and it is required rather than
+        optional because a platform where each agent posts as its own bot
+        cannot add or remove a reaction without knowing whose it is. A
+        platform with one shared bot ignores it — there is one reaction
+        between every agent there — but a caller that could not supply it
+        would be a caller that cannot serve the per-agent platforms at all.
+        """
 
     def _runtime_lock(self, channel_id: str, agent_name: str) -> asyncio.Lock:
         """The lock serialising runtime-indicator work for one agent in one

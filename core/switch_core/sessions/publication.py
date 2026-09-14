@@ -404,6 +404,7 @@ async def refresh_activity(
     session_id: str,
     activity: SessionTurnActivity,
     *,
+    surface: str,
     gateway_public_url: str | None = None,
     retry_allowed: Callable[[str], bool] = _always_recover,
     retry_succeeded: Callable[[str], None] = _ignore_recovery,
@@ -458,8 +459,12 @@ async def refresh_activity(
         turns = list(snapshot.turns)
         latest_turn_id = turns[-1].turn_id if turns else None
         known_commands = {turn.command_id for turn in turns}
-        # A presentation-only queued turn acknowledges accepted Slack input before
-        # the SDK reports a turn. Never write synthetic turns into the contract.
+        # A presentation-only queued turn acknowledges input this bridge itself
+        # accepted, before the SDK reports a turn. Scoped to commands that came
+        # in on `surface` because that is where the acknowledgement would go: a
+        # command typed in the console has no message in this channel to answer,
+        # and a turn drawn for it would be this bridge announcing work nobody
+        # here asked for. Never write synthetic turns into the contract.
         for pending_command in await db.scalars(
             select(SdkSessionCommand)
             .where(
@@ -475,7 +480,7 @@ async def refresh_activity(
             if (
                 command.command_id in known_commands
                 or command.epoch != row.epoch
-                or command.origin.surface != "slack"
+                or command.origin.surface != surface
                 or command.body.type != "message.send"
             ):
                 continue
@@ -811,6 +816,7 @@ class SessionPublisher:
         self._sessions = session_factory
         self._gateway_public_url = gateway_public_url
         self._bridge_id = bridge_id
+        self._surface = cards.surface
         self._cards = cards
         self._activity = activity
         self._published: dict[str, tuple[int, bool]] = {}
@@ -859,6 +865,7 @@ class SessionPublisher:
                         self._bridge_id,
                         session_id,
                         self._activity,
+                        surface=self._surface,
                         **(
                             {"gateway_public_url": self._gateway_public_url}
                             if self._gateway_public_url

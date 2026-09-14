@@ -13,7 +13,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from switch_core.sessions.contract import TURN_ENDED, Item, TurnUpsert
+from switch_core.sessions.contract import (
+    TURN_ENDED,
+    Item,
+    Question,
+    Surface,
+    TurnUpsert,
+)
 
 # Where the turn itself has got to. One message per turn is edited in place, so
 # without this a turn that finished and a turn that stalled read identically:
@@ -79,6 +85,95 @@ def _format_duration(elapsed_seconds: float) -> str:
     total = max(int(elapsed_seconds), 0)
     minutes, seconds = divmod(total, 60)
     return f"{minutes}m {seconds}s" if minutes else f"{seconds}s"
+
+
+# How a request that was never answered ended, in the words a reader sees. One
+# copy rather than one per renderer: two platforms describing the same outcome
+# differently is a difference a reader would take for a difference in what
+# actually happened.
+CLOSED = {
+    "cancelled": "Cancelled before it was answered.",
+    "expired": "Expired before it was answered.",
+    "interrupted": "Interrupted before it was answered.",
+    "provider-error": "The provider failed before it was answered.",
+}
+
+# Where the person who answered was, in the words a reader of that platform
+# would use for it.
+SURFACES: dict[Surface, str] = {
+    "console": "the console",
+    "switch-web": "Switch",
+    "slack": "Slack",
+    "mattermost": "Mattermost",
+    "discord": "Discord",
+    "teams": "Teams",
+    "telegram": "Telegram",
+}
+
+# An approval with nothing to choose from. The same defect as a form with no
+# questions in it (see `unanswerable`) and refused the same way: there is no
+# number to type, no word to say and nothing to press, so an instruction here
+# would be one the resolver goes on to refuse.
+NO_OPTIONS = "This card cannot be answered: it offers no options."
+
+
+def unanswerable(questions: list[Question]) -> str | None:
+    """What a card says instead of an instruction, when there is no answering it.
+
+    Two shapes reach this, and they are the same defect a question apart. A
+    question offering nothing to choose and taking no written answer cannot be
+    answered on any surface — there is no number to type and words are refused —
+    and because every question has to be answered for the answer to be sent at
+    all, one of them stops the whole form. A form with no questions in it has
+    nothing to say back either: there is no number, no word and no button, and
+    the grammar has no shape for an answer to nothing.
+
+    Both are the host's mistake rather than the reader's, so the card says so
+    where a person can see the session is stuck on it, instead of printing an
+    instruction the resolver would then refuse.
+
+    The contract permits both — `questions` has no minimum length in either
+    reader — and this is the wrong place to start forbidding them: rejecting
+    the event would cost the whole snapshot rather than one card, and the
+    Python reader would refuse a shape the TypeScript one accepts. So the
+    refusal is on the card, where it is visible and costs nothing else.
+
+    Plain words with no markup in them, so every platform's renderer reads the
+    same refusal rather than keeping its own to drift.
+    """
+    if not questions:
+        return "This card cannot be answered: it asks no questions."
+    stuck = [
+        position
+        for position, question in enumerate(questions, start=1)
+        if not question.options and not question.allow_custom_answer
+    ]
+    if not stuck:
+        return None
+    where = (
+        ""
+        if len(questions) == 1
+        else " on " + ", ".join(f"q{position}" for position in stuck)
+    )
+    return (
+        f"This card cannot be answered: nothing to choose{where}, "
+        "and no written answer allowed."
+    )
+
+
+def example_value(question: Question) -> str:
+    """The part of a typed answer that stands for one question.
+
+    Built from the question rather than fixed, because the shapes need
+    different things said: a list is answered by number, a list that takes
+    more than one by several, and a question with nothing to number is
+    answered in words.
+    """
+    if not question.options:
+        return '"your answer"'
+    if question.multi_select and len(question.options) > 1:
+        return "1,2"
+    return "1"
 
 
 # Every platform that puts controls on a message gives each one an id it hands

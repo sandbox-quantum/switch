@@ -56,19 +56,43 @@ class ActivitySlack(SlackAdapter):
                 return ref
         return None
 
-    async def mark_activity(self, channel, ref, *, working, force=False):
+    async def mark_activity(self, channel, ref, *, agent_name, working, force=False):
         if working:
             self.reactions.add(ref)
         else:
             self.reactions.discard(ref)
 
 
+class PerAgentSlack(ActivitySlack):
+    """A platform where each agent marks the message as its own bot.
+
+    Mattermost is the real one: an agent's `:eyes:` is added by that agent's
+    own bot account, so two agents working the same message leave two separate
+    marks. Slack's single bot leaves one between them, which is why this is a
+    capability and not the default.
+    """
+
+    activity_reactions_per_agent = True
+
+    def __init__(self):
+        super().__init__()
+        self.reactions = set()
+
+    async def mark_activity(self, channel, ref, *, agent_name, working, force=False):
+        if working:
+            self.reactions.add((agent_name, ref))
+        else:
+            self.reactions.discard((agent_name, ref))
+
+
 def activity(factory, platform):
     return SessionTurnActivity(platform, journal=ActivityJournal(factory, "bridge"))
 
 
-async def publish(renderer, status="running", *, tools=True):
-    turn = _turn(status).model_copy(update={"command_id": "message-demo"})
+async def publish(
+    renderer, status="running", *, tools=True, agent="Agent", command="message-demo"
+):
+    turn = _turn(status).model_copy(update={"command_id": command})
     return await renderer.publish(
         await _items() if tools else [],
         turn,
@@ -76,7 +100,7 @@ async def publish(renderer, status="running", *, tools=True):
         channel_id="channel-demo",
         thread_root_id="channel-demo:root",
         asked_on="channel-demo:question",
-        agent_name="Agent",
+        agent_name=agent,
         elapsed_seconds=12,
     )
 
@@ -442,6 +466,54 @@ async def test_failed_final_edit_releases_reaction_across_restart(session_factor
         "channel-demo:question",
         sessions=session_factory,
     )
+
+
+async def test_one_agents_finished_turn_leaves_another_agents_mark_alone(
+    session_factory,
+):
+    """Each agent's mark is its own bot's, so each has to come off on its own.
+
+    Two turns on one message is the shared case the journal exists for — but
+    scoped per agent, the other agent still working says nothing about whether
+    this one's mark should stay. Unscoped, the first agent to finish reads the
+    second's live anchor as a reason to hold, and its own eyes stay on the
+    message for good.
+
+    Both turns run under one session here because the journal keys rows by
+    session and command together; two commands is what makes two turns, and
+    which session they belong to is not what the scoping reads.
+    """
+    await setup(session_factory)
+    platform = PerAgentSlack()
+    await publish(activity(session_factory, platform))
+    await publish(activity(session_factory, platform), agent="Other", command="other")
+    assert platform.reactions == {
+        ("Agent", "channel-demo:question"),
+        ("Other", "channel-demo:question"),
+    }
+
+    await publish(activity(session_factory, platform), "completed")
+
+    assert platform.reactions == {("Other", "channel-demo:question")}
+
+
+async def test_a_shared_bots_single_mark_survives_one_of_two_turns_ending(
+    session_factory,
+):
+    """The inverse, and why the scoping is a capability rather than the rule.
+
+    Where every agent reacts as the same bot there is one mark between them,
+    and taking it off when the first turn ends would strip it from a turn that
+    is still running.
+    """
+    await setup(session_factory)
+    platform = ActivitySlack()
+    await publish(activity(session_factory, platform))
+    await publish(activity(session_factory, platform), agent="Other", command="other")
+
+    await publish(activity(session_factory, platform), "completed")
+
+    assert platform.reactions == {"channel-demo:question"}
 
 
 async def test_busy_journal_is_skipped_until_next_sweep(session_factory):

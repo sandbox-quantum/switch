@@ -301,6 +301,7 @@ def _cards(adapter: SlackAdapter, post: SessionRequestPost) -> SessionRequestCar
         bridge_id="bridge-1",
         posts=_JustThisRow(post),
         session_factory=cast(Any, _NoDatabase),
+        surface="slack",
     )
 
 

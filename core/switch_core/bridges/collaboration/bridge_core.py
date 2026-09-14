@@ -239,6 +239,7 @@ class BridgeCore:
             SessionRequestCards(
                 adapter,
                 bridge_id=bridge_id,
+                surface=bridge_type,
                 posts=session_request_post_store,
                 session_factory=session_factory,
             )
@@ -289,6 +290,7 @@ class BridgeCore:
             SessionRequestCards(
                 self._adapter,
                 bridge_id=self._bridge_id,
+                surface=self._bridge_type,
                 posts=posts,
                 session_factory=self._session_factory,
             ),

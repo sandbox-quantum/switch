@@ -162,6 +162,7 @@ class SlackConnectionConfig(BridgeConnectionConfig):
 class SlackAdapter(CollaborationAdapter):
     publishes_sdk_sessions: ClassVar[bool] = True
     separate_activity_log: ClassVar[bool] = True
+    separate_attention_slot: ClassVar[bool] = True
     supports_activity_reactions: ClassVar[bool] = True
     renders_legacy_runtime_state: ClassVar[bool] = False
 
@@ -1052,12 +1053,23 @@ class SlackAdapter(CollaborationAdapter):
             )
 
     async def mark_activity(
-        self, channel_id: str, message_ref: str, *, working: bool, force: bool = False
+        self,
+        channel_id: str,
+        message_ref: str,
+        *,
+        agent_name: str,
+        working: bool,
+        force: bool = False,
     ) -> None:
         """Mark the asking message, accepting either a timestamp or channel:ts.
 
         The SDK publication journal owns concurrent turn claims. ``force``
         reconciles Slack's reaction after a restart despite the local cache.
+
+        `agent_name` is not used: every agent speaks as the one app here, so
+        there is a single reaction on the message whoever is working behind
+        it, and adding it twice or removing one agent's while another is
+        still running would both be the same mark.
         """
         await self._mark_being_read(
             channel_id, self._thread_ts_of(message_ref), working=working, force=force

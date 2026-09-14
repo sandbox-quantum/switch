@@ -11,6 +11,7 @@ platform gets if it implements nothing beyond the port.
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -173,9 +174,11 @@ async def test_update_rich_falls_back_the_same_way() -> None:
 
 
 async def test_update_rich_does_not_raise_when_the_platform_only_swallows() -> None:
-    """Mattermost, Discord and (mostly) Telegram log their own update failure
-    and return normally — there is nothing here for the base to detect or
-    raise on, which is the existing runtime-status contract."""
+    """Discord and (mostly) Telegram log their own update failure and return
+    normally — there is nothing here for the base to detect or raise on, which
+    is the existing runtime-status contract. A platform that publishes SDK
+    sessions cannot leave it there and overrides this seam to raise; Mattermost
+    does, and its own tests cover it."""
     adapter = _BareAdapter()
     items = [_item(kind="assistant-message", title="", text="Looking now.")]
 
@@ -224,15 +227,41 @@ async def test_the_fallback_budget_survives_translate_outbound_expanding_it() ->
     assert "&amp;" in content
 
 
-async def test_a_request_card_has_no_neutral_form_yet() -> None:
-    """Stubbed on purpose (CHOO-2621): there is no off-Slack request renderer
-    to write one against yet. `NotImplementedError`, not `RichContentFailed`
-    — this is a missing implementation, not an ordinary posting failure."""
+async def test_a_request_card_falls_back_to_a_form_that_can_be_answered() -> None:
+    """A card the platform cannot draw as buttons still has to be answerable.
+
+    The typed-answer grammar is the whole fallback: without the handle and an
+    example of what to type, a reader is looking at a question with no way to
+    reply to it.
+    """
     adapter = _BareAdapter()
     content = await _request_card()
 
-    with pytest.raises(NotImplementedError):
-        await adapter.post_rich("C1", "agent", content)
+    ref = await adapter.post_rich("C1", "agent", content)
+
+    assert ref == "C1:1.0"
+    text = adapter.sent[0][2]
+    assert "`R1`" in text
+    assert "Reply with `R1 " in text
+    assert "1." in text
+    assert content.request.content.title in text
+
+
+async def test_a_settled_request_says_what_was_decided_rather_than_how_to_answer() -> (
+    None
+):
+    """The form is for answering. Once it is answered it is a record, and
+    telling a reader to reply to it would be inviting them to answer twice."""
+    adapter = _BareAdapter()
+    card = await _request_card()
+    content = replace(
+        card, request=card.request.model_copy(update={"state": "resolved"})
+    )
+
+    await adapter.post_rich("C1", "agent", content)
+
+    text = adapter.sent[0][2]
+    assert "Reply with" not in text
 
 
 def test_rich_fallback_limit_defaults_to_discords() -> None:

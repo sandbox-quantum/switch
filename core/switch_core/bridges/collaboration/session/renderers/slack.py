@@ -46,11 +46,19 @@ from switch_core.sessions.contract import (
     QuestionsContent,
     QuestionsResult,
     SnapshotRequest,
-    Surface,
     TurnUpsert,
 )
 
-from . import ANSWER_ACTION, RequestReference, turn_state
+from . import (
+    ANSWER_ACTION,
+    CLOSED,
+    NO_OPTIONS,
+    SURFACES,
+    RequestReference,
+    example_value,
+    turn_state,
+    unanswerable,
+)
 
 # Slack's own limits. Exceeding one is rejected at the API, so it is caught here
 # where the offending value can still be named.
@@ -164,27 +172,6 @@ _QUESTION_HEADINGS = {
     "submitting": "Questions",
     "resolved": "Questions answered",
     "closed": "Questions closed",
-}
-
-# Where the person who answered was, in the words a reader of that platform
-# would use for it.
-_SURFACES: dict[Surface, str] = {
-    "console": "the console",
-    "switch-web": "Switch",
-    "slack": "Slack",
-    "mattermost": "Mattermost",
-    "discord": "Discord",
-    "teams": "Teams",
-    "telegram": "Telegram",
-}
-
-# Every outcome but `answered`. Each says the request was not answered, because
-# a closed request that reads as answered is the one mistake this must not make.
-_CLOSED = {
-    "cancelled": "Cancelled before it was answered.",
-    "expired": "Expired before it was answered.",
-    "interrupted": "Interrupted before it was answered.",
-    "provider-error": "The provider failed before it was answered.",
 }
 
 
@@ -464,13 +451,10 @@ def _footer(
     """
     if request.state == "open":
         if not content.options:
-            # The same shape as a form with no questions in it, and refused the
-            # same way and for the same reasons: there is no number to type, no
-            # word to say and nothing to press, so an instruction here would be
-            # one the resolver goes on to refuse. Neither reader of the contract
-            # gives `options` a minimum length, and the schema is still the
-            # wrong place to add one — see `_unanswerable`.
-            return "This card cannot be answered: it offers no options."
+            # Neither reader of the contract gives `options` a minimum
+            # length, and the schema is still the wrong place to add one — see
+            # `unanswerable`, which refuses the same defect a question apart.
+            return NO_OPTIONS
         # A code span, because the reader is meant to copy this and quote marks
         # around it are not part of the answer: `"R42 1"` parses as a handle of
         # `"R42`, which resolves to nothing and changes nothing on the card.
@@ -487,7 +471,7 @@ def _footer(
         return "Closed without being answered."
     # A closed request reporting `answered` contradicts itself. Say both rather
     # than pick one, and never the word that would read as a decision.
-    summary = _CLOSED.get(
+    summary = CLOSED.get(
         settled.outcome, f"Closed, though the host called it {settled.outcome}."
     )
     if request.decided_by is not None:
@@ -519,7 +503,7 @@ def _answered(request: SnapshotRequest, content: ApprovalContent) -> str:
 
 def _actor(decided_by: DecidedBy) -> str:
     return (
-        f"{_fit(decided_by.actor_id, _MAX_ACTOR)} from {_SURFACES[decided_by.surface]}"
+        f"{_fit(decided_by.actor_id, _MAX_ACTOR)} from {SURFACES[decided_by.surface]}"
     )
 
 
@@ -756,7 +740,7 @@ def _questions_footer(
     budget that measures it.
     """
     if request.state == "open":
-        stuck = _unanswerable(content.questions)
+        stuck = unanswerable(content.questions)
         if stuck is not None:
             return stuck
         example = f"`{_example(reference.handle, content.questions)}`"
@@ -774,53 +758,12 @@ def _questions_footer(
     settled = request.result
     if settled is None:
         return "Closed without being answered."
-    summary = _CLOSED.get(
+    summary = CLOSED.get(
         settled.outcome, f"Closed, though the host called it {settled.outcome}."
     )
     if request.decided_by is not None:
         summary += f" Decided by {_actor(request.decided_by)}."
     return summary
-
-
-def _unanswerable(questions: list[Question]) -> str | None:
-    """What the card says instead of an instruction, when there is no answering it.
-
-    Two shapes reach this, and they are the same defect a question apart. A
-    question offering nothing to choose and taking no written answer cannot be
-    answered on any surface — there is no number to type and words are refused —
-    and because every question has to be answered for the answer to be sent at
-    all, one of them stops the whole form. A form with no questions in it has
-    nothing to say back either: there is no number, no word and no button, and
-    the grammar has no shape for an answer to nothing.
-
-    Both are the host's mistake rather than the reader's, so the card says so
-    where a person can see the session is stuck on it, instead of printing an
-    instruction the resolver would then refuse.
-
-    The contract permits both — `questions` has no minimum length in either
-    reader — and this is the wrong place to start forbidding them: rejecting
-    the event would cost the whole snapshot rather than one card, and the
-    Python reader would refuse a shape the TypeScript one accepts. So the
-    refusal is on the card, where it is visible and costs nothing else.
-    """
-    if not questions:
-        return "This card cannot be answered: it asks no questions."
-    stuck = [
-        position
-        for position, question in enumerate(questions, start=1)
-        if not question.options and not question.allow_custom_answer
-    ]
-    if not stuck:
-        return None
-    where = (
-        ""
-        if len(questions) == 1
-        else " on " + ", ".join(f"q{position}" for position in stuck)
-    )
-    return (
-        f"This card cannot be answered: nothing to choose{where}, "
-        "and no written answer allowed."
-    )
 
 
 def _example(handle: str, questions: list[Question]) -> str:
@@ -832,20 +775,12 @@ def _example(handle: str, questions: list[Question]) -> str:
     Only ever called for a form that has questions and every one of which can
     be answered, so there is always something for each part to say.
     """
-    values = [_example_value(question) for question in questions]
+    values = [example_value(question) for question in questions]
     if len(values) == 1:
         return f"{escape_mrkdwn(handle)} {values[0]}"
     return f"{escape_mrkdwn(handle)} " + "; ".join(
         f"q{position}={value}" for position, value in enumerate(values, start=1)
     )
-
-
-def _example_value(question: Question) -> str:
-    if not question.options:
-        return '"your answer"'
-    if question.multi_select and len(question.options) > 1:
-        return "1,2"
-    return "1"
 
 
 def _answered_questions(request: SnapshotRequest, content: QuestionsContent) -> str:

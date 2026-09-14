@@ -74,9 +74,7 @@ class _Platform:
 
 def _adapter() -> tuple[TelegramAdapter, _Platform]:
     adapter = TelegramAdapter(
-        config=TelegramConnectionConfig(
-            bot_token="test", bot_username="test_bot"
-        )
+        config=TelegramConnectionConfig(bot_token="test", bot_username="test_bot")
     )
     adapter._working_msg[KEY] = LiveRuntimeIndicator(
         message_ref="msg-1",

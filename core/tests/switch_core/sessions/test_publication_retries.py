@@ -55,6 +55,7 @@ def cards_for(factory, platform):
     return SessionRequestCards(
         platform,
         bridge_id="bridge",
+        surface="slack",
         posts=SessionRequestPostStore(),
         session_factory=factory,
     )

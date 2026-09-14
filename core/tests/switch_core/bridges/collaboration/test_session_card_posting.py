@@ -118,6 +118,7 @@ async def _cards(
     cards = SessionRequestCards(
         _adapter(client),
         bridge_id=bridge_id,
+        surface="slack",
         posts=SessionRequestPostStore(),
         session_factory=session_factory,
     )
@@ -134,6 +135,7 @@ async def _demo(
     cards = SessionRequestCards(
         adapter,
         bridge_id=bridge_id,
+        surface="slack",
         posts=SessionRequestPostStore(),
         session_factory=session_factory,
     )
@@ -383,6 +385,7 @@ async def test_a_freed_handle_is_the_one_the_next_card_takes(
     working = SessionRequestCards(
         _adapter(client),
         bridge_id=bridge_id,
+        surface="slack",
         posts=SessionRequestPostStore(),
         session_factory=session_factory,
     )
@@ -444,6 +447,7 @@ async def test_losing_the_race_is_reported_as_the_repeat_it_is(
     racing = SessionRequestCards(
         _adapter(client),
         bridge_id=bridge_id,
+        surface="slack",
         posts=_RivalPoster(
             session_factory,
             bridge_id=bridge_id,

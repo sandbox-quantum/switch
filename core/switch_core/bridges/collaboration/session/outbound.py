@@ -155,8 +155,14 @@ class SessionTurnActivity:
         )
         self._adapter = adapter
         self._separate_activity_log = getattr(adapter, "separate_activity_log", False)
+        self._separate_attention_slot = getattr(
+            adapter, "separate_attention_slot", False
+        )
+        self._reactions_per_agent = getattr(
+            adapter, "activity_reactions_per_agent", False
+        )
         self._anchors: OrderedDict[tuple[str, str], _Anchor] = OrderedDict()
-        self._thread_turns: dict[tuple[str, str], set[tuple[str, str]]] = {}
+        self._thread_turns: dict[tuple[str, str, str], set[tuple[str, str]]] = {}
         self._attention: OrderedDict[tuple[str, str], tuple[str, str]] = OrderedDict()
 
     @property
@@ -197,7 +203,7 @@ class SessionTurnActivity:
                 elapsed_seconds=elapsed_seconds,
                 session_url=session_url,
             )
-            if self._separate_activity_log:
+            if self._separate_attention_slot:
                 await self._refresh_attention(
                     session_id,
                     channel_id,
@@ -652,8 +658,7 @@ class SessionTurnActivity:
         """
         if anchor.reaction_ref is None:
             return
-        thread_key = (anchor.channel_id, anchor.reaction_ref)
-        turns = self._thread_turns.setdefault(thread_key, set())
+        turns = self._thread_turns.setdefault(self._thread_key(anchor), set())
         first = not turns
         if not first or await self._mark_thread(anchor, working=True):
             turns.add(key)
@@ -676,7 +681,7 @@ class SessionTurnActivity:
         """
         if anchor.reaction_ref is None:
             return True
-        thread_key = (anchor.channel_id, anchor.reaction_ref)
+        thread_key = self._thread_key(anchor)
         turns = self._thread_turns.get(thread_key)
         if turns is not None:
             turns.discard(key)
@@ -688,10 +693,25 @@ class SessionTurnActivity:
             key,
             anchor.channel_id,
             anchor.reaction_ref,
+            agent_name=anchor.agent_name if self._reactions_per_agent else None,
             sessions=record.sessions if record else self._journal.sessions,
         ):
             return True
         return await self._mark_thread(anchor, working=False)
+
+    def _thread_key(self, anchor: _Anchor) -> tuple[str, str, str]:
+        """Who is holding what, keyed by whose reaction it actually is.
+
+        Where each agent reacts as its own bot the marks are independent, so
+        one agent finishing must not read another's claim as its own and leave
+        its own eyes on the message for good. Where every agent shares a bot
+        there is one reaction between them, and scoping the key per agent
+        would have the second agent's claim try to add a reaction that is
+        already there and the first agent's end remove one the second still
+        wants.
+        """
+        agent = anchor.agent_name if self._reactions_per_agent else ""
+        return (anchor.channel_id, anchor.reaction_ref or "", agent)
 
     async def _mark_thread(self, anchor: _Anchor, *, working: bool) -> bool:
         """Put `:eyes:` on the message that actually asked, or take it off.
@@ -710,6 +730,7 @@ class SessionTurnActivity:
             await self._adapter.mark_activity(
                 anchor.channel_id,
                 anchor.reaction_ref,
+                agent_name=anchor.agent_name,
                 working=working,
                 **({"force": True} if self._journal else {}),
             )
@@ -752,14 +773,26 @@ class SessionRequestCards:
         adapter: CollaborationAdapter,
         *,
         bridge_id: str,
+        surface: str,
         posts: SessionRequestPostStore,
         session_factory: async_sessionmaker[AsyncSession],
     ) -> None:
         self._adapter = adapter
         self._bridge_id = bridge_id
+        self._surface = surface
         self._posts = posts
         self._session_factory = session_factory
         self._reported_edit_failures: dict[str, tuple[int, str]] = {}
+
+    @property
+    def surface(self) -> str:
+        """Which platform these cards are posted on.
+
+        Read by the publisher rather than passed to it separately: the cards
+        and the activity it drives are one bridge's, and two places to say
+        which one is two places to say it differently.
+        """
+        return self._surface
 
     async def post(
         self,
@@ -999,8 +1032,12 @@ class SessionRequestCards:
         seconds until something moves it on.
         """
         reference = RequestReference(token=post.token, handle=post.handle)
+        # Only an answer given on this very platform has a handle this channel
+        # would recognise. Someone who answered from the console may well have
+        # a claimed identity here too, but naming them by it would say they
+        # answered where they did not.
         responder_external_id = None
-        if request.decided_by and request.decided_by.surface == "slack":
+        if request.decided_by and request.decided_by.surface == self._surface:
             async with self._session_factory() as db:
                 responder_external_id = await db.scalar(
                     select(ExternalUser.external_user_id)
