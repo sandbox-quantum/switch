@@ -750,6 +750,50 @@ async def test_a_card_that_cannot_be_posted_is_not_retried_every_cycle(
     assert "waiting out a retry backoff" in caplog.text
 
 
+async def test_a_destination_that_never_takes_the_card_is_given_up_on(
+    session_factory, monkeypatch, caplog
+):
+    """The widening wait bounds how often a refused post costs a reservation
+    and a released handle. On its own it never ends: a deleted channel is
+    posted to every ten minutes for as long as the request is open, and the
+    session it belongs to reports the same failure over whatever is new. Once
+    the wait has stretched as far as it goes the card is given up on, with one
+    record of where the request can still be answered."""
+    clock = 0.0
+
+    def fake_monotonic() -> float:
+        return clock
+
+    monkeypatch.setattr(publication.time, "monotonic", fake_monotonic)
+    service, epoch = await setup(session_factory)
+    await opened(service, epoch)
+    platform = RecoverablePlatform()
+    refused = AsyncMock(side_effect=RichContentFailed("no such channel", text="gone"))
+    monkeypatch.setattr(platform, "post_rich", refused)
+    publisher = SessionPublisher(
+        session_factory, "bridge", cards_for(session_factory, platform)
+    )
+
+    for _ in range(12):
+        clock += _RecoveryBackoff._MAX + 1.0
+        await publisher.publish_pending()
+
+    # Doubling from five seconds, the seventh attempt is the one that stretches
+    # the wait to the ten-minute cap, and its own refusal is the last.
+    assert refused.await_count == 7
+    assert caplog.text.count("Giving up posting the card") == 1
+    async with session_factory() as db:
+        assert (await db.scalars(select(SessionRequestPost))).all() == []
+
+    caplog.clear()
+    clock += _RecoveryBackoff._MAX + 1.0
+    await publisher.publish_pending()
+    assert refused.await_count == 7
+    # Nor is it still counted against the session, which would have it report
+    # a failure that has been dealt with as well as it can be on every cycle.
+    assert "card publication failed" not in caplog.text
+
+
 # ── A confirmed card is only redrawn when something about it changed ────────
 
 

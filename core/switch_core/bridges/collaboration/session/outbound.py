@@ -163,6 +163,16 @@ class CardAlreadyPosted(CardNotPosted):
     """
 
 
+class CardRefused(CardNotPosted):
+    """The platform would not take the card, so its handle was released.
+
+    A subclass because nobody was asked either way. What the separate type
+    adds is that the destination itself answered: the reservation is gone and
+    a later attempt starts again from nothing, which is what lets a caller
+    bound how many times it is worth starting.
+    """
+
+
 class ActivityAbandoned(CardNotPosted):
     """A turn's activity slot that will never be settled, whatever happens.
 
@@ -1257,6 +1267,7 @@ class SessionRequestCards:
         self._session_factory = session_factory
         self._reported_edit_failures: dict[str, tuple[int, str]] = {}
         self._noted_unconfirmed: set[str] = set()
+        self._undeliverable: set[str] = set()
 
     @property
     def surface(self) -> str:
@@ -1393,7 +1404,7 @@ class SessionRequestCards:
             except RichContentFailed as error:
                 await session.delete(post)
                 await session.commit()
-                raise CardNotPosted(
+                raise CardRefused(
                     f"Could not post the card for request {request.request_id} "
                     f"in channel {channel_id}: {error}. Nobody has been asked, "
                     f"and the handle {post.handle} was released."
@@ -1463,6 +1474,57 @@ class SessionRequestCards:
             post.external_channel_id,
             self._surface,
             post.request_id,
+        )
+
+    def undeliverable(self, attempt: str) -> bool:
+        """Whether this process has given up posting this request's card."""
+        return attempt in self._undeliverable
+
+    def note_undeliverable(
+        self,
+        attempt: str,
+        *,
+        request_id: str,
+        channel_id: str,
+        console_url: str | None,
+        refusal: BaseException,
+    ) -> None:
+        """Stop posting a card the destination has refused for long enough.
+
+        A channel that was deleted, or that this bot has been put out of,
+        refuses the post every time it is tried. Stretching the wait between
+        tries bounds how often that costs a reservation and a released handle;
+        it does not end it, and a request nobody can be asked stays an
+        unfinished publication for as long as it is open, so the session it
+        belongs to never settles and every cycle reports the same failure over
+        whatever is new.
+
+        So the attempts end, with the one record of why. Nothing is said in
+        the channel: there is no reachable channel to say it in, and the notice
+        does not go somewhere else of this module's choosing. The request stays
+        open and answerable in Console, which is the route that does not depend
+        on the destination existing.
+
+        Memory, not the row — the reservation was released with the refusal, so
+        there is no row to stamp. A restart tries again, which is the right
+        lifetime for it: nothing here can tell a channel that is gone from one
+        that will be back, and a process that has just started has no grounds
+        for the giving up the last one did.
+        """
+        if attempt in self._undeliverable:
+            return
+        self._undeliverable.add(attempt)
+        console = console_url or "Switch Console"
+        logger.error(
+            "Giving up posting the card for request %s in %s channel %s: %s. "
+            "Nobody has been asked there, and no further attempt will be made "
+            "until this bridge restarts. The request is still open and can be "
+            "answered at %s.",
+            request_id,
+            self._surface,
+            channel_id,
+            refusal,
+            console,
         )
 
     async def disclose_unconfirmed(

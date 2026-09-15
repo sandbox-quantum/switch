@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.bridges.collaboration.adapter import RichContentThrottled
 from switch_core.bridges.collaboration.session.outbound import (
+    CardRefused,
     SessionRequestCards,
     SessionTurnActivity,
 )
@@ -44,6 +45,10 @@ logger = logging.getLogger(__name__)
 
 def _always_recover(_token: str) -> bool:
     return True
+
+
+def _never_spent(_token: str) -> bool:
+    return False
 
 
 def _ignore_delay(_token: str, _delay: float) -> None:
@@ -97,6 +102,7 @@ async def refresh_cards(
     recovery_succeeded: Callable[[str], None] = _ignore_recovery,
     post_allowed: Callable[[str], bool] = _always_recover,
     post_succeeded: Callable[[str], None] = _ignore_recovery,
+    post_spent: Callable[[str], bool] = _never_spent,
     refresh_needed: Callable[[str, tuple[int, str]], bool] = _always_refresh,
     refreshed: Callable[[str, tuple[int, str]], None] = _ignore_refresh,
 ) -> None:
@@ -115,6 +121,13 @@ async def refresh_cards(
     still picked up and one that does not stops drowning the log. It does not
     decide what the channel is told: that is the platform's disclosure policy
     and is deliberately not made here.
+
+    `post_spent` says that wait has stretched as far as it goes, and is where a
+    destination stops being treated as one that might come back: the card is
+    given up on, `cards.note_undeliverable` makes the single record of it, and
+    the request is skipped from then on rather than counted as a failure of
+    this session's publication on every later cycle. A caller that passes
+    nothing keeps the old behaviour — every refusal raised, forever.
 
     `refresh_needed` gates redrawing an already-confirmed card, per token and
     `(revision, state)`, and `refreshed` is told once one lands. Both parts of
@@ -260,22 +273,36 @@ async def refresh_cards(
                 if request.state != "open":
                     continue
                 attempt = f"{session_id}:{request.request_id}"
+                if cards.undeliverable(attempt):
+                    continue
                 if not post_allowed(attempt):
                     backed_off += 1
                     continue
-                new_post = await cards.post(
-                    request,
-                    channel_id=channel_id,
-                    thread_root_id=thread_id,
-                    asked_at_root=asked_at_root,
-                    room_id=room_id,
-                    session_id=session_id,
-                    epoch=epoch,
-                    agent_name=agent_name,
-                    notify_external_id=recipient,
-                    notify_unreachable=unreachable,
-                    unavailable_reason=unavailable_reason,
-                )
+                try:
+                    new_post = await cards.post(
+                        request,
+                        channel_id=channel_id,
+                        thread_root_id=thread_id,
+                        asked_at_root=asked_at_root,
+                        room_id=room_id,
+                        session_id=session_id,
+                        epoch=epoch,
+                        agent_name=agent_name,
+                        notify_external_id=recipient,
+                        notify_unreachable=unreachable,
+                        unavailable_reason=unavailable_reason,
+                    )
+                except CardRefused as refusal:
+                    if not post_spent(attempt):
+                        raise
+                    cards.note_undeliverable(
+                        attempt,
+                        request_id=request.request_id,
+                        channel_id=channel_id,
+                        console_url=console_url,
+                        refusal=refusal,
+                    )
+                    continue
                 post_succeeded(attempt)
                 refreshed(new_post.token, state)
             elif post.external_post_id == post.token:
@@ -790,6 +817,17 @@ class _RecoveryBackoff:
         self._interval[token] = min(interval * 2, self._max_interval)
         return True
 
+    def spent(self, token: str) -> bool:
+        """Whether this key's waits have stretched as far as they go.
+
+        True once the interval has doubled its way to `_MAX`, which takes
+        several failed attempts over several minutes. A caller that has a
+        terminal disposition for the thing it keeps retrying reads this to
+        decide the destination is not coming back inside a wait; one that has
+        none ignores it and keeps trying at the capped interval.
+        """
+        return self._interval.get(token, self._MIN) >= self._max_interval
+
     def delay(self, token: str, seconds: float) -> None:
         self._next_attempt[token] = time.monotonic() + seconds
         self._interval.pop(token, None)
@@ -1042,6 +1080,7 @@ class SessionPublisher:
                         recovery_succeeded=self._recovery.succeeded,
                         post_allowed=self._card_post.allowed,
                         post_succeeded=self._card_post.succeeded,
+                        post_spent=self._card_post.spent,
                         refresh_needed=self._redraw.needed,
                         refreshed=self._redraw.drawn,
                     )
