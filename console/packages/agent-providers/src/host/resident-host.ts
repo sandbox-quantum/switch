@@ -148,6 +148,12 @@ export function assertSessionEnvironment(
     throw new Error(
       `Session ${context.sessionId} prepared a provider environment for session ${env.SWITCHDASH_SESSION_ID}.`
     );
+  // What pins the session's Switch tools to one room. A config with no execution
+  // credentials carries no Switch tools and so no pin.
+  if (env.SWITCH_BOUND_ROOM_ID !== undefined && env.SWITCH_BOUND_ROOM_ID !== context.roomId)
+    throw new Error(
+      `Session ${context.sessionId} prepared a provider environment bound to room ${env.SWITCH_BOUND_ROOM_ID} rather than ${context.roomId}.`
+    );
   for (const [key, baseline] of Object.entries(HOST_ENVIRONMENT_BASELINE))
     if (process.env[key] !== baseline)
       throw new Error(

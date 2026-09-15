@@ -73,6 +73,7 @@ function configFor(input: {
         env: {
           SWITCH_CONNECTION_ID: input.connectionId,
           SWITCHDASH_SESSION_ID: input.sessionId,
+          SWITCH_BOUND_ROOM_ID: input.roomId,
         },
         mcpServers: {},
       },
@@ -219,10 +220,12 @@ it('gives every room session its own immutable provider environment', async () =
   expect(runner.envs.get('session-a')).toEqual({
     SWITCH_CONNECTION_ID: 'connection-a',
     SWITCHDASH_SESSION_ID: 'session-a',
+    SWITCH_BOUND_ROOM_ID: 'room-a',
   });
   expect(runner.envs.get('session-b')).toEqual({
     SWITCH_CONNECTION_ID: 'connection-b',
     SWITCHDASH_SESSION_ID: 'session-b',
+    SWITCH_BOUND_ROOM_ID: 'room-b',
   });
   // Running two sessions changed nothing on the host's own environment.
   expect({
@@ -237,6 +240,14 @@ it('gives every room session its own immutable provider environment', async () =
   expect(() =>
     assertSessionEnvironment(context, { SWITCH_CONNECTION_ID: 'connection-b' }, 'session-a')
   ).toThrow('rather than connection-a');
+  // A session pinned to another room can never reach a provider.
+  expect(() =>
+    assertSessionEnvironment(
+      context,
+      { SWITCH_CONNECTION_ID: 'connection-a', SWITCH_BOUND_ROOM_ID: 'room-b' },
+      'session-a'
+    )
+  ).toThrow('bound to room room-b rather than room-a');
   await host.stopAll();
 });
 
