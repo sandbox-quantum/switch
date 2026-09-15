@@ -1035,7 +1035,10 @@ async def test_a_deleted_message_is_not_a_failed_removal() -> None:
     await adapter.mark_activity(
         str(CHANNEL_ID), ref, agent_name="my-agent", mark="working", on=True
     )
-    assert channel.reactions[-1] == ("👀", True)
+    # The whole list, not just its tail: the failed removal appends nothing, so
+    # a tail check passes on the first add alone and would not notice the
+    # second being suppressed by a record still claiming the mark is present.
+    assert channel.reactions == [("👀", True), ("👀", True)]
 
 
 async def test_a_transient_reaction_failure_raises_so_the_publisher_retries() -> None:
