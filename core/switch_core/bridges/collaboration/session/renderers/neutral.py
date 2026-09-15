@@ -93,6 +93,11 @@ _OUTCOME = {
     "declined": "⊘",
 }
 
+# How much of one tool call's title a disclosed line keeps. A title is host
+# text: long enough to recognise the call, short enough that five of them are
+# still a glance rather than a page.
+_DETAIL_TITLE = 120
+
 _OUTCOME_WORDS = {
     "in-progress": "running",
     "completed": "done",
@@ -214,6 +219,47 @@ def turn_status(
         lines.append(line)
         spent += len(line) + 1
     return _mentioned(mention, "\n".join(lines))
+
+
+def activity_detail(
+    items: list[Item],
+    *,
+    escape: Callable[[str], str],
+    limit: int,
+    lines: int,
+) -> list[str]:
+    """The last few tool calls as their own lines, oldest first.
+
+    What a platform puts behind a disclosure it already has — Telegram's
+    expandable quotation — rather than in the status itself, which stays the
+    three compact lines `turn_status` draws whether or not anything expands.
+    The caller supplies the wrapper; this decides what is safe to say inside
+    it and how much of it there is room for.
+
+    Only the title and how the call went. Arguments and output are host text
+    with no bound worth trusting, and a status is not a transcript: five
+    labels say what the turn has been doing, and a count says there was more.
+    Lines are dropped from the oldest end when the budget is short, because
+    the reader opening this wants to know what it is doing now.
+
+    `limit` counts the escaped text and the newlines between the lines, not
+    whatever the caller wraps around them.
+    """
+    did = [item for item in items if item.kind == "tool-activity"]
+    if not did or limit <= 0 or lines <= 0:
+        return []
+    shown = did[-lines:]
+    per = max(1, min(_DETAIL_TITLE, limit // len(shown)))
+    drawn = [
+        f"{_OUTCOME[item.status]} {_fit(item.title or 'Tool call', per, escape=escape)}"
+        for item in shown
+    ]
+    hidden = len(did) - len(shown)
+    if hidden:
+        drawn.insert(0, f"…{hidden} earlier, not shown.")
+    while drawn and sum(len(line) + 1 for line in drawn) - 1 > limit:
+        drawn.pop(0)
+    return drawn
 
 
 def _doing(

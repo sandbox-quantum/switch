@@ -167,6 +167,8 @@ class _FakeBot:
         self.send_album_error: Exception | None = None
         # Set to an exception to make the next edit_message_text raise it once.
         self.edit_error: Exception | None = None
+        # Set to an exception to make the next delete_message raise it once.
+        self.delete_error: Exception | None = None
 
     def _mint(self, chat_id: Any) -> _FakeSentMessage:
         self._next_id += 1
@@ -208,6 +210,10 @@ class _FakeBot:
         self.edits.append(kwargs)
 
     async def delete_message(self, **kwargs: Any) -> None:
+        if self.delete_error is not None:
+            error = self.delete_error
+            self.delete_error = None
+            raise error
         self.deletes.append(kwargs)
 
     async def send_chat_action(self, **kwargs: Any) -> None:

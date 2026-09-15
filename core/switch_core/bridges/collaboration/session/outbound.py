@@ -248,18 +248,7 @@ class SessionTurnActivity:
         notify_unreachable: bool = False,
         error_summary: str | None = None,
     ) -> bool:
-        async def draw() -> bool:
-            drawn = await self._publish(
-                items,
-                turn,
-                session_id=session_id,
-                channel_id=channel_id,
-                thread_root_id=thread_root_id,
-                asked_on=asked_on,
-                agent_name=agent_name,
-                elapsed_seconds=elapsed_seconds,
-                session_url=session_url,
-            )
+        async def attend() -> None:
             if self._separate_attention_slot:
                 await self._refresh_attention(
                     session_id,
@@ -271,6 +260,29 @@ class SessionTurnActivity:
                     notify_unreachable,
                     error_summary,
                 )
+
+        async def draw() -> bool:
+            try:
+                drawn = await self._publish(
+                    items,
+                    turn,
+                    session_id=session_id,
+                    channel_id=channel_id,
+                    thread_root_id=thread_root_id,
+                    asked_on=asked_on,
+                    agent_name=agent_name,
+                    elapsed_seconds=elapsed_seconds,
+                    session_url=session_url,
+                )
+            except CardNotPosted:
+                # A status whose delivery cannot be resolved keeps its
+                # reservation for good where the platform cannot search for it.
+                # Attention is a message of its own and the only way this turn
+                # has of saying something went wrong, so it goes out rather
+                # than waiting behind a status nobody can settle.
+                await attend()
+                raise
+            await attend()
             return drawn
 
         if self._journal is None:
@@ -400,23 +412,6 @@ class SessionTurnActivity:
         if record is None:
             return await self._adapter.post_rich(channel, agent, content, thread)
         delivery = record.data.get(slot)
-        if delivery and not delivery.get("ref") and not self._recovers_posts:
-            # Nothing will ever find this one, so holding the reservation holds
-            # the turn's only voice shut: no status, and no attention message
-            # when something goes wrong later. A second status message is worth
-            # more than a permanently silent turn, so the reservation is given
-            # up and this slot starts again.
-            logger.warning(
-                "Activity delivery for %s in %s was never confirmed and this "
-                "platform cannot search for it. Posting a new %s message, which "
-                "may duplicate one already in the channel.",
-                delivery["token"],
-                delivery["channel"],
-                slot,
-            )
-            del record.data[slot]
-            await record.save()
-            delivery = None
         if delivery:
             saved_ref = delivery.get("ref")
             if saved_ref:
@@ -425,6 +420,18 @@ class SessionTurnActivity:
                         "Activity journal message reference must be a string."
                     )
                 return saved_ref
+            if not self._recovers_posts:
+                # The send may well have landed; nothing here can find out.
+                # Posting again on every cycle would put one unwanted copy in
+                # the chat per cycle, so the reservation is kept and this slot
+                # stays as it is. The attention message is published
+                # separately and is not held up by it.
+                raise CardNotPosted(
+                    f"The {slot} message sent as {delivery['token']} in "
+                    f"{delivery['channel']} was never acknowledged, and this "
+                    "platform cannot search for it. Keeping its reservation "
+                    "rather than posting a second one that may duplicate it."
+                )
             ref = await self._adapter.find_request_card(
                 delivery["channel"],
                 delivery["thread"],

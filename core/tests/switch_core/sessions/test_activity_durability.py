@@ -8,7 +8,10 @@ from mattermostdriver.exceptions import NotEnoughPermissions
 
 from switch_core.bridges.collaboration.adapter import RichContentThrottled
 from switch_core.bridges.collaboration.session.activity_journal import ActivityJournal
-from switch_core.bridges.collaboration.session.outbound import SessionTurnActivity
+from switch_core.bridges.collaboration.session.outbound import (
+    CardNotPosted,
+    SessionTurnActivity,
+)
 from switch_core.bridges.collaboration.slack.adapter import (
     SlackAdapter,
     SlackConnectionConfig,
@@ -304,8 +307,6 @@ async def test_existing_older_turn_is_finished_after_restart_without_replaying_h
 
 
 async def test_unknown_delivery_without_a_match_never_blindly_reposts(session_factory):
-    from switch_core.bridges.collaboration.session.outbound import CardNotPosted
-
     await setup(session_factory)
     platform = ActivitySlack()
     platform.fail_after_post = True
@@ -317,29 +318,29 @@ async def test_unknown_delivery_without_a_match_never_blindly_reposts(session_fa
     assert platform.post_count == 1
 
 
-async def test_a_turn_a_platform_cannot_search_starts_again_rather_than_going_quiet(
-    session_factory, caplog
+async def test_a_status_a_platform_cannot_search_is_never_posted_a_second_time(
+    session_factory,
 ):
     """The other half of the test above, for a platform with nowhere to look.
 
     There the reservation is held because the lookup may yet find the message.
-    Here no lookup exists, so holding it means this turn never says anything
-    again — not its status, and not the attention message that goes out when
-    something has gone wrong. A second status message in the channel is a
-    smaller fault than a turn that silently stops reporting, and the warning
-    is what makes the trade visible rather than invisible.
+    Here no lookup exists, so the answer is the same and it is permanent: the
+    send probably landed, nothing can confirm it, and posting again — on this
+    cycle or on any of the hundreds after it — puts one more copy of the same
+    status in the chat each time. The reservation stays and the turn keeps the
+    status it may already have.
     """
     await setup(session_factory)
     platform = UnsearchablePlatform()
     platform.fail_after_post = True
     with pytest.raises(TimeoutError):
         await publish(activity(session_factory, platform))
-    platform.messages.clear()
-    assert await publish(activity(session_factory, platform))
-    # A fresh status to replace the one nothing can find, and the tool log
-    # that the abandoned turn never got as far as posting.
-    assert len(platform.messages) == 2
-    assert "may duplicate" in caplog.text
+    assert platform.post_count == 1
+
+    for _ in range(3):
+        with pytest.raises(CardNotPosted):
+            await publish(activity(session_factory, platform))
+    assert platform.post_count == 1
 
 
 async def test_an_unconfirmed_status_does_not_swallow_the_attention_message(
@@ -347,25 +348,18 @@ async def test_an_unconfirmed_status_does_not_swallow_the_attention_message(
 ):
     """A problem still reaches the channel after a status delivery is lost.
 
-    The attention message has its own durable slot, and it is posted rather
-    than edited precisely so it can notify. If an unconfirmed reservation in
-    that slot could never be given up, the one message whose whole job is to
-    say "somebody has to act on this" would be the one guaranteed never to
-    arrive.
+    The attention message is a message of its own, posted rather than edited
+    precisely so it can notify. A status nobody can confirm keeps its
+    reservation for good on a platform that cannot search, so an attention
+    message published behind it would be the one message whose whole job is to
+    say "somebody has to act on this" and which is guaranteed never to arrive.
     """
     await setup(session_factory)
     platform = UnsearchablePlatform()
-    original_post = platform.post_rich
+    platform.fail_after_post = True
 
-    async def lose_the_attention_post(channel, agent, content, thread):
-        if content.status_only:
-            platform.fail_after_post = True
-        return await original_post(channel, agent, content, thread)
-
-    platform.post_rich = lose_the_attention_post
-    renderer = activity(session_factory, platform)
-    with pytest.raises(TimeoutError):
-        await renderer.publish(
+    async def report(renderer):
+        return await renderer.publish(
             [],
             _turn("running").model_copy(update={"command_id": "message-demo"}),
             session_id="session-demo",
@@ -376,19 +370,13 @@ async def test_an_unconfirmed_status_does_not_swallow_the_attention_message(
             elapsed_seconds=12,
             error_summary="The host went away.",
         )
-    platform.post_rich = original_post
+
+    with pytest.raises(TimeoutError):
+        await report(activity(session_factory, platform))
     platform.messages.clear()
-    assert await activity(session_factory, platform).publish(
-        [],
-        _turn("running").model_copy(update={"command_id": "message-demo"}),
-        session_id="session-demo",
-        channel_id="channel-demo",
-        thread_root_id="channel-demo:root",
-        asked_on="channel-demo:question",
-        agent_name="Agent",
-        elapsed_seconds=12,
-        error_summary="The host went away.",
-    )
+
+    with pytest.raises(CardNotPosted):
+        await report(activity(session_factory, platform))
     assert any(
         "The host went away." in str(message) for message in platform.messages.values()
     )

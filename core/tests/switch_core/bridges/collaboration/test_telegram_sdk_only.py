@@ -291,7 +291,7 @@ async def test_the_chat_is_asked_once_rather_than_on_every_publication() -> None
     _bot(adapter).get_chat = counted  # type: ignore[method-assign]
 
     await adapter.post_rich(CHANNEL, "my-agent", _activity(), TOPIC_ID)
-    await adapter.post_rich(CHANNEL, "my-agent", _activity(), TOPIC_ID)
+    await adapter.post_rich(CHANNEL, "my-agent", await _card(), TOPIC_ID)
 
     assert len(calls) == 1
 
@@ -421,10 +421,10 @@ async def test_an_edit_telegram_calls_unchanged_is_not_a_failure() -> None:
     """ "message is not modified" means the chat already shows what was asked
     for, which is the outcome the caller wanted."""
     adapter = _adapter()
-    ref = await adapter.post_rich(CHANNEL, "my-agent", _activity(), None)
+    ref = await adapter.post_rich(CHANNEL, "my-agent", await _card(), None)
     _bot(adapter).edit_error = BadRequest("Message is not modified")
 
-    await adapter.update_rich(CHANNEL, "my-agent", ref, _ended())
+    await adapter.update_rich(CHANNEL, "my-agent", ref, await _card())
 
 
 async def test_a_publication_is_never_retried_as_stripped_plain_text() -> None:
@@ -476,13 +476,13 @@ async def test_progress_arriving_faster_than_the_chat_can_take_it_waits() -> Non
 
 async def test_the_end_of_a_turn_is_never_held_back() -> None:
     """A reader waiting on the outcome is waiting on precisely the thing the
-    pacing would delay."""
+    pacing would delay — and here the outcome is the status going away."""
     adapter = _adapter()
     ref = await adapter.post_rich(CHANNEL, "my-agent", _activity(), None)
 
     await adapter.update_rich(CHANNEL, "my-agent", ref, _ended())
 
-    assert len(_bot(adapter).edits) == 1
+    assert len(_bot(adapter).deletes) == 1
 
 
 async def test_a_problem_somebody_has_to_act_on_is_never_held_back() -> None:
@@ -505,6 +505,238 @@ async def test_a_card_is_never_held_back() -> None:
     await adapter.update_rich(CHANNEL, "my-agent", ref, await _card())
 
     assert len(_bot(adapter).edits) == 1
+
+
+async def test_two_agents_publishing_in_one_chat_share_its_budget() -> None:
+    """Telegram's limits are the chat's, and so is the 429 that follows from
+    overspending them. Metering each message on its own would let five agents
+    in one group send five times what one agent can."""
+    adapter = _adapter()
+    await adapter.post_rich(CHANNEL, "one", _activity(), None)
+
+    with pytest.raises(RichContentThrottled):
+        await adapter.post_rich(CHANNEL, "two", _activity(), None)
+    assert len(_bot(adapter).messages) == 1
+
+
+async def test_one_agents_redraw_paces_the_next_agents() -> None:
+    adapter = _adapter()
+    await adapter.update_rich(CHANNEL, "one", f"{CHAT_ID}:11", _activity())
+
+    with pytest.raises(RichContentThrottled):
+        await adapter.update_rich(CHANNEL, "two", f"{CHAT_ID}:12", _activity())
+    assert len(_bot(adapter).edits) == 1
+
+
+async def test_another_chat_is_not_held_back_by_this_one() -> None:
+    adapter = _adapter()
+    await adapter.post_rich(CHANNEL, "one", _activity(), None)
+
+    await adapter.post_rich("-1002000000002", "one", _activity(), None)
+
+    assert len(_bot(adapter).messages) == 2
+
+
+# ── A finished turn does not stay on the screen ──────────────────────────────
+
+
+async def test_a_finished_status_is_taken_out_of_the_chat() -> None:
+    """A Telegram chat is the conversation itself: there is no side channel a
+    completed status can sit quietly in, and the legacy indicator was deleted
+    for that reason. One permanent "Worked for 12s" per turn is the clutter
+    this platform's own rule exists to avoid."""
+    adapter = _adapter()
+    ref = await adapter.post_rich(CHANNEL, "my-agent", _activity(), None)
+
+    await adapter.update_rich(CHANNEL, "my-agent", ref, _ended())
+
+    assert _bot(adapter).deletes[0]["message_id"] == int(ref.split(":")[1])
+    assert _bot(adapter).edits == []
+
+
+async def test_a_finished_status_in_a_forum_topic_goes_the_same_way() -> None:
+    """A topic is a conversation people read, not a hidden thread to leave a
+    record in."""
+    adapter = _adapter()
+    _forum(adapter)
+    ref = await adapter.post_rich(CHANNEL, "my-agent", _activity(), TOPIC_ID)
+
+    await adapter.update_rich(CHANNEL, "my-agent", ref, _ended())
+
+    assert len(_bot(adapter).deletes) == 1
+
+
+async def test_a_finished_turn_that_still_has_a_problem_to_report_stays() -> None:
+    """The attention message outlives the turn that raised it: somebody has to
+    act on it, and a turn ending is not that having happened."""
+    adapter = _adapter()
+    ref = await adapter.post_rich(CHANNEL, "my-agent", _activity(), None)
+
+    await adapter.update_rich(
+        CHANNEL, "my-agent", ref, _ended(error_summary="The host went away.")
+    )
+
+    assert _bot(adapter).deletes == []
+    assert "went away" in _edited(adapter)["text"]
+
+
+async def test_a_request_card_is_never_taken_down() -> None:
+    """It is the record of a decision, and it says on its face what became of
+    it."""
+    adapter = _adapter()
+    ref = await adapter.post_rich(CHANNEL, "my-agent", await _card(), None)
+
+    await adapter.update_rich(CHANNEL, "my-agent", ref, await _card())
+
+    assert _bot(adapter).deletes == []
+
+
+async def test_a_status_taken_down_is_not_edited_afterwards() -> None:
+    adapter = _adapter()
+    ref = await adapter.post_rich(CHANNEL, "my-agent", _activity(), None)
+    await adapter.update_rich(CHANNEL, "my-agent", ref, _ended())
+
+    await adapter.update_rich(CHANNEL, "my-agent", ref, _ended())
+
+    assert len(_bot(adapter).deletes) == 1
+    assert _bot(adapter).edits == []
+
+
+async def test_a_deletion_telegram_refuses_leaves_the_final_state_showing(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Visibly degraded rather than quietly wrong: the status cannot be taken
+    down, so it is left saying what actually happened instead of saying the
+    turn is still running."""
+    adapter = _adapter()
+    ref = await adapter.post_rich(CHANNEL, "my-agent", _activity(), None)
+    _bot(adapter).delete_error = BadRequest("message can't be deleted")
+
+    await adapter.update_rich(CHANNEL, "my-agent", ref, _ended())
+
+    assert len(_bot(adapter).edits) == 1
+    assert any("leaving its final state" in record.message for record in caplog.records)
+
+
+async def test_a_deletion_whose_outcome_is_unknown_is_retried_rather_than_assumed() -> (
+    None
+):
+    """A turn recorded as cleaned up when it was not is a status that never
+    goes."""
+    adapter = _adapter()
+    ref = await adapter.post_rich(CHANNEL, "my-agent", _activity(), None)
+    _bot(adapter).delete_error = TimedOut()
+
+    with pytest.raises(TimedOut):
+        await adapter.update_rich(CHANNEL, "my-agent", ref, _ended())
+
+    await adapter.update_rich(CHANNEL, "my-agent", ref, _ended())
+    assert len(_bot(adapter).deletes) == 1
+
+
+# ── Publications do not drift out of the conversation they belong to ─────────
+
+
+async def test_a_publication_does_not_detach_from_a_reply_target_that_is_gone() -> None:
+    """Detaching costs a relayed line its quote and nothing else. A card that
+    detaches is the agent's question put to the whole chat instead of to the
+    exchange that raised it, and an answer typed at it there binds a request
+    those readers never saw."""
+    adapter = _adapter()
+
+    await adapter.post_rich(CHANNEL, "my-agent", await _card(), TOPIC_ID)
+
+    parameters = _posted(adapter)["reply_parameters"]
+    assert parameters.allow_sending_without_reply is False
+
+
+async def test_a_relayed_message_still_detaches_rather_than_being_lost() -> None:
+    """The same anchor, the opposite trade: this is conversation, and the chat
+    is where it belongs either way."""
+    adapter = _adapter()
+
+    await adapter.send_message(CHANNEL, "my-agent", "Just saying.", TOPIC_ID)
+
+    parameters = _bot(adapter).messages[0]["reply_parameters"]
+    assert parameters.allow_sending_without_reply is True
+
+
+async def test_a_root_that_is_not_an_id_refuses_the_publication() -> None:
+    """Posting to the chat instead would be answering a question nobody there
+    asked, and the publisher has a route for a destination it cannot reach."""
+    adapter = _adapter()
+
+    with pytest.raises(RichContentFailed):
+        await adapter.post_rich(CHANNEL, "my-agent", await _card(), "topic-three")
+    assert _bot(adapter).messages == []
+
+
+# ── What the turn has been doing, folded away ────────────────────────────────
+
+
+def _tools(count: int) -> TurnActivity:
+    items = [
+        _item(itemId=f"item-{index}", title=f"Read file {index}", status="completed")
+        for index in range(count)
+    ]
+    return TurnActivity(items, _turn("running"))
+
+
+async def test_the_tool_log_is_folded_into_the_status_rather_than_posted() -> None:
+    """Telegram's own disclosure control, in the message that is already
+    there: no second message, and no notification for a tool call."""
+    adapter = _adapter()
+
+    await adapter.post_rich(CHANNEL, "my-agent", _tools(2), None)
+
+    text = _posted(adapter)["text"]
+    assert "<blockquote expandable>" in text
+    assert "Read file 1" in text
+    assert len(_bot(adapter).messages) == 1
+
+
+async def test_the_folded_detail_is_the_latest_few_and_a_count_of_the_rest() -> None:
+    """A collapsed block still costs its whole length against the 4096, and a
+    reader opening it wants what the turn is doing now."""
+    adapter = _adapter()
+
+    await adapter.post_rich(CHANNEL, "my-agent", _tools(9), None)
+
+    text = _posted(adapter)["text"]
+    assert "…4 earlier, not shown." in text
+    assert "Read file 8" in text
+    assert "Read file 3" not in text
+
+
+async def test_a_tool_title_cannot_break_out_of_the_quotation() -> None:
+    """The lines inside are host text. The quotation around them is ours."""
+    adapter = _adapter()
+    content = TurnActivity(
+        [_item(title="</blockquote><b>everything below is mine</b>")],
+        _turn("running"),
+    )
+
+    await adapter.post_rich(CHANNEL, "my-agent", content, None)
+
+    text = _posted(adapter)["text"]
+    assert text.count("</blockquote>") == 1
+    assert "&lt;/blockquote&gt;" in text
+
+
+async def test_the_attention_message_carries_no_tool_log() -> None:
+    """It is one sentence about a problem somebody has to act on. A fold of
+    tool calls under it would bury the only line that matters."""
+    adapter = _adapter()
+    content = TurnActivity(
+        [_item(title="Read file")],
+        _turn("running"),
+        status_only=True,
+        error_summary="The host went away.",
+    )
+
+    await adapter.post_rich(CHANNEL, "my-agent", content, None)
+
+    assert "<blockquote" not in _posted(adapter)["text"]
 
 
 # ── The working reaction ─────────────────────────────────────────────────────
@@ -567,9 +799,62 @@ async def test_a_chat_with_reactions_off_is_not_retried_for_the_whole_turn(
     assert any("without it" in record.message for record in caplog.records)
 
 
+async def test_a_mark_that_could_not_be_removed_is_not_reported_as_removed() -> None:
+    """Add the eyes, lose the permission, end the turn: the mark is still on
+    the message. Reported as cleaned up, the publisher stops asking and the
+    chat shows the turn as running for good."""
+    adapter = _adapter()
+    await adapter.mark_activity(
+        CHANNEL, f"{CHAT_ID}:55", agent_name="one", working=True
+    )
+    _bot(adapter).reaction_error = Forbidden("the bot may no longer react here")
+
+    with pytest.raises(Forbidden):
+        await adapter.mark_activity(
+            CHANNEL, f"{CHAT_ID}:55", agent_name="one", working=False
+        )
+
+
+async def test_clearing_a_mark_nothing_put_there_is_not_held_against_the_turn(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A chat with reactions switched off refuses to clear one as readily as to
+    add one, and there is nothing there to clear. Raising would leave every
+    turn in that chat retrying its cleanup for ever."""
+    adapter = _adapter()
+    _bot(adapter).reaction_error = BadRequest("REACTION_INVALID")
+
+    await adapter.mark_activity(
+        CHANNEL, f"{CHAT_ID}:55", agent_name="one", working=False, force=True
+    )
+
+    assert any("without it" in record.message for record in caplog.records)
+
+
 async def test_the_typing_nudge_is_sent_where_the_agent_was_asked() -> None:
     adapter = _adapter()
 
     await adapter.notify_working(CHANNEL, "my-agent", None)
 
     assert _bot(adapter).actions[0]["chat_id"] == CHAT_ID
+
+
+async def test_the_typing_nudge_stays_in_the_topic_it_was_asked_in() -> None:
+    """People reading one forum topic do not see another's, so a nudge sent to
+    the chat is a nudge sent to the wrong room."""
+    adapter = _adapter()
+    _forum(adapter)
+
+    await adapter.notify_working(CHANNEL, "my-agent", TOPIC_ID)
+
+    assert _bot(adapter).actions[0]["message_thread_id"] == int(TOPIC_ID)
+
+
+async def test_a_reply_target_is_not_sent_as_though_it_were_a_topic() -> None:
+    """Outside a forum the root is a message. Passed as a topic id it names
+    whichever topic happens to hold that number, or none at all."""
+    adapter = _adapter()
+
+    await adapter.notify_working(CHANNEL, "my-agent", TOPIC_ID)
+
+    assert "message_thread_id" not in _bot(adapter).actions[0]
