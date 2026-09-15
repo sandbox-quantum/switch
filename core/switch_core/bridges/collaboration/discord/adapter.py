@@ -54,7 +54,6 @@ from switch_core.bridges.collaboration.session.renderers.neutral import (
     request_summary,
     turn_status,
 )
-from switch_core.sessions.contract import TURN_ENDED
 
 logger = logging.getLogger(__name__)
 
@@ -149,15 +148,6 @@ def _as_rich_failure(
     if isinstance(error, discord.HTTPException | ValueError):
         return RichContentFailed(f"{description}: {error}", text=text)
     return None
-
-
-def _turn_has_ended(content: RichContent) -> bool:
-    """Whether this publication is a turn with nothing left to happen in it.
-
-    A request card is never one, whatever state its turn is in: the card is the
-    record of a decision and outlives the turn that asked for it.
-    """
-    return isinstance(content, TurnActivity) and content.turn.status in TURN_ENDED
 
 
 class _WebhookIdentity:
@@ -343,11 +333,6 @@ class DiscordAdapter(CollaborationAdapter):
         # marked several messages.
         self._eyes: set[str] = set()
         self._agent_eyes: dict[tuple[str, str], set[str]] = {}
-        # Publications this adapter has taken down at the end of a turn, so a
-        # later redraw of one is recognised as finished rather than reported as
-        # a message Discord has lost.
-        self._rich_retired: OrderedDict[str, None] = OrderedDict()
-        self._rich_retired_max = 1000
         # Set once Discord has told us it will not host agent roles, so the
         # bridge stops asking and says so only once.
         self._agent_roles_off_reason: str | None = None
@@ -1112,16 +1097,14 @@ class DiscordAdapter(CollaborationAdapter):
         content: RichContent,
         thread_root_id: str | None,
     ) -> None:
-        """Redraw a publication in place — or take it down, where it has served
-        its purpose and staying would just be clutter.
+        """Redraw a publication in place, including the last time.
 
-        A turn that has ended leaves nothing behind outside a thread. At the
-        channel root and in a DM the status was only ever the thing saying work
-        was happening, and Discord deletes it cleanly, so it goes the way the
-        legacy indicator went. Inside a thread it stays: a thread is the record
-        of one exchange, and the outcome, the time it took and the link to the
-        session belong in it. A request card is never taken down anywhere — it
-        is the record of a decision, and it says on its face what became of it.
+        Nothing is taken down. A turn that has ended is edited to its final
+        state and stays where it was published — in a thread, at the channel
+        root or in a DM alike — as the record that the turn ran, how long it
+        took and where to open it. Deleting it at the channel root left a
+        reader scrolling back with none of that, and a request card was never
+        taken down anywhere for the same reason.
 
         Not `update_message`, which logs and returns. That is right for a
         status line nobody is waiting on and wrong here: a card that failed to
@@ -1140,9 +1123,6 @@ class DiscordAdapter(CollaborationAdapter):
                 "location:message reference.",
                 text=self.rich_fallback_text(content),
             )
-        if message_ref in self._rich_retired:
-            return
-
         try:
             target = await self._get_channel(int(channel_id))
         except Exception as error:
@@ -1160,58 +1140,7 @@ class DiscordAdapter(CollaborationAdapter):
         text = self._render_rich(
             replace(content, notify_external_id=None), prefix=prefix
         )
-        if self._is_flat(channel_id, message_ref) and _turn_has_ended(content):
-            await self._retire_rich(channel_id, message_ref, text, lobby=lobby)
-            return
         await self._edit_rich(channel_id, message_ref, text, lobby=lobby)
-
-    def _is_flat(self, channel_id: str, message_ref: str) -> bool:
-        """Whether a publication is sitting in the channel rather than a thread.
-
-        A Discord thread is a channel of its own, so the location half of the
-        ref differs from the channel the turn belongs to exactly when the post
-        went into a thread.
-        """
-        location_id, _ = self._parse_message_ref(message_ref)
-        return location_id == channel_id
-
-    async def _retire_rich(
-        self, channel_id: str, message_ref: str, text: str, *, lobby: bool
-    ) -> None:
-        location_id, message_id = self._parse_message_ref(message_ref)
-        try:
-            if lobby:
-                target = await self._get_channel(int(location_id or channel_id))
-                await target.get_partial_message(int(message_id)).delete()
-            else:
-                webhook = await self._publication_webhook(int(channel_id))
-                await webhook.delete_message(int(message_id))
-        except discord.NotFound:
-            pass
-        except Exception as error:
-            failure = _as_rich_failure(
-                error,
-                description=(
-                    f"Discord refused to remove the finished status {message_ref} "
-                    f"in channel {channel_id}"
-                ),
-                text=text,
-            )
-            if failure is None:
-                raise
-            # Visibly degraded rather than quietly wrong: the status cannot be
-            # taken down, so it is left saying what actually happened instead
-            # of saying the turn is still running.
-            logger.warning(
-                "Could not remove the finished Discord status %s in channel %s "
-                "(%s); leaving its final state in the channel instead.",
-                message_ref,
-                channel_id,
-                error,
-            )
-            await self._edit_rich(channel_id, message_ref, text, lobby=lobby)
-            return
-        self._retire_ref(message_ref)
 
     async def _edit_rich(
         self, channel_id: str, message_ref: str, text: str, *, lobby: bool
@@ -1531,12 +1460,6 @@ class DiscordAdapter(CollaborationAdapter):
                 agent_name,
                 e,
             )
-
-    def _retire_ref(self, message_ref: str) -> None:
-        self._rich_retired[message_ref] = None
-        self._rich_retired.move_to_end(message_ref)
-        while len(self._rich_retired) > self._rich_retired_max:
-            self._rich_retired.popitem(last=False)
 
     @staticmethod
     def _thread_channel_id(thread_root_ref: str) -> int | None:

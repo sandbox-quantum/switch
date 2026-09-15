@@ -599,7 +599,7 @@ async def test_a_failed_edit_is_reported_rather_than_logged_and_forgotten() -> N
         )
 
 
-# ── Redrawing and retirement ─────────────────────────────────────────────────
+# ── Redrawing ────────────────────────────────────────────────────────────────
 
 
 async def test_a_running_turn_is_redrawn_in_place_inside_its_thread() -> None:
@@ -625,18 +625,22 @@ async def test_a_thread_keeps_the_finished_turn_as_its_record() -> None:
     assert webhook.edits[0]["message_id"] == 901
 
 
-async def test_a_flat_channel_loses_the_status_when_the_turn_ends() -> None:
+async def test_a_flat_channel_keeps_the_finished_turn_too() -> None:
+    """The channel root is where most turns are published and the one place a
+    finished status used to disappear from. What a reader scrolling back wants
+    is the same there as in a thread: that it ran, how long it took, and the
+    link to open it."""
     adapter, _channel, _thread, webhook = _guild_setup()
 
     await adapter.update_rich(
         str(CHANNEL_ID), "my-agent", f"{CHANNEL_ID}:901", _ended(), None
     )
 
-    assert webhook.edits == []
-    assert webhook.deletes[0]["message_id"] == 901
+    assert webhook.deletes == []
+    assert webhook.edits[0]["message_id"] == 901
 
 
-async def test_a_dm_loses_it_too_and_never_asks_for_a_webhook() -> None:
+async def test_a_dm_keeps_it_too_and_never_asks_for_a_webhook() -> None:
     dm = _DMChannel()
     adapter = _adapter({DM_CHANNEL_ID: dm})
     dm.messages[501] = _Message(dm, 501)
@@ -645,7 +649,8 @@ async def test_a_dm_loses_it_too_and_never_asks_for_a_webhook() -> None:
         str(DM_CHANNEL_ID), "my-agent", f"{DM_CHANNEL_ID}:501", _ended(), None
     )
 
-    assert dm.deleted_ids == [501]
+    assert dm.deleted_ids == []
+    assert dm.messages[501].edited is not None
 
 
 async def test_a_dm_redraw_writes_the_agent_name_back_into_the_body() -> None:
@@ -688,22 +693,9 @@ async def test_a_settled_card_is_never_taken_down() -> None:
     assert webhook.edits[0]["message_id"] == 901
 
 
-async def test_a_status_that_cannot_be_removed_is_left_saying_what_happened(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    adapter, _channel, _thread, webhook = _guild_setup()
-    webhook.delete_error = _http_error(403)
-
-    with caplog.at_level(logging.WARNING):
-        await adapter.update_rich(
-            str(CHANNEL_ID), "my-agent", f"{CHANNEL_ID}:901", _ended(), None
-        )
-
-    assert "leaving its final state" in caplog.text
-    assert webhook.edits[0]["message_id"] == 901
-
-
-async def test_redrawing_a_retired_status_is_not_reported_as_a_lost_message() -> None:
+async def test_a_finished_status_is_still_redrawn_when_the_turn_says_more() -> None:
+    """Nothing is retired, so a late revision of a turn that has ended reaches
+    the channel rather than being dropped on the floor."""
     adapter, _channel, _thread, webhook = _guild_setup()
 
     await adapter.update_rich(
@@ -713,8 +705,8 @@ async def test_redrawing_a_retired_status_is_not_reported_as_a_lost_message() ->
         str(CHANNEL_ID), "my-agent", f"{CHANNEL_ID}:901", _ended(), None
     )
 
-    assert len(webhook.deletes) == 1
-    assert webhook.edits == []
+    assert webhook.deletes == []
+    assert len(webhook.edits) == 2
 
 
 # ── Recovery ─────────────────────────────────────────────────────────────────
