@@ -1176,7 +1176,13 @@ class FakeAdminClient(AdminClient):
         return self.joined
 
     async def send_platform_message(  # type: ignore[override]
-        self, room_id: str, body: str, *, thread_root_id=None, on_behalf_of=None
+        self,
+        room_id: str,
+        body: str,
+        *,
+        thread_root_id=None,
+        on_behalf_of=None,
+        reply_in_channel=False,
     ) -> str | None:
         if self.send_error is not None:
             raise self.send_error
@@ -1186,6 +1192,7 @@ class FakeAdminClient(AdminClient):
                 "body": body,
                 "on_behalf_of": on_behalf_of,
                 "thread_root_id": thread_root_id,
+                "reply_in_channel": reply_in_channel,
             }
         )
         return self.send_returns
@@ -1257,12 +1264,14 @@ async def test_provision_kickoff_posts_as_platform_on_behalf_of_creator(env):
             "body": "Template kickoff on behalf of @alice",
             "on_behalf_of": person,
             "thread_root_id": None,
+            "reply_in_channel": False,
         },
         {
             "room_id": ANY_ROOM,
             "body": "@claude-code.alice start on the brief.\n",
             "on_behalf_of": person,
             "thread_root_id": "$kickoff",
+            "reply_in_channel": True,
         },
     ]
 

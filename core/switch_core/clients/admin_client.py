@@ -136,6 +136,7 @@ class AdminClient(ClientBase[ClientConfig]):
         *,
         thread_root_id: str | None = None,
         on_behalf_of: OnBehalfOf | None = None,
+        reply_in_channel: bool = False,
     ) -> str | None:
         """Send an addressed message as the Switch platform.
 
@@ -156,6 +157,10 @@ class AdminClient(ClientBase[ClientConfig]):
                 "user_id": on_behalf_of.user_id,
                 "name": on_behalf_of.name,
             }
+        if reply_in_channel:
+            # Only meaningful for a threaded message: the agents it addresses
+            # answer at the top level instead of under it.
+            marker_value["reply_in_channel"] = True
         return await self.send_message(
             room_id,
             body,

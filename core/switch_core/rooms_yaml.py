@@ -815,7 +815,11 @@ class RoomYamlService:
                 fail("the platform could not post the kickoff")
                 return
             event_id = await admin.send_platform_message(
-                room.matrix_room_id, text, thread_root_id=root_id, on_behalf_of=person
+                room.matrix_room_id,
+                text,
+                thread_root_id=root_id,
+                on_behalf_of=person,
+                reply_in_channel=True,
             )
         except Exception as e:
             fail(str(e))

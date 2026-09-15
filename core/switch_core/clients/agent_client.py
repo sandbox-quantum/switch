@@ -29,7 +29,11 @@ from switch_core.bridges.agent.protocol.types import (
     TaskFinalisePayload,
     TaskUpdatePayload,
 )
-from switch_core.clients.admin_messages import PLATFORM_MARKER, platform_on_behalf_of
+from switch_core.clients.admin_messages import (
+    PLATFORM_MARKER,
+    platform_on_behalf_of,
+    platform_replies_in_channel,
+)
 from switch_core.clients.client_base import (
     ClientBase,
     ClientBaseKwargs,
@@ -404,8 +408,13 @@ class AgentClient(ClientBase[ClientConfig]):
             return
 
         thread_id = event.thread_root_id
-
-        reply_thread_root = thread_id if thread_id is not None else event.event_id
+        if platform_replies_in_channel(event.content):
+            # A threaded kickoff that wants its work in the channel: the agent
+            # sees it as top-level, so its replies and notices go there.
+            thread_id = None
+            reply_thread_root = None
+        else:
+            reply_thread_root = thread_id if thread_id is not None else event.event_id
 
         # Every database read this message needs happens in one session, and
         # nothing is posted to Matrix while it is open. A busy room fans one
