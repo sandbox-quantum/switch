@@ -16,7 +16,11 @@ from switch_core.bridges.collaboration.teams.adapter import (
     TeamsConnectionConfig,
     _hard_wrap,
 )
-from switch_core.bridges.collaboration.teams.cards import agent_message_card
+from switch_core.bridges.collaboration.teams.cards import (
+    agent_message_card,
+    card_attachment,
+)
+from switch_core.bridges.collaboration.teams.connector import _payload
 
 _RENDERING = AgentRendering(
     field_label="james", body_label="james", icon_url="http://icon"
@@ -206,6 +210,31 @@ def test_list_items_stay_in_one_block_so_they_stay_one_list() -> None:
 
 def test_a_body_with_no_newlines_is_one_block() -> None:
     assert _lines("just a sentence") == [("Small", "just a sentence")]
+
+
+def test_a_body_of_many_short_lines_is_not_refused_for_its_punctuation() -> None:
+    """Five hundred short lines is about a thousand characters of message.
+
+    Set a line to a block it was seventy kilobytes of JSON braces, past the
+    connector's limit, and the whole message was refused — for the shape it
+    was drawn in rather than for anything the sender wrote. Every line is
+    still here and still on a line of its own; the gaps between them widen.
+    """
+    body = "\n".join(f"line {n}" for n in range(500))
+    card = agent_message_card(_RENDERING, body, [])
+
+    assert len(card["body"][1:]) == 1
+    text = str(card["body"][1]["text"])
+    assert text.startswith("line 0\n\nline 1\n\n")
+    assert text.endswith("line 499")
+    _payload("send", {"type": "message", "attachments": [card_attachment(card)]})
+
+
+def test_a_body_short_enough_to_afford_its_blocks_still_gets_them() -> None:
+    body = "\n".join(f"line {n}" for n in range(20))
+
+    assert _lines(body)[:2] == [("Small", "line 0"), ("None", "line 1")]
+    assert len(_lines(body)) == 20
 
 
 def test_the_text_itself_is_left_alone() -> None:

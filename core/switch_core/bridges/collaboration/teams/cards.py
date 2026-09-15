@@ -11,6 +11,19 @@ ADAPTIVE_CARD_CONTENT_TYPE = "application/vnd.microsoft.card.adaptive"
 # less than the four spaces that would make it a code block instead.
 _LIST_ITEM = re.compile(r"^ {0,3}(?:[-*+]|\d+[.)]) ")
 
+# A TextBlock costs roughly this much JSON around whatever line it carries,
+# measured the way Teams measures an activity — its keys are ASCII, so UTF-16
+# counts each of them twice.
+_BLOCK_OVERHEAD = 140
+
+# What all that structure may add up to. The connector refuses an activity over
+# 64 KiB on the same metric, and a body split a line to a block spends the
+# budget on punctuation: a thousand characters written as five hundred short
+# lines cost seventy kilobytes of braces to say. Past this the body is set as
+# one block again, so a long message is judged on its own length rather than on
+# the shape it was drawn in.
+_BLOCK_BUDGET = 8 * 1024
+
 
 def body_blocks(body: str) -> list[dict[str, Any]]:
     """A message body as consecutive TextBlocks, a line to a block.
@@ -26,6 +39,12 @@ def body_blocks(body: str) -> list[dict[str, Any]]:
     Consecutive list items stay in one block, so they render as one list with
     its numbering intact rather than as several lists of one item each.
     Markdown already keeps those on their own lines.
+
+    A body with more lines than `_BLOCK_BUDGET` pays for is set as a single
+    block with its breaks doubled instead. Every line survives, in order; what
+    changes is that each gets a paragraph's gap rather than a line's. That is
+    worth it against the alternative, which is the whole message refused for
+    being made of too many short lines.
     """
     runs: list[tuple[str, list[str]]] = []
     # The first block sits against the card header, which is a gap of its own.
@@ -44,6 +63,15 @@ def body_blocks(body: str) -> list[dict[str, Any]]:
             continue
         runs.append(("Small" if gap else "None", [line]))
         gap = False
+    if len(runs) * _BLOCK_OVERHEAD > _BLOCK_BUDGET:
+        return [
+            {
+                "type": "TextBlock",
+                "text": "\n\n".join("\n".join(lines) for _, lines in runs),
+                "wrap": True,
+                "spacing": "None",
+            }
+        ]
     return [
         {
             "type": "TextBlock",
