@@ -333,6 +333,13 @@ export class SwitchClient {
     );
   }
 
+  /** Harness speakers can differ from the registration token's owner. */
+  async clearAgentAddressingPolicy(agentId: string): Promise<void> {
+    await this.gateway('PUT', `/agents/${encodeURIComponent(agentId)}/addressing-policy`, {
+      policy: null,
+    });
+  }
+
   // ── agent bridge: registration ────────────────────────────────────────────
 
   /**

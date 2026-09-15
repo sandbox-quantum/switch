@@ -165,6 +165,8 @@ export async function setupHarness(env: HarnessEnv, options: SetupOptions = {}):
     },
   });
 
+  await switchClient.clearAgentAddressingPolicy(agent.id);
+
   // Registration is what mints the bot; wait for it so a later `@name` mention
   // has something to resolve to.
   const bot = await mattermost.waitForBotUser(agent.name, 60_000);
@@ -285,6 +287,8 @@ async function reuseHarness(env: HarnessEnv, manifest: HarnessManifest): Promise
     gatewayAdminPassword: env.gatewayAdminPassword,
   });
   const mattermost = new MattermostClient({ url: env.mattermostUrl, token: env.mattermostToken });
+
+  await switchClient.clearAgentAddressingPolicy(manifest.agent.id);
 
   const harness: Harness = {
     env,

@@ -203,7 +203,12 @@ POST   /gateway/rooms                     {name, description, bridge_id, agent_n
                                              Mattermost channel and adds the bot
 DELETE /gateway/rooms/{id}
 DELETE /gateway/agents/by-name/{name}      (admin teardown, no agent key needed)
+PUT    /gateway/agents/{id}/addressing-policy  {"policy": null}
 ```
+
+The harness clears the throwaway agent's addressing policy when creating or
+reusing it. The Mattermost speaker can differ from the registration token's
+owner; leaving the owner-only default would reject the scenario messages.
 
 ### Switch agent bridge
 
