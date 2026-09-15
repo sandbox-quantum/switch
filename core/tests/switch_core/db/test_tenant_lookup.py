@@ -103,6 +103,15 @@ _ADDED_SINCE = {
     "tenant_of_messaging_install": "c8a4e21f6d30",
 }
 
+# A third kind of change, and the quietest: a lookup whose body a later
+# revision replaced. Creation and removal both show up as a function that is
+# there or is not; a redefinition leaves a function of the right name and
+# signature answering a different question, which nothing about the shape of
+# the schema reveals. So the revision that last wrote the body is named here
+# and compared against the module, while the creating revision above goes on
+# owning the drop.
+_REDEFINED_SINCE = {"tenant_of_messaging_install": "a7f2c3e9b481"}
+
 
 def _revision_module(revision: str) -> ModuleType:
     """One revision module, loaded through Alembic.
@@ -722,17 +731,24 @@ class TestTheMigrationInstallsTheSameThing:
 
         Driven by `_ADDED_SINCE` rather than naming one lookup, so the next
         entry is covered by adding it there and nowhere else.
+
+        The body is compared against `_REDEFINED_SINCE` where there is an
+        entry, because the revision that creates a function is not always the
+        one that last says what it does. The drop is still the creating
+        revision's: a redefinition replaces a body and leaves the function it
+        replaced nothing to undo.
         """
         for name, revision in _ADDED_SINCE.items():
             lookup = TENANT_LOOKUPS_BY_NAME[name]
-            module = _revision_module(revision)
+            defining = _REDEFINED_SINCE.get(name, revision)
+            module = _revision_module(defining)
             assert getattr(module, f"CREATE_{name.upper()}") == create_lookup_ddl(
                 lookup
             ), (
-                f"revision {revision} would install {name} with different DDL "
+                f"revision {defining} would install {name} with different DDL "
                 "from the one db/tenant_lookup.py builds."
             )
-            assert getattr(module, f"DROP_{name.upper()}") == (
+            assert getattr(_revision_module(revision), f"DROP_{name.upper()}") == (
                 f"DROP FUNCTION IF EXISTS {lookup.signature}"
             )
 

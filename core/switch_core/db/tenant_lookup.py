@@ -122,6 +122,13 @@ lookup on the id alone would answer twice the first time two platforms
 happened to mint the same string, and refuse a customer's traffic for a
 reason in someone else's account.
 
+It also filters on `status = 'active'`, which is not a refinement but the
+other half of the same uniqueness. Only active rows are unique by index, so a
+workspace that was installed, removed and installed again has two rows and
+this would otherwise answer twice — refusing a customer's live traffic on the
+strength of an install they themselves ended. The predicate here and the one
+on the index are the same predicate, and have to stay that way.
+
 Why not the obvious alternatives is argued in
 `docs/old/multi-tenancy-phase1-db.md`, "The bootstrap problem"; the short
 version is that returning rows instead of tenant ids would put a second copy
@@ -306,14 +313,17 @@ TENANT_LOOKUPS: tuple[TenantLookup, ...] = (
         query=(
             "SELECT tenant_id FROM messaging_installs "
             "WHERE platform = p_platform "
-            "AND external_workspace_id = p_external_workspace_id"
+            "AND external_workspace_id = p_external_workspace_id "
+            "AND status = 'active'"
         ),
         purpose=(
             "Which tenant an inbound event from an installed workspace belongs "
             "to. The public webhook is unauthenticated by nature and knows only "
             "the platform it was posted to and the workspace the payload names, "
-            "so this runs before anything else the request does. Unique by "
-            "constraint on exactly this pair, so it answers at most once."
+            "so this runs before anything else the request does. The status "
+            "predicate is the index's own: only active rows are unique, and an "
+            "install that ended must stop answering for its workspace rather "
+            "than compete with the one that replaced it."
         ),
     ),
 )

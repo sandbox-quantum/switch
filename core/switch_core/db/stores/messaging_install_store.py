@@ -18,6 +18,18 @@ from switch_core.db.models import (
 #: is worthless by the time anyone reads it.
 STATE_TTL = timedelta(minutes=10)
 
+#: An install that is serving. The only status the workspace uniqueness index
+#: covers, so it is also the answer to "who holds this workspace".
+INSTALL_ACTIVE = "active"
+
+#: Ended here, by someone who decided to. The bridge is gone with it.
+INSTALL_DISCONNECTED = "disconnected"
+
+#: Ended there: the platform told us the app was removed or its token killed.
+#: Distinct from `disconnected` because an operator whose bridge stopped
+#: working needs to know whether it was news or a decision.
+INSTALL_REVOKED = "revoked"
+
 
 class MessagingInstallClaimedError(RuntimeError):
     """Another tenant has already installed the app into this workspace.
@@ -103,17 +115,21 @@ class MessagingInstallStore:
         """Claim a workspace for the bound tenant.
 
         The claim is the insert: `(platform, external_workspace_id)` is unique
-        across the deployment, so the database decides who holds a workspace
-        rather than a read followed by a write that cannot be made atomic with
-        it. A second tenant's install therefore fails here, loudly, instead of
-        producing an event with two possible destinations.
+        across the deployment among active rows, so the database decides who
+        holds a workspace rather than a read followed by a write that cannot be
+        made atomic with it. A second tenant's install therefore fails here,
+        loudly, instead of producing an event with two possible destinations.
+
+        Installs that have ended are not in the index, so re-installing a
+        workspace somebody released is an ordinary insert and needs no check of
+        its own.
         """
         install = MessagingInstall(
             platform=platform,
             external_workspace_id=external_workspace_id,
             encrypted_bot_token=encrypted_bot_token,
             scopes=scopes,
-            status="active",
+            status=INSTALL_ACTIVE,
             installed_by_user_id=user_id,
         )
         session.add(install)
@@ -124,26 +140,33 @@ class MessagingInstallStore:
                 raise
             raise MessagingInstallClaimedError(
                 f"the {platform} workspace {external_workspace_id} is already "
-                "connected to Switch. Remove the existing install before "
-                "connecting it again."
+                "connected to Switch. Disconnect the existing install — from "
+                "the organisation that holds it, which may not be yours — "
+                "before connecting it again."
             ) from exc
         return install
 
     async def get_for_workspace(
         self, session: AsyncSession, *, platform: str, external_workspace_id: str
     ) -> MessagingInstall | None:
-        """The bound tenant's install of one workspace, if it is theirs.
+        """The bound tenant's live install of one workspace, if it is theirs.
 
-        Deliberately still scoped, even though the unique constraint means at
-        most one row exists deployment-wide: the caller is an inbound webhook
-        that resolved a tenant from the workspace a moment ago, and this
-        re-reading it under RLS is what makes a mistake there a miss rather
-        than a cross-tenant read.
+        Deliberately still scoped, even though the unique index means at most
+        one active row exists deployment-wide: the caller is an inbound webhook
+        that resolved a tenant from the workspace a moment ago, and re-reading
+        it under RLS is what makes a mistake there a miss rather than a
+        cross-tenant read.
+
+        The status predicate matches the index's and `tenant_of_messaging_
+        install`'s. Without it a workspace installed, removed and installed
+        again returns two rows and this raises — an outage for the live
+        install, caused by the ended one.
         """
         result = await session.execute(
             select(MessagingInstall).where(
                 MessagingInstall.platform == platform,
                 MessagingInstall.external_workspace_id == external_workspace_id,
+                MessagingInstall.status == INSTALL_ACTIVE,
             )
         )
         return result.scalars().one_or_none()
