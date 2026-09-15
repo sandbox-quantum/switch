@@ -33,6 +33,7 @@ own than by a `Markup` that returns its argument.
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import dataclass
 
 from switch_core.sessions.contract import (
     TURN_ENDED,
@@ -101,11 +102,14 @@ _OUTCOME_WORDS = {
     "declined": "declined",
 }
 
+# What the heading says where the outcome cannot. A resolved card names the
+# option that was chosen instead, so "Permission answered" is left for the one
+# case that earns it: answered, but the host never said with what.
 _HEADINGS = {
     "open": "Permission needed",
     "submitting": "Permission needed",
     "resolved": "Permission answered",
-    "closed": "Permission request closed",
+    "closed": "Closed",
 }
 
 # How far an "accept for this session" option reaches. One copy, because the
@@ -405,10 +409,17 @@ def _approval_form(
 ) -> tuple[list[str], list[str], str, bool]:
     fit = _Faithful(escape)
     handle = escape(reference.handle)
-    head = [f"{markup.bold(_HEADINGS[request.state])} · request {markup.code(handle)}"]
+    outcome = (
+        _chosen(request, content, escape=escape, limit=limit)
+        if request.state == "resolved"
+        else None
+    )
+    heading = outcome.label if outcome else _HEADINGS[request.state]
+    head = [f"{markup.bold(heading)} · request {markup.code(handle)}"]
     head.append(fit(content.title, _share(limit, 1500, 3)))
     if content.detail:
-        head.append(fit(content.detail, _share(limit, 1200, 4)))
+        detail = fit(content.detail, _share(limit, 1200, 4))
+        head.append(markup.command(detail) if "\n" not in detail else detail)
 
     body: list[str] = []
     if request.state == "open":
@@ -429,6 +440,7 @@ def _approval_form(
             request,
             content,
             handle,
+            outcome,
             escape=escape,
             limit=limit,
             markup=markup,
@@ -442,6 +454,7 @@ def _approval_footer(
     request: SnapshotRequest,
     content: ApprovalContent,
     handle: str,
+    outcome: _Chosen | None,
     *,
     escape: Callable[[str], str],
     limit: int,
@@ -460,24 +473,36 @@ def _approval_footer(
         return _in_flight(request, responder=responder, limit=limit, escape=escape)
     if request.state == "resolved":
         return _approval_answer(
-            request, content, escape=escape, limit=limit, responder=responder
+            request, outcome, escape=escape, limit=limit, responder=responder
         )
     return _closed(request, escape=escape, limit=limit, responder=responder)
 
 
-def _approval_answer(
+@dataclass(frozen=True)
+class _Chosen:
+    """The option a resolved approval settled on, and how far it reaches."""
+
+    label: str
+    scope: str
+
+
+def _chosen(
     request: SnapshotRequest,
     content: ApprovalContent,
     *,
     escape: Callable[[str], str],
     limit: int,
-    responder: str | None,
-) -> str:
+) -> _Chosen | None:
+    """What was decided, or None where the host never said.
+
+    The heading and the footer both need this and have to agree: a heading
+    naming an outcome over a footer saying none was reported would be the card
+    contradicting itself, so it is settled once and passed to both.
+    """
     settled = request.result
     result = settled.result if settled else None
-    by = _by(request.decided_by, responder=responder, limit=limit, escape=escape)
     if not isinstance(result, ApprovalResult):
-        return f"Answered{by}, but the host did not say which option was chosen."
+        return None
     chosen = next(
         (option for option in content.options if option.option_id == result.option_id),
         None,
@@ -485,13 +510,31 @@ def _approval_answer(
     # An option the content never offered is still named rather than hidden:
     # the id is what the host said, and saying nothing would read as a plain
     # answer to a question that was not the one asked.
-    label = _fit(
-        chosen.label if chosen else result.option_id,
-        _share(limit, 150, 8),
-        escape=escape,
+    #
+    # Folded onto one line first. This label heads the card, and a heading is a
+    # line that begins bold and ends in the handle — a newline in the middle of
+    # it leaves two lines that are each only half of that, and Discord finds a
+    # card again after a restart by looking for exactly that shape.
+    named = " ".join((chosen.label if chosen else result.option_id).split())
+    return _Chosen(
+        label=_fit(named, _share(limit, 150, 8), escape=escape),
+        scope=_scope(chosen) if chosen else "",
     )
-    scope = _scope(chosen) if chosen else ""
-    return f"{label}{scope} — chosen{by}." if by else f"{label}{scope}."
+
+
+def _approval_answer(
+    request: SnapshotRequest,
+    outcome: _Chosen | None,
+    *,
+    escape: Callable[[str], str],
+    limit: int,
+    responder: str | None,
+) -> str:
+    """Who answered, the outcome itself having already been said in the heading."""
+    by = _by(request.decided_by, responder=responder, limit=limit, escape=escape)
+    if outcome is None:
+        return f"Answered{by}, but the host did not say which option was chosen."
+    return f"Chosen{by}{outcome.scope}." if by else f"Answered{outcome.scope}."
 
 
 def _questions_form(

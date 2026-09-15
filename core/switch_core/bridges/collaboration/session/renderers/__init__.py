@@ -312,14 +312,15 @@ class Drawn:
 
 
 class Markup:
-    """The three marks the neutral renderer makes, in one platform's spelling.
+    """The marks the neutral renderer makes, in one platform's spelling.
 
-    Emphasis, a literal a reader is meant to copy, and a link. Everything else
-    the renderer writes is plain text. They live behind this rather than being
-    written into the renderer because a platform that does not parse Markdown
-    is otherwise forced to choose between a renderer of its own — the whole of
-    the budget and faithfulness logic, copied and left to drift — and shipping
-    `**Working…**` to a reader as those characters.
+    Emphasis, a literal a reader is meant to copy, the command a card is asking
+    about, and a link. Everything else the renderer writes is plain text. They
+    live behind this rather than being written into the renderer because a
+    platform that does not parse Markdown is otherwise forced to choose between
+    a renderer of its own — the whole of the budget and faithfulness logic,
+    copied and left to drift — and shipping `**Working…**` to a reader as those
+    characters.
 
     Not an escaper. Host text is neutralised by the adapter's own escape before
     it reaches here, and what these produce is measured against the message
@@ -332,6 +333,18 @@ class Markup:
 
     def code(self, text: str) -> str:
         return f"`{text}`"
+
+    def command(self, text: str) -> str:
+        """The command a card is asking about, set apart from the prose.
+
+        Most platforms spell this the same as `code`, but the two are asking
+        for different things and a platform may answer them differently. A
+        handle is a literal to copy and has to survive being marked some other
+        way; a command is read, not typed, so a platform with no code span is
+        better off leaving it alone than emphasising it into a third bold on a
+        card that already has two.
+        """
+        return self.code(text)
 
     def link(self, label: str, url: str) -> str:
         # A `)` inside the destination closes the link early and spills the

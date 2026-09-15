@@ -222,10 +222,17 @@ class _TeamsMarkup(Markup):
     as `` `R42` `` invites somebody to type the backticks with it. Bold is
     emphasis Teams does render, so the literal is marked with that and arrives
     as something to copy rather than something to decode.
+
+    A command gets neither. It is read rather than typed, so the argument that
+    wins for the handle does not apply, and a third bold on a card whose
+    heading and handle are already bold marks nothing out at all.
     """
 
     def code(self, text: str) -> str:
         return f"**{text}**"
+
+    def command(self, text: str) -> str:
+        return text
 
 
 _TEAMS_MARKUP = _TeamsMarkup()
