@@ -859,6 +859,17 @@ def test_a_threaded_reply_is_anchored_to_its_root() -> None:
     assert params.allow_sending_without_reply is True
 
 
+def test_a_reply_anchored_to_a_stored_message_reference_still_quotes_it() -> None:
+    # `chat:message` is how this platform's own refs are spelled — it is what
+    # `send_message` returns and what the message map keeps — so a root read
+    # back out of storage arrives in that form rather than as a bare number.
+    adapter = _adapter()
+
+    _run(adapter.send_message(str(CHAT_ID), "scout", "in thread", f"{CHAT_ID}:88"))
+
+    assert _bot(adapter).messages[0]["reply_parameters"].message_id == 88
+
+
 def test_a_body_over_the_cap_is_split_rather_than_rejected() -> None:
     adapter = _adapter()
     body = "\n".join(["x" * 200] * 60)
@@ -883,6 +894,22 @@ def test_only_the_first_chunk_replies_into_the_thread() -> None:
     sent = _bot(adapter).messages
     assert "reply_parameters" in sent[0]
     assert all("reply_parameters" not in m for m in sent[1:])
+
+
+def test_every_chunk_of_a_forum_reply_stays_in_the_topic() -> None:
+    # A reply anchor in a forum is the one case where the two rules collide:
+    # dropping it after the first chunk is what keeps the quote tidy, and it is
+    # also what drops the tail of the answer into General, away from the people
+    # reading the topic. Re-quoting is the lesser cost.
+    adapter = _adapter()
+    _bot(adapter).chat.is_forum = True
+    body = "\n".join(["x" * 200] * 60)
+
+    _run(adapter.send_message(str(CHAT_ID), "scout", body, f"{CHAT_ID}:88"))
+
+    sent = _bot(adapter).messages
+    assert len(sent) > 1
+    assert all(m["reply_parameters"].message_id == 88 for m in sent)
 
 
 def test_markup_telegram_rejects_is_resent_as_plain_text() -> None:

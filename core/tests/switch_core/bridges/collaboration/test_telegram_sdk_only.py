@@ -302,6 +302,58 @@ async def test_a_card_in_an_ordinary_group_replies_to_what_was_asked() -> None:
     assert _posted(adapter)["reply_parameters"].message_id == int(TOPIC_ID)
 
 
+async def test_a_card_anchored_to_a_stored_message_reference_replies_to_it() -> None:
+    """The form the publication seam actually passes, which is not the form
+    inbound records.
+
+    A card's root is resolved through the message map, and what that stores is
+    this platform's own reference to a message — `chat:message`, the same
+    string `post_rich` hands back. Read as a bare number it is not one, so
+    every card raised in an ordinary Telegram chat was refused before it was
+    drawn and only ever reached the Console.
+    """
+    adapter = _adapter()
+
+    await adapter.post_rich(CHANNEL, "my-agent", await _card(), f"{CHANNEL}:75")
+
+    params = _posted(adapter)["reply_parameters"]
+    assert params.message_id == 75
+    # A card that detaches is the agent's question put to the whole chat.
+    assert params.allow_sending_without_reply is False
+
+
+async def test_a_message_reference_in_a_forum_is_a_reply_rather_than_a_topic() -> None:
+    """A composite reference names one message, so its number is a message id
+    in a forum too. Passed as `message_thread_id` it would name whichever topic
+    happens to hold that number — a different room of people."""
+    adapter = _adapter()
+    _forum(adapter)
+
+    await adapter.post_rich(CHANNEL, "my-agent", await _card(), f"{CHANNEL}:75")
+
+    assert "message_thread_id" not in _posted(adapter)
+    assert _posted(adapter)["reply_parameters"].message_id == 75
+
+
+async def test_a_card_rooted_in_another_chat_is_refused() -> None:
+    """Replying to message 75 of some other chat would either fail or quote
+    this chat's message 75, which is a different conversation. Neither is the
+    exchange that raised the request."""
+    adapter = _adapter()
+
+    with pytest.raises(RichContentFailed):
+        await adapter.post_rich(CHANNEL, "my-agent", await _card(), "-1009999999:75")
+    assert _bot(adapter).messages == []
+
+
+async def test_a_root_that_names_no_number_at_all_is_still_refused() -> None:
+    adapter = _adapter()
+
+    with pytest.raises(RichContentFailed):
+        await adapter.post_rich(CHANNEL, "my-agent", await _card(), "sw_abc123")
+    assert _bot(adapter).messages == []
+
+
 async def test_the_chat_is_asked_once_rather_than_on_every_publication() -> None:
     adapter = _adapter()
     calls: list[Any] = []

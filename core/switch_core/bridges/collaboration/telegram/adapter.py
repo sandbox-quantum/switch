@@ -353,6 +353,27 @@ class _ChatVisibility(NamedTuple):
     via_admin: bool
 
 
+def _as_int(value: str) -> int | None:
+    """The number this names, where it names one."""
+    try:
+        return int(value)
+    except ValueError:
+        return None
+
+
+class _ThreadRoot(NamedTuple):
+    """Where in one chat a thread root points.
+
+    The same number means one of two things. A forum topic is addressed with
+    ``message_thread_id`` and every message in it carries that id; anywhere
+    else Telegram has no thread and the root is a message to reply to. The two
+    are not interchangeable — see ``_resolve_root``.
+    """
+
+    is_topic: bool
+    id: int
+
+
 class TelegramConnectionConfig(BridgeConnectionConfig):
     bot_token: str
     bot_username: str
@@ -2981,20 +3002,47 @@ class TelegramAdapter(CollaborationAdapter):
         self._forum_chats[channel_id] = is_forum
         return is_forum
 
+    async def _resolve_root(
+        self, channel_id: str, thread_root_id: str
+    ) -> _ThreadRoot | None:
+        """What a thread root names in this chat, or None if it names nothing.
+
+        A root arrives in either of two spellings, and they do not mean the
+        same thing. Inbound records a bare number — the topic in a forum, the
+        message replied to everywhere else. The publication seam records this
+        platform's own reference to a message, `chat:message`, because that is
+        the form the message map stores, and it always names one message. So a
+        composite reference is a reply target even in a forum: reading `75` out
+        of `-100123:75` and passing it as a topic would aim the post at
+        whichever topic happens to hold that number.
+
+        Nothing is returned for a reference this chat cannot address — a number
+        that is not one, or a message belonging to another chat, which is a
+        confusion of destinations rather than a missing quote. Callers disagree
+        about what that should cost, so none of it is settled here.
+        """
+        chat, separator, message = thread_root_id.partition(":")
+        if separator:
+            if chat != channel_id:
+                return None
+            numbered = _as_int(message)
+            return None if numbered is None else _ThreadRoot(False, numbered)
+        root = _as_int(chat)
+        if root is None:
+            return None
+        return _ThreadRoot(await self._is_forum(channel_id), root)
+
     async def _anchor_kwargs(
         self, channel_id: str, thread_root_id: str | None
     ) -> dict[str, Any]:
         """Anchor a post where the conversation it belongs to is.
 
-        Two different things are spelled the same way. In a forum the root is
-        the topic, and a topic is addressed with `message_thread_id` — every
-        message in it carries that id, not the id of anything one of them
-        replied to. Everywhere else Telegram has no thread at all and the root
-        is a message to reply to. Sending one as the other is not a formatting
-        difference: a topic id used as a reply target is a reply to whichever
-        message happens to hold that number, and it lands in the General topic
-        the moment the topic's opening message is gone — so a card asked for in
-        one topic would be put to the whole group instead.
+        Sending a topic as a reply target, or the other way about, is not a
+        formatting difference: a topic id used as a reply target quotes
+        whichever message happens to hold that number, and it lands in the
+        General topic the moment the topic's opening message is gone — so a
+        card asked for in one topic would be put to the whole group instead.
+        Which of the two a root names is `_resolve_root`'s question.
 
         A reply target that has since been deleted does not stop the send.
         Detaching there costs the quote, not the audience: it is the same chat
@@ -3002,16 +3050,19 @@ class TelegramAdapter(CollaborationAdapter):
         """
         if not thread_root_id:
             return {}
-        try:
-            root = int(thread_root_id)
-        except ValueError:
-            logger.error("Ignoring unparseable Telegram thread root %s", thread_root_id)
+        root = await self._resolve_root(channel_id, thread_root_id)
+        if root is None:
+            logger.error(
+                "Ignoring Telegram thread root %s, which chat %s cannot address.",
+                thread_root_id,
+                channel_id,
+            )
             return {}
-        if await self._is_forum(channel_id):
-            return {"message_thread_id": root}
+        if root.is_topic:
+            return {"message_thread_id": root.id}
         return {
             "reply_parameters": ReplyParameters(
-                message_id=root, allow_sending_without_reply=True
+                message_id=root.id, allow_sending_without_reply=True
             )
         }
 
@@ -3030,26 +3081,25 @@ class TelegramAdapter(CollaborationAdapter):
         and the publisher takes the route it keeps for a destination it cannot
         reach — which ends at the Console rather than in the wrong place.
 
-        A root that is not a number is the same thing arriving differently: the
-        caller asked for somewhere this cannot address, and posting to the chat
-        instead would be answering a question nobody asked.
+        A root this chat cannot address is the same thing arriving differently:
+        the caller asked for somewhere this cannot reach, and posting to the
+        chat instead would be answering a question nobody asked.
         """
         if not thread_root_id:
             return {}
-        try:
-            root = int(thread_root_id)
-        except ValueError:
+        root = await self._resolve_root(channel_id, thread_root_id)
+        if root is None:
             raise RichContentFailed(
                 f"Cannot publish to Telegram chat {channel_id}: {thread_root_id!r} "
-                "is not a topic or message id, so there is no conversation this "
-                "belongs to.",
+                "is not a topic or a message in it, so there is no conversation "
+                "this belongs to.",
                 text=text,
-            ) from None
-        if await self._is_forum(channel_id):
-            return {"message_thread_id": root}
+            )
+        if root.is_topic:
+            return {"message_thread_id": root.id}
         return {
             "reply_parameters": ReplyParameters(
-                message_id=root, allow_sending_without_reply=False
+                message_id=root.id, allow_sending_without_reply=False
             )
         }
 
@@ -3058,13 +3108,24 @@ class TelegramAdapter(CollaborationAdapter):
     ) -> dict[str, Any]:
         """The forum topic to address, where the root names one.
 
-        Outside a forum the root is a message rather than a topic, and there is
-        nothing but the chat to aim at."""
-        if not thread_root_id or not thread_root_id.isdigit():
+        A chat action has no target finer than a topic, so a root naming a
+        message leaves nothing but the chat to aim at — which is every root
+        outside a forum, and a reference to a specific message inside one.
+        """
+        if not thread_root_id:
             return {}
-        if not await self._is_forum(channel_id):
+        root = await self._resolve_root(channel_id, thread_root_id)
+        if root is None:
+            logger.warning(
+                "Signalling to the whole of Telegram chat %s: thread root %s "
+                "names nothing it can address.",
+                channel_id,
+                thread_root_id,
+            )
             return {}
-        return {"message_thread_id": int(thread_root_id)}
+        if not root.is_topic:
+            return {}
+        return {"message_thread_id": root.id}
 
     @staticmethod
     def _is_photo(mimetype: str, size: int) -> bool:
@@ -3118,14 +3179,17 @@ class TelegramAdapter(CollaborationAdapter):
         head of the run."""
         bot = self._require_bot()
         anchor = await self._anchor_kwargs(channel_id, thread_root_id)
-        # A topic is where the message lives, so every chunk carries it or the
-        # tail of a long answer lands in General. A reply target is a pointer
-        # at one message, and repeating it on each chunk would quote the same
-        # message several times over.
-        topic = "message_thread_id" in anchor
+        # In a forum the anchor is what keeps the run together: a chunk without
+        # one lands in General, so the tail of a long answer would be read by
+        # people who never saw its head. Everywhere else the anchor is a pointer
+        # at one message and repeating it quotes that message once per chunk,
+        # which is noise rather than a misdelivery — so it goes on the first
+        # only. The cost of the forum rule is that same repeated quote when the
+        # anchor is a reply rather than a topic, which is the better trade.
+        every_chunk = bool(anchor) and await self._is_forum(channel_id)
         first_ref: str | None = None
         for index, chunk in enumerate(chunk_message(body)):
-            kwargs = anchor if topic or index == 0 else {}
+            kwargs = anchor if every_chunk or index == 0 else {}
             sent = await self._send_chunk(bot, channel_id, chunk, kwargs)
             if sent is None:
                 return first_ref
