@@ -10,7 +10,11 @@ from switch_core.db.models import Package, User
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.user_store import UserStore
-from switch_core.gateway.auth import get_current_user, require_room_access
+from switch_core.gateway.auth import (
+    get_current_user,
+    get_tenant_is_admin,
+    require_room_access,
+)
 from switch_core.gateway.dependencies import (
     get_agent_store,
     get_resource_service,
@@ -140,10 +144,14 @@ async def get_package(
     resource_service: Annotated[ResourceService, Depends(get_resource_service)],
     user_store: Annotated[UserStore, Depends(get_user_store)],
     user: Annotated[User, Depends(get_current_user)],
+    is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> PackageDetail:
     try:
         pkg = await resource_service.get_package_for_user(
-            session, package_id, user.id, is_admin=user.role == "admin"
+            session,
+            package_id,
+            user.id,
+            is_admin=is_admin,
         )
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
@@ -160,13 +168,14 @@ async def patch_package(
     resource_service: Annotated[ResourceService, Depends(get_resource_service)],
     user_store: Annotated[UserStore, Depends(get_user_store)],
     user: Annotated[User, Depends(get_current_user)],
+    is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> PackageDetail:
     try:
         pkg = await resource_service.update_package(
             session,
             package_id,
             user_id=user.id,
-            is_admin=user.role == "admin",
+            is_admin=is_admin,
             name=req.name,
             description=req.description,
             instructions=req.instructions,
@@ -187,13 +196,14 @@ async def delete_package(
     session: Annotated[AsyncSession, Depends(get_session)],
     resource_service: Annotated[ResourceService, Depends(get_resource_service)],
     user: Annotated[User, Depends(get_current_user)],
+    is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> PackageDeleteResponse:
     try:
         detached = await resource_service.delete_package(
             session,
             package_id,
             user_id=user.id,
-            is_admin=user.role == "admin",
+            is_admin=is_admin,
         )
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
@@ -209,10 +219,14 @@ async def list_rooms_for_package(
     session: Annotated[AsyncSession, Depends(get_session)],
     resource_service: Annotated[ResourceService, Depends(get_resource_service)],
     user: Annotated[User, Depends(get_current_user)],
+    is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> list[ResourceRoom]:
     try:
         await resource_service.get_package_for_user(
-            session, package_id, user.id, is_admin=user.role == "admin"
+            session,
+            package_id,
+            user.id,
+            is_admin=is_admin,
         )
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
@@ -232,10 +246,14 @@ async def list_package_references(
     resource_service: Annotated[ResourceService, Depends(get_resource_service)],
     user_store: Annotated[UserStore, Depends(get_user_store)],
     user: Annotated[User, Depends(get_current_user)],
+    is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> list[ReferenceDetail]:
     try:
         await resource_service.get_package_for_user(
-            session, package_id, user.id, is_admin=user.role == "admin"
+            session,
+            package_id,
+            user.id,
+            is_admin=is_admin,
         )
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
@@ -252,6 +270,7 @@ async def add_reference_to_package(
     session: Annotated[AsyncSession, Depends(get_session)],
     resource_service: Annotated[ResourceService, Depends(get_resource_service)],
     user: Annotated[User, Depends(get_current_user)],
+    is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> None:
     try:
         await resource_service.add_reference_to_package(
@@ -259,7 +278,7 @@ async def add_reference_to_package(
             package_id,
             reference_id,
             user_id=user.id,
-            is_admin=user.role == "admin",
+            is_admin=is_admin,
         )
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
@@ -275,6 +294,7 @@ async def remove_reference_from_package(
     session: Annotated[AsyncSession, Depends(get_session)],
     resource_service: Annotated[ResourceService, Depends(get_resource_service)],
     user: Annotated[User, Depends(get_current_user)],
+    is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> PackageMemberRemoveResponse:
     try:
         affected = await resource_service.remove_reference_from_package(
@@ -282,7 +302,7 @@ async def remove_reference_from_package(
             package_id,
             reference_id,
             user_id=user.id,
-            is_admin=user.role == "admin",
+            is_admin=is_admin,
         )
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
@@ -305,10 +325,14 @@ async def list_package_documents(
     user_store: Annotated[UserStore, Depends(get_user_store)],
     agent_store: Annotated[AgentStore, Depends(get_agent_store)],
     user: Annotated[User, Depends(get_current_user)],
+    is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> list[DocumentSummary]:
     try:
         await resource_service.get_package_for_user(
-            session, package_id, user.id, is_admin=user.role == "admin"
+            session,
+            package_id,
+            user.id,
+            is_admin=is_admin,
         )
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
@@ -327,6 +351,7 @@ async def add_document_to_package(
     session: Annotated[AsyncSession, Depends(get_session)],
     resource_service: Annotated[ResourceService, Depends(get_resource_service)],
     user: Annotated[User, Depends(get_current_user)],
+    is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> None:
     try:
         await resource_service.add_document_to_package(
@@ -334,7 +359,7 @@ async def add_document_to_package(
             package_id,
             document_id,
             user_id=user.id,
-            is_admin=user.role == "admin",
+            is_admin=is_admin,
         )
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
@@ -350,6 +375,7 @@ async def remove_document_from_package(
     session: Annotated[AsyncSession, Depends(get_session)],
     resource_service: Annotated[ResourceService, Depends(get_resource_service)],
     user: Annotated[User, Depends(get_current_user)],
+    is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> PackageMemberRemoveResponse:
     try:
         affected = await resource_service.remove_document_from_package(
@@ -357,7 +383,7 @@ async def remove_document_from_package(
             package_id,
             document_id,
             user_id=user.id,
-            is_admin=user.role == "admin",
+            is_admin=is_admin,
         )
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
@@ -383,8 +409,9 @@ async def list_room_packages(
     room_store: Annotated[RoomStore, Depends(get_room_store)],
     user_store: Annotated[UserStore, Depends(get_user_store)],
     user: Annotated[User, Depends(get_current_user)],
+    is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> list[PackageDetail]:
-    await require_room_access(session, room_store, room_id, user, "read")
+    await require_room_access(session, room_store, room_id, user, "read", is_admin)
     pkgs = await resource_service.list_room_packages(session, room_id)
     return await _enrich(session, pkgs, resource_service, user_store)
 
@@ -398,15 +425,16 @@ async def attach_package_to_room(
     room_store: Annotated[RoomStore, Depends(get_room_store)],
     user_store: Annotated[UserStore, Depends(get_user_store)],
     user: Annotated[User, Depends(get_current_user)],
+    is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> PackageDetail:
-    await require_room_access(session, room_store, room_id, user, "write")
+    await require_room_access(session, room_store, room_id, user, "write", is_admin)
     try:
         await resource_service.attach_package_to_room(
             session,
             room_id,
             package_id,
             user_id=user.id,
-            is_admin=user.role == "admin",
+            is_admin=is_admin,
         )
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
@@ -414,7 +442,10 @@ async def attach_package_to_room(
         raise HTTPException(status_code=403, detail=str(e)) from e
     await session.commit()
     pkg = await resource_service.get_package_for_user(
-        session, package_id, user.id, is_admin=user.role == "admin"
+        session,
+        package_id,
+        user.id,
+        is_admin=is_admin,
     )
     return await _enrich_one(session, pkg, resource_service, user_store)
 
@@ -427,7 +458,8 @@ async def detach_package_from_room(
     resource_service: Annotated[ResourceService, Depends(get_resource_service)],
     room_store: Annotated[RoomStore, Depends(get_room_store)],
     user: Annotated[User, Depends(get_current_user)],
+    is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> None:
-    await require_room_access(session, room_store, room_id, user, "write")
+    await require_room_access(session, room_store, room_id, user, "write", is_admin)
     await resource_service.detach_package_from_room(session, room_id, package_id)
     await session.commit()

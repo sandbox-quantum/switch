@@ -31,6 +31,16 @@ _ROOM_STORE = RoomStore()
 _USER_STORE = UserStore()
 
 
+async def _is_admin(session: AsyncSession, user: User) -> bool:
+    """The bit `get_tenant_is_admin` hands the route, resolved the same way.
+
+    Passing a literal here would test the handler against an admin bit no
+    dependency could have produced; reading it through the store keeps the
+    role on the user row meaningful.
+    """
+    return await _USER_STORE.administers(session, user)
+
+
 def _resource_service(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> ResourceService:
@@ -103,7 +113,14 @@ class TestAttachReferenceRoomWriteAuthz:
 
             with pytest.raises(HTTPException) as exc:
                 await attach_reference_to_room(
-                    room.id, ref.id, session, svc, _ROOM_STORE, _USER_STORE, other
+                    room.id,
+                    ref.id,
+                    session,
+                    svc,
+                    _ROOM_STORE,
+                    _USER_STORE,
+                    other,
+                    await _is_admin(session, other),
                 )
 
             assert exc.value.status_code == 403
@@ -119,7 +136,14 @@ class TestAttachReferenceRoomWriteAuthz:
             svc = _resource_service(session_factory)
 
             detail = await attach_reference_to_room(
-                room.id, ref.id, session, svc, _ROOM_STORE, _USER_STORE, owner
+                room.id,
+                ref.id,
+                session,
+                svc,
+                _ROOM_STORE,
+                _USER_STORE,
+                owner,
+                await _is_admin(session, owner),
             )
 
             assert detail.id == ref.id
@@ -137,7 +161,14 @@ class TestAttachReferenceRoomWriteAuthz:
             svc = _resource_service(session_factory)
 
             detail = await attach_reference_to_room(
-                room.id, ref.id, session, svc, _ROOM_STORE, _USER_STORE, admin
+                room.id,
+                ref.id,
+                session,
+                svc,
+                _ROOM_STORE,
+                _USER_STORE,
+                admin,
+                await _is_admin(session, admin),
             )
 
             assert detail.id == ref.id
@@ -161,7 +192,14 @@ class TestAttachReferenceRoomWriteAuthz:
             svc = _resource_service(session_factory)
 
             detail = await attach_reference_to_room(
-                room.id, ref.id, session, svc, _ROOM_STORE, _USER_STORE, other
+                room.id,
+                ref.id,
+                session,
+                svc,
+                _ROOM_STORE,
+                _USER_STORE,
+                other,
+                await _is_admin(session, other),
             )
 
             assert detail.id == ref.id
@@ -176,7 +214,14 @@ class TestAttachReferenceRoomWriteAuthz:
 
             with pytest.raises(HTTPException) as exc:
                 await attach_reference_to_room(
-                    "missing-room", ref.id, session, svc, _ROOM_STORE, _USER_STORE, user
+                    "missing-room",
+                    ref.id,
+                    session,
+                    svc,
+                    _ROOM_STORE,
+                    _USER_STORE,
+                    user,
+                    await _is_admin(session, user),
                 )
 
             assert exc.value.status_code == 404
@@ -196,7 +241,13 @@ class TestCreateLinkedRoomWriteAuthz:
 
             with pytest.raises(HTTPException) as exc:
                 await create_linked_room(
-                    source.id, req, session, svc, _ROOM_STORE, other
+                    source.id,
+                    req,
+                    session,
+                    svc,
+                    _ROOM_STORE,
+                    other,
+                    await _is_admin(session, other),
                 )
 
             assert exc.value.status_code == 403
@@ -213,7 +264,13 @@ class TestCreateLinkedRoomWriteAuthz:
             req = LinkedRoomCreateRequest(target_room_id=target.id, label="rel")
 
             detail = await create_linked_room(
-                source.id, req, session, svc, _ROOM_STORE, owner
+                source.id,
+                req,
+                session,
+                svc,
+                _ROOM_STORE,
+                owner,
+                await _is_admin(session, owner),
             )
 
             assert detail.target_room_id == target.id
@@ -237,7 +294,13 @@ class TestDeleteLinkedRoomWriteAuthz:
 
             with pytest.raises(HTTPException) as exc:
                 await delete_linked_room(
-                    source.id, target.id, session, svc, _ROOM_STORE, other
+                    source.id,
+                    target.id,
+                    session,
+                    svc,
+                    _ROOM_STORE,
+                    other,
+                    await _is_admin(session, other),
                 )
 
             assert exc.value.status_code == 403
@@ -257,7 +320,13 @@ class TestDeleteLinkedRoomWriteAuthz:
             )
 
             resp = await delete_linked_room(
-                source.id, target.id, session, svc, _ROOM_STORE, owner
+                source.id,
+                target.id,
+                session,
+                svc,
+                _ROOM_STORE,
+                owner,
+                await _is_admin(session, owner),
             )
 
             assert resp.status_code == 204

@@ -261,6 +261,76 @@ class ApiKey(TenantScoped, Base):
     )
 
 
+# ── Invitations ────────────────────────────────────────────────────────────────
+
+
+class Invitation(TenantScoped, Base):
+    """A credential that grants membership in a tenant (CHOO-2722).
+
+    `email` is null for a shareable link and set for an invitation addressed
+    to one person; nothing at this layer refuses acceptance by a different
+    address, which is a decision for whatever accepts the invitation, not for
+    the row that describes it.
+
+    `token_hash` is unique across the whole deployment rather than per tenant,
+    the same reasoning as `api_keys.key_hash`: accepting an invitation is
+    exactly the credential-resolution shape that runs before any tenant is
+    bound, so the hash has to be resolvable on its own. `tenant_of_invitation`
+    (`db/tenant_lookup.py`) is the lookup that does it. The hash, never the
+    token: nothing in this schema, this store, or anything built on either
+    holds the plaintext once `InvitationStore.create` has returned it.
+
+    `role` is a checked string rather than an enum type, matching
+    `tenant_members.role` — the role an acceptance would grant, not one held
+    by anything yet.
+
+    `uses_remaining` and `expires_at` bound how long and how many times the
+    token works; `revoked_at` is a third, independent way to stop it early.
+    None of the three are optional here — a table that could not expire or be
+    revoked would not be a credential, and the design this implements is
+    explicit that expiry and revocation are not optional.
+
+    The floor under `uses_remaining` is a constraint rather than a convention
+    because the thing it guards against is a lost race, not a typo: two
+    concurrent acceptances of a single-use invitation can both read `1` and
+    both write `0`, and read-committed will let both commit. `consume`
+    (`db/stores/invitation_store.py`) is the decrement that cannot lose that
+    race; the constraint is what makes any other decrement fail loudly instead
+    of over-granting membership.
+    """
+
+    __tablename__ = "invitations"
+    __table_args__ = (
+        CheckConstraint(
+            "role IN ('owner', 'admin', 'member')", name="ck_invitations_role"
+        ),
+        CheckConstraint(
+            "uses_remaining >= 0", name="ck_invitations_uses_remaining_not_negative"
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
+    role: Mapped[str] = mapped_column(Text, nullable=False)
+    email: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Global on purpose, like api_keys.key_hash: accepting an invitation
+    # resolves the hash before a tenant is known, so it cannot be scoped by
+    # one.
+    token_hash: Mapped[str] = mapped_column(Text, unique=True, nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    uses_remaining: Mapped[int] = mapped_column(Integer, nullable=False)
+    revoked_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_by: Mapped[str] = mapped_column(
+        Text, ForeignKey("users.id"), nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
 # ── Clients ────────────────────────────────────────────────────────────────────
 
 
@@ -873,6 +943,48 @@ class Document(TenantScoped, Base):
     content: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[str] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+# ── Templates ─────────────────────────────────────────────────────────────────
+
+
+class Template(TenantScoped, Base):
+    """A template document held on this server, plus the metadata to find it.
+
+    ``content`` is stored verbatim and never parsed, so a document in a format
+    this server does not yet understand still round-trips byte for byte.
+    ``kind`` is free text for the same reason: room, group and agent templates
+    differ only in a string, not in the schema.
+
+    ``version`` counts revisions of the stored row, incrementing whenever the
+    content is replaced. It is not the author's name for a release, and not the
+    inert ``version:`` key inside the document — those belong to the format.
+    """
+
+    __tablename__ = "templates"
+    __table_args__ = (
+        # Not widened to include the tenant: an owner belongs to one, so
+        # scoping the name to the owner already scopes it to the tenant.
+        UniqueConstraint("owner_id", "name", name="uq_templates_owner_name"),
+        UniqueConstraint("id", "tenant_id", name="uq_templates_id_tenant"),
+    )
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
+    owner_id: Mapped[str] = mapped_column(Text, ForeignKey("users.id"), nullable=False)
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    description: Mapped[str] = mapped_column(Text, nullable=False)
+    kind: Mapped[str] = mapped_column(Text, nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    version: Mapped[int] = mapped_column(Integer, nullable=False, server_default="1")
+    created_at: Mapped[str] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[str] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
     )
 
 

@@ -56,6 +56,11 @@ from switch_core.bridges.agent.registration_bootstrap import (
     resolve_registration_owner_id,
 )
 from switch_core.bridges.resource.service import ResourceService
+from switch_core.clients.admin_messages import PLATFORM_MARKER as _PLATFORM_MARKER
+from switch_core.clients.admin_messages import (
+    platform_on_behalf_of,
+    platform_replies_in_channel,
+)
 from switch_core.crypto import encrypt_token
 from switch_core.db.models import (
     Agent,
@@ -93,7 +98,7 @@ from switch_core.events import (
     ToolCallReport as MatrixToolCallReport,
 )
 from switch_core.messages.recorded_types import MEMBERSHIP_EVENT_TYPE
-from switch_core.tenant_context import tenant_scope
+from switch_core.tenant_context import current_tenant_id, tenant_scope
 from switch_core.transport import (
     TransportError,
 )
@@ -338,6 +343,9 @@ class ProtocolService:
         Raises:
             ValueError: name is invalid (lowercase alphanumeric, dots, hyphens,
                 or underscores — no spaces).
+            RuntimeError: no tenant is bound. Checked before anything is
+                written, because the agent's row and its bridge identities
+                both belong to a tenant and neither can be placed without one.
             InvalidIconUrl: ``icon_url`` is malformed or points somewhere unsafe.
             InvalidDisplayName: ``display_name`` is over-long or unsafe to render.
             AgentExistsError: agent with this name exists and ``overwrite`` is
@@ -349,6 +357,13 @@ class ProtocolService:
             raise ValueError(
                 f"Invalid agent name: {name!r}. "
                 "Use only lowercase letters, digits, dots, hyphens, and underscores."
+            )
+
+        tenant_id = current_tenant_id()
+        if tenant_id is None:
+            raise RuntimeError(
+                "register_agent requires a bound tenant; the agent's row and "
+                "its bridge identities both belong to one"
             )
 
         validated_icon_url = normalise_icon_url(icon_url)
@@ -430,7 +445,7 @@ class ProtocolService:
                 )
                 logger.info("Registered agent: %s (%s)", name, agent_id)
 
-        await self._create_bridge_identities(name, description)
+        await self._create_bridge_identities(tenant_id, name, description)
 
         return RegistrationResult(
             agent_id=agent_id,
@@ -695,9 +710,18 @@ class ProtocolService:
         return existing.id
 
     async def _create_bridge_identities(
-        self, agent_name: str, description: str
+        self, tenant_id: str, agent_name: str, description: str
     ) -> None:
-        for bridge_core in self.collab_lifecycle.all_bridges():
+        """Create `agent_name`'s platform identity on the bridges of
+        `tenant_id` — and only that tenant's bridges.
+
+        The tenant is passed in rather than read from the ambient context so
+        that it is the caller's to establish: `register_agent` refuses without
+        one before it writes anything. Fanning out to every tenant's bridges
+        instead would repeat the cross-tenant identity leak this method exists
+        to avoid.
+        """
+        for bridge_core in self.collab_lifecycle.bridges_for_tenant(tenant_id):
             try:
                 await bridge_core.adapter.create_agent_identity(agent_name, description)
             except Exception:
@@ -799,8 +823,17 @@ class ProtocolService:
             await self.agent_store.update(session, agent_id, icon_url=validated)
             await session.commit()
 
-    async def _remove_bridge_identities(self, agent_name: str) -> None:
-        for bridge_core in self.collab_lifecycle.all_bridges():
+    async def _remove_bridge_identities(self, tenant_id: str, agent_name: str) -> None:
+        """Remove `agent_name`'s platform identity from the bridges of
+        `tenant_id` — and only that tenant's bridges.
+
+        Unscoped, this is worse than its `_create_bridge_identities` twin:
+        deleting an agent in one tenant would delete the platform bot, user
+        group, or role of a same-named agent belonging to another tenant. As
+        there, the tenant is the caller's to establish — `delete_agent`
+        refuses without one before it stops anything.
+        """
+        for bridge_core in self.collab_lifecycle.bridges_for_tenant(tenant_id):
             try:
                 await bridge_core.adapter.remove_agent_identity(agent_name)
             except Exception:
@@ -819,10 +852,23 @@ class ProtocolService:
         """Delete an agent and clean up all associated state.
 
         Provide exactly one of ``agent_id`` or ``agent_name``.
+
+        Raises:
+            ValueError: neither or both selectors were given, or no such agent.
+            RuntimeError: no tenant is bound. Checked before the agent is
+                stopped, so an unbound caller leaves it running rather than
+                half torn down.
         """
         if (agent_id is None) == (agent_name is None):
             raise ValueError(
                 "delete_agent requires exactly one of agent_id or agent_name"
+            )
+
+        tenant_id = current_tenant_id()
+        if tenant_id is None:
+            raise RuntimeError(
+                "delete_agent requires a bound tenant; the agent's row and its "
+                "bridge identities both belong to one"
             )
 
         async with self.session_factory() as session:
@@ -841,7 +887,7 @@ class ProtocolService:
         await self.client_lifecycle.stop(client_id)
         self.event_buffer.remove(resolved_id)
 
-        await self._remove_bridge_identities(resolved_name)
+        await self._remove_bridge_identities(tenant_id, resolved_name)
 
         async with self.session_factory() as session:
             await self.agent_store.delete(session, resolved_id)
@@ -1672,15 +1718,25 @@ class ProtocolService:
 
     @staticmethod
     def _timeline_entry(
-        message: Message, attachments: list[MessageAttachment]
+        message: Message,
+        attachments: list[MessageAttachment],
+        sender_kinds: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         """Build the agent-facing entry for a recorded row.
 
         An arrival is stored with no body — how it reads is this function's to
         decide, not the writer's — so the sentence is composed here and can be
         changed without rewriting history.
+
+        ``sender_kinds`` is an optional pre-resolved map of sender mxid to
+        kind ("user", "agent", "platform"). When absent, ``sender_kind`` is
+        read from the message content: "platform" for a PLATFORM_MARKER, else
+        None.
         """
         name = message.sender_name or message.sender_id
+        sender_kind = (sender_kinds or {}).get(message.sender_id)
+        if sender_kind is None and _PLATFORM_MARKER in (message.content or {}):
+            sender_kind = "platform"
         if message.event_type == MEMBERSHIP_EVENT_TYPE:
             return {
                 "id": message.transport_event_id,
@@ -1691,7 +1747,7 @@ class ProtocolService:
                 "timestamp": _epoch_ms(message.sent_at),
                 "attachments": [],
             }
-        return {
+        entry: dict[str, Any] = {
             "id": message.transport_event_id,
             "kind": "message",
             "sender": message.sender_id,
@@ -1709,10 +1765,24 @@ class ProtocolService:
                 for attachment in attachments
             ],
         }
+        if sender_kind is not None:
+            entry["sender_kind"] = sender_kind
+        person = platform_on_behalf_of(message.content or {})
+        if person is not None:
+            entry["on_behalf_of"] = person.name
+        return entry
 
     @staticmethod
     def _thread_root_id(message: Message) -> str:
-        """A threaded reply belongs to its root; anything else is its own root."""
+        """A threaded reply belongs to its root; anything else is its own root.
+
+        A platform message flagged reply_in_channel (a template's kickoff
+        text, threaded under its headline only to keep the channel tidy) is
+        read as its own root, so an agent catching up sees the work it starts
+        at the top level and answers there.
+        """
+        if platform_replies_in_channel(message.content or {}):
+            return message.transport_event_id
         return message.thread_root_event_id or message.transport_event_id
 
     async def read_context(
@@ -1735,8 +1805,10 @@ class ProtocolService:
             {"root": <entry>, "replies": [<entry>, ...]}
 
         An <entry> is {"id", "kind", "sender", "sender_name", "body",
-        "timestamp", "attachments"}. `kind` is "message" for something someone
-        said and "room_join" for an arrival. Top-level entries are roots with
+        "timestamp", "attachments"}, plus "sender_kind" ("platform" for a
+        message the Switch app posted) and "on_behalf_of" (the person a
+        platform message spoke for) when they apply. `kind` is "message" for
+        something someone said and "room_join" for an arrival. Top-level entries are roots with
         an empty replies list; replies are ordered oldest-first within a
         thread. A root that falls outside the fetched window but has a reply
         inside it is fetched alongside; if no record of it exists it is
@@ -2267,13 +2339,9 @@ class ProtocolService:
         )
 
         async with self.session_factory() as session:
-            agent = await self.agent_store.get(session, agent_id)
-            if agent is None:
-                raise ValueError(f"Unknown agent: {agent_id}")
-            owner_is_admin = False
-            if agent.owner_id is not None:
-                owner = await session.get(User, agent.owner_id)
-                owner_is_admin = owner is not None and owner.role == "admin"
+            agent, _owner_id, owner_is_admin = await self._resolve_acting_identity(
+                session, agent_id
+            )
             group_id = await self._resolve_group_name(session, group_name)
         if (reference_ids or package_ids) and agent.owner_id is None:
             raise ValueError(
@@ -2422,6 +2490,13 @@ class ProtocolService:
 
         Returns ``(agent, owner_id, owner_is_admin)``. Used by moderation
         methods that perform resource-access checks on the agent's behalf.
+
+        ``owner_is_admin`` is the owner's tenant-scoped administrative bit
+        (``UserStore.administers``), not the global operator flag alone: the
+        agent must not gain more than its owner holds in the tenant this
+        request is bound to. `session` is already scoped there by the time an
+        agent-bridge request reaches this method, so the read is the owner's
+        membership in the same tenant the agent itself belongs to.
         """
         agent = await self.agent_store.get(session, agent_id)
         if agent is None:
@@ -2429,7 +2504,9 @@ class ProtocolService:
         owner_is_admin = False
         if agent.owner_id is not None:
             owner = await session.get(User, agent.owner_id)
-            owner_is_admin = owner is not None and owner.role == "admin"
+            owner_is_admin = owner is not None and await self.user_store.administers(
+                session, owner
+            )
         return agent, agent.owner_id, owner_is_admin
 
     async def _require_room_action(

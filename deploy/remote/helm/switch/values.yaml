@@ -400,6 +400,16 @@ postgresql:
   # in staging first. Migrations are unaffected; Alembic does not read it.
   idleInTransactionSessionTimeout: ""
 
+  # How long a migration waits for a lock before failing (e.g. "10s"; "0" waits
+  # forever). Migrations are DDL, so they ask for ACCESS EXCLUSIVE on tables the
+  # release is still serving from, and that request queues behind whatever
+  # transaction holds the table — with every reader arriving after it queueing
+  # behind the request. Waiting therefore does not just delay the upgrade, it
+  # stalls the deployment beside it. Failing instead leaves the old schema up
+  # and the release un-applied, which is the outcome worth retrying. Raise it
+  # for a migration known to rewrite a large table while traffic is on it.
+  migrationLockTimeout: "10s"
+
   # Password source. By default the password is read from the chart-managed
   # Secret (secrets.postgresPassword). To source it from a pre-existing Secret
   # instead (e.g. synced by external-secrets / sealed-secrets), set

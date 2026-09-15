@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 
+import httpx
 import pytest
 from fastapi import HTTPException
 from sqlalchemy import select
@@ -11,8 +13,14 @@ import switch_core.gateway.oidc_routes as oidc_routes
 from switch_core.config import SwitchConfig
 from switch_core.db.models import TENANT_ZERO_ID, OidcIdentity, TenantMember, User
 from switch_core.db.stores.user_store import OidcIdentityRaceError, UserStore
-from switch_core.gateway.auth import hash_password
+from switch_core.gateway.auth import decode_jwt, hash_password
 from switch_core.gateway.auth_routes import auth_config
+
+
+def _tenant_claim(set_cookie: str) -> str | None:
+    token = set_cookie.split("switch_auth=", 1)[1].split(";", 1)[0]
+    claim: str | None = decode_jwt(token, "secret").get("tenant_id")
+    return claim
 
 
 def _config(**overrides: object) -> SwitchConfig:
@@ -30,6 +38,7 @@ def _config(**overrides: object) -> SwitchConfig:
         gateway_oidc_issuer_url="https://idp.example",
         gateway_oidc_client_id="cid",
         gateway_oidc_client_secret="sec",
+        gateway_oidc_scopes="openid email profile",
     )
     base.update(overrides)
     return SwitchConfig(**base)  # type: ignore[arg-type]
@@ -43,6 +52,19 @@ class _FakeClient:
 
     async def authorize_access_token(self, _request: object) -> dict:
         return self._token
+
+
+class _FakeClientNoUserinfoInToken:
+    """A token with no embedded userinfo, forcing the userinfo HTTP call."""
+
+    def __init__(self, userinfo_error: Exception) -> None:
+        self._userinfo_error = userinfo_error
+
+    async def authorize_access_token(self, _request: object) -> dict:
+        return {"access_token": "at"}
+
+    async def userinfo(self, **_kwargs: object) -> dict:
+        raise self._userinfo_error
 
 
 class TestOidcCallback:
@@ -72,6 +94,12 @@ class TestOidcCallback:
             assert response.status_code == 303
             set_cookie = response.headers.get("set-cookie")
             assert set_cookie is not None and "switch_auth=" in set_cookie
+            # Signing in selects no workspace. That null claim is the recovery
+            # path out of a selection that has gone stale — a removed member is
+            # 403'd on every request until something mints one without it — so
+            # a later change carrying the previous tenant forward here would
+            # strand them until their cookie expired (CHOO-2723).
+            assert _tenant_claim(set_cookie) is None
 
             user = await UserStore().get_by_email(session, "alice@example.com")
             assert user is not None
@@ -412,6 +440,92 @@ class TestOidcCallback:
                 )
             assert exc.value.status_code == 401
 
+    async def test_userinfo_upstream_failure_maps_to_502(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # A token with no embedded userinfo forces the fallback HTTP call to
+        # the provider's userinfo endpoint; that call failing is the IdP's
+        # fault, not the caller's, and must not surface as an unhandled 500.
+        monkeypatch.setattr(
+            oidc_routes,
+            "_client",
+            lambda: _FakeClientNoUserinfoInToken(
+                httpx.ConnectError("connection refused")
+            ),
+        )
+
+        async with session_factory() as session:
+            with pytest.raises(HTTPException) as exc:
+                await oidc_routes.oidc_callback(
+                    request=SimpleNamespace(),  # type: ignore[arg-type]
+                    config=_config(),
+                    session=session,
+                    user_store=UserStore(),
+                )
+            assert exc.value.status_code == 502
+            assert exc.value.detail == "OIDC provider did not respond"
+
+    async def test_userinfo_non_json_response_maps_to_502(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # A 200 whose body isn't JSON (a proxy or captive portal sitting in
+        # front of the provider) fails in resp.json(), not raise_for_status()
+        # — still the provider's fault, so still a 502.
+        monkeypatch.setattr(
+            oidc_routes,
+            "_client",
+            lambda: _FakeClientNoUserinfoInToken(
+                json.JSONDecodeError("Expecting value", "<html>not json</html>", 0)
+            ),
+        )
+
+        async with session_factory() as session:
+            with pytest.raises(HTTPException) as exc:
+                await oidc_routes.oidc_callback(
+                    request=SimpleNamespace(),  # type: ignore[arg-type]
+                    config=_config(),
+                    session=session,
+                    user_store=UserStore(),
+                )
+            assert exc.value.status_code == 502
+            assert exc.value.detail == "OIDC provider did not respond"
+
+    async def test_missing_userinfo_endpoint_maps_to_503(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # A provider whose discovery document has no userinfo_endpoint (it's
+        # optional in the OIDC spec — WorkOS's User Management surface is one
+        # such provider) combined with a token carrying no usable claims
+        # leaves nowhere to read claims from. That's a configuration mistake
+        # for this deployment, not a transient upstream fault — 503, not
+        # 500, since it's diagnosed precisely enough to name rather than
+        # unanticipated, and not a 502 since the provider didn't misbehave.
+        monkeypatch.setattr(
+            oidc_routes,
+            "_client",
+            lambda: _FakeClientNoUserinfoInToken(KeyError("userinfo_endpoint")),
+        )
+
+        async with session_factory() as session:
+            with pytest.raises(HTTPException) as exc:
+                await oidc_routes.oidc_callback(
+                    request=SimpleNamespace(),  # type: ignore[arg-type]
+                    config=_config(),
+                    session=session,
+                    user_store=UserStore(),
+                )
+            assert exc.value.status_code == 503
+            assert exc.value.detail == (
+                "OIDC provider has no userinfo endpoint and no claims were "
+                "available from the token"
+            )
+
 
 class TestTheCallbackPlacesTheUserInATenant:
     """Sign-in provisions accounts, and an account with no membership can
@@ -550,6 +664,7 @@ class TestAuthConfigEndpoint:
             gateway_oidc_issuer_url=None,
             gateway_oidc_client_id=None,
             gateway_oidc_client_secret=None,
+            gateway_oidc_scopes=None,
             gateway_password_login_enabled=False,
         )
         result = await auth_config(config=config)

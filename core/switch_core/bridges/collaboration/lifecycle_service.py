@@ -712,5 +712,13 @@ class CollaborationBridgeLifecycleService:
     def get(self, bridge_id: str) -> BridgeCore | None:
         return self._bridges.get(bridge_id)
 
-    def all_bridges(self) -> list[BridgeCore]:
-        return list(self._bridges.values())
+    def bridges_for_tenant(self, tenant_id: str) -> list[BridgeCore]:
+        """Running bridges belonging to `tenant_id`, and none other.
+
+        `_bridges` is a flat, instance-wide dict, so this is the only way to
+        act on a tenant's bridges — e.g. creating an agent's platform identity
+        — without reaching another tenant's.
+        """
+        return [
+            bridge for bridge in self._bridges.values() if bridge.tenant_id == tenant_id
+        ]

@@ -8,7 +8,9 @@ from switch_core.bridges.agent.commands import dispatch_admin_command
 from switch_core.bridges.agent.protocol.connections import ConnectionRegistry
 from switch_core.clients.admin_messages import (
     ADMIN_MARKER,
+    PLATFORM_MARKER,
     AdminMessageType,
+    OnBehalfOf,
     admin_extra_content,
 )
 from switch_core.clients.client_base import (
@@ -123,6 +125,44 @@ class AdminClient(ClientBase[ClientConfig]):
             format=format,
             thread_root_id=thread_root_id,
             extra_content=admin_extra_content(AdminMessageType.COMMAND_RESULT),
+        )
+
+    # ── Platform messages ───────────────────────────────────────────────────
+
+    async def send_platform_message(
+        self,
+        room_id: str,
+        body: str,
+        *,
+        thread_root_id: str | None = None,
+        on_behalf_of: OnBehalfOf | None = None,
+        reply_in_channel: bool = False,
+    ) -> str | None:
+        """Send an addressed message as the Switch platform.
+
+        Unlike an admin notice it carries no ADMIN_MARKER and IS addressed to
+        agents. ``on_behalf_of`` names the person whose authority it carries:
+        each addressed agent applies its policy to that person, so the
+        platform can say what they could have said and nothing more. Without
+        it the message is the platform's own, which agents deny unless a rule
+        opts them in.
+        """
+        marker_value: dict[str, object] = {}
+        if on_behalf_of is not None:
+            marker_value["on_behalf_of"] = {
+                "user_id": on_behalf_of.user_id,
+                "name": on_behalf_of.name,
+            }
+        if reply_in_channel:
+            # Only meaningful for a threaded message: the agents it addresses
+            # answer at the top level instead of under it.
+            marker_value["reply_in_channel"] = True
+        return await self.send_message(
+            room_id,
+            body,
+            format="markdown",
+            thread_root_id=thread_root_id,
+            extra_content={PLATFORM_MARKER: marker_value},
         )
 
     # ── Admin notices ─────────────────────────────────────────────────────────

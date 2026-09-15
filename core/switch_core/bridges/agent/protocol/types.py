@@ -213,6 +213,12 @@ class MessagePayload(BaseModel):
     addressed: bool
     sender: str
     sender_name: str
+    # Who sent this: "user" (a human on a bridge), "agent", or "platform"
+    # (the Switch app itself). None on rows written before the field existed.
+    sender_kind: str | None = None
+    # For a platform message: the display name of the person whose authority
+    # it carries (a template's creator behind its kickoff), else None.
+    on_behalf_of: str | None = None
     message_id: str
     body: str
     timestamp: int

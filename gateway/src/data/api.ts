@@ -102,6 +102,14 @@ export interface AddressingRule {
   room_groups: AddressingDimension;
   users: AddressingDimension;
   agents: AddressingDimension;
+  // Symbolic subjects, resolved when a message arrives. Absent reads as
+  // false, as it does server-side.
+  owner?: boolean;
+  owner_agents?: boolean;
+  // Admit the Switch platform on its own account. Denied by default even for
+  // an open policy. A platform message sent for a person is judged as that
+  // person instead.
+  platform?: boolean;
 }
 
 export interface AddressingPolicy {
@@ -1494,4 +1502,108 @@ export async function detachPackageFromRoom(
     const body = await res.json().catch(() => null);
     throw new Error(body?.detail ?? `${res.status} ${res.statusText}`);
   }
+}
+
+// ── Templates ────────────────────────────────────────────────────────────────
+
+export interface TemplateSummary {
+  id: string;
+  owner_id: string;
+  owner_name: string | null;
+  name: string;
+  description: string;
+  kind: string;
+  version: number;
+  size_bytes: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface TemplateDetail extends TemplateSummary {
+  content: string;
+}
+
+export interface TemplateCreateInput {
+  name: string;
+  description: string;
+  kind: string;
+  content: string;
+}
+
+export interface TemplateUpdateInput {
+  name?: string;
+  description?: string;
+  kind?: string;
+  content?: string;
+}
+
+export interface TemplateDeleteResult {
+  deleted_id: string;
+}
+
+export async function fetchTemplates(): Promise<TemplateSummary[] | null> {
+  return fetchJson<TemplateSummary[]>("/templates");
+}
+
+export async function fetchTemplate(id: string): Promise<TemplateDetail | null> {
+  return fetchJson<TemplateDetail>(`/templates/${id}`);
+}
+
+export async function createTemplate(
+  input: TemplateCreateInput,
+): Promise<TemplateDetail> {
+  return jsonRequest<TemplateDetail>("/templates", "POST", input);
+}
+
+export async function updateTemplate(
+  id: string,
+  input: TemplateUpdateInput,
+): Promise<TemplateDetail> {
+  return jsonRequest<TemplateDetail>(`/templates/${id}`, "PATCH", input);
+}
+
+export async function deleteTemplate(id: string): Promise<TemplateDeleteResult> {
+  return jsonRequest<TemplateDeleteResult>(`/templates/${id}`, "DELETE");
+}
+
+/** The stored document itself, exactly as uploaded — for download and copy. */
+export async function fetchTemplateContent(id: string): Promise<string> {
+  const res = await fetch(`${BASE}/templates/${id}/content`, {
+    credentials: "include",
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => null);
+    throw new Error(body?.detail ?? `${res.status} ${res.statusText}`);
+  }
+  return res.text();
+}
+
+export interface TemplateFinding {
+  code: string;
+  message: string;
+  subject: string | null;
+  blocking: boolean;
+}
+
+export interface TemplateValidation {
+  ok: boolean;
+  /** The server refuses an upload of this document. */
+  blocked: boolean;
+  errors: TemplateFinding[];
+  warnings: TemplateFinding[];
+}
+
+/**
+ * Check a document without storing it.
+ *
+ * Mostly advisory — but `blocked` is not. The server refuses an upload that
+ * is not YAML at all, so a form that ignored it would offer a button that
+ * always fails.
+ */
+export async function validateTemplate(
+  content: string,
+): Promise<TemplateValidation> {
+  return jsonRequest<TemplateValidation>("/templates/validate", "POST", {
+    content,
+  });
 }

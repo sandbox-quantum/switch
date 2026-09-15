@@ -19,7 +19,7 @@ from switch_core.db.stores.external_user_store import ExternalUserStore
 from switch_core.db.stores.room_group_store import RoomGroupStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.user_store import UserStore
-from switch_core.gateway.auth import get_current_user
+from switch_core.gateway.auth import get_current_user, get_tenant_is_admin
 from switch_core.gateway.dependencies import (
     get_bridge_store,
     get_collab_lifecycle,
@@ -52,7 +52,7 @@ from switch_core.gateway.schemas import (
     RoomUsersRequest,
 )
 from switch_core.room_service import RoleSpec, RoomCreateConfig, RoomService
-from switch_core.rooms_yaml import ProvisionResult, RoomYamlService
+from switch_core.rooms_yaml import ProvisionResult, RoomYamlService, TemplateDocument
 
 logger = logging.getLogger(__name__)
 
@@ -65,6 +65,7 @@ async def _require_room(
     room_id: str,
     user: User,
     action: Action,
+    is_admin: bool,
 ) -> Room:
     """Load a room (404 if missing) and authorize `action` for `user`,
     raising HTTP 403 if denied."""
@@ -72,7 +73,11 @@ async def _require_room(
     if room is None:
         raise HTTPException(status_code=404, detail="Room not found")
     try:
-        require(Principal(user.id, user.role == "admin"), action, room)
+        require(
+            Principal(user.id, is_admin),
+            action,
+            room,
+        )
     except PermissionError as e:
         raise HTTPException(status_code=403, detail=str(e)) from e
     return room
@@ -238,13 +243,14 @@ async def list_rooms(
     external_user_store: Annotated[ExternalUserStore, Depends(get_external_user_store)],
     user_store: Annotated[UserStore, Depends(get_user_store)],
     user: Annotated[User, Depends(get_current_user)],
+    is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
     search: Annotated[str | None, Query()] = None,
     include_archived: Annotated[bool, Query()] = False,
 ) -> list[RoomSummary]:
     rooms = await room_store.list_readable(
         session,
         user.id,
-        is_admin=user.role == "admin",
+        is_admin=is_admin,
         include_archived=include_archived,
     )
 
@@ -371,8 +377,10 @@ async def create_room(
 @router.post("/from-yaml", status_code=201)
 async def create_room_from_yaml(
     request: Request,
+    session: Annotated[AsyncSession, Depends(get_session)],
     rooms_yaml: Annotated[RoomYamlService, Depends(get_room_yaml_service)],
     user: Annotated[User, Depends(get_current_user)],
+    is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> ProvisionResult:
     """Provision a single room and its attachments from a YAML spec.
 
@@ -398,9 +406,17 @@ async def create_room_from_yaml(
         else:
             text = (await request.body()).decode("utf-8")
             inputs = None
-        spec = rooms_yaml.parse(text, inputs=inputs)
+        builtins = await rooms_yaml.builtins_for(
+            user_id=user.id, name=user.name, email=user.email, text=text
+        )
+        parsed = rooms_yaml.parse_template(text, inputs=inputs, builtins=builtins)
+        await rooms_yaml.check_entity_params(parsed)
         return await rooms_yaml.provision(
-            spec, user_id=user.id, is_admin=user.role == "admin"
+            parsed.spec,
+            kickoff=parsed.kickoff,
+            user_id=user.id,
+            is_admin=is_admin,
+            creator_name=builtins["$creator"],
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
@@ -410,6 +426,14 @@ async def create_room_from_yaml(
         raise HTTPException(status_code=502, detail=str(e)) from e
 
 
+@router.get("/template-schema")
+async def get_template_schema(
+    _user: Annotated[User, Depends(get_current_user)],
+) -> dict:
+    """Return the JSON Schema describing a valid room template document."""
+    return TemplateDocument.model_json_schema()
+
+
 @router.get("/{room_id}/yaml")
 async def export_room_yaml(
     room_id: str,
@@ -417,6 +441,7 @@ async def export_room_yaml(
     room_store: Annotated[RoomStore, Depends(get_room_store)],
     rooms_yaml: Annotated[RoomYamlService, Depends(get_room_yaml_service)],
     user: Annotated[User, Depends(get_current_user)],
+    is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
     agents: Annotated[bool, Query()] = True,
     users: Annotated[bool, Query()] = True,
     references: Annotated[bool, Query()] = True,
@@ -425,7 +450,7 @@ async def export_room_yaml(
 ) -> Response:
     """Export a room to YAML in the same surface ``/rooms/from-yaml`` accepts.
     Each section can be dropped via its boolean toggle (default included)."""
-    await _require_room(session, room_store, room_id, user, "read")
+    await _require_room(session, room_store, room_id, user, "read", is_admin)
     yaml_text = await rooms_yaml.export(
         room_id,
         agents=agents,
@@ -446,8 +471,9 @@ async def get_room(
     external_user_store: Annotated[ExternalUserStore, Depends(get_external_user_store)],
     protocol: Annotated[ProtocolService, Depends(get_protocol)],
     user: Annotated[User, Depends(get_current_user)],
+    is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> RoomDetail:
-    room = await _require_room(session, room_store, room_id, user, "read")
+    room = await _require_room(session, room_store, room_id, user, "read", is_admin)
     return await _build_room_detail(
         session, room, room_store, bridge_store, external_user_store, protocol
     )
@@ -464,8 +490,9 @@ async def patch_room(
     external_user_store: Annotated[ExternalUserStore, Depends(get_external_user_store)],
     protocol: Annotated[ProtocolService, Depends(get_protocol)],
     user: Annotated[User, Depends(get_current_user)],
+    is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> RoomDetail:
-    await _require_room(session, room_store, room_id, user, "write")
+    await _require_room(session, room_store, room_id, user, "write", is_admin)
     try:
         await room_service.update_room(
             room_id,
@@ -494,8 +521,9 @@ async def list_room_roles(
     room_store: Annotated[RoomStore, Depends(get_room_store)],
     protocol: Annotated[ProtocolService, Depends(get_protocol)],
     user: Annotated[User, Depends(get_current_user)],
+    is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> list[RoomRoleDetail]:
-    await _require_room(session, room_store, room_id, user, "read")
+    await _require_room(session, room_store, room_id, user, "read", is_admin)
     return await _list_room_role_details(session, room_id, protocol)
 
 
@@ -507,8 +535,9 @@ async def create_room_role(
     room_store: Annotated[RoomStore, Depends(get_room_store)],
     protocol: Annotated[ProtocolService, Depends(get_protocol)],
     user: Annotated[User, Depends(get_current_user)],
+    is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> list[RoomRoleDetail]:
-    await _require_room(session, room_store, room_id, user, "write")
+    await _require_room(session, room_store, room_id, user, "write", is_admin)
     try:
         await protocol.room_role_store.define_role(
             session, room_id, req.name, req.instructions, req.exclusive
@@ -528,8 +557,9 @@ async def patch_room_role(
     room_store: Annotated[RoomStore, Depends(get_room_store)],
     protocol: Annotated[ProtocolService, Depends(get_protocol)],
     user: Annotated[User, Depends(get_current_user)],
+    is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> list[RoomRoleDetail]:
-    await _require_room(session, room_store, room_id, user, "write")
+    await _require_room(session, room_store, room_id, user, "write", is_admin)
     try:
         await protocol.room_role_store.edit_role(
             session, room_id, name, req.instructions, req.exclusive
@@ -548,8 +578,9 @@ async def delete_room_role(
     room_store: Annotated[RoomStore, Depends(get_room_store)],
     protocol: Annotated[ProtocolService, Depends(get_protocol)],
     user: Annotated[User, Depends(get_current_user)],
+    is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> list[RoomRoleDetail]:
-    await _require_room(session, room_store, room_id, user, "write")
+    await _require_room(session, room_store, room_id, user, "write", is_admin)
     try:
         await protocol.room_role_store.delete_role(session, room_id, name)
     except ValueError as e:
@@ -568,9 +599,10 @@ async def put_room_group(
     external_user_store: Annotated[ExternalUserStore, Depends(get_external_user_store)],
     protocol: Annotated[ProtocolService, Depends(get_protocol)],
     user: Annotated[User, Depends(get_current_user)],
+    is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> RoomDetail:
     """Assign the room to a group, or make it standalone (`group_id=null`)."""
-    await _require_room(session, room_store, room_id, user, "write")
+    await _require_room(session, room_store, room_id, user, "write", is_admin)
     try:
         await room_store.set_group(session, room_id, req.group_id)
     except ValueError as e:
@@ -598,8 +630,9 @@ async def put_protection(
     external_user_store: Annotated[ExternalUserStore, Depends(get_external_user_store)],
     protocol: Annotated[ProtocolService, Depends(get_protocol)],
     user: Annotated[User, Depends(get_current_user)],
+    is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> RoomDetail:
-    await _require_room(session, room_store, room_id, user, "write")
+    await _require_room(session, room_store, room_id, user, "write", is_admin)
     try:
         await room_service.update_protection_config(room_id, req.protection_config)
     except ValueError:
@@ -624,8 +657,9 @@ async def put_observe(
     external_user_store: Annotated[ExternalUserStore, Depends(get_external_user_store)],
     protocol: Annotated[ProtocolService, Depends(get_protocol)],
     user: Annotated[User, Depends(get_current_user)],
+    is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> RoomDetail:
-    await _require_room(session, room_store, room_id, user, "write")
+    await _require_room(session, room_store, room_id, user, "write", is_admin)
     try:
         await room_service.update_observe_config(room_id, req.observe_config)
     except ValueError:
@@ -650,8 +684,9 @@ async def post_room_agents(
     external_user_store: Annotated[ExternalUserStore, Depends(get_external_user_store)],
     protocol: Annotated[ProtocolService, Depends(get_protocol)],
     user: Annotated[User, Depends(get_current_user)],
+    is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> RoomDetail:
-    await _require_room(session, room_store, room_id, user, "write")
+    await _require_room(session, room_store, room_id, user, "write", is_admin)
     try:
         await room_service.add_agents_to_room(
             room_id,
@@ -682,8 +717,9 @@ async def patch_room_agent(
     external_user_store: Annotated[ExternalUserStore, Depends(get_external_user_store)],
     protocol: Annotated[ProtocolService, Depends(get_protocol)],
     user: Annotated[User, Depends(get_current_user)],
+    is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> RoomDetail:
-    await _require_room(session, room_store, room_id, user, "write")
+    await _require_room(session, room_store, room_id, user, "write", is_admin)
     try:
         await room_service.set_join_event_listeners(
             room_id, {agent_id: req.receives_join_events}
@@ -709,8 +745,9 @@ async def delete_room_agent(
     external_user_store: Annotated[ExternalUserStore, Depends(get_external_user_store)],
     protocol: Annotated[ProtocolService, Depends(get_protocol)],
     user: Annotated[User, Depends(get_current_user)],
+    is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> RoomDetail:
-    await _require_room(session, room_store, room_id, user, "write")
+    await _require_room(session, room_store, room_id, user, "write", is_admin)
     try:
         await room_service.remove_agents_from_room(room_id, [agent_id])
     except ValueError as e:
@@ -735,8 +772,9 @@ async def post_room_users(
     external_user_store: Annotated[ExternalUserStore, Depends(get_external_user_store)],
     protocol: Annotated[ProtocolService, Depends(get_protocol)],
     user: Annotated[User, Depends(get_current_user)],
+    is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> RoomDetail:
-    await _require_room(session, room_store, room_id, user, "write")
+    await _require_room(session, room_store, room_id, user, "write", is_admin)
     try:
         await room_service.add_users_to_room(room_id, req.user_names)
     except ValueError as e:
@@ -760,8 +798,9 @@ async def _set_archived(
     external_user_store: ExternalUserStore,
     protocol: ProtocolService,
     user: User,
+    is_admin: bool,
 ) -> RoomDetail:
-    await _require_room(session, room_store, room_id, user, "write")
+    await _require_room(session, room_store, room_id, user, "write", is_admin)
     try:
         await room_service.set_room_archived(room_id, archived)
     except ValueError:
@@ -784,8 +823,9 @@ async def archive_room(
     external_user_store: Annotated[ExternalUserStore, Depends(get_external_user_store)],
     protocol: Annotated[ProtocolService, Depends(get_protocol)],
     user: Annotated[User, Depends(get_current_user)],
+    is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> RoomDetail:
-    """Archive a room: hide it from the default active list. Reversible and
+    """: hide it from the default active list. Reversible and
     metadata-only — the Matrix room, members, and bridge channel are intact."""
     return await _set_archived(
         room_id,
@@ -797,6 +837,7 @@ async def archive_room(
         external_user_store,
         protocol,
         user,
+        is_admin,
     )
 
 
@@ -810,8 +851,9 @@ async def unarchive_room(
     external_user_store: Annotated[ExternalUserStore, Depends(get_external_user_store)],
     protocol: Annotated[ProtocolService, Depends(get_protocol)],
     user: Annotated[User, Depends(get_current_user)],
+    is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> RoomDetail:
-    """Unarchive a room: restore it to the active list."""
+    """: restore it to the active list."""
     return await _set_archived(
         room_id,
         False,
@@ -822,6 +864,7 @@ async def unarchive_room(
         external_user_store,
         protocol,
         user,
+        is_admin,
     )
 
 
@@ -832,8 +875,9 @@ async def delete_room(
     room_service: Annotated[RoomService, Depends(get_room_service)],
     room_store: Annotated[RoomStore, Depends(get_room_store)],
     user: Annotated[User, Depends(get_current_user)],
+    is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> dict[str, bool]:
-    await _require_room(session, room_store, room_id, user, "delete")
+    await _require_room(session, room_store, room_id, user, "delete", is_admin)
     try:
         await room_service.delete_room(room_id)
     except ValueError:
@@ -848,8 +892,9 @@ async def bulk_delete_rooms(
     room_service: Annotated[RoomService, Depends(get_room_service)],
     room_store: Annotated[RoomStore, Depends(get_room_store)],
     user: Annotated[User, Depends(get_current_user)],
+    is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> BulkDeleteResponse:
-    principal = Principal(user.id, user.role == "admin")
+    principal = Principal(user.id, is_admin)
     deleted = 0
     for room_id in req.room_ids:
         room = await room_store.get(session, room_id)
@@ -873,11 +918,12 @@ async def bulk_archive_rooms(
     room_service: Annotated[RoomService, Depends(get_room_service)],
     room_store: Annotated[RoomStore, Depends(get_room_store)],
     user: Annotated[User, Depends(get_current_user)],
+    is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> BulkArchiveResponse:
     """Archive or unarchive many rooms at once. Each room is authorized
     individually with the same `write` check as the single archive endpoint;
     rooms the caller cannot write (or that no longer exist) are skipped."""
-    principal = Principal(user.id, user.role == "admin")
+    principal = Principal(user.id, is_admin)
     updated = 0
     for room_id in req.room_ids:
         room = await room_store.get(session, room_id)

@@ -3,6 +3,7 @@ import { homeView } from '@renderer/app/home-view';
 import { locationView } from '@renderer/features/locations/view';
 import { remoteHostView } from '@renderer/features/remote-hosts/views/remote-host-view';
 import { remoteHostsView } from '@renderer/features/remote-hosts/views/remote-hosts-view';
+import { roomTemplateImportView } from '@renderer/features/room-templates/room-template-import-view';
 import { sessionView } from '@renderer/features/sessions/view';
 import { settingsView } from '@renderer/features/settings/settings-view';
 import { roomView } from '@renderer/features/switch-rooms/view';
@@ -27,6 +28,7 @@ export const views = {
   serverRooms: serverRoomsView,
   remoteHosts: remoteHostsView,
   remoteHost: remoteHostView,
+  roomTemplateImport: roomTemplateImportView,
   // oxlint-disable-next-line typescript/no-explicit-any
 } satisfies Record<string, ViewDefinition<any>>;
 

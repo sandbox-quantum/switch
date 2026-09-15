@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from switch_core.clients.admin_messages import PLATFORM_MARKER
 from switch_core.clients.agent_client import (
     _STARTING_SESSION_MESSAGE,
     AUTO_REPLY_FLAG,
@@ -264,3 +265,22 @@ class TestTerminalReplyThreadsOffTheTrigger:
         )
 
         assert send_message.calls[0]["thread_root_id"] == "$thread-root"
+
+
+@pytest.mark.asyncio
+async def test_a_kickoff_that_wants_the_channel_gets_its_reply_at_top_level() -> None:
+    # The template kickoff sits in a thread to keep the channel to one line,
+    # but flags that the work belongs in the channel: the agent's reply goes
+    # to the top level, not under the kickoff.
+    send_message = _Recorder()
+    room = RoomRef(room_id="!matrix:server")
+    event = _event(thread_id="$kickoff-headline")
+    event.content[PLATFORM_MARKER] = {
+        "on_behalf_of": {"user_id": "u9", "name": "dantas.abel"},
+        "reply_in_channel": True,
+    }
+    await AgentClient.on_message(_fake_self(send_message), room, event)
+
+    assert len(send_message.calls) == 1
+    assert send_message.calls[0]["thread_root_id"] is None
+    assert send_message.calls[0]["body"].startswith("@dantas.abel ")

@@ -4,7 +4,7 @@ import asyncio
 import logging
 import re
 import uuid
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, TypeVar, cast, get_args
 
@@ -39,6 +39,12 @@ from switch_core.bridges.collaboration.session.outbound import (
     SessionTurnActivity,
 )
 from switch_core.clients.admin_messages import ADMIN_MARKER, AdminMessageType
+from switch_core.clients.admin_messages import (
+    ADMIN_MARKER,
+    PLATFORM_MARKER,
+    AdminMessageType,
+    platform_on_behalf_of,
+)
 from switch_core.clients.client_base import ClientBase, ClientConfig
 from switch_core.clients.mentions import mention_regex, strip_emphasis
 from switch_core.db.models import BridgeMessageMap, ExternalUser
@@ -93,6 +99,11 @@ PUPPET_JOIN_TIMEOUT = 30.0
 # How long to hold an incomplete outbound attachment group before relaying the
 # parts that arrived, flagged as incomplete (see _schedule_outbound_group_flush).
 OUTBOUND_GROUP_TIMEOUT_SECONDS = 5.0
+
+
+def _is_thread_reply(content: Mapping[str, object]) -> bool:
+    relates = content.get("m.relates_to")
+    return isinstance(relates, dict) and relates.get("rel_type") == "m.thread"
 
 
 @dataclass
@@ -319,6 +330,10 @@ class BridgeCore:
     @property
     def adapter(self) -> CollaborationAdapter:
         return self._adapter
+
+    @property
+    def tenant_id(self) -> str:
+        return self._bridge_tenant_id
 
     def _traced(
         self, handler: Callable[[_InboundEventT], Awaitable[None]]
@@ -1205,6 +1220,12 @@ class BridgeCore:
         Only resolvable names appear in the returned dict; names with no
         matching external user on this bridge are omitted (and logged), so the
         caller can diff against the input to learn which ones failed.
+
+        When the DB lookup misses, falls back to an exact match in the
+        platform directory, so a person who has never messaged through Switch
+        still resolves. A hit is persisted (an ``ExternalUser`` row and its
+        puppet), so room membership, addressing and export all see the same
+        person this resolution found.
         """
         async with self._session_factory() as session:
             users = await self._external_user_store.get_by_bridge(
@@ -1217,6 +1238,29 @@ class BridgeCore:
             if ext_id:
                 resolved[name] = ext_id
             else:
+                # Exact match on username or email only: a fuzzy directory
+                # hit is a real person, and being wrong invites a stranger
+                # into a private channel.
+                try:
+                    results = await self.adapter.search_directory_users(name)
+                    match = next(
+                        (
+                            r
+                            for r in results
+                            if r.username == name
+                            or (r.email is not None and r.email.lower() == name.lower())
+                        ),
+                        None,
+                    )
+                    if match:
+                        ext = await self.ensure_external_user(
+                            external_user_id=match.external_user_id,
+                            external_username=match.username,
+                        )
+                        resolved[name] = ext.external_user_id
+                        continue
+                except (NotImplementedError, RuntimeError):
+                    pass
                 logger.warning(
                     "No external user found for username '%s' on bridge %s",
                     name,
@@ -1234,17 +1278,27 @@ class BridgeCore:
         matrix_room_id: str,
         user_names: list[str],
     ) -> None:
-        """For each known external user matching one of `user_names` on this
-        bridge, ensure a running puppet client exists and is joined to the
-        Matrix room. Names without an existing ExternalUser row are skipped
-        — they will be picked up by the on_user_joined callback (when the
-        adapter sees them join externally) or by the lazy inbound-message
-        path."""
-        async with self._session_factory() as session:
-            users = await self._external_user_store.get_by_bridge_and_names(
-                session, self._bridge_id, user_names
-            )
-        for ext_user in users:
+        """For each resolvable name in `user_names`, ensure a running puppet
+        client exists and is joined to the Matrix room.
+
+        Resolution goes through `resolve_external_user_id_map`, the same
+        answer the channel-invite path uses, so a person the platform
+        directory can find is added here too. Unresolvable names are skipped
+        (the resolver logs them); the on_user_joined callback or the inbound
+        message path picks them up later."""
+        resolved = await self.resolve_external_user_id_map(user_names)
+        for ext_id in resolved.values():
+            async with self._session_factory() as session:
+                ext_user = await self._external_user_store.get_by_external_id(
+                    session, self._bridge_id, ext_id
+                )
+            if ext_user is None:
+                logger.error(
+                    "External user %s resolved on bridge %s but has no record",
+                    ext_id,
+                    self._bridge_id,
+                )
+                continue
             await self._ensure_user_in_matrix_room(
                 external_user_id=ext_user.external_user_id,
                 external_username=ext_user.external_username,
@@ -1724,27 +1778,31 @@ class BridgeCore:
     ) -> None:
         event_content = event.content
         admin_marker = event_content.get(ADMIN_MARKER)
+        platform_marker = event_content.get(PLATFORM_MARKER)
         sender_name = event.sender_name
-        # An admin/system message renders natively per bridge (admin_message)
-        # rather than on behalf of its Matrix sender, so it needs no sender_name.
-        if sender_name is None and admin_marker is None:
+        # An admin/system or platform message renders natively per bridge
+        # (admin_message) rather than on behalf of its Matrix sender, so it
+        # needs no sender_name.
+        is_system = admin_marker is not None or platform_marker is not None
+        if sender_name is None and not is_system:
             logger.error(
                 "No sender_name in event from %s — skipping outbound", event.sender
             )
             return
 
         logger.debug(
-            "[BRIDGE-OUT] sending to channel=%s sender=%s admin=%s",
+            "[BRIDGE-OUT] sending to channel=%s sender=%s admin=%s platform=%s",
             channel_id,
             sender_name,
             admin_marker is not None,
+            platform_marker is not None,
         )
 
         thread_root_ref = await self._outbound_thread_root_ref(
             event_content, channel_id
         )
 
-        if admin_marker is not None:
+        if is_system:
             message_type = (
                 admin_marker.get("type") if isinstance(admin_marker, dict) else None
             )
@@ -1753,9 +1811,20 @@ class BridgeCore:
             # here as well ran the body through twice, and the second pass
             # escapes the markup the first one produced — a command reply
             # arrived showing its own `<b>` tags.
+            # A platform message sent for a person says so, so the room sees
+            # whose authority it carries. A thread reply sits under a root that
+            # already said it, and a body naming the person needs no second line.
+            body = event.body
+            person = platform_on_behalf_of(event_content)
+            if (
+                person is not None
+                and not _is_thread_reply(event_content)
+                and f"@{person.name}" not in body
+            ):
+                body = f"On behalf of @{person.name}:\n\n{body}"
             message_ref = await self._adapter.admin_message(
                 channel_id,
-                event.body,
+                body,
                 thread_root_ref,
                 message_type=message_type,
             )

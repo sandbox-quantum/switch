@@ -27,6 +27,7 @@ const EMPTY_RULE: AddressingRule = {
   agents: '*',
   owner: false,
   owner_agents: false,
+  platform: false,
 };
 
 /**
@@ -223,6 +224,20 @@ export function AddressingPolicyEditor({
               disabled={disabled}
               onChange={(agents) => updateRule(index, withAgents(rule, agents))}
             />
+            <label className="flex items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                className="size-4 rounded border-border"
+                checked={rule.platform === true}
+                disabled={disabled}
+                onChange={(e) => updateRule(index, { ...rule, platform: e.target.checked })}
+              />
+              <span>Switch itself</span>
+              <span className="text-xs text-foreground-muted">
+                Let the platform address this agent on its own account. A message it sends for a
+                person, such as a template kickoff, is judged as that person and needs no opt-in.
+              </span>
+            </label>
             {deadRuleReason(rule) !== null && (
               <p className="text-xs text-destructive">{deadRuleReason(rule)}</p>
             )}
@@ -315,6 +330,11 @@ function RuleSummary({
             <span className="font-medium">Agents:</span>{' '}
             {dimLabel(agentsOf(rule), [MY_AGENTS_OPTION, ...agents])}
           </span>
+          {rule.platform === true && (
+            <span>
+              <span className="font-medium">Switch itself:</span> allowed
+            </span>
+          )}
         </div>
         {dead !== null && <span className="text-xs text-destructive">{dead}</span>}
       </div>
