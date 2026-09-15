@@ -53,6 +53,7 @@ from . import (
     CLOSED,
     NO_OPTIONS,
     SURFACES,
+    Drawn,
     Markup,
     RequestReference,
     example_value,
@@ -315,6 +316,33 @@ def request_summary(
     responder: str | None = None,
     unavailable_reason: str | None = None,
 ) -> str:
+    """`render_request`, for a platform whose drawing is the whole of the card.
+
+    A platform with no controls of its own has nothing to do with the rest of
+    the result: the body already says how to answer, or says it cannot be
+    answered here.
+    """
+    return render_request(
+        request,
+        reference,
+        escape=escape,
+        limit=limit,
+        markup=markup,
+        responder=responder,
+        unavailable_reason=unavailable_reason,
+    ).text
+
+
+def render_request(
+    request: SnapshotRequest,
+    reference: RequestReference,
+    *,
+    escape: Callable[[str], str],
+    limit: int,
+    markup: Markup,
+    responder: str | None,
+    unavailable_reason: str | None,
+) -> Drawn:
     """The text form of a request: the question, the options, and how to answer.
 
     The same function serves the first post and every edit after it, because
@@ -344,6 +372,11 @@ def request_summary(
     is too long, and names Console. Only an instruction is replaced this way
     — a card that already says why it cannot be answered says it better than
     this would.
+
+    Whether it came to that is the other half of the result. It is decided
+    here, from the same facts that decide the footer, so a platform drawing
+    controls beside the body does not have to work it out a second way — and
+    cannot come to a different answer than the words under its own buttons.
     """
     content = request.content
     if isinstance(content, ApprovalContent):
@@ -370,13 +403,14 @@ def request_summary(
         body = []
         footer = _fit(unavailable_reason, max(1, limit // 3), escape=escape)
         invites_answer = False
-    return _compose(
+    text, cut = _compose(
         head,
         body,
         footer,
         limit=limit,
         if_cut=_TOO_BIG if invites_answer else footer,
     )
+    return Drawn(text=text, answerable=invites_answer and not cut)
 
 
 def _approval_form(
@@ -715,8 +749,8 @@ def _actor(
 
 def _compose(
     head: list[str], body: list[str], footer: str, *, limit: int, if_cut: str
-) -> str:
-    """Head, as much of the body as fits, then the footer — which always survives.
+) -> tuple[str, bool]:
+    """Head, as much of the body as fits, then the footer — and whether it cut.
 
     The body is what gets dropped because it is the part a reader can recover
     elsewhere: an option they cannot see is still an option, and the notice
@@ -757,7 +791,7 @@ def _compose(
             notice = _CUT.format(left=len(body) - len(shown))
         if spent + len(notice) + 1 <= limit:
             shown.append(notice)
-    return "\n".join([*lines, *shown, if_cut if cut else footer])
+    return "\n".join([*lines, *shown, if_cut if cut else footer]), cut
 
 
 def _mentioned(mention: str | None, body: str) -> str:

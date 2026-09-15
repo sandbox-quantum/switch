@@ -1310,15 +1310,16 @@ class BridgeCore:
         if isinstance(outcome, Refused):
             # outcome.card_ref is available here too, but deliberately unused:
             # a press only reaches a platform whose buttons are live, and on
-            # each of those the reply to a press is already private to whoever
-            # pressed — Slack's ephemeral, Telegram's alert on the press
-            # itself. thread_ref would only choose where a private notice
-            # appeared on screen, not who saw it.
+            # each of those the reply to a press is private to whoever pressed
+            # — Slack's ephemeral, Telegram's alert on the press itself.
+            # thread_ref would only choose where a private notice appeared on
+            # screen, not who saw it.
             await self._tell_refused(interaction, outcome, thread_ref=None)
             return
-        await self._submit_session_command(
-            outcome, interaction.channel_id, interaction.message_ref
-        )
+        # Both ways a press can be turned down go the same way out. The two
+        # were split once, and the half that went through the channel put one
+        # person's rejected approval in front of everybody in it.
+        await self._submit_session_command(outcome, interaction, thread_ref=None)
 
     async def _handle_text_answer(self, msg: InboundMessage) -> None:
         """The same answer, typed rather than pressed.
@@ -1339,7 +1340,7 @@ class BridgeCore:
             await self._tell_refused(msg, outcome, thread_ref=outcome.card_ref)
             return
         await self._submit_session_command(
-            outcome, msg.channel_id, msg.root_id or msg.message_ref
+            outcome, msg, thread_ref=msg.root_id or msg.message_ref
         )
 
     async def _tell_refused(
@@ -1404,8 +1405,23 @@ class BridgeCore:
             self._session_publisher.wake()
 
     async def _submit_session_command(
-        self, command: Command | None, channel_id: str, message_ref: str | None
+        self, command: Command | None, actor: InboundActor, thread_ref: str | None
     ) -> None:
+        """Give the session the answer, and tell the answerer if it bounced.
+
+        Authority is the second thing that can turn an answer down, after the
+        resolution that built it, and it turns down the same kinds of thing:
+        not yours to decide, too late, already answered. So it is reported the
+        same way — to the person who answered, as privately as the platform
+        allows — rather than as a notice to the channel. `tell_actor` is what
+        knows the difference per platform, and on a platform with no private
+        reply it still lands in the card's thread, which is where this used to
+        post anyway.
+
+        `thread_ref` is None for a press: the reply to a press is addressed by
+        the press itself, and the channel root would be a wider audience than
+        the card's own thread rather than a narrower one.
+        """
         if command is None:
             return
         try:
@@ -1413,10 +1429,12 @@ class BridgeCore:
                 command, user_id=None, bridge_id=self._bridge_id
             )
         except SessionError as error:
-            await self._adapter.admin_message(
-                channel_id,
+            await self._adapter.tell_actor(
+                actor.channel_id,
+                actor.sender_id,
+                actor.sender_name,
+                thread_ref,
                 f"Answer was not accepted ({error.code}): {error}",
-                message_ref,
             )
             return
         await self.refresh_sdk_session(command.session_id)

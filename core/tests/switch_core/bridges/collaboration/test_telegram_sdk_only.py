@@ -1011,6 +1011,78 @@ async def test_a_card_that_cannot_be_answered_here_offers_nothing_to_press() -> 
     assert _posted(adapter)["reply_markup"] is None
 
 
+async def _clipped_detail(**kwargs: Any) -> RequestCard:
+    """A card whose decision text is longer than a Telegram message can hold."""
+    card = await _card(**kwargs)
+    return replace(
+        card,
+        request=card.request.model_copy(
+            update={
+                "content": card.request.content.model_copy(
+                    update={"detail": "Deletes the production volume. " * 200}
+                )
+            }
+        ),
+    )
+
+
+async def test_a_card_that_could_not_show_its_decision_offers_nothing_to_press() -> (
+    None
+):
+    """The body says it is too long to answer here — and a button beside that
+    sentence answers it anyway. The press would resolve against the saved form
+    and settle the request on text the reader never saw."""
+    adapter = _adapter()
+
+    await adapter.post_rich(CHANNEL, "my-agent", await _clipped_detail(), None)
+
+    assert "cannot be answered from this message" in _posted(adapter)["text"]
+    assert _posted(adapter)["reply_markup"] is None
+
+
+async def test_a_card_whose_options_did_not_all_fit_offers_nothing_to_press() -> None:
+    """Each option is faithful on its own and there is no room for them all.
+    A keyboard here would offer a choice against a list the reader can only
+    see part of, which is the same defect reached by the other door."""
+    adapter = _adapter()
+    card = await _card()
+    crowded = card.request.model_copy(
+        update={
+            "content": card.request.content.model_copy(
+                update={
+                    "options": [
+                        card.request.content.options[0].model_copy(
+                            update={
+                                "option_id": f"option-{index}",
+                                "label": f"Option {index}: " + "a" * 1000,
+                            }
+                        )
+                        for index in range(10)
+                    ]
+                }
+            )
+        }
+    )
+
+    await adapter.post_rich(CHANNEL, "my-agent", replace(card, request=crowded), None)
+
+    assert "more not shown" in _posted(adapter)["text"]
+    assert _posted(adapter)["reply_markup"] is None
+
+
+async def test_a_redraw_takes_the_buttons_off_a_card_that_stopped_fitting() -> None:
+    """The same rule on the edit path. A card that grew past what one message
+    can show keeps its keyboard otherwise, because an edit carries the whole
+    of it and a redraw that says nothing about controls leaves them live."""
+    adapter = _adapter()
+    ref = await adapter.post_rich(CHANNEL, "my-agent", await _card(), None)
+
+    await adapter.update_rich(CHANNEL, "my-agent", ref, await _clipped_detail())
+
+    assert _keyboard(_posted(adapter)["reply_markup"]) != []
+    assert _edited(adapter)["reply_markup"] is None
+
+
 async def test_a_status_has_nothing_to_press() -> None:
     adapter = _adapter()
 

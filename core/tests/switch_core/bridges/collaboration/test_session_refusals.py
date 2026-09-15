@@ -15,6 +15,7 @@ every "yes" said near a card comes back at whoever said it.
 from __future__ import annotations
 
 import logging
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -23,6 +24,7 @@ from switch_core.bridges.collaboration.session.inbound import Refused
 from switch_core.bridges.collaboration.session.renderers import ANSWER_ACTION
 from switch_core.bridges.collaboration.slack.adapter import SlackAdapter
 from switch_core.bridges.collaboration.telegram.adapter import TelegramAdapter
+from switch_core.sessions.service import SessionError
 
 from .test_session_answers import _interactions, _post, _press, _run
 from .test_session_text_answers import CARD, _bridge, _typed
@@ -285,6 +287,50 @@ def test_a_press_is_answered_back_in_the_channel() -> None:
     assert [(actor, thread) for _, actor, _, thread, _ in bridge._adapter.told] == [
         ("U1", None)
     ]
+
+
+def _authority_refuses(bridge: Any, code: str) -> None:
+    """Authority takes the answer and turns it down — the second refusal.
+
+    Not the same thing as the card refusing it: the press was well formed and
+    named a real option, and it is the session that says no. Stale revision,
+    an epoch that has moved on, an account without the authority to decide.
+    """
+
+    async def _submit(*_args: Any, **_kwargs: Any) -> None:
+        raise SessionError(code, "this account cannot decide this request")
+
+    bridge._session_authority = SimpleNamespace(submit=_submit)
+
+
+def test_a_press_the_session_turns_down_is_told_to_the_presser_alone() -> None:
+    """The refusal that comes back from authority goes the same way as the one
+    the card gives. It was public once, which put "not authorised" under a
+    request in front of everyone in the group, and told the person nothing
+    where their client was showing a spinner."""
+    bridge, _ = _bridge(_interactions(_post()))
+    _authority_refuses(bridge, "NOT_AUTHORIZED")
+
+    _run(bridge._handle_inbound_interaction(_press()))
+
+    assert [(actor, thread) for _, actor, _, thread, _ in bridge._adapter.told] == [
+        ("U1", None)
+    ]
+    assert "NOT_AUTHORIZED" in bridge._adapter.told[0][4]
+
+
+def test_a_typed_answer_the_session_turns_down_is_still_said_in_the_thread() -> None:
+    """Deliberately unchanged for typing: there is no press to reply to, so the
+    card's own thread is the only place it can be said, and the notice names
+    whose answer it was because several people can be answering there."""
+    bridge, _ = _bridge(_interactions(_post()))
+    _authority_refuses(bridge, "STALE_REVISION")
+
+    _run(bridge._handle_inbound_message(_typed("R42 1", root_id=CARD)))
+
+    assert [
+        (actor, name, thread) for _, actor, name, thread, _ in bridge._adapter.told
+    ] == [("U1", "someone", CARD)]
 
 
 def test_an_answer_that_did_land_is_not_answered_back() -> None:

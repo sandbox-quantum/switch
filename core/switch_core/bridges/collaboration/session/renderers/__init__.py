@@ -280,6 +280,27 @@ def offered_controls(request: SnapshotRequest) -> list[Control]:
     ]
 
 
+@dataclass(frozen=True)
+class Drawn:
+    """A rendering of a request, and whether it can be answered where it shows.
+
+    The two travel together because only the renderer knows both, and it knows
+    them at the same moment: whether the body had to be cut is settled while it
+    is being composed, and a form cut short of the difference between two
+    options cannot be answered from what is on the screen — which is why the
+    footer under a cut form stops asking to be answered there.
+
+    `offered_controls` says which presses a request *could* have. This says
+    whether this particular drawing of it earned them. A platform that draws
+    buttons needs both: without this, a live control ends up under the very
+    sentence explaining that the form cannot be answered here, and a press on
+    it decides something the reader was never shown.
+    """
+
+    text: str
+    answerable: bool
+
+
 class Markup:
     """The three marks the neutral renderer makes, in one platform's spelling.
 

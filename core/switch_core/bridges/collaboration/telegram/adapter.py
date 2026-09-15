@@ -61,13 +61,14 @@ from switch_core.bridges.collaboration.models import (
 )
 from switch_core.bridges.collaboration.session.renderers import (
     Control,
+    Drawn,
     Markup,
     offered_controls,
     position_action,
 )
 from switch_core.bridges.collaboration.session.renderers.neutral import (
     activity_detail,
-    request_summary,
+    render_request,
     turn_status,
 )
 from switch_core.bridges.collaboration.telegram.chunking import (
@@ -1354,7 +1355,7 @@ class TelegramAdapter(CollaborationAdapter):
         it is what a caller logs or shows in the Console when the post did not
         happen, not something anyone reads in the chat.
         """
-        return self._draw(content, mention=None, responder=None, prefix="")
+        return self._draw(content, mention=None, responder=None, prefix="").text
 
     def _draw(
         self,
@@ -1363,7 +1364,7 @@ class TelegramAdapter(CollaborationAdapter):
         mention: str | None,
         responder: str | None,
         prefix: str,
-    ) -> str:
+    ) -> Drawn:
         escape = self._rich_escape
         limit = max(1, self.rich_fallback_limit() - len(prefix))
         markup = self.rich_markup()
@@ -1391,13 +1392,13 @@ class TelegramAdapter(CollaborationAdapter):
                     content, escape=escape, budget=limit - len(body) - len(tail)
                 )
             )
-            return f"{prefix}{body}{detail}{tail}"
+            return Drawn(text=f"{prefix}{body}{detail}{tail}", answerable=False)
         # The mention goes on its own line rather than in front of the heading:
         # a card is a block, and a handle wedged before "Permission needed"
         # reads as part of the heading.
         lead = f"{mention}\n" if mention else ""
         tail = f"\n{self.unnotified_notice()}" if content.notify_unreachable else ""
-        body = request_summary(
+        drawn = render_request(
             content.request,
             content.reference,
             escape=escape,
@@ -1406,7 +1407,7 @@ class TelegramAdapter(CollaborationAdapter):
             responder=responder,
             unavailable_reason=content.unavailable_reason,
         )
-        return f"{prefix}{lead}{body}{tail}"
+        return replace(drawn, text=f"{prefix}{lead}{drawn.text}{tail}")
 
     def _expandable(
         self,
@@ -1444,7 +1445,9 @@ class TelegramAdapter(CollaborationAdapter):
         quoted = "\n".join(lines)
         return f"\n{_EXPAND_OPEN}{quoted}{_EXPAND_CLOSE}"
 
-    def _controls(self, content: RichContent, text: str) -> InlineKeyboardMarkup | None:
+    def _controls(
+        self, content: RichContent, drawn: Drawn
+    ) -> InlineKeyboardMarkup | None:
         """The card's options as buttons, or nothing where a press cannot land.
 
         One per row. An option's label is a phrase more often than a word, and
@@ -1460,10 +1463,17 @@ class TelegramAdapter(CollaborationAdapter):
         moment it stops being pressable, without anything having to remember
         that it once had them.
 
-        `text` is the drawing these belong to, carried only so a refusal can
-        report what could not be posted.
+        Which of those it is comes from `drawn`, not from reading the request a
+        second time. A long detail or a clipped option leaves a body the reader
+        cannot decide from, and only the renderer that cut it knows that. A
+        press would still resolve against the saved form and settle the
+        request — so the whole of the protection is not offering the button.
+
+        A truncated *label* is not that case. The body above it carries the
+        option in full, so the reader has what they are agreeing to and the
+        button is only the shortest way to say which one.
         """
-        if not isinstance(content, RequestCard) or content.unavailable_reason:
+        if not isinstance(content, RequestCard) or not drawn.answerable:
             return None
         rows: list[list[InlineKeyboardButton]] = []
         for control in offered_controls(content.request):
@@ -1473,14 +1483,14 @@ class TelegramAdapter(CollaborationAdapter):
                     f"Cannot put a button on request {content.request.request_id} in "
                     f"Telegram: its press would carry {len(data.encode())} bytes and "
                     f"Telegram allows {_MAX_CALLBACK_BYTES}.",
-                    text=text,
+                    text=drawn.text,
                 )
             rows.append(
                 [InlineKeyboardButton(text=_button_label(control), callback_data=data)]
             )
         return InlineKeyboardMarkup(rows) if rows else None
 
-    async def _render_rich(self, content: RichContent, agent_name: str) -> str:
+    async def _render_rich(self, content: RichContent, agent_name: str) -> Drawn:
         """Draw `content` as the agent, for one Telegram chat.
 
         The name is always in the body. Telegram gives a bot no per-message
@@ -1571,10 +1581,11 @@ class TelegramAdapter(CollaborationAdapter):
         `rich_fallback_limit` for exactly that reason and `_clamp` is the
         backstop if something still overruns.
         """
-        text = await self._render_rich(content, agent_name)
+        drawn = await self._render_rich(content, agent_name)
+        text = drawn.text
         self._refuse_while_throttled(text)
         self._pace_publication(channel_id, content, text)
-        controls = self._controls(content, text)
+        controls = self._controls(content, drawn)
         anchor = await self._publication_anchor(channel_id, thread_root_id, text)
         try:
             sent = await self._require_bot().send_message(
@@ -1633,16 +1644,16 @@ class TelegramAdapter(CollaborationAdapter):
         # A post notifies; an edit does not. Repeating the mention on every
         # redraw would be a handle in the chat that never reaches anybody it
         # has not already reached.
-        text = await self._render_rich(
+        drawn = await self._render_rich(
             replace(content, notify_external_id=None), agent_name
         )
-        self._refuse_while_throttled(text)
+        self._refuse_while_throttled(drawn.text)
         if _retires(content):
-            await self._retire_rich(channel_id, message_ref, text)
+            await self._retire_rich(channel_id, message_ref, drawn.text)
             return
-        self._pace_publication(channel_id, content, text)
+        self._pace_publication(channel_id, content, drawn.text)
         await self._edit_rich(
-            channel_id, message_ref, text, self._controls(content, text)
+            channel_id, message_ref, drawn.text, self._controls(content, drawn)
         )
 
     async def _retire_rich(self, channel_id: str, message_ref: str, text: str) -> None:
