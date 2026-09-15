@@ -544,6 +544,7 @@ describe('ClaudeAdapter approvals', () => {
     expect(opened.requestType).toBe('command_execution_approval');
     expect(opened.turnId).toBe('turn-1');
     expect(opened.title).toBe('Claude wants to run echo hi');
+    expect(opened.detail).toBe('echo hi');
     expect(opened.options.map((option) => option.decision)).toEqual([
       'accept',
       'acceptForSession',
@@ -554,6 +555,47 @@ describe('ClaudeAdapter approvals', () => {
     expect(await decision).toEqual({ behavior: 'allow' });
     const resolved = await recorder.waitFor('request.resolved', () => true, 1_000);
     expect(resolved.decision).toBe('accept');
+  });
+
+  it('puts the command in detail and the description in the title', async () => {
+    const { sdk, adapter, recorder } = await startSession();
+    await adapter.sendTurn({ sessionId: SESSION, turnId: 'turn-1', text: 'go' });
+    const controller = new AbortController();
+    void sdk.canUseTool()(
+      'Bash',
+      { command: 'pwd', description: 'Print working directory' },
+      toolOptions(controller.signal)
+    );
+
+    const opened = await recorder.waitFor('request.opened', () => true, 1_000);
+    expect(opened.title).toBe('Print working directory');
+    expect(opened.detail).toBe('pwd');
+  });
+
+  it('names the tool when a command arrives with nothing to describe it', async () => {
+    const { sdk, adapter, recorder } = await startSession();
+    await adapter.sendTurn({ sessionId: SESSION, turnId: 'turn-1', text: 'go' });
+    const controller = new AbortController();
+    void sdk.canUseTool()('Bash', { command: 'pwd' }, toolOptions(controller.signal));
+
+    const opened = await recorder.waitFor('request.opened', () => true, 1_000);
+    expect(opened.title).toBe('Run a Bash command');
+    expect(opened.detail).toBe('pwd');
+  });
+
+  it('leaves a tool that is not a command with its description as the detail', async () => {
+    const { sdk, adapter, recorder } = await startSession();
+    await adapter.sendTurn({ sessionId: SESSION, turnId: 'turn-1', text: 'go' });
+    const controller = new AbortController();
+    void sdk.canUseTool()(
+      'Write',
+      { file_path: '/work/notes.md' },
+      toolOptions(controller.signal, { description: 'Create the notes file' })
+    );
+
+    const opened = await recorder.waitFor('request.opened', () => true, 1_000);
+    expect(opened.title).toBe('Write /work/notes.md');
+    expect(opened.detail).toBe('Create the notes file');
   });
 
   it('rescopes the CLI suggestions to the session on acceptForSession', async () => {

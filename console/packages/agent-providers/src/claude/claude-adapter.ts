@@ -37,6 +37,7 @@ import type {
   UserInputQuestion,
 } from '../events';
 import {
+  approvalContent,
   isRecord,
   itemTypeForTool,
   outcomeForResult,
@@ -977,8 +978,7 @@ export class ClaudeAdapter implements ProviderAdapter {
         turnId,
         requestId,
         requestType: requestTypeForTool(toolName),
-        title: options.title ?? toolTitle(toolName, toolInput),
-        ...(options.description ? { detail: options.description } : {}),
+        ...approvalContent(toolName, toolInput, options.title, options.description),
         options: APPROVAL_OPTIONS,
         raw: { source: 'claude', payload: { toolName, toolInput } },
       });

@@ -76,6 +76,33 @@ export function toolTitle(toolName: string, input: Record<string, unknown>): str
 }
 
 /**
+ * Which part of a permission request is the command and which is the prose.
+ *
+ * A reader sees `detail` set apart — a code span where the surface has one — so
+ * it has to be the literal thing being approved, not a second sentence about
+ * it. For a command tool the command is in the input and the summary is the
+ * prose, which is the opposite of how they read on an activity item.
+ */
+export function approvalContent(
+  toolName: string,
+  input: Record<string, unknown>,
+  title: string | undefined,
+  description: string | undefined
+): { title: string; detail?: string } {
+  if (COMMAND_TOOLS.has(toolName)) {
+    const command = stringField(input, 'command');
+    if (command) {
+      const summary = title ?? description ?? stringField(input, 'description');
+      return { title: summary ? truncate(summary) : `Run a ${toolName} command`, detail: command };
+    }
+  }
+  return {
+    title: title ?? toolTitle(toolName, input),
+    ...(description ? { detail: description } : {}),
+  };
+}
+
+/**
  * The CLI stamps a user abort on the result: `aborted_streaming` when the
  * interrupt landed mid-stream, `aborted_tools` when it landed in a tool call.
  * Older CLIs only say so in `errors`.

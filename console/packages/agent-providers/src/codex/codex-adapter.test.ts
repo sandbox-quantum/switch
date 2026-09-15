@@ -365,6 +365,58 @@ describe('CodexAdapter', () => {
     expect(eventsOf(events, 'request.resolved')[0]).toMatchObject({ decision: 'decline' });
   });
 
+  it('puts the command in detail and the reason for asking in the title', async () => {
+    const { adapter, server, events } = await start('approval-required');
+    server.replyAlways('turn/start', () => ({ turn: { id: 'native-a', status: 'inProgress' } }));
+    await adapter.sendTurn({ sessionId: 'session-1', turnId: 'caller-1', text: 'run it' });
+    server.notify('turn/started', turnNotification('native-a', 'inProgress'));
+
+    server.send({
+      id: 92,
+      method: 'item/commandExecution/requestApproval',
+      params: {
+        threadId: THREAD,
+        turnId: 'native-a',
+        itemId: 'exec-1',
+        command: 'rm -rf build',
+        cwd: '/work',
+        reason: 'Clearing stale build output',
+        availableDecisions: ['accept'],
+      },
+    });
+    await vi.waitFor(() => expect(eventsOf(events, 'request.opened')).toHaveLength(1));
+    expect(eventsOf(events, 'request.opened')[0]).toMatchObject({
+      title: 'Clearing stale build output',
+      detail: 'rm -rf build',
+    });
+  });
+
+  it('keeps the working directory visible when codex gives no reason', async () => {
+    const { adapter, server, events } = await start('approval-required');
+    server.replyAlways('turn/start', () => ({ turn: { id: 'native-a', status: 'inProgress' } }));
+    await adapter.sendTurn({ sessionId: 'session-1', turnId: 'caller-1', text: 'run it' });
+    server.notify('turn/started', turnNotification('native-a', 'inProgress'));
+
+    server.send({
+      id: 93,
+      method: 'item/commandExecution/requestApproval',
+      params: {
+        threadId: THREAD,
+        turnId: 'native-a',
+        itemId: 'exec-1',
+        command: 'echo hi',
+        cwd: '/work',
+        reason: null,
+        availableDecisions: ['accept'],
+      },
+    });
+    await vi.waitFor(() => expect(eventsOf(events, 'request.opened')).toHaveLength(1));
+    expect(eventsOf(events, 'request.opened')[0]).toMatchObject({
+      title: 'Run a command in /work',
+      detail: 'echo hi',
+    });
+  });
+
   it('surfaces a question and answers it with the codex answer shape', async () => {
     const { adapter, server, events } = await start();
     server.replyAlways('turn/start', () => ({ turn: { id: 'native-a', status: 'inProgress' } }));
