@@ -286,14 +286,17 @@ def _is_usable_handle(name: str) -> bool:
 
 
 def _hard_wrap(text: str) -> str:
-    """Make single line breaks survive into Teams.
+    """Make single line breaks survive into a plain-text Teams activity.
 
-    An Adaptive Card TextBlock follows Markdown's rule that one newline is
-    whitespace, so a heading and the line under it arrive as one run-on
-    sentence. Doubling a lone newline gives the break back. Existing blank
-    lines are left alone — doubling those too would stretch every paragraph
-    gap — and list items keep their own lines, which is why this is done here
-    rather than by splitting the body into separate blocks.
+    Teams renders a bot's `text` as Markdown, where one newline is whitespace,
+    so a heading and the line under it arrive as one run-on sentence. Doubling
+    a lone newline gives the break back, at the cost of a paragraph gap in
+    place of every line break. Existing blank lines are left alone.
+
+    Only the seam that has no card to work with — an admin message, which is
+    the platform speaking rather than an agent. An agent's message is an
+    Adaptive Card, and `cards.body_blocks` gives it the same line breaks
+    without the gaps.
     """
     return _LONE_NEWLINE.sub("\n\n", text)
 
@@ -1172,7 +1175,7 @@ class TeamsAdapter(CollaborationAdapter):
 
         body = self.translate_outbound(content)
         thread_root_id = await self._post_to_answer_in(channel_id, thread_root_id)
-        activity: dict[str, Any] = {"type": "message", "text": body}
+        activity: dict[str, Any] = {"type": "message", "text": _hard_wrap(body)}
         mentions = self._mention_entities(body)
         if mentions:
             # A plain-text activity carries its mention entities directly; only
@@ -1288,12 +1291,12 @@ class TeamsAdapter(CollaborationAdapter):
         responder: str | None,
         notice: str | None,
     ) -> str:
-        """The body of a publication, as a card TextBlock will render it.
+        """The body of a publication, as a card will render it.
 
-        Hard-wrapped last, after the budget has been cut, because the doubled
-        newlines are display syntax rather than anything a reader spends their
-        attention on — and because what Teams will actually accept is measured
-        on the finished activity, not here.
+        Line breaks are the card's problem rather than this text's: the body is
+        written with one newline to a line and `cards.body_blocks` turns those
+        into blocks. So the budget here is measured on what a reader actually
+        reads, with no display syntax counted against it.
         """
         escape = self._rich_escape
         limit = self.rich_fallback_limit()
@@ -1334,7 +1337,7 @@ class TeamsAdapter(CollaborationAdapter):
                 unavailable_reason=content.unavailable_reason,
             )
             drawn = f"{lead}{body}{tail}"
-        return _hard_wrap(drawn)
+        return drawn
 
     def _mention(self, external_id: str | None) -> str | None:
         """`<at>` markup naming whoever holds this AAD id, or None.
@@ -2027,7 +2030,7 @@ class TeamsAdapter(CollaborationAdapter):
         return self._mention_pattern
 
     def translate_outbound(self, content: str) -> str:
-        return _hard_wrap(self._mark_mentions(content))
+        return self._mark_mentions(content)
 
     def escape_label_for_body(self, label: str) -> str:
         """Add the `<at>` tag to what the base class already defuses.

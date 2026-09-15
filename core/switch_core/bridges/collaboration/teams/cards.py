@@ -1,10 +1,58 @@
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from switch_core.bridges.collaboration.adapter import AgentRendering
 
 ADAPTIVE_CARD_CONTENT_TYPE = "application/vnd.microsoft.card.adaptive"
+
+# A line markdown would set as a list item: a bullet or a number, indented by
+# less than the four spaces that would make it a code block instead.
+_LIST_ITEM = re.compile(r"^ {0,3}(?:[-*+]|\d+[.)]) ")
+
+
+def body_blocks(body: str) -> list[dict[str, Any]]:
+    """A message body as consecutive TextBlocks, a line to a block.
+
+    One TextBlock renders markdown, where a lone newline is whitespace: a
+    heading and the line under it arrive as one run-on sentence. Doubling the
+    newline gives the break back but pays a full paragraph gap for it, so a
+    six-line card is read as six paragraphs. Separate blocks give the break
+    back and let `spacing` say what kind of break it is — `None` for a line
+    that simply follows the one above, `Small` where the body itself left a
+    blank line.
+
+    Consecutive list items stay in one block, so they render as one list with
+    its numbering intact rather than as several lists of one item each.
+    Markdown already keeps those on their own lines.
+    """
+    runs: list[tuple[str, list[str]]] = []
+    # The first block sits against the card header, which is a gap of its own.
+    gap = True
+    for line in body.split("\n"):
+        if not line.strip():
+            gap = True
+            continue
+        if (
+            not gap
+            and runs
+            and _LIST_ITEM.match(line)
+            and _LIST_ITEM.match(runs[-1][1][-1])
+        ):
+            runs[-1][1].append(line)
+            continue
+        runs.append(("Small" if gap else "None", [line]))
+        gap = False
+    return [
+        {
+            "type": "TextBlock",
+            "text": "\n".join(lines),
+            "wrap": True,
+            "spacing": spacing,
+        }
+        for spacing, lines in runs
+    ]
 
 
 def agent_message_card(
@@ -25,6 +73,10 @@ def agent_message_card(
     Which form goes where is the point of taking the whole rendering: the header
     is an ordinary TextBlock and so renders the markdown subset, while
     ``altText`` is read out verbatim by a screen reader.
+
+    The body becomes one TextBlock per line rather than one for the whole of it
+    — see ``body_blocks`` for why. ``fallbackText`` keeps the body as it came
+    in, because nothing renders it as a card.
 
     ``mentions`` are Bot Framework mention entities matching ``<at>`` markup in
     ``body``. A card carries them under ``msteams`` rather than on the activity,
@@ -71,11 +123,7 @@ def agent_message_card(
                     },
                 ],
             },
-            {
-                "type": "TextBlock",
-                "text": body,
-                "wrap": True,
-            },
+            *body_blocks(body),
         ],
     }
     if mentions:

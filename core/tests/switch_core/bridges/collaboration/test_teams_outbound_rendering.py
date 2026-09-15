@@ -14,8 +14,13 @@ from switch_core.bridges.collaboration.adapter import AgentRendering
 from switch_core.bridges.collaboration.teams.adapter import (
     TeamsAdapter,
     TeamsConnectionConfig,
+    _hard_wrap,
 )
 from switch_core.bridges.collaboration.teams.cards import agent_message_card
+
+_RENDERING = AgentRendering(
+    field_label="james", body_label="james", icon_url="http://icon"
+)
 
 
 def _run(coro: Any) -> Any:
@@ -144,11 +149,7 @@ def test_the_card_carries_mentions_where_teams_looks_for_them() -> None:
 
 
 def test_a_card_with_no_mentions_carries_no_msteams_block() -> None:
-    agent = AgentRendering(
-        field_label="james", body_label="james", icon_url="http://icon"
-    )
-
-    assert "msteams" not in agent_message_card(agent, "hello", [])
+    assert "msteams" not in agent_message_card(_RENDERING, "hello", [])
 
 
 # ── the app's own handle ─────────────────────────────────────────────────────
@@ -169,33 +170,62 @@ def test_the_app_is_named_in_words_not_in_slack_syntax() -> None:
 # ── line breaks ──────────────────────────────────────────────────────────────
 
 
+def _lines(body: str) -> list[tuple[str, str]]:
+    """Every body block of the card, as (spacing, text)."""
+    card = agent_message_card(_RENDERING, body, [])
+    return [(str(block["spacing"]), str(block["text"])) for block in card["body"][1:]]
+
+
 def test_a_single_newline_survives() -> None:
     # Adaptive Cards follow Markdown: one newline is whitespace. This is the
-    # heading that ran into the sentence under it.
+    # heading that ran into the sentence under it. It gets its break from a
+    # block of its own, so the line beneath sits under it rather than a
+    # paragraph away.
+    assert _lines("**Heading:**\nbody") == [
+        ("Small", "**Heading:**"),
+        ("None", "body"),
+    ]
+
+
+def test_a_gap_the_body_asked_for_is_the_only_gap_there_is() -> None:
+    assert _lines("one\ntwo\n\nthree") == [
+        ("Small", "one"),
+        ("None", "two"),
+        ("Small", "three"),
+    ]
+
+
+def test_list_items_stay_in_one_block_so_they_stay_one_list() -> None:
+    # Split a block apiece and each item is its own one-item list, which
+    # restarts the numbering and indents each one separately.
+    assert _lines("pick one:\n1. one\n2. two") == [
+        ("Small", "pick one:"),
+        ("None", "1. one\n2. two"),
+    ]
+
+
+def test_a_body_with_no_newlines_is_one_block() -> None:
+    assert _lines("just a sentence") == [("Small", "just a sentence")]
+
+
+def test_the_text_itself_is_left_alone() -> None:
+    # The breaks are the card's doing, so nothing is written into the body to
+    # get them — and `fallbackText`, which no card renders, is the body as the
+    # agent wrote it.
     adapter = _adapter()
+    body = "**Heading:**\nbody"
 
-    assert adapter.translate_outbound("**Heading:**\nbody") == ("**Heading:**\n\nbody")
-
-
-def test_an_existing_paragraph_gap_is_not_widened() -> None:
-    adapter = _adapter()
-
-    assert adapter.translate_outbound("one\n\ntwo") == "one\n\ntwo"
+    assert adapter.translate_outbound(body) == body
+    assert agent_message_card(_RENDERING, body, [])["fallbackText"].endswith(body)
 
 
-def test_list_items_keep_their_own_lines() -> None:
-    adapter = _adapter()
-
-    rendered = adapter.translate_outbound("- one\n- two")
-
-    assert rendered == "- one\n\n- two"
-    assert rendered.count("- ") == 2
-
-
-def test_a_body_with_no_newlines_is_unchanged() -> None:
-    adapter = _adapter()
-
-    assert adapter.translate_outbound("just a sentence") == "just a sentence"
+def test_the_plain_text_seam_still_doubles_because_it_has_no_blocks() -> None:
+    # An admin message is Teams speaking as itself: a plain-text activity, no
+    # Adaptive Card, and so nowhere to put a line break but the text. A
+    # paragraph gap per break is worse than a block and far better than the
+    # run-on sentence this started as.
+    assert _hard_wrap("**Heading:**\nbody") == "**Heading:**\n\nbody"
+    assert _hard_wrap("one\n\ntwo") == "one\n\ntwo"
 
 
 # ── translated once, not twice ───────────────────────────────────────────────
@@ -204,16 +234,16 @@ def test_a_body_with_no_newlines_is_unchanged() -> None:
 def test_send_message_does_not_translate_again() -> None:
     # Callers of send_message translate first, by documented contract. The
     # adapter used to translate a second time, which is invisible while
-    # translation is a no-op and corrupting the moment it is not — doubling
-    # every newline again, and re-marking text that was already marked.
+    # translation is a no-op and corrupting the moment it is not — re-marking
+    # text that was already marked.
     adapter = _adapter(alice="aad-alice")
     already = adapter.translate_outbound("hi @alice\nthere")
 
     activity = _run(adapter._message_activity("james", already))
+    blocks = activity["attachments"][0]["content"]["body"][1:]
 
-    assert activity["attachments"][0]["content"]["body"][-1]["text"] == already
+    assert [block["text"] for block in blocks] == ["hi <at>alice</at>", "there"]
     assert "<at><at>" not in already
-    assert "\n\n\n" not in already
 
 
 # ── commands ─────────────────────────────────────────────────────────────────
