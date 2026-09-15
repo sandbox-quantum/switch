@@ -292,10 +292,12 @@ behind one already running; Telegram does not, because a bot may hold exactly
 one reaction on a message and the mark that matters is the one saying work is
 under way.
 
-It marks the *last thing a person said* in the chat, because outside forum
-topics Telegram has no threads — only reply chains — so there is no thread for
-a status to belong to. If an agent is asked two things at once, both messages
-are marked and both are cleared when the turn ends.
+It marks **the message that asked** — the one that started the turn, not
+whatever was said most recently. Where a command was answered inside an
+existing reply chain, that is the reply itself rather than the message the
+chain started from. If an agent is asked two things at once, both of those
+messages are marked. A mark comes off once the last turn holding it has ended,
+so a message two prompts are waiting on keeps its mark until both are done.
 
 A chat can have reactions switched off. Then the mark is lost and the turn
 carries on; the bridge logs it rather than failing the turn.

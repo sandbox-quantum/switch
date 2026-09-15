@@ -122,10 +122,13 @@ where role management is restricted.
 When a Switch Console-managed agent starts on a message, two things appear:
 
 - **A reaction on the message it is answering** — 👀 while the agent is working
-  on it, ⏳ while a prompt is waiting behind one already running. Cleared when
-  the turn ends. This is the only signal that says *which* message is being
-  handled — an agent answering two people at once marks both, and clears both
-  together. It needs the **Add Reactions** permission; without it the bridge
+  on it, ⏳ while a prompt is waiting behind one already running. This is the
+  only signal that says *which* message is being handled — an agent answering
+  two people at once marks both. A mark comes off a message once the last turn
+  holding it has ended, which is not always the same moment the turn that put
+  it there ends: two prompts queued behind one message share its ⏳, and it
+  stays until both are done. It needs the **Add Reactions** permission; without
+  it the bridge
   logs a warning and posts no reaction rather than a mark that is not there.
 - **A status message** posted under the agent's own name and avatar, edited in
   place as the activity changes: "Working… 41s" while the turn runs, "Worked for
@@ -150,12 +153,22 @@ webhooks, not one, and both are expected:
 - **Switch Sessions** — session status messages and request cards, and nothing
   else.
 
-They are split so that a status or a card can be recognised with certainty from
-the channel history alone. Recognising them by sender-plus-wording would also
-match an agent that happens to quote a request handle in its own reply, and
-Switch would then keep editing that reply as though it were the card. Nothing
-but the publisher ever posts on the second webhook, so anything found on it is
-one of ours.
+They are split so that a **request card** can be found again when its fate is
+unknown — the post timed out, or the process died between sending it and
+recording its id. Two things have to hold before Switch will bind a
+reservation to a message it finds, and the webhook is only the first: the
+message must have come through the publication webhook, and it must carry that
+card's heading line for that handle. The webhook alone rules out an agent's own
+reply that happens to quote a handle — "I can explain the request `R7` syntax"
+arrives on the webhook agents speak through, so it is never a candidate — and
+the heading picks the right card out of the other publications beside it.
+
+**This does not recover a status message.** A turn's status prints no handle,
+so there is nothing to match on and the lookup declines rather than guessing;
+the status stays unconfirmed and is not posted a second time. That is a Discord
+limitation rather than a decision: a webhook message carries no metadata this
+bridge can set, so the handle a card prints is the only marker available. On a
+platform that can carry one — Slack does — a status is as findable as a card.
 
 Both are minted on demand the first time the bridge needs them in a channel, and
 both need **Manage Webhooks**. Discord's limit is 15 webhooks per channel.
