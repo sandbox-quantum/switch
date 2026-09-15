@@ -106,6 +106,7 @@ from switch_core.db.stores.external_user_store import ExternalUserStore
 from switch_core.db.stores.invitation_store import InvitationStore
 from switch_core.db.stores.media_store import MediaStore
 from switch_core.db.stores.message_store import MessageStore
+from switch_core.db.stores.messaging_event_store import MessagingEventReceiptStore
 from switch_core.db.stores.messaging_install_store import MessagingInstallStore
 from switch_core.db.stores.package_store import PackageStore
 from switch_core.db.stores.reference_store import ReferenceStore
@@ -506,6 +507,7 @@ async def run(config: SwitchConfig) -> None:
         install_service = MessagingInstallService(
             session_factory=session_factory,
             store=MessagingInstallStore(),
+            receipts=MessagingEventReceiptStore(),
             installers=installers,
             lifecycle=collab_lifecycle,
             public_origin=config.messaging_public_url,

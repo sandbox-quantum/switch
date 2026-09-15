@@ -65,6 +65,30 @@ def _json_object(raw: bytes) -> dict[str, Any]:
     return parsed
 
 
+#: Slack's count of how many times it has re-sent a delivery, absent on the
+#: first. Header names arrive from Starlette lower-cased and are compared that
+#: way; Slack's own spelling is `X-Slack-Retry-Num`.
+_RETRY_NUM_HEADER = "x-slack-retry-num"
+
+
+def _retry_number(headers: Mapping[str, str]) -> int:
+    """How many times Slack has sent this already, defaulting to none.
+
+    Unauthenticated in the sense that it is not covered by the signature — the
+    signature is over the body and the timestamp — so it is read as a hint and
+    never as a decision. A forged value cannot make an event be handled twice
+    or dropped, because the receipt decides that; the worst it can do is put a
+    wrong number in a log line.
+    """
+    raw = headers.get(_RETRY_NUM_HEADER)
+    if raw is None:
+        return 0
+    try:
+        return int(raw)
+    except ValueError:
+        return 0
+
+
 def _form_fields(raw: bytes) -> dict[str, Any]:
     """Slack's form encoding as a flat dict, matching Socket Mode's payload.
 
@@ -215,8 +239,10 @@ class SlackAppInstaller(MessagingAppInstaller):
             raise WebhookAuthenticityError("bad Slack signature")
 
     def parse_webhook(
-        self, *, endpoint: WebhookEndpoint, body: bytes
+        self, *, endpoint: WebhookEndpoint, headers: Mapping[str, str], body: bytes
     ) -> InboundWebhook:
+        attempt = _retry_number(headers)
+
         if endpoint == "commands":
             # A slash command posts its fields as a form, and Socket Mode
             # delivers that same flat dict — so the parsed form *is* the
@@ -225,6 +251,13 @@ class SlackAppInstaller(MessagingAppInstaller):
                 envelope_type="slash_commands",
                 payload=_form_fields(body),
                 handshake=None,
+                # Slack retries neither of the two form endpoints. A command
+                # and an interaction are a person waiting on a dialog, and a
+                # reply that arrives a minute late is worse than none — so
+                # Slack sends each exactly once and there is no id on it to
+                # deduplicate by.
+                external_event_id=None,
+                delivery_attempt=attempt,
             )
 
         if endpoint == "interactive":
@@ -239,6 +272,8 @@ class SlackAppInstaller(MessagingAppInstaller):
                 envelope_type="interactive",
                 payload=_json_object(raw.encode()),
                 handshake=None,
+                external_event_id=None,
+                delivery_attempt=attempt,
             )
 
         envelope = _json_object(body)
@@ -253,11 +288,25 @@ class SlackAppInstaller(MessagingAppInstaller):
                     "Slack sent a URL verification with no challenge to echo"
                 )
             return InboundWebhook(
-                envelope_type="url_verification", payload=envelope, handshake=challenge
+                envelope_type="url_verification",
+                payload=envelope,
+                handshake=challenge,
+                external_event_id=None,
+                delivery_attempt=attempt,
             )
 
+        event_id = envelope.get("event_id")
         return InboundWebhook(
-            envelope_type="events_api", payload=envelope, handshake=None
+            envelope_type="events_api",
+            payload=envelope,
+            handshake=None,
+            # The one envelope Slack numbers, and the one it retries. A
+            # retried delivery carries the same `event_id` as the original,
+            # which is the whole basis of handling it once.
+            external_event_id=event_id
+            if isinstance(event_id, str) and event_id
+            else None,
+            delivery_attempt=attempt,
         )
 
     def workspace_of_event(self, payload: Mapping[str, object]) -> str:
