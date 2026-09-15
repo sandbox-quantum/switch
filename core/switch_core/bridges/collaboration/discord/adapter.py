@@ -5,7 +5,6 @@ import hashlib
 import io
 import logging
 import re
-import time
 from collections import OrderedDict
 from collections.abc import Awaitable, Callable, Coroutine
 from dataclasses import replace
@@ -22,7 +21,6 @@ from switch_core.bridges.collaboration.adapter import (
     ActivityMark,
     ActivityMarkRefused,
     CollaborationAdapter,
-    LiveRuntimeIndicator,
     RequestCard,
     RichContent,
     RichContentFailed,
@@ -294,8 +292,10 @@ class DiscordAdapter(CollaborationAdapter):
     # them: the first turn to want it adds it and the last to finish removes it.
     activity_reactions_per_agent: ClassVar[bool] = False
 
-    # Both paths would draw the same turn. The legacy renderer below is
-    # retained, not reachable — removing it is its own task.
+    # Off, because the SDK publication draws the status. This adapter has no
+    # legacy renderer left to run, but the base class defaults the flag on for
+    # the platforms that still do, so saying so here is what keeps the base
+    # class's own fallback from drawing a second account of the turn.
     renders_legacy_runtime_state: ClassVar[bool] = False
 
     # `find_request_card` reads a channel's history back and matches a card by
@@ -327,14 +327,10 @@ class DiscordAdapter(CollaborationAdapter):
         # Discord user id ↔ username caches, for mention translation both ways.
         self._user_names: dict[int, str] = {}
         self._username_to_id: dict[str, int] = {}
-        # Webhook messages delete cleanly on Discord, so runtime state renders
-        # as a persistent message (see the base class's _working_msg) rather
-        # than the one-shot typing indicator.
-        # Message refs currently carrying the "being worked on" reaction, and
-        # per agent the set it has marked — a turn ends once but may have
-        # marked several messages.
+        # Message refs currently carrying an activity reaction. One bot serves
+        # every agent here, so a mark belongs to the application rather than to
+        # whichever agent asked for it.
         self._marked: set[tuple[str, ActivityMark]] = set()
-        self._agent_eyes: dict[tuple[str, str], set[str]] = {}
         # Set once Discord has told us it will not host agent roles, so the
         # bridge stops asking and says so only once.
         self._agent_roles_off_reason: str | None = None
@@ -1478,138 +1474,6 @@ class DiscordAdapter(CollaborationAdapter):
         except ValueError:
             return None
 
-    # ── Runtime state ────────────────────────────────────────────────────────
-
-    async def _apply_runtime_state(
-        self,
-        channel_id: str,
-        agent_name: str,
-        state: str,
-        *,
-        mention_handle: str | None,
-        thread_root_id: str | None,
-        deeplink_url: str | None = None,
-        detail: str | None = None,
-        trigger_thread_root_id: str | None = None,
-        anchor_message_ref: str | None = None,
-    ) -> None:
-        """Render runtime state as persistent, truly-deletable status messages.
-
-        Discord deletes webhook messages cleanly (no tombstone), so — like
-        Slack — the "working on it…" indicator and any "needs your input"
-        pings are posted while relevant and deleted when the turn ends. The
-        working indicator stays up through `awaiting-input` (the agent is
-        mid-turn, just paused) and the pings are removed alongside it when
-        the turn goes idle or resumes to `working`. When the agent was
-        addressed in a thread, messages surface in that thread.
-
-        Alongside them the message the agent is answering carries 👀 for as long
-        as the turn lasts. The status sits where the conversation is, so the
-        reaction is the only thing that says *which* message is being handled —
-        and it needs nothing from Discord but a permission, so it is there at
-        the channel root as well as inside a thread.
-        """
-        # Marked before the branching below, because the working branch returns
-        # early when it only has to refresh the message in place.
-        await self._track_turn(channel_id, anchor_message_ref, agent_name, state=state)
-
-        key = (channel_id, agent_name)
-        if state == "working":
-            await self._clear_input_pings(channel_id, agent_name)
-            # Posted under the agent's own name/icon, so the body just states
-            # the activity — no need to repeat the agent name in the text.
-            body = self._working_body(detail, deeplink_url)
-            existing = self._working_msg.get(key)
-            if existing is not None:
-                await self.update_message(channel_id, existing.message_ref, body)
-                self._working_msg[key] = replace(existing, body=body)
-                return
-            ref = await self.send_message(channel_id, agent_name, body, thread_root_id)
-            if ref is not None:
-                self._working_msg[key] = LiveRuntimeIndicator(
-                    message_ref=ref,
-                    body=body,
-                    thread_root_id=thread_root_id,
-                    started_at=time.monotonic(),
-                )
-        elif state == "awaiting-input":
-            ref = await self._ping_operator(
-                channel_id,
-                agent_name,
-                mention_handle,
-                thread_root_id,
-                deeplink_url,
-                detail,
-            )
-            if ref is not None:
-                self._input_pings.setdefault(key, []).append(ref)
-        else:
-            await self._clear_working(channel_id, agent_name)
-            await self._clear_input_pings(channel_id, agent_name)
-
-    async def _track_turn(
-        self,
-        channel_id: str,
-        anchor_message_ref: str | None,
-        agent_name: str,
-        *,
-        state: str,
-    ) -> None:
-        """Mark every message this agent is working on, and unmark them together.
-
-        An agent asked two things at once works on both, and each message gets
-        its own 👀 — but the turn ends **once**, naming only the message it last
-        touched. Clearing just that one leaves the first marked as being worked
-        on for good, so they are remembered per agent and cleared together.
-        """
-        akey = (channel_id, agent_name)
-        if state in ("working", "awaiting-input"):
-            if anchor_message_ref is None:
-                return
-            self._agent_eyes.setdefault(akey, set()).add(anchor_message_ref)
-            await self._mark_being_read(anchor_message_ref, working=True)
-            return
-
-        for ref in sorted(self._agent_eyes.pop(akey, set())):
-            await self._mark_being_read(ref, working=False)
-
-    async def _mark_being_read(self, message_ref: str, *, working: bool) -> None:
-        """Put 👀 on the message an agent is working on, and take it off after.
-
-        Needs only the Add Reactions permission, and works at the channel root
-        as well as inside a thread — so it is the progress signal that is always
-        available. A guild that has not granted the permission gets one warning
-        and no reaction, rather than a mark that is not there.
-
-        This path has no durable record, so it answers the refused-removal
-        question from `self._marked` — which is sound only because it will not
-        attempt a removal at all unless this process put the mark there. The
-        reaction is then known to be outstanding, and is reported as such.
-        """
-        _, message_id = self._parse_message_ref(message_ref)
-        if not message_id or self._client is None:
-            return
-        if working == ((message_ref, "working") in self._marked):
-            return
-
-        try:
-            await self._react(message_ref, mark="working", on=working)
-        except ActivityMarkRefused as refusal:
-            if working:
-                logger.warning("%s", refusal)
-            else:
-                logger.error(
-                    "%s The mark this process put there is still on the message.",
-                    refusal,
-                )
-        except (discord.HTTPException, ValueError) as e:
-            logger.warning(
-                "Could not %s the working reaction on Discord message %s: %s",
-                "add" if working else "remove",
-                message_ref,
-                e,
-            )
-
     async def _react(self, message_ref: str, *, mark: ActivityMark, on: bool) -> None:
         """Add or remove a mark, letting through whatever another attempt might fix.
 
@@ -1657,16 +1521,6 @@ class DiscordAdapter(CollaborationAdapter):
                 f"is the bot's access to the channel rather than the reaction: check "
                 f"it can still see {message_ref}."
             ) from error
-
-    async def _clear_working(self, channel_id: str, agent_name: str) -> None:
-        live = self._working_msg.pop((channel_id, agent_name), None)
-        if live is not None:
-            await self.delete_message(channel_id, live.message_ref)
-
-    async def _clear_input_pings(self, channel_id: str, agent_name: str) -> None:
-        refs = self._input_pings.pop((channel_id, agent_name), [])
-        for ref in refs:
-            await self.delete_message(channel_id, ref)
 
     # ── Channels ─────────────────────────────────────────────────────────────
 

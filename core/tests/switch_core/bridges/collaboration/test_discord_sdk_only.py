@@ -350,11 +350,13 @@ async def _card(**kwargs: Any) -> RequestCard:
     return RequestCard(request, RequestReference(token="tok-1", handle="R7"), **kwargs)
 
 
-# ── The legacy renderer is off ───────────────────────────────────────────────
+# ── No legacy renderer ───────────────────────────────────────────────────────
 
 
-async def test_the_legacy_renderer_no_longer_draws_alongside_the_sdk_one() -> None:
-    """Both would draw the same turn, and the channel would show it twice."""
+async def test_nothing_draws_a_second_account_of_the_turn() -> None:
+    """This adapter's own renderer is gone, but the base class still defaults
+    the flag on for the platforms that have one, so the declaration is what
+    keeps the inherited fallback from drawing the turn a second time."""
     adapter, channel, _thread, webhook = _guild_setup()
 
     for state in ("working", "awaiting-input", "idle"):
@@ -975,33 +977,65 @@ async def test_a_mark_that_cannot_be_taken_off_is_refused_not_shrugged_away() ->
         )
 
 
-async def test_the_pre_sdk_path_still_says_which_refusal_it_hit(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    """A turn with no durable record behind it answers the question itself.
-
-    It can, because it only reaches a removal for a mark this process put
-    there: an absent mark is a warning and a stuck one is an error, as they
-    were before the refusal became an exception.
-    """
+async def test_a_refused_mark_is_not_recorded_as_present() -> None:
+    """Recording a mark that was refused would make the next attempt a no-op,
+    so the guild would never get the reaction back once the permission is."""
     adapter, channel, _thread, _webhook = _guild_setup()
     ref = f"{CHANNEL_ID}:{ROOT_MESSAGE_ID}"
     channel.reaction_error = discord.Forbidden(_Response(), "no Add Reactions")  # type: ignore[arg-type]
 
-    with caplog.at_level(logging.WARNING):
-        await adapter._track_turn(str(CHANNEL_ID), ref, "my-agent", state="working")
-    assert [record.levelname for record in caplog.records] == ["WARNING"]
+    with pytest.raises(ActivityMarkRefused):
+        await adapter.mark_activity(
+            str(CHANNEL_ID), ref, agent_name="my-agent", mark="working", on=True
+        )
 
-    caplog.clear()
     channel.reaction_error = None
-    await adapter._track_turn(str(CHANNEL_ID), ref, "my-agent", state="working")
-    channel.reaction_error = discord.Forbidden(_Response(), "cannot see the channel")  # type: ignore[arg-type]
+    await adapter.mark_activity(
+        str(CHANNEL_ID), ref, agent_name="my-agent", mark="working", on=True
+    )
+    assert channel.reactions == [("👀", True)]
 
-    with caplog.at_level(logging.WARNING):
-        await adapter._track_turn(str(CHANNEL_ID), ref, "my-agent", state="completed")
 
-    assert [record.levelname for record in caplog.records] == ["ERROR"]
-    assert "still on the message" in caplog.text
+async def test_a_message_inside_a_thread_is_marked_in_that_thread() -> None:
+    """The reaction goes where the message is, not where the room is.
+
+    A message posted in a thread is bridged into the parent channel's room, but
+    it lives in the thread — which on Discord is a channel of its own, and the
+    only place the reaction can be added.
+    """
+    adapter, channel, thread, _webhook = _guild_setup()
+
+    await adapter.mark_activity(
+        str(CHANNEL_ID),
+        f"{ROOT_MESSAGE_ID}:999",
+        agent_name="my-agent",
+        mark="working",
+        on=True,
+    )
+
+    assert thread.reactions == [("👀", True)]
+    assert channel.reactions == []
+
+
+async def test_a_deleted_message_is_not_a_failed_removal() -> None:
+    """The end state is what was wanted either way, so the mark is forgotten
+    rather than left recorded as present — and a later turn still marks."""
+    adapter, channel, _thread, _webhook = _guild_setup()
+    ref = f"{CHANNEL_ID}:{ROOT_MESSAGE_ID}"
+    await adapter.mark_activity(
+        str(CHANNEL_ID), ref, agent_name="my-agent", mark="working", on=True
+    )
+
+    channel.reaction_error = discord.NotFound(_Response(), "unknown message")  # type: ignore[arg-type]
+    await adapter.mark_activity(
+        str(CHANNEL_ID), ref, agent_name="my-agent", mark="working", on=False
+    )
+
+    channel.reaction_error = None
+    await adapter.mark_activity(
+        str(CHANNEL_ID), ref, agent_name="my-agent", mark="working", on=True
+    )
+    assert channel.reactions[-1] == ("👀", True)
 
 
 async def test_a_transient_reaction_failure_raises_so_the_publisher_retries() -> None:

@@ -911,151 +911,6 @@ def test_send_typing_triggers_once_and_off_is_noop() -> None:
     assert channel.typing_count == 1
 
 
-# ── Runtime state (working-on-it activity) ──────────────────────────────────
-#
-# These drive `_apply_runtime_state` rather than the public entry point because
-# the public one no longer reaches it: Discord now publishes SDK sessions and
-# declares `renders_legacy_runtime_state = False`, so the base class stops the
-# legacy path before the adapter sees it. The implementation is still here and
-# still correct; what it no longer has is a caller. Removing it is its own task
-# — until then these keep it honest, and `test_discord_sdk_only.py` covers the
-# disabled ingress itself.
-
-
-def _runtime_setup() -> tuple[DiscordAdapter, _FakeChannel, _FakeWebhook]:
-    adapter = _adapter()
-    channel = _FakeChannel()
-    adapter._client = _FakeClient({CHANNEL_ID: channel})
-    webhook = _FakeWebhook()
-    adapter._webhooks[(CHANNEL_ID, _WEBHOOK_NAME)] = webhook
-    return adapter, channel, webhook
-
-
-def test_runtime_state_working_posts_persistent_indicator() -> None:
-    adapter, _, webhook = _runtime_setup()
-
-    _run(
-        adapter._apply_runtime_state(
-            str(CHANNEL_ID),
-            "my-agent",
-            "working",
-            mention_handle=None,
-            thread_root_id=None,
-        )
-    )
-
-    assert len(webhook.sent) == 1
-    assert webhook.sent[0]["content"] == "⚙️ _Working on it…_"
-    assert webhook.sent[0]["username"] == "my-agent"
-    assert (
-        adapter._working_msg[(str(CHANNEL_ID), "my-agent")].message_ref
-        == f"{CHANNEL_ID}:901"
-    )
-
-
-def test_runtime_state_detail_edits_message_in_place() -> None:
-    adapter, _, webhook = _runtime_setup()
-
-    _run(
-        adapter._apply_runtime_state(
-            str(CHANNEL_ID),
-            "my-agent",
-            "working",
-            mention_handle=None,
-            thread_root_id=None,
-        )
-    )
-    _run(
-        adapter._apply_runtime_state(
-            str(CHANNEL_ID),
-            "my-agent",
-            "working",
-            mention_handle=None,
-            thread_root_id=None,
-            detail="Editing adapter.py",
-        )
-    )
-
-    assert len(webhook.sent) == 1
-    assert len(webhook.edits) == 1
-    assert webhook.edits[0]["message_id"] == 901
-    assert webhook.edits[0]["content"] == "⚙️ Editing adapter.py"
-    assert (
-        adapter._working_msg[(str(CHANNEL_ID), "my-agent")].message_ref
-        == f"{CHANNEL_ID}:901"
-    )
-
-
-def test_runtime_state_idle_clears_working_message() -> None:
-    adapter, channel, webhook = _runtime_setup()
-
-    _run(
-        adapter._apply_runtime_state(
-            str(CHANNEL_ID),
-            "my-agent",
-            "working",
-            mention_handle=None,
-            thread_root_id=None,
-        )
-    )
-    _run(
-        adapter._apply_runtime_state(
-            str(CHANNEL_ID),
-            "my-agent",
-            "idle",
-            mention_handle=None,
-            thread_root_id=None,
-        )
-    )
-
-    assert [d["message_id"] for d in webhook.deletes] == [901]
-    assert channel.deleted_ids == []
-    assert (str(CHANNEL_ID), "my-agent") not in adapter._working_msg
-
-
-def test_runtime_state_awaiting_input_pings_and_resume_clears_pings() -> None:
-    adapter, channel, webhook = _runtime_setup()
-
-    _run(
-        adapter._apply_runtime_state(
-            str(CHANNEL_ID),
-            "my-agent",
-            "working",
-            mention_handle=None,
-            thread_root_id=None,
-        )
-    )
-    _run(
-        adapter._apply_runtime_state(
-            str(CHANNEL_ID),
-            "my-agent",
-            "awaiting-input",
-            mention_handle="louis",
-            thread_root_id=None,
-        )
-    )
-
-    # Working indicator stays up; a ping was posted and tracked.
-    assert len(webhook.sent) == 2
-    assert "@louis" in webhook.sent[1]["content"]
-    assert "needs your input" in webhook.sent[1]["content"]
-    assert adapter._input_pings[(str(CHANNEL_ID), "my-agent")] == [f"{CHANNEL_ID}:902"]
-
-    # Resuming work means the input was provided — the ping is deleted, the
-    # working indicator is refreshed in place.
-    _run(
-        adapter._apply_runtime_state(
-            str(CHANNEL_ID),
-            "my-agent",
-            "working",
-            mention_handle=None,
-            thread_root_id=None,
-        )
-    )
-    assert [d["message_id"] for d in webhook.deletes] == [902]
-    assert (str(CHANNEL_ID), "my-agent") not in adapter._input_pings
-
-
 # ── Webhook management ───────────────────────────────────────────────────────
 
 
@@ -1270,20 +1125,26 @@ def test_start_times_out_when_never_ready_and_stops() -> None:
 
 
 def test_awaiting_input_with_nobody_linked_says_so() -> None:
-    # The ping used to post with the mention simply missing, which on the
-    # channel reads exactly like a ping that worked — an agent waiting on input
-    # nobody knows to give. The handle is the agent owner's linked account
-    # (CHOO-2137), so "nobody" now means the owner has not said which account
-    # here is theirs, and the line says that instead of trailing off.
-    adapter, _channel, webhook = _runtime_setup()
+    """`_ping_operator` is shared and still used by the platforms that have
+    not migrated, so it is exercised here through a real adapter's delivery.
+
+    The ping used to post with the mention simply missing, which on the channel
+    reads exactly like a ping that worked — an agent waiting on input nobody
+    knows to give. The handle is the agent owner's linked account, so "nobody"
+    means the owner has not said which account here is theirs, and the line
+    says that instead of trailing off.
+    """
+    adapter = _adapter()
+    adapter._client = _FakeClient({CHANNEL_ID: _FakeChannel()})
+    webhook = _FakeWebhook()
+    adapter._webhooks[(CHANNEL_ID, _WEBHOOK_NAME)] = webhook
 
     _run(
-        adapter._apply_runtime_state(
+        adapter._ping_operator(
             str(CHANNEL_ID),
             "my-agent",
-            "awaiting-input",
-            mention_handle=None,
-            thread_root_id=None,
+            None,
+            None,
         )
     )
 
