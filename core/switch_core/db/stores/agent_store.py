@@ -5,6 +5,7 @@ from switch_core.db.models import (
     Agent,
     ClientRoom,
     Model,
+    SdkSession,
     Tool,
     require_tenant_id,
     room_agents,
@@ -138,6 +139,12 @@ class AgentStore:
         )
         await session.execute(
             delete(ClientRoom).where(ClientRoom.client_id == agent.client_id)
+        )
+        await session.execute(
+            delete(SdkSession).where(
+                SdkSession.tenant_id == require_tenant_id(),
+                SdkSession.agent_id == agent_id,
+            )
         )
         await session.delete(agent)
         await session.flush()
