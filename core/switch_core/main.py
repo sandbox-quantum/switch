@@ -502,13 +502,13 @@ async def run(config: SwitchConfig) -> None:
 
     install_service: MessagingInstallService | None = None
     if installers.platforms():
-        assert config.gateway_public_url is not None
+        assert config.messaging_public_url is not None
         install_service = MessagingInstallService(
             session_factory=session_factory,
             store=MessagingInstallStore(),
             installers=installers,
             lifecycle=collab_lifecycle,
-            public_origin=config.gateway_public_url,
+            public_origin=config.messaging_public_url,
             secret=config.jwt_secret_key,
         )
 

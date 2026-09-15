@@ -194,6 +194,20 @@ class SwitchConfig(BaseSettings):
     slack_app_client_secret: str | None = None
     slack_app_signing_secret: str | None = None
 
+    # Public origin (scheme + host, no path) that a messaging platform reaches
+    # Switch on: the base of the OAuth redirect and of the three event URLs
+    # under `/messaging`, and the one registered with the app.
+    #
+    # Separate from `gateway_public_url` because the two answer to different
+    # audiences and need not be the same host. The gateway URL is opened by a
+    # person following a deeplink and may live on a private network; this one
+    # is dialled by Slack from the internet and must resolve and present a
+    # browser-trusted certificate there. A deployment whose gateway is
+    # reachable only over a VPN can still offer installs, and pointing the
+    # gateway URL at the internet-facing host to achieve that would silently
+    # move every deeplink along with it.
+    messaging_public_url: str | None = None
+
     # Upper bound on a single attachment an agent may post to a room (and that
     # a collaboration bridge will relay out). Uploads over this raise instead
     # of being truncated or silently dropped.
@@ -411,6 +425,28 @@ class SwitchConfig(BaseSettings):
         return self
 
     @model_validator(mode="after")
+    def _validate_messaging_public_url(self) -> "SwitchConfig":
+        # Slack compares the redirect URI it is sent against the one registered
+        # with the app, byte for byte, and reports a mismatch as a generic
+        # refusal. A path here would make every install URL wrong in a way the
+        # error message does not name, so it is a startup error instead.
+        if self.messaging_public_url:
+            parts = urlsplit(self.messaging_public_url)
+            if not parts.scheme or not parts.netloc or parts.path not in ("", "/"):
+                raise ValueError(
+                    "MESSAGING_PUBLIC_URL must be a scheme + host only "
+                    "(e.g. https://switch.example), with no path, "
+                    f"got {self.messaging_public_url!r}."
+                )
+            if parts.scheme != "https":
+                raise ValueError(
+                    "MESSAGING_PUBLIC_URL must be https. Slack refuses to "
+                    "register an http redirect or event URL, so an http origin "
+                    f"cannot work, got {self.messaging_public_url!r}."
+                )
+        return self
+
+    @model_validator(mode="after")
     def _validate_gateway_oidc(self) -> "SwitchConfig":
         required = (
             self.gateway_oidc_issuer_url,
@@ -456,9 +492,9 @@ class SwitchConfig(BaseSettings):
         # the app. Without the origin they would be built against nothing, so a
         # deployment configured to offer installs and unable to name itself is
         # a startup error rather than a broken button.
-        if set_count and not self.gateway_public_url:
+        if set_count and not self.messaging_public_url:
             raise ValueError(
-                "A distributed Slack app is configured but GATEWAY_PUBLIC_URL "
+                "A distributed Slack app is configured but MESSAGING_PUBLIC_URL "
                 "is not. The install redirect and the events endpoint are built "
                 "from it, and Slack rejects a redirect that does not match the "
                 "one registered with the app."

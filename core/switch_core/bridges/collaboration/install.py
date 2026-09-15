@@ -71,8 +71,8 @@ def commands_path(platform: str) -> str:
 def public_url(public_origin: str, path: str) -> str:
     """Absolute URL for one install path, given the deployment's public origin.
 
-    The origin is `GATEWAY_PUBLIC_URL`, which is validated at startup as scheme
-    and host with no path, so this is a join and not a merge. It exists as a
+    The origin is `MESSAGING_PUBLIC_URL`, which is validated at startup as
+    scheme and host with no path, so this is a join and not a merge. It exists as a
     function so the redirect URI sent to the platform and the one registered
     with the app are built the same way — the platform compares them exactly,
     and a trailing slash on one side is a refused install with a message that
