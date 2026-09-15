@@ -1912,13 +1912,17 @@ class TelegramAdapter(CollaborationAdapter):
         thread root has here. Outside a forum the root is a message to reply
         to and there is nothing to send an action to but the chat, so it is
         not passed on: `message_thread_id` set to a reply target would aim the
-        nudge at a topic that is not one.
+        nudge at a topic that is not one. A forum whose topic cannot be
+        located gets no nudge at all rather than one in General.
         """
+        topic = await self._topic_kwargs(channel_id, thread_root_id)
+        if topic is None:
+            return
         try:
             await self._require_bot().send_chat_action(
                 chat_id=self._chat_id(channel_id),
                 action=ChatAction.TYPING,
-                **await self._topic_kwargs(channel_id, thread_root_id),
+                **topic,
             )
         except Exception as error:
             logger.warning(
@@ -3044,9 +3048,17 @@ class TelegramAdapter(CollaborationAdapter):
         card asked for in one topic would be put to the whole group instead.
         Which of the two a root names is `_resolve_root`'s question.
 
-        A reply target that has since been deleted does not stop the send.
-        Detaching there costs the quote, not the audience: it is the same chat
-        either way, and a reply nobody can trace back beats no message at all.
+        Outside a forum, a reply target that has since been deleted does not
+        stop the send. Detaching there costs the quote, not the audience: it is
+        the same chat either way, and a reply nobody can trace back beats no
+        message at all.
+
+        Inside one it is the opposite, because a reply target is also the only
+        thing naming the topic. Permitting the send without it is permitting it
+        into General — in front of the whole group rather than the people in
+        the conversation — so the anchor is required and the send fails
+        instead. Repeating an optional anchor on each chunk would not have
+        prevented that: the permission travels with every copy of it.
         """
         if not thread_root_id:
             return {}
@@ -3062,7 +3074,8 @@ class TelegramAdapter(CollaborationAdapter):
             return {"message_thread_id": root.id}
         return {
             "reply_parameters": ReplyParameters(
-                message_id=root.id, allow_sending_without_reply=True
+                message_id=root.id,
+                allow_sending_without_reply=not await self._is_forum(channel_id),
             )
         }
 
@@ -3105,27 +3118,36 @@ class TelegramAdapter(CollaborationAdapter):
 
     async def _topic_kwargs(
         self, channel_id: str, thread_root_id: str | None
-    ) -> dict[str, Any]:
-        """The forum topic to address, where the root names one.
+    ) -> dict[str, Any] | None:
+        """The forum topic to signal in, or None to signal nowhere.
 
-        A chat action has no target finer than a topic, so a root naming a
-        message leaves nothing but the chat to aim at — which is every root
-        outside a forum, and a reference to a specific message inside one.
+        A chat action has no target finer than a topic. Outside a forum there
+        are no topics, so the chat is the right and only destination and an
+        empty mapping says so.
+
+        Inside one, a root that names a message rather than a topic leaves this
+        unable to locate the conversation — and a typing indicator raised in
+        General is shown to a whole group who did not ask for it, while the
+        people who did see nothing. There is no topic id to be had: the number
+        in a message reference is a message, and guessing from it would aim at
+        whichever topic happens to hold it. So the nudge is dropped. It is the
+        one signal here that is pure best effort, expiring in about five
+        seconds, and the status that follows carries the real state.
         """
         if not thread_root_id:
             return {}
         root = await self._resolve_root(channel_id, thread_root_id)
-        if root is None:
-            logger.warning(
-                "Signalling to the whole of Telegram chat %s: thread root %s "
-                "names nothing it can address.",
-                channel_id,
-                thread_root_id,
-            )
+        if root is not None and root.is_topic:
+            return {"message_thread_id": root.id}
+        if not await self._is_forum(channel_id):
             return {}
-        if not root.is_topic:
-            return {}
-        return {"message_thread_id": root.id}
+        logger.warning(
+            "Not signalling in Telegram chat %s: thread root %s does not name a "
+            "topic there, and the whole forum is the wrong audience.",
+            channel_id,
+            thread_root_id,
+        )
+        return None
 
     @staticmethod
     def _is_photo(mimetype: str, size: int) -> bool:
@@ -3186,6 +3208,9 @@ class TelegramAdapter(CollaborationAdapter):
         # which is noise rather than a misdelivery — so it goes on the first
         # only. The cost of the forum rule is that same repeated quote when the
         # anchor is a reply rather than a topic, which is the better trade.
+        # Repetition alone is not what holds the destination: a reply anchor in
+        # a forum is also mandatory, so a target deleted mid-run fails the rest
+        # of the send instead of scattering it into General.
         every_chunk = bool(anchor) and await self._is_forum(channel_id)
         first_ref: str | None = None
         for index, chunk in enumerate(chunk_message(body)):

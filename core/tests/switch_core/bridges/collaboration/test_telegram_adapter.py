@@ -912,6 +912,123 @@ def test_every_chunk_of_a_forum_reply_stays_in_the_topic() -> None:
     assert all(m["reply_parameters"].message_id == 88 for m in sent)
 
 
+def test_a_forum_reply_anchor_is_mandatory_because_it_is_the_only_topic() -> None:
+    # Repeating the anchor is not what holds the destination. In a forum the
+    # reply target is also the only thing naming the topic, so permitting the
+    # send without it permits it into General — on every chunk that carries the
+    # permission, which after the repeat rule is all of them.
+    adapter = _adapter()
+    _bot(adapter).chat.is_forum = True
+    body = "\n".join(["x" * 200] * 60)
+
+    _run(adapter.send_message(str(CHAT_ID), "scout", body, f"{CHAT_ID}:88"))
+
+    sent = _bot(adapter).messages
+    assert len(sent) > 1
+    assert all(m["reply_parameters"].allow_sending_without_reply is False for m in sent)
+
+
+def test_an_ordinary_chat_still_detaches_rather_than_lose_the_message() -> None:
+    # The forum rule must not become the general one: outside a forum there is
+    # no topic to lose, so a deleted target costs the quote and nothing else.
+    adapter = _adapter()
+
+    _run(adapter.send_message(str(CHAT_ID), "scout", "in thread", f"{CHAT_ID}:88"))
+
+    assert (
+        _bot(adapter).messages[0]["reply_parameters"].allow_sending_without_reply
+        is True
+    )
+
+
+def test_a_forum_reply_whose_target_is_already_gone_keeps_its_anchor_on_retry() -> None:
+    # The unformatted retry re-sends with the same kwargs. If it ever dropped
+    # them, a refused reply would come back as a successful send into General —
+    # the exact outcome the mandatory anchor exists to prevent.
+    adapter = _adapter()
+    _bot(adapter).chat.is_forum = True
+    _bot(adapter).send_message_error = BadRequest("message to be replied not found")
+
+    _run(adapter.send_message(str(CHAT_ID), "scout", "hello", f"{CHAT_ID}:88"))
+
+    sent = _bot(adapter).messages
+    assert len(sent) == 1
+    assert sent[0]["reply_parameters"].message_id == 88
+    assert sent[0]["reply_parameters"].allow_sending_without_reply is False
+
+
+def test_a_forum_target_deleted_mid_run_truncates_rather_than_scatters() -> None:
+    # Losing the tail of a long answer is a visible failure with an error in
+    # the log. Delivering it to General is an invisible one, read by the whole
+    # group instead of the topic.
+    adapter = _adapter()
+    _bot(adapter).chat.is_forum = True
+    bot = _bot(adapter)
+    original = bot.send_message
+    calls: list[int] = []
+
+    async def gone_after_the_first(**kwargs: Any) -> Any:
+        calls.append(1)
+        if len(calls) > 1:
+            raise BadRequest("message to be replied not found")
+        return await original(**kwargs)
+
+    bot.send_message = gone_after_the_first  # type: ignore[method-assign]
+    body = "\n".join(["x" * 200] * 60)
+
+    _run(adapter.send_message(str(CHAT_ID), "scout", body, f"{CHAT_ID}:88"))
+
+    sent = bot.messages
+    assert len(sent) == 1
+    assert all("reply_parameters" in m for m in sent)
+
+
+def test_a_forum_attachment_carries_the_same_mandatory_anchor() -> None:
+    # send_attachment shares the helper, and one file in the wrong topic is the
+    # same misdelivery as one message in it.
+    adapter = _adapter()
+    _bot(adapter).chat.is_forum = True
+
+    _run(
+        adapter.send_attachment(
+            str(CHAT_ID),
+            "scout",
+            "note.txt",
+            "text/plain",
+            b"hello",
+            caption="here",
+            thread_root_id=f"{CHAT_ID}:88",
+        )
+    )
+
+    params = _bot(adapter).documents[0]["reply_parameters"]
+    assert params.message_id == 88
+    assert params.allow_sending_without_reply is False
+
+
+def test_a_forum_nudge_with_no_locatable_topic_is_dropped_not_widened() -> None:
+    # A typing indicator in General is shown to a whole group who did not ask
+    # for it, while the people who did see nothing. There is no topic id to be
+    # had from a message reference, so the nudge is simply not sent.
+    adapter = _adapter()
+    _bot(adapter).chat.is_forum = True
+
+    _run(adapter.notify_working(str(CHAT_ID), "scout", f"{CHAT_ID}:88"))
+
+    assert _bot(adapter).actions == []
+
+
+def test_an_ordinary_chat_still_gets_its_nudge() -> None:
+    # Outside a forum the chat is the only destination there is, so sending to
+    # it is right rather than a widening.
+    adapter = _adapter()
+
+    _run(adapter.notify_working(str(CHAT_ID), "scout", f"{CHAT_ID}:88"))
+
+    assert len(_bot(adapter).actions) == 1
+    assert "message_thread_id" not in _bot(adapter).actions[0]
+
+
 def test_markup_telegram_rejects_is_resent_as_plain_text() -> None:
     # Losing the message is the one outcome that is not acceptable.
     adapter = _adapter()
