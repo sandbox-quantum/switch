@@ -92,13 +92,23 @@ async def test_refresh_cookie_is_httponly_and_respects_secure_flag() -> None:
     assert "secure" in (secure.headers.get("set-cookie") or "").lower()
 
 
-async def test_refresh_cookie_max_age_matches_jwt_expiry() -> None:
+async def test_refresh_cookie_max_age_tracks_jwt_expiry(monkeypatch) -> None:
     """The cookie's lifetime must track the token's, so raising or lowering
-    JWT_EXPIRY_HOURS cannot silently desynchronise the two."""
+    JWT_EXPIRY_HOURS cannot silently desynchronise the two.
+
+    Patch the expiry to a value whose seconds are *not* the old hardcoded
+    86400, so both the token's own lifetime and the cookie Max-Age must move
+    with it — the old `max_age=86400` fails this."""
+    assert JWT_EXPIRY_HOURS != 48, "pick an expiry distinct from the default"
+    monkeypatch.setattr("switch_core.gateway.auth.JWT_EXPIRY_HOURS", 48)
+
     user = User(id="u-4", name="Di", email="di@example.com", role="user")
     response = Response()
 
     await refresh(_request(tenant_id="tenant-0"), response, user, _config())
 
+    token = decode_jwt(_extract_cookie(response), _SECRET)
+    assert token["exp"] - token["iat"] == 48 * 3600
+
     header = response.headers.get("set-cookie") or ""
-    assert f"max-age={JWT_EXPIRY_HOURS * 3600}" in header.lower()
+    assert "max-age=172800" in header.lower()
