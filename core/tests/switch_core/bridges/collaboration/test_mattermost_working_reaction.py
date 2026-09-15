@@ -228,7 +228,7 @@ def test_a_failed_reaction_does_not_break_the_turn(
     with caplog.at_level(logging.WARNING):
         _run(adapter, ("working", "post-1"))
 
-    assert ("worker", "post-1") not in adapter._eyes
+    assert ("worker", "post-1", "working") not in adapter._marked
     assert any("working reaction" in r.getMessage() for r in caplog.records)
 
 

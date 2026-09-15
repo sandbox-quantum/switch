@@ -914,13 +914,13 @@ async def test_one_mark_is_shared_between_agents_and_not_added_twice() -> None:
 
     ref = f"{CHANNEL_ID}:{ROOT_MESSAGE_ID}"
     await adapter.mark_activity(
-        str(CHANNEL_ID), ref, agent_name="my-agent", working=True
+        str(CHANNEL_ID), ref, agent_name="my-agent", mark="working", on=True
     )
     await adapter.mark_activity(
-        str(CHANNEL_ID), ref, agent_name="other-agent", working=True
+        str(CHANNEL_ID), ref, agent_name="other-agent", mark="working", on=True
     )
     await adapter.mark_activity(
-        str(CHANNEL_ID), ref, agent_name="my-agent", working=False
+        str(CHANNEL_ID), ref, agent_name="my-agent", mark="working", on=False
     )
 
     assert channel.reactions == [("👀", True), ("👀", False)]
@@ -931,10 +931,10 @@ async def test_force_marks_again_because_the_record_may_be_empty_and_wrong() -> 
 
     ref = f"{CHANNEL_ID}:{ROOT_MESSAGE_ID}"
     await adapter.mark_activity(
-        str(CHANNEL_ID), ref, agent_name="my-agent", working=True
+        str(CHANNEL_ID), ref, agent_name="my-agent", mark="working", on=True
     )
     await adapter.mark_activity(
-        str(CHANNEL_ID), ref, agent_name="my-agent", working=True, force=True
+        str(CHANNEL_ID), ref, agent_name="my-agent", mark="working", on=True, force=True
     )
 
     assert channel.reactions == [("👀", True), ("👀", True)]
@@ -949,7 +949,8 @@ async def test_a_missing_permission_is_refused_rather_than_swallowed() -> None:
             str(CHANNEL_ID),
             f"{CHANNEL_ID}:{ROOT_MESSAGE_ID}",
             agent_name="my-agent",
-            working=True,
+            mark="working",
+            on=True,
         )
 
 
@@ -964,13 +965,13 @@ async def test_a_mark_that_cannot_be_taken_off_is_refused_not_shrugged_away() ->
     adapter, channel, _thread, _webhook = _guild_setup()
     ref = f"{CHANNEL_ID}:{ROOT_MESSAGE_ID}"
     await adapter.mark_activity(
-        str(CHANNEL_ID), ref, agent_name="my-agent", working=True
+        str(CHANNEL_ID), ref, agent_name="my-agent", mark="working", on=True
     )
     channel.reaction_error = discord.Forbidden(_Response(), "cannot see the channel")  # type: ignore[arg-type]
 
     with pytest.raises(ActivityMarkRefused, match="still see"):
         await adapter.mark_activity(
-            str(CHANNEL_ID), ref, agent_name="my-agent", working=False
+            str(CHANNEL_ID), ref, agent_name="my-agent", mark="working", on=False
         )
 
 
@@ -1012,7 +1013,8 @@ async def test_a_transient_reaction_failure_raises_so_the_publisher_retries() ->
             str(CHANNEL_ID),
             f"{CHANNEL_ID}:{ROOT_MESSAGE_ID}",
             agent_name="my-agent",
-            working=True,
+            mark="working",
+            on=True,
         )
 
 

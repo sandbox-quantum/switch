@@ -529,9 +529,15 @@ async def test_a_search_that_could_not_run_is_not_found_rather_than_a_guess() ->
 async def test_two_agents_on_one_message_are_two_independent_marks() -> None:
     adapter = _adapter("worker", "other")
 
-    await adapter.mark_activity("chan-1", "post-1", agent_name="worker", working=True)
-    await adapter.mark_activity("chan-1", "post-1", agent_name="other", working=True)
-    await adapter.mark_activity("chan-1", "post-1", agent_name="worker", working=False)
+    await adapter.mark_activity(
+        "chan-1", "post-1", agent_name="worker", mark="working", on=True
+    )
+    await adapter.mark_activity(
+        "chan-1", "post-1", agent_name="other", mark="working", on=True
+    )
+    await adapter.mark_activity(
+        "chan-1", "post-1", agent_name="worker", mark="working", on=False
+    )
 
     worker: Any = adapter._bot_drivers["worker"]
     other: Any = adapter._bot_drivers["other"]
@@ -551,7 +557,7 @@ async def test_a_mark_that_did_not_happen_is_raised_rather_than_swallowed() -> N
 
     with pytest.raises(ConnectionError):
         await adapter.mark_activity(
-            "chan-1", "post-1", agent_name="worker", working=True
+            "chan-1", "post-1", agent_name="worker", mark="working", on=True
         )
 
 
@@ -560,23 +566,25 @@ async def test_an_agent_with_no_bot_cannot_mark_and_says_so() -> None:
 
     with pytest.raises(RuntimeError):
         await adapter.mark_activity(
-            "chan-1", "post-1", agent_name="ghost", working=True
+            "chan-1", "post-1", agent_name="ghost", mark="working", on=True
         )
 
 
 async def test_a_failed_mark_is_tried_again_rather_than_recorded_as_done() -> None:
-    """`self._eyes` is this process's memory of what it has already done. A
+    """`self._marked` is this process's memory of what it has already done. A
     failure recorded there would talk the retry out of trying."""
     adapter = _adapter()
     driver: Any = adapter._bot_drivers["worker"]
     driver.reactions.create_error = ConnectionError("temporary network failure")
     with pytest.raises(ConnectionError):
         await adapter.mark_activity(
-            "chan-1", "post-1", agent_name="worker", working=True
+            "chan-1", "post-1", agent_name="worker", mark="working", on=True
         )
 
     driver.reactions.create_error = None
-    await adapter.mark_activity("chan-1", "post-1", agent_name="worker", working=True)
+    await adapter.mark_activity(
+        "chan-1", "post-1", agent_name="worker", mark="working", on=True
+    )
 
     assert driver.reactions.calls == [("add", "bot-worker", "post-1", "eyes")]
 
@@ -585,14 +593,20 @@ async def test_clearing_a_mark_mattermost_says_is_gone_is_not_a_failure() -> Non
     """The channel is already in the state being asked for, so there is
     nothing for the caller to retry."""
     adapter = _adapter()
-    await adapter.mark_activity("chan-1", "post-1", agent_name="worker", working=True)
+    await adapter.mark_activity(
+        "chan-1", "post-1", agent_name="worker", mark="working", on=True
+    )
     driver: Any = adapter._bot_drivers["worker"]
     driver.reactions.delete_error = ResourceNotFound("404 reaction not found")
 
-    await adapter.mark_activity("chan-1", "post-1", agent_name="worker", working=False)
+    await adapter.mark_activity(
+        "chan-1", "post-1", agent_name="worker", mark="working", on=False
+    )
 
     driver.reactions.delete_error = None
-    await adapter.mark_activity("chan-1", "post-1", agent_name="worker", working=True)
+    await adapter.mark_activity(
+        "chan-1", "post-1", agent_name="worker", mark="working", on=True
+    )
     assert driver.reactions.calls == [
         ("add", "bot-worker", "post-1", "eyes"),
         ("add", "bot-worker", "post-1", "eyes"),
@@ -620,7 +634,7 @@ async def test_a_mark_left_over_from_before_a_restart_is_still_cleared() -> None
     adapter = _adapter()
 
     await adapter.mark_activity(
-        "chan-1", "post-1", agent_name="worker", working=False, force=True
+        "chan-1", "post-1", agent_name="worker", mark="working", on=False, force=True
     )
 
     driver: Any = adapter._bot_drivers["worker"]

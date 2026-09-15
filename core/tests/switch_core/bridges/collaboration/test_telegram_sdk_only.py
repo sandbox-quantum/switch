@@ -865,10 +865,10 @@ async def test_one_mark_is_shared_between_agents_and_not_added_twice() -> None:
     adapter = _adapter()
 
     await adapter.mark_activity(
-        CHANNEL, f"{CHAT_ID}:55", agent_name="one", working=True
+        CHANNEL, f"{CHAT_ID}:55", agent_name="one", mark="working", on=True
     )
     await adapter.mark_activity(
-        CHANNEL, f"{CHAT_ID}:55", agent_name="two", working=True
+        CHANNEL, f"{CHAT_ID}:55", agent_name="two", mark="working", on=True
     )
 
     assert len(_bot(adapter).reactions) == 1
@@ -880,10 +880,10 @@ async def test_force_marks_again_because_the_record_may_be_empty_and_wrong() -> 
     adapter = _adapter()
 
     await adapter.mark_activity(
-        CHANNEL, f"{CHAT_ID}:55", agent_name="one", working=True, force=True
+        CHANNEL, f"{CHAT_ID}:55", agent_name="one", mark="working", on=True, force=True
     )
     await adapter.mark_activity(
-        CHANNEL, f"{CHAT_ID}:55", agent_name="one", working=True, force=True
+        CHANNEL, f"{CHAT_ID}:55", agent_name="one", mark="working", on=True, force=True
     )
 
     assert len(_bot(adapter).reactions) == 2
@@ -897,7 +897,7 @@ async def test_a_transient_reaction_failure_raises_so_the_publisher_retries() ->
 
     with pytest.raises(TimedOut):
         await adapter.mark_activity(
-            CHANNEL, f"{CHAT_ID}:55", agent_name="one", working=True
+            CHANNEL, f"{CHAT_ID}:55", agent_name="one", mark="working", on=True
         )
 
 
@@ -909,7 +909,7 @@ async def test_a_chat_with_reactions_off_says_so_rather_than_swallowing_it() -> 
 
     with pytest.raises(ActivityMarkRefused):
         await adapter.mark_activity(
-            CHANNEL, f"{CHAT_ID}:55", agent_name="one", working=True
+            CHANNEL, f"{CHAT_ID}:55", agent_name="one", mark="working", on=True
         )
 
 
@@ -923,13 +923,13 @@ async def test_a_refused_removal_is_reported_whatever_this_process_remembers() -
     """
     adapter = _adapter()
     await adapter.mark_activity(
-        CHANNEL, f"{CHAT_ID}:55", agent_name="one", working=True
+        CHANNEL, f"{CHAT_ID}:55", agent_name="one", mark="working", on=True
     )
     _bot(adapter).reaction_error = Forbidden("the bot may no longer react here")
 
     with pytest.raises(ActivityMarkRefused):
         await adapter.mark_activity(
-            CHANNEL, f"{CHAT_ID}:55", agent_name="one", working=False
+            CHANNEL, f"{CHAT_ID}:55", agent_name="one", mark="working", on=False
         )
 
     fresh = _adapter()
@@ -937,7 +937,12 @@ async def test_a_refused_removal_is_reported_whatever_this_process_remembers() -
 
     with pytest.raises(ActivityMarkRefused):
         await fresh.mark_activity(
-            CHANNEL, f"{CHAT_ID}:55", agent_name="one", working=False, force=True
+            CHANNEL,
+            f"{CHAT_ID}:55",
+            agent_name="one",
+            mark="working",
+            on=False,
+            force=True,
         )
 
 

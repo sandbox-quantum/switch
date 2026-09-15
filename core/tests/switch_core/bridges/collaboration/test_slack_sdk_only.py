@@ -72,9 +72,11 @@ async def test_native_stop_event_is_acknowledged_without_interrupting_an_sdk_tur
 async def test_reaction_cache_handles_expected_slack_refusals_quietly(error, caplog):
     slack, client = adapter()
     client.reaction_error = error
-    await slack.mark_activity("C1", "C1:1.0", agent_name="worker", working=True)
+    await slack.mark_activity(
+        "C1", "C1:1.0", agent_name="worker", mark="working", on=True
+    )
     client.reaction_error = None
-    await slack.mark_activity("C1", "1.0", agent_name="worker", working=True)
+    await slack.mark_activity("C1", "1.0", agent_name="worker", mark="working", on=True)
     assert not client.reactions
     assert not caplog.records
 
@@ -82,7 +84,7 @@ async def test_reaction_cache_handles_expected_slack_refusals_quietly(error, cap
 async def test_reaction_force_reconciles_after_restart():
     slack, client = adapter()
     await slack.mark_activity(
-        "C1", "C1:1.0", agent_name="worker", working=False, force=True
+        "C1", "C1:1.0", agent_name="worker", mark="working", on=False, force=True
     )
     assert client.reactions == [("remove", "1.0", "eyes")]
 
@@ -120,9 +122,10 @@ async def test_activity_layout_is_an_adapter_capability_not_a_slack_type_check()
         ("worker", "C1:status"),
         ("worker", "C1:log"),
     ]
-    assert [
-        call.kwargs["working"] for call in platform.mark_activity.call_args_list
-    ] == [True, False]
+    assert [call.kwargs["on"] for call in platform.mark_activity.call_args_list] == [
+        True,
+        False,
+    ]
 
 
 async def test_typed_interrupt_still_routes_to_the_global_command():
