@@ -171,7 +171,6 @@ class SlackAdapter(CollaborationAdapter):
     redraws_for_elapsed_time: ClassVar[bool] = True
     supports_activity_reactions: ClassVar[bool] = True
     supports_queue_reaction: ClassVar[bool] = True
-    renders_legacy_runtime_state: ClassVar[bool] = False
     recovers_uncertain_posts: ClassVar[bool] = True
 
     #: Every publication carries its token in `block_id` and in the message's

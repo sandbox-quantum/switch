@@ -292,12 +292,6 @@ class DiscordAdapter(CollaborationAdapter):
     # them: the first turn to want it adds it and the last to finish removes it.
     activity_reactions_per_agent: ClassVar[bool] = False
 
-    # Off, because the SDK publication draws the status. This adapter has no
-    # legacy renderer left to run, but the base class defaults the flag on for
-    # the platforms that still do, so saying so here is what keeps the base
-    # class's own fallback from drawing a second account of the turn.
-    renders_legacy_runtime_state: ClassVar[bool] = False
-
     # `find_request_card` reads a channel's history back and matches a card by
     # the handle printed on it, so an unacknowledged send can still be bound to
     # the message it produced.
@@ -1871,10 +1865,10 @@ class DiscordAdapter(CollaborationAdapter):
         - Mass and user mentions. `escape_mentions` breaks `@everyone`,
           `@here` and `<@id>` with a zero-width space after the `@`. It does
           nothing for a plain `@opsbot`, which needs no Discord syntax at all:
-          `translate_outbound` runs over the finished body after the label is
-          inlined and resolves any handle it holds an id for into a real
-          `<@id>` or `<@&role>`. The base class's `@` rule is what closes that,
-          which is why this builds on it rather than replacing it.
+          `translate_outbound` resolves any handle it holds an id for into a
+          real `<@id>` or `<@&role>`, and `_rich_escape` runs it over escaped
+          host text. The base class's `@` rule is what closes that, which is
+          why this builds on it rather than replacing it.
         - Everything else Discord resolves from `<…>` — a channel link
           (`<#id>`), a custom emoji (`<:name:id>`), a timestamp (`<t:ts:F>`),
           a slash-command link (`</cmd:id>`). `escape_mentions` covers none of

@@ -5,9 +5,8 @@ plain-text request form, posted as the agent's own bot, edited in place, found
 again after an uncertain delivery, and — unlike the old status line — loud when
 any of that fails.
 
-The old runtime-state renderer is still in the file (removing it is its own
-task) but nothing routes to it any more. The first test holds that line: the
-two renderers must not both draw, or every turn appears twice.
+There is no longer a second renderer anywhere to fall back to, so what the
+publication draws is the whole of what a channel sees of a turn.
 """
 
 from __future__ import annotations
@@ -211,30 +210,6 @@ async def _card(**kwargs: Any) -> RequestCard:
     projection = await project(source, "session-demo")
     request = projection.open_requests()[0]
     return RequestCard(request, RequestReference(token="tok-1", handle="R7"), **kwargs)
-
-
-# ── The legacy renderer is off ───────────────────────────────────────────────
-
-
-async def test_the_legacy_renderer_no_longer_draws_alongside_the_sdk_one() -> None:
-    """Both would draw the same turn, and the channel would show it twice."""
-    adapter = _adapter()
-
-    for state in ("working", "awaiting-input", "idle"):
-        await adapter.apply_runtime_state(
-            "chan-1",
-            "worker",
-            state,
-            mention_handle="@owner",
-            thread_root_id="root-1",
-            detail="Private legacy status",
-        )
-        await adapter.reposition_runtime_state("chan-1", "worker", "root-2")
-
-    assert _posts(adapter).created == []
-    assert _posts(adapter).patched == []
-    assert adapter._working_msg == {}
-    assert adapter._runtime_locks == {}
 
 
 # ── Posting ──────────────────────────────────────────────────────────────────

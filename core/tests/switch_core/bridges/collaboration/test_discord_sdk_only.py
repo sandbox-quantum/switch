@@ -5,9 +5,8 @@ plain-text request card, posted under the agent's own webhook identity, edited
 in place, taken down at the end of a turn where a thread is not holding it,
 found again after an uncertain delivery, and loud when any of that fails.
 
-The old runtime-state renderer is still in the file (removing it is its own
-task) but nothing routes to it any more. The first test holds that line: the
-two renderers must not both draw, or every turn appears twice.
+There is no longer a second renderer anywhere to fall back to, so what the
+publication draws is the whole of what a channel sees of a turn.
 """
 
 from __future__ import annotations
@@ -350,28 +349,16 @@ async def _card(**kwargs: Any) -> RequestCard:
     return RequestCard(request, RequestReference(token="tok-1", handle="R7"), **kwargs)
 
 
-# ── No legacy renderer ───────────────────────────────────────────────────────
+# ── The publication is the only account of the turn ──────────────────────────
 
 
-async def test_nothing_draws_a_second_account_of_the_turn() -> None:
-    """This adapter's own renderer is gone, but the base class still defaults
-    the flag on for the platforms that have one, so the declaration is what
-    keeps the inherited fallback from drawing the turn a second time."""
-    adapter, channel, _thread, webhook = _guild_setup()
+async def test_the_publication_is_the_only_account_of_a_turn() -> None:
+    """There is no second renderer to fall back to, and `bridge_core` reads
+    this flag to decide whether to route sessions here at all — so a platform
+    that stopped declaring it would go quiet rather than draw the turn some
+    other way."""
+    adapter, _channel, _thread, _webhook = _guild_setup()
 
-    for state in ("working", "awaiting-input", "idle"):
-        await adapter.apply_runtime_state(
-            str(CHANNEL_ID),
-            "my-agent",
-            state,
-            mention_handle="someone",
-            thread_root_id=None,
-        )
-    await adapter.reposition_runtime_state(str(CHANNEL_ID), "my-agent", None)
-
-    assert webhook.sent == []
-    assert channel.sent == []
-    assert adapter.renders_legacy_runtime_state is False
     assert adapter.publishes_sdk_sessions is True
 
 
@@ -416,6 +403,29 @@ async def test_a_card_names_the_asker_and_prints_the_handle_it_answers_to() -> N
     content = webhook.sent[0]["content"]
     assert content.startswith(f"<@{ASKER_ID}>\n")
     assert "request `R7`" in content
+
+
+async def test_a_card_nobody_can_be_notified_about_says_so_on_the_card() -> None:
+    """A card posted with the mention simply missing reads on the channel
+    exactly like one that reached someone — an agent waiting on input nobody
+    knows to give. The handle is the agent owner's linked account, so nobody to
+    name means the owner has not said which account here is theirs, and the
+    card says that instead of trailing off.
+    """
+    adapter, _channel, _thread, webhook = _guild_setup()
+
+    await adapter.post_rich(
+        str(CHANNEL_ID),
+        "my-agent",
+        await _card(notify_unreachable=True),
+        f"{CHANNEL_ID}:{ROOT_MESSAGE_ID}",
+    )
+
+    content = webhook.sent[0]["content"]
+    assert "this notified no one" in content
+    # Named as a person would name it, not as the class is.
+    assert "Link your Discord account" in content
+    assert "Adapter" not in content
 
 
 async def test_a_dm_inlines_the_agent_name_because_there_is_no_webhook() -> None:

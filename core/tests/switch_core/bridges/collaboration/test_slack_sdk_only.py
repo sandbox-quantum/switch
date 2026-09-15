@@ -1,4 +1,4 @@
-"""Slack uses SDK publication without legacy progress or native stop handling."""
+"""Slack uses SDK publication, and handles no native stop event."""
 
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -25,25 +25,6 @@ def adapter():
     client = FakeWebClient()
     result._web_client = client
     return result, client
-
-
-async def test_legacy_reports_cannot_fall_back_to_status_messages_or_mentions():
-    slack, client = adapter()
-    for state in ("working", "awaiting-input", "idle"):
-        await slack.apply_runtime_state(
-            "C1",
-            "worker",
-            state,
-            mention_handle="UOWNER",
-            thread_root_id="C1:1.0",
-            deeplink_url="https://example.test",
-            detail="Private legacy status",
-        )
-        await slack.reposition_runtime_state("C1", "worker", "C1:2.0")
-    assert not client.posted
-    assert not client.updated
-    assert not client.reactions
-    assert not slack._runtime_locks
 
 
 async def test_native_stop_event_is_acknowledged_without_interrupting_an_sdk_turn():

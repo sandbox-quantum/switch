@@ -1,10 +1,9 @@
 from __future__ import annotations
 
-import asyncio
 import logging
 from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import ClassVar, Literal
 
@@ -41,27 +40,6 @@ from switch_core.sessions.contract import (
 logger = logging.getLogger(__name__)
 
 
-def format_elapsed(seconds: float) -> str:
-    """How long a turn took, for the marker its status line becomes.
-
-    Rounded to whole seconds and written the way a reader skims it — "8s",
-    "2m14s", "1h03m" — rather than as a precise duration nobody reads. Sub-
-    second turns report "0s" instead of an empty string.
-
-    Lives here rather than beside one adapter because every platform ends a
-    status line the same way — edited in place, left in the conversation — and
-    wants the same words on it.
-    """
-    total = max(0, int(seconds))
-    if total < 60:
-        return f"{total}s"
-    minutes, secs = divmod(total, 60)
-    if minutes < 60:
-        return f"{minutes}m{secs:02d}s"
-    hours, minutes = divmod(minutes, 60)
-    return f"{hours}h{minutes:02d}m"
-
-
 @dataclass(frozen=True)
 class AgentPresentation:
     """The presentation columns of one agent, exactly as they are stored.
@@ -91,27 +69,6 @@ class AgentRendering:
     field_label: str
     body_label: str
     icon_url: str
-
-
-@dataclass(frozen=True)
-class LiveRuntimeIndicator:
-    """The runtime status message currently posted for one agent in one channel.
-
-    ``body`` and ``thread_root_id`` are retained so the indicator can be
-    reposted verbatim, in the same thread, when it is moved to follow newer
-    traffic — a move has no access to the ``detail``/``deeplink_url`` the body
-    was originally rendered from.
-
-    ``started_at`` is a ``time.monotonic()`` reading from when the turn's
-    indicator first went up, for adapters that report how long the turn took
-    once it ends. Monotonic because it measures an elapsed span, which a clock
-    adjustment must not distort.
-    """
-
-    message_ref: str
-    body: str
-    thread_root_id: str | None
-    started_at: float
 
 
 @dataclass(frozen=True)
@@ -311,8 +268,6 @@ class CollaborationAdapter(ABC):
     #: puts it on and the last to finish takes it off.
     activity_reactions_per_agent: ClassVar[bool] = False
 
-    renders_legacy_runtime_state: ClassVar[bool] = True
-
     #: Whether this platform can create a channel from Switch at all.
     #:
     #: A ceiling, not a preference: an operator may withhold channel creation
@@ -344,22 +299,6 @@ class CollaborationAdapter(ABC):
     #: redirect. Declared here so the lifecycle can say so once at startup
     #: instead of each bridge discovering it in its own way.
     renders_custom_url_schemes: ClassVar[bool] = True
-
-    #: Whether a runtime-state report with no thread of its own should anchor
-    #: to the message the agent is working on.
-    #:
-    #: A report only carries a `thread_id` when the agent was addressed inside
-    #: an existing thread. Addressed at the conversation root it carries none,
-    #: while the agent's reply still opens a thread on the triggering message —
-    #: so the status and the answer to it end up in two different places.
-    #: Where this is True the anchor the agent reports (the last message it was
-    #: actually handed) stands in, putting the status in the thread the reply
-    #: will land in.
-    #:
-    #: Off by default: on a platform that renders a thread as a side panel
-    #: rather than inline, moving the status out of the channel hides it, and
-    #: that trade is the platform's to make.
-    runtime_state_follows_anchor: ClassVar[bool] = False
 
     #: Whether `find_request_card` can actually search this platform.
     #:
@@ -443,15 +382,6 @@ class CollaborationAdapter(ABC):
         # size against this before downloading so an oversize file is rejected
         # loudly instead of being pulled down and discarded.
         self._max_attachment_bytes = 20 * 1024 * 1024
-        # (channel_id, agent_name) -> the agent's live "working on it…" runtime
-        # indicator, and the operator pings posted alongside it. Adapters that
-        # render runtime state as a persistent message maintain these; the
-        # typing-indicator default leaves them empty.
-        self._working_msg: dict[tuple[str, str], LiveRuntimeIndicator] = {}
-        self._input_pings: dict[tuple[str, str], list[str]] = {}
-        # One lock per (channel_id, agent_name). Every mutation of the entries
-        # above happens under it — see _runtime_lock.
-        self._runtime_locks: dict[tuple[str, str], asyncio.Lock] = {}
 
     def set_max_attachment_bytes(self, max_bytes: int) -> None:
         self._max_attachment_bytes = max_bytes
@@ -955,255 +885,12 @@ class CollaborationAdapter(ABC):
         does nothing and says nothing.
         """
 
-    def _runtime_lock(self, channel_id: str, agent_name: str) -> asyncio.Lock:
-        """The lock serialising runtime-indicator work for one agent in one
-        channel.
-
-        The indicator is mutated from two independent places — the periodic
-        activity refresh and a reposition triggered by new traffic — and each
-        reads the tracked message, awaits a platform call, then writes it back.
-        Left to interleave, the later write restores a superseded message ref:
-        the entry then names a message that has just been deleted while the one
-        actually on screen is referenced by nothing, so the end-of-turn clear
-        cannot remove it and it stays in the channel for good.
-        """
-        return self._runtime_locks.setdefault((channel_id, agent_name), asyncio.Lock())
-
-    async def apply_runtime_state(
-        self,
-        channel_id: str,
-        agent_name: str,
-        state: str,
-        *,
-        mention_handle: str | None,
-        thread_root_id: str | None,
-        deeplink_url: str | None = None,
-        detail: str | None = None,
-        trigger_thread_root_id: str | None = None,
-        anchor_message_ref: str | None = None,
-    ) -> None:
-        """Serialise against any other runtime-indicator work for this agent,
-        then apply the state. Adapters override ``_apply_runtime_state``."""
-        if not self.renders_legacy_runtime_state:
-            return
-        async with self._runtime_lock(channel_id, agent_name):
-            await self._apply_runtime_state(
-                channel_id,
-                agent_name,
-                state,
-                mention_handle=mention_handle,
-                thread_root_id=thread_root_id,
-                deeplink_url=deeplink_url,
-                detail=detail,
-                trigger_thread_root_id=trigger_thread_root_id,
-                anchor_message_ref=anchor_message_ref,
-            )
-
-    async def reposition_runtime_state(
-        self, channel_id: str, agent_name: str, thread_root_id: str | None
-    ) -> None:
-        """Serialise against any other runtime-indicator work for this agent,
-        then move the indicator. Adapters override
-        ``_reposition_runtime_state``."""
-        if not self.renders_legacy_runtime_state:
-            return
-        async with self._runtime_lock(channel_id, agent_name):
-            await self._reposition_runtime_state(channel_id, agent_name, thread_root_id)
-
-    async def _apply_runtime_state(
-        self,
-        channel_id: str,
-        agent_name: str,
-        state: str,
-        *,
-        mention_handle: str | None,
-        thread_root_id: str | None,
-        deeplink_url: str | None = None,
-        detail: str | None = None,
-        trigger_thread_root_id: str | None = None,
-        anchor_message_ref: str | None = None,
-    ) -> None:
-        """Surface a Switch Console-managed agent's runtime state on the channel.
-
-        How a state is rendered is the adapter's choice — this default uses the
-        typing indicator for ``working``. Mattermost overrides this to edit a
-        persistent status message, since deletion leaves a tombstone.
-        Slack disables this path and renders SDK session activity instead.
-
-        ``thread_root_id``, when set, is the external thread the state belongs
-        in; the state surfaces there.
-
-        ``trigger_thread_root_id`` is where the triggering message itself sits,
-        and is None when it came from the channel root. The two differ on an
-        adapter that pins a status to a thread the conversation is not in yet
-        (see ``runtime_state_follows_anchor``): the status belongs in the
-        thread, but a typing indicator belongs where the person who is waiting
-        for it is looking. Defaulted because only an adapter that draws the
-        distinction reads it, and its callers should not have to restate a
-        value the other adapters ignore.
-
-        ``anchor_message_ref`` is the external post the agent reports it is
-        answering — the last message it was actually handed. Unlike the two
-        above it names a *message* rather than a thread, and it is set whether
-        or not that message opened one, so an adapter can mark the message
-        itself (Discord puts a reaction on it) without moving where the status
-        is posted. None when nothing the agent was handed crossed this bridge.
-
-        ``deeplink_url``, when set, is an https link (served by the gateway) that
-        opens the agent's session in the Switch Console desktop app; adapters that
-        post a visible status message append it so a reader can jump there.
-
-        - ``working`` → typing on.
-        - ``awaiting-input`` → keep the working/typing indicator (the agent is
-          mid-turn, paused for input) and ping the configured operator.
-        - ``idle`` (where ``completed`` collapses) → typing off.
-        """
-        if state == "working":
-            await self.send_typing(channel_id, agent_name, True)
-        elif state == "awaiting-input":
-            await self.send_typing(channel_id, agent_name, True)
-            await self._ping_operator(
-                channel_id,
-                agent_name,
-                mention_handle,
-                thread_root_id,
-                deeplink_url,
-                detail,
-            )
-        else:
-            await self.send_typing(channel_id, agent_name, False)
-
-    def agents_with_live_runtime_state(self, channel_id: str) -> list[str]:
-        """Agents with a runtime indicator currently posted in this channel.
-
-        Cheap and synchronous so a caller can skip the work of deciding whether
-        a message warrants a move when there is nothing to move."""
-        return [
-            agent_name
-            for (posted_channel, agent_name) in self._working_msg
-            if posted_channel == channel_id
-        ]
-
-    async def _reposition_runtime_state(
-        self, channel_id: str, agent_name: str, thread_root_id: str | None
-    ) -> None:
-        """Move the agent's live runtime indicator to follow the latest message.
-
-        Called when a message the agent is party to has just crossed the bridge,
-        so the indicator no longer sits below the conversation it belongs to.
-        The replacement is posted *before* the original is removed: the
-        indicator is therefore never briefly absent, and a failed repost leaves
-        the original in place rather than clearing it.
-
-        ``thread_root_id`` is the thread that message belonged to, and is where
-        the indicator lands — so it follows the agent between threads (and back
-        out to the channel root) rather than being stranded in whichever thread
-        the turn happened to start in.
-
-        Runs under the agent's runtime lock, so the tracked indicator cannot be
-        cleared or refreshed part-way through.
-
-        Adapters that render runtime state as a typing indicator have nothing
-        positional to move, so the default does nothing.
-        """
-        key = (channel_id, agent_name)
-        live = self._working_msg.get(key)
-        if live is None:
-            return
-
-        ref = await self.send_message(channel_id, agent_name, live.body, thread_root_id)
-        if ref is None:
-            logger.warning(
-                "Could not repost the runtime indicator for %s in %s; leaving it "
-                "at its current position",
-                agent_name,
-                channel_id,
-            )
-            return
-
-        self._working_msg[key] = replace(
-            live, message_ref=ref, thread_root_id=thread_root_id
-        )
-        await self._remove_runtime_indicator(channel_id, live.message_ref)
-
-    async def _remove_runtime_indicator(
-        self, channel_id: str, message_ref: str
-    ) -> None:
-        """Delete a superseded runtime indicator.
-
-        Separate from ``delete_message`` so an adapter whose delete raises can
-        keep a failed cleanup from tearing down the turn — the worst case is a
-        duplicate indicator, which is visible, rather than a broken turn."""
-        await self.delete_message(channel_id, message_ref)
-
-    @staticmethod
-    def _deeplink_suffix(deeplink_url: str | None) -> str:
-        """A trailing ``(Open in Switch Console)`` link to the session, or empty.
-
-        Appended inline in parentheses after the status text. Rendered through
-        ``translate_outbound`` along with the rest of the body, so it converts
-        to each platform's link format."""
-        if not deeplink_url:
-            return ""
-        return f" ([Open in Switch Console]({deeplink_url}))"
-
-    def _working_body(self, detail: str | None, deeplink_url: str | None) -> str:
-        """The "working on it…" status text, rendered for this platform.
-
-        Uses the connector-supplied `detail` (e.g. "Editing foo.py") as the live
-        activity line when present, falling back to the generic phrase. The
-        deeplink is appended as a trailing link either way."""
-        activity = detail.strip() if detail and detail.strip() else "_Working on it…_"
-        return self.translate_outbound(
-            f"⚙️ {activity}" + self._deeplink_suffix(deeplink_url)
-        )
-
-    async def _ping_operator(
-        self,
-        channel_id: str,
-        agent_name: str,
-        mention_handle: str | None,
-        thread_root_id: str | None,
-        deeplink_url: str | None = None,
-        detail: str | None = None,
-    ) -> str | None:
-        """Post a message nudging the operator that the agent needs attention.
-
-        ``detail``, when set, is the reason the session stalled — an API or auth
-        failure the agent cannot recover from on its own. It replaces the
-        generic "needs your input" wording so the operator knows what is wrong
-        before clicking through.
-
-        `mention_handle` is the agent owner's account on this platform, or None
-        when there is nobody to reach — no owner, or an owner who has not said
-        which account here is theirs. That case says so instead of posting a
-        line nobody is notified about: a nudge that reaches no one looks
-        identical to an agent that never asked.
-
-        Returns the posted message ref so callers that can remove it (Slack,
-        Mattermost) track it for cleanup when the turn ends."""
-        label = await self.agent_label_for_body(agent_name)
-        reason = detail.strip() if detail and detail.strip() else ""
-        need = f"hit an error: {reason}" if reason else "needs your input"
-        lead = "⚠️ " if reason else ""
-        if mention_handle:
-            text = f"@{mention_handle} {lead}**{label}** {need}."
-        else:
-            text = (
-                f"{lead}**{label}** {need} — but nobody here is linked "
-                f"to its owner, so this pings no one. Link your "
-                f"{self.platform_name} account in Switch Console to be notified."
-            )
-        body = self.translate_outbound(text + self._deeplink_suffix(deeplink_url))
-        return await self.send_message(channel_id, agent_name, body, thread_root_id)
-
     def unnotified_notice(self) -> str:
         """Why an attention post named nobody, for a platform that says so.
 
-        The same explanation `_ping_operator` gives, for the SDK publication
-        that replaces it: the reader is told this reached no one and what to
-        do so the next one does, rather than being left to assume the person
-        who can act has already seen it.
+        The reader is told this reached no one and what to do so the next one
+        does, rather than being left to assume the person who can act has
+        already seen it.
         """
         return (
             "Nobody here is linked to this agent's owner, so this notified no one. "
@@ -1560,10 +1247,10 @@ class CollaborationAdapter(ABC):
     def escape_label_for_body(self, label: str) -> str:
         """Neutralise a label's markup before it goes into message text.
 
-        A display name is presentation text an agent's owner chooses, and
-        `_ping_operator` inlines it into a body. Two constructs are near
-        universal across chat platforms and are the ones a name can use to
-        claim something it is not:
+        A display name is presentation text an agent's owner chooses, and an
+        adapter inlines it into a body. Two constructs are near universal
+        across chat platforms and are the ones a name can use to claim
+        something it is not:
 
         - `@…` addresses somebody. Whether the platform resolves `@channel`,
           `@here`, a person or one of our own agent handles, the label gets to

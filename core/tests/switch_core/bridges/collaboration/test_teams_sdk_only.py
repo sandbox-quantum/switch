@@ -7,9 +7,8 @@ thread the caller kept rather than from a map a restart empties, retired
 according to what a deletion leaves behind in each of Teams' two channel
 layouts, and truthful about which failures mean "nothing was written".
 
-The old runtime-state renderer is still in the file (removing it is its own
-task) but nothing routes to it any more. The first test holds that line: the
-two renderers must not both draw, or every turn appears twice.
+There is no longer a second renderer anywhere to fall back to, so what the
+publication draws is the whole of what a post sees of a turn.
 """
 
 from __future__ import annotations
@@ -189,25 +188,16 @@ async def _card(**kwargs: Any) -> RequestCard:
     return RequestCard(request, RequestReference(token="tok-1", handle="R7"), **kwargs)
 
 
-# ── The legacy renderer is off ───────────────────────────────────────────────
+# ── The publication is the only account of the turn ──────────────────────────
 
 
-def test_the_legacy_renderer_no_longer_draws_alongside_the_sdk_one() -> None:
-    """Both would draw the same turn, and the post would show it twice."""
-    adapter, connector = _teams()
+def test_the_publication_is_the_only_account_of_a_turn() -> None:
+    """There is no second renderer to fall back to, and `bridge_core` reads
+    this flag to decide whether to route sessions here at all — so a platform
+    that stopped declaring it would go quiet rather than draw the turn some
+    other way."""
+    adapter, _ = _teams()
 
-    for state in ("working", "awaiting-input", "idle"):
-        _run(
-            adapter.apply_runtime_state(
-                CHANNEL, AGENT, state, mention_handle=None, thread_root_id=None
-            )
-        )
-    _run(adapter.reposition_runtime_state(CHANNEL, AGENT, ROOT))
-
-    assert connector.threads == []
-    assert connector.sends == []
-    assert connector.updates == []
-    assert adapter.renders_legacy_runtime_state is False
     assert adapter.publishes_sdk_sessions is True
 
 

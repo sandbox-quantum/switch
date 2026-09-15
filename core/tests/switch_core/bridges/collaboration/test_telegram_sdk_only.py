@@ -7,9 +7,8 @@ attributed anywhere else, anchored to a forum topic or to a reply target
 depending on what the chat actually is, edited in place, paced under Telegram's
 own limits, and loud when any of that fails.
 
-This adapter has no legacy renderer left, but the base class defaults the flag
-on for the platforms that still do. The first test holds that line: nothing
-inherited may draw alongside the publication, or every turn appears twice.
+There is no longer a second renderer anywhere to fall back to, so what the
+publication draws is the whole of what a chat sees of a turn.
 """
 
 from __future__ import annotations
@@ -131,27 +130,15 @@ def _edited(adapter: TelegramAdapter) -> dict[str, Any]:
     return _bot(adapter).edits[-1]
 
 
-# ── The legacy renderer is off ───────────────────────────────────────────────
+# ── The publication is the only account of the turn ──────────────────────────
 
 
-async def test_the_legacy_renderer_no_longer_draws_alongside_the_sdk_one() -> None:
-    """Both would draw the same turn, and the chat would show it twice."""
-    adapter = _adapter()
-
-    for state in ("working", "awaiting-input", "idle"):
-        await adapter.apply_runtime_state(
-            CHANNEL,
-            "my-agent",
-            state,
-            mention_handle="someone",
-            thread_root_id=None,
-        )
-    await adapter.reposition_runtime_state(CHANNEL, "my-agent", None)
-
-    assert _bot(adapter).messages == []
-    assert _bot(adapter).edits == []
-    assert adapter.renders_legacy_runtime_state is False
-    assert adapter.publishes_sdk_sessions is True
+def test_the_publication_is_the_only_account_of_a_turn() -> None:
+    """There is no second renderer to fall back to, and `bridge_core` reads
+    this flag to decide whether to route sessions here at all — so a platform
+    that stopped declaring it would go quiet rather than draw the turn some
+    other way."""
+    assert _adapter().publishes_sdk_sessions is True
 
 
 def test_telegram_notifies_a_chat_without_anybody_being_named() -> None:

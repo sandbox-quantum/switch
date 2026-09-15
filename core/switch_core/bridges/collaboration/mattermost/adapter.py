@@ -215,21 +215,6 @@ class MattermostAdapter(CollaborationAdapter):
     #: on its own.
     activity_reactions_per_agent: ClassVar[bool] = True
 
-    #: Off, because the SDK publication draws the status. This adapter has no
-    #: legacy renderer left to run, but the base class defaults the flag on for
-    #: the platforms that still do, so saying so here is what keeps the base
-    #: class's own fallback from drawing a second account of the turn.
-    renders_legacy_runtime_state: ClassVar[bool] = False
-
-    #: Mattermost renders a thread inline under its root as well as in the
-    #: side panel, so anchoring the status to the message being worked on keeps
-    #: it beside the answer instead of stranding it at the channel root.
-    #:
-    #: Read only by the legacy runtime-state path, which is off above. Kept
-    #: because it is a true statement about the platform, and the platform is
-    #: what the flag describes.
-    runtime_state_follows_anchor: ClassVar[bool] = True
-
     #: `find_request_card` reads the channel's recent posts back, so a card
     #: whose send was never acknowledged can be bound to what is actually
     #: there instead of being disclosed as lost.

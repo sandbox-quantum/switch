@@ -427,12 +427,6 @@ class TelegramAdapter(CollaborationAdapter):
     #: account that added it, so there is one mark between them all.
     activity_reactions_per_agent: ClassVar[bool] = False
 
-    #: Off, because the SDK publication draws the status. This adapter has no
-    #: legacy renderer left to run, but the base class defaults the flag on for
-    #: the platforms that still do, so saying so here is what keeps the base
-    #: class's own fallback from drawing a second account of the turn.
-    renders_legacy_runtime_state: ClassVar[bool] = False
-
     # Telegram's is the one disclosure that has been agreed: T2, accepted for
     # this platform on this platform's evidence. It does not travel to another
     # adapter that happens to share the inability to search.
@@ -2712,11 +2706,7 @@ class TelegramAdapter(CollaborationAdapter):
         zero-width space is not an entity, so the two never compound. This
         prefix is finished HTML — assembled after `translate_outbound` has
         already run over `content`, and never fed back through it — so
-        `html.escape` is the whole of the tag escaping it needs. The ping line
-        the base `_ping_operator` builds is the other pipeline: it inlines the
-        same escaped label into Markdown source and lets `translate_outbound`
-        escape the whole line. Neither pipeline knows about the other and each
-        escapes exactly once."""
+        `html.escape` is the whole of the tag escaping it needs."""
         name = (
             f"{cls._agent_marker(sender_name)} <b>{html.escape(label, quote=False)}</b>"
         )
