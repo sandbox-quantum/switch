@@ -18,6 +18,7 @@ import { cliFailureReason } from '@main/core/telemetry/cli-failure';
 import type { TelemetryCliAction } from '@main/core/telemetry/events';
 import { installMethodOf } from '@main/core/telemetry/narrow';
 import { trackEvent } from '@main/core/telemetry/telemetry-service';
+import { log } from '@main/lib/logger';
 import { hostBlockedReason, type HostReachability } from '@shared/core/remote-hosts/reachability';
 import type { HostSetupPlan } from '@shared/core/remote-hosts/setup';
 import { createRPCController } from '@shared/lib/ipc/rpc';
@@ -114,6 +115,26 @@ function reportRemoteCliAction(
   });
 }
 
+/**
+ * Probe a freshly onboarded host's prerequisites (CHOO-2801).
+ *
+ * Deliberately not awaited: onboarding returns as soon as the host is reachable
+ * and stored, and the plan reaches the UI over `hostSetupPlanEventChannel` as it
+ * fills in, so the host page shows real prerequisite state on arrival instead of
+ * waiting for someone to press "Re-check". A probe that fails does not fail the
+ * onboarding — the host is onboarded either way — but it is logged, and the
+ * plan itself carries the per-step error the user sees.
+ */
+function startOnboardingDependencyCheck(sshHost: string): void {
+  void recheckSetup(sshHost).catch((error: unknown) => {
+    log.warn('[RemoteHosts] onboarding dependency check failed', {
+      event: 'host-onboard-dependency-check-failed',
+      sshHost,
+      error: String((error as Error)?.message ?? error),
+    });
+  });
+}
+
 export const remoteHostsController = createRPCController({
   /** SSH aliases from ~/.ssh/config, for the onboarding picker. */
   listSshConfigHosts: (): Promise<string[]> => listSshConfigHosts(),
@@ -164,6 +185,7 @@ export const remoteHostsController = createRPCController({
       outcome: 'success',
       picked_from_ssh_config: params.pickedFromSshConfig === true,
     });
+    startOnboardingDependencyCheck(params.sshHost);
     return host;
   },
 

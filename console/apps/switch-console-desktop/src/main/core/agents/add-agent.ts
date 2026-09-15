@@ -17,6 +17,7 @@ import { agentAvatarUrlForName } from '@shared/core/agents/agent-avatar';
 import type { AgentProviderConfig } from '@shared/core/agents/agent-provider-config';
 import type { Agent } from '@shared/core/agents/agents';
 import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
+import type { AddressingPolicy } from '@shared/core/switch-servers/switch-servers';
 import type { UiEntryPoint } from '@shared/core/telemetry/reporting';
 import { basenameFromAnyPath } from '@shared/path-name';
 import { writeAgentConfigFile } from './agent-config-file';
@@ -54,6 +55,10 @@ export type AddAgentParams = {
   iconUrl: string | null;
   autoSession: boolean;
   autoApprove: boolean;
+  /** Who may address the agent, as chosen in the create form. Null means
+   * anyone. Applied when the identity is minted, so the agent is never briefly
+   * live under a policy the user did not pick (CHOO-2801). */
+  addressingPolicy: AddressingPolicy | null;
   /** The agent's system prompt, provider-agnostic. Rendered into whatever the
    * provider reads — a Claude Code subagent body, Codex's developer
    * instructions. Empty for an agent with none. */
@@ -217,6 +222,7 @@ async function runAddAgent(params: AddAgentParams): Promise<AddAgentResult> {
     autoSession: params.autoSession,
     agentType: knownAgentTypeForProvider(params.providerId),
     iconUrl: params.iconUrl ?? agentAvatarUrlForName(params.name),
+    addressingPolicy: params.addressingPolicy,
   });
   if (registered.kind !== 'created') return reportFailedCreate(params, registered);
 

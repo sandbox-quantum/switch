@@ -58,7 +58,7 @@ export function useConfigureAgentForm() {
   const [autoApprove, setAutoApproveRaw] = useState(false);
   const [autoApproveTouched, setAutoApproveTouched] = useState(false);
   // Scoped addressing policy (CHOO-1585). null = open; a new agent starts
-  // owner-scoped (CHOO-2137). Applied via a follow-up PUT after creation.
+  // owner-scoped (CHOO-2137). Sent with the create call, not after it.
   const [addressingPolicy, setAddressingPolicy] = useState<AddressingPolicy | null>(() =>
     ownerOnlyPolicy()
   );

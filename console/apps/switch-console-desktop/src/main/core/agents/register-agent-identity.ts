@@ -1,6 +1,9 @@
 import type { KnownAgentType } from '@main/core/agents/known-agent-type';
 import { GatewayError, registerKnownAgent } from '@main/core/switch-servers/gateway-client';
-import type { RegisterIdentityFailure } from '@shared/core/switch-servers/switch-servers';
+import type {
+  AddressingPolicy,
+  RegisterIdentityFailure,
+} from '@shared/core/switch-servers/switch-servers';
 import type { SwitchServer } from '@shared/core/switch-servers/switch-servers';
 
 export type RegisterAgentInput = {
@@ -19,6 +22,10 @@ export type RegisterAgentInput = {
    * be shown under `name`. Required for the same reason as `iconUrl`: a flow
    * that has a label to pass must not lose it by omission. */
   displayName: string | null;
+  /** Who may address the agent, chosen in the create form. Null means anyone.
+   * Required so a create flow states the user's choice rather than dropping it
+   * and inheriting the gateway's owner-only default (CHOO-2801). */
+  addressingPolicy: AddressingPolicy | null;
 };
 
 /**
@@ -46,6 +53,7 @@ export async function registerAgentIdentity(
       agentType: input.agentType,
       iconUrl: input.iconUrl,
       displayName: input.displayName,
+      addressingPolicy: input.addressingPolicy,
       options: {
         channels_enabled: true,
         repo_dir: input.repoDir,

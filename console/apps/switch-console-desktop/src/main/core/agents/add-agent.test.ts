@@ -117,6 +117,7 @@ function params(overrides: Record<string, unknown> = {}) {
     iconUrl: null,
     autoSession: false,
     autoApprove: false,
+    addressingPolicy: null,
     instructions: '',
     definitionAttributes: {},
     entryPoint: 'unknown' as const,
@@ -137,6 +138,29 @@ describe('addAgent', () => {
     h.state.repoAgents = h.repoAgents;
     h.state.workspace = fakeFs();
     h.registerAgentIdentity.mockResolvedValue({ kind: 'created', id: 'sw-1', apiKey: 'tok-123' });
+  });
+
+  it('mints the identity with the addressing policy chosen in the form', async () => {
+    // The choice used to be applied by a follow-up request that was skipped
+    // when it was "anyone" (null), so that option silently produced an
+    // owner-only agent (CHOO-2801).
+    await addAgent(params({ addressingPolicy: null }));
+
+    expect(h.registerAgentIdentity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ addressingPolicy: null })
+    );
+  });
+
+  it('passes a restrictive policy through to registration unchanged', async () => {
+    const policy = { rules: [{ users: ['u-1'], agents: [], owner: true }] };
+
+    await addAgent(params({ addressingPolicy: policy }));
+
+    expect(h.registerAgentIdentity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ addressingPolicy: policy })
+    );
   });
 
   it('writes name-keyed credentials for a provider with no repo-agent definitions', async () => {

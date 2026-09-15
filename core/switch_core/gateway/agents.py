@@ -179,6 +179,7 @@ async def register_known_agent(
             metadata=metadata,
             owner_id=user.id,
             overwrite=req.overwrite,
+            addressing_policy=req.addressing_policy,
         )
     except AgentExistsError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
