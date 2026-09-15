@@ -1907,9 +1907,9 @@ class SessionRequestCards:
                 await self._adapter.admin_message(
                     post.external_channel_id,
                     f"The card for request {post.handle} above could not be updated, "
-                    f"so it may still be offering buttons that no longer "
-                    f"work.\n{error.text}",
+                    "so it may still be offering buttons that no longer work.",
                     self._adapter.notice_address(post.external_post_id, post.thread_id),
+                    drawn=error.text,
                 )
                 self._reported_edit_failures[post.token] = state
             raise

@@ -377,6 +377,7 @@ class MattermostAdapter(CollaborationAdapter):
         thread_root_id: str | None = None,
         *,
         message_type: str | None = None,
+        drawn: str | None = None,
     ) -> str | None:
         """Post an admin/system message natively on Mattermost.
 
@@ -389,7 +390,7 @@ class MattermostAdapter(CollaborationAdapter):
         conversion belongs here rather than at each of them — one of them
         forgetting is how a notice reached a channel with its markup showing.
         """
-        content = self.translate_outbound(content)
+        content = self._admin_body(self.translate_outbound(content), drawn)
         loop = self._main_loop
         if loop is None:
             logger.error("Cannot post admin message: event loop not initialized")

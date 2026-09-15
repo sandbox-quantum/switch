@@ -724,6 +724,7 @@ class DiscordAdapter(CollaborationAdapter):
         thread_root_id: str | None = None,
         *,
         message_type: str | None = None,
+        drawn: str | None = None,
     ) -> str | None:
         # Renders its own body: every caller of `admin_message` passes Switch
         # Markdown, so the conversion belongs here rather than at each of
@@ -750,7 +751,7 @@ class DiscordAdapter(CollaborationAdapter):
             return None
 
         return await self._send_chunked(
-            self.translate_outbound(content),
+            self._admin_body(self.translate_outbound(content), drawn),
             lambda part: target.send(part, suppress_embeds=True),
             where=f"channel {channel_id}",
         )

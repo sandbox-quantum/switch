@@ -1080,6 +1080,7 @@ class TelegramAdapter(CollaborationAdapter):
         thread_root_id: str | None = None,
         *,
         message_type: str | None = None,
+        drawn: str | None = None,
     ) -> str | None:
         # Admin/system notices post unattributed, so they read as the bridge
         # speaking rather than as one of the agents.
@@ -1090,7 +1091,9 @@ class TelegramAdapter(CollaborationAdapter):
         # showing. Platforms with a Markdown-ish native format got away with
         # skipping this; Telegram does not.
         return await self._send_text(
-            channel_id, self.translate_outbound(content), thread_root_id
+            channel_id,
+            self._admin_body(self.translate_outbound(content), drawn),
+            thread_root_id,
         )
 
     async def update_message(

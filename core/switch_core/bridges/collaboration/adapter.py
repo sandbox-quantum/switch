@@ -544,6 +544,7 @@ class CollaborationAdapter(ABC):
         thread_root_id: str | None = None,
         *,
         message_type: str | None = None,
+        drawn: str | None = None,
     ) -> str | None:
         """Post a first-class admin/system message to the external channel,
         rendered in the platform's native way as the bridge's own identity (not
@@ -562,13 +563,25 @@ class CollaborationAdapter(ABC):
         notices, and the relayed admin events alike. An override must therefore
         run `translate_outbound` itself. Splitting that responsibility between
         callers is what once sent a body through the conversion twice, and the
-        second pass escapes the markup the first one produced."""
+        second pass escapes the markup the first one produced.
+
+        `drawn` is content this adapter drew, in the platform's own spelling,
+        to go under the notice — a card's fallback text, where the notice is
+        about that card. It is appended after the conversion and never through
+        it. Written into `content` instead it would be converted as if it were
+        Markdown, and a reader is shown the platform's own tags as prose: the
+        very failure the paragraph above describes, arriving from the other
+        side. An override joins the two with `_admin_body`."""
         return await self.send_message(
             channel_id,
             self._bridge_display_name(),
-            self.translate_outbound(content),
+            self._admin_body(self.translate_outbound(content), drawn),
             thread_root_id,
         )
+
+    def _admin_body(self, rendered: str, drawn: str | None) -> str:
+        """A rendered notice, and under it whatever the adapter already drew."""
+        return rendered if drawn is None else f"{rendered}\n{drawn}"
 
     def _bridge_display_name(self) -> str:
         return "Switch"

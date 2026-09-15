@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -41,6 +42,7 @@ from switch_core.bridges.collaboration.session.form import (
     posted_form,
     resolve_pressed_position,
 )
+from switch_core.bridges.collaboration.session.outbound import SessionRequestCards
 from switch_core.bridges.collaboration.session.renderers import (
     RequestReference,
     parse_answer_position,
@@ -537,6 +539,48 @@ async def test_what_a_refusal_carries_is_answerable_without_the_buttons() -> Non
         lines[-1]
         == "Reply with <code>R7</code> and your choice, e.g. <code>R7 1</code>."
     )
+
+
+async def test_the_notice_about_a_failed_card_delivers_that_drawing_intact() -> None:
+    """What `error.text` holds is only half the claim: it is HTML, and the
+    notice it goes under is Switch Markdown.
+
+    A notice is converted on its way out, because every other caller writes
+    Markdown. Putting the drawing inside it sends Telegram's own tags through
+    that conversion, and `<code>` arrives escaped — so the reader is shown the
+    tags themselves, on the one message whose job is to say what the card can
+    no longer say.
+    """
+    adapter = _adapter()
+    content = await _card()
+    _bot(adapter).edit_error = BadRequest("message to edit not found")
+    post = SimpleNamespace(
+        token="tok-1",
+        handle="R7",
+        external_channel_id=CHANNEL,
+        external_post_id=f"{CHANNEL}:42",
+        thread_id=None,
+        request_id=content.request.request_id,
+    )
+    cards = SessionRequestCards(
+        adapter,
+        bridge_id="bridge",
+        surface="telegram",
+        posts=None,
+        session_factory=None,
+    )
+
+    with pytest.raises(RichContentFailed):
+        await cards.refresh(post, content.request, agent_name="my-agent")
+
+    notice = _bot(adapter).messages[-1]["text"]
+    assert "could not be updated" in notice
+    assert "1. Allow once" in notice
+    assert (
+        notice.splitlines()[-1]
+        == "Reply with <code>R7</code> and your choice, e.g. <code>R7 1</code>."
+    )
+    assert "&lt;code&gt;" not in notice
 
 
 async def test_a_refused_post_carries_the_same_buttonless_drawing() -> None:

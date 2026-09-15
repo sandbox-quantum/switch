@@ -1182,6 +1182,7 @@ class TeamsAdapter(CollaborationAdapter):
         thread_root_id: str | None = None,
         *,
         message_type: str | None = None,
+        drawn: str | None = None,
     ) -> str | None:
         # Admin/system messages render as the Switch bot itself — a plain text
         # activity, no per-agent Adaptive Card — so they read as the platform
@@ -1189,7 +1190,7 @@ class TeamsAdapter(CollaborationAdapter):
         if self._connector is None:
             raise RuntimeError("Cannot post admin message: Teams adapter not started")
 
-        body = self.translate_outbound(content)
+        body = self._admin_body(self.translate_outbound(content), drawn)
         thread_root_id = await self._post_to_answer_in(channel_id, thread_root_id)
         activity: dict[str, Any] = {"type": "message", "text": _hard_wrap(body)}
         mentions = self._mention_entities(body)

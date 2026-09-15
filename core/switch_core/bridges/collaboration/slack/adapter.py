@@ -756,6 +756,7 @@ class SlackAdapter(CollaborationAdapter):
         thread_root_id: str | None = None,
         *,
         message_type: str | None = None,
+        drawn: str | None = None,
     ) -> str | None:
         # Renders its own body: every caller of `admin_message` passes Switch
         # Markdown, so the conversion belongs here rather than at each of
@@ -780,7 +781,7 @@ class SlackAdapter(CollaborationAdapter):
         try:
             result = await self._web_client.chat_postMessage(
                 channel=channel_id,
-                text=content,
+                text=self._admin_body(content, drawn),
                 thread_ts=thread_ts,
                 unfurl_links=False,
                 unfurl_media=False,
