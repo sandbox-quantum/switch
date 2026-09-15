@@ -53,7 +53,7 @@ from switch_core.bridges.collaboration.telegram.adapter import (
     _REDRAW_INTERVAL,
     TelegramAdapter,
 )
-from switch_core.sessions.contract import ApprovalResult
+from switch_core.sessions.contract import ApprovalResult, Item
 
 from .test_session_activity import _item, _turn
 from .test_telegram_adapter import (
@@ -75,6 +75,7 @@ QUESTIONS_PATH = (
 
 CHANNEL = str(CHAT_ID)
 TOPIC_ID = "88"
+SESSION_URL = "https://console.example/sessions/session-demo"
 ASKER_ID = 60606
 ASKER = str(ASKER_ID)
 
@@ -87,6 +88,26 @@ def _activity(**kwargs: Any) -> TurnActivity:
 def _ended(**kwargs: Any) -> TurnActivity:
     items = [_item(kind="assistant-message", title="", text="Done.")]
     return TurnActivity(items, _turn("completed"), **kwargs)
+
+
+def _tool(status: str) -> Item:
+    return _item(itemId=f"item-{status}", title="Read the adapter", status=status)
+
+
+def _running(*extra: Item) -> TurnActivity:
+    """A turn mid-flight, with everything a status can draw from: a tool call
+    in progress, a duration to count and a session to link to."""
+    items = [_tool("in-progress"), *extra]
+    return TurnActivity(
+        items, _turn("running"), elapsed_seconds=12, session_url=SESSION_URL
+    )
+
+
+def _finished(*extra: Item) -> TurnActivity:
+    items = [_tool("completed"), *extra]
+    return TurnActivity(
+        items, _turn("completed"), elapsed_seconds=42, session_url=SESSION_URL
+    )
 
 
 async def _card(**kwargs: Any) -> RequestCard:
@@ -551,13 +572,13 @@ async def test_progress_arriving_faster_than_the_chat_can_take_it_waits() -> Non
 
 async def test_the_end_of_a_turn_is_never_held_back() -> None:
     """A reader waiting on the outcome is waiting on precisely the thing the
-    pacing would delay — and here the outcome is the status going away."""
+    pacing would delay."""
     adapter = _adapter()
     ref = await adapter.post_rich(CHANNEL, "my-agent", _activity(), None)
 
     await adapter.update_rich(CHANNEL, "my-agent", ref, _ended(), None)
 
-    assert len(_bot(adapter).deletes) == 1
+    assert "Turn complete." in _edited(adapter)["text"]
 
 
 async def test_a_problem_somebody_has_to_act_on_is_never_held_back() -> None:
@@ -612,36 +633,77 @@ async def test_another_chat_is_not_held_back_by_this_one() -> None:
     assert len(_bot(adapter).messages) == 2
 
 
-# ── A finished turn does not stay on the screen ──────────────────────────────
+# ── A finished turn stays, as a line ─────────────────────────────────────────
 
 
-async def test_a_finished_status_is_taken_out_of_the_chat() -> None:
-    """A Telegram chat is the conversation itself: there is no side channel a
-    completed status can sit quietly in, and the legacy indicator was deleted
-    for that reason. One permanent "Worked for 12s" per turn is the clutter
-    this platform's own rule exists to avoid."""
+async def test_a_finished_status_is_edited_to_its_final_state_and_left_there() -> None:
+    """What a reader scrolling the chat wants from a turn that has ended is
+    that it ran, how long it took and where to open it. Deleting the status
+    left them with none of that."""
     adapter = _adapter()
-    ref = await adapter.post_rich(CHANNEL, "my-agent", _activity(), None)
+    ref = await adapter.post_rich(CHANNEL, "my-agent", _running(), None)
 
-    await adapter.update_rich(CHANNEL, "my-agent", ref, _ended(), None)
+    await adapter.update_rich(CHANNEL, "my-agent", ref, _finished(), None)
 
-    assert _bot(adapter).deletes[0]["message_id"] == int(ref.split(":")[1])
-    assert _bot(adapter).edits == []
+    text = _edited(adapter)["text"]
+    assert _bot(adapter).deletes == []
+    assert "Worked for 42s" in text
+    assert f'<a href="{SESSION_URL}">' in text
 
 
-async def test_a_finished_status_in_a_forum_topic_goes_the_same_way() -> None:
-    """A topic is a conversation people read, not a hidden thread to leave a
-    record in."""
+async def test_a_finished_status_in_a_forum_topic_is_kept_the_same_way() -> None:
+    """A topic is the conversation, and the record belongs in it."""
     adapter = _adapter()
     _forum(adapter)
-    ref = await adapter.post_rich(CHANNEL, "my-agent", _activity(), TOPIC_ID)
+    ref = await adapter.post_rich(CHANNEL, "my-agent", _running(), TOPIC_ID)
 
-    await adapter.update_rich(CHANNEL, "my-agent", ref, _ended(), TOPIC_ID)
+    await adapter.update_rich(CHANNEL, "my-agent", ref, _finished(), TOPIC_ID)
 
-    assert len(_bot(adapter).deletes) == 1
+    assert _bot(adapter).deletes == []
+    assert "Worked for 42s" in _edited(adapter)["text"]
 
 
-async def test_a_finished_turn_that_still_has_a_problem_to_report_stays() -> None:
+async def test_a_finished_status_stops_counting_and_drops_what_was_running() -> None:
+    """The timer and the running marks are the parts that are wrong the moment
+    the turn ends, and a retained status keeps showing whatever it last said."""
+    adapter = _adapter()
+    ref = await adapter.post_rich(CHANNEL, "my-agent", _running(), None)
+    assert "Working…" in _bot(adapter).messages[0]["text"]
+
+    await adapter.update_rich(CHANNEL, "my-agent", ref, _finished(), None)
+
+    text = _edited(adapter)["text"]
+    assert "Working…" not in text
+    assert "running" not in text
+
+
+async def test_a_telegram_status_never_names_the_tool_of_the_moment() -> None:
+    """It is compact for the reason it used to be deleted: the chat is the
+    conversation itself, so the status is a line and its link rather than a
+    running commentary. What the turn is doing is in the Console."""
+    adapter = _adapter()
+
+    await adapter.post_rich(CHANNEL, "my-agent", _running(), None)
+
+    text = _bot(adapter).messages[0]["text"]
+    assert "Read the adapter" not in text
+    assert "Now:" not in text and "Last:" not in text
+
+
+async def test_a_call_that_failed_still_shows_on_a_finished_status() -> None:
+    """Not chatter about progress. A turn whose total reads as a clean run,
+    with a declined call inside it, is the status saying the wrong thing."""
+    adapter = _adapter()
+    ref = await adapter.post_rich(CHANNEL, "my-agent", _running(), None)
+
+    await adapter.update_rich(
+        CHANNEL, "my-agent", ref, _finished(_tool("failed")), None
+    )
+
+    assert "1 failed" in _edited(adapter)["text"]
+
+
+async def test_a_finished_turn_that_still_has_a_problem_to_report_says_so() -> None:
     """The attention message outlives the turn that raised it: somebody has to
     act on it, and a turn ending is not that having happened."""
     adapter = _adapter()
@@ -651,62 +713,34 @@ async def test_a_finished_turn_that_still_has_a_problem_to_report_stays() -> Non
         CHANNEL, "my-agent", ref, _ended(error_summary="The host went away."), None
     )
 
-    assert _bot(adapter).deletes == []
     assert "went away" in _edited(adapter)["text"]
 
 
-async def test_a_request_card_is_never_taken_down() -> None:
-    """It is the record of a decision, and it says on its face what became of
-    it."""
+async def test_nothing_this_bridge_publishes_is_ever_taken_down() -> None:
+    """A status and a card are both the record of something that happened, and
+    each says on its face what became of it."""
     adapter = _adapter()
-    ref = await adapter.post_rich(CHANNEL, "my-agent", await _card(), None)
+    status = await adapter.post_rich(CHANNEL, "my-agent", _running(), None)
+    card = await adapter.post_rich(CHANNEL, "my-agent", await _card(), None)
 
-    await adapter.update_rich(CHANNEL, "my-agent", ref, await _card(), None)
+    await adapter.update_rich(CHANNEL, "my-agent", status, _finished(), None)
+    await adapter.update_rich(CHANNEL, "my-agent", card, await _card(), None)
 
     assert _bot(adapter).deletes == []
 
 
-async def test_a_status_taken_down_is_not_edited_afterwards() -> None:
+async def test_a_finished_status_is_still_redrawn_when_the_turn_says_more() -> None:
+    """Nothing is retired, so a late revision of a turn that has ended reaches
+    the chat rather than being dropped on the floor."""
     adapter = _adapter()
-    ref = await adapter.post_rich(CHANNEL, "my-agent", _activity(), None)
-    await adapter.update_rich(CHANNEL, "my-agent", ref, _ended(), None)
+    ref = await adapter.post_rich(CHANNEL, "my-agent", _running(), None)
+    await adapter.update_rich(CHANNEL, "my-agent", ref, _finished(), None)
 
-    await adapter.update_rich(CHANNEL, "my-agent", ref, _ended(), None)
+    await adapter.update_rich(
+        CHANNEL, "my-agent", ref, _finished(_tool("declined")), None
+    )
 
-    assert len(_bot(adapter).deletes) == 1
-    assert _bot(adapter).edits == []
-
-
-async def test_a_deletion_telegram_refuses_leaves_the_final_state_showing(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    """Visibly degraded rather than quietly wrong: the status cannot be taken
-    down, so it is left saying what actually happened instead of saying the
-    turn is still running."""
-    adapter = _adapter()
-    ref = await adapter.post_rich(CHANNEL, "my-agent", _activity(), None)
-    _bot(adapter).delete_error = BadRequest("message can't be deleted")
-
-    await adapter.update_rich(CHANNEL, "my-agent", ref, _ended(), None)
-
-    assert len(_bot(adapter).edits) == 1
-    assert any("leaving its final state" in record.message for record in caplog.records)
-
-
-async def test_a_deletion_whose_outcome_is_unknown_is_retried_rather_than_assumed() -> (
-    None
-):
-    """A turn recorded as cleaned up when it was not is a status that never
-    goes."""
-    adapter = _adapter()
-    ref = await adapter.post_rich(CHANNEL, "my-agent", _activity(), None)
-    _bot(adapter).delete_error = TimedOut()
-
-    with pytest.raises(TimedOut):
-        await adapter.update_rich(CHANNEL, "my-agent", ref, _ended(), None)
-
-    await adapter.update_rich(CHANNEL, "my-agent", ref, _ended(), None)
-    assert len(_bot(adapter).deletes) == 1
+    assert "1 declined" in _edited(adapter)["text"]
 
 
 # ── Publications do not drift out of the conversation they belong to ─────────
@@ -746,7 +780,7 @@ async def test_a_root_that_is_not_an_id_refuses_the_publication() -> None:
     assert _bot(adapter).messages == []
 
 
-# ── What the turn has been doing, folded away ────────────────────────────────
+# ── What the turn has been doing stays in the Console ────────────────────────
 
 
 def _tools(count: int) -> TurnActivity:
@@ -757,61 +791,42 @@ def _tools(count: int) -> TurnActivity:
     return TurnActivity(items, _turn("running"))
 
 
-async def test_the_tool_log_is_folded_into_the_status_rather_than_posted() -> None:
-    """Telegram's own disclosure control, in the message that is already
-    there: no second message, and no notification for a tool call."""
-    adapter = _adapter()
-
-    await adapter.post_rich(CHANNEL, "my-agent", _tools(2), None)
-
-    text = _posted(adapter)["text"]
-    assert "<blockquote expandable>" in text
-    assert "Read file 1" in text
-    assert len(_bot(adapter).messages) == 1
-
-
-async def test_the_folded_detail_is_the_latest_few_and_a_count_of_the_rest() -> None:
-    """A collapsed block still costs its whole length against the 4096, and a
-    reader opening it wants what the turn is doing now."""
+async def test_the_tool_log_is_not_drawn_into_the_chat_at_all() -> None:
+    """A status that stays needs to be worth keeping. Nine tool titles folded
+    into it is a running commentary on a turn the reader can open in the
+    Console, sitting permanently in the conversation."""
     adapter = _adapter()
 
     await adapter.post_rich(CHANNEL, "my-agent", _tools(9), None)
 
     text = _posted(adapter)["text"]
-    assert "…4 earlier, not shown." in text
-    assert "Read file 8" in text
-    assert "Read file 3" not in text
+    assert "Read file" not in text
+    assert "<blockquote" not in text
+    assert len(_bot(adapter).messages) == 1
 
 
-async def test_a_tool_title_cannot_break_out_of_the_quotation() -> None:
-    """The lines inside are host text. The quotation around them is ours."""
+async def test_the_status_still_says_how_the_calls_went() -> None:
+    """Dropping the log is not dropping the outcome: nine done is one short
+    line, and it is the part a reader cannot get from the duration."""
+    adapter = _adapter()
+
+    await adapter.post_rich(CHANNEL, "my-agent", _tools(9), None)
+
+    assert "9 done" in _posted(adapter)["text"]
+
+
+async def test_a_tool_title_cannot_reach_the_chat_as_markup() -> None:
+    """Nothing draws it today, and a title is host text whatever draws it
+    next."""
     adapter = _adapter()
     content = TurnActivity(
-        [_item(title="</blockquote><b>everything below is mine</b>")],
+        [_item(title="<b>everything below is mine</b>")],
         _turn("running"),
     )
 
     await adapter.post_rich(CHANNEL, "my-agent", content, None)
 
-    text = _posted(adapter)["text"]
-    assert text.count("</blockquote>") == 1
-    assert "&lt;/blockquote&gt;" in text
-
-
-async def test_the_attention_message_carries_no_tool_log() -> None:
-    """It is one sentence about a problem somebody has to act on. A fold of
-    tool calls under it would bury the only line that matters."""
-    adapter = _adapter()
-    content = TurnActivity(
-        [_item(title="Read file")],
-        _turn("running"),
-        status_only=True,
-        error_summary="The host went away.",
-    )
-
-    await adapter.post_rich(CHANNEL, "my-agent", content, None)
-
-    assert "<blockquote" not in _posted(adapter)["text"]
+    assert "everything below is mine" not in _posted(adapter)["text"]
 
 
 # ── The working reaction ─────────────────────────────────────────────────────

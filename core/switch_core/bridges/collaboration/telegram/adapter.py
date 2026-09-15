@@ -68,7 +68,6 @@ from switch_core.bridges.collaboration.session.renderers import (
     position_action,
 )
 from switch_core.bridges.collaboration.session.renderers.neutral import (
-    activity_detail,
     render_request,
     turn_status,
 )
@@ -226,38 +225,10 @@ _THROTTLE_FALLBACK = 5.0
 # every agent publishing there shares one budget, and being paced by Telegram
 # costs the conversation rather than only the redraw.
 #
-# Only intermediate progress is held back. A turn's last state and its cleanup,
-# the attention slot and every request card go through immediately, because a
-# reader waiting on one of those is waiting on the thing this pacing would
-# delay.
+# Only intermediate progress is held back. A turn's last state, the attention
+# slot and every request card go through immediately, because a reader waiting
+# on one of those is waiting on the thing this pacing would delay.
 _REDRAW_INTERVAL = 1.5
-
-# Telegram's own disclosure control: a quotation the reader opens, documented
-# under HTML style in the Bot API. Nothing may be nested inside it, and a
-# collapsed block still costs its whole length against the message limit, so
-# what goes in is bounded to the latest few tool calls and a count of the rest.
-_EXPAND_OPEN = "<blockquote expandable>"
-_EXPAND_CLOSE = "</blockquote>"
-_EXPAND_LINES = 5
-
-
-def _retires(content: RichContent) -> bool:
-    """Whether this redraw is the end of something that should not stay.
-
-    A status is the thing in the chat saying work is happening, and a Telegram
-    chat or topic is the conversation itself rather than a side channel, so it
-    goes when the turn does — as the legacy indicator did. Two things stay: a
-    request card, which is the record of a decision and says on its face what
-    became of it, and anything still reporting a problem or an unreached
-    reader, which is the message somebody has to act on and outlives the turn
-    that raised it.
-    """
-    return (
-        isinstance(content, TurnActivity)
-        and content.turn.status in TURN_ENDED
-        and not content.error_summary
-        and not content.notify_unreachable
-    )
 
 
 def _throttle_delay(error: RetryAfter) -> float:
@@ -519,10 +490,6 @@ class TelegramAdapter(CollaborationAdapter):
         # entry is only ever a timestamp to compare against.
         self._rich_drawn_at: OrderedDict[str, float] = OrderedDict()
         self._rich_drawn_at_max = 1000
-        # Publications taken down at the end of their turn, so a later redraw
-        # of one is a no-op rather than an edit to a message that is gone.
-        self._rich_retired: OrderedDict[str, None] = OrderedDict()
-        self._rich_retired_max = 1000
 
     # ── Lifecycle ────────────────────────────────────────────────────────────
 
@@ -1411,15 +1378,9 @@ class TelegramAdapter(CollaborationAdapter):
                 session_url=content.session_url,
                 mention=mention,
                 error_summary=content.error_summary,
+                current_tool=False,
             )
-            detail = (
-                ""
-                if content.error_summary or content.status_only
-                else self._expandable(
-                    content, escape=escape, budget=limit - len(body) - len(tail)
-                )
-            )
-            return Drawn(text=f"{prefix}{body}{detail}{tail}", answerable=False)
+            return Drawn(text=f"{prefix}{body}{tail}", answerable=False)
         # The mention goes on its own line rather than in front of the heading:
         # a card is a block, and a handle wedged before "Permission needed"
         # reads as part of the heading.
@@ -1435,42 +1396,6 @@ class TelegramAdapter(CollaborationAdapter):
             unavailable_reason=content.unavailable_reason,
         )
         return replace(drawn, text=f"{prefix}{lead}{drawn.text}{tail}")
-
-    def _expandable(
-        self,
-        content: TurnActivity,
-        *,
-        escape: Callable[[str], str],
-        budget: int,
-    ) -> str:
-        """What the turn has been doing, folded away under the status.
-
-        Telegram's own disclosure: a collapsed quotation the reader opens if
-        they want it, in the message that is already there. It is why this
-        platform has no separate activity log — the detail lives inside the
-        status rather than in a second message that would notify the chat
-        again.
-
-        Assembled here rather than in the renderer because the tags have to go
-        on after escaping: `translate_outbound` escapes a body whole and then
-        re-introduces the tags it knows by pattern, so markup written upstream
-        of it would reach the chat as visible angle brackets. The lines inside
-        are escaped host text; the quotation around them is ours.
-
-        A collapsed block still costs its full length against the message
-        limit, so it is the first thing to go when the status is already large:
-        the reader loses the detail, not the state.
-        """
-        lines = activity_detail(
-            content.items,
-            escape=escape,
-            limit=budget - len(_EXPAND_OPEN) - len(_EXPAND_CLOSE) - 1,
-            lines=_EXPAND_LINES,
-        )
-        if not lines:
-            return ""
-        quoted = "\n".join(lines)
-        return f"\n{_EXPAND_OPEN}{quoted}{_EXPAND_CLOSE}"
 
     def _controls(
         self, content: RichContent, drawn: Drawn
@@ -1639,16 +1564,15 @@ class TelegramAdapter(CollaborationAdapter):
         content: RichContent,
         thread_root_id: str | None,
     ) -> None:
-        """Redraw a publication in place — or take it down, once the turn it
-        was reporting is over.
+        """Redraw a publication in place, including the last time.
 
-        A Telegram chat and a forum topic are both the conversation itself:
-        there is no side channel a finished status could sit quietly in, and
-        the legacy indicator was deleted at the end of a turn for that reason.
-        The status keeps that lifecycle, so a chat is not left carrying one
-        permanent "Worked for 12s" per turn. What is still worth reading stays:
-        a request card is the record of a decision and is never taken down, and
-        an attention message about a problem outlives the turn that raised it.
+        Nothing is taken down. A finished status is edited to its final state
+        and stays in the chat as the record that the turn ran, how long it
+        took, and where to open it — which is what a reader scrolling back
+        wants and what a deletion left them without. It is compact for the same
+        reason it used to be deleted: a Telegram chat or topic is the
+        conversation itself, so the status is a line and its link rather than a
+        running commentary on tool calls.
 
         `agent_name` is what the redraw writes back into the body. The name is
         the message here — one bot posts for every agent — so an edit that did
@@ -1667,8 +1591,6 @@ class TelegramAdapter(CollaborationAdapter):
                 "chat:message reference.",
                 text=self.rich_fallback_text(content),
             )
-        if message_ref in self._rich_retired:
-            return
         # A post notifies; an edit does not. Repeating the mention on every
         # redraw would be a handle in the chat that never reaches anybody it
         # has not already reached.
@@ -1676,54 +1598,10 @@ class TelegramAdapter(CollaborationAdapter):
             replace(content, notify_external_id=None), agent_name
         )
         self._refuse_while_throttled(drawn.text)
-        if _retires(content):
-            await self._retire_rich(channel_id, message_ref, drawn.text)
-            return
         self._pace_publication(channel_id, content, drawn.text)
         await self._edit_rich(
             channel_id, message_ref, drawn.text, self._controls(content, drawn)
         )
-
-    async def _retire_rich(self, channel_id: str, message_ref: str, text: str) -> None:
-        """Take a finished status out of the chat, or say why it is still there.
-
-        A deletion Telegram refuses is not quietly treated as one that
-        happened: the message stays, so it is left showing the turn's final
-        state rather than "Working…", and the refusal is logged. An outcome
-        nobody knows — a timeout, a reset — is raised, because the publisher
-        holds the anchor and can come back to it, and a turn recorded as
-        cleaned up when it was not is a status that never goes.
-        """
-        _, message_id = self._parse_message_ref(message_ref)
-        try:
-            await self._require_bot().delete_message(
-                chat_id=self._chat_id(channel_id), message_id=int(message_id)
-            )
-        except BadRequest as error:
-            if "not found" in str(error).lower():
-                self._retire_ref(message_ref)
-                return
-            logger.warning(
-                "Telegram would not remove the finished status %s in chat %s "
-                "(%s); leaving its final state there instead.",
-                message_ref,
-                channel_id,
-                error,
-            )
-            await self._edit_rich(channel_id, message_ref, text, None)
-            return
-        except Forbidden as error:
-            logger.warning(
-                "Telegram would not remove the finished status %s in chat %s "
-                "(%s); leaving its final state there instead.",
-                message_ref,
-                channel_id,
-                error,
-            )
-            await self._edit_rich(channel_id, message_ref, text, None)
-            return
-        self._note_publication(channel_id)
-        self._retire_ref(message_ref)
 
     async def _edit_rich(
         self,
@@ -1768,12 +1646,6 @@ class TelegramAdapter(CollaborationAdapter):
             ) from error
         self._note_publication(channel_id)
 
-    def _retire_ref(self, message_ref: str) -> None:
-        self._rich_retired[message_ref] = None
-        self._rich_retired.move_to_end(message_ref)
-        while len(self._rich_retired) > self._rich_retired_max:
-            self._rich_retired.popitem(last=False)
-
     def _rich_failure(self, error: Exception, description: str, text: str) -> Exception:
         """The exception to raise for `error`: Telegram's refusal, or its own.
 
@@ -1814,11 +1686,11 @@ class TelegramAdapter(CollaborationAdapter):
         agents' statuses share one budget the way they share the 429 that
         follows from overspending it.
 
-        Only progress. A turn's final state and its cleanup, the attention
-        slot and every request card go through however recently the chat was
-        last written to, because a reader waiting on one of those is waiting
-        on precisely the thing this would delay — and the publisher retries a
-        throttle, so what is held back here is postponed rather than lost.
+        Only progress. A turn's final state, the attention slot and every
+        request card go through however recently the chat was last written to,
+        because a reader waiting on one of those is waiting on precisely the
+        thing this would delay — and the publisher retries a throttle, so what
+        is held back here is postponed rather than lost.
         """
         if not isinstance(content, TurnActivity):
             return

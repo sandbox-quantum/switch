@@ -94,11 +94,6 @@ _OUTCOME = {
     "declined": "⊘",
 }
 
-# How much of one tool call's title a disclosed line keeps. A title is host
-# text: long enough to recognise the call, short enough that five of them are
-# still a glance rather than a page.
-_DETAIL_TITLE = 120
-
 _OUTCOME_WORDS = {
     "in-progress": "running",
     "completed": "done",
@@ -174,6 +169,7 @@ def turn_status(
     session_url: str | None = None,
     mention: str | None = None,
     error_summary: str | None = None,
+    current_tool: bool,
 ) -> str:
     """A turn's progress, compact enough to live in one message that is edited.
 
@@ -189,6 +185,13 @@ def turn_status(
     - where the turn got to and how long it has taken, with one Console link;
     - what it is doing right now, while it is still doing something;
     - how the tool calls went, once there is more than one outcome to report.
+
+    `current_tool` is the middle one, and a platform can decline it. Where the
+    status shares the conversation with everything else that is said there, a
+    line naming the tool of the moment is the part that reads as noise: the
+    state and its link are the record, and what the turn is doing is in
+    Console. The outcome tally is not covered by it — a call that failed is
+    not chatter about progress.
 
     `error_summary` is the attention slot rather than the status: a distinct
     problem somebody has to act on, said in one sentence with the mention that
@@ -214,53 +217,14 @@ def turn_status(
     lines = [head]
     spent = len(head)
     did = [item for item in items if item.kind == "tool-activity"]
-    for line in _doing(did, turn, escape=escape, budget=budget):
+    for line in _doing(
+        did, turn, escape=escape, budget=budget, current_tool=current_tool
+    ):
         if spent + len(line) + 1 > budget:
             break
         lines.append(line)
         spent += len(line) + 1
     return _mentioned(mention, "\n".join(lines))
-
-
-def activity_detail(
-    items: list[Item],
-    *,
-    escape: Callable[[str], str],
-    limit: int,
-    lines: int,
-) -> list[str]:
-    """The last few tool calls as their own lines, oldest first.
-
-    What a platform puts behind a disclosure it already has — Telegram's
-    expandable quotation — rather than in the status itself, which stays the
-    three compact lines `turn_status` draws whether or not anything expands.
-    The caller supplies the wrapper; this decides what is safe to say inside
-    it and how much of it there is room for.
-
-    Only the title and how the call went. Arguments and output are host text
-    with no bound worth trusting, and a status is not a transcript: five
-    labels say what the turn has been doing, and a count says there was more.
-    Lines are dropped from the oldest end when the budget is short, because
-    the reader opening this wants to know what it is doing now.
-
-    `limit` counts the escaped text and the newlines between the lines, not
-    whatever the caller wraps around them.
-    """
-    did = [item for item in items if item.kind == "tool-activity"]
-    if not did or limit <= 0 or lines <= 0:
-        return []
-    shown = did[-lines:]
-    per = max(1, min(_DETAIL_TITLE, limit // len(shown)))
-    drawn = [
-        f"{_OUTCOME[item.status]} {_fit(item.title or 'Tool call', per, escape=escape)}"
-        for item in shown
-    ]
-    hidden = len(did) - len(shown)
-    if hidden:
-        drawn.insert(0, f"…{hidden} earlier, not shown.")
-    while drawn and sum(len(line) + 1 for line in drawn) - 1 > limit:
-        drawn.pop(0)
-    return drawn
 
 
 def _doing(
@@ -269,6 +233,7 @@ def _doing(
     *,
     escape: Callable[[str], str],
     budget: int,
+    current_tool: bool,
 ) -> list[str]:
     """The optional lines under the state: what is running, and how it is going.
 
@@ -281,7 +246,7 @@ def _doing(
         return []
     lines: list[str] = []
     ended = turn.status in TURN_ENDED
-    if not ended:
+    if current_tool and not ended:
         current = next(
             (item for item in reversed(did) if item.status == "in-progress"), None
         )
