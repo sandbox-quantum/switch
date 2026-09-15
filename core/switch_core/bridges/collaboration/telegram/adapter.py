@@ -292,6 +292,16 @@ class _TelegramMarkup(Markup):
     def bold(self, text: str) -> str:
         return f"<b>{text}</b>"
 
+    def literal(self, escape: Callable[[str], str]) -> Callable[[str], str]:
+        """The ordinary escape: `<code>` is still HTML inside.
+
+        Telegram's span reads its content, so an `&` or a `<` in a command
+        needs defusing exactly as it would in the body. The Markdown default
+        passes text through untouched, which here would break the message
+        rather than merely litter it.
+        """
+        return escape
+
     def code(self, text: str) -> str:
         return f"<code>{text}</code>"
 

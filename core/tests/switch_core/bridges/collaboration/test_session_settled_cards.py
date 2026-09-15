@@ -12,11 +12,17 @@ platforms that share `neutral.py`.
 
 from __future__ import annotations
 
+import html
+
+from markdown_it import MarkdownIt
+
 from switch_core.bridges.collaboration.session.renderers import MARKDOWN, Markup
 from switch_core.bridges.collaboration.session.renderers.neutral import request_summary
 from switch_core.bridges.collaboration.teams.adapter import _TEAMS_MARKUP
+from switch_core.bridges.collaboration.telegram.adapter import TELEGRAM_HTML
 from switch_core.sessions.contract import ApprovalContent, SnapshotRequest
 
+from .test_discord_sdk_only import _adapter as _discord_adapter
 from .test_session_neutral_forms import REFERENCE, _identity, _option
 
 ALLOW = _option("opt-allow", "Allow once")
@@ -186,3 +192,98 @@ def test_a_detail_of_several_lines_is_not_a_command_and_is_left_alone() -> None:
 
     assert "`" not in lines[2]
     assert lines[2:4] == ["It will:", "run the suite"]
+
+
+# ── What the code span actually carries ───────────────────────────────────────
+
+
+def _discord_escape(text: str) -> str:
+    return _discord_adapter({}).escape_label_for_body(text)
+
+
+def _spans(text: str) -> list[str]:
+    """The literal content of every code span, as a Markdown reader sees it."""
+    return [
+        child.content
+        for block in MarkdownIt().parse(text)
+        for child in (block.children or [])
+        if child.type == "code_inline"
+    ]
+
+
+def test_a_command_reaches_the_reader_as_the_command_it_is() -> None:
+    """The prose escape must not run inside a code span.
+
+    Nothing between backticks is read as syntax, so `my_file.txt` needs no
+    defusing there — and defusing it anyway puts a backslash in front of the
+    underscore in the one place on the card meant to be read literally. The
+    reader cannot tell whether the backslash is part of the command.
+    """
+    text = request_summary(
+        _settled(detail="cat my_file.txt"),
+        REFERENCE,
+        escape=_discord_escape,
+        limit=10_000,
+        markup=MARKDOWN,
+    )
+
+    assert "cat my_file.txt" in _spans(text)
+    assert "\\_" not in text
+
+
+def test_the_handle_is_a_literal_too() -> None:
+    """Same span, same rule. A handle is alphanumeric today, so this pins the
+    reasoning rather than a live defect."""
+    text = request_summary(
+        _settled(),
+        REFERENCE,
+        escape=_discord_escape,
+        limit=10_000,
+        markup=MARKDOWN,
+    )
+
+    assert "R42" in _spans(text)
+
+
+def test_a_command_containing_a_backtick_does_not_end_its_own_span() -> None:
+    """A single backtick closed the span early and spilled the rest of the
+    command into the body as prose."""
+    command = "echo `date`"
+
+    assert command in _spans(_line(_settled(detail=command)))
+
+
+def test_a_command_starting_and_ending_in_a_backtick_keeps_them() -> None:
+    """The padding spaces a fence needs here are stripped by the reader, so
+    they cost the card a little width and the reader nothing."""
+    command = "`quoted`"
+
+    assert command in _spans(_line(_settled(detail=command)))
+
+
+def test_a_backslash_in_a_command_is_the_reader_s_backslash() -> None:
+    """Not an escape introduced by us, and not one removed."""
+    command = r"grep '\d+' log.txt"
+
+    assert command in _spans(_line(_settled(detail=command)))
+
+
+def test_telegram_still_defuses_html_inside_its_code_span() -> None:
+    """Telegram's span reads its content, so it keeps the adapter's escape
+    where the Markdown platforms must drop it. Dropping it here would not
+    litter the card — it would break the message."""
+    text = request_summary(
+        _settled(detail="grep <name> file"),
+        REFERENCE,
+        escape=lambda body: html.escape(body, quote=False),
+        limit=10_000,
+        markup=TELEGRAM_HTML,
+    )
+
+    assert "<code>grep &lt;name&gt; file</code>" in text.splitlines()
+
+
+def _line(request: SnapshotRequest) -> str:
+    return request_summary(
+        request, REFERENCE, escape=_identity, limit=10_000, markup=MARKDOWN
+    )

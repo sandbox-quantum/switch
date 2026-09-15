@@ -11,6 +11,8 @@ reads it the same way rather than each keeping its own copy to drift.
 
 from __future__ import annotations
 
+import re
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from switch_core.sessions.contract import (
@@ -322,17 +324,45 @@ class Markup:
     copied and left to drift — and shipping `**Working…**` to a reader as those
     characters.
 
-    Not an escaper. Host text is neutralised by the adapter's own escape before
-    it reaches here, and what these produce is measured against the message
-    budget like anything else, so a spelling that costs more characters costs
-    them out of the same allowance.
+    Not an escaper, with one exception it cannot delegate: `literal` says how
+    text must be spelled to survive this markup's own code span, because only
+    the spelling knows whether its content is read as syntax. Everything else
+    is neutralised by the adapter's own escape before it reaches here, and what
+    these produce is measured against the message budget like anything else, so
+    a spelling that costs more characters costs them out of the same allowance.
     """
 
     def bold(self, text: str) -> str:
         return f"**{text}**"
 
+    def literal(self, escape: Callable[[str], str]) -> Callable[[str], str]:
+        """The escape that gets text intact through `code` and `command`.
+
+        A code span is not prose and the prose escape is wrong inside it:
+        Markdown reads nothing between the backticks as syntax, so a `_`
+        defused to `\\_` for the body arrives with the backslash showing, in
+        the one place on the card that is meant to be read literally. The
+        identity here is the whole point — a platform whose span does read its
+        content, as an HTML one reads `&` and `<`, overrides this with the
+        escape that makes it safe.
+        """
+        return lambda text: text
+
     def code(self, text: str) -> str:
-        return f"`{text}`"
+        """A literal, fenced by a run of backticks the content cannot close.
+
+        A single backtick is the common case and the only one before this: a
+        command containing one ended the span early and spilled the rest of
+        itself into the body as prose. CommonMark closes a span on a run of
+        exactly the length that opened it, so a fence one longer than the
+        longest run inside is always safe. The padding spaces are stripped by
+        the same rule, and are there so content that starts or ends with a
+        backtick does not fuse with its own fence.
+        """
+        longest = max((len(run) for run in re.findall(r"`+", text)), default=0)
+        fence = "`" * (longest + 1)
+        pad = " " if text.startswith("`") or text.endswith("`") else ""
+        return f"{fence}{pad}{text}{pad}{fence}"
 
     def command(self, text: str) -> str:
         """The command a card is asking about, set apart from the prose.

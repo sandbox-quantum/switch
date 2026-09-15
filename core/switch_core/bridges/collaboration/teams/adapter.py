@@ -228,6 +228,15 @@ class _TeamsMarkup(Markup):
     heading and handle are already bold marks nothing out at all.
     """
 
+    def literal(self, escape: Callable[[str], str]) -> Callable[[str], str]:
+        """The ordinary escape: neither spelling here is a code span.
+
+        A handle becomes emphasis and a command stays plain, so both land in
+        prose that a TextBlock parses as Markdown. The Markdown default exists
+        for content nothing will read; this content is read.
+        """
+        return escape
+
     def code(self, text: str) -> str:
         return f"**{text}**"
 

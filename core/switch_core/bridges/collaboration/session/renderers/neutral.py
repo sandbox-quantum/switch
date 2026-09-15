@@ -421,7 +421,8 @@ def _approval_form(
     control_label_limit: int | None,
 ) -> tuple[list[str], list[str], str, bool]:
     fit = _Faithful(escape)
-    handle = escape(reference.handle)
+    literal = markup.literal(escape)
+    handle = literal(reference.handle)
     outcome = (
         _chosen(request, content, escape=escape, limit=limit)
         if request.state == "resolved"
@@ -431,8 +432,15 @@ def _approval_form(
     head = [f"{markup.bold(heading)} · request {markup.code(handle)}"]
     head.append(fit(content.title, _share(limit, 1500, 3)))
     if content.detail:
-        detail = fit(content.detail, _share(limit, 1200, 4))
-        head.append(markup.command(detail) if "\n" not in detail else detail)
+        # A command spanning lines is left as prose: a code span is one line,
+        # and the alternative is a fenced block nothing else on the card uses.
+        multiline = "\n" in content.detail
+        detail = fit(
+            content.detail,
+            _share(limit, 1200, 4),
+            escape=None if multiline else literal,
+        )
+        head.append(detail if multiline else markup.command(detail))
 
     body: list[str] = []
     if request.state == "open":
@@ -566,7 +574,7 @@ def _questions_form(
     responder: str | None,
 ) -> tuple[list[str], list[str], str, bool]:
     fit = _Faithful(escape)
-    handle = escape(reference.handle)
+    handle = markup.literal(escape)(reference.handle)
     head = [
         f"{markup.bold(_QUESTION_HEADINGS[request.state])} · request "
         f"{markup.code(handle)}",
@@ -883,9 +891,18 @@ class _Faithful:
         self._escape = escape
         self.whole = True
 
-    def __call__(self, text: str, limit: int) -> str:
-        self.whole = self.whole and len(self._escape(text)) <= limit
-        return _fit(text, limit, escape=self._escape)
+    def __call__(
+        self, text: str, limit: int, escape: Callable[[str], str] | None = None
+    ) -> str:
+        """`escape` overrides the prose one for text bound somewhere else.
+
+        A command is measured and cut as the code span will actually carry it.
+        Fitting it as prose would budget for backslashes the reader never sees
+        and cut the command short to make room for them.
+        """
+        spell = escape or self._escape
+        self.whole = self.whole and len(spell(text)) <= limit
+        return _fit(text, limit, escape=spell)
 
 
 def _scope(option: ApprovalOption) -> str:
