@@ -129,14 +129,21 @@ async function launch(input: LaunchInput): Promise<{ created: boolean }> {
 
 async function stopOwnedProcess(root: string, ownerPath: string): Promise<void> {
   let pid: number;
+  let resident = false;
   try {
-    pid = JSON.parse(await readFile(ownerPath, 'utf8')).pid;
+    const owner = JSON.parse(await readFile(ownerPath, 'utf8'));
+    pid = owner.pid;
+    resident = owner.resident === true;
     if (!Number.isSafeInteger(pid) || pid <= 0) throw new Error('Invalid SDK process owner.');
     process.kill(pid, 0);
   } catch (error) {
     if (['ENOENT', 'ESRCH'].includes((error as NodeJS.ErrnoException).code ?? '')) return;
     throw error;
   }
+  if (resident)
+    throw new Error(
+      "This room session runs inside its agent's resident SDK host. Restart the agent's host instead of this session."
+    );
   if (process.platform === 'win32')
     throw new Error(
       'Automatic host restart requires process fencing, which is not available on Windows.'

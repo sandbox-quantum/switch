@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
+import type { EventStreamLogger } from '@sandboxaq/switch-agent-runtime';
 import {
   commandSchema,
   commandStatusSchema,
@@ -17,6 +18,19 @@ import { HostedSession } from './session-host';
 import { SharedDelivery } from './shared-delivery';
 import { SharedState } from './shared-state';
 
+/**
+ * Supplied when many room sessions share one resident host process instead of
+ * each owning its own supervisor and worker. A resident host reaps its own
+ * children, so it releases its ownership record rather than leaving it for a
+ * supervisor to fence, and it refuses to wait indefinitely for a room the server
+ * will not admit.
+ */
+export type ResidentSupport = {
+  admissionTimeoutMs: number;
+  log: EventStreamLogger;
+  lastRefusal(): string | null;
+};
+
 export type SharedHostOptions = {
   root: string;
   resumeOperationId?: string;
@@ -25,7 +39,41 @@ export type SharedHostOptions = {
   session: Session;
   input: ProviderSessionStartInput;
   roomConnection?: z.infer<typeof roomConnectionSchema>;
+  resident?: ResidentSupport;
 };
+
+/**
+ * Switch refuses a connection past its per-agent cap with a transport error the
+ * stream retries forever. Waiting on that is a session that never starts and
+ * never says why, so a resident host bounds the wait and reports what the server
+ * said.
+ */
+async function admitRooms(
+  connecting: Promise<void>,
+  resident: ResidentSupport,
+  rooms: string[]
+): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      connecting,
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => {
+          const refusal = resident.lastRefusal();
+          reject(
+            new Error(
+              `ROOM_ADMISSION_FAILED: Switch did not admit ${rooms.join(', ')} within ${resident.admissionTimeoutMs}ms.` +
+                (refusal ? ` The server reported: ${refusal}.` : '') +
+                ' An agent may hold at most 32 Switch connections; stop an idle room session or another client of this agent.'
+            )
+          );
+        }, resident.admissionTimeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
 
 class TransportError extends Error {}
 class RequestError extends Error {
@@ -196,8 +244,11 @@ export async function runSharedHost(
         );
       }
     }
-    // The supervisor reaps the isolated group after this worker exits.
-    // Retain its owner record so a replacement supervisor can fence it too.
+    // A supervised worker retains its owner record so a replacement supervisor
+    // can fence the isolated group it leaves behind. A resident host has already
+    // reaped this session's own children, so it releases the record instead —
+    // otherwise the next start of this session sees a live owner and refuses.
+    if (options.resident) await state.unlock();
   };
   try {
     // Complete a recovery whose response may have been lost before doing anything else.
@@ -285,15 +336,19 @@ export async function runSharedHost(
     let rooms: SharedRoomInbox | null = null;
     if (options.roomConnection) {
       rooms = await SharedRoomInbox.open(options.root);
-      await rooms.connect(
+      const connecting = rooms.connect(
         { agentId: session.agentId, apiEndpoint: options.agentApiUrl, token: options.token },
         options.roomConnection,
         executionSignal,
         (error) => {
           failure = error;
           stopped.abort(error);
-        }
+        },
+        options.resident?.log ?? console
       );
+      if (options.resident)
+        await admitRooms(connecting, options.resident, options.roomConnection.rooms);
+      else await connecting;
     }
     starting = true;
     host = await HostedSession.start(

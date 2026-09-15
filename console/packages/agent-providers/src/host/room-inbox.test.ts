@@ -69,7 +69,8 @@ async function connected() {
     credentials,
     { connectionId: 'connection', rooms: ['room'] },
     new AbortController().signal,
-    (error) => failures.push(error)
+    (error) => failures.push(error),
+    console
   );
   return { root, inbox, failures, stream: streams[streams.length - 1] };
 }
@@ -148,7 +149,8 @@ async function reconnect(root: string) {
     credentials,
     { connectionId: 'connection', rooms: ['room'], startCursor: 4 },
     new AbortController().signal,
-    vi.fn()
+    vi.fn(),
+    console
   );
   return { inbox, stream: streams[streams.length - 1] };
 }

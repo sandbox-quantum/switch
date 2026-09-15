@@ -2,7 +2,11 @@ import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { SwitchEventStream } from '@sandboxaq/switch-agent-runtime';
-import type { AgentBridgeEvent, SwitchCredentials } from '@sandboxaq/switch-agent-runtime';
+import type {
+  AgentBridgeEvent,
+  EventStreamLogger,
+  SwitchCredentials,
+} from '@sandboxaq/switch-agent-runtime';
 import { z } from 'zod';
 import { Journal } from './journal';
 
@@ -136,7 +140,8 @@ export class SharedRoomInbox {
     credentials: SwitchCredentials,
     connection: z.infer<typeof roomConnectionSchema>,
     signal: AbortSignal,
-    fail: (error: Error) => void
+    fail: (error: Error) => void,
+    log: EventStreamLogger
   ): Promise<void> {
     const cursor = this.cursor ?? connection.startCursor;
     let rooms = this.rooms ?? connection.rooms;
@@ -151,7 +156,7 @@ export class SharedRoomInbox {
         startCursor: cursor,
         rooms,
         signal,
-        log: console,
+        log,
         onEvent: async (event) => {
           const messageId = roomInputId(event);
           if (!messageId) {
@@ -197,7 +202,7 @@ export class SharedRoomInbox {
         // serving from wherever it resumed, and the warning rides on the next
         // delivery so the agent reads the room before it answers.
         onGap: async (gap) => {
-          console.warn(`Room delivery gap: ${gap.reason}. Read room context before continuing.`);
+          log.warn(`Room delivery gap: ${gap.reason}. Read room context before continuing.`);
           const detail = { fromSequence: gap.fromSequence, reason: gap.reason };
           if (gap.resumedAt !== undefined) {
             await this.journal.append({
@@ -216,7 +221,7 @@ export class SharedRoomInbox {
         },
         onEvicted: (reason) => {
           if (reason === 'heartbeat lapsed')
-            console.warn('Room heartbeat lapsed; reconnecting from the saved cursor.');
+            log.warn('Room heartbeat lapsed; reconnecting from the saved cursor.');
           else fail(new Error(`Room connection was evicted: ${reason}`));
         },
         onRoomRejected: ({ roomId, detail }) =>

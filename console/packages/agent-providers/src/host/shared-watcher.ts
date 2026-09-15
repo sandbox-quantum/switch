@@ -5,8 +5,9 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { SwitchEventStream } from '@sandboxaq/switch-agent-runtime';
 import { z } from 'zod';
 import { Journal } from './journal';
-import { ensureSharedProcess, sharedSessionRoot } from './launch';
+import { sharedSessionRoot } from './launch';
 import { releaseOwner, replaceOwner, withOwnershipLock } from './ownership-lock';
+import type { SessionDispatcher } from './resident-host';
 import { roomInputId, SharedRoomInbox } from './room-inbox';
 import { readSharedCredentials, sharedConfigSchema, type SharedHostConfig } from './shared-config';
 
@@ -106,11 +107,32 @@ export class SharedWatchAssignments {
       ).values(),
     ];
   }
+
+  /**
+   * The session currently serving each room — the last one assigned to it.
+   *
+   * A room whose session was superseded (its inbox showed it had moved on) keeps
+   * its older record in the journal. Restarting both would put two conversations
+   * on one room and let them race for its connection, so only the current one is
+   * dispatched.
+   */
+  current(): { roomId: string; config: SharedHostConfig }[] {
+    return [
+      ...new Map(
+        this.journal.records.map((record) => [record.roomId, { roomId: record.roomId, config: record.config }])
+      ).values(),
+    ];
+  }
 }
 
+/**
+ * Discovery for one agent. The watcher keeps the agent's only `scope: 'all'`
+ * connection and hands every addressed message to the dispatcher, which owns the
+ * room sessions themselves.
+ */
 export async function runSharedWatcher(
   root: string,
-  entrypoint: string,
+  dispatcher: SessionDispatcher,
   template: SharedHostConfig,
   signal: AbortSignal
 ): Promise<void> {
@@ -148,18 +170,11 @@ export async function runSharedWatcher(
     if (!(await enabled())) return;
     const credentials = await readSharedCredentials(template);
     const assignments = await SharedWatchAssignments.open(root);
-    const launch = async (config: SharedHostConfig) => {
+    const launch = async (roomId: string, config: SharedHostConfig) => {
       if (!(await enabled()) || (await stopped(config.session.sessionId))) return;
-      await ensureSharedProcess({
-        root: sharedSessionRoot(config.session.sessionId),
-        entrypoint,
-        config,
-        resuming: false,
-        watcher: false,
-        restart: false,
-      });
+      await dispatcher.dispatch(roomId, config);
     };
-    for (const config of assignments.sessions()) await launch(config);
+    for (const session of assignments.current()) await launch(session.roomId, session.config);
     const stream = new SwitchEventStream({
       creds: {
         agentId: credentials.SWITCH_AGENT_ID,
@@ -186,7 +201,7 @@ export async function runSharedWatcher(
               messageId,
             }
           );
-          await launch(config);
+          await launch(event.room_id, config);
         });
         return pending.catch((error: Error) => {
           fail(error);
@@ -219,6 +234,11 @@ export async function runSharedWatcher(
     stop.abort();
     signal.removeEventListener('abort', abort);
     await pending.catch(() => {});
+    // Room sessions live in this process: stopping the watcher stops them, and
+    // each one quiesces its server lease on the way out.
+    await dispatcher.stopAll().catch((error: unknown) => {
+      console.error('The resident host could not stop its room sessions:', String(error));
+    });
     await releaseOwner(root, ownerPath, owner);
   }
   if (fault) throw fault;

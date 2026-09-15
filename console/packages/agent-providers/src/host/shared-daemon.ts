@@ -7,6 +7,7 @@ import { ensureSharedProcess } from './launch';
 import { replaceOwner } from './ownership-lock';
 import { ownProcessGroup } from './process-fence';
 import { checkProviderReadiness } from './provider-readiness';
+import { residentDispatcher, spawningDispatcher } from './resident-host';
 import { adapterFor } from './server';
 import { prepareSharedConfig, sharedConfigSchema } from './shared-config';
 import { runSharedHost, SharedHostLeaseExpiredError } from './shared-host';
@@ -108,7 +109,17 @@ async function main(): Promise<void> {
     const stop = new AbortController();
     process.on('SIGTERM', () => stop.abort());
     process.on('SIGINT', () => stop.abort());
-    await runSharedWatcher(root, process.argv[1], config, stop.signal);
+    // The resident host runs every room session of this agent in this process.
+    // SWITCH_SDK_SESSION_DISPATCH=spawn selects the previous behaviour — a
+    // supervisor, a worker and a host process per room — for comparison.
+    await runSharedWatcher(
+      root,
+      process.env.SWITCH_SDK_SESSION_DISPATCH === 'spawn'
+        ? spawningDispatcher(process.argv[1])
+        : residentDispatcher(resolve(root)),
+      config,
+      stop.signal
+    );
   } else if (process.platform !== 'win32' && (await ownProcessGroup()) === null) {
     const child = spawn(process.execPath, process.argv.slice(1), {
       detached: true,
