@@ -19,6 +19,13 @@ shared onboarding model, then the per-platform guide:
 | Discord | [`DISCORD_SETUP.md`](DISCORD_SETUP.md) | single bot app | Gateway WebSocket (outbound) | not required |
 | Telegram | [`TELEGRAM_SETUP.md`](TELEGRAM_SETUP.md) | single bot, agent named in the message body | long polling (outbound) | not required |
 
+> **Distributed (OAuth-install) apps — design.** The guides above cover an
+> operator registering their *own* app and pasting its token in. Letting a
+> customer install *Switch's* app by clicking *Add to Server* / *Add to Slack*
+> is a separate line of work: the Discord design is in
+> [`DISCORD_DISTRIBUTED_APP.md`](DISCORD_DISTRIBUTED_APP.md) (design spike), and
+> the Slack distributed app is in flight (PR #435).
+
 ## The onboarding model (same for every bridge)
 
 A bridge is an **unowned, workspace-wide integration** that holds platform
