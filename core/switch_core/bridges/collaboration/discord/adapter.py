@@ -311,6 +311,13 @@ class DiscordAdapter(CollaborationAdapter):
     # the message it produced.
     recovers_uncertain_posts: ClassVar[bool] = True
 
+    # Left False: a webhook message carries no metadata this bridge can set,
+    # so the handle a card prints is the only thing a search has to match on.
+    # A card is therefore recoverable and a turn's activity, which prints no
+    # handle, is not — see `find_request_card`. Not a property of Discord: a
+    # marker carried some other way would make this True.
+    carries_publication_marker: ClassVar[bool] = False
+
     def __init__(self, *, config: DiscordConnectionConfig) -> None:
         super().__init__()
         self._config = config

@@ -157,10 +157,12 @@ class ActivityAbandoned(CardNotPosted):
     as a fresh failure reports the same permanent condition on every cycle and
     never lets the session settle, which buries the failures that are new.
 
-    Already reported by the time a caller sees it. What each caller still has
-    to decide is what the loss costs: a status is the whole of a turn's
-    display, so there is nothing left to draw, while an attention message is
-    one message and the turn carries on without it.
+    Already reported by the time a caller sees it, and scoped to the one slot
+    it names. Nothing about the rest of the turn is settled by it: the turn
+    can still change state, still need attention, and still have to be ended
+    and its reaction taken off. A caller that reads this as "this turn is
+    finished with" stops doing all of that, which costs more than the message
+    that was lost.
     """
 
     def __init__(self, message: str, *, slot: str, abandoned_at: str) -> None:
@@ -198,6 +200,7 @@ class SessionTurnActivity:
         self._timer_redraws = getattr(adapter, "redraws_for_elapsed_time", False)
         self._only_mentions_notify = getattr(adapter, "notifies_only_by_mention", False)
         self._recovers_posts = getattr(adapter, "recovers_uncertain_posts", False)
+        self._marks_publications = getattr(adapter, "carries_publication_marker", False)
         self._anchors: OrderedDict[tuple[str, str], _Anchor] = OrderedDict()
         self._thread_turns: dict[tuple[str, str, str], set[tuple[str, str]]] = {}
         self._expecting: set[tuple[str, str, str]] = set()
@@ -319,6 +322,15 @@ class SessionTurnActivity:
                     elapsed_seconds=elapsed_seconds,
                     session_url=session_url,
                 )
+            except ActivityAbandoned:
+                # Settled, but only for the status. The turn can still change,
+                # still need attention, and still have to be ended and its
+                # reaction taken off, and a caller told to come back later
+                # does none of that — it skips the turn entirely from here on.
+                # So this state counts as taken as far as it can go, which
+                # leaves the next state free to be published.
+                await attend()
+                return True
             except CardNotPosted:
                 # A status whose delivery cannot be resolved keeps its
                 # reservation for good where the platform cannot search for it.
@@ -448,18 +460,19 @@ class SessionTurnActivity:
     def _report_abandoned(
         self, key: tuple[str, ...], slot: str, reason: str, abandoned_at: str
     ) -> None:
-        """Say once, here, that a slot has been given up on.
+        """Say, here rather than at each caller, that a slot is given up on.
 
-        Reported where the decision is made rather than by each caller,
-        because the callers differ in what they do about it and not in what
-        happened. Once per process: the condition is permanent, so a line per
-        publish cycle would be the same sentence every few seconds for as long
-        as the bridge runs, and a restart genuinely is worth one line — it is
-        the only place an operator learns that a turn on this platform is
-        showing less than it should.
+        Reported where the decision is made because the callers differ in what
+        they do about it and not in what happened.
 
-        Bounded, and an eviction costs one repeated warning rather than a
-        missed one, which is the right way round.
+        Said rarely rather than a guaranteed number of times. The condition is
+        permanent, so a line per publish cycle would be the same sentence every
+        few seconds for as long as the bridge runs, and this suppresses that.
+        It does not promise once: the cache is bounded and per process, so an
+        eviction or a restart can repeat a warning. That is the right way for
+        it to be wrong — a repeated line is read twice, and a missed one is the
+        only place an operator would have learned that a turn on this platform
+        is showing less than it should.
         """
         seen = (*key, slot)
         if seen in self._abandoned:
@@ -512,12 +525,27 @@ class SessionTurnActivity:
                         "Activity journal message reference must be a string."
                     )
                 return saved_ref
-            if not self._recovers_posts:
+            if not self._recovers_posts or not self._marks_publications:
                 # The send may well have landed; nothing here can find out.
                 # Posting again on every cycle would put one unwanted copy in
                 # the chat per cycle, so the reservation is kept and this slot
                 # stays as it is. The attention message is published
                 # separately and is not held up by it.
+                #
+                # Two ways to arrive, and the difference is worth saying out
+                # loud because only one of them is about the platform. Either
+                # nothing here can be searched for, or it can but only by the
+                # handle a card prints — and every slot reserved through this
+                # method is a turn's own message, which prints none. Neither
+                # is a lookup that came back empty: both are known before
+                # looking, which is why a miss elsewhere still means "ask
+                # again".
+                nowhere = (
+                    "this platform cannot search for it"
+                    if not self._recovers_posts
+                    else "this platform can only find a publication by the "
+                    "handle it prints, and a turn's own messages print none"
+                )
                 abandoned_at = delivery.get("abandoned_at")
                 if not abandoned_at:
                     abandoned_at = datetime.now(UTC).isoformat()
@@ -526,9 +554,9 @@ class SessionTurnActivity:
                     await record.save()
                 reason = (
                     f"The {slot} message sent as {delivery['token']} in "
-                    f"{delivery['channel']} was never acknowledged, and this "
-                    "platform cannot search for it. Keeping its reservation "
-                    "rather than posting a second one that may duplicate it."
+                    f"{delivery['channel']} was never acknowledged, and "
+                    f"{nowhere}. Keeping its reservation rather than posting "
+                    "a second one that may duplicate it."
                 )
                 self._report_abandoned(record.key, slot, reason, abandoned_at)
                 raise ActivityAbandoned(reason, slot=slot, abandoned_at=abandoned_at)

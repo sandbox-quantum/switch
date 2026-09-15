@@ -354,6 +354,30 @@ class CollaborationAdapter(ABC):
     #: outcome the publisher discloses instead.
     recovers_uncertain_posts: ClassVar[bool] = False
 
+    #: Whether a publication carries a marker `find_request_card` can match on
+    #: regardless of what the message says.
+    #:
+    #: Slack writes the token into a `block_id` and message metadata,
+    #: Mattermost into a post prop: both are exact, invisible, and present on
+    #: every publication, so anything this bridge posted can be recognised
+    #: again. Discord has nowhere to put one on a webhook message, so it
+    #: recognises a card by the handle the card itself prints — which works
+    #: for a card and cannot work for a turn's activity, because activity
+    #: prints no handle.
+    #:
+    #: Separate from `recovers_uncertain_posts` because the two answer
+    #: different questions. That one asks whether the platform can be searched
+    #: at all; this one asks whether a search can find a publication that
+    #: prints nothing to search for. A platform can recover its cards and
+    #: still never recover a status, and a caller that cannot tell those apart
+    #: either repeats a lookup that has no way to succeed or abandons a card
+    #: that would have been found.
+    #:
+    #: Not a statement about the platform — a statement about this adapter. An
+    #: adapter that starts carrying a marker of its own sets this True and the
+    #: publications it could not recognise before become recoverable.
+    carries_publication_marker: ClassVar[bool] = False
+
     def __init__(self) -> None:
         self._on_message: Callable[[InboundMessage], Awaitable[None]] | None = None
         self._on_command: Callable[[InboundCommand], Awaitable[None]] | None = None

@@ -234,6 +234,11 @@ class MattermostAdapter(CollaborationAdapter):
     #: there instead of being disclosed as lost.
     recovers_uncertain_posts: ClassVar[bool] = True
 
+    #: Every publication carries its token in a post prop, which is exact and
+    #: invisible, so a status is as findable as a card despite printing no
+    #: handle of its own.
+    carries_publication_marker: ClassVar[bool] = True
+
     def __init__(self, *, config: MattermostConnectionConfig) -> None:
         super().__init__()
         self._config = config

@@ -14,7 +14,6 @@ from switch_core.bridges.collaboration.adapter import (
 )
 from switch_core.bridges.collaboration.session.activity_journal import ActivityJournal
 from switch_core.bridges.collaboration.session.outbound import (
-    ActivityAbandoned,
     CardNotPosted,
     SessionTurnActivity,
 )
@@ -23,6 +22,7 @@ from switch_core.bridges.collaboration.slack.adapter import (
     SlackConnectionConfig,
 )
 from switch_core.db.models import SdkSession, SessionActivityPost, require_tenant_id
+from switch_core.sessions import publication
 from switch_core.sessions.publication import SessionPublisher
 
 from ..bridges.collaboration.test_mattermost_sdk_only import (
@@ -31,7 +31,7 @@ from ..bridges.collaboration.test_mattermost_sdk_only import (
 from ..bridges.collaboration.test_mattermost_sdk_only import _http_error
 from ..bridges.collaboration.test_mattermost_sdk_only import _posts as mm_posts
 from ..bridges.collaboration.test_session_activity import _items, _turn
-from .test_authority import opened, setup
+from .test_authority import host_event, opened, setup
 from .test_publication import Platform
 from .test_publication_retries import cards_for
 
@@ -91,6 +91,29 @@ class UnsearchablePlatform(ActivitySlack):
     recovers_uncertain_posts = False
 
 
+class UnmarkedPlatform(ActivitySlack):
+    """Discord's shape: it searches, but only for what prints its own handle.
+
+    A webhook message carries no metadata this bridge can set, so a card is
+    recognised by the handle printed on it and a turn's messages, which print
+    none, cannot be recognised at all. That is a different thing from Telegram
+    having nowhere to look, and it has to be told apart from a search that
+    simply has not found the message yet.
+    """
+
+    carries_publication_marker = False
+
+    def __init__(self):
+        super().__init__()
+        self.lookups = 0
+
+    async def find_request_card(self, channel, thread, token, created_at, handle):
+        self.lookups += 1
+        return await super().find_request_card(
+            channel, thread, token, created_at, handle
+        )
+
+
 class PerAgentSlack(ActivitySlack):
     """A platform where each agent marks the message as its own bot.
 
@@ -114,6 +137,10 @@ class PerAgentSlack(ActivitySlack):
 
 
 OUTBOUND_LOGGER = "switch_core.bridges.collaboration.session.outbound"
+
+#: Longer than the publisher's longest wait before it retries a turn it could
+#: not draw, so a sweep in a test is never the one that is skipped.
+PAST_THE_RETRY_BACKOFF = 60.0
 
 
 def activity(factory, platform):
@@ -338,6 +365,10 @@ async def test_a_status_a_platform_cannot_search_is_never_posted_a_second_time(
     cycle or on any of the hundreds after it — puts one more copy of the same
     status in the chat each time. The reservation stays and the turn keeps the
     status it may already have.
+
+    What it does not do is refuse: the loss is the status slot's, and the turn
+    around it still has work left, so each pass comes back having done as much
+    as it can rather than as a failure to try again.
     """
     await setup(session_factory)
     platform = UnsearchablePlatform()
@@ -347,8 +378,7 @@ async def test_a_status_a_platform_cannot_search_is_never_posted_a_second_time(
     assert platform.post_count == 1
 
     for _ in range(3):
-        with pytest.raises(CardNotPosted):
-            await publish(activity(session_factory, platform))
+        assert await publish(activity(session_factory, platform)) is True
     assert platform.post_count == 1
 
 
@@ -363,23 +393,25 @@ async def test_a_status_nobody_can_confirm_is_written_off_once_and_not_again(
     which would otherwise report a months-old conclusion as though it had just
     reached it. The stamp is taken once and kept.
     """
+
+    async def stamp():
+        async with session_factory() as db:
+            row = await db.scalar(select(SessionActivityPost))
+            return row.data["status"].get("abandoned_at")
+
     await setup(session_factory)
     platform = UnsearchablePlatform()
     platform.fail_after_post = True
     with pytest.raises(TimeoutError):
         await publish(activity(session_factory, platform))
+    assert await stamp() is None  # Unfinished, not yet given up on.
 
-    with pytest.raises(ActivityAbandoned) as written_off:
-        await publish(activity(session_factory, platform))
-    assert written_off.value.slot == "status"
+    await publish(activity(session_factory, platform))
+    written_off = await stamp()
+    assert written_off
 
-    async with session_factory() as db:
-        row = await db.scalar(select(SessionActivityPost))
-        assert row.data["status"]["abandoned_at"] == written_off.value.abandoned_at
-
-    with pytest.raises(ActivityAbandoned) as again:
-        await publish(activity(session_factory, platform))
-    assert again.value.abandoned_at == written_off.value.abandoned_at
+    await publish(activity(session_factory, platform))
+    assert await stamp() == written_off
     assert platform.post_count == 1
 
 
@@ -493,6 +525,154 @@ async def test_an_attention_message_nobody_can_confirm_leaves_the_turn_drawing(
     assert platform.edit_refs  # The status is still being drawn.
 
 
+async def test_a_turn_whose_status_was_abandoned_still_reports_and_ends(
+    session_factory,
+    monkeypatch,
+):
+    """Giving up on the status is not giving up on the turn.
+
+    Driven through the real publisher, because the regression it guards was a
+    publisher one: an unconfirmable status made the whole turn permanently
+    uninteresting, so the failure that happened afterwards was never told to
+    anyone and the turn was never tidied up. A status is one of the things a
+    turn shows. Losing it says nothing about whether the agent then failed,
+    whether somebody needs to be told, or whether the `:eyes:` should come off
+    the message that asked.
+    """
+    service, epoch = await setup(session_factory)
+    await opened(service, epoch)
+    clock = [0.0]
+    monkeypatch.setattr(publication.time, "monotonic", lambda: clock[0])
+    platform = UnsearchablePlatform()
+    platform.fail_after_post = True
+    publisher = SessionPublisher(
+        session_factory,
+        "bridge",
+        cards_for(session_factory, Platform()),
+        activity(session_factory, platform),
+    )
+
+    async def sweep(sequence, status):
+        await service.ingest(
+            "agent-demo",
+            "host-demo",
+            host_event(
+                epoch,
+                sequence,
+                {
+                    "type": "turn.upsert",
+                    "turnId": "turn-demo",
+                    "status": status,
+                    "commandId": "message-demo",
+                },
+            ),
+        )
+        clock[0] += PAST_THE_RETRY_BACKOFF
+        await publisher.publish_pending()
+
+    await publisher.publish_pending()  # Sends the status; the response is lost.
+    await sweep(3, "running")  # Gives the status up as unconfirmable.
+    async with session_factory() as db:
+        row = await db.scalar(select(SessionActivityPost))
+        assert row.data["status"]["abandoned_at"]
+
+    await sweep(4, "error")
+
+    assert any(
+        "could not complete this request" in str(message)
+        for message in platform.messages.values()
+    )
+    async with session_factory() as db:
+        row = await db.scalar(select(SessionActivityPost))
+        assert row.data["completed"] is True  # Ended and tidied, not left open.
+
+
+async def test_an_abandoned_turn_still_lets_go_of_the_asking_message(session_factory):
+    """The mark is shared, so a turn that gives up still has to release it.
+
+    Two turns are working on one asking message, and the `:eyes:` on it belongs
+    to both: it comes off when the last of them finishes, not the first. A turn
+    whose status can never be confirmed is still one of the two. If abandoning
+    it also abandoned its claim, the mark would sit on the message for the life
+    of the process and the other turn would never be able to take it off.
+    """
+    await setup(session_factory)
+    platform = UnsearchablePlatform()
+    platform.fail_after_post = True
+    with pytest.raises(TimeoutError):
+        await publish(activity(session_factory, platform))  # Loses its status.
+    await publish(activity(session_factory, platform), agent="Other", command="other")
+    assert platform.reactions == {"channel-demo:question"}
+
+    await publish(activity(session_factory, platform), "completed")
+    assert platform.reactions == {"channel-demo:question"}  # The other turn holds it.
+    await publish(
+        activity(session_factory, platform),
+        "completed",
+        agent="Other",
+        command="other",
+    )
+    assert not platform.reactions
+
+
+async def test_a_status_the_search_could_never_match_is_not_searched_for(
+    session_factory,
+):
+    """Knowing the answer beforehand is not the same as a lookup coming back empty.
+
+    This platform can search, and for a card it works. A turn's status prints
+    no handle, so the same search has nothing to match on and will answer the
+    same way for as long as it is asked. Asking anyway is not harmless: it
+    reads a channel's history on every publish cycle, for the life of the
+    process, to be told what was known before the first call.
+    """
+    await setup(session_factory)
+    platform = UnmarkedPlatform()
+    platform.fail_after_post = True
+    with pytest.raises(TimeoutError):
+        await publish(activity(session_factory, platform))
+
+    assert await publish(activity(session_factory, platform)) is True
+    assert platform.lookups == 0
+    assert platform.post_count == 1
+    async with session_factory() as db:
+        row = await db.scalar(select(SessionActivityPost))
+        assert row.data["status"]["abandoned_at"]
+
+
+async def test_a_search_that_misses_is_asked_again_and_not_written_off(
+    session_factory,
+):
+    """The opposite case, and the one a capability must not swallow.
+
+    A platform carrying a marker can recognise anything it posted, so a lookup
+    that comes back empty means the message is not there *yet* — the post may
+    still be settling, or the read may have failed. Treating that as permanent
+    would abandon a status that is about to be found, so the reservation is
+    kept and the question asked again.
+    """
+    await setup(session_factory)
+    platform = ActivitySlack()
+    platform.fail_after_post = True
+    with pytest.raises(TimeoutError):
+        await publish(activity(session_factory, platform))
+    posted = dict(platform.messages)
+    platform.messages.clear()
+
+    with pytest.raises(CardNotPosted):
+        await publish(activity(session_factory, platform))
+    async with session_factory() as db:
+        row = await db.scalar(select(SessionActivityPost))
+        assert "abandoned_at" not in row.data["status"]
+
+    platform.messages.update(posted)
+    await publish(activity(session_factory, platform))
+    async with session_factory() as db:
+        row = await db.scalar(select(SessionActivityPost))
+        # Bound to the status that was there all along, not a second one.
+        assert row.data["status"]["ref"] in posted
+
+
 async def test_an_unconfirmed_status_does_not_swallow_the_attention_message(
     session_factory,
 ):
@@ -525,8 +705,7 @@ async def test_an_unconfirmed_status_does_not_swallow_the_attention_message(
         await report(activity(session_factory, platform))
     platform.messages.clear()
 
-    with pytest.raises(CardNotPosted):
-        await report(activity(session_factory, platform))
+    await report(activity(session_factory, platform))
     assert any(
         "The host went away." in str(message) for message in platform.messages.values()
     )

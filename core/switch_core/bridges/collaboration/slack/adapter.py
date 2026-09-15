@@ -168,6 +168,11 @@ class SlackAdapter(CollaborationAdapter):
     renders_legacy_runtime_state: ClassVar[bool] = False
     recovers_uncertain_posts: ClassVar[bool] = True
 
+    #: Every publication carries its token in `block_id` and in the message's
+    #: metadata, so a status is as findable as a card despite printing no
+    #: handle of its own.
+    carries_publication_marker: ClassVar[bool] = True
+
     # Every Slack bridge in this process shares one, because resolving a
     # mention that crossed a workspace boundary means reading a group another
     # bridge minted. Rebind it to a fresh instance to isolate a test.
