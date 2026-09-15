@@ -60,12 +60,11 @@ KICKOFF_JOIN_TIMEOUT = 30.0
 
 PLACEHOLDER_RE = re.compile(r"\{(\$?[A-Za-z_][A-Za-z0-9_]*)\}")
 
-# Param types whose value names something that already exists on the server.
-# They interpolate as plain strings; what sets them apart is that the value is
-# checked against the server before provisioning (``check_entity_params``)
-# and that the Console offers a picker over the matching list instead of a
-# text box. The value is the entity's name as a template would spell it: an
-# agent's name, a bridge's display name, a room's name, a platform username.
+# Param types whose value names something the server already has. They
+# interpolate as plain strings; the difference is that the server checks the
+# name before provisioning and the Console offers a picker instead of a text
+# box. The value is the name a template would write: an agent's name, a
+# bridge's display name, a room's name, a platform username.
 ENTITY_PARAM_TYPES = ("agent", "bridge", "room", "user")
 
 ParamType = Literal[
@@ -349,7 +348,7 @@ class RoomYamlService:
         ``builtins`` are server-injected variables (e.g. ``{creator}``) that
         are always available for interpolation alongside user-supplied
         ``inputs``.  They are resolved first and never collide with declared
-        params — a param named ``creator`` would shadow the built-in, which is
+        params; a param named ``creator`` would shadow the built-in, which is
         intentional (the template author owns the namespace).
         """
         try:
@@ -421,13 +420,11 @@ class RoomYamlService:
     async def check_entity_params(self, parsed: ParsedTemplate) -> None:
         """Every entity-typed param must name something this server has.
 
-        Raises ``ValueError`` naming the param and what was looked for, in
-        the ``param 'x': ...`` form the Console maps back onto the form
-        field. Runs after ``parse_template`` and before ``provision`` so a
-        typo in a picked name fails at the input rather than as a half-built
-        room. A ``user`` param is resolved on the bridge the room will land
-        on, which is why the interpolated spec is needed and not only the
-        raw inputs.
+        Raises ``ValueError`` in the ``param 'x': ...`` form the Console maps
+        back onto the field. Runs between ``parse_template`` and ``provision``
+        so a bad name fails at the input, not as a half-built room. A ``user``
+        param resolves on the bridge the room will land on, hence the parsed
+        spec rather than the raw inputs.
         """
         wanted: dict[str, list[tuple[str, str]]] = {}
         for name, spec in parsed.params.items():
@@ -493,14 +490,13 @@ class RoomYamlService:
     ) -> dict[str, str]:
         """The server-injected ``{$...}`` variables for one create call.
 
-        ``$creator`` is the name the creator goes by on the template's bridge:
-        the identity they have linked (claimed) there, which is what ``users:``
-        resolution and channel invites understand. A template that uses
-        ``{$creator}`` on a bridged room is refused when there is no such
-        claim, rather than guessing from the gateway account name: the guess
-        rarely matches a platform account, and the result was a private
-        channel the creator could not enter. Without a bridge there is nobody
-        to invite, so the gateway name stands in.
+        ``$creator`` is the name the creator goes by on the template's bridge,
+        the identity they have linked there, which is what ``users:``
+        resolution and channel invites understand. A bridged template that
+        uses ``{$creator}`` is refused without such a link rather than guessed
+        from the gateway account name, which is rarely a platform account.
+        Without a bridge there is nobody to invite, so the gateway name stands
+        in.
         """
         creator = name
         bridge_id = await self._peek_bridge_id(text)
@@ -531,7 +527,7 @@ class RoomYamlService:
         """The bridge the template will land on, read before interpolation.
 
         Best-effort: an unparseable template, an interpolated bridge name, or
-        an unknown bridge all answer None — parse/provision fails loudly later
+        an unknown bridge all answer None; parse/provision fails loudly later
         when it matters. A template naming no bridge lands on the default one,
         same as provisioning."""
         try:
@@ -766,23 +762,15 @@ class RoomYamlService:
     ) -> None:
         """Post the kickoff into the room the template just created.
 
-        The platform posts it, on the creator's behalf: the message renders as
-        the Switch app and says who it speaks for, and each agent it mentions
-        applies its addressing policy to that person, so the kickoff reaches
-        exactly the agents the creator could have addressed by hand. Nobody is
-        impersonated and no agent is granted anything past this one event.
+        Switch posts it on the creator's behalf, so nobody is impersonated:
+        the message renders as the app, and each agent it mentions applies
+        its policy to the creator, for this one event. It goes out as a
+        one-line headline in the channel plus the text in that headline's
+        thread, so the channel keeps one line per kickoff.
 
-        Two messages: a one-line headline in the channel saying whose kickoff
-        this is, and the kickoff text itself as a reply in that headline's
-        thread. The agents it mentions are addressed by the threaded message,
-        so their session notices, plans and hand-offs stay in the thread and
-        the channel keeps one line per kickoff.
-
-        Best-effort like references and docs: the room exists, so a kickoff
-        that cannot be posted is reported in ``failures``, not fatal. The
-        agents are waited for first, because a client drops events that land
-        before its own join; one that does not turn up in time is reported
-        too, since it will not have seen the message.
+        Best-effort like references and docs: a kickoff that cannot be posted
+        is reported in ``failures``, not fatal. The agents are waited for
+        first, because a client drops events that land before its own join.
         """
 
         def fail(error: str) -> None:

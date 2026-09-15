@@ -634,7 +634,7 @@ class TestValidation:
         assert policy.requires_owner_identity() is False
 
     def test_stored_policy_without_platform_key_defaults_to_false(self) -> None:
-        # A pre-CHOO-2719 blob has no `platform` key; must deny platform.
+        # A policy stored before the platform key existed must deny the platform.
         policy = parse_policy({"rules": [{"users": ["u1"], "agents": []}]})
         assert policy.rules[0].platform is False
         assert _allows(policy, sender_kind="platform", sender_id="switch") is False
@@ -645,7 +645,7 @@ class TestValidation:
 
 
 class TestPlatformSenderKind:
-    """Platform senders are always denied unless explicitly allowed (CHOO-2719).
+    """Platform senders are always denied unless explicitly allowed.
 
     Unlike user/agent, an open policy (no rules) also refuses the platform.
     This is "deny by default with no configuration needed."
@@ -654,7 +654,7 @@ class TestPlatformSenderKind:
     def test_open_policy_denies_platform(self) -> None:
         policy = AddressingPolicy()
         assert policy.is_open() is True
-        # Users and agents still allowed — only platform is refused.
+        # Users and agents still allowed; only platform is refused.
         assert _allows(policy, sender_kind="user", sender_id="u1") is True
         assert _allows(policy, sender_kind="agent", sender_id="a1") is True
         assert _allows(policy, sender_kind="platform", sender_id="switch") is False
@@ -701,14 +701,14 @@ class TestPlatformSenderKind:
         )
 
     def test_platform_does_not_fall_through_to_agents_dim(self) -> None:
-        # A wildcard agents dimension must NOT admit platform — the platform
+        # A wildcard agents dimension must NOT admit platform: the platform
         # early return in _matches() prevents the fallthrough.
         policy = AddressingPolicy(rules=[AddressingRule(agents="*")])
         assert _allows(policy, sender_kind="platform", sender_id="switch") is False
 
     def test_platform_flag_off_by_default_for_old_policies(self) -> None:
-        # A stored policy written before CHOO-2719 carries no `platform` key;
-        # it must default to False rather than silently admitting the platform.
+        # A policy stored before the platform key existed carries none; it must
+        # default to False rather than silently admitting the platform.
         policy = parse_policy({"rules": [{"users": [], "agents": [], "owner": True}]})
         assert policy.rules[0].platform is False
         assert _allows(policy, sender_kind="platform", sender_id="switch") is False

@@ -213,9 +213,8 @@ class MessagePayload(BaseModel):
     addressed: bool
     sender: str
     sender_name: str
-    # The kind of entity that sent this message: "user" (a human on a bridge),
-    # "agent" (another agent), or "platform" (the Switch app itself,
-    # CHOO-2719). None for messages sent before sender_kind was tracked.
+    # Who sent this: "user" (a human on a bridge), "agent", or "platform"
+    # (the Switch app itself). None on rows written before the field existed.
     sender_kind: str | None = None
     # For a platform message: the display name of the person whose authority
     # it carries (a template's creator behind its kickoff), else None.

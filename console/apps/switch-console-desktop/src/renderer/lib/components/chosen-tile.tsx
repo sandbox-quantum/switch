@@ -3,12 +3,8 @@ import { cn } from '@renderer/utils/utils';
 
 /**
  * Something already picked, with the way to take it back out: a mark, a name,
- * a line under it, and a remove button that shows on hover.
- *
- * The one shape behind every "chosen" grid: agents added to a room, rooms an
- * agent is going into, the members a template pre-fills. Keeping it here means
- * the grids match, and a surface that picks a new kind of thing gets the same
- * tile for free.
+ * a line under it, and a remove button on hover. One shape behind every
+ * "chosen" grid, so the grids match and a new kind of pick gets it for free.
  */
 export function ChosenTile({
   mark,

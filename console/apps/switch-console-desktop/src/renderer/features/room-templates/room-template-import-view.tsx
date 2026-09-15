@@ -705,10 +705,9 @@ const TemplateImportPanel = observer(function TemplateImportPanel() {
     return identities[0]?.externalUsername ?? null;
   }, [identities, templateBridge]);
 
-  // The room cannot be created while the template needs the creator on the
-  // bridge and the server has no account of theirs there: the server refuses
-  // it too, but the person should hear it before filling the form, with the
-  // fix one click away. Unknown identities (still loading) do not block.
+  // The server refuses a template that needs the creator on the bridge when
+  // no account is linked; saying so here, with the fix one click away, beats
+  // a rejected create. Unknown identities (still loading) do not block.
   const creatorBlocked =
     parsed?.usesCreator === true && identities !== null && creatorIdentity === null;
   const onLinkAccount = useMemo(() => {
@@ -736,8 +735,8 @@ const TemplateImportPanel = observer(function TemplateImportPanel() {
     return blockedHandoffs(inRoom);
   }, [parsed, editedAgents, values, agents.data]);
 
-  // The two-click promise: the template implies these agents talk, so the fix
-  // is offered here rather than found later in each agent's settings. Same
+  // The template implies these agents talk to each other, so the fix is
+  // offered here rather than found later in each agent's settings. Same
   // owner gets "my agents" on every rule; a stranger is named outright.
   const queryClient = useQueryClient();
   const [allowingHandoffs, setAllowingHandoffs] = useState(false);
@@ -932,7 +931,7 @@ const TemplateImportPanel = observer(function TemplateImportPanel() {
   const subtitle =
     step === 'source'
       ? 'Paste a room template or pick a YAML file.'
-      : `${sourceName ?? 'template'} — ${parsed?.params.length ?? 0} input${(parsed?.params.length ?? 0) !== 1 ? 's' : ''}. The room is created only when you hit Create.`;
+      : `${sourceName ?? 'template'}: ${parsed?.params.length ?? 0} input${(parsed?.params.length ?? 0) !== 1 ? 's' : ''}. The room is created only when you hit Create.`;
 
   return (
     <ServerPage

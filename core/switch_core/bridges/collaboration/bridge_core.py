@@ -1091,11 +1091,10 @@ class BridgeCore:
         matching external user on this bridge are omitted (and logged), so the
         caller can diff against the input to learn which ones failed.
 
-        When the DB lookup misses, falls back to a proactive platform directory
-        search so that users who exist on the platform but have never messaged
-        through Switch can still be resolved. A directory hit is persisted (an
-        ``ExternalUser`` row and its puppet), so every later step that reads
-        the database — room membership, addressing, export — sees the same
+        When the DB lookup misses, falls back to an exact match in the
+        platform directory, so a person who has never messaged through Switch
+        still resolves. A hit is persisted (an ``ExternalUser`` row and its
+        puppet), so room membership, addressing and export all see the same
         person this resolution found.
         """
         async with self._session_factory() as session:
@@ -1109,11 +1108,9 @@ class BridgeCore:
             if ext_id:
                 resolved[name] = ext_id
             else:
-                # Proactive platform lookup — exact match on username or
-                # email only. A lone search RESULT is deliberately not
-                # accepted as a match: a fuzzy directory hit resolves to a
-                # real person, and being wrong invites a stranger into a
-                # private channel.
+                # Exact match on username or email only: a fuzzy directory
+                # hit is a real person, and being wrong invites a stranger
+                # into a private channel.
                 try:
                     results = await self.adapter.search_directory_users(name)
                     match = next(
@@ -1155,11 +1152,10 @@ class BridgeCore:
         client exists and is joined to the Matrix room.
 
         Resolution goes through `resolve_external_user_id_map`, the same
-        answer the channel-invite path uses — a person the platform directory
-        can find is added here too, not only names Switch has already seen.
-        Unresolvable names are skipped (logged by the resolver) — they will be
-        picked up by the on_user_joined callback (when the adapter sees them
-        join externally) or by the lazy inbound-message path."""
+        answer the channel-invite path uses, so a person the platform
+        directory can find is added here too. Unresolvable names are skipped
+        (the resolver logs them); the on_user_joined callback or the inbound
+        message path picks them up later."""
         resolved = await self.resolve_external_user_id_map(user_names)
         for ext_id in resolved.values():
             async with self._session_factory() as session:
@@ -1522,11 +1518,9 @@ class BridgeCore:
             # here as well ran the body through twice, and the second pass
             # escapes the markup the first one produced — a command reply
             # arrived showing its own `<b>` tags.
-            # A platform message sent for a person says so in the text, so
-            # the room sees whose authority it carries rather than a bare
-            # notice from the app. A reply inside a thread sits under a root
-            # that already said it, and a body that names the person itself
-            # (the kickoff headline) needs no second line.
+            # A platform message sent for a person says so, so the room sees
+            # whose authority it carries. A thread reply sits under a root that
+            # already said it, and a body naming the person needs no second line.
             body = event.body
             person = platform_on_behalf_of(event_content)
             if (

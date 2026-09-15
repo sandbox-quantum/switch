@@ -17,19 +17,16 @@ from typing import NamedTuple
 # human-readable default text, so a vanilla Matrix client still renders it.
 ADMIN_MARKER = "com.switch.admin"
 
-# Marker for a platform-sourced message (CHOO-2719). Unlike ADMIN_MARKER, a
-# platform message IS addressed to agents and expects action — the marker
-# tells the bridge to render it as the Switch app and lets resolve_sender
-# identify it as sender_kind="platform". Carried as a content field on a
-# plain m.room.message whose body is the human-readable default text.
+# Marker for a message the Switch platform posts. Unlike ADMIN_MARKER it IS
+# addressed to agents and expects action; the marker tells the bridge to
+# render it as the Switch app and lets resolve_sender see sender_kind
+# "platform". Carried as a content field on a plain m.room.message.
 #
-# Value is a dict: {} for a message the platform sends on its own account, or
-# {"on_behalf_of": {"user_id": ..., "name": ...}} when it speaks with a
-# person's authority (a template kickoff, posted for whoever created the
-# room). The authority is per message: an agent's addressing policy is
-# evaluated for that user when this event arrives, and nothing is granted
-# beyond it. Only server-side code writes the marker; an agent or a bridge
-# relay never can.
+# Value: {} for the platform's own message, or {"on_behalf_of": {"user_id",
+# "name"}} when it speaks with a person's authority (a template's kickoff).
+# The authority is per message: the addressed agent's policy is evaluated
+# for that person when the event arrives, and nothing is granted beyond it.
+# Only server-side code writes the marker.
 PLATFORM_MARKER = "com.switch.platform"
 
 
@@ -42,11 +39,9 @@ class OnBehalfOf(NamedTuple):
 
 def platform_replies_in_channel(content: Mapping[str, object]) -> bool:
     """Whether a platform message asks the agents it addresses to answer in
-    the channel rather than in its own thread.
-
-    The kickoff a template posts sits in a thread only to keep the channel
-    to one line; the work it starts is the room's main conversation and
-    belongs at the top level, where a person would have started it.
+    the channel rather than in its thread. A template's kickoff sits in a
+    thread only to keep the channel to one line; the work belongs at the top
+    level, where a person would have started it.
     """
     marker = content.get(PLATFORM_MARKER)
     return isinstance(marker, dict) and marker.get("reply_in_channel") is True

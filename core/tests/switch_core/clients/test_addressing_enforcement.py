@@ -144,7 +144,7 @@ class TestResolveSenderPrincipal:
         assert result is None
 
     async def test_admin_client_resolves_to_platform(self) -> None:
-        # The admin client resolves to sender_kind="platform" (CHOO-2719).
+        # The admin client resolves to sender_kind="platform".
         client = self._client(
             client=SimpleNamespace(id="c1", type="admin"),
             agent=None,

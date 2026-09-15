@@ -32,12 +32,9 @@ function admitsAgent(target: HandoffAgent, source: HandoffAgent): boolean {
 }
 
 /**
- * The pairs of agents in a room that cannot talk to each other.
- *
- * A coder/reviewer template only works if the coder's hand-off reaches the
- * reviewer, and an agent created from the Console starts owner-only, which
- * admits its owner and nobody else. The wizard warns before the room exists
- * rather than after the hand-off bounces.
+ * The pairs of agents in a room that cannot talk to each other. A template
+ * with a hand-off only works if it goes through, and an agent created from
+ * the Console starts owner-only, so the wizard warns before the room exists.
  */
 export function blockedHandoffs(agents: HandoffAgent[]): BlockedHandoff[] {
   const blocked: BlockedHandoff[] = [];

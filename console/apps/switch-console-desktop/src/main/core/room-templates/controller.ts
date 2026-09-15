@@ -19,13 +19,13 @@ export type ParsedTemplate = {
   roomName: string | null;
   /** All agents from the template (both interpolated and hardcoded). */
   agents: string[];
-  /** Hardcoded agents (no `{param}` interpolation) — editable in the form. */
+  /** Hardcoded agents (no `{param}` interpolation), editable in the form. */
   hardcodedAgents: string[];
-  /** Hardcoded users — editable in the form. */
+  /** Hardcoded users, editable in the form. */
   hardcodedUsers: string[];
   /** All users from the template, interpolated entries included. */
   users: string[];
-  /** The bridge the template names — null when unset or interpolated. */
+  /** The bridge the template names, or null when unset or interpolated. */
   bridge: string | null;
   /** Message the server posts as the creating user after the room exists. */
   kickoff: string | null;
@@ -118,7 +118,7 @@ export const roomTemplatesController = createRPCController({
     const kickoff = typeof doc.kickoff === 'string' ? doc.kickoff : null;
     if (room && typeof room.kickoff === 'string') {
       warnings.push(
-        '`kickoff:` belongs at the top level, beside `room:` — inside `room:` the server ignores it.'
+        '`kickoff:` belongs at the top level, beside `room:`. Inside `room:` the server ignores it.'
       );
     }
     const bridge =
@@ -127,7 +127,7 @@ export const roomTemplatesController = createRPCController({
         : null;
 
     if (!room) {
-      warnings.push('Template has no "room:" block — the server may reject it.');
+      warnings.push('Template has no "room:" block, so the server may reject it.');
     }
 
     return {

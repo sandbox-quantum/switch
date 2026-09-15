@@ -1083,7 +1083,7 @@ export async function createRoomFromTemplate(
 
 /**
  * Fetch the JSON Schema describing a valid room template. Returns null when
- * the server does not support the endpoint (404) — older servers that lack
+ * the server does not support the endpoint (404): older servers without
  * `params:` support.
  */
 export async function fetchTemplateSchema(

@@ -127,7 +127,7 @@ class AdminClient(ClientBase[ClientConfig]):
             extra_content=admin_extra_content(AdminMessageType.COMMAND_RESULT),
         )
 
-    # ── Platform messages (CHOO-2719) ───────────────────────────────────────
+    # ── Platform messages ───────────────────────────────────────────────────
 
     async def send_platform_message(
         self,
@@ -140,16 +140,12 @@ class AdminClient(ClientBase[ClientConfig]):
     ) -> str | None:
         """Send an addressed message as the Switch platform.
 
-        Unlike admin notices, a platform message carries no ADMIN_MARKER and
-        IS addressed to agents: it expects a response. The PLATFORM_MARKER
-        tells the bridge to render it as the Switch app and lets the receive
-        path resolve it to sender_kind="platform".
-
-        ``on_behalf_of`` names the person whose authority the message carries.
-        Each addressed agent then applies its policy to that person, so the
-        platform can say what they could have said in that room and nothing
-        more. Without it the message is the platform's own, which agents deny
-        unless a rule opts them in.
+        Unlike an admin notice it carries no ADMIN_MARKER and IS addressed to
+        agents. ``on_behalf_of`` names the person whose authority it carries:
+        each addressed agent applies its policy to that person, so the
+        platform can say what they could have said and nothing more. Without
+        it the message is the platform's own, which agents deny unless a rule
+        opts them in.
         """
         marker_value: dict[str, object] = {}
         if on_behalf_of is not None:

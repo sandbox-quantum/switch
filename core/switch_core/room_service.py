@@ -1240,7 +1240,7 @@ class RoomService:
     async def resolve_bridge_users(
         self, bridge_id: str, names: list[str]
     ) -> dict[str, str]:
-        """Which of ``names`` are people on the bridge, as name → external id.
+        """Which of ``names`` are people on the bridge, as name to external id.
 
         The same resolution room creation applies to a template's ``users:``
         (known users first, then an exact directory match), exposed so a

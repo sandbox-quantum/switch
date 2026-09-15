@@ -4,8 +4,8 @@ import { roomTemplatesController } from './controller';
 const parse = (yamlText: string, schema?: Record<string, unknown>) =>
   roomTemplatesController.parse({ yamlText, schema });
 
-/** A permissive schema that accepts both `room:` and `params:` — simulates a
- *  server that supports template params (PR #402+). */
+/** A permissive schema that accepts both `room:` and `params:`, standing in
+ *  for a server that supports template params. */
 const PARAMS_SCHEMA = {
   type: 'object',
   required: ['room'],
@@ -170,7 +170,7 @@ params:
   });
 });
 
-describe('roomTemplatesController.parse — kickoff and creator', () => {
+describe('roomTemplatesController.parse: kickoff and creator', () => {
   it('extracts kickoff, bridge, users, and the creator flag', () => {
     const result = roomTemplatesController.parse({
       yamlText: [
@@ -220,7 +220,7 @@ describe('roomTemplatesController.parse — kickoff and creator', () => {
   });
 });
 
-describe('roomTemplatesController.parse — multiline params', () => {
+describe('roomTemplatesController.parse: multiline params', () => {
   it('marks a string param declared multiline', () => {
     const result = roomTemplatesController.parse({
       yamlText: [

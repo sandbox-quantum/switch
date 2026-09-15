@@ -10,7 +10,7 @@ export type RoomPick = {
   bridgeType: string | null;
 };
 
-/** Where a room's conversation actually happens, for the right of its row. */
+/** Where a room's conversation happens, for the right of its row. */
 export function roomWhereLabel(bridgeType: string | null): string {
   return bridgeType ? bridgePlatformLabel(bridgeType) : 'Switch only';
 }

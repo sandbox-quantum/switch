@@ -11,7 +11,7 @@
 #                anything. The value is the entity's name as the template
 #                would spell it.
 #
-#   {$creator}:  Server-injected builtin — the creating user's name on the
+#   {$creator}:  Server-injected builtin: the creating user's name on the
 #                room's bridge (their linked identity when they have claimed
 #                one, otherwise their account name). Putting it in `users:`
 #                invites whoever instantiates the template into the room.
@@ -40,7 +40,7 @@ params:
     description: The task brief (paste the full text)
 room:
   name: "Switch work: {task_name}"
-  description: "Workroom for {task_name} — coder/reviewer loop, human-gated."
+  description: "Workroom for {task_name}: coder/reviewer loop, human-gated."
   channel_type: channel_private
   agents: ["{coder_agent}", "{reviewer_agent}"]
   users: ["{$creator}"]

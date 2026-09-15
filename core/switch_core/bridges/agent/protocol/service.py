@@ -1728,9 +1728,10 @@ class ProtocolService:
         decide, not the writer's — so the sentence is composed here and can be
         changed without rewriting history.
 
-        ``sender_kinds`` is an optional pre-resolved map of sender mxid → kind
-        ("user", "agent", "platform"). When absent, ``sender_kind`` is derived
-        from the message content (PLATFORM_MARKER → "platform", else None).
+        ``sender_kinds`` is an optional pre-resolved map of sender mxid to
+        kind ("user", "agent", "platform"). When absent, ``sender_kind`` is
+        read from the message content: "platform" for a PLATFORM_MARKER, else
+        None.
         """
         name = message.sender_name or message.sender_id
         sender_kind = (sender_kinds or {}).get(message.sender_id)

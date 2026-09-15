@@ -9,14 +9,10 @@ import {
 } from '@renderer/lib/ui/combobox';
 
 /**
- * A search box that picks one thing at a time from a list and hands it to the
- * caller, then clears for the next pick.
- *
- * The search box is the control rather than something a button has to open:
- * everywhere this is used, picking several in a row is the normal case, and a
- * picker that has to be reopened per pick makes the normal case the laborious
- * one. Rows are the caller's to draw, so an agent row can carry its avatar and
- * a room row its platform mark while the box itself behaves the same.
+ * A search box that picks one item from a list, hands it to the caller and
+ * clears for the next pick. The box is the control rather than something a
+ * button opens, because picking several in a row is the normal case. Rows are
+ * the caller's to draw, so the same box serves agents, rooms and people.
  */
 export function PickerCombobox<T extends { id: string }>({
   items,
