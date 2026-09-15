@@ -19,8 +19,22 @@
  * "accept" keystroke — terminates that token, leaving the cursor past it so no
  * picker is open when the separate submit keystroke lands.
  */
+/**
+ * Strip C0/C1 control bytes (keeping tab and newline) from untrusted text.
+ *
+ * The injected text comes from room messages, which any participant can write.
+ * Removing control bytes — ESC in particular — means an embedded bracketed-paste
+ * end marker (`ESC[201~`) or any other escape sequence cannot survive to close
+ * the paste early and turn the rest of the message into live keystrokes. Tab and
+ * newline are kept so multi-line pasted content is preserved.
+ */
+function stripControlBytes(text: string): string {
+  // eslint-disable-next-line no-control-regex
+  return text.replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f]/g, '');
+}
+
 export function buildPromptInjectionPayload(text: string): string {
-  const trimmed = text.trim();
+  const trimmed = stripControlBytes(text).trim();
   if (!trimmed) return '';
   return `\x1b[200~${trimmed} \x1b[201~`;
 }
