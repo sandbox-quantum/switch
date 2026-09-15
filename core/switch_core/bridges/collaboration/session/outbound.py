@@ -170,6 +170,12 @@ class CardRefused(CardNotPosted):
     adds is that the destination itself answered: the reservation is gone and
     a later attempt starts again from nothing, which is what lets a caller
     bound how many times it is worth starting.
+
+    Being asked to wait is not that answer, so a `RichContentThrottled` comes
+    back out as itself. It says the card may well be takeable and to come back
+    later; counting it here would spend the same bound that decides a
+    destination is gone, and a busy channel would end up permanently
+    undeliverable for being busy.
     """
 
 
@@ -1403,6 +1409,10 @@ class SessionRequestCards:
                     ref = await self._adapter.post_rich(
                         channel_id, agent_name, card, None
                     )
+            except RichContentThrottled:
+                await session.delete(post)
+                await session.commit()
+                raise
             except RichContentFailed as error:
                 await session.delete(post)
                 await session.commit()

@@ -103,6 +103,7 @@ async def refresh_cards(
     post_allowed: Callable[[str], bool] = _always_recover,
     post_succeeded: Callable[[str], None] = _ignore_recovery,
     post_spent: Callable[[str], bool] = _never_spent,
+    post_delayed: Callable[[str, float], None] = _ignore_delay,
     refresh_needed: Callable[[str, tuple[int, str]], bool] = _always_refresh,
     refreshed: Callable[[str, tuple[int, str]], None] = _ignore_refresh,
 ) -> None:
@@ -128,6 +129,13 @@ async def refresh_cards(
     the request is skipped from then on rather than counted as a failure of
     this session's publication on every later cycle. A caller that passes
     nothing keeps the old behaviour — every refusal raised, forever.
+
+    `post_delayed` carries the platform's own Retry-After back to that wait,
+    and is the reason being rate limited cannot end in `post_spent`. A throttle
+    says the channel is busy, not that it is gone; if it stretched the same
+    wait, a channel busy enough for long enough would be written off as
+    undeliverable for the crime of being busy, and the card would never be
+    posted again.
 
     `refresh_needed` gates redrawing an already-confirmed card, per token and
     `(revision, state)`, and `refreshed` is told once one lands. Both parts of
@@ -292,6 +300,10 @@ async def refresh_cards(
                         notify_unreachable=unreachable,
                         unavailable_reason=unavailable_reason,
                     )
+                except RichContentThrottled as throttled:
+                    post_delayed(attempt, throttled.retry_after)
+                    backed_off += 1
+                    continue
                 except CardRefused as refusal:
                     if not post_spent(attempt):
                         raise
@@ -1090,6 +1102,7 @@ class SessionPublisher:
                         post_allowed=self._card_post.allowed,
                         post_succeeded=self._card_post.succeeded,
                         post_spent=self._card_post.spent,
+                        post_delayed=self._card_post.delay,
                         refresh_needed=self._redraw.needed,
                         refreshed=self._redraw.drawn,
                     )

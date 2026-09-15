@@ -15,7 +15,10 @@ from switch_core.bridges.agent.dependencies import (
     get_collab_lifecycle,
     get_session_factory,
 )
-from switch_core.bridges.collaboration.adapter import RichContentFailed
+from switch_core.bridges.collaboration.adapter import (
+    RichContentFailed,
+    RichContentThrottled,
+)
 from switch_core.bridges.collaboration.bridge_core import BridgeCore
 from switch_core.bridges.collaboration.session.outbound import (
     CardNotPosted,
@@ -792,6 +795,52 @@ async def test_a_destination_that_never_takes_the_card_is_given_up_on(
     # Nor is it still counted against the session, which would have it report
     # a failure that has been dealt with as well as it can be on every cycle.
     assert "card publication failed" not in caplog.text
+
+
+async def test_a_channel_that_only_asks_us_to_slow_down_is_never_given_up_on(
+    session_factory, monkeypatch, caplog
+):
+    """Being rate limited is not a destination refusing the card.
+
+    A throttle and a deleted channel arrived here as the same exception, so a
+    busy channel spent the same bounded attempts a gone one does and was then
+    written off: the request would never be asked again, in a channel that was
+    only ever going to say yes a moment later. The platform's own Retry-After
+    is honoured instead, and the wait that decides a destination is gone is
+    left where it was."""
+    clock = 0.0
+
+    def fake_monotonic() -> float:
+        return clock
+
+    monkeypatch.setattr(publication.time, "monotonic", fake_monotonic)
+    service, epoch = await setup(session_factory)
+    await opened(service, epoch)
+    platform = RecoverablePlatform()
+    throttled = AsyncMock(
+        side_effect=RichContentThrottled(retry_after=120.0, text="please wait")
+    )
+    monkeypatch.setattr(platform, "post_rich", throttled)
+    publisher = SessionPublisher(
+        session_factory, "bridge", cards_for(session_factory, platform)
+    )
+
+    await publisher.publish_pending()
+    assert throttled.await_count == 1
+    async with session_factory() as db:
+        # Nothing was posted, so the handle goes back exactly as for a refusal.
+        assert (await db.scalars(select(SessionRequestPost))).all() == []
+
+    clock += 119.0
+    await publisher.publish_pending()
+    assert throttled.await_count == 1  # the platform said 120 seconds
+
+    for _ in range(12):
+        clock += 121.0
+        await publisher.publish_pending()
+
+    assert throttled.await_count == 13
+    assert "Giving up posting the card" not in caplog.text
 
 
 # ── A confirmed card is only redrawn when something about it changed ────────
