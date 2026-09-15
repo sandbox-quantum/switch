@@ -9,6 +9,11 @@ requires them to see a token at all.
 They are two separate Slack apps and they will both exist. Nothing here
 replaces the other page.
 
+The install connects a workspace to a tenant that **already exists**. Creating
+a tenant is Switch Console's job and is not reachable from Slack: the flow
+begins with an authenticated admin inside the tenant they are installing into,
+so no amount of clicking in Slack brings a tenant into being.
+
 ## Why it cannot be the same app
 
 The self-registered app uses **Socket Mode**: Switch dials out to Slack and
@@ -27,10 +32,16 @@ That is the whole of the difference, and everything below follows from it.
 
 ## The four URLs
 
-Every URL is the same host with a different path. The host is the public
-origin of the deployment — the same value as `GATEWAY_PUBLIC_URL`, which is
-already validated as scheme-and-host with no path and already serves the
-deeplink redirect from the same application.
+Every URL is the same host with a different path. The host is
+**`MESSAGING_PUBLIC_URL`**: scheme and host, no path, https only, and the
+origin Slack itself dials.
+
+It is deliberately not `GATEWAY_PUBLIC_URL`. That one is the host a *person*
+lands on following an "Open in Switch Console" deeplink, and on many
+deployments it is reachable only over a private network — which is fine for a
+person and useless to Slack. Pointing it at an internet-facing host to satisfy
+Slack would move every deeplink to that host as a side effect, so the two are
+separate settings and a deployment may set either, both, or neither.
 
 | Slack setting | Path |
 | --- | --- |

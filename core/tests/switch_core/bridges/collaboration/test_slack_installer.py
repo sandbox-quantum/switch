@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import json
 import time
+from urllib.parse import urlencode
 
 import pytest
 from slack_sdk.web.async_client import AsyncWebClient
@@ -19,6 +21,7 @@ from switch_core.bridges.collaboration.install import (
     MessagingInstallerRegistry,
     MessagingInstallError,
     WebhookAuthenticityError,
+    WebhookPayloadError,
     events_path,
     oauth_callback_path,
     public_url,
@@ -130,23 +133,6 @@ class TestWebhookVerification:
         installer.verify_webhook(headers=headers, body=body)
 
 
-class TestWorkspaceOfEvent:
-    def test_it_reads_the_team_id(self, installer: SlackAppInstaller) -> None:
-        assert installer.workspace_of_event({"team_id": "T123"}) == "T123"
-
-    @pytest.mark.parametrize("payload", [{}, {"team_id": ""}, {"team_id": 7}])
-    def test_an_event_naming_no_workspace_is_refused(
-        self, installer: SlackAppInstaller, payload: dict
-    ) -> None:
-        """An event we cannot route is not an event to guess at.
-
-        There is no sensible default here: picking any tenant would deliver a
-        stranger's message into somebody's rooms.
-        """
-        with pytest.raises(WebhookAuthenticityError):
-            installer.workspace_of_event(payload)
-
-
 class TestRedeem:
     async def _redeem_returning(
         self, monkeypatch: pytest.MonkeyPatch, installer: SlackAppInstaller, response
@@ -157,7 +143,7 @@ class TestRedeem:
         monkeypatch.setattr(AsyncWebClient, "oauth_v2_access", fake)
         return await installer.redeem(code="c", redirect_uri="https://x.example/cb")
 
-    async def test_a_good_grant_becomes_the_three_things_we_keep(
+    async def test_a_good_grant_becomes_the_few_things_we_keep(
         self, installer: SlackAppInstaller, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         grant = await self._redeem_returning(
@@ -172,9 +158,26 @@ class TestRedeem:
         )
         assert grant == InstallGrant(
             external_workspace_id="T123",
+            workspace_name="Acme",
             bot_token="xoxb-granted",
             scopes="chat:write,commands",
         )
+
+    async def test_a_workspace_with_no_name_falls_back_to_its_id(
+        self, installer: SlackAppInstaller, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The name is only ever a label, so its absence is not a failure."""
+        grant = await self._redeem_returning(
+            monkeypatch,
+            installer,
+            {
+                "ok": True,
+                "access_token": "xoxb-granted",
+                "scope": "chat:write",
+                "team": {"id": "T123"},
+            },
+        )
+        assert grant.workspace_name == "T123"
 
     async def test_a_two_hundred_saying_not_ok_is_still_a_failure(
         self, installer: SlackAppInstaller, monkeypatch: pytest.MonkeyPatch
@@ -211,23 +214,159 @@ class TestRedeem:
             )
 
 
+class TestParsingAWebhook:
+    """Turning three differently-shaped bodies into what Socket Mode delivers.
+
+    The comparison that matters is not with Slack's documentation but with the
+    socket transport: `dispatch_event` is shared, so anything parsed into a
+    different shape here is a bridge that behaves differently depending on
+    which Slack app its token came from.
+    """
+
+    def test_an_event_callback_becomes_the_socket_mode_envelope(
+        self, installer: SlackAppInstaller
+    ) -> None:
+        body = json.dumps(
+            {
+                "type": "event_callback",
+                "team_id": "T1",
+                "event": {"type": "message", "text": "hello"},
+            }
+        ).encode()
+
+        parsed = installer.parse_webhook(endpoint="events", body=body)
+
+        assert parsed.envelope_type == "events_api"
+        assert parsed.handshake is None
+        # The whole envelope, not the inner event: `dispatch_event` reads
+        # `payload["event"]` out of it, exactly as Socket Mode hands it over.
+        assert parsed.payload["event"] == {"type": "message", "text": "hello"}
+        assert parsed.payload["team_id"] == "T1"
+
+    def test_a_url_verification_is_answered_and_not_dispatched(
+        self, installer: SlackAppInstaller
+    ) -> None:
+        """Slack proving the URL at the moment it is saved.
+
+        It arrives before any workspace has installed anything, so a handshake
+        that had to resolve a tenant could never be answered — which would mean
+        the Request URL could not be saved at all.
+        """
+        body = json.dumps({"type": "url_verification", "challenge": "abc123"}).encode()
+
+        parsed = installer.parse_webhook(endpoint="events", body=body)
+
+        assert parsed.handshake == "abc123"
+
+    def test_a_url_verification_with_nothing_to_echo_is_refused(
+        self, installer: SlackAppInstaller
+    ) -> None:
+        with pytest.raises(WebhookPayloadError, match="challenge"):
+            installer.parse_webhook(
+                endpoint="events", body=b'{"type":"url_verification"}'
+            )
+
+    def test_a_slash_command_is_its_form_fields(
+        self, installer: SlackAppInstaller
+    ) -> None:
+        body = urlencode(
+            {"command": "/agents-status", "text": "", "team_id": "T1", "user_id": "U1"}
+        ).encode()
+
+        parsed = installer.parse_webhook(endpoint="commands", body=body)
+
+        assert parsed.envelope_type == "slash_commands"
+        assert parsed.payload["command"] == "/agents-status"
+        # A string, not a one-element list: the adapter reads these the way
+        # Socket Mode delivers them.
+        assert parsed.payload["text"] == ""
+
+    def test_an_interaction_is_unwrapped_from_its_payload_field(
+        self, installer: SlackAppInstaller
+    ) -> None:
+        inner = {"type": "block_actions", "team": {"id": "T1"}}
+        body = urlencode({"payload": json.dumps(inner)}).encode()
+
+        parsed = installer.parse_webhook(endpoint="interactive", body=body)
+
+        assert parsed.envelope_type == "interactive"
+        assert parsed.payload == inner
+
+    def test_an_interaction_with_no_payload_field_is_refused(
+        self, installer: SlackAppInstaller
+    ) -> None:
+        with pytest.raises(WebhookPayloadError, match="payload"):
+            installer.parse_webhook(endpoint="interactive", body=b"other=1")
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            pytest.param(b"not json at all", id="not-json"),
+            pytest.param(b"[1, 2, 3]", id="json-but-not-an-object"),
+            pytest.param(b"", id="empty"),
+        ],
+    )
+    def test_a_body_that_cannot_be_read_is_a_payload_error(
+        self, installer: SlackAppInstaller, body: bytes
+    ) -> None:
+        """Verified, so it really is Slack. That makes it worth a loud error.
+
+        A bad signature is the internet; a signed body this build cannot parse
+        is either a Slack change or a bug of ours, and both want a log line
+        rather than a shrug.
+        """
+        with pytest.raises(WebhookPayloadError):
+            installer.parse_webhook(endpoint="events", body=body)
+
+
+class TestWhichWorkspaceSentIt:
+    """The one question that decides who the event belongs to."""
+
+    def test_an_event_names_it_flat(self, installer: SlackAppInstaller) -> None:
+        assert installer.workspace_of_event({"team_id": "T1"}) == "T1"
+
+    def test_an_interaction_names_it_nested(self, installer: SlackAppInstaller) -> None:
+        assert installer.workspace_of_event({"team": {"id": "T1"}}) == "T1"
+
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            pytest.param({}, id="absent"),
+            pytest.param({"team_id": ""}, id="empty"),
+            pytest.param({"team_id": 7}, id="not-a-string"),
+            pytest.param({"team": "T1"}, id="team-not-an-object"),
+        ],
+    )
+    def test_an_event_naming_none_is_refused_rather_than_guessed_at(
+        self, installer: SlackAppInstaller, payload: dict[str, object]
+    ) -> None:
+        """There is no safe default. Any guess picks somebody's tenant."""
+        with pytest.raises(WebhookPayloadError):
+            installer.workspace_of_event(payload)
+
+
 class TestConnectionConfig:
     def test_a_grant_renders_a_config_the_adapter_accepts(
         self, installer: SlackAppInstaller
     ) -> None:
-        """The seam: after this an installed bridge is an ordinary bridge."""
+        """The seam: after this an installed bridge is an ordinary bridge.
+
+        Validated as-is, with nothing added. What the installer renders is what
+        `register` is handed, so a rendering that only validates once the test
+        has helped it along is a registration that fails in production.
+        """
         rendered = installer.connection_config(
             InstallGrant(
                 external_workspace_id="T123",
+                workspace_name="Acme",
                 bot_token="xoxb-granted",
                 scopes="chat:write",
             )
         )
-        config = SlackConnectionConfig.model_validate(
-            {**rendered, "event_delivery": "webhook"}
-        )
+        config = SlackConnectionConfig.model_validate(rendered)
         assert config.bot_token == "xoxb-granted"
         assert config.workspace_id == "T123"
+        assert config.event_delivery == "webhook"
         assert config.app_token is None
 
 

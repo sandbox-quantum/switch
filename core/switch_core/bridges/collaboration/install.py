@@ -35,7 +35,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import ClassVar
+from typing import Any, ClassVar, Literal
 
 #: The public prefix every install endpoint hangs off.
 #:
@@ -71,8 +71,8 @@ def commands_path(platform: str) -> str:
 def public_url(public_origin: str, path: str) -> str:
     """Absolute URL for one install path, given the deployment's public origin.
 
-    The origin is `GATEWAY_PUBLIC_URL`, which is validated at startup as scheme
-    and host with no path, so this is a join and not a merge. It exists as a
+    The origin is `MESSAGING_PUBLIC_URL`, which is validated at startup as
+    scheme and host with no path, so this is a join and not a merge. It exists as a
     function so the redirect URI sent to the platform and the one registered
     with the app are built the same way — the platform compares them exactly,
     and a trailing slash on one side is a refused install with a message that
@@ -101,14 +101,64 @@ class WebhookAuthenticityError(RuntimeError):
     """
 
 
+class WebhookPayloadError(RuntimeError):
+    """A webhook proved genuine and then could not be read.
+
+    Distinct from :class:`WebhookAuthenticityError` because it says something
+    entirely different: the signature checked out, so this really is the
+    platform, and what it sent is a shape this build does not know. That is a
+    fault worth seeing in a log — an unrecognised body is how a platform's
+    change first shows up — where a bad signature is just the internet.
+    """
+
+
+#: Which of a platform's inbound endpoints a request arrived on.
+#:
+#: Three, because that is what the platforms ask for and what the app manifests
+#: declare: events, interactivity, and slash commands. They are separate URLs
+#: rather than one, because a platform decides that, not us — and they carry
+#: genuinely different bodies (Slack posts JSON to the first and a form to the
+#: other two), which is why the endpoint is an argument to parsing rather than
+#: something a handler could infer.
+WebhookEndpoint = Literal["events", "interactive", "commands"]
+
+
+@dataclass(frozen=True)
+class InboundWebhook:
+    """One authenticated inbound event, in the shape a running adapter takes.
+
+    `envelope_type` and `payload` are deliberately the two arguments Socket
+    Mode's own listener is handed, so an event that arrived over HTTP and the
+    same event over a socket reach `dispatch_event` indistinguishable from one
+    another. Anything that made them differ would be two code paths for one
+    behaviour, drifting apart at the speed of whichever gets used more.
+
+    `handshake` is the exception, and it is not an event at all: a platform
+    proving the URL it was given is really ours (Slack's `url_verification`)
+    expects a specific string echoed straight back and nothing dispatched. It
+    is `None` for every real event, and it arrives before any workspace has
+    installed anything — so it must be answerable with no tenant, no install
+    row, and nothing running.
+    """
+
+    envelope_type: str
+    payload: dict[str, Any]
+    handshake: str | None
+
+
 @dataclass(frozen=True)
 class InstallGrant:
     """What the platform handed back when a workspace installed us.
 
-    Deliberately three fields and not the platform's whole response. What a
+    Deliberately four fields and not the platform's whole response. What a
     grant *is*, across platforms, is a workspace, a credential, and the
     permissions that credential was actually given — everything else in the
     response is Slack's shape and belongs behind `connection_config`.
+
+    `workspace_name` is the exception, and it earns its place by being the only
+    thing here a person recognises. It names the bridge in the operator's list,
+    where the alternative is a row of opaque platform ids. It is the customer's
+    own text and is never matched on.
 
     `scopes` is the platform's own spelling, kept verbatim. A scope string that
     means nothing to us is still the thing to show an operator asking why a
@@ -117,6 +167,7 @@ class InstallGrant:
     """
 
     external_workspace_id: str
+    workspace_name: str
     bot_token: str
     scopes: str
 
@@ -168,13 +219,30 @@ class MessagingAppInstaller(ABC):
         """
 
     @abstractmethod
+    def parse_webhook(
+        self, *, endpoint: WebhookEndpoint, body: bytes
+    ) -> InboundWebhook:
+        """Read a verified request body into an event a running adapter takes.
+
+        Called only after :meth:`verify_webhook` has passed, and separate from
+        it for exactly that reason: parsing before verifying is how an
+        unauthenticated body gets to choose which code runs.
+
+        Takes the raw bytes rather than a parsed payload because only this
+        method knows the encoding, which is per platform and per endpoint —
+        Slack posts JSON to one of its three and form data to the other two.
+
+        Raise :class:`WebhookPayloadError` for a body that cannot be read.
+        """
+
+    @abstractmethod
     def workspace_of_event(self, payload: Mapping[str, object]) -> str:
         """Which workspace an authenticated event came from.
 
         The answer is what resolves a tenant, so this runs on a request with
         nothing bound and must not touch the database. Raise
-        :class:`WebhookAuthenticityError` for a payload that names no
-        workspace: an event we cannot route is not an event we may guess at.
+        :class:`WebhookPayloadError` for a payload that names no workspace: an
+        event we cannot route is not an event we may guess at.
         """
 
     @abstractmethod

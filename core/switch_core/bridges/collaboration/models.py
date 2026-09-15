@@ -17,6 +17,17 @@ class ChannelCreationUnsupported(ValueError):
     """
 
 
+class WebhookDeliveryUnsupported(RuntimeError):
+    """A verified inbound event was routed to a bridge that cannot take one.
+
+    Only reachable when a bridge is recorded as serving an installed workspace
+    and its adapter receives events some other way — so it is a deployment
+    inconsistency rather than anything the sender did, and it is raised rather
+    than logged-and-dropped so the route answers with a failure the platform's
+    own delivery log records.
+    """
+
+
 class Attachment(BaseModel):
     """An inbound file attachment of any type, with its raw bytes.
 
