@@ -583,6 +583,57 @@ describe('ClaudeAdapter approvals', () => {
     expect(opened.detail).toBe('pwd');
   });
 
+  it('keeps the description when the host also supplied a title', async () => {
+    const { sdk, adapter, recorder } = await startSession();
+    await adapter.sendTurn({ sessionId: SESSION, turnId: 'turn-1', text: 'go' });
+    const controller = new AbortController();
+    void sdk.canUseTool()(
+      'Bash',
+      { command: 'npm run deploy' },
+      toolOptions(controller.signal, {
+        title: 'Run deployment',
+        description: 'Uses production credentials.',
+      })
+    );
+
+    const opened = await recorder.waitFor('request.opened', () => true, 1_000);
+    expect(opened.title).toBe('Run deployment — Uses production credentials.');
+    expect(opened.detail).toBe('npm run deploy');
+  });
+
+  it('does not cut the decision context before anything has budgeted it', async () => {
+    const { sdk, adapter, recorder } = await startSession();
+    await adapter.sendTurn({ sessionId: SESSION, turnId: 'turn-1', text: 'go' });
+    const controller = new AbortController();
+    const reason = `${'This runs against the configured workspace. '.repeat(6)}It writes to production.`;
+    void sdk.canUseTool()(
+      'Bash',
+      { command: 'npm run deploy' },
+      toolOptions(controller.signal, { description: reason })
+    );
+
+    const opened = await recorder.waitFor('request.opened', () => true, 1_000);
+    expect(reason.length).toBeGreaterThan(160);
+    expect(opened.title).toBe(reason);
+  });
+
+  it('says a title once when the host sends it as both title and description', async () => {
+    const { sdk, adapter, recorder } = await startSession();
+    await adapter.sendTurn({ sessionId: SESSION, turnId: 'turn-1', text: 'go' });
+    const controller = new AbortController();
+    void sdk.canUseTool()(
+      'Bash',
+      { command: 'pwd' },
+      toolOptions(controller.signal, {
+        title: 'Print working directory',
+        description: 'Print working directory',
+      })
+    );
+
+    const opened = await recorder.waitFor('request.opened', () => true, 1_000);
+    expect(opened.title).toBe('Print working directory');
+  });
+
   it('leaves a tool that is not a command with its description as the detail', async () => {
     const { sdk, adapter, recorder } = await startSession();
     await adapter.sendTurn({ sessionId: SESSION, turnId: 'turn-1', text: 'go' });

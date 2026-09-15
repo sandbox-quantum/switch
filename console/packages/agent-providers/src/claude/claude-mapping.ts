@@ -82,6 +82,12 @@ export function toolTitle(toolName: string, input: Record<string, unknown>): str
  * it has to be the literal thing being approved, not a second sentence about
  * it. For a command tool the command is in the input and the summary is the
  * prose, which is the opposite of how they read on an activity item.
+ *
+ * Both halves of the prose are kept when the host sends both: a title says what
+ * the command is for and a description often says what it will cost, and
+ * someone deciding needs the second one most. Nothing is cut here — a consumer
+ * that cuts also records that it did, and answers for whether what survived is
+ * still enough to decide on. Cutting first hides that judgement from it.
  */
 export function approvalContent(
   toolName: string,
@@ -92,8 +98,12 @@ export function approvalContent(
   if (COMMAND_TOOLS.has(toolName)) {
     const command = stringField(input, 'command');
     if (command) {
-      const summary = title ?? description ?? stringField(input, 'description');
-      return { title: summary ? truncate(summary) : `Run a ${toolName} command`, detail: command };
+      const summary = description ?? stringField(input, 'description');
+      const prose = [...new Set([title, summary].filter((part) => part !== undefined))];
+      return {
+        title: prose.length > 0 ? prose.join(' — ') : `Run a ${toolName} command`,
+        detail: command,
+      };
     }
   }
   return {
