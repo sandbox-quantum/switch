@@ -427,6 +427,7 @@ class RoomService:
         )
 
     async def create_room(self, config: RoomCreateConfig) -> RoomCreateResult:
+        validate_visibility_pair(config.read_visibility, config.write_visibility)
         await self._validate_attachments(config)
         # Validate the group up front so a bad id fails before we provision a
         # Matrix room / external channel.
