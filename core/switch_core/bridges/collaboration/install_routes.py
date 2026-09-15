@@ -42,6 +42,7 @@ from switch_core.bridges.collaboration.install import (
 from switch_core.bridges.collaboration.install_service import (
     InstallPlatformMismatch,
     MessagingInstallService,
+    Revocation,
     WebhookBridgeUnavailable,
     WebhookTarget,
     WebhookWorkspaceUnknown,
@@ -175,6 +176,29 @@ def create_messaging_install_router(
                 target.tenant_id,
             )
 
+    async def _end_install(platform: str, revocation: Revocation) -> None:
+        """Act on the platform's news after it has been acknowledged.
+
+        Logged and not raised for the same reason as `_deliver`, and with more
+        at stake: the platform redelivers what it gets no answer to, and a
+        traceback out of a background task would leave a dead install claiming
+        a workspace with nothing in the log naming it.
+        """
+        try:
+            await service.revoked(
+                platform=platform,
+                workspace_id=revocation.workspace_id,
+                reason=revocation.reason,
+            )
+        except Exception:
+            logger.exception(
+                "Failed to end the install of %s workspace %s after the platform "
+                "reported it was over (%s)",
+                platform,
+                revocation.workspace_id,
+                revocation.reason,
+            )
+
     async def _inbound(
         platform: str,
         endpoint: WebhookEndpoint,
@@ -217,6 +241,13 @@ def create_messaging_install_router(
             return PlainTextResponse(event.handshake)
 
         try:
+            # Before resolving, because this is the one event that arrives as
+            # the bridge it would be resolved to is going away.
+            revocation = service.revocation(platform=platform, event=event)
+            if revocation is not None:
+                background.add_task(_end_install, platform, revocation)
+                return Response(status_code=200)
+
             target = await service.resolve(platform=platform, event=event)
         except WebhookPayloadError as failure:
             logger.error(
@@ -224,8 +255,14 @@ def create_messaging_install_router(
             )
             return Response(status_code=400)
         except WebhookWorkspaceUnknown as failure:
+            # A 200 for an event that reached nobody, which is the one place
+            # this file answers something other than what happened. The app
+            # left behind in a workspace whose install ended goes on posting,
+            # the platform cannot act on a 404, and it counts the refusals
+            # against the app as a whole — so the honest answer costs every
+            # other customer's delivery. The log is where it is visible.
             logger.warning("Dropped a %s event: %s", platform, failure)
-            return Response(status_code=404)
+            return Response(status_code=200)
         except WebhookBridgeUnavailable as failure:
             # Deliberately a 503: the platform retrying is the right behaviour
             # while a bridge restarts, and a 200 here would drop a real message

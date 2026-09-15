@@ -206,6 +206,31 @@ class MessagingAppInstaller(ABC):
         """
 
     @abstractmethod
+    async def revoke(self, *, bot_token: str) -> None:
+        """Tell the platform the credential it granted us is finished with.
+
+        Called when an operator disconnects an install. Deleting our copy is
+        not the same act: the token stays valid at the platform, so a dump
+        taken before the disconnect would still hold a working key into a
+        customer's workspace. This is the half only the platform can do.
+
+        **A token the platform already considers dead is a success, not a
+        failure.** The common reason to be disconnecting at all is that the
+        customer removed the app on their side, and an implementation that
+        raised on "this token is already invalid" would make exactly that
+        install impossible to disconnect, forever.
+
+        Raise :class:`MessagingInstallError` for anything else — a refusal we
+        do not understand leaves a live credential behind and the operator
+        should hear about it rather than see a disconnect that reports
+        success.
+
+        Not the same thing as the platform's own uninstall. Revoking a token
+        does not remove the app from the workspace; it ends this deployment's
+        access with it.
+        """
+
+    @abstractmethod
     def verify_webhook(self, *, headers: Mapping[str, str], body: bytes) -> None:
         """Prove an inbound event came from the platform, or raise.
 
@@ -243,6 +268,24 @@ class MessagingAppInstaller(ABC):
         nothing bound and must not touch the database. Raise
         :class:`WebhookPayloadError` for a payload that names no workspace: an
         event we cannot route is not an event we may guess at.
+        """
+
+    @abstractmethod
+    def revocation_of_event(self, payload: Mapping[str, object]) -> str | None:
+        """Why this event says the install is over, or `None` if it does not.
+
+        Platforms report the end of an install as an ordinary event on the
+        ordinary endpoint, which makes it easy to treat as one: the app is
+        removed from a workspace, an event arrives saying so, nothing reads
+        it, and the deployment goes on holding a dead token, a running bridge
+        and a claim on a workspace whose owner believes they have left.
+
+        A reason rather than a flag because it is the thing worth logging — an
+        operator asking why their bridge stopped needs the platform's own
+        answer, and there is more than one way an install can end.
+
+        Runs on a payload that has been authenticated and not yet routed, so
+        like :meth:`workspace_of_event` it must not touch the database.
         """
 
     @abstractmethod
