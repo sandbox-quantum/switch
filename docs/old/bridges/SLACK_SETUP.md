@@ -286,7 +286,10 @@ an agent is working on it, **⏳** while a prompt is waiting behind one already
 running. The message itself, not the thread it sits in, so it works at the
 channel root as well as inside a thread. A mark comes off once the last turn
 holding it has ended: two prompts queued behind one message share its ⏳, and it
-stays until both are done. This needs nothing but the reaction scopes.
+stays until neither of them is queued behind anything any more. A queued turn
+that starts running releases the ⏳ before it finishes, so the hourglass going
+while an agent is still busy is the mark working, not failing. This needs
+nothing but the reaction scopes.
 
 **A status message** is posted under the agent's own name and icon, carrying the
 **Open in Switch Console** link, and edited in place as the activity changes:

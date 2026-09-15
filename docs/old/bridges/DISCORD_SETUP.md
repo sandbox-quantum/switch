@@ -127,7 +127,10 @@ When a Switch Console-managed agent starts on a message, two things appear:
   two people at once marks both. A mark comes off a message once the last turn
   holding it has ended, which is not always the same moment the turn that put
   it there ends: two prompts queued behind one message share its ⏳, and it
-  stays until both are done. It needs the **Add Reactions** permission; without
+  stays until neither of them is queued behind anything any more. A queued turn
+  that starts running releases the ⏳ before it finishes, so the hourglass
+  going while an agent is still busy is the mark working, not failing. It needs
+  the **Add Reactions** permission; without
   it the bridge
   logs a warning and posts no reaction rather than a mark that is not there.
 - **A status message** posted under the agent's own name and avatar, edited in
@@ -165,10 +168,12 @@ the heading picks the right card out of the other publications beside it.
 
 **This does not recover a status message.** A turn's status prints no handle,
 so there is nothing to match on and the lookup declines rather than guessing;
-the status stays unconfirmed and is not posted a second time. That is a Discord
-limitation rather than a decision: a webhook message carries no metadata this
-bridge can set, so the handle a card prints is the only marker available. On a
-platform that can carry one — Slack does — a status is as findable as a card.
+the status stays unconfirmed and is not posted a second time. The current
+bridge emits no discriminator by which it can recover a status: a webhook
+message carries no metadata this bridge sets, so the handle a card prints is
+what the lookup has to match on. Alternative recovery approaches remain
+deferred. On a platform that can carry a marker — Slack does — a status is as
+findable as a card.
 
 Both are minted on demand the first time the bridge needs them in a channel, and
 both need **Manage Webhooks**. Discord's limit is 15 webhooks per channel.
