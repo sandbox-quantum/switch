@@ -29,6 +29,7 @@ from mattermostdriver.exceptions import (
 
 from switch_core.agent_icon import default_icon_url
 from switch_core.bridges.collaboration.adapter import (
+    ActivityMark,
     CollaborationAdapter,
     LiveRuntimeIndicator,
     RequestCard,
@@ -71,7 +72,10 @@ _MAX_BOT_ICON_BYTES = 5 * 1024 * 1024
 _JOINABLE_MM_CHANNEL_TYPES = frozenset({"O", "P"})
 
 # Emoji marking the message an agent is currently working on.
-_WORKING_REACTION = "eyes"
+_REACTION: dict[ActivityMark, str] = {
+    "working": "eyes",
+    "queued": "hourglass_flowing_sand",
+}
 
 # The post property carrying a publication's recovery marker. Props are part of
 # the post but not part of what anyone reads, which is exactly what this needs
@@ -206,6 +210,7 @@ class MattermostAdapter(CollaborationAdapter):
     redraws_for_elapsed_time: ClassVar[bool] = False
 
     supports_activity_reactions: ClassVar[bool] = True
+    supports_queue_reaction: ClassVar[bool] = True
 
     #: Each agent posts and reacts as its own bot here, so two agents working
     #: on one message leave two independent 👀 and each is claimed and removed
@@ -273,7 +278,7 @@ class MattermostAdapter(CollaborationAdapter):
         # (agent_name, post_id) currently carrying the working reaction. A
         # reaction belongs to the bot that added it, so two agents on the same
         # post are two independent marks.
-        self._eyes: set[tuple[str, str]] = set()
+        self._marked: set[tuple[str, str, ActivityMark]] = set()
 
         # (channel_id, agent_name) -> the posts that agent has marked. An agent
         # asked two things at once works on both, and the turn ends once — so
@@ -924,10 +929,11 @@ class MattermostAdapter(CollaborationAdapter):
         message_ref: str,
         *,
         agent_name: str,
-        working: bool,
+        mark: ActivityMark,
+        on: bool,
         force: bool = False,
     ) -> None:
-        """Put this agent's 👀 on the message it is working on, or take it off.
+        """Put this agent's mark on the message, or take it off.
 
         Per agent, because the reaction belongs to the bot that added it:
         two agents on one message are two marks, and one finishing leaves the
@@ -940,7 +946,7 @@ class MattermostAdapter(CollaborationAdapter):
         only once the channel actually shows what it says it shows.
         """
         await self._react_or_raise(
-            agent_name, message_ref, working=working, force=force
+            agent_name, message_ref, mark=mark, on=on, force=force
         )
 
     async def notify_working(
@@ -1202,7 +1208,7 @@ class MattermostAdapter(CollaborationAdapter):
         """
         try:
             await self._react_or_raise(
-                agent_name, post_id, working=working, force=force
+                agent_name, post_id, mark="working", on=working, force=force
             )
         except Exception as e:
             logger.warning(
@@ -1213,7 +1219,13 @@ class MattermostAdapter(CollaborationAdapter):
             )
 
     async def _react_or_raise(
-        self, agent_name: str, post_id: str, *, working: bool, force: bool
+        self,
+        agent_name: str,
+        post_id: str,
+        *,
+        mark: ActivityMark,
+        on: bool,
+        force: bool,
     ) -> None:
         """Put 👀 on the post an agent is working on, and take it off after.
 
@@ -1223,19 +1235,21 @@ class MattermostAdapter(CollaborationAdapter):
         unlike the status post it needs no thread, and unlike the typing
         indicator it does not expire.
 
-        `self._eyes` is this process's memory of what it has already done, and
-        a restart empties it while the reactions stay in the channel. `force`
-        is for the caller that knows better from the journal: skipping the
-        call because the set is empty would strand a 👀 on a turn that ended
-        while the bridge was down.
+        `self._marked` is this process's memory of what it has already done,
+        and a restart empties it while the reactions stay in the channel.
+        `force` is for the caller that knows better from the journal: skipping
+        the call because the set is empty would strand a 👀 on a turn that
+        ended while the bridge was down. It is remembered per reaction: a
+        queued prompt that starts running loses the hourglass and keeps the
+        eyes, so one cannot answer for the other.
 
         A failure leaves that memory alone, so the next attempt is a real
         attempt rather than one the record talks out of trying. Removing a
         reaction Mattermost says is not there is the exception: the channel is
         already in the state being asked for, and there is nothing to retry.
         """
-        key = (agent_name, post_id)
-        if not force and working == (key in self._eyes):
+        key = (agent_name, post_id, mark)
+        if not force and on == (key in self._marked):
             return
 
         bot_info = self._agent_bots.get(agent_name)
@@ -1245,17 +1259,17 @@ class MattermostAdapter(CollaborationAdapter):
             raise RuntimeError(f"no connected bot for {agent_name!r}")
         user_id = bot_info["user_id"]
 
-        if working:
+        if on:
             await loop.run_in_executor(
                 None,
                 driver.reactions.create_reaction,
                 {
                     "user_id": user_id,
                     "post_id": post_id,
-                    "emoji_name": _WORKING_REACTION,
+                    "emoji_name": _REACTION[mark],
                 },
             )
-            self._eyes.add(key)
+            self._marked.add(key)
             return
         try:
             await loop.run_in_executor(
@@ -1263,11 +1277,11 @@ class MattermostAdapter(CollaborationAdapter):
                 driver.reactions.delete_reaction,
                 user_id,
                 post_id,
-                _WORKING_REACTION,
+                _REACTION[mark],
             )
         except ResourceNotFound:
             pass
-        self._eyes.discard(key)
+        self._marked.discard(key)
 
     async def _reposition_runtime_state(
         self, channel_id: str, agent_name: str, thread_root_id: str | None

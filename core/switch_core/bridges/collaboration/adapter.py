@@ -6,7 +6,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field, replace
 from datetime import datetime
-from typing import ClassVar
+from typing import ClassVar, Literal
 
 from switch_core.agent_display_name import defuse_label_markup
 from switch_core.agent_icon import default_icon_url
@@ -240,6 +240,15 @@ class ActivityMarkRefused(RuntimeError):
     """
 
 
+#: Which indicator a message is carrying, where a platform can carry one.
+#:
+#: "working" is the agent reading and acting on the message. "queued" is the
+#: agent holding it behind something else and not started, which is a different
+#: thing to be told and is why it is a mark of its own rather than a second
+#: meaning for the first.
+ActivityMark = Literal["working", "queued"]
+
+
 class CollaborationAdapter(ABC):
     # Platforms opt in only when their SDK request and activity rendering is ready.
     publishes_sdk_sessions: ClassVar[bool] = False
@@ -282,6 +291,16 @@ class CollaborationAdapter(ABC):
     redraws_for_elapsed_time: ClassVar[bool] = False
 
     supports_activity_reactions: ClassVar[bool] = False
+
+    #: Whether a prompt still waiting its turn can be marked as well.
+    #:
+    #: A second reaction beside the working one, saying the agent has the
+    #: prompt but has not started on it. Separate from
+    #: `supports_activity_reactions` because it asks more of the platform: not
+    #: that a bot can react, but that it can hold two reactions on one message
+    #: at once. Telegram allows a bot exactly one, so the queued state is
+    #: carried by its status text alone and never by a mark.
+    supports_queue_reaction: ClassVar[bool] = False
 
     #: Whether the work reaction belongs to the agent that added it.
     #:
@@ -884,7 +903,8 @@ class CollaborationAdapter(ABC):
         message_ref: str,
         *,
         agent_name: str,
-        working: bool,
+        mark: ActivityMark,
+        on: bool,
         force: bool = False,
     ) -> None:
         """Update a platform work indicator when the adapter supports one.
@@ -895,6 +915,11 @@ class CollaborationAdapter(ABC):
         platform with one shared bot ignores it — there is one reaction
         between every agent there — but a caller that could not supply it
         would be a caller that cannot serve the per-agent platforms at all.
+
+        `mark` says which indicator, and the two are independent: a prompt can
+        be queued and not yet worked on, and the same message can carry another
+        turn's working mark at the same time. An adapter that declares no
+        `supports_queue_reaction` is never asked for the queued one.
         """
 
     async def notify_working(

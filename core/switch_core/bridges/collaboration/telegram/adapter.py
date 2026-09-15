@@ -36,6 +36,7 @@ from telegram.ext import Application, ApplicationBuilder, TypeHandler
 
 from switch_core.bridges.agent.commands import COMMANDS, COMMANDS_BY_NAME, CommandArg
 from switch_core.bridges.collaboration.adapter import (
+    ActivityMark,
     ActivityMarkRefused,
     CollaborationAdapter,
     LiveRuntimeIndicator,
@@ -1718,7 +1719,8 @@ class TelegramAdapter(CollaborationAdapter):
         message_ref: str,
         *,
         agent_name: str,
-        working: bool,
+        mark: ActivityMark,
+        on: bool,
         force: bool = False,
     ) -> None:
         """Put 👀 on the message being worked on, or take it off.
@@ -1727,6 +1729,12 @@ class TelegramAdapter(CollaborationAdapter):
         one bot account and Telegram has a single reaction per account per
         message. The publisher counts the turns holding it, so the first to
         want it adds it and the last to finish removes it.
+
+        That single reaction is also why `supports_queue_reaction` is false
+        here and `mark` is only ever the working one: a second mark could only
+        be put on by taking this one off, and a queued prompt saying nothing is
+        better than a running one that has stopped saying it is being read.
+        Telegram carries the queued state in its status text instead.
 
         `force` is the durable publisher reconciling after a restart, when this
         process's record of what is already on the message is empty and wrong
@@ -1755,20 +1763,20 @@ class TelegramAdapter(CollaborationAdapter):
             )
             return
         key = (channel_id, message_id)
-        if not force and working == (key in self._reacted):
+        if not force and on == (key in self._reacted):
             return
         try:
             await self._require_bot().set_message_reaction(
                 chat_id=self._chat_id(channel_id),
                 message_id=int(message_id),
-                reaction=[ReactionTypeEmoji(_WORKING_REACTION)] if working else [],
+                reaction=[ReactionTypeEmoji(_WORKING_REACTION)] if on else [],
             )
         except (BadRequest, Forbidden) as error:
             raise ActivityMarkRefused(
-                f"Telegram will not {'add' if working else 'remove'} the working "
+                f"Telegram will not {'add' if on else 'remove'} the working "
                 f"reaction on {message_id} in chat {channel_id} ({error})."
             ) from error
-        if working:
+        if on:
             self._reacted.add(key)
         else:
             self._reacted.discard(key)

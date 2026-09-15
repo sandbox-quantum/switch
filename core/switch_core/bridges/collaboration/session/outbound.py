@@ -1040,7 +1040,8 @@ class SessionTurnActivity:
                 anchor.channel_id,
                 anchor.reaction_ref,
                 agent_name=anchor.agent_name,
-                working=working,
+                mark="working",
+                on=working,
                 **({"force": True} if self._journal else {}),
             )
         except ActivityMarkRefused as refusal:

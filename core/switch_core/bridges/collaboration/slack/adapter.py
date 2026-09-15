@@ -21,6 +21,7 @@ from slack_sdk.socket_mode.response import SocketModeResponse
 from slack_sdk.web.async_client import AsyncWebClient
 
 from switch_core.bridges.collaboration.adapter import (
+    ActivityMark,
     CollaborationAdapter,
     RequestCard,
     RichContent,
@@ -122,8 +123,12 @@ def _group_description(agent_description: str) -> str:
     return full[: _GROUP_DESCRIPTION_MAX - 1].rstrip() + "…"
 
 
-# Reaction on the message an SDK turn is handling.
-_WORKING_REACTION = "eyes"
+# Reactions on the message an SDK turn is handling: one for work under way,
+# one for a prompt the agent is holding behind something else.
+_REACTION: dict[ActivityMark, str] = {
+    "working": "eyes",
+    "queued": "hourglass_flowing_sand",
+}
 
 
 def _retry_after_seconds(error: SlackApiError) -> int:
@@ -165,6 +170,7 @@ class SlackAdapter(CollaborationAdapter):
     separate_attention_slot: ClassVar[bool] = True
     redraws_for_elapsed_time: ClassVar[bool] = True
     supports_activity_reactions: ClassVar[bool] = True
+    supports_queue_reaction: ClassVar[bool] = True
     renders_legacy_runtime_state: ClassVar[bool] = False
     recovers_uncertain_posts: ClassVar[bool] = True
 
@@ -223,8 +229,8 @@ class SlackAdapter(CollaborationAdapter):
         # Set to Slack's error code once the workspace has told us it cannot
         # host user groups, so the bridge stops asking and says so only once.
         self._agent_usergroups_off_reason: str | None = None
-        # (channel_id, ts) currently carrying the "being worked on" reaction.
-        self._eyes: set[tuple[str, str]] = set()
+        # (channel_id, ts, mark) currently carrying that reaction.
+        self._marked: set[tuple[str, str, ActivityMark]] = set()
         # (channel_id, ts) Slack says it cannot find. Retrying it on every
         # progress report of a long turn is how one unmarkable message became
         # a warning a second for as long as the agent worked.
@@ -1026,48 +1032,58 @@ class SlackAdapter(CollaborationAdapter):
         channel_id: str,
         thread_ts: str | None,
         *,
-        working: bool,
+        mark: ActivityMark,
+        on: bool,
         force: bool = False,
     ) -> None:
-        """Mark the asking message and cache expected Slack reaction refusals."""
+        """Mark the asking message and cache expected Slack reaction refusals.
+
+        The memory of what is already there is per reaction, because the two
+        are independent: a queued prompt that starts running loses one mark and
+        keeps the other, and a message can carry another turn's working mark
+        while this one is still waiting. A message Slack says does not exist is
+        not per reaction — there is nothing there to carry either.
+        """
         ts = thread_ts
         if not ts or not self._web_client:
             return
-        key = (channel_id, ts)
-        if not force and working == (key in self._eyes):
+        message = (channel_id, ts)
+        key = (channel_id, ts, mark)
+        if not force and on == (key in self._marked):
             return
-        if key in self._unmarkable:
+        if message in self._unmarkable:
             return
 
         try:
-            if working:
+            if on:
                 await self._web_client.reactions_add(
-                    channel=channel_id, timestamp=ts, name=_WORKING_REACTION
+                    channel=channel_id, timestamp=ts, name=_REACTION[mark]
                 )
-                self._eyes.add(key)
+                self._marked.add(key)
             else:
                 await self._web_client.reactions_remove(
-                    channel=channel_id, timestamp=ts, name=_WORKING_REACTION
+                    channel=channel_id, timestamp=ts, name=_REACTION[mark]
                 )
-                self._eyes.discard(key)
+                self._marked.discard(key)
         except SlackApiError as e:
             error = e.response.get("error", "")
             # Already there, or already gone: the end state is what was wanted,
             # so record it and say nothing.
             if error in ("already_reacted", "no_reaction"):
-                self._eyes.add(key) if working else self._eyes.discard(key)
+                self._marked.add(key) if on else self._marked.discard(key)
                 return
             if error == "message_not_found":
                 # There is no message to mark, and there will not be one later.
-                self._unmarkable[key] = None
+                self._unmarkable[message] = None
                 if len(self._unmarkable) > self._unmarkable_max:
                     self._unmarkable.popitem(last=False)
                 return
             if force:
                 raise
             logger.warning(
-                "Could not %s the working reaction on %s in %s: %s",
-                "add" if working else "remove",
+                "Could not %s the %s reaction on %s in %s: %s",
+                "add" if on else "remove",
+                mark,
                 ts,
                 channel_id,
                 error or e,
@@ -1079,7 +1095,8 @@ class SlackAdapter(CollaborationAdapter):
         message_ref: str,
         *,
         agent_name: str,
-        working: bool,
+        mark: ActivityMark,
+        on: bool,
         force: bool = False,
     ) -> None:
         """Mark the asking message, accepting either a timestamp or channel:ts.
@@ -1093,7 +1110,11 @@ class SlackAdapter(CollaborationAdapter):
         still running would both be the same mark.
         """
         await self._mark_being_read(
-            channel_id, self._thread_ts_of(message_ref), working=working, force=force
+            channel_id,
+            self._thread_ts_of(message_ref),
+            mark=mark,
+            on=on,
+            force=force,
         )
 
     @staticmethod

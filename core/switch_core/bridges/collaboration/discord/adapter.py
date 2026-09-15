@@ -19,6 +19,7 @@ from pydantic import Field
 from switch_core.bridges.agent.commands import COMMANDS_BY_NAME
 from switch_core.bridges.agent.commands import Command as InRoomCommand
 from switch_core.bridges.collaboration.adapter import (
+    ActivityMark,
     ActivityMarkRefused,
     CollaborationAdapter,
     LiveRuntimeIndicator,
@@ -69,7 +70,7 @@ _PUBLICATION_WEBHOOK_NAME = "Switch Sessions"
 _READY_TIMEOUT = 30.0
 
 # Put on the message an agent is working on for as long as its turn lasts.
-_WORKING_REACTION = "👀"
+_REACTION: dict[ActivityMark, str] = {"working": "👀", "queued": "⏳"}
 
 # Discord's error code for "Maximum number of guild roles reached" (250).
 _MAX_GUILD_ROLES_CODE = 30005
@@ -287,6 +288,7 @@ class DiscordAdapter(CollaborationAdapter):
     redraws_for_elapsed_time: ClassVar[bool] = False
 
     supports_activity_reactions: ClassVar[bool] = True
+    supports_queue_reaction: ClassVar[bool] = True
 
     # Every agent posts through one bot application, so there is one 👀 between
     # them: the first turn to want it adds it and the last to finish removes it.
@@ -331,7 +333,7 @@ class DiscordAdapter(CollaborationAdapter):
         # Message refs currently carrying the "being worked on" reaction, and
         # per agent the set it has marked — a turn ends once but may have
         # marked several messages.
-        self._eyes: set[str] = set()
+        self._marked: set[tuple[str, ActivityMark]] = set()
         self._agent_eyes: dict[tuple[str, str], set[str]] = {}
         # Set once Discord has told us it will not host agent roles, so the
         # bridge stops asking and says so only once.
@@ -1392,10 +1394,11 @@ class DiscordAdapter(CollaborationAdapter):
         message_ref: str,
         *,
         agent_name: str,
-        working: bool,
+        mark: ActivityMark,
+        on: bool,
         force: bool = False,
     ) -> None:
-        """Put 👀 on the message being worked on, or take it off.
+        """Put a mark on the message being worked on, or take it off.
 
         One mark between every agent, because every agent posts through one
         bot application here and a reaction belongs to whoever added it. The
@@ -1415,13 +1418,13 @@ class DiscordAdapter(CollaborationAdapter):
         _, message_id = self._parse_message_ref(message_ref)
         if not message_id:
             logger.warning(
-                "Cannot mark %s as being worked on: not a Discord message reference.",
+                "Cannot mark %s: not a Discord message reference.",
                 message_ref,
             )
             return
-        if not force and working == (message_ref in self._eyes):
+        if not force and on == ((message_ref, mark) in self._marked):
             return
-        await self._react(message_ref, working=working)
+        await self._react(message_ref, mark=mark, on=on)
 
     async def notify_working(
         self, channel_id: str, agent_name: str, thread_root_id: str | None
@@ -1578,18 +1581,18 @@ class DiscordAdapter(CollaborationAdapter):
         and no reaction, rather than a mark that is not there.
 
         This path has no durable record, so it answers the refused-removal
-        question from `self._eyes` — which is sound only because it will not
+        question from `self._marked` — which is sound only because it will not
         attempt a removal at all unless this process put the mark there. The
         reaction is then known to be outstanding, and is reported as such.
         """
         _, message_id = self._parse_message_ref(message_ref)
         if not message_id or self._client is None:
             return
-        if working == (message_ref in self._eyes):
+        if working == ((message_ref, "working") in self._marked):
             return
 
         try:
-            await self._react(message_ref, working=working)
+            await self._react(message_ref, mark="working", on=working)
         except ActivityMarkRefused as refusal:
             if working:
                 logger.warning("%s", refusal)
@@ -1606,8 +1609,8 @@ class DiscordAdapter(CollaborationAdapter):
                 e,
             )
 
-    async def _react(self, message_ref: str, *, working: bool) -> None:
-        """Add or remove 👀, letting through whatever another attempt might fix.
+    async def _react(self, message_ref: str, *, mark: ActivityMark, on: bool) -> None:
+        """Add or remove a mark, letting through whatever another attempt might fix.
 
         Two endings are final rather than worth retrying: the message is gone,
         or this guild will never allow the reaction. Everything else is left to
@@ -1624,30 +1627,31 @@ class DiscordAdapter(CollaborationAdapter):
         """
         location_id, message_id = self._parse_message_ref(message_ref)
         client = self._require_client()
+        key = (message_ref, mark)
         try:
             channel = await self._get_channel(int(location_id))
             message = channel.get_partial_message(int(message_id))
-            if working:
-                await message.add_reaction(_WORKING_REACTION)
-                self._eyes.add(message_ref)
+            if on:
+                await message.add_reaction(_REACTION[mark])
+                self._marked.add(key)
             else:
-                await message.remove_reaction(_WORKING_REACTION, client.user)
-                self._eyes.discard(message_ref)
+                await message.remove_reaction(_REACTION[mark], client.user)
+                self._marked.discard(key)
         except discord.NotFound:
             # The message (or the reaction) is gone; the end state is what was
             # wanted either way.
-            self._eyes.discard(message_ref)
+            self._marked.discard(key)
         except discord.Forbidden as error:
-            if working:
+            if on:
                 raise ActivityMarkRefused(
-                    f"Discord refused the working reaction on {message_ref} — the "
+                    f"Discord refused the {mark} reaction on {message_ref} — the "
                     f"bot is missing the Add Reactions permission here. Turns still "
                     f"show their status message; only the mark on the message being "
                     f"answered is missing. Re-invite the bot with the permissions "
                     f"in DISCORD_SETUP.md."
                 ) from error
             raise ActivityMarkRefused(
-                f"Discord refused to take the working reaction off {message_ref}. "
+                f"Discord refused to take the {mark} reaction off {message_ref}. "
                 f"Removing our own reaction needs no permission of its own, so this "
                 f"is the bot's access to the channel rather than the reaction: check "
                 f"it can still see {message_ref}."

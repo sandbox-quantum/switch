@@ -79,8 +79,8 @@ class ActivitySlack(SlackAdapter):
                 return ref
         return None
 
-    async def mark_activity(self, channel, ref, *, agent_name, working, force=False):
-        if working:
+    async def mark_activity(self, channel, ref, *, agent_name, mark, on, force=False):
+        if on:
             self.reactions.add(ref)
         else:
             self.reactions.discard(ref)
@@ -136,8 +136,8 @@ class PerAgentSlack(ActivitySlack):
         super().__init__()
         self.reactions = set()
 
-    async def mark_activity(self, channel, ref, *, agent_name, working, force=False):
-        if working:
+    async def mark_activity(self, channel, ref, *, agent_name, mark, on, force=False):
+        if on:
             self.reactions.add((agent_name, ref))
         else:
             self.reactions.discard((agent_name, ref))
@@ -1185,8 +1185,8 @@ class RefusingPlatform(ActivitySlack):
         self.refuse_add = refuse_add
         self.refuse_remove = refuse_remove
 
-    async def mark_activity(self, channel, ref, *, agent_name, working, force=False):
-        if working:
+    async def mark_activity(self, channel, ref, *, agent_name, mark, on, force=False):
+        if on:
             if self.refuse_add:
                 raise ActivityMarkRefused("reactions are switched off in this chat")
             self.reactions.add(ref)
@@ -1380,11 +1380,11 @@ class DelayedRemoval(RefusingPlatform):
         super().__init__(chat)
         self.while_unacknowledged = while_unacknowledged
 
-    async def mark_activity(self, channel, ref, *, agent_name, working, force=False):
+    async def mark_activity(self, channel, ref, *, agent_name, mark, on, force=False):
         await super().mark_activity(
-            channel, ref, agent_name=agent_name, working=working, force=force
+            channel, ref, agent_name=agent_name, mark=mark, on=on, force=force
         )
-        if not working:
+        if not on:
             await self.while_unacknowledged()
 
 
@@ -1550,11 +1550,11 @@ class LostAcknowledgement(RefusingPlatform):
         super().__init__(chat)
         self.lose_the_answer = True
 
-    async def mark_activity(self, channel, ref, *, agent_name, working, force=False):
+    async def mark_activity(self, channel, ref, *, agent_name, mark, on, force=False):
         await super().mark_activity(
-            channel, ref, agent_name=agent_name, working=working, force=force
+            channel, ref, agent_name=agent_name, mark=mark, on=on, force=force
         )
-        if working and self.lose_the_answer:
+        if on and self.lose_the_answer:
             raise TimeoutError("the answer to the reaction never came back")
 
 
