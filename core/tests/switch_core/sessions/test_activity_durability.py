@@ -21,7 +21,12 @@ from switch_core.bridges.collaboration.slack.adapter import (
     SlackAdapter,
     SlackConnectionConfig,
 )
-from switch_core.db.models import SdkSession, SessionActivityPost, require_tenant_id
+from switch_core.db.models import (
+    SdkSession,
+    SdkSessionCommand,
+    SessionActivityPost,
+    require_tenant_id,
+)
 from switch_core.sessions import publication
 from switch_core.sessions.publication import SessionPublisher
 
@@ -31,7 +36,7 @@ from ..bridges.collaboration.test_mattermost_sdk_only import (
 from ..bridges.collaboration.test_mattermost_sdk_only import _http_error
 from ..bridges.collaboration.test_mattermost_sdk_only import _posts as mm_posts
 from ..bridges.collaboration.test_session_activity import _items, _turn
-from .test_authority import host_event, opened, setup
+from .test_authority import command, host_event, opened, setup
 from .test_publication import Platform
 from .test_publication_retries import cards_for
 
@@ -847,6 +852,69 @@ async def test_pending_command_cannot_hide_recorded_completion_or_replay_stale_e
         # Each fresh demo publisher redraws the latest real completion. Pending
         # errors are not replayed, and a queued receipt cannot hide that completion.
         assert platform.post_count == (10 if pending_status == "accepted" else 6)
+
+
+@pytest.mark.parametrize(
+    "final_status,says,not_says",
+    [
+        ("unknown", "could not confirm", "could not complete"),
+        ("rejected", "could not complete", "could not confirm"),
+    ],
+)
+async def test_an_unacknowledged_command_is_not_reported_as_one_the_agent_failed(
+    session_factory, final_status, says, not_says
+):
+    """A queued prompt that loses its acknowledgement, and one the host refused.
+
+    Both are carried as an error turn, because a provisional receipt has no
+    other status to be carried as, so the sentence in the channel cannot be
+    read off that status. A refusal did reach the host and came back no; an
+    unacknowledged command may have run in full. Telling the second as the
+    first asserts something nobody here knows, and buries the one fact the
+    reader can act on — that Switch will not send it again.
+    """
+    service, epoch = await setup(session_factory)
+    await opened(service, epoch)
+    platform = ActivitySlack()
+    publisher = SessionPublisher(
+        session_factory,
+        "bridge",
+        cards_for(session_factory, Platform()),
+        activity(session_factory, platform),
+    )
+    await publisher.publish_pending()
+    await service.submit(
+        command(
+            epoch,
+            "pending-command",
+            {
+                "type": "message.send",
+                "text": "Later message",
+                "attachments": [],
+                "delivery": "queue",
+            },
+            actor="@owner:example.test",
+            surface="slack",
+        ),
+        user_id=None,
+        bridge_id="bridge",
+    )
+    await publisher.publish_pending()
+    assert any(
+        "queued" in message.text.lower() for message in platform.messages.values()
+    )
+
+    async with session_factory() as db:
+        row = await db.get(
+            SdkSessionCommand, (require_tenant_id(), "session-demo", "pending-command")
+        )
+        row.status = {**row.status, "status": final_status}
+        await db.commit()
+    await publisher.publish_pending()
+
+    said = " ".join(message.text.lower() for message in platform.messages.values())
+    assert says in said
+    assert not_says not in said
 
 
 async def test_reaction_failure_retries_without_blocking_log(session_factory):

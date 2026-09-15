@@ -163,12 +163,32 @@ def test_error_summary_uses_only_state(turn_status, session_status, online, expe
         type="turn.upsert", turn_id="turn", command_id="command", status=turn_status
     )
     result = activity_error_summary(
-        turn, SimpleNamespace(status=session_status), online=online
+        turn, SimpleNamespace(status=session_status), online=online, unconfirmed=False
     )
     if expected is None:
         assert result is None
     else:
         assert expected in result
+
+
+def test_an_unacknowledged_command_is_not_reported_as_a_failed_one():
+    """Nobody here knows whether the agent saw it, so nothing may claim it didn't.
+
+    The turn is carried as an error because there is no other status to carry
+    it as, which is exactly why the sentence cannot be read off the status.
+    """
+    turn = TurnUpsert(
+        type="turn.upsert", turn_id="turn", command_id="command", status="error"
+    )
+
+    summary = activity_error_summary(
+        turn, SimpleNamespace(status="ready"), online=True, unconfirmed=True
+    )
+
+    assert summary is not None
+    assert "could not complete" not in summary
+    assert "could not confirm" in summary
+    assert "not be resent" in summary
 
 
 @pytest.mark.parametrize(

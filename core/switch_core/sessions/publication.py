@@ -568,6 +568,9 @@ async def refresh_activity(
         turns = list(snapshot.turns)
         latest_turn_id = turns[-1].turn_id if turns else None
         known_commands = {turn.command_id for turn in turns}
+        # Turns carried as errors only because the command was never
+        # acknowledged, which is not the same thing as one that failed.
+        unconfirmed: set[str] = set()
         # A presentation-only queued turn acknowledges input this bridge itself
         # accepted, before the SDK reports a turn. Scoped to commands that came
         # in on `surface` because that is where the acknowledgement would go: a
@@ -596,10 +599,13 @@ async def refresh_activity(
             status = pending_command.status["status"]
             if status not in ("accepted", "dispatched", "unknown", "rejected"):
                 continue
+            turn_id = f"pending:{command.command_id}"
+            if status == "unknown":
+                unconfirmed.add(turn_id)
             turns.append(
                 TurnUpsert(
                     type="turn.upsert",
-                    turn_id=f"pending:{command.command_id}",
+                    turn_id=turn_id,
                     command_id=command.command_id,
                     status="queued"
                     if status in ("accepted", "dispatched")
@@ -614,7 +620,10 @@ async def refresh_activity(
             if turn.status == "running" and activity.redraws_for_elapsed_time:
                 revisions += (int(time.monotonic() // 5),)
             error_summary = activity_error_summary(
-                turn, snapshot.session, online=online
+                turn,
+                snapshot.session,
+                online=online,
+                unconfirmed=turn.turn_id in unconfirmed,
             )
             state = (
                 turn.status + (":" + error_summary if error_summary else ""),

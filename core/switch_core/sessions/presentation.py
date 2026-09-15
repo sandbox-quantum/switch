@@ -89,9 +89,19 @@ async def notification_recipient(
 
 
 def activity_error_summary(
-    turn: TurnUpsert, session: Session, *, online: bool
+    turn: TurnUpsert, session: Session, *, online: bool, unconfirmed: bool
 ) -> str | None:
-    """Describe state without leaking provider notices or session-private output."""
+    """Describe state without leaking provider notices or session-private output.
+
+    `unconfirmed` is the one state that is neither running nor finished: the
+    command left Switch and no acknowledgement came back, so whether the agent
+    ever saw it is unknown and stays unknown. It reads as a failure otherwise —
+    the turn is carried as an error for want of anywhere else to put it — and
+    saying the request could not be completed asserts something nobody here
+    knows. What the reader can act on is that Switch will not resend it.
+    """
+    if unconfirmed:
+        return "Switch could not confirm the agent received this. It will not be resent; send it again if you still want it."
     if turn.status == "error":
         return "The agent could not complete this request. Open Switch Console for details."
     if turn.status not in {"queued", "running"}:

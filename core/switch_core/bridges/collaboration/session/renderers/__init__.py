@@ -29,7 +29,7 @@ from switch_core.sessions.contract import (
 # which of the two a reader is looking at. Plain sentences, not markup, so
 # every renderer reads the same wording rather than each keeping its own copy.
 TURN_STATE = {
-    "queued": "Received. Waiting for the agent…",
+    "queued": "Queued. Waiting for the agent to start…",
     "running": "Working…",
     "completed": "Turn complete.",
     "interrupted": "Turn interrupted.",
