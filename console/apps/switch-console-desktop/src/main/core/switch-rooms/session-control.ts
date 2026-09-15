@@ -18,13 +18,18 @@ export interface SessionControlCapabilities {
   interrupt: boolean;
 }
 
-/** A single keystroke step to run against the injection sink. */
+/** A single step to run against the injection sink. */
 export type SessionControlAction =
   /** Write raw bytes directly (e.g. an ESC interrupt); no submit keystroke. */
   | { kind: 'raw'; data: string }
   /** Inject text like a prompt (built via the provider's PromptInjector) and
    *  submit it. */
-  | { kind: 'prompt'; text: string };
+  | { kind: 'prompt'; text: string }
+  /** Stop the running turn through the runtime rather than by typing at it.
+   *  Only a target that understands it can run this. */
+  | { kind: 'interrupt' }
+  /** Say something in the session's own record without prompting it. */
+  | { kind: 'notice'; text: string };
 
 /** Context a command plan may need — e.g. reset must reconnect to the room and
  * re-assume the role the agent held before its context was cleared. */
@@ -159,6 +164,41 @@ const OPENCODE_CONTROL: SessionControl = {
         return [
           { kind: 'prompt', text: '/new' },
           { kind: 'prompt', text: reconnectAndAnnounce(ctx, 'session has been reset') },
+        ];
+      default:
+        return null;
+    }
+  },
+};
+
+/**
+ * A session driven through a provider adapter.
+ *
+ * None of the TUI recipes apply: there is no `/clear` to type and an ESC would
+ * arrive as a turn consisting of one escape character. What the adapter offers
+ * is an interrupt, so that is what all three map onto — with a notice for the
+ * two that promise more than an interrupt, because a room told its command ran
+ * when only half of it did is worse than one told plainly what happened.
+ *
+ * `reset` and `compact` are honestly partial here and say so. Restarting the
+ * session would clear the context, but it would also drop the vendor session
+ * the transcript and `resume` are built on, which is a larger thing than the
+ * command asked for.
+ */
+export const PROVIDER_CONTROL: SessionControl = {
+  capabilities: { reset: false, compact: false, interrupt: true },
+  plan(command) {
+    switch (command) {
+      case 'interrupt':
+        return [{ kind: 'interrupt' }];
+      case 'compact':
+      case 'reset':
+        return [
+          { kind: 'interrupt' },
+          {
+            kind: 'notice',
+            text: `The room asked to ${command} this session. Its turn was stopped; clearing or compacting context is not available for a provider-backed session yet.`,
+          },
         ];
       default:
         return null;

@@ -77,7 +77,9 @@ export function buildSetupPlan(input: BuildPlanInput): HostSetupPlan {
   const steps: HostSetupStep[] = [];
 
   for (const dep of coreDependencies) {
-    steps.push(blankStep(dep.id, 'core-dependency', dep.name, now));
+    steps.push(
+      blankStep(dep.id, 'core-dependency', dep.name, now, { optional: dep.id === 'tmux' })
+    );
   }
 
   for (const agent of agentTypes) {

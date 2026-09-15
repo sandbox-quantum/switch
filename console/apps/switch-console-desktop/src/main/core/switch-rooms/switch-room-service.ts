@@ -9,7 +9,6 @@ import {
   listPersistedRoomSessionIds,
   persistRoomConnection,
 } from './session-room-store';
-import { switchNotificationPoller } from './switch-notification-poller';
 
 export type SessionRoomContext = {
   sessionId: string;
@@ -183,7 +182,6 @@ class SwitchRoomService implements IDisposable {
     });
 
     this.setSessionRoom(ctx, persisted.roomId, persisted.switchAgentId, persisted.roomName);
-    switchNotificationPoller.connect(ctx, persisted.roomId, persisted.roomName);
   }
 
   /**

@@ -40,7 +40,7 @@ describe('restoreSession', () => {
         config: null,
         shellId: 'system',
         status: 'done',
-        agentSessionId: null,
+
         agentStatus: null,
         agentStatusSeen: 1,
         isInitialSession: null,

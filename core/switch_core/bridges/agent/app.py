@@ -8,6 +8,7 @@ from fastapi.responses import JSONResponse
 
 from switch_core.bridges.agent.api.handlers import router as api_router
 from switch_core.bridges.agent.api.operations import router as operations_router
+from switch_core.bridges.agent.api.session_routes import router as sessions_router
 from switch_core.bridges.agent.api.version_routes import router as version_router
 from switch_core.bridges.agent.api_key_cache import ApiKeyCache
 from switch_core.bridges.agent.auth import BearerAuthMiddleware
@@ -32,6 +33,8 @@ from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.task_store import TaskStore
 from switch_core.request_context import RequestContextMiddleware
 from switch_core.room_service import RoomService
+from switch_core.sessions.http import session_error_response
+from switch_core.sessions.service import SessionError
 
 logger = logging.getLogger(__name__)
 
@@ -137,6 +140,8 @@ def create_agent_bridge_app(
         )
         return JSONResponse(status_code=422, content={"detail": exc.errors()})
 
+    app.add_exception_handler(SessionError, session_error_response)
+    app.include_router(sessions_router, tags=["sessions"])
     app.include_router(api_router, prefix="/agents", tags=["api"])
     app.include_router(operations_router)
     app.include_router(deeplink_router, tags=["deeplink"])

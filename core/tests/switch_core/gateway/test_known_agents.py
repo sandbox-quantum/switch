@@ -8,6 +8,10 @@ from switch_core.gateway.known_agents import (
     ClaudeCodeOptions,
     CodexKnownAgent,
     CodexOptions,
+    CursorKnownAgent,
+    CursorOptions,
+    GeminiKnownAgent,
+    GeminiOptions,
     OpenCodeKnownAgent,
     OpenCodeOptions,
     known_agent_for,
@@ -638,3 +642,55 @@ class TestKnownAgentFor:
         assert isinstance(options, ClaudeCodeOptions)
         assert options.channels_enabled is True
         assert options.repo_dir is None
+
+
+class TestGeminiKnownAgent:
+    def test_registry_and_profile(self) -> None:
+        assert KNOWN_AGENTS["gemini"] is GeminiKnownAgent
+        for auto_session, expected in [
+            (False, "session_addressable"),
+            (True, "auto_session"),
+        ]:
+            profile = GeminiKnownAgent.build_profile(
+                GeminiOptions(auto_session=auto_session)
+            )
+            assert profile.connection_model == expected
+            assert profile.message_exchange
+            assert profile.command_capabilities.interrupt == "session_dependent"
+            assert profile.pre_invocation_mediation == []
+
+    def test_onboarding_requires_console_acp(self) -> None:
+        options = GeminiKnownAgent.parse_options({"repo_dir": " "})
+        assert options.repo_dir is None
+        agent = _agent_named("gemini.test")
+        assert GeminiKnownAgent.connect_command(options, agent, "hub", None) is None
+        text = GeminiKnownAgent.start_session_instructions(options, agent, "hub", None)
+        assert "Gemini CLI ACP" in text
+        assert "local session" in text
+        assert "gemini.test" in text
+
+
+class TestCursorKnownAgent:
+    def test_registry_and_profile(self) -> None:
+        assert KNOWN_AGENTS["cursor"] is CursorKnownAgent
+        for auto_session, expected in [
+            (False, "session_addressable"),
+            (True, "auto_session"),
+        ]:
+            profile = CursorKnownAgent.build_profile(
+                CursorOptions(auto_session=auto_session)
+            )
+            assert profile.connection_model == expected
+            assert profile.message_exchange
+            assert profile.command_capabilities.interrupt == "session_dependent"
+            assert profile.pre_invocation_mediation == []
+
+    def test_onboarding_requires_console_acp(self) -> None:
+        options = CursorKnownAgent.parse_options({"repo_dir": " "})
+        assert options.repo_dir is None
+        agent = _agent_named("cursor.test")
+        assert CursorKnownAgent.connect_command(options, agent, "hub", None) is None
+        text = CursorKnownAgent.start_session_instructions(options, agent, "hub", None)
+        assert "Cursor CLI ACP" in text
+        assert "local session" in text
+        assert "cursor.test" in text

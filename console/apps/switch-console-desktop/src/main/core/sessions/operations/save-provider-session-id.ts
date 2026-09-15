@@ -18,7 +18,22 @@ export async function saveProviderSessionId(
     });
     return;
   }
+  await saveNativeSessionId(sessionId, providerSessionId);
+}
 
+/**
+ * Record the provider's own id for a session's conversation, so a later launch
+ * resumes it.
+ *
+ * Unvalidated, deliberately. The Droid path above checks the shape because that
+ * id is scraped out of a hook payload and could be anything; a provider adapter
+ * reports the id it just created, and refusing it here would silently cost the
+ * session its resume.
+ */
+export async function saveNativeSessionId(
+  sessionId: string,
+  providerSessionId: string
+): Promise<void> {
   const loaded = await loadSessionWithAgent(sessionId);
   if (!loaded) return;
 

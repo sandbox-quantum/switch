@@ -7,7 +7,6 @@ import { setProviderSessionId } from '@main/core/sessions/operations/set-provide
 import { touchSession } from '@main/core/sessions/operations/touchSession';
 import { sessionHooks } from '@main/core/sessions/session-hooks';
 import { loadSessionWithAgent } from '@main/core/sessions/session-join';
-import { switchNotificationPoller } from '@main/core/switch-rooms/switch-notification-poller';
 import { switchRoomService } from '@main/core/switch-rooms/switch-room-service';
 import { db } from '@main/db/client';
 import { sessions } from '@main/db/schema';
@@ -21,7 +20,7 @@ import {
   sessionChangedChannel,
 } from '@shared/core/sessions/sessionEvents';
 import { dbContextResolver } from './db-context-resolver';
-import { deriveAgentStatus, deriveErrorDetail } from './derive-agent-status';
+import { deriveAgentStatus } from './derive-agent-status';
 import { parseHookEvent } from './event-enricher';
 import { HookServer, type RawHookRequest } from './hook-server';
 import { isAppFocused, maybeShowNotification } from './notification';
@@ -73,14 +72,7 @@ class AgentHookService implements IInitializable, IDisposable, Hookable<AgentHoo
     this._hooks.callHookBackground('agent:event', event, appFocused);
   }
 
-  /**
-   * Process one raw hook callback. Local sessions (`startLocalPoller: true`)
-   * start Switch Console's own room poller on a `connect_to_room`. Remote sessions
-   * relayed from the on-VM sidecar (`startLocalPoller: false`) skip it — the
-   * sidecar owns polling and tmux injection on the VM; Switch Console only records
-   * the room and status for display so it must not start a competing poller.
-   */
-  async handleRawHook(raw: RawHookRequest, opts: { startLocalPoller: boolean }): Promise<void> {
+  async handleRawHook(raw: RawHookRequest): Promise<void> {
     let parsed;
     try {
       parsed = await parseHookEvent(raw, dbContextResolver, log);
@@ -112,19 +104,10 @@ class AgentHookService implements IInitializable, IDisposable, Hookable<AgentHoo
 
     if (parsed.kind === 'switch-room') {
       switchRoomService.setSessionRoom(parsed.ctx, parsed.roomId, parsed.agentId, parsed.roomName);
-      if (opts.startLocalPoller) {
-        switchNotificationPoller.connect(parsed.ctx, parsed.roomId, parsed.roomName);
-      }
       return;
     }
 
-    if (parsed.kind === 'activity') {
-      // Surface the running turn's activity on the bridged channel by refreshing
-      // the "working on it…" message. A no-op unless a room-triggered turn is
-      // live. In-process call: the `events` bus is renderer-bound (see below).
-      switchNotificationPoller.onAgentActivity(parsed.ctx.sessionId, parsed.detail);
-      return;
-    }
+    if (parsed.kind === 'activity') return;
 
     const event = parsed.event;
     const appFocused = isAppFocused();
@@ -133,7 +116,7 @@ class AgentHookService implements IInitializable, IDisposable, Hookable<AgentHoo
   }
 
   async initialize(): Promise<void> {
-    await this.server.start(async (raw) => this.handleRawHook(raw, { startLocalPoller: true }));
+    await this.server.start(async (raw) => this.handleRawHook(raw));
 
     // A session that never reported itself up is stopped on something only a
     // human can answer. Raise it as attention-needed rather than leaving a
@@ -205,18 +188,6 @@ class AgentHookService implements IInitializable, IDisposable, Hookable<AgentHoo
         seen: seen === 1,
       });
 
-      // Drive the notification poller's injection gate directly. In the main
-      // process the `events` bus is renderer-bound (emit → webContents.send, on →
-      // ipcMain), so an in-process emit never reaches an in-process listener — the
-      // poller would otherwise never observe a turn finishing and would release
-      // its gate only via the 60s fallback.
-      switchNotificationPoller.onAgentStatusChange(
-        event.sessionId,
-        status,
-        notificationType,
-        deriveErrorDetail(event)
-      );
-
       await db
         .update(sessions)
         .set({ agentStatus: status, agentStatusSeen: seen })
@@ -248,8 +219,6 @@ class AgentHookService implements IInitializable, IDisposable, Hookable<AgentHoo
             .set({ agentStatus: 'idle', agentStatusSeen: 1 })
             .where(eq(sessions.id, sessionId));
 
-          switchNotificationPoller.onAgentStatusChange(sessionId, 'idle');
-
           events.emit(sessionAgentStatusChangedChannel, {
             sessionId,
             status: 'idle',
@@ -268,7 +237,6 @@ class AgentHookService implements IInitializable, IDisposable, Hookable<AgentHoo
 
   dispose(): void {
     this.server.stop();
-    switchNotificationPoller.dispose();
   }
 
   getPort(): number {

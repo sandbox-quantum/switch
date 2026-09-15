@@ -105,11 +105,31 @@ describe('the model field, given a host catalogue', () => {
     expect(seen).toContain('ollama/brand-new');
   });
 
-  it('falls back to a plain input when there is no catalogue to offer', async () => {
+  it('keeps the editable combobox when there is no catalogue to offer', async () => {
     const host = await render(
       <DefinitionFieldInput field={FIELD} value="typed" onChange={() => {}} />
     );
 
     expect(host.querySelector('input')?.value).toBe('typed');
+    expect(host.querySelector('input')?.getAttribute('role')).toBe('combobox');
   });
+});
+
+it('does not erase a custom model when Escape closes the picker', async () => {
+  const seen: unknown[] = [];
+  const host = await render(
+    <DefinitionFieldInput
+      field={FIELD}
+      value="custom-model"
+      suggestions={MODELS}
+      onChange={(value) => seen.push(value)}
+    />
+  );
+  const input = host.querySelector('input')!;
+  await act(async () => {
+    input.focus();
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+  });
+  expect(seen).not.toContain('');
+  expect(input.value).toBe('custom-model');
 });

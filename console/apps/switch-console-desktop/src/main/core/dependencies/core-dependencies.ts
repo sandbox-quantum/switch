@@ -80,9 +80,8 @@ export const CORE_DEPENDENCIES: DependencyDescriptor[] = [
     category: 'core',
     commands: ['node'],
     versionArgs: ['--version'],
-    // The sidecar bundle and the remote-session reachability probe rely on global
-    // `fetch` / `AbortSignal.timeout` / optional chaining, stable only from Node 18.
-    minVersion: '18.0.0',
+    // Persistent SDK hosts require AbortSignal.any.
+    minVersion: '20.3.0',
     docUrl: 'https://nodejs.org/en/download',
     installCommands: {
       macos: [{ method: 'homebrew', command: 'brew install node', recommended: true }],
