@@ -58,7 +58,7 @@ from switch_core.db.models import Client, ExternalUser, SessionRequestPost
 from switch_core.db.stores.session_request_post_store import SessionRequestPostStore
 from switch_core.sessions.contract import TURN_ENDED, Item, SnapshotRequest, TurnUpsert
 
-from .activity_journal import ActivityJournal, ActivityRecord
+from .activity_journal import ActivityJournal, ActivityRecord, claims
 from .form import posted_form
 from .renderers import RequestReference
 
@@ -944,6 +944,11 @@ class SessionTurnActivity:
         anchor.log_state = state
         return True
 
+    @property
+    def _reacts(self) -> bool:
+        """Whether the adapter marks a message with a reaction at all."""
+        return bool(getattr(self._adapter, "supports_activity_reactions", False))
+
     def _wanted_mark(self, turn: TurnUpsert) -> ActivityMark:
         """Which mark this turn's current state earns.
 
@@ -980,19 +985,25 @@ class SessionTurnActivity:
     def _holds(self, key: tuple[str, str], anchor: _Anchor, mark: ActivityMark) -> bool:
         """Whether this turn's own ask may have put `mark` on the message.
 
-        Both halves, for the same reason `_claimants` reads both: this
+        Every half, for the same reason `_claimants` reads more than one: this
         process's memory is empty after a restart and the row's claim is not,
-        and a publisher with no journal has only the memory. A turn the second
-        to want a mark has no claim of its own — the first turn's covers the
-        reaction they share — and is answered by the memory alone, which is
-        where its place among the holders is kept.
+        and a publisher with no journal has only the memory.
+
+        Being one of the holders is the ordinary answer. A standing expectation
+        is the answer when that has already been given up and the mark did not
+        come off with it: a refused removal drops the turn from the holders
+        before the platform is asked, and what it leaves behind is the
+        expectation, unretracted precisely because the reaction may still be
+        there. Reading only the holders is how a refusal comes to be its own
+        last word, with nothing left to say the retry is owed.
         """
         if key in self._thread_turns.get(self._thread_key(anchor, mark), frozenset()):
             return True
+        wanted = self._mark_key(anchor, mark)
+        if key in self._expecting.get(_mark_id(wanted), {}):
+            return True
         record = self._record.get()
-        return record is not None and record.data.get("mark") == self._mark_key(
-            anchor, mark
-        )
+        return record is not None and claims(record.data.get("mark"), wanted)
 
     async def _claim_thread(
         self, key: tuple[str, str], anchor: _Anchor, mark: ActivityMark
@@ -1006,13 +1017,33 @@ class SessionTurnActivity:
         that same thread shares it too — and the second must not find the
         reaction already there and skip it, nor the first's own end wipe it
         out from under the second.
+
+        Only the first asks the platform, and where the mark is there to be
+        held every one of them records it, because only the ask is redundant
+        and not the stake in what is on the message. A holder whose stake lives
+        in this process's memory alone is a holder only until the process
+        restarts, and the reaction outlives that: the rest of them end, each
+        finding nothing of its own to take off, and the mark stays on a message
+        with no turn left to answer for it.
+
+        Where the mark is not there the joining turn records nothing, and the
+        first one's refusal is how that is known — a platform that would not
+        add the reaction is not holding one, and a turn claiming otherwise
+        would have its own end wait on a mark nobody can remove.
         """
         if anchor.reaction_ref is None:
             return
         turns = self._thread_turns.setdefault(self._thread_key(anchor, mark), set())
-        first = not turns
-        if not first or await self._mark_thread(key, anchor, mark=mark, on=True):
-            turns.add(key)
+        if key in turns:
+            return
+        if not turns:
+            if not await self._mark_thread(key, anchor, mark=mark, on=True):
+                return
+        elif self._reacts:
+            held = self._mark_key(anchor, mark)
+            if await self._mark_may_be_there(held):
+                await self._expect_mark(key, held)
+        turns.add(key)
 
     async def _release_marks(self, key: tuple[str, str], anchor: _Anchor) -> bool:
         """Take this turn off every mark it could be holding.
@@ -1121,9 +1152,7 @@ class SessionTurnActivity:
         clear, which is why an expectation is named by the ask and not only by
         the turn that made it.
         """
-        if anchor.reaction_ref is None or not getattr(
-            self._adapter, "supports_activity_reactions", False
-        ):
+        if anchor.reaction_ref is None or not self._reacts:
             return True
         held = self._mark_key(anchor, mark)
         removing: set[tuple[str, str, str]] = set()

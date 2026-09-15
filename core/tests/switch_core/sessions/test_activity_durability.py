@@ -1153,6 +1153,118 @@ async def test_a_platform_with_one_reaction_marks_a_queued_prompt_as_it_always_d
     assert not platform.hourglass
 
 
+class RefusingHourglass(ActivitySlack):
+    """A platform that will not take the hourglass off, until it will.
+
+    Slack refuses a reaction change outright when the bot has lost the scope
+    for it, and the permission can come back. What the refusal leaves is a
+    reaction still on the message, which is why it is told apart from a
+    request that simply failed.
+    """
+
+    refuse_removal = False
+
+    async def mark_activity(self, channel, ref, *, agent_name, mark, on, force=False):
+        if mark == "queued" and not on and self.refuse_removal:
+            raise ActivityMarkRefused("Reactions are not allowed in this channel")
+        await super().mark_activity(
+            channel, ref, agent_name=agent_name, mark=mark, on=on, force=force
+        )
+
+
+async def test_a_shared_hourglass_outlives_a_restart_until_its_last_holder_ends(
+    session_factory,
+):
+    """Both prompts waiting behind one message hold its hourglass, and only the
+    first of them asked the platform for it.
+
+    A holder whose stake is only this process's memory stops being a holder
+    when the process does. The reaction does not: the second turn ends finding
+    nothing of its own to take off, and the hourglass stays on a message where
+    nobody is waiting any more.
+    """
+    await setup(session_factory)
+    platform = ActivitySlack()
+    renderer = activity(session_factory, platform)
+    await publish(renderer, "queued")
+    await publish(renderer, "queued", agent="Other", command="other")
+    await publish(renderer, "completed")
+    assert platform.hourglass == {"channel-demo:question"}
+
+    await publish(
+        activity(session_factory, platform), "completed", agent="Other", command="other"
+    )
+
+    assert not platform.hourglass
+
+
+async def test_a_refused_hourglass_removal_is_asked_again_when_the_turn_ends():
+    """A refusal is not the last word on a mark that is still there.
+
+    The turn is dropped from the holders before the platform is asked, so a
+    refusal leaves it holding nothing — and its own end then has no reason to
+    ask again. What survives the refusal is the expectation, standing because
+    the reaction may still be on the message, and that is what is owed a retry.
+    """
+    platform = RefusingHourglass()
+    renderer = SessionTurnActivity(platform)
+    await publish(renderer, "queued")
+    platform.refuse_removal = True
+    await publish(renderer, "running")
+    assert platform.hourglass == {"channel-demo:question"}
+    platform.refuse_removal = False
+
+    await publish(renderer, "completed")
+
+    assert not platform.hourglass
+
+
+async def test_a_claim_written_before_the_hourglass_still_answers_for_the_eyes(
+    session_factory,
+):
+    """A claim from before the two marks were told apart names no mark.
+
+    Read as naming none of them, a refused removal finds no evidence that
+    anything was ever put on the message, reports the cleanup done and leaves
+    the 👀 in plain sight. There was one reaction when those rows were written,
+    so the claim is the working one and the turn is not finished until it is
+    off.
+    """
+    await setup(session_factory)
+    platform = ActivitySlack()
+    await publish(activity(session_factory, platform))
+    await _unstamp_the_mark(session_factory)
+
+    async def refuse(*args, **kwargs):
+        raise ActivityMarkRefused("Reactions are not allowed in this channel")
+
+    platform.mark_activity = refuse
+    ended = await publish(activity(session_factory, platform), "completed")
+
+    assert platform.reactions == {"channel-demo:question"}
+    assert ended is False
+
+
+async def _unstamp_the_mark(session_factory):
+    """Put the recorded claims back into the shape an older release wrote."""
+    async with session_factory() as db:
+        for row in list(await db.scalars(select(SessionActivityPost))):
+            unstamped = {
+                key: row.data["mark"][key] for key in row.data["mark"] if key != "mark"
+            }
+            await db.execute(
+                update(SessionActivityPost)
+                .where(
+                    SessionActivityPost.tenant_id == row.tenant_id,
+                    SessionActivityPost.bridge_id == row.bridge_id,
+                    SessionActivityPost.session_id == row.session_id,
+                    SessionActivityPost.command_id == row.command_id,
+                )
+                .values(data=row.data | {"mark": unstamped})
+            )
+        await db.commit()
+
+
 async def test_busy_journal_is_skipped_until_next_sweep(session_factory):
     await setup(session_factory)
     journal = ActivityJournal(session_factory, "bridge")

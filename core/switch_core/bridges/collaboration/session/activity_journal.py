@@ -14,9 +14,9 @@ pre-journal live messages cannot be adopted automatically and may be duplicated.
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Final
 
-from sqlalchemy import Text, cast, func, literal, select, text, update
+from sqlalchemy import Text, and_, cast, func, literal, or_, select, text, update
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
@@ -48,6 +48,49 @@ def _claim_in(document: Any) -> ColumnElement:
             "mark_attempt",
             document["mark_attempt"],
         )
+    )
+
+
+#: What a claim that does not say which mark it holds is holding.
+#:
+#: There was one reaction before the hourglass, so a claim naming the message
+#: and the bot but not the mark is naming the working one. Read that way rather
+#: than rewritten: the rows belong to whichever turn wrote them, and a claim
+#: only has to be understood for as long as the reaction it describes is still
+#: on the message. Rewriting them would also have to reach rows no turn here
+#: has any business opening.
+IMPLIED_MARK: Final[str] = "working"
+
+
+def claims(stored: Any, mark: dict[str, str]) -> bool:
+    """Whether a recorded claim names this reaction."""
+    if not isinstance(stored, dict):
+        return False
+    if stored == mark:
+        return True
+    if mark.get("mark") != IMPLIED_MARK:
+        return False
+    return stored == {key: value for key, value in mark.items() if key != "mark"}
+
+
+def _claiming(mark: dict[str, str]) -> ColumnElement:
+    """Rows whose recorded claim names this reaction — `claims` as a query.
+
+    Containment is recursive, so the anchor alone also matches a claim on the
+    other mark; the kind being absent is what tells an older claim from that
+    one, and asking for it directly reads as SQL NULL where the key is not
+    there.
+    """
+    named: ColumnElement = SessionActivityPost.data.contains({"mark": mark})
+    if mark.get("mark") != IMPLIED_MARK:
+        return named
+    anchor = {key: value for key, value in mark.items() if key != "mark"}
+    return or_(
+        named,
+        and_(
+            SessionActivityPost.data.contains({"mark": anchor}),
+            SessionActivityPost.data["mark"]["mark"].astext.is_(None),
+        ),
     )
 
 
@@ -259,7 +302,7 @@ class ActivityJournal:
                         select(SessionActivityPost).where(
                             SessionActivityPost.tenant_id == require_tenant_id(),
                             SessionActivityPost.bridge_id == self.bridge_id,
-                            SessionActivityPost.data.contains({"mark": mark}),
+                            _claiming(mark),
                         )
                     )
                 ).first()
@@ -290,7 +333,7 @@ class ActivityJournal:
                 select(SessionActivityPost).where(
                     SessionActivityPost.tenant_id == require_tenant_id(),
                     SessionActivityPost.bridge_id == self.bridge_id,
-                    SessionActivityPost.data.contains({"mark": mark}),
+                    _claiming(mark),
                 )
             )
             return {
@@ -344,7 +387,7 @@ class ActivityJournal:
                         SessionActivityPost.bridge_id == self.bridge_id,
                         SessionActivityPost.session_id == session_id,
                         SessionActivityPost.command_id == command_id,
-                        SessionActivityPost.data.contains({"mark": mark}),
+                        _claiming(mark),
                         held == attempt,
                     )
                     .values(data=forgotten)
