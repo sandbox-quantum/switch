@@ -121,6 +121,11 @@ def _violates(error: IntegrityError, constraint: str) -> bool:
     return f'"{constraint}"' in str(error.orig)
 
 
+def _mark_id(mark: dict[str, str]) -> tuple[str, str, str]:
+    """The same reaction as a key this process can hold in a set."""
+    return (mark["channel_id"], mark["reaction_ref"], mark["agent_name"])
+
+
 class CardNotPosted(RuntimeError):
     """A request that has no card, so nobody was asked and nobody can answer.
 
@@ -167,6 +172,7 @@ class SessionTurnActivity:
         self._recovers_posts = getattr(adapter, "recovers_uncertain_posts", False)
         self._anchors: OrderedDict[tuple[str, str], _Anchor] = OrderedDict()
         self._thread_turns: dict[tuple[str, str, str], set[tuple[str, str]]] = {}
+        self._expecting: set[tuple[str, str, str]] = set()
         self._attention: OrderedDict[tuple[str, str], tuple[str, str]] = OrderedDict()
 
     @property
@@ -329,7 +335,13 @@ class SessionTurnActivity:
                     if not turn.turn_id.startswith("pending:"):
                         # Keep a small completion receipt to suppress replay, but
                         # discard delivery reservations and reaction/log anchors.
+                        # An outstanding mark is not this turn's to discard: the
+                        # holder that takes it off may be another turn entirely,
+                        # and it needs to know the mark is there.
+                        mark = record.data.get("mark")
                         record.data = {"turn_id": turn.turn_id, "ended": True}
+                        if mark is not None:
+                            record.data["mark"] = mark
                     record.data["completed"] = True
                     await record.save()
                 return drawn
@@ -820,21 +832,25 @@ class SessionTurnActivity:
         and best effort: errors do not interrupt rendering. Return whether it worked so
         callers can retry a failed claim or unfinished terminal cleanup.
 
-        A platform that refuses the mark outright raises `ActivityMarkRefused`,
-        and what that means depends on which way it was going. Refused on the
-        way *on*, the mark is simply absent: the turn goes on without it, and
-        the refusal is recorded so a later removal knows there was never
-        anything there. Refused on the way *off*, the question is whether a
-        mark is still sitting on the message, and only the durable record can
-        answer it once a restart has emptied this process's memory. No recorded
-        refusal means the cleanup is unfinished, and saying otherwise would
-        leave a channel showing an agent still working on something it has
-        finished.
+        A platform that refuses the mark outright raises `ActivityMarkRefused`.
+        Refused on the way *on*, the mark is simply absent and the turn goes on
+        without it. Refused on the way *off*, the question is whether a mark is
+        still sitting on the message — and that is a question about the mark,
+        not about this turn, because turns share one. It is answered from
+        `_expecting`, which is written before the platform is called and
+        retracted only when the platform says outright that nothing was put
+        there. Anything less certain leaves the expectation standing, so an
+        addition whose outcome is unknown counts as a mark that may be on the
+        message. Claiming otherwise would leave a channel showing an agent
+        still working on something it has finished.
         """
         if anchor.reaction_ref is None or not getattr(
             self._adapter, "supports_activity_reactions", False
         ):
             return True
+        mark = self._mark_key(anchor)
+        if working:
+            await self._expect_mark(mark)
         try:
             await self._adapter.mark_activity(
                 anchor.channel_id,
@@ -843,16 +859,12 @@ class SessionTurnActivity:
                 working=working,
                 **({"force": True} if self._journal else {}),
             )
-            return True
         except ActivityMarkRefused as refusal:
             if working:
-                await self._remember_refusal()
-                logger.warning(
-                    "%s The turn goes on without the mark.",
-                    refusal,
-                )
+                await self._forget_mark(mark)
+                logger.warning("%s The turn goes on without the mark.", refusal)
                 return True
-            if await self._nothing_was_marked(anchor):
+            if not await self._mark_may_be_there(mark):
                 logger.warning(
                     "%s Nothing was ever put on it, so there is nothing to take off.",
                     refusal,
@@ -873,37 +885,78 @@ class SessionTurnActivity:
                 exc_info=True,
             )
             return False
+        if not working:
+            await self._forget_mark(mark)
+        return True
 
-    async def _remember_refusal(self) -> None:
-        """Record that this message would not take the mark at all.
+    def _mark_key(self, anchor: _Anchor) -> dict[str, str]:
+        """Identify the reaction itself, which several turns can share.
 
-        On the turn's own journal row, which is discarded when the turn
-        completes — so the memory lasts exactly as long as it can be relevant.
-        Without a journal there is nothing to remember it in, and a restart is
-        not survivable anyway.
+        The same shape as `_thread_key` and for the same reason: where every
+        agent reacts as one bot there is a single mark between them, and where
+        each reacts as its own there is one apiece. Self-contained rather than
+        a pointer into the turn's anchor, because it has to outlive the anchor
+        — a turn that put the mark there can finish while another holder keeps
+        it, and its row is reduced to a receipt at that point.
         """
-        record = self._record.get()
-        if record is None:
+        return {
+            "channel_id": anchor.channel_id,
+            "reaction_ref": anchor.reaction_ref or "",
+            "agent_name": anchor.agent_name if self._reactions_per_agent else "",
+        }
+
+    async def _expect_mark(self, mark: dict[str, str]) -> None:
+        """Record that a mark may be on this message, before asking for it.
+
+        Before, not after, because a request that fails without an answer may
+        still have landed. Written where the answer will be needed: durably
+        when there is a journal, since the turn that eventually takes the mark
+        off may be running in a later process than the turn that put it on.
+        """
+        if _mark_id(mark) in self._expecting:
             return
-        record.data["reaction_refused"] = True
+        self._expecting.add(_mark_id(mark))
+        record = self._record.get()
+        if record is None or record.data.get("mark") == mark:
+            return
+        record.data["mark"] = mark
         await record.save()
 
-    async def _nothing_was_marked(self, anchor: _Anchor) -> bool:
-        """Whether a refused removal is safe to treat as already done.
+    async def _forget_mark(self, mark: dict[str, str]) -> None:
+        """Drop the expectation, once the mark is known not to be there.
 
-        Only a recorded refusal makes it safe. Absence of evidence is not
-        evidence, so an unjournalled publisher — which cannot survive a restart
-        to be wrong in the first place — keeps the behaviour it had.
+        Two ways to know: the platform refused to put it there at all, or it
+        took it off. Every holder's evidence goes, not only this turn's, because
+        they are all talking about the same reaction — one left behind would
+        have a later turn on that message reporting a mark that is not there
+        and never finishing.
         """
-        if self._journal is None:
-            return True
+        self._expecting.discard(_mark_id(mark))
         record = self._record.get()
-        if record is not None and record.data.get("reaction_refused"):
+        if record is not None and record.data.pop("mark", None) is not None:
+            await record.save()
+        if self._journal is not None:
+            await self._journal.forget_mark(
+                mark,
+                sessions=record.sessions if record else self._journal.sessions,
+            )
+
+    async def _mark_may_be_there(self, mark: dict[str, str]) -> bool:
+        """Whether a refused removal leaves something behind.
+
+        Any holder's standing expectation answers yes, whichever turn recorded
+        it and whether or not that turn has ended: a mark outlives the turn
+        that put it there. Without a journal the question is only as good as
+        this process's memory, which is sound for a publisher that has no
+        durable state to be restarted into.
+        """
+        if _mark_id(mark) in self._expecting:
             return True
-        return await self._journal.reaction_refused(
-            anchor.channel_id,
-            anchor.reaction_ref or "",
-            agent_name=anchor.agent_name if self._reactions_per_agent else None,
+        if self._journal is None:
+            return False
+        record = self._record.get()
+        return await self._journal.mark_expected(
+            mark,
             sessions=record.sessions if record else self._journal.sessions,
         )
 

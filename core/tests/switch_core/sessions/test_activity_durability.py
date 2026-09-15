@@ -824,3 +824,95 @@ async def test_a_chat_that_never_took_the_mark_does_not_hold_the_turn_open(
     after_restart = RefusingPlatform(chat, refuse_add=True, refuse_remove=True)
 
     assert await publish(activity(session_factory, after_restart), "completed")
+
+
+async def test_two_turns_sharing_a_mark_nobody_could_add_do_not_wait_for_it(
+    session_factory,
+):
+    """Reactions off throughout, and the turn that finishes last never tried.
+
+    Two turns on one asking message share a single reaction, so only the first
+    attempts to add it and only the last attempts to take it off — and they are
+    rarely the same turn. The first one's completion reduces its row to a
+    receipt. If what it learned lived on that row as a fact about the turn, the
+    last holder would find nothing, assume a mark it must remove, and go on
+    failing at a reaction that was never there. The evidence is about the mark,
+    so it outlives whichever turn recorded it.
+    """
+    await setup(session_factory)
+    chat = {"reactions": set(), "messages": {}}
+    renderer = activity(session_factory, RefusingPlatform(chat, refuse_add=True))
+
+    assert await publish(renderer, command="first")
+    assert await publish(renderer, command="second")
+    assert await publish(renderer, "completed", command="first")
+    assert not chat["reactions"]
+
+    renderer._adapter.refuse_remove = True
+
+    assert await publish(renderer, "completed", command="second")
+
+
+async def test_a_mark_that_went_on_later_outranks_the_refusal_that_came_first(
+    session_factory,
+):
+    """One turn is refused the mark; the next puts it there; the first ends last.
+
+    The refusal says nothing about the mark once somebody else has managed to
+    add it — they are the same reaction. Deciding from the ending turn's own
+    history reports a clean finish with the 👀 still on the message, which is
+    the failure this is all about, so the answer comes from what is expected of
+    the mark rather than from what happened to a turn.
+    """
+    await setup(session_factory)
+    chat = {"reactions": set(), "messages": {}}
+    refusing = RefusingPlatform(chat, refuse_add=True)
+    assert await publish(activity(session_factory, refusing), command="first")
+    assert not chat["reactions"]
+
+    after_restart = RefusingPlatform(chat)
+    renderer = activity(session_factory, after_restart)
+    assert await publish(renderer, command="second")
+    assert chat["reactions"] == {"channel-demo:question"}
+
+    # The first turn is still live, so the second leaves the shared mark alone.
+    assert await publish(renderer, "completed", command="second")
+    assert chat["reactions"] == {"channel-demo:question"}
+
+    after_restart.refuse_remove = True
+    assert not await publish(renderer, "completed", command="first")
+    assert chat["reactions"] == {"channel-demo:question"}
+
+    after_restart.refuse_remove = False
+    assert await publish(renderer, "completed", command="first")
+    assert not chat["reactions"]
+
+
+async def test_a_publisher_with_no_journal_still_owes_a_mark_it_put_there(
+    session_factory,
+):
+    """Without a journal there is no restart to survive, but there is a mark.
+
+    Nothing durable is recorded for this publisher, so its own memory is all
+    the evidence there is — and it is enough, because a process that cannot be
+    restarted into cannot be asked a question it was not there for. What it
+    must not do is treat having no journal as proof that nothing was added.
+    """
+    await setup(session_factory)
+    chat = {"reactions": set(), "messages": {}}
+    platform = RefusingPlatform(chat)
+    renderer = SessionTurnActivity(platform)
+
+    assert await publish(renderer)
+    assert chat["reactions"] == {"channel-demo:question"}
+
+    platform.refuse_remove = True
+    assert not await publish(renderer, "completed")
+    assert chat["reactions"] == {"channel-demo:question"}
+
+    elsewhere = RefusingPlatform(
+        {"reactions": set(), "messages": {}}, refuse_add=True, refuse_remove=True
+    )
+    unmarked = SessionTurnActivity(elsewhere)
+    assert await publish(unmarked)
+    assert await publish(unmarked, "completed")

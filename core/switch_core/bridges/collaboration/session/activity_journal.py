@@ -94,36 +94,25 @@ class ActivityJournal:
                 for row in rows
             )
 
-    async def reaction_refused(
+    async def mark_expected(
         self,
-        channel: str,
-        ref: str,
+        mark: dict[str, str],
         *,
-        agent_name: str | None = None,
         sessions: async_sessionmaker[AsyncSession],
     ) -> bool:
-        """Whether a turn on this message was refused the mark outright.
+        """Whether any turn is still expecting this reaction to be there.
 
         Asked when a *removal* is refused, to tell a mark that is still sitting
         on the message from one that was never put there. A process's own
         memory cannot answer it: a restart empties that, and empty then means
-        "no idea" rather than "nothing was added". Recording the refusal is
-        what survives.
+        "no idea" rather than "nothing was added".
 
-        Absence is not evidence, so absence means outstanding. A turn whose
-        addition succeeded records nothing here and a refused removal is
-        therefore treated as a mark still on the message, which is the truthful
-        direction: the cost of being wrong is a retry, and the cost of the
-        opposite is a channel showing an agent working on something it
-        finished.
-
-        Ended turns are counted, unlike `reaction_held`. A turn being over says
-        nothing about whether it left a mark behind — that is the whole of what
-        went wrong before.
+        Ended turns count, unlike `reaction_held`, and that is the point. Turns
+        share one reaction, so the turn that put it there routinely finishes
+        first and is reduced to a receipt while a later holder is left to take
+        it off. Asking only the live ones is how a mark comes to be reported as
+        cleaned up with the 👀 still on the message.
         """
-        anchor: dict[str, str] = {"channel_id": channel, "reaction_ref": ref}
-        if agent_name is not None:
-            anchor["agent_name"] = agent_name
         async with sessions() as db:
             return bool(
                 (
@@ -131,13 +120,38 @@ class ActivityJournal:
                         select(SessionActivityPost).where(
                             SessionActivityPost.tenant_id == require_tenant_id(),
                             SessionActivityPost.bridge_id == self.bridge_id,
-                            SessionActivityPost.data.contains(
-                                {"anchor": anchor, "reaction_refused": True}
-                            ),
+                            SessionActivityPost.data.contains({"mark": mark}),
                         )
                     )
                 ).first()
             )
+
+    async def forget_mark(
+        self,
+        mark: dict[str, str],
+        *,
+        sessions: async_sessionmaker[AsyncSession],
+    ) -> None:
+        """Erase every turn's expectation of this reaction at once.
+
+        Called when the platform has said the mark is not there — it was
+        refused, or it has been taken off. One reaction, so one answer: a
+        holder left still expecting it would have the next turn on that message
+        refuse to finish, waiting on a mark nobody can remove.
+        """
+        async with sessions() as db:
+            rows = await db.scalars(
+                select(SessionActivityPost).where(
+                    SessionActivityPost.tenant_id == require_tenant_id(),
+                    SessionActivityPost.bridge_id == self.bridge_id,
+                    SessionActivityPost.data.contains({"mark": mark}),
+                )
+            )
+            for row in rows:
+                data = dict(row.data)
+                data.pop("mark", None)
+                row.data = data
+            await db.commit()
 
     @asynccontextmanager
     async def open(
