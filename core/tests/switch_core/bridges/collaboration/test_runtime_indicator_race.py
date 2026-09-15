@@ -10,8 +10,12 @@ superseded message ref. The entry then points at a message the move has just
 deleted, and the message the move posted is referenced by nothing — so the
 end-of-turn clear cannot remove it and it stays in the channel forever.
 
-Telegram still uses this shared runtime-indicator path. Slack now uses SDK
-publication and does not participate in these races.
+Every platform that publishes SDK sessions has left this path, so the races are
+reproduced against a Telegram adapter with the legacy indicator switched back
+on. The path itself is shared and still live — Teams renders its runtime state
+through exactly this locking — and Telegram remains the adapter whose
+implementation exercises it most directly, so this is a fixture for a real
+defect rather than a test of dead code.
 
 The invariant each test asserts is the same: whatever is still posted on the
 platform is exactly what the adapter thinks is posted.
@@ -21,13 +25,27 @@ from __future__ import annotations
 
 import asyncio
 import time
-from typing import Any
+from typing import Any, ClassVar
 
 from switch_core.bridges.collaboration.adapter import LiveRuntimeIndicator
 from switch_core.bridges.collaboration.telegram.adapter import (
     TelegramAdapter,
     TelegramConnectionConfig,
 )
+
+
+class _LegacyIndicator(TelegramAdapter):
+    """Telegram with the legacy runtime indicator still switched on.
+
+    The lock these tests are about lives in the public `apply_runtime_state` /
+    `reposition_runtime_state`, above the flag that now turns the whole path
+    off — so calling the adapter's own `_apply_runtime_state` instead would
+    bypass the very thing under test. Re-enabling the flag keeps both callers
+    going through the real entry point.
+    """
+
+    renders_legacy_runtime_state: ClassVar[bool] = True
+
 
 CHANNEL = "chan-1"
 AGENT = "worker"
@@ -73,10 +91,8 @@ class _Platform:
 
 
 def _adapter() -> tuple[TelegramAdapter, _Platform]:
-    adapter = TelegramAdapter(
-        config=TelegramConnectionConfig(
-            bot_token="test", bot_username="test_bot"
-        )
+    adapter = _LegacyIndicator(
+        config=TelegramConnectionConfig(bot_token="test", bot_username="test_bot")
     )
     adapter._working_msg[KEY] = LiveRuntimeIndicator(
         message_ref="msg-1",

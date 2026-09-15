@@ -6,7 +6,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field, replace
 from datetime import datetime
-from typing import ClassVar
+from typing import ClassVar, Literal
 
 from switch_core.agent_display_name import defuse_label_markup
 from switch_core.agent_icon import default_icon_url
@@ -23,7 +23,11 @@ from switch_core.bridges.collaboration.models import (
     InboundUserJoin,
     OutboundAttachment,
 )
-from switch_core.bridges.collaboration.session.renderers import RequestReference
+from switch_core.bridges.collaboration.session.renderers import (
+    MARKDOWN,
+    Markup,
+    RequestReference,
+)
 from switch_core.bridges.collaboration.session.renderers.neutral import (
     request_summary,
     turn_summary,
@@ -44,9 +48,9 @@ def format_elapsed(seconds: float) -> str:
     "2m14s", "1h03m" — rather than as a precise duration nobody reads. Sub-
     second turns report "0s" instead of an empty string.
 
-    Lives here rather than beside one adapter because every platform that
-    retires a status line by editing it rather than deleting it wants the same
-    words on it.
+    Lives here rather than beside one adapter because every platform ends a
+    status line the same way — edited in place, left in the conversation — and
+    wants the same words on it.
     """
     total = max(0, int(seconds))
     if total < 60:
@@ -134,6 +138,11 @@ class TurnActivity:
     publication_token: str | None = None
     session_url: str | None = None
     notify_external_id: str | None = None
+    # There was someone who should be told and nobody here to name: the agent
+    # has no owner, or an owner who has claimed no account on this platform.
+    # Distinct from `notify_external_id` being None on a redraw, which means
+    # the mention has already been made and must not be repeated.
+    notify_unreachable: bool = False
     # Canned, room-safe attention message. Never raw host/provider output.
     error_summary: str | None = None
 
@@ -163,6 +172,10 @@ class RequestCard:
     # Presentation only: never changes the SDK request or its authorization.
     unavailable_reason: str | None = None
     notify_external_id: str | None = None
+    # As on `TurnActivity`, and for the same reason: a card being asked of
+    # nobody is not the same as a redraw of one already asked, and only the
+    # first is worth saying out loud.
+    notify_unreachable: bool = False
 
 
 RichContent = TurnActivity | RequestCard
@@ -199,12 +212,105 @@ class RichContentThrottled(RichContentFailed):
         self.retry_after = retry_after
 
 
+class ThreadUnavailable(RichContentFailed):
+    """No thread exists under the root message, and none could be made.
+
+    A statement of fact, not a verdict on where the content should go instead.
+    An absent thread looks the same whether it was never made or was made
+    privately and then deleted, and only the caller knows which: it holds the
+    recorded origin of the command, and the platform does not. Posting to the
+    parent channel is right in the first case and hands a private
+    conversation's contents to an audience in the second.
+
+    Nothing has been posted when this is raised, so a caller may post
+    elsewhere — or release its reservation, as for any `RichContentFailed`.
+    """
+
+
+class ActivityMarkRefused(RuntimeError):
+    """The platform will not change the work mark, and another attempt will not.
+
+    Reactions switched off in the chat, or a permission the bot does not have:
+    refused now means refused for the life of the turn. Anything a retry might
+    fix is left to raise as itself, so the publisher can tell the two apart.
+
+    Raised for a refused *removal* as well as a refused addition. Whether that
+    matters is not the adapter's to decide — it depends on whether a mark was
+    ever put there, which only the durable record knows after a restart.
+    """
+
+
+#: Which indicator a message is carrying, where a platform can carry one.
+#:
+#: "working" is the agent reading and acting on the message. "queued" is the
+#: agent holding it behind something else and not started, which is a different
+#: thing to be told and is why it is a mark of its own rather than a second
+#: meaning for the first.
+ActivityMark = Literal["working", "queued"]
+
+
 class CollaborationAdapter(ABC):
     # Platforms opt in only when their SDK request and activity rendering is ready.
     publishes_sdk_sessions: ClassVar[bool] = False
     # Keep the ticking status and expandable tool log in separate messages.
     separate_activity_log: ClassVar[bool] = False
+
+    #: Whether a problem somebody has to act on gets a message of its own.
+    #:
+    #: One durable reply per turn, reused as the problem changes and cleared
+    #: when it goes away — never a second one. Separate from
+    #: `separate_activity_log` because the two answer different questions: a
+    #: platform can want one compact status carrying its own tool counts (so
+    #: no separate log) and still want a failure to arrive as something a
+    #: reader is notified about rather than as an edit to a message they have
+    #: already scrolled past.
+    separate_attention_slot: ClassVar[bool] = False
+
+    #: Whether a mention is the only way an attention post reaches anyone.
+    #:
+    #: True where nobody follows a thread they are not already in, so a post
+    #: that names no one is read by no one. What follows from that is the
+    #: admission: an attention post with nobody to name says so, because one
+    #: that notified no one otherwise looks exactly like one that notified the
+    #: right person. Who gets named is not decided here — the asker leads
+    #: everywhere, with the agent's owner as the fallback.
+    #:
+    #: False where the platform's own following does that work: a Slack
+    #: participant gets the threaded reply without being named, and naming
+    #: them is a notification they already had.
+    notifies_only_by_mention: ClassVar[bool] = False
+
+    #: Whether a ticking clock is reason enough to redraw a running turn.
+    #:
+    #: True where the status is a small line of its own that a reader watches
+    #: for exactly that, so the seconds advancing is the message doing its job.
+    #: False where the status is the turn's one post: there the elapsed time
+    #: rides along with the next real change — a tool, a state, the ending —
+    #: rather than rewriting the post a reader is in the middle of, and the
+    #: final update still shows what the turn actually took.
+    redraws_for_elapsed_time: ClassVar[bool] = False
+
     supports_activity_reactions: ClassVar[bool] = False
+
+    #: Whether a prompt still waiting its turn can be marked as well.
+    #:
+    #: A second reaction beside the working one, saying the agent has the
+    #: prompt but has not started on it. Separate from
+    #: `supports_activity_reactions` because it asks more of the platform: not
+    #: that a bot can react, but that it can hold two reactions on one message
+    #: at once. Telegram allows a bot exactly one, so the queued state is
+    #: carried by its status text alone and never by a mark.
+    supports_queue_reaction: ClassVar[bool] = False
+
+    #: Whether the work reaction belongs to the agent that added it.
+    #:
+    #: True where each agent posts as its own bot, so two agents working on one
+    #: message leave two independent marks and each must be claimed, held and
+    #: removed on its own. False where every agent shares one bot account: the
+    #: platform has one reaction between them, so the first turn to want it
+    #: puts it on and the last to finish takes it off.
+    activity_reactions_per_agent: ClassVar[bool] = False
+
     renders_legacy_runtime_state: ClassVar[bool] = True
 
     #: Whether this platform can create a channel from Switch at all.
@@ -254,6 +360,58 @@ class CollaborationAdapter(ABC):
     #: rather than inline, moving the status out of the channel hides it, and
     #: that trade is the platform's to make.
     runtime_state_follows_anchor: ClassVar[bool] = False
+
+    #: Whether `find_request_card` can actually search this platform.
+    #:
+    #: False here because the base `find_request_card` returns `None` for
+    #: every call: it has nowhere to look. An adapter that implements the
+    #: search sets this True, and the difference is not cosmetic — `None`
+    #: from a platform that searched means "not there yet, ask again", while
+    #: `None` from a platform that cannot search means "never, however long
+    #: you wait". Retrying the second one forever leaves a card visible in
+    #: the chat that silently refuses the answer it asks for, which is the
+    #: outcome the publisher discloses instead.
+    recovers_uncertain_posts: ClassVar[bool] = False
+
+    #: Whether a publication carries a marker `find_request_card` can match on
+    #: regardless of what the message says.
+    #:
+    #: Slack writes the token into a `block_id` and message metadata,
+    #: Mattermost into a post prop: both are exact, invisible, and present on
+    #: every publication, so anything this bridge posted can be recognised
+    #: again. Discord has nowhere to put one on a webhook message, so it
+    #: recognises a card by the handle the card itself prints — which works
+    #: for a card and cannot work for a turn's activity, because activity
+    #: prints no handle.
+    #:
+    #: Separate from `recovers_uncertain_posts` because the two answer
+    #: different questions. That one asks whether the platform can be searched
+    #: at all; this one asks whether a search can find a publication that
+    #: prints nothing to search for. A platform can recover its cards and
+    #: still never recover a status, and a caller that cannot tell those apart
+    #: either repeats a lookup that has no way to succeed or abandons a card
+    #: that would have been found.
+    #:
+    #: Not a statement about the platform — a statement about this adapter. An
+    #: adapter that starts carrying a marker of its own sets this True and the
+    #: publications it could not recognise before become recoverable.
+    carries_publication_marker: ClassVar[bool] = False
+
+    #: Whether this platform may say in the channel that a card's delivery was
+    #: never confirmed.
+    #:
+    #: Deliberately not implied by `recovers_uncertain_posts`. That one is a
+    #: fact about the adapter — whether a lost publication can be looked for.
+    #: This is a decision about what the people in the channel are told when it
+    #: cannot be, and it posts a message they did not ask for into a
+    #: conversation this bridge does not own. The two were one flag, and a
+    #: platform gaining the first answer silently acquired the second.
+    #:
+    #: False here so a new platform discloses nothing until somebody has agreed
+    #: it should. Where it is False and recovery is impossible, the reservation
+    #: is still kept and the request is still answerable in Console — what is
+    #: withheld is the notice, not the request.
+    discloses_unconfirmed_posts: ClassVar[bool] = False
 
     def __init__(self) -> None:
         self._on_message: Callable[[InboundMessage], Awaitable[None]] | None = None
@@ -386,6 +544,7 @@ class CollaborationAdapter(ABC):
         thread_root_id: str | None = None,
         *,
         message_type: str | None = None,
+        drawn: str | None = None,
     ) -> str | None:
         """Post a first-class admin/system message to the external channel,
         rendered in the platform's native way as the bridge's own identity (not
@@ -404,13 +563,25 @@ class CollaborationAdapter(ABC):
         notices, and the relayed admin events alike. An override must therefore
         run `translate_outbound` itself. Splitting that responsibility between
         callers is what once sent a body through the conversion twice, and the
-        second pass escapes the markup the first one produced."""
+        second pass escapes the markup the first one produced.
+
+        `drawn` is content this adapter drew, in the platform's own spelling,
+        to go under the notice — a card's fallback text, where the notice is
+        about that card. It is appended after the conversion and never through
+        it. Written into `content` instead it would be converted as if it were
+        Markdown, and a reader is shown the platform's own tags as prose: the
+        very failure the paragraph above describes, arriving from the other
+        side. An override joins the two with `_admin_body`."""
         return await self.send_message(
             channel_id,
             self._bridge_display_name(),
-            self.translate_outbound(content),
+            self._admin_body(self.translate_outbound(content), drawn),
             thread_root_id,
         )
+
+    def _admin_body(self, rendered: str, drawn: str | None) -> str:
+        """A rendered notice, and under it whatever the adapter already drew."""
+        return rendered if drawn is None else f"{rendered}\n{drawn}"
 
     def _bridge_display_name(self) -> str:
         return "Switch"
@@ -561,16 +732,41 @@ class CollaborationAdapter(ABC):
         return ref
 
     async def update_rich(
-        self, channel_id: str, message_ref: str, content: RichContent
+        self,
+        channel_id: str,
+        agent_name: str,
+        message_ref: str,
+        content: RichContent,
+        thread_root_id: str | None,
     ) -> None:
         """Redraw what `post_rich` posted, in place.
 
         Falls back the same way `post_rich` does. Most adapters'
         `update_message` swallows its own errors by design, for the
-        runtime-status paths that depend on that — but not all of them (Teams'
-        raises on any non-2xx status), so this catches broadly rather than
-        trusting the convention: whichever it does, a caller of `update_rich`
-        sees `RichContentFailed` or nothing.
+        runtime-status paths that depend on that — but not all of them, so this
+        catches broadly rather than trusting the convention: whichever it does,
+        a caller of *this* wrapper sees `RichContentFailed` or nothing.
+
+        That is the default, not the port's whole contract. An adapter with its
+        own failure policy overrides this, and the overrides deliberately let a
+        throttle and an unknown outcome through unwrapped, because a caller has
+        to be able to tell "refused" from "come back to this". What the port
+        does promise is that a *refusal* arrives as `RichContentFailed`, never
+        as a platform client's own exception.
+
+        `agent_name` is the same name `post_rich` was given, and is here for
+        the platform that writes it into the body: one bot identity means the
+        name is part of what was drawn, so a redraw that did not know it would
+        quietly rewrite the message as somebody else. Passing it on every call
+        keeps that out of an in-memory map that a restart empties.
+
+        `thread_root_id` is the same thread `post_rich` was given, for the same
+        reason. On most platforms a message id is an address on its own and
+        this is ignored; on Teams an edit is addressed to the *conversation*,
+        and for a reply inside a channel post that conversation is named by the
+        thread rather than by the message. Passing it keeps the one durable
+        answer flowing from the journal or the card row, instead of a
+        process-local map that a restart turns into a guess.
         """
         text = self.rich_fallback_text(content)
         try:
@@ -582,17 +778,42 @@ class CollaborationAdapter(ABC):
                 text=text,
             ) from error
 
+    def notice_address(self, message_ref: str, thread_root_id: str | None) -> str:
+        """Where a notice *about* a publication has to be said.
+
+        Beside the publication, so the people who can see the stale card are
+        the people who read the correction: the thread it went into where there
+        was one, and otherwise the publication itself, which is then the root
+        of its own conversation.
+
+        Not the publication's id where a thread exists — on a platform that
+        addresses a reply by its conversation rather than by the message, a
+        publication that is itself a reply names no conversation, and a notice
+        nobody can see is worse than the stale card it is about. An adapter
+        whose own reference carries a confirmed conversation overrides this to
+        prefer it: a rebuilt address is the weaker of the two.
+        """
+        return thread_root_id or message_ref
+
     def rich_fallback_text(self, content: RichContent) -> str:
         """The neutral text form of `content`, for `post_rich` / `update_rich`'s
         base and for any adapter that wants the same fallback rather than its
         own.
 
         A turn falls back to `turn_summary` — the last thing the agent said,
-        and the turn's own state. A request card has no neutral form yet:
-        there is no off-Slack request renderer to write one against, so
-        `request_summary` raises rather than guess at a shape (title, detail,
-        per-option or per-question lines, a footer) nobody has needed yet.
-        Implement that alongside the first one.
+        and the turn's own state. A request falls back to `request_summary`:
+        the question, its numbered options and the typed-answer grammar for
+        this particular form, in whichever state the request is in. Neither
+        is the compact presentation a platform publishing SDK sessions wants
+        (`turn_status` is), which is why an adapter that does publish them
+        overrides this rather than inheriting it.
+
+        The card's own extras go with it. `unavailable_reason` is the notice
+        that replaces the instruction on a card that cannot be answered where
+        it is showing, and dropping it here would leave the reader an
+        instruction that is about to be refused. `responder_external_id` is
+        not passed on: it is a platform id, and an adapter that can turn one
+        into a name renders the card itself.
 
         The result is ready to send as-is — `post_rich` and `update_rich` do
         not run it through `translate_outbound` again. `_rich_escape` already
@@ -617,7 +838,19 @@ class CollaborationAdapter(ABC):
             content.reference,
             escape=escape,
             limit=self.rich_fallback_limit(),
+            markup=self.rich_markup(),
+            unavailable_reason=content.unavailable_reason,
         )
+
+    def rich_markup(self) -> Markup:
+        """How this platform spells emphasis, a copyable literal and a link.
+
+        Markdown by default, which is what every platform reaching the neutral
+        renderer today parses. A platform whose message body is something else
+        — Telegram's is HTML — overrides this rather than carrying a renderer
+        of its own, so the budget and faithfulness logic stays in one copy.
+        """
+        return MARKDOWN
 
     def _rich_escape(self, label: str) -> str:
         """`rich_fallback_text`'s host text, neutralised and then rendered.
@@ -648,14 +881,24 @@ class CollaborationAdapter(ABC):
         thread_root_id: str | None,
         token: str,
         created_at: datetime,
+        handle: str | None,
     ) -> str | None:
-        """Search for a request card already on the platform, by its token.
+        """Search for a publication already on the platform, by its marker.
 
         `recover` calls this when a post's outcome is uncertain, so it can
         bind the reservation to what is actually there instead of risking a
         duplicate. `None` means either nothing was found or, as here, that
-        this platform has no way to look — a card recovers only where an
-        adapter can search for one, which today is only `SlackAdapter`.
+        this platform has no way to look — a publication recovers only where
+        an adapter can search for one.
+
+        `token` is the marker the adapter was given to carry, and is what a
+        platform with somewhere to hide one matches on. `handle` is the
+        request's own name, the one printed in the card for people to type
+        back, and it is here for the platform that has nowhere to hide a
+        marker at all: on Discord a webhook message carries no metadata, so
+        the visible handle is the only durable thing that distinguishes one
+        card from another. It is `None` for an activity publication, which
+        has no handle and so cannot be recovered that way.
         """
         return None
 
@@ -668,9 +911,49 @@ class CollaborationAdapter(ABC):
     ) -> None: ...
 
     async def mark_activity(
-        self, channel_id: str, message_ref: str, *, working: bool, force: bool = False
+        self,
+        channel_id: str,
+        message_ref: str,
+        *,
+        agent_name: str,
+        mark: ActivityMark,
+        on: bool,
+        force: bool = False,
     ) -> None:
-        """Update a platform work indicator when the adapter supports one."""
+        """Update a platform work indicator when the adapter supports one.
+
+        `agent_name` is which agent is working, and it is required rather than
+        optional because a platform where each agent posts as its own bot
+        cannot add or remove a reaction without knowing whose it is. A
+        platform with one shared bot ignores it — there is one reaction
+        between every agent there — but a caller that could not supply it
+        would be a caller that cannot serve the per-agent platforms at all.
+
+        `mark` says which indicator, and the two are independent: a prompt can
+        be queued and not yet worked on, and the same message can carry another
+        turn's working mark at the same time. An adapter that declares no
+        `supports_queue_reaction` is never asked for the queued one.
+        """
+
+    async def notify_working(
+        self, channel_id: str, agent_name: str, thread_root_id: str | None
+    ) -> None:
+        """Signal once, where the work was asked for, that the agent has begun.
+
+        A platform's own ephemeral "typing" affordance, which expires by itself
+        and so is a nudge rather than a state to switch off. Called once as a
+        turn opens and never on a redraw: repeated, it would claim the agent
+        was typing for as long as the turn ran.
+
+        `thread_root_id` is where the *asking* happened, which is not
+        necessarily where the status went — someone who wrote at the channel
+        root is watching the root, not a thread they have not opened yet. None
+        means the channel root.
+
+        Best effort by nature. Nothing is waiting on it and the posted status
+        carries the state from here on, so an adapter that cannot send one
+        does nothing and says nothing.
+        """
 
     def _runtime_lock(self, channel_id: str, agent_name: str) -> asyncio.Lock:
         """The lock serialising runtime-indicator work for one agent in one
@@ -913,6 +1196,19 @@ class CollaborationAdapter(ABC):
             )
         body = self.translate_outbound(text + self._deeplink_suffix(deeplink_url))
         return await self.send_message(channel_id, agent_name, body, thread_root_id)
+
+    def unnotified_notice(self) -> str:
+        """Why an attention post named nobody, for a platform that says so.
+
+        The same explanation `_ping_operator` gives, for the SDK publication
+        that replaces it: the reader is told this reached no one and what to
+        do so the next one does, rather than being left to assume the person
+        who can act has already seen it.
+        """
+        return (
+            "Nobody here is linked to this agent's owner, so this notified no one. "
+            f"Link your {self.platform_name} account in Switch Console to be notified."
+        )
 
     @abstractmethod
     async def create_channel(

@@ -26,16 +26,22 @@ class ActivityPlatform:
     not what a renderer does with it.
     """
 
+    redraws_for_elapsed_time = True
+
     def __init__(self):
         self.posts = []
         self.edits = []
+        self.nudges = []
 
     async def post_rich(self, channel, agent, content, thread):
         self.posts.append((channel, content, thread))
         return f"{channel}:activity.1"
 
-    async def update_rich(self, channel, post, content):
+    async def update_rich(self, channel, agent, post, content, thread):
         self.edits.append((channel, post, content))
+
+    async def notify_working(self, channel, agent, thread_root_id):
+        self.nudges.append((channel, agent, thread_root_id))
 
 
 async def test_a_running_turn_is_published_for_a_real_session(session_factory):
@@ -1049,6 +1055,20 @@ async def test_slack_receipt_maps_ids_and_becomes_the_running_activity(
     assert len(platform.edits) == edits
 
 
+def _elapsed_follows(monkeypatch, clock):
+    """Report the turn's duration from the test's clock rather than wall time.
+
+    A turn's elapsed time is measured against `datetime.now`, which barely
+    moves while a test runs, so a redraw the clock earned would be
+    indistinguishable from no redraw at all.
+    """
+
+    async def elapsed(db, session_id, turn_id, *, running=False):
+        return clock[0]
+
+    monkeypatch.setattr(publication, "_turn_elapsed_seconds", elapsed)
+
+
 async def test_running_timer_refreshes_without_new_sdk_events(
     session_factory, monkeypatch
 ):
@@ -1065,6 +1085,7 @@ async def test_running_timer_refreshes_without_new_sdk_events(
     monkeypatch.setattr(
         publication, "time", SimpleNamespace(monotonic=lambda: clock[0])
     )
+    _elapsed_follows(monkeypatch, clock)
     await publisher.publish_pending()
     await publisher.publish_pending()
     assert platform.edits == []
@@ -1073,6 +1094,78 @@ async def test_running_timer_refreshes_without_new_sdk_events(
     assert len(platform.posts) == 1
     assert len(platform.edits) == 1
     assert platform.edits[0][2].elapsed_seconds >= platform.posts[0][1].elapsed_seconds
+
+
+async def test_a_platform_that_does_not_tick_is_not_woken_by_the_clock(
+    session_factory, monkeypatch
+):
+    """Where the turn is one post the reader is already looking at, a redraw
+    is their message changing under them. The clock has not earned one, so the
+    turn is not even offered for republication until something else changes.
+    """
+
+    class Untimed(ActivityPlatform):
+        redraws_for_elapsed_time = False
+
+    service, epoch = await setup(session_factory)
+    await opened(service, epoch)
+    platform = Untimed()
+    publisher = SessionPublisher(
+        session_factory,
+        "bridge",
+        cards_for(session_factory, Platform()),
+        SessionTurnActivity(platform),
+    )
+    clock = [100.0]
+    monkeypatch.setattr(
+        publication, "time", SimpleNamespace(monotonic=lambda: clock[0])
+    )
+    _elapsed_follows(monkeypatch, clock)
+    await publisher.publish_pending()
+    for _ in range(4):
+        clock[0] += 5
+        await publisher.publish_pending()
+
+    assert len(platform.posts) == 1
+    assert platform.edits == []
+
+
+async def test_a_turn_that_ends_is_still_drawn_on_a_platform_that_does_not_tick(
+    session_factory, monkeypatch
+):
+    """The suppression is of the clock, not of the turn. A reader left with
+    "Working…" on a finished turn is worse off than one redrawn too often."""
+
+    class Untimed(ActivityPlatform):
+        redraws_for_elapsed_time = False
+
+    service, epoch = await setup(session_factory)
+    await opened(service, epoch)
+    platform = Untimed()
+    publisher = SessionPublisher(
+        session_factory,
+        "bridge",
+        cards_for(session_factory, Platform()),
+        SessionTurnActivity(platform),
+    )
+    await publisher.publish_pending()
+    await service.ingest(
+        "agent-demo",
+        "host-demo",
+        host_event(
+            epoch,
+            3,
+            {
+                "type": "turn.upsert",
+                "turnId": "turn-demo",
+                "status": "completed",
+                "commandId": "message-demo",
+            },
+        ),
+    )
+    await publisher.publish_pending()
+
+    assert [edit[2].turn.status for edit in platform.edits] == ["completed"]
 
 
 async def test_rate_limited_activity_retries_at_platform_deadline(
@@ -1095,6 +1188,7 @@ async def test_rate_limited_activity_retries_at_platform_deadline(
     monkeypatch.setattr(
         publication, "time", SimpleNamespace(monotonic=lambda: clock[0])
     )
+    _elapsed_follows(monkeypatch, clock)
     await publisher.publish_pending()
     update = AsyncMock(
         side_effect=[RichContentThrottled(retry_after=17, text="Working"), None]

@@ -49,14 +49,15 @@ Build an OAuth2 invite URL (Developer Portal → **OAuth2 → URL Generator**):
 - **Bot permissions** (matching what the adapter does):
   - **View Channels** — see the guild's channels.
   - **Send Messages** + **Send Messages in Threads** — post agent replies.
-  - **Manage Webhooks** — mint the per-channel webhook agents post through.
+  - **Manage Webhooks** — mint the two per-channel webhooks the bridge posts
+    through (see [Two webhooks per channel](#two-webhooks-per-channel)).
   - **Manage Channels** / **Manage Roles** — set per-member channel permission
     overwrites (`channel.set_permissions`) when provisioning access, and mint
     the per-agent role that makes an agent's name autocomplete (see [Agent name
     autocomplete](#agent-name-autocomplete-agent_roles)).
   - **Read Message History** — thread-aware replies.
   - **Attach Files** — relay agent image attachments.
-  - **Add Reactions** — put 👀 on the message an agent is working on (see
+  - **Add Reactions** — mark the message an agent is working on (see
     [Knowing an agent is working](#knowing-an-agent-is-working)).
 
 Open the generated URL and add the bot to your server.
@@ -120,14 +121,16 @@ where role management is restricted.
 
 When a Switch Console-managed agent starts on a message, two things appear:
 
-- **👀 on the message it is answering**, removed when its turn ends. This is the
-  only signal that says *which* message is being handled — an agent answering
-  two people at once marks both, and clears both together. It needs the **Add
-  Reactions** permission; without it the bridge logs a warning and posts no
-  reaction rather than a mark that is not there.
-- **A "⚙️ Working on it…" message** posted under the agent's own name and
-  avatar, edited in place as the activity changes and deleted when the turn
-  ends.
+- **A reaction on the message it is answering** — 👀 while the agent is working
+  on it, ⏳ while a prompt is waiting behind one already running. Cleared when
+  the turn ends. This is the only signal that says *which* message is being
+  handled — an agent answering two people at once marks both, and clears both
+  together. It needs the **Add Reactions** permission; without it the bridge
+  logs a warning and posts no reaction rather than a mark that is not there.
+- **A status message** posted under the agent's own name and avatar, edited in
+  place as the activity changes: "Working… 41s" while the turn runs, "Worked for
+  2m 14s." when it finishes. It stays in the channel after the turn rather than
+  being deleted, so someone scrolling back can still see that the turn ran.
 
 **What Discord cannot do here.** There is no native progress surface — nothing
 like Slack's agent card — so the working message is one Switch renders itself.
@@ -136,6 +139,26 @@ about 10 seconds, has no "stop" call, and shows the *bot* rather than the agent,
 so with two agents working it would read as one anonymous "Switch Bridge is
 typing". Discord's "thinking…" placeholder is interaction-only (slash commands),
 which does not cover an ordinary `@agent` message.
+
+## Two webhooks per channel
+
+An admin looking at a channel's integration settings will see **two** Switch
+webhooks, not one, and both are expected:
+
+- **Switch Bridge** — every ordinary agent message, with the agent's name and
+  avatar carried as a per-message override.
+- **Switch Sessions** — session status messages and request cards, and nothing
+  else.
+
+They are split so that a status or a card can be recognised with certainty from
+the channel history alone. Recognising them by sender-plus-wording would also
+match an agent that happens to quote a request handle in its own reply, and
+Switch would then keep editing that reply as though it were the card. Nothing
+but the publisher ever posts on the second webhook, so anything found on it is
+one of ours.
+
+Both are minted on demand the first time the bridge needs them in a channel, and
+both need **Manage Webhooks**. Discord's limit is 15 webhooks per channel.
 
 ## Slash commands
 

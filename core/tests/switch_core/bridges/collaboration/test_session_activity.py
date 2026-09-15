@@ -285,7 +285,7 @@ async def test_the_last_line_says_whether_the_turn_is_still_moving() -> None:
     items = await _items()
 
     assert _state(items, _turn("running")) == "Working…"
-    assert _state(items, _turn("queued")) == "Received. Waiting for the agent…"
+    assert _state(items, _turn("queued")) == "Queued. Waiting for the agent to start…"
 
 
 async def test_a_turn_with_nothing_done_in_it_still_says_where_it_got_to() -> None:
@@ -407,7 +407,7 @@ async def test_a_turn_with_no_items_at_all_shows_its_state_too() -> None:
 
 
 async def test_a_completed_turn_shows_how_long_it_worked_instead_of_saying_so() -> None:
-    state = turn_state([], _turn("completed"), elapsed_seconds=80)
+    state = turn_state([], _turn("completed"), tool_detail=True, elapsed_seconds=80)
 
     assert state == "Worked for 1m 20s."
 
@@ -415,13 +415,15 @@ async def test_a_completed_turn_shows_how_long_it_worked_instead_of_saying_so() 
 async def test_the_worked_for_line_counts_its_tool_calls() -> None:
     did = [_item(itemId=f"c{n}") for n in range(20)]
 
-    state = turn_state(did, _turn("completed"), elapsed_seconds=80)
+    state = turn_state(did, _turn("completed"), tool_detail=True, elapsed_seconds=80)
 
     assert state == "Worked for 1m 20s. 20 tool calls."
 
 
 async def test_a_single_tool_call_is_not_pluralised() -> None:
-    state = turn_state([_item()], _turn("completed"), elapsed_seconds=5)
+    state = turn_state(
+        [_item()], _turn("completed"), tool_detail=True, elapsed_seconds=5
+    )
 
     assert state == "Worked for 5s. 1 tool call."
 
@@ -429,14 +431,14 @@ async def test_a_single_tool_call_is_not_pluralised() -> None:
 async def test_an_interrupted_turn_keeps_its_own_phrase_and_says_how_long_too() -> None:
     """Worth knowing on its own, unlike "complete" — so this one is appended
     rather than replaced."""
-    state = turn_state([], _turn("interrupted"), elapsed_seconds=45)
+    state = turn_state([], _turn("interrupted"), tool_detail=True, elapsed_seconds=45)
 
     assert state == "Turn interrupted. Worked for 45s."
 
 
 async def test_a_running_turn_shows_live_elapsed_seconds() -> None:
     """The publisher refreshes this duration while the turn is running."""
-    state = turn_state([], _turn("running"), elapsed_seconds=80)
+    state = turn_state([], _turn("running"), tool_detail=True, elapsed_seconds=80)
 
     assert state == "Working… 1m 20s"
 
@@ -444,7 +446,7 @@ async def test_a_running_turn_shows_live_elapsed_seconds() -> None:
 async def test_with_no_elapsed_seconds_a_completed_turn_says_only_that() -> None:
     """No timing to show is not the same as zero — the plain phrase stays
     rather than claiming a duration nobody measured."""
-    state = turn_state([], _turn("completed"), elapsed_seconds=None)
+    state = turn_state([], _turn("completed"), tool_detail=True, elapsed_seconds=None)
 
     assert state == "Turn complete."
 

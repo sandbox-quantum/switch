@@ -167,6 +167,22 @@ function advertisedDecisions(raw: CodexCommandExecutionApprovalParams): Approval
   return decisions;
 }
 
+/**
+ * Which part of a command approval is the command and which is the prose.
+ *
+ * A reader sees `detail` set apart — a code span where the surface has one — so
+ * the command belongs there and Codex's reason for asking belongs in the title.
+ * With no command there is nothing to set apart and the prose carries the card.
+ */
+function commandApprovalContent(payload: CodexCommandExecutionApprovalParams): {
+  title: string;
+  detail?: string;
+} {
+  const where = payload.cwd ? `Run a command in ${payload.cwd}` : 'Run a command';
+  if (!payload.command) return { title: payload.reason ?? where };
+  return { title: payload.reason ?? where, detail: payload.command };
+}
+
 function toCodexInput(
   text: string,
   attachments: ProviderSendTurnInput['attachments']
@@ -668,8 +684,7 @@ export class CodexAdapter implements ProviderAdapter {
       return this.openApproval(state, {
         turnId: payload.turnId,
         requestType: 'command_execution_approval',
-        title: payload.command ?? 'Run a command',
-        detail: payload.reason ?? payload.cwd ?? undefined,
+        ...commandApprovalContent(payload),
         options: approvalOptions(advertisedDecisions(payload)),
         respond: (decision) => ({ decision }),
       });

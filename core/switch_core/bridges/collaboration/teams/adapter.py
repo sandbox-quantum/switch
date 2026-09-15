@@ -9,11 +9,12 @@ import re
 import secrets
 import time
 from collections import OrderedDict
-from collections.abc import Awaitable, Callable
-from dataclasses import replace
+from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import asynccontextmanager
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from typing import Any, ClassVar
-from urllib.parse import quote
+from urllib.parse import quote, unquote
 
 import httpx
 from aiohttp import web
@@ -24,6 +25,11 @@ from switch_core.bridges.agent.commands import COMMANDS_BY_NAME
 from switch_core.bridges.collaboration.adapter import (
     CollaborationAdapter,
     LiveRuntimeIndicator,
+    RequestCard,
+    RichContent,
+    RichContentFailed,
+    RichContentThrottled,
+    TurnActivity,
     format_elapsed,
 )
 from switch_core.bridges.collaboration.models import (
@@ -37,6 +43,11 @@ from switch_core.bridges.collaboration.models import (
     InboundMessage,
     InboundUserJoin,
 )
+from switch_core.bridges.collaboration.session.renderers import Markup
+from switch_core.bridges.collaboration.session.renderers.neutral import (
+    request_summary,
+    turn_status,
+)
 from switch_core.bridges.collaboration.teams.auth import (
     InboundActivityValidator,
     TeamsTokenProvider,
@@ -45,7 +56,12 @@ from switch_core.bridges.collaboration.teams.cards import (
     agent_message_card,
     card_attachment,
 )
-from switch_core.bridges.collaboration.teams.connector import BotConnectorClient
+from switch_core.bridges.collaboration.teams.connector import (
+    BotConnectorClient,
+    BotConnectorConflict,
+    BotConnectorRefused,
+    BotConnectorThrottled,
+)
 from switch_core.bridges.collaboration.teams.crypto import (
     decrypt_resource_data,
     generate_encryption_keypair,
@@ -65,6 +81,172 @@ _HANDLE_SHAPE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*\Z")
 _MENTION_END = r"(?![A-Za-z0-9._-])"
 _AT_TAG = re.compile(r"<at>(.*?)</at>", re.DOTALL)
 _ZERO_WIDTH_SPACE = "\u200b"
+
+_PUBLICATION_LIMIT = 2000
+"""How many characters a status or a card may spend on its body.
+
+A readability choice, not a safety one \u2014 the size Teams will actually accept
+is enforced on the serialised activity in `connector.py`, which is where the
+card structure, the mention entities and the two further copies of this text
+in `summary` and `fallbackText` can all be counted. This is the separate
+question of how much of a turn belongs in a message somebody has to scroll
+past to reach the next one. 2000 is the same figure the platforms without a
+renderer of their own inherit, kept because it reads well in a Teams post
+rather than because it was inherited.
+"""
+
+_THROTTLE_BACKOFF = 5.0
+"""How long to wait when Teams throttles without saying how long.
+
+Ours, not Microsoft's, and only used when the 429 carried no `Retry-After`.
+"""
+
+_CONFLICT_BACKOFF = 1.0
+"""How long to wait after Teams reports the activity changed under an edit.
+
+Short: nothing is rate limited, something else simply wrote first, and the
+next attempt renders the current state from scratch. Long enough that two
+writers racing do not simply race again.
+"""
+
+_MAX_CONVERSATION_LOCKS = 512
+"""How many conversations' write locks one adapter keeps.
+
+Enough for every conversation a bridge is realistically mid-turn in at once.
+Only a lock nobody is using is ever dropped — see `_writes_to`.
+"""
+
+_PUBLICATION_MARK = "teams1"
+"""What marks a string as a publication reference rather than a message id.
+
+Versioned, because the parts are what an edit is addressed with and a later
+shape has to be told from this one rather than guessed at.
+"""
+
+
+def _publication_ref(service_url: str, conversation_id: str, activity_id: str) -> str:
+    """The durable address of a publication, as one string.
+
+    A Teams edit or delete needs three things and a bare message id is one of
+    them. The conversation is the part nothing else can supply — in a channel
+    it names the post the message sits in, and Teams may answer a create with
+    a conversation of its own choosing rather than the one that was asked for
+    — and the regional service URL is learned from inbound traffic, so a
+    process that has only heard from one region would send the next edit
+    somewhere else entirely.
+
+    So the caller is given all three to write down, in the single opaque
+    string its column and its journal already hold. Discord's publications
+    carry `channel:message` the same way and for the same reason.
+
+    Percent-encoded per part so a service URL's own separators cannot be read
+    as this one's.
+    """
+    return "|".join(
+        [
+            _PUBLICATION_MARK,
+            *(
+                quote(part, safe="")
+                for part in (service_url, conversation_id, activity_id)
+            ),
+        ]
+    )
+
+
+def _read_publication_ref(ref: str) -> tuple[str, str, str] | None:
+    """`(service_url, conversation_id, activity_id)`, or None if this is not one.
+
+    None rather than an error: every reference written before publication
+    carried its address is a bare message id, and so is anything the relay
+    stored. The caller decides what a missing address is worth.
+    """
+    parts = ref.split("|")
+    if len(parts) != 4 or parts[0] != _PUBLICATION_MARK:
+        return None
+    service_url, conversation_id, activity_id = (unquote(part) for part in parts[1:])
+    if not (service_url and conversation_id and activity_id):
+        return None
+    return (service_url, conversation_id, activity_id)
+
+
+@dataclass(frozen=True)
+class _Publication:
+    """Where a publication is, and whether that is known or reconstructed.
+
+    `trusted` is the part decisions hang off. A trusted address came back from
+    Teams and was written down, so a 404 against it means the message is gone;
+    a reconstructed one is this adapter's guess from a channel id and a stored
+    root, so the same 404 may only mean the guess was wrong, and an outcome
+    that cannot be told apart from a bad address is not an outcome.
+    """
+
+    service_url: str
+    conversation_id: str
+    activity_id: str
+    channel_id: str
+    trusted: bool
+
+    @property
+    def in_a_channel(self) -> bool:
+        """Whether this publication sits in a channel post rather than a chat.
+
+        Read off the address rather than the channel-type cache, which a
+        restart empties and which then answers "channel" for everything it has
+        not heard from. A chat is addressed as itself; a channel post is
+        addressed as a conversation inside the channel, so the two differ
+        exactly when the message is in a post.
+        """
+        return self.conversation_id != self.channel_id
+
+
+@dataclass
+class _ConversationWrites:
+    """One conversation's write lock, and how many writers are on it.
+
+    `users` counts everyone between asking for the lock and finishing with it,
+    holder and queue alike, because the lock itself cannot be asked: it reports
+    unheld from the moment it is released until the waiter it woke gets a turn
+    to run. Eviction reads this instead.
+    """
+
+    lock: asyncio.Lock
+    users: int
+
+
+class _TeamsMarkup(Markup):
+    """Markdown as an Adaptive Card TextBlock actually parses it.
+
+    A TextBlock renders a subset \u2014 emphasis, lists, links \u2014 and has no code
+    span at all, so a backtick reaches the reader as a backtick. That lands
+    worst on the one literal a card exists to be answered with: a handle drawn
+    as `` `R42` `` invites somebody to type the backticks with it. Bold is
+    emphasis Teams does render, so the literal is marked with that and arrives
+    as something to copy rather than something to decode.
+
+    A command gets neither. It is read rather than typed, so the argument that
+    wins for the handle does not apply, and a third bold on a card whose
+    heading and handle are already bold marks nothing out at all.
+    """
+
+    def literal(self, escape: Callable[[str], str]) -> Callable[[str], str]:
+        """The ordinary escape: neither spelling here is a code span.
+
+        A handle becomes emphasis and a command stays plain, so both land in
+        prose that a TextBlock parses as Markdown. The Markdown default exists
+        for content nothing will read; this content is read.
+        """
+        return escape
+
+    def code(self, text: str) -> str:
+        return f"**{text}**"
+
+    def command(self, text: str) -> str:
+        return text
+
+
+_TEAMS_MARKUP = _TeamsMarkup()
+
+
 # A Teams identifier standing where a person's name should be: a channel
 # account (`29:…`, `8:orgid:…`) or a bare Entra object id.
 _TEAMS_ID = re.compile(
@@ -120,14 +302,17 @@ def _is_usable_handle(name: str) -> bool:
 
 
 def _hard_wrap(text: str) -> str:
-    """Make single line breaks survive into Teams.
+    """Make single line breaks survive into a plain-text Teams activity.
 
-    An Adaptive Card TextBlock follows Markdown's rule that one newline is
-    whitespace, so a heading and the line under it arrive as one run-on
-    sentence. Doubling a lone newline gives the break back. Existing blank
-    lines are left alone — doubling those too would stretch every paragraph
-    gap — and list items keep their own lines, which is why this is done here
-    rather than by splitting the body into separate blocks.
+    Teams renders a bot's `text` as Markdown, where one newline is whitespace,
+    so a heading and the line under it arrive as one run-on sentence. Doubling
+    a lone newline gives the break back, at the cost of a paragraph gap in
+    place of every line break. Existing blank lines are left alone.
+
+    Only the seam that has no card to work with — an admin message, which is
+    the platform speaking rather than an agent. An agent's message is an
+    Adaptive Card, and `cards.body_blocks` gives it the same line breaks
+    without the gaps.
     """
     return _LONE_NEWLINE.sub("\n\n", text)
 
@@ -319,6 +504,43 @@ class TeamsAdapter(CollaborationAdapter):
     # makes the lifecycle say so at startup when it is not.
     renders_custom_url_schemes: ClassVar[bool] = False
 
+    publishes_sdk_sessions: ClassVar[bool] = True
+
+    # One compact status per turn rather than a status and a tool log. A posts
+    # channel shows a thread as a stack of replies with no collapsing, so a
+    # second message per turn is a second thing to scroll past for every turn
+    # in the post.
+    separate_activity_log: ClassVar[bool] = False
+
+    # A problem gets its own message. An edit to the status is not something
+    # Teams notifies anyone about, so a failure folded into it reaches whoever
+    # happens to be looking.
+    separate_attention_slot: ClassVar[bool] = True
+
+    # Teams notifies on a mention and on little else: a reply inside a post
+    # reaches the people already following that post and nobody else.
+    notifies_only_by_mention: ClassVar[bool] = True
+
+    # No redraw for the clock alone. An edit is charged against the same
+    # per-thread send budget as a message, and a turn's status is the turn's
+    # one post here, so the elapsed time rides along with the next real change.
+    redraws_for_elapsed_time: ClassVar[bool] = False
+
+    # The Bot Connector gives a bot no way to add a reaction to a message.
+    supports_activity_reactions: ClassVar[bool] = False
+    activity_reactions_per_agent: ClassVar[bool] = False
+
+    renders_legacy_runtime_state: ClassVar[bool] = False
+
+    # Nothing here can look for a publication whose response was lost. The
+    # Graph credentials are app-only and the app's resource-specific consent
+    # covers reading channel messages, not chats; `GraphClient` has no
+    # message-listing call and the bridge has no paging anywhere; and a
+    # publication carries no marker a search could match even if it did. An
+    # uncertain card is disclosed rather than looked for.
+    recovers_uncertain_posts: ClassVar[bool] = False
+    carries_publication_marker: ClassVar[bool] = False
+
     @classmethod
     async def prepare_config(
         cls, connection_config: dict[str, object]
@@ -434,6 +656,8 @@ class TeamsAdapter(CollaborationAdapter):
         self._channel_layouts: dict[str, str] = {}
         # message id -> (service_url, conversation_id) for later edit/delete.
         self._sent: dict[str, tuple[str, str]] = {}
+        # conversation id -> the lock ordering this bridge's writes to it.
+        self._conversation_writes: OrderedDict[str, _ConversationWrites] = OrderedDict()
         # Inbound de-duplication — the Bot Framework and Graph capture paths can
         # both deliver the same channel message, keyed on the Teams message id.
         self._seen: OrderedDict[str, None] = OrderedDict()
@@ -710,6 +934,81 @@ class TeamsAdapter(CollaborationAdapter):
     def _thread_conversation(channel_id: str, root_id: str) -> str:
         return f"{channel_id};messageid={root_id}"
 
+    @staticmethod
+    def _root_of(conversation_id: str) -> str | None:
+        """The post a conversation is, where it is one — the inverse of above.
+
+        None for a chat, which is its own conversation, and for a conversation
+        Teams named itself rather than by the post it opened.
+        """
+        _, sep, root = conversation_id.partition(";messageid=")
+        return root if sep and root else None
+
+    def _reply_conversation(
+        self, channel_id: str, thread_root_id: str | None
+    ) -> str | None:
+        """Where a reply goes, or None to say a channel post must be opened.
+
+        The thread root may arrive as a publication reference rather than a
+        bare message id — `admin_message`'s callers name the conversation a
+        card is in, and a card that opened its own post *is* that conversation.
+        Where it does, the address it carries is used as given: it is the one
+        Teams confirmed, and reconstructing it from a channel id would throw
+        away the part that survives a restart.
+        """
+        if thread_root_id is not None:
+            carried = _read_publication_ref(thread_root_id)
+            if carried is not None:
+                return carried[1]
+        if not self._is_channel(channel_id):
+            return channel_id
+        if thread_root_id is None:
+            return None
+        return self._thread_conversation(channel_id, thread_root_id)
+
+    @asynccontextmanager
+    async def _writes_to(self, conversation_id: str) -> AsyncIterator[None]:
+        """Order this bridge's own writes to one conversation.
+
+        Teams answers an edit to an activity it is still processing with 412,
+        and two publishers redrawing in one conversation generate those against
+        each other for as long as both keep retrying. A lock per conversation
+        turns the race into a queue; it says nothing about writers in another
+        process, which is what the 412 handling is still for.
+
+        Bounded, and the registry counts its own users rather than asking the
+        lock whether it is held. `asyncio.Lock.locked()` is False for the whole
+        window between a release and the woken waiter resuming, so a lock with
+        someone queued behind it looks idle; dropping it there would hand the
+        next writer a brand-new lock and run the two side by side — which is
+        the ordering this exists to provide, quietly withdrawn under load.
+        An entry with a user is never evicted, so everyone who asks for one
+        conversation holds the same lock.
+        """
+        entry = self._conversation_writes.get(conversation_id)
+        if entry is None:
+            entry = _ConversationWrites(asyncio.Lock(), 0)
+            self._conversation_writes[conversation_id] = entry
+        self._conversation_writes.move_to_end(conversation_id)
+        entry.users += 1
+        while len(self._conversation_writes) > _MAX_CONVERSATION_LOCKS:
+            unused = next(
+                (
+                    key
+                    for key, waiting in self._conversation_writes.items()
+                    if not waiting.users
+                ),
+                None,
+            )
+            if unused is None:
+                break
+            del self._conversation_writes[unused]
+        try:
+            async with entry.lock:
+                yield
+        finally:
+            entry.users -= 1
+
     async def _channel_layout(self, channel_id: str) -> str | None:
         """The channel's conversation layout as Graph reports it, or None.
 
@@ -831,36 +1130,50 @@ class TeamsAdapter(CollaborationAdapter):
         if self._connector is None:
             raise RuntimeError("Cannot send message: Teams adapter not started")
 
-        service_url = self._service_url_for(channel_id)
         # `content` arrives rendered: every caller of `send_message` runs
         # `translate_outbound` first, and rendering again here put the body
         # through the conversion twice.
         activity = await self._message_activity(sender_name, content)
         thread_root_id = await self._post_to_answer_in(channel_id, thread_root_id)
+        return await self._relay(self._connector, channel_id, thread_root_id, activity)
 
-        if self._is_channel(channel_id) and thread_root_id is None:
-            conversation_id, msg_id = await self._connector.create_channel_thread(
+    async def _relay(
+        self,
+        connector: BotConnectorClient,
+        channel_id: str,
+        thread_root_id: str | None,
+        activity: dict[str, Any],
+    ) -> str:
+        """Send one relayed activity and remember where it went.
+
+        Where the thread root is a publication reference the address it carries
+        is used whole, service URL included: a bridge that has only heard from
+        one region since it started would otherwise send a reply to a card in
+        another region's conversation to the region it happens to know.
+        """
+        carried = _read_publication_ref(thread_root_id) if thread_root_id else None
+        service_url = carried[0] if carried else self._service_url_for(channel_id)
+        conversation_id = self._reply_conversation(channel_id, thread_root_id)
+        if conversation_id is None:
+            conversation_id, msg_id = await connector.create_channel_thread(
                 service_url=service_url, channel_id=channel_id, activity=activity
             )
+            # A message that opened its own post is that post.
+            remembered = msg_id
         else:
-            conversation_id = (
-                self._thread_conversation(channel_id, thread_root_id)
-                if thread_root_id and self._is_channel(channel_id)
-                else channel_id
-            )
-            msg_id = await self._connector.send_to_conversation(
+            msg_id = await connector.send_to_conversation(
                 service_url=service_url,
                 conversation_id=conversation_id,
                 activity=activity,
             )
-
-        if msg_id:
-            self._sent[msg_id] = (service_url, conversation_id)
-            await self._remember_post(
-                channel_id, thread_root_id or msg_id, only_if_unset=True
-            )
-            return msg_id
-        return None
+            # `_last_post` holds a post id, so a reply contributes the post it
+            # went into rather than itself — read back off the conversation,
+            # which is the one form a publication reference and a bare root
+            # both reduce to.
+            remembered = self._root_of(conversation_id) or thread_root_id or msg_id
+        self._sent[msg_id] = (service_url, conversation_id)
+        await self._remember_post(channel_id, remembered, only_if_unset=True)
+        return msg_id
 
     async def admin_message(
         self,
@@ -869,6 +1182,7 @@ class TeamsAdapter(CollaborationAdapter):
         thread_root_id: str | None = None,
         *,
         message_type: str | None = None,
+        drawn: str | None = None,
     ) -> str | None:
         # Admin/system messages render as the Switch bot itself — a plain text
         # activity, no per-agent Adaptive Card — so they read as the platform
@@ -876,44 +1190,28 @@ class TeamsAdapter(CollaborationAdapter):
         if self._connector is None:
             raise RuntimeError("Cannot post admin message: Teams adapter not started")
 
-        service_url = self._service_url_for(channel_id)
-        body = self.translate_outbound(content)
+        body = self._admin_body(self.translate_outbound(content), drawn)
         thread_root_id = await self._post_to_answer_in(channel_id, thread_root_id)
-        activity: dict[str, Any] = {"type": "message", "text": body}
+        activity: dict[str, Any] = {"type": "message", "text": _hard_wrap(body)}
         mentions = self._mention_entities(body)
         if mentions:
             # A plain-text activity carries its mention entities directly; only
             # a card puts them under `msteams`.
             activity["entities"] = mentions
-
-        if self._is_channel(channel_id) and thread_root_id is None:
-            conversation_id, msg_id = await self._connector.create_channel_thread(
-                service_url=service_url, channel_id=channel_id, activity=activity
-            )
-        else:
-            conversation_id = (
-                self._thread_conversation(channel_id, thread_root_id)
-                if thread_root_id and self._is_channel(channel_id)
-                else channel_id
-            )
-            msg_id = await self._connector.send_to_conversation(
-                service_url=service_url,
-                conversation_id=conversation_id,
-                activity=activity,
-            )
-
-        if msg_id:
-            self._sent[msg_id] = (service_url, conversation_id)
-            await self._remember_post(
-                channel_id, thread_root_id or msg_id, only_if_unset=True
-            )
-            return msg_id
-        return None
+        return await self._relay(self._connector, channel_id, thread_root_id, activity)
 
     def _locate(self, channel_id: str, message_ref: str) -> tuple[str, str]:
         """Resolve ``(service_url, conversation_id)`` for a previously sent
         message so it can be edited or deleted. Falls back to treating the
-        message as its own thread root when it wasn't sent in this session."""
+        message as its own thread root when it wasn't sent in this session.
+
+        A guess, and only good enough for the relay: a message posted as a
+        reply inside a post is addressed by that post, so after a restart this
+        reconstruction names a conversation that does not exist and the edit
+        is refused. SDK publications do not come through here — they carry the
+        thread they were posted into and resolve it through
+        `_publication_conversation`.
+        """
         located = self._sent.get(message_ref)
         if located is not None:
             return located
@@ -928,9 +1226,22 @@ class TeamsAdapter(CollaborationAdapter):
     async def update_message(
         self, channel_id: str, message_ref: str, new_content: str
     ) -> None:
+        """Rewrite a relayed message as plain text.
+
+        Degraded, and said out loud because a reader cannot see it happen: an
+        agent's message was posted as an Adaptive Card carrying its name and
+        avatar, and this replaces the whole activity with unlabelled text, so
+        an edited message stops looking like the agent that sent it. The
+        sender's name is what would fix it and this seam is not given one.
+        """
         if self._connector is None:
             raise RuntimeError("Cannot update message: Teams adapter not started")
         service_url, conversation_id = self._locate(channel_id, message_ref)
+        logger.warning(
+            "Rewriting Teams message %s as plain text: an edit through this seam "
+            "drops the agent card it was posted in.",
+            message_ref,
+        )
         await self._connector.update_activity(
             service_url=service_url,
             conversation_id=conversation_id,
@@ -957,13 +1268,407 @@ class TeamsAdapter(CollaborationAdapter):
         if not is_typing or self._connector is None:
             return
         try:
-            await self._connector.send_to_conversation(
+            await self._connector.send_signal(
                 service_url=self._service_url_for(channel_id),
                 conversation_id=channel_id,
                 activity={"type": "typing"},
             )
         except Exception:
             logger.warning("Failed to send typing indicator to %s", channel_id)
+
+    # ── SDK session publication ──────────────────────────────────────────────
+
+    def rich_fallback_limit(self) -> int:
+        return _PUBLICATION_LIMIT
+
+    def rich_markup(self) -> Markup:
+        return _TEAMS_MARKUP
+
+    def rich_fallback_text(self, content: RichContent) -> str:
+        """What a publication says, with nothing that had to be looked up.
+
+        The renderers are the ones `post_rich` uses; what is missing is the
+        mention and the responder's name, both of which come from an AAD id
+        that has to be turned back into a handle. This is the string carried on
+        a `RichContentFailed`, where a name this bridge could not resolve would
+        add nothing to a post that did not happen.
+        """
+        return self._draw(
+            content,
+            mention=None,
+            responder=None,
+            notice=self.unnotified_notice() if content.notify_unreachable else None,
+        )
+
+    def _draw(
+        self,
+        content: RichContent,
+        *,
+        mention: str | None,
+        responder: str | None,
+        notice: str | None,
+    ) -> str:
+        """The body of a publication, as a card will render it.
+
+        Line breaks are the card's problem rather than this text's: the body is
+        written with one newline to a line and `cards.body_blocks` turns those
+        into blocks. So the budget here is measured on what a reader actually
+        reads, with no display syntax counted against it.
+        """
+        escape = self._rich_escape
+        limit = self.rich_fallback_limit()
+        markup = self.rich_markup()
+        if isinstance(content, TurnActivity):
+            # Charged to the same budget as the status it follows: a body that
+            # just fits, plus a line saying it reached nobody, is a body over
+            # the budget.
+            tail = f"\n{notice}" if notice else ""
+            drawn = (
+                turn_status(
+                    content.items,
+                    content.turn,
+                    escape=escape,
+                    limit=max(1, limit - len(tail)),
+                    markup=markup,
+                    elapsed_seconds=content.elapsed_seconds,
+                    session_url=content.session_url,
+                    mention=mention,
+                    error_summary=content.error_summary,
+                    tool_detail=True,
+                )
+                + tail
+            )
+        else:
+            # The mention goes on a line of its own rather than in front of the
+            # heading: the card is a block, and a name wedged before "Permission
+            # needed" reads as part of it.
+            lead = f"{mention}\n" if mention else ""
+            tail = f"\n{notice}" if notice else ""
+            body = request_summary(
+                content.request,
+                content.reference,
+                escape=escape,
+                limit=max(1, limit - len(lead) - len(tail)),
+                markup=markup,
+                responder=responder,
+                unavailable_reason=content.unavailable_reason,
+            )
+            drawn = f"{lead}{body}{tail}"
+        return drawn
+
+    def _mention(self, external_id: str | None) -> str | None:
+        """`<at>` markup naming whoever holds this AAD id, or None.
+
+        Both halves of a Teams mention or neither: the markup only reaches
+        anybody when `_mention_entities` can pair it with a target, so a
+        person this bridge holds no name for is written as no mention at all
+        rather than as a highlight that goes nowhere. The caller's
+        `notify_unreachable` is what tells the reader that happened.
+        """
+        if external_id is None:
+            return None
+        name = self._sender_handles.get(external_id) or next(
+            (
+                handle
+                for handle, target in self._mention_targets.items()
+                if target == external_id
+            ),
+            None,
+        )
+        if name is None or name.casefold() not in self._mention_targets:
+            return None
+        return f"<at>{html.escape(name)}</at>"
+
+    def _unmentionable_notice(self) -> str:
+        """Why a publication that had someone to name did not name them.
+
+        Not `unnotified_notice`, which says nobody is linked: here somebody is,
+        and what failed was turning their directory id into a name this team
+        can be `@`-mentioned by. Telling them to link an account they have
+        already linked would send the one person who could act to fix something
+        that is not broken.
+        """
+        return (
+            "Switch could not work out how to mention the person this is for, "
+            "so this notified no one. They are linked; finding their name in "
+            f"this {self.platform_name} team is what failed."
+        )
+
+    def _render_rich(self, content: RichContent) -> str:
+        """Draw a publication, saying so when the mention could not be made.
+
+        Two different failures reach the same reader. The publisher sets
+        `notify_unreachable` when there was nobody to name at all; this covers
+        the other one, where there was and the name could not be resolved here.
+        Either way the person who can answer has not been pinged, and the one
+        thing that must not happen is a card that looks like it went to them.
+        """
+        mention = self._mention(content.notify_external_id)
+        unmentionable = mention is None and content.notify_external_id is not None
+        if unmentionable:
+            logger.warning(
+                "No Teams mention target for %s, so the publication names "
+                "nobody and says so.",
+                content.notify_external_id,
+            )
+        return self._draw(
+            content,
+            mention=mention,
+            responder=self._mention(content.responder_external_id)
+            if isinstance(content, RequestCard)
+            else None,
+            notice=self._unmentionable_notice()
+            if unmentionable
+            else self.unnotified_notice()
+            if content.notify_unreachable
+            else None,
+        )
+
+    def notice_address(self, message_ref: str, thread_root_id: str | None) -> str:
+        """The reference wins over the thread, where the publication has one.
+
+        Both name the same conversation, but the reference names the one Teams
+        confirmed, service URL included, while the thread is a root this
+        rebuilds into `channel;messageid=root` in whatever region the process
+        last heard from. A notice about a card in another region would go to
+        the region this happens to know.
+        """
+        if _read_publication_ref(message_ref) is not None:
+            return message_ref
+        return thread_root_id or message_ref
+
+    def _publication_conversation(self, channel_id: str, root_id: str | None) -> str:
+        """Where a *new* publication goes, from durable facts only.
+
+        A Teams message is sent to a *conversation*, and in a channel the
+        conversation is named by the post it sits in rather than by the
+        message. So the answer needs the thread — which the caller has written
+        down, in the journal's anchor or in the card's row, and passes in.
+
+        Deliberately neither `_sent`, which a restart empties, nor
+        `_last_post`, which is the relay's guess at where an untied reply
+        belongs and crosses conversations whenever two run in one channel.
+
+        A chat is its own conversation and has no root. So does a channel with
+        no post named — which is where a new post begins, and is why this is
+        not an error: only `post_rich` ever asks with nothing to name, and it
+        asks in order to start one.
+
+        For a redraw, `_publication_address` is the method to want: it reads
+        the address Teams confirmed instead of rebuilding one.
+        """
+        if root_id is not None:
+            carried = _read_publication_ref(root_id)
+            if carried is not None:
+                return carried[1]
+        if not self._is_channel(channel_id) or root_id is None:
+            return channel_id
+        return self._thread_conversation(channel_id, root_id)
+
+    def _publication_address(
+        self, channel_id: str, message_ref: str, thread_root_id: str | None
+    ) -> _Publication:
+        """The address to redraw or remove a publication at.
+
+        The reference `post_rich` handed back carries the whole of it —
+        service URL, conversation and activity — because those are what Teams
+        confirmed rather than what this process can work out, and they are the
+        three that a restart, a regional service URL or a conversation Teams
+        named itself would each break separately.
+
+        A reference from before that, or one the relay wrote, is a bare
+        message id, and then there is nothing to do but rebuild the address
+        from the channel and the stored thread. That is said out loud and
+        marked untrusted, because a 404 against a guess says the guess may be
+        wrong and not that the message is gone.
+        """
+        carried = _read_publication_ref(message_ref)
+        if carried is not None:
+            service_url, conversation_id, activity_id = carried
+            return _Publication(
+                service_url=service_url,
+                conversation_id=conversation_id,
+                activity_id=activity_id,
+                channel_id=channel_id,
+                trusted=True,
+            )
+        logger.warning(
+            "Teams publication %s in channel %s carries no address; rebuilding "
+            "one from the channel and its stored thread, which a chat whose "
+            "type this process has not learned will get wrong.",
+            message_ref,
+            channel_id,
+        )
+        return _Publication(
+            service_url=self._service_url_for(channel_id),
+            conversation_id=self._publication_conversation(
+                channel_id, thread_root_id or message_ref
+            ),
+            activity_id=message_ref,
+            channel_id=channel_id,
+            trusted=False,
+        )
+
+    @staticmethod
+    def _throttled(error: BotConnectorThrottled, text: str) -> RichContentThrottled:
+        return RichContentThrottled(
+            retry_after=_THROTTLE_BACKOFF
+            if error.retry_after is None
+            else error.retry_after,
+            text=text,
+        )
+
+    @staticmethod
+    def _conflicted(error: BotConnectorConflict, text: str) -> RichContentThrottled:
+        """A 412 is a wait, not a refusal.
+
+        The message is there and something else wrote to it first, so the
+        publication is neither lost nor wrong — it is one revision behind. Sent
+        back as a backoff so the caller keeps its anchor and comes round again
+        with content rendered from the state as it is by then, rather than
+        replaying an intent that has already been overtaken. Calling it a
+        failure instead put a "could not be updated" notice in the channel for
+        something that fixes itself in a second.
+        """
+        return RichContentThrottled(retry_after=_CONFLICT_BACKOFF, text=text)
+
+    async def post_rich(
+        self,
+        channel_id: str,
+        agent_name: str,
+        content: RichContent,
+        thread_root_id: str | None = None,
+    ) -> str:
+        """Post a turn's status or a request's card as an agent-labelled card.
+
+        What it raises is the whole point. `RichContentFailed` is the caller's
+        licence to throw its reservation away, so it is kept for the answers
+        Teams actually gave — a refusal, a 4xx, a payload this would not even
+        attempt. A timeout, a 5xx, or an activity Teams accepted without
+        returning an id all mean the publication may be sitting in the channel
+        already, and those propagate as themselves so the reservation survives
+        and nobody posts a second copy.
+
+        `thread_root_id` is used as given. `_post_to_answer_in`, which the
+        relay uses to steer an untied reply into whatever post the channel last
+        spoke in, is not consulted: a publication has a durable address to keep
+        and a guess is not one. Where the root is itself a publication
+        reference, both halves of it are kept — the conversation *and* the
+        service that holds it. Taking the conversation and the region from
+        different places sends a card in one region to another, and writes the
+        wrong region into the reference that comes back, so the next redraw
+        repeats it.
+
+        What comes back is that address rather than a message id — see
+        `_publication_ref`. It is what the caller stores, and the only thing
+        that makes a redraw after a restart address the conversation the post
+        actually went to.
+        """
+        text = self._render_rich(content)
+        if self._connector is None:
+            raise RichContentFailed(
+                "Teams is not connected, so the publication was not sent.", text=text
+            )
+        carried = _read_publication_ref(thread_root_id) if thread_root_id else None
+        service_url = carried[0] if carried else self._service_url_for(channel_id)
+        activity = await self._message_activity(agent_name, text)
+        opening = self._is_channel(channel_id) and thread_root_id is None
+        # A new post has no conversation to queue behind yet, so its writes are
+        # ordered against the channel instead.
+        target = (
+            channel_id
+            if opening
+            else self._publication_conversation(channel_id, thread_root_id)
+        )
+        try:
+            async with self._writes_to(target):
+                if opening:
+                    conversation_id, ref = await self._connector.create_channel_thread(
+                        service_url=service_url,
+                        channel_id=channel_id,
+                        activity=activity,
+                    )
+                else:
+                    conversation_id = target
+                    ref = await self._connector.send_to_conversation(
+                        service_url=service_url,
+                        conversation_id=conversation_id,
+                        activity=activity,
+                    )
+        except BotConnectorThrottled as error:
+            raise self._throttled(error, text) from error
+        except BotConnectorConflict as error:
+            raise self._conflicted(error, text) from error
+        except BotConnectorRefused as error:
+            raise RichContentFailed(
+                f"Teams would not post in channel {channel_id}: {error}", text=text
+            ) from error
+        return _publication_ref(service_url, conversation_id, ref)
+
+    async def update_rich(
+        self,
+        channel_id: str,
+        agent_name: str,
+        message_ref: str,
+        content: RichContent,
+        thread_root_id: str | None,
+    ) -> None:
+        """Redraw a publication in place, including the last time.
+
+        Nothing is taken down. A turn that has ended is edited to its final
+        state and stays in the conversation as the record that it ran, how long
+        it took and where to open it. A chat-layout channel used to delete it,
+        on the reasoning that a bot's own message goes there without trace and
+        a finished status is clutter; what went with it was the only account of
+        the turn anybody scrolling back could read. A posts channel already
+        kept it, because Teams leaves *"This message has been deleted."* behind
+        and that is worse than the line it replaces.
+
+        Not `update_message`, for two reasons. That one replaces the whole
+        activity with plain text, which would strip the agent's card off a
+        status halfway through the turn; and it addresses the message through
+        `_sent`, which a restart empties. Here the card is rebuilt, and the
+        address is the one `post_rich` returned and the caller wrote down.
+
+        `agent_name` is what the redraw writes back into the header. One bot
+        posts for every agent here, so the name is part of what was drawn, and
+        an edit that did not know it would republish the turn as somebody else.
+        """
+        text = self._render_rich(replace(content, notify_external_id=None))
+        connector = self._connector
+        if connector is None:
+            raise RichContentFailed(
+                "Teams is not connected, so the publication could not be redrawn.",
+                text=text,
+            )
+        address = self._publication_address(channel_id, message_ref, thread_root_id)
+        await self._edit_rich(connector, agent_name, address, text)
+
+    async def _edit_rich(
+        self,
+        connector: BotConnectorClient,
+        agent_name: str,
+        address: _Publication,
+        text: str,
+    ) -> None:
+        try:
+            async with self._writes_to(address.conversation_id):
+                await connector.update_activity(
+                    service_url=address.service_url,
+                    conversation_id=address.conversation_id,
+                    activity_id=address.activity_id,
+                    activity=await self._message_activity(agent_name, text),
+                )
+        except BotConnectorThrottled as error:
+            raise self._throttled(error, text) from error
+        except BotConnectorConflict as error:
+            raise self._conflicted(error, text) from error
+        except BotConnectorRefused as error:
+            raise RichContentFailed(
+                f"Teams refused the edit to {address.activity_id} in "
+                f"conversation {address.conversation_id}: {error}",
+                text=text,
+            ) from error
 
     # ── Runtime state ──────────────────────────────────────────────────────────
 
@@ -981,6 +1686,11 @@ class TeamsAdapter(CollaborationAdapter):
         anchor_message_ref: str | None = None,
     ) -> None:
         """Persistent status messages, mirroring Slack.
+
+        Superseded: `renders_legacy_runtime_state` is False, so nothing calls
+        this. Kept until the legacy indicator is removed everywhere, because
+        deleting one platform's copy ahead of the others makes the comparison
+        between them impossible to read.
 
         A "working on it…" card is posted (as the agent) while the agent works
         and edited in place as the activity detail changes; it stays up through
@@ -1337,7 +2047,7 @@ class TeamsAdapter(CollaborationAdapter):
         return self._mention_pattern
 
     def translate_outbound(self, content: str) -> str:
-        return _hard_wrap(self._mark_mentions(content))
+        return self._mark_mentions(content)
 
     def escape_label_for_body(self, label: str) -> str:
         """Add the `<at>` tag to what the base class already defuses.

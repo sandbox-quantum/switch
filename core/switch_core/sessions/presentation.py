@@ -46,6 +46,11 @@ async def notification_recipient(
 ) -> str | None:
     """Slack participants follow replies by default; mention only other origins.
 
+    Whoever asked is named first. They are the one waiting on the answer, and
+    on a platform where a mention is the whole notification they are also the
+    one most likely to be looking. The agent's owner is the fallback, so a turn
+    started by someone who has claimed no account here still reaches somebody.
+
     Membership and bridge checks prevent mentioning identities from another
     room or workspace. No follower API is needed for the usual threaded case.
     """
@@ -56,19 +61,12 @@ async def notification_recipient(
         .join(ClientRoom, ClientRoom.client_id == ExternalUser.client_id)
         .where(ExternalUser.bridge_id == bridge_id, ClientRoom.room_id == room_id)
     )
-    actor = await db.scalar(
-        members.join(Client, Client.id == ExternalUser.client_id)
-        .where(Client.matrix_user_id == origin.actor_id)
-        .order_by(ExternalUser.id)
-        .limit(1)
-    )
-    if actor:
-        return actor
-    # Console commands identify their user directly rather than a puppet.
-    for user_id in dict.fromkeys([origin.actor_id, agent.owner_id]):
+
+    async def claimed_by(user_id: str | None) -> str | None:
+        # Console commands identify their user directly rather than a puppet.
         if not user_id:
-            continue
-        recipient = await db.scalar(
+            return None
+        claimant: str | None = await db.scalar(
             members.join(
                 ExternalUserClaim, ExternalUserClaim.external_user_id == ExternalUser.id
             )
@@ -76,15 +74,34 @@ async def notification_recipient(
             .order_by(ExternalUser.id)
             .limit(1)
         )
-        if recipient:
-            return recipient
-    return None
+        return claimant
+
+    async def initiator() -> str | None:
+        actor = await db.scalar(
+            members.join(Client, Client.id == ExternalUser.client_id)
+            .where(Client.matrix_user_id == origin.actor_id)
+            .order_by(ExternalUser.id)
+            .limit(1)
+        )
+        return actor or await claimed_by(origin.actor_id)
+
+    return await initiator() or await claimed_by(agent.owner_id)
 
 
 def activity_error_summary(
-    turn: TurnUpsert, session: Session, *, online: bool
+    turn: TurnUpsert, session: Session, *, online: bool, unconfirmed: bool
 ) -> str | None:
-    """Describe state without leaking provider notices or session-private output."""
+    """Describe state without leaking provider notices or session-private output.
+
+    `unconfirmed` is the one state that is neither running nor finished: the
+    command left Switch and no acknowledgement came back, so whether the agent
+    ever saw it is unknown and stays unknown. It reads as a failure otherwise —
+    the turn is carried as an error for want of anywhere else to put it — and
+    saying the request could not be completed asserts something nobody here
+    knows. What the reader can act on is that Switch will not resend it.
+    """
+    if unconfirmed:
+        return "Switch could not confirm the agent received this. It will not be resent; send it again if you still want it."
     if turn.status == "error":
         return "The agent could not complete this request. Open Switch Console for details."
     if turn.status not in {"queued", "running"}:

@@ -21,6 +21,7 @@ from slack_sdk.socket_mode.response import SocketModeResponse
 from slack_sdk.web.async_client import AsyncWebClient
 
 from switch_core.bridges.collaboration.adapter import (
+    ActivityMark,
     CollaborationAdapter,
     RequestCard,
     RichContent,
@@ -122,8 +123,12 @@ def _group_description(agent_description: str) -> str:
     return full[: _GROUP_DESCRIPTION_MAX - 1].rstrip() + "…"
 
 
-# Reaction on the message an SDK turn is handling.
-_WORKING_REACTION = "eyes"
+# Reactions on the message an SDK turn is handling: one for work under way,
+# one for a prompt the agent is holding behind something else.
+_REACTION: dict[ActivityMark, str] = {
+    "working": "eyes",
+    "queued": "hourglass_flowing_sand",
+}
 
 
 def _retry_after_seconds(error: SlackApiError) -> int:
@@ -162,8 +167,17 @@ class SlackConnectionConfig(BridgeConnectionConfig):
 class SlackAdapter(CollaborationAdapter):
     publishes_sdk_sessions: ClassVar[bool] = True
     separate_activity_log: ClassVar[bool] = True
+    separate_attention_slot: ClassVar[bool] = True
+    redraws_for_elapsed_time: ClassVar[bool] = True
     supports_activity_reactions: ClassVar[bool] = True
+    supports_queue_reaction: ClassVar[bool] = True
     renders_legacy_runtime_state: ClassVar[bool] = False
+    recovers_uncertain_posts: ClassVar[bool] = True
+
+    #: Every publication carries its token in `block_id` and in the message's
+    #: metadata, so a status is as findable as a card despite printing no
+    #: handle of its own.
+    carries_publication_marker: ClassVar[bool] = True
 
     # Every Slack bridge in this process shares one, because resolving a
     # mention that crossed a workspace boundary means reading a group another
@@ -215,8 +229,8 @@ class SlackAdapter(CollaborationAdapter):
         # Set to Slack's error code once the workspace has told us it cannot
         # host user groups, so the bridge stops asking and says so only once.
         self._agent_usergroups_off_reason: str | None = None
-        # (channel_id, ts) currently carrying the "being worked on" reaction.
-        self._eyes: set[tuple[str, str]] = set()
+        # (channel_id, ts, mark) currently carrying that reaction.
+        self._marked: set[tuple[str, str, ActivityMark]] = set()
         # (channel_id, ts) Slack says it cannot find. Retrying it on every
         # progress report of a long turn is how one unmarkable message became
         # a warning a second for as long as the agent worked.
@@ -398,8 +412,14 @@ class SlackAdapter(CollaborationAdapter):
         thread_root_id: str | None,
         token: str,
         created_at: datetime,
+        handle: str | None,
     ) -> str | None:
-        """Find a reserved request or activity post by its shared recovery marker."""
+        """Find a reserved request or activity post by its shared recovery marker.
+
+        `handle` is unused: Slack carries the marker in the message's own
+        `block_id`, which is exact and invisible, so there is nothing the
+        printed handle would add.
+        """
         if self._web_client is None:
             raise RuntimeError(
                 "Cannot recover a request card: Slack client not connected."
@@ -509,9 +529,17 @@ class SlackAdapter(CollaborationAdapter):
         return ref
 
     async def update_rich(
-        self, channel_id: str, message_ref: str, content: RichContent
+        self,
+        channel_id: str,
+        agent_name: str,
+        message_ref: str,
+        content: RichContent,
+        thread_root_id: str | None,
     ) -> None:
         """Redraw what `post_rich` posted, in place.
+
+        `agent_name` is not read: a Slack message carries its sender's name
+        and face, so the name is never part of what was drawn.
 
         Chains `SlackApiError` as `RichContentFailed` rather than letting it
         through raw, so a caller that no longer imports this module still
@@ -728,6 +756,7 @@ class SlackAdapter(CollaborationAdapter):
         thread_root_id: str | None = None,
         *,
         message_type: str | None = None,
+        drawn: str | None = None,
     ) -> str | None:
         # Renders its own body: every caller of `admin_message` passes Switch
         # Markdown, so the conversion belongs here rather than at each of
@@ -752,7 +781,7 @@ class SlackAdapter(CollaborationAdapter):
         try:
             result = await self._web_client.chat_postMessage(
                 channel=channel_id,
-                text=content,
+                text=self._admin_body(content, drawn),
                 thread_ts=thread_ts,
                 unfurl_links=False,
                 unfurl_media=False,
@@ -1004,63 +1033,89 @@ class SlackAdapter(CollaborationAdapter):
         channel_id: str,
         thread_ts: str | None,
         *,
-        working: bool,
+        mark: ActivityMark,
+        on: bool,
         force: bool = False,
     ) -> None:
-        """Mark the asking message and cache expected Slack reaction refusals."""
+        """Mark the asking message and cache expected Slack reaction refusals.
+
+        The memory of what is already there is per reaction, because the two
+        are independent: a queued prompt that starts running loses one mark and
+        keeps the other, and a message can carry another turn's working mark
+        while this one is still waiting. A message Slack says does not exist is
+        not per reaction — there is nothing there to carry either.
+        """
         ts = thread_ts
         if not ts or not self._web_client:
             return
-        key = (channel_id, ts)
-        if not force and working == (key in self._eyes):
+        message = (channel_id, ts)
+        key = (channel_id, ts, mark)
+        if not force and on == (key in self._marked):
             return
-        if key in self._unmarkable:
+        if message in self._unmarkable:
             return
 
         try:
-            if working:
+            if on:
                 await self._web_client.reactions_add(
-                    channel=channel_id, timestamp=ts, name=_WORKING_REACTION
+                    channel=channel_id, timestamp=ts, name=_REACTION[mark]
                 )
-                self._eyes.add(key)
+                self._marked.add(key)
             else:
                 await self._web_client.reactions_remove(
-                    channel=channel_id, timestamp=ts, name=_WORKING_REACTION
+                    channel=channel_id, timestamp=ts, name=_REACTION[mark]
                 )
-                self._eyes.discard(key)
+                self._marked.discard(key)
         except SlackApiError as e:
             error = e.response.get("error", "")
             # Already there, or already gone: the end state is what was wanted,
             # so record it and say nothing.
             if error in ("already_reacted", "no_reaction"):
-                self._eyes.add(key) if working else self._eyes.discard(key)
+                self._marked.add(key) if on else self._marked.discard(key)
                 return
             if error == "message_not_found":
                 # There is no message to mark, and there will not be one later.
-                self._unmarkable[key] = None
+                self._unmarkable[message] = None
                 if len(self._unmarkable) > self._unmarkable_max:
                     self._unmarkable.popitem(last=False)
                 return
             if force:
                 raise
             logger.warning(
-                "Could not %s the working reaction on %s in %s: %s",
-                "add" if working else "remove",
+                "Could not %s the %s reaction on %s in %s: %s",
+                "add" if on else "remove",
+                mark,
                 ts,
                 channel_id,
                 error or e,
             )
 
     async def mark_activity(
-        self, channel_id: str, message_ref: str, *, working: bool, force: bool = False
+        self,
+        channel_id: str,
+        message_ref: str,
+        *,
+        agent_name: str,
+        mark: ActivityMark,
+        on: bool,
+        force: bool = False,
     ) -> None:
         """Mark the asking message, accepting either a timestamp or channel:ts.
 
         The SDK publication journal owns concurrent turn claims. ``force``
         reconciles Slack's reaction after a restart despite the local cache.
+
+        `agent_name` is not used: every agent speaks as the one app here, so
+        there is a single reaction on the message whoever is working behind
+        it, and adding it twice or removing one agent's while another is
+        still running would both be the same mark.
         """
         await self._mark_being_read(
-            channel_id, self._thread_ts_of(message_ref), working=working, force=force
+            channel_id,
+            self._thread_ts_of(message_ref),
+            mark=mark,
+            on=on,
+            force=force,
         )
 
     @staticmethod

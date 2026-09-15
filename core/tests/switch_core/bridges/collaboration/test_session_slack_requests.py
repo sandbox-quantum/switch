@@ -155,7 +155,7 @@ def test_the_card_says_how_to_answer_in_words() -> None:
     message = render_approval(request, REFERENCE)
 
     assert not any(block["type"] == "context" for block in message.blocks)
-    assert "Reply with `R42 1`" in message.text
+    assert "Reply with `R42` and your choice, e.g. `R42 1`" in message.text
     assert message.text == render_approval_text(request, REFERENCE)
     assert message.text.startswith("> Request R42: Run project tests")
     assert "1. Allow once" in message.text
@@ -169,14 +169,19 @@ def test_what_the_card_tells_you_to_type_is_what_the_grammar_reads() -> None:
     who copied it verbatim got a handle of `"R42`, which resolves to nothing,
     logs nothing and leaves the card unchanged. A code span is what makes the
     example copy back: Slack draws it as one and the grammar strips the marks.
+
+    The footer spans the handle on its own before it spans the example, so the
+    example is the last of them — the handle alone is the thing to type first,
+    not a whole answer.
     """
     request = _projection().open_requests()[0]
 
     footer = _footer_of(render_approval(request, REFERENCE))
-    example = re.search(r"`([^`]+)`", footer)
+    spans = re.findall(r"`([^`]+)`", footer)
 
-    assert example is not None, f"the card offers no example to copy: {footer}"
-    for typed in (example.group(1), f"`{example.group(1)}`", f"_{example.group(1)}_"):
+    assert spans, f"the card offers no example to copy: {footer}"
+    assert spans[0] == "R42"
+    for typed in (spans[-1], f"`{spans[-1]}`", f"_{spans[-1]}_"):
         answer = parse_text_answer(typed)
         assert answer is not None, f"the card's own instruction does not parse: {typed}"
         assert answer.handle == "R42"
@@ -292,9 +297,9 @@ def test_no_option_count_makes_the_card_offer_an_answer_it_would_refuse() -> Non
         if footer.startswith("This card cannot be answered"):
             continue
 
-        example = re.search(r"`([^`]+)`", footer)
-        assert example is not None, f"{count} options: no example in {footer!r}"
-        answer = parse_text_answer(example.group(1))
+        spans = re.findall(r"`([^`]+)`", footer)
+        assert spans, f"{count} options: no example in {footer!r}"
+        answer = parse_text_answer(spans[-1])
         assert answer is not None, f"{count} options: {footer!r} does not parse"
         resolved = resolve_text_answer(posted_form(card), answer)
         assert not isinstance(resolved, Unanswerable), f"{count} options: {resolved}"

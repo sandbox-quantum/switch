@@ -1,10 +1,13 @@
 import pytest
 from sqlalchemy import select
 
-from switch_core.bridges.collaboration.adapter import RequestCard
+from switch_core.bridges.collaboration.adapter import RequestCard, ThreadUnavailable
 from switch_core.bridges.collaboration.models import InboundInteraction
 from switch_core.bridges.collaboration.session.inbound import SessionInteractions
-from switch_core.bridges.collaboration.session.outbound import SessionRequestCards
+from switch_core.bridges.collaboration.session.outbound import (
+    CardNotPosted,
+    SessionRequestCards,
+)
 from switch_core.bridges.collaboration.session.renderers import ANSWER_ACTION
 from switch_core.bridges.collaboration.session.renderers.slack import render_request
 from switch_core.db.models import (
@@ -33,6 +36,7 @@ class Platform:
     def __init__(self):
         self.posts = []
         self.edits = []
+        self.edit_threads = []
 
     async def post_rich(self, channel, agent, content: RequestCard, thread):
         message = render_request(
@@ -44,7 +48,7 @@ class Platform:
         self.posts.append((channel, message.text, message.blocks, thread))
         return f"{channel}:111.0"
 
-    async def update_rich(self, channel, post, content: RequestCard):
+    async def update_rich(self, channel, agent, post, content: RequestCard, thread):
         message = render_request(
             content.request,
             content.reference,
@@ -52,6 +56,7 @@ class Platform:
             unavailable_reason=content.unavailable_reason,
         )
         self.edits.append((channel, post, message.text, message.blocks))
+        self.edit_threads.append(thread)
 
 
 async def test_card_callback_reservation_and_confirmed_settlement(session_factory):
@@ -68,7 +73,11 @@ async def test_card_callback_reservation_and_confirmed_settlement(session_factor
     platform = Platform()
     posts = SessionRequestPostStore()
     cards = SessionRequestCards(
-        platform, bridge_id="bridge", posts=posts, session_factory=session_factory
+        platform,
+        bridge_id="bridge",
+        surface="slack",
+        posts=posts,
+        session_factory=session_factory,
     )
     await refresh_cards(session_factory, "bridge", "session-demo", cards)
     await refresh_cards(session_factory, "bridge", "session-demo", cards)
@@ -135,10 +144,12 @@ async def test_card_callback_reservation_and_confirmed_settlement(session_factor
     assert len(platform.posts) == 1
 
 
-@pytest.mark.parametrize("thread", [None, "sw_thread"])
-async def test_permission_uses_activity_thread_and_persists_it(session_factory, thread):
-    service, epoch = await setup(session_factory)
-    await opened(service, epoch)
+async def _asked_in(session_factory, thread):
+    """Rewrite the stored command's origin: in `thread`, or at the channel root.
+
+    `None` is the root, which is what an `Origin` with no thread means, and the
+    two get different treatment wherever a card cannot go where it belongs.
+    """
     async with session_factory() as db:
         row = await db.get(
             SdkSessionCommand, (require_tenant_id(), "session-demo", "message-demo")
@@ -163,10 +174,18 @@ async def test_permission_uses_activity_thread_and_persists_it(session_factory, 
                 )
             )
         await db.commit()
+
+
+@pytest.mark.parametrize("thread", [None, "sw_thread"])
+async def test_permission_uses_activity_thread_and_persists_it(session_factory, thread):
+    service, epoch = await setup(session_factory)
+    await opened(service, epoch)
+    await _asked_in(session_factory, thread)
     platform = Platform()
     cards = SessionRequestCards(
         platform,
         bridge_id="bridge",
+        surface="slack",
         posts=SessionRequestPostStore(),
         session_factory=session_factory,
     )
@@ -193,3 +212,81 @@ async def test_permission_uses_activity_thread_and_persists_it(session_factory, 
     assert (
         await service.submit(reply, user_id=None, bridge_id="bridge")
     ).status == "accepted"
+
+    await refresh_cards(session_factory, "bridge", "session-demo", cards)
+    # Where an edit is addressed to the conversation rather than to the
+    # message, the stored thread is the address, and the row is what survives
+    # a restart.
+    assert platform.edit_threads == [expected]
+
+
+class ThreadlessPlatform(Platform):
+    """A platform pointed at a thread it can neither find nor make.
+
+    Which is all it can say: Discord answers a deleted thread and a thread that
+    was never started with the same "unknown channel", so the fake refuses the
+    same way for both and the difference has to come from the origin.
+    """
+
+    def __init__(self):
+        super().__init__()
+        self.refused = []
+
+    async def post_rich(self, channel, agent, content: RequestCard, thread):
+        if thread is not None:
+            self.refused.append(thread)
+            raise ThreadUnavailable(f"no thread under {thread}", text="the card")
+        return await super().post_rich(channel, agent, content, thread)
+
+
+async def test_a_card_asked_at_the_channel_root_is_posted_there(session_factory):
+    """The reply thread has not been made yet, so the root is where it was asked.
+
+    Everyone who could read the question can read the card, which is what makes
+    this a fallback rather than a disclosure — and it is disclosed anyway.
+    """
+    service, epoch = await setup(session_factory)
+    await opened(service, epoch)
+    await _asked_in(session_factory, None)
+    platform = ThreadlessPlatform()
+    cards = SessionRequestCards(
+        platform,
+        bridge_id="bridge",
+        surface="slack",
+        posts=SessionRequestPostStore(),
+        session_factory=session_factory,
+    )
+
+    await refresh_cards(session_factory, "bridge", "session-demo", cards)
+
+    assert platform.refused == ["channel-demo:100.1"]
+    assert platform.posts[0][3] is None
+
+
+async def test_a_card_asked_in_a_thread_is_not_moved_into_the_channel(session_factory):
+    """The thread the question was asked in has gone, and the channel is not it.
+
+    A deleted private thread leaves the platform saying exactly what an absent
+    reply thread says. Posting the card to the parent anyway would hand that
+    conversation's question and its options to people who were never in it, so
+    nobody is asked and the handle is released for the retry.
+    """
+    service, epoch = await setup(session_factory)
+    await opened(service, epoch)
+    await _asked_in(session_factory, "sw_thread")
+    platform = ThreadlessPlatform()
+    cards = SessionRequestCards(
+        platform,
+        bridge_id="bridge",
+        surface="slack",
+        posts=SessionRequestPostStore(),
+        session_factory=session_factory,
+    )
+
+    with pytest.raises(CardNotPosted):
+        await refresh_cards(session_factory, "bridge", "session-demo", cards)
+
+    assert platform.refused == ["channel-demo:100.0"]
+    assert platform.posts == []
+    async with session_factory() as db:
+        assert await db.scalar(select(SessionRequestPost)) is None

@@ -457,7 +457,7 @@ async def test_releasing_a_claim_this_turn_never_made_still_clears_a_live_reacti
     `:eyes:` for good."""
     client = FakeWebClient()
     adapter = _adapter(client)
-    adapter._eyes.add((CHANNEL, "parent-1"))
+    adapter._marked.add((CHANNEL, "parent-1", "working"))
     activity = SessionTurnActivity(adapter)
 
     await _publish(activity, [_item()], _turn("completed"), thread_root_id="parent-1")

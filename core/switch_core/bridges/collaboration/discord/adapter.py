@@ -9,6 +9,7 @@ import time
 from collections import OrderedDict
 from collections.abc import Awaitable, Callable, Coroutine
 from dataclasses import replace
+from datetime import UTC, datetime, timedelta
 from typing import Any, ClassVar
 
 import discord
@@ -18,10 +19,21 @@ from pydantic import Field
 from switch_core.bridges.agent.commands import COMMANDS_BY_NAME
 from switch_core.bridges.agent.commands import Command as InRoomCommand
 from switch_core.bridges.collaboration.adapter import (
+    ActivityMark,
+    ActivityMarkRefused,
     CollaborationAdapter,
     LiveRuntimeIndicator,
+    RequestCard,
+    RichContent,
+    RichContentFailed,
+    RichContentThrottled,
+    ThreadUnavailable,
+    TurnActivity,
 )
-from switch_core.bridges.collaboration.discord.chunking import chunk_message
+from switch_core.bridges.collaboration.discord.chunking import (
+    MAX_MESSAGE,
+    chunk_message,
+)
 from switch_core.bridges.collaboration.discord.slash import (
     SlashArgError,
     build_app_commands,
@@ -39,6 +51,10 @@ from switch_core.bridges.collaboration.models import (
     InboundMessage,
     InboundUserJoin,
 )
+from switch_core.bridges.collaboration.session.renderers.neutral import (
+    request_summary,
+    turn_status,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -46,10 +62,15 @@ logger = logging.getLogger(__name__)
 # via per-message username/avatar overrides.
 _WEBHOOK_NAME = "Switch Bridge"
 
+# A second webhook in the same channels, carrying session publications and
+# nothing else, so that one of ours can be told apart from an agent's own words
+# when the only record left to read is the channel history.
+_PUBLICATION_WEBHOOK_NAME = "Switch Sessions"
+
 _READY_TIMEOUT = 30.0
 
 # Put on the message an agent is working on for as long as its turn lasts.
-_WORKING_REACTION = "👀"
+_REACTION: dict[ActivityMark, str] = {"working": "👀", "queued": "⏳"}
 
 # Discord's error code for "Maximum number of guild roles reached" (250).
 _MAX_GUILD_ROLES_CODE = 30005
@@ -66,6 +87,68 @@ _NO_MASS_MENTIONS = discord.AllowedMentions(everyone=False)
 # has no escape for `<`, so the syntax is broken rather than escaped — the same
 # technique discord.py uses on `@`.
 _ZERO_WIDTH_SPACE = "\u200b"
+
+# How far before a reservation's own timestamp a recovery search starts, and
+# how far back it is willing to read. The allowance covers the gap between
+# Switch writing the reservation and Discord stamping the message it is looking
+# for; the limit stops a busy channel turning one lookup into a history crawl.
+_RECOVERY_SKEW = timedelta(seconds=30)
+_RECOVERY_LIMIT = 100
+
+# Waited when Discord says it is rate limiting but does not say for how long.
+# Its buckets are short, so this is a floor that keeps the caller's backoff in
+# the right order of magnitude rather than a figure Discord commits to.
+_THROTTLE_FALLBACK = 5.0
+
+
+def _throttle_delay(error: discord.HTTPException) -> float:
+    """How long a 429 asks us to wait, from wherever Discord put the number.
+
+    `RateLimited` carries it as a float. An `HTTPException` does not: the
+    library parses the 429 body down to its `message` and drops the rest, so
+    the header is what is left. Falls back to a constant rather than to zero —
+    retrying a throttle immediately is how a throttle becomes a ban.
+    """
+    response = getattr(error, "response", None)
+    raw = getattr(response, "headers", {}).get("Retry-After") if response else None
+    try:
+        return float(raw) if raw is not None else _THROTTLE_FALLBACK
+    except (TypeError, ValueError):
+        return _THROTTLE_FALLBACK
+
+
+def _as_rich_failure(
+    error: Exception, *, description: str, text: str
+) -> RichContentFailed | None:
+    """Discord's answer, or no answer at all.
+
+    `None` means the send may or may not have happened, and the caller must
+    keep its reservation: `RichContentFailed` is a licence to discard one and
+    try again, which on a request card is a licence to ask the same question
+    twice.
+
+    A 4xx is Discord refusing, and Discord refusing is an answer. A 5xx is not:
+    discord.py has already retried it several times by then, and each of those
+    attempts may have been the one that landed before the response was lost.
+    Neither is a timeout or a dropped connection, which arrive as
+    `aiohttp` and `asyncio` errors rather than as anything Discord said.
+
+    A 429 is an answer, but not that one. It arrives two ways — as
+    `RateLimited` when the library declines to sleep through it, and as a plain
+    `HTTPException` when the webhook transport has exhausted its own retries or
+    when the response is missing the header the library needs to classify it —
+    and both mean wait, not stop. Reading only the first shape turned a
+    throttle into a refusal and threw away the delay Discord had just supplied.
+    """
+    if isinstance(error, discord.RateLimited):
+        return RichContentThrottled(retry_after=error.retry_after, text=text)
+    if isinstance(error, discord.HTTPException) and error.status == 429:
+        return RichContentThrottled(retry_after=_throttle_delay(error), text=text)
+    if isinstance(error, discord.DiscordServerError):
+        return None
+    if isinstance(error, discord.HTTPException | ValueError):
+        return RichContentFailed(f"{description}: {error}", text=text)
+    return None
 
 
 class _WebhookIdentity:
@@ -182,6 +265,51 @@ class DiscordAdapter(CollaborationAdapter):
     # https redirect (`GATEWAY_PUBLIC_URL`) to be clickable here.
     renders_custom_url_schemes: ClassVar[bool] = False
 
+    publishes_sdk_sessions: ClassVar[bool] = True
+
+    # One status per turn, holding its own tool counts. A second message would
+    # be a second notification for everyone in the thread, and the thread is
+    # already where the detail is allowed to live.
+    separate_activity_log: ClassVar[bool] = False
+
+    # A problem somebody has to act on gets its own reply, because the status
+    # it would otherwise be an edit to is a message they have already read.
+    separate_attention_slot: ClassVar[bool] = True
+
+    # Discord subscribes you to a thread you started, were mentioned in, or
+    # have spoken in — and to nothing else. The person who asked from the
+    # channel root is in none of those, so a reply that names nobody reaches
+    # nobody.
+    notifies_only_by_mention: ClassVar[bool] = True
+
+    # The status is the turn's one post, so the clock rides along with the next
+    # real change rather than rewriting a message somebody is reading. See the
+    # matching choice on Mattermost.
+    redraws_for_elapsed_time: ClassVar[bool] = False
+
+    supports_activity_reactions: ClassVar[bool] = True
+    supports_queue_reaction: ClassVar[bool] = True
+
+    # Every agent posts through one bot application, so there is one 👀 between
+    # them: the first turn to want it adds it and the last to finish removes it.
+    activity_reactions_per_agent: ClassVar[bool] = False
+
+    # Both paths would draw the same turn. The legacy renderer below is
+    # retained, not reachable — removing it is its own task.
+    renders_legacy_runtime_state: ClassVar[bool] = False
+
+    # `find_request_card` reads a channel's history back and matches a card by
+    # the handle printed on it, so an unacknowledged send can still be bound to
+    # the message it produced.
+    recovers_uncertain_posts: ClassVar[bool] = True
+
+    # Left False: a webhook message carries no metadata this bridge can set,
+    # so the handle a card prints is the only thing a search has to match on.
+    # A card is therefore recoverable and a turn's activity, which prints no
+    # handle, is not — see `find_request_card`. Not a property of Discord: a
+    # marker carried some other way would make this True.
+    carries_publication_marker: ClassVar[bool] = False
+
     def __init__(self, *, config: DiscordConnectionConfig) -> None:
         super().__init__()
         self._config = config
@@ -190,8 +318,8 @@ class DiscordAdapter(CollaborationAdapter):
         self._tree: app_commands.CommandTree[Any] | None = None
         self._connect_task: asyncio.Task[None] | None = None
         self._bot_user_id: int = 0
-        # channel id -> webhook the bridge posts through in that channel.
-        self._webhooks: dict[int, discord.Webhook] = {}
+        # (channel id, webhook name) -> webhook the bridge posts through there.
+        self._webhooks: dict[tuple[int, str], discord.Webhook] = {}
         # Ids of webhooks the bridge has minted/adopted, for echo dropping.
         self._webhook_ids: set[int] = set()
         self._seen_ids: OrderedDict[int, None] = OrderedDict()
@@ -205,7 +333,7 @@ class DiscordAdapter(CollaborationAdapter):
         # Message refs currently carrying the "being worked on" reaction, and
         # per agent the set it has marked — a turn ends once but may have
         # marked several messages.
-        self._eyes: set[str] = set()
+        self._marked: set[tuple[str, ActivityMark]] = set()
         self._agent_eyes: dict[tuple[str, str], set[str]] = {}
         # Set once Discord has told us it will not host agent roles, so the
         # bridge stops asking and says so only once.
@@ -596,6 +724,7 @@ class DiscordAdapter(CollaborationAdapter):
         thread_root_id: str | None = None,
         *,
         message_type: str | None = None,
+        drawn: str | None = None,
     ) -> str | None:
         # Renders its own body: every caller of `admin_message` passes Switch
         # Markdown, so the conversion belongs here rather than at each of
@@ -622,7 +751,7 @@ class DiscordAdapter(CollaborationAdapter):
             return None
 
         return await self._send_chunked(
-            self.translate_outbound(content),
+            self._admin_body(self.translate_outbound(content), drawn),
             lambda part: target.send(part, suppress_embeds=True),
             where=f"channel {channel_id}",
         )
@@ -702,6 +831,652 @@ class DiscordAdapter(CollaborationAdapter):
             logger.exception(
                 "Failed to trigger typing in Discord channel %s", channel_id
             )
+
+    # ── SDK session publication ──────────────────────────────────────────────
+
+    def rich_fallback_limit(self) -> int:
+        return MAX_MESSAGE
+
+    def rich_fallback_text(self, content: RichContent) -> str:
+        """What a publication says with nothing resolved against the guild.
+
+        The same renderers `post_rich` uses, without the mention, the
+        responder's handle or the DM name prefix — each of which needs
+        something looked up. This is the string that travels in a
+        `RichContentFailed`, where the lookups would be decorating a message
+        nobody is going to see.
+        """
+        return self._draw(content, mention=None, responder=None, prefix="")
+
+    def _draw(
+        self,
+        content: RichContent,
+        *,
+        mention: str | None,
+        responder: str | None,
+        prefix: str,
+    ) -> str:
+        escape = self._rich_escape
+        limit = max(1, self.rich_fallback_limit() - len(prefix))
+        markup = self.rich_markup()
+        if isinstance(content, TurnActivity):
+            # Charged to the same budget as the status it follows: a message
+            # that just fits, plus a line saying it reached nobody, is a
+            # message Discord refuses.
+            tail = f"\n{self.unnotified_notice()}" if content.notify_unreachable else ""
+            body = (
+                turn_status(
+                    content.items,
+                    content.turn,
+                    escape=escape,
+                    limit=max(1, limit - len(tail)),
+                    markup=markup,
+                    elapsed_seconds=content.elapsed_seconds,
+                    session_url=content.session_url,
+                    mention=mention,
+                    error_summary=content.error_summary,
+                    tool_detail=True,
+                )
+                + tail
+            )
+            return f"{prefix}{body}"
+        # The mention goes on its own line rather than in front of the heading:
+        # a card is a block, and a handle wedged before "**Permission needed**"
+        # reads as part of the heading.
+        lead = f"{mention}\n" if mention else ""
+        tail = f"\n{self.unnotified_notice()}" if content.notify_unreachable else ""
+        body = request_summary(
+            content.request,
+            content.reference,
+            escape=escape,
+            limit=max(1, limit - len(lead) - len(tail)),
+            markup=markup,
+            responder=responder,
+            unavailable_reason=content.unavailable_reason,
+        )
+        return f"{prefix}{lead}{body}{tail}"
+
+    def _render_rich(self, content: RichContent, *, prefix: str) -> str:
+        """Draw `content` for one place on Discord.
+
+        `prefix` is the inlined agent name a DM needs and a guild channel does
+        not: a webhook message carries its sender's name and face, and a bot
+        post in a DM carries the bot's, so there the name goes in the body the
+        way `send_message` puts it there, charged to the same 2,000 characters
+        as everything else.
+        """
+        responder = (
+            self._mention(content.responder_external_id)
+            if isinstance(content, RequestCard)
+            else None
+        )
+        return self._draw(
+            content,
+            mention=self._mention(content.notify_external_id),
+            responder=responder,
+            prefix=prefix,
+        )
+
+    def _mention(self, external_user_id: str | None) -> str | None:
+        """`<@id>` for a Discord user id, or None where there is nothing to name.
+
+        No lookup, unlike the platforms whose mention syntax needs a handle:
+        Discord resolves the id itself at render time, so this costs no call
+        and cannot fail for a user this process has never seen.
+        """
+        if not external_user_id:
+            return None
+        try:
+            return f"<@{int(external_user_id)}>"
+        except ValueError:
+            logger.warning(
+                "Cannot mention %r on Discord: it is not a user id.",
+                external_user_id[:64],
+            )
+            return None
+
+    async def post_rich(
+        self,
+        channel_id: str,
+        agent_name: str,
+        content: RichContent,
+        thread_root_id: str | None = None,
+    ) -> str:
+        """Post a turn's status or a request's card, as the agent itself.
+
+        Raises on every failure, unlike `send_message`, which reports one by
+        returning `None`: a publication that silently did not happen is a
+        reservation nothing retries and a turn the channel never sees. What it
+        raises is the point — `RichContentFailed` is the caller's licence to
+        discard the reservation and try again, so it is reserved for a refusal
+        Discord actually gave. A send whose outcome nobody knows raises the
+        transport's own error and keeps the reservation.
+
+        A `thread_root_id` is where the content belongs, and this never
+        substitutes the parent channel for it. Where no thread exists and none
+        can be made, `ThreadUnavailable` says so and the caller decides: the
+        channel root is the same audience as a turn addressed to the channel
+        root, and a different one from a thread that has been deleted, and
+        nothing Discord can be asked distinguishes the two.
+
+        Where a thread exists and Discord will not let us into it, that is
+        refused outright. The thread may be private, and a request carries the
+        agent's question and its options — posting it to the parent would hand
+        the contents of a conversation to people who were not in it. A question
+        nobody can see is bad; a question the wrong people can see is worse,
+        and unlike the first it cannot be undone.
+
+        Pass `thread_root_id=None` to post at the channel root deliberately.
+        """
+        fallback = self.rich_fallback_text(content)
+        try:
+            target = await self._get_channel(int(channel_id))
+        except Exception as error:
+            raise self._rich_failure(
+                error,
+                f"Discord could not resolve channel {channel_id}",
+                fallback,
+            ) from error
+
+        lobby = self._channel_type_of(target) == "lobby"
+        prefix = f"**{await self.agent_label_for_body(agent_name)}**: " if lobby else ""
+        text = self._render_rich(content, prefix=prefix)
+        if lobby:
+            try:
+                sent = await target.send(
+                    text,
+                    suppress_embeds=True,
+                    allowed_mentions=_NO_MASS_MENTIONS,
+                )
+            except Exception as error:
+                raise self._rich_failure(
+                    error, f"Discord refused the post in DM {channel_id}", text
+                ) from error
+            return f"{sent.channel.id}:{sent.id}"
+
+        thread: Any = None
+        if thread_root_id:
+            thread = await self._publication_thread(
+                int(channel_id), thread_root_id, text
+            )
+
+        try:
+            webhook = await self._publication_webhook(int(channel_id))
+            agent = await self.agent_rendering(agent_name)
+            payload: dict[str, Any] = {
+                "content": text,
+                "avatar_url": agent.icon_url,
+                "suppress_embeds": True,
+                "allowed_mentions": _NO_MASS_MENTIONS,
+                "wait": True,
+            }
+            if thread is not None:
+                payload["thread"] = thread
+            sent = await _WebhookIdentity(agent.field_label, agent_name).send(
+                webhook, payload
+            )
+        except Exception as error:
+            raise self._rich_failure(
+                error, f"Discord refused the post in channel {channel_id}", text
+            ) from error
+        return f"{sent.channel.id}:{sent.id}"
+
+    async def _publication_thread(
+        self, channel_id: int, thread_root_id: str, text: str
+    ) -> Any:
+        """The thread this publication goes in. Never the channel instead.
+
+        `ThreadUnavailable` when no thread exists under the root message and
+        one could not be made, which reads the same from here whether the
+        thread was never created or was created privately and deleted. Only the
+        caller can tell those apart, from where the command was addressed, and
+        only the caller may decide that the parent channel will do.
+
+        Every other failure raises as itself. A thread that exists and will not
+        open may be private, and the difference between "in a thread" and "in
+        the channel" is then the difference between a conversation and an
+        audience.
+        """
+        existing = await self._reachable_thread(channel_id, thread_root_id, text)
+        if existing is not None:
+            return existing
+        try:
+            return await self._ensure_thread(channel_id, thread_root_id)
+        except Exception as error:
+            # The create may have been refused because the thread is already
+            # there — the one failure that means the opposite of what it looks
+            # like. Ask again before reporting that there is none.
+            settled = await self._reachable_thread(channel_id, thread_root_id, text)
+            if settled is not None:
+                return settled
+            raise ThreadUnavailable(
+                f"Discord has no thread under {thread_root_id} in channel "
+                f"{channel_id} and would not make one: {error}",
+                text=text,
+            ) from error
+
+    async def _reachable_thread(
+        self, channel_id: int, thread_root_id: str, text: str
+    ) -> Any:
+        """The thread already hanging from this message, if there is one.
+
+        `None` means Discord said there is none: a message with no thread under
+        it answers a channel fetch with "unknown channel", because a Discord
+        thread is a channel whose id is the message's own. Anything else it
+        says is not that answer, and is refused rather than read as absence —
+        "there is no thread here" and "this thread is not yours" must not be
+        confused, because the first invites posting in the channel instead and
+        the second is how a private conversation becomes a public one.
+
+        Refusing is safe for the caller's reservation in a way a failed send is
+        not: nothing has been posted at this point, so there is no message
+        anywhere that a retry could duplicate.
+        """
+        thread_id = self._thread_channel_id(thread_root_id)
+        if thread_id is None:
+            return None
+        client = self._require_client()
+        cached = client.get_channel(thread_id)
+        if cached is not None:
+            return cached
+        try:
+            return await client.fetch_channel(thread_id)
+        except discord.NotFound:
+            return None
+        except Exception as error:
+            raise RichContentFailed(
+                f"Discord will not say what is under {thread_root_id} in channel "
+                f"{channel_id}, so this publication has nowhere it is known to "
+                f"belong. The channel is not a substitute: a thread this bridge "
+                f"cannot open may be one the channel cannot read either. {error}",
+                text=text,
+            ) from error
+
+    async def update_rich(
+        self,
+        channel_id: str,
+        agent_name: str,
+        message_ref: str,
+        content: RichContent,
+        thread_root_id: str | None,
+    ) -> None:
+        """Redraw a publication in place, including the last time.
+
+        Nothing is taken down. A turn that has ended is edited to its final
+        state and stays where it was published — in a thread, at the channel
+        root or in a DM alike — as the record that the turn ran, how long it
+        took and where to open it. Deleting it at the channel root left a
+        reader scrolling back with none of that, and a request card was never
+        taken down anywhere for the same reason.
+
+        Not `update_message`, which logs and returns. That is right for a
+        status line nobody is waiting on and wrong here: a card that failed to
+        redraw is still showing a settled request as open, and the caller has a
+        reply to post about that — but only if it is told.
+
+        `agent_name` is what a DM redraw writes back into the body. A webhook
+        message keeps its sender through an edit because Discord keeps it; a DM
+        has no webhook, so the name is part of the message and an edit that
+        forgot it would publish the turn as the bot.
+        """
+        _, message_id = self._parse_message_ref(message_ref)
+        if not message_id:
+            raise RichContentFailed(
+                f"Cannot redraw Discord publication {message_ref!r}: it is not a "
+                "location:message reference.",
+                text=self.rich_fallback_text(content),
+            )
+        try:
+            target = await self._get_channel(int(channel_id))
+        except Exception as error:
+            raise self._rich_failure(
+                error,
+                f"Discord could not resolve channel {channel_id}",
+                self.rich_fallback_text(content),
+            ) from error
+
+        lobby = self._channel_type_of(target) == "lobby"
+        prefix = f"**{await self.agent_label_for_body(agent_name)}**: " if lobby else ""
+        # A post notifies; an edit does not. Repeating the mention on every
+        # redraw would be a handle in the channel that never reaches anybody
+        # it has not already reached.
+        text = self._render_rich(
+            replace(content, notify_external_id=None), prefix=prefix
+        )
+        await self._edit_rich(channel_id, message_ref, text, lobby=lobby)
+
+    async def _edit_rich(
+        self, channel_id: str, message_ref: str, text: str, *, lobby: bool
+    ) -> None:
+        location_id, message_id = self._parse_message_ref(message_ref)
+        try:
+            if lobby:
+                target = await self._get_channel(int(location_id or channel_id))
+                message = await target.fetch_message(int(message_id))
+                await message.edit(content=text, allowed_mentions=_NO_MASS_MENTIONS)
+                return
+            kwargs: dict[str, Any] = {}
+            if location_id and location_id != channel_id:
+                kwargs["thread"] = discord.Object(id=int(location_id))
+            webhook = await self._publication_webhook(int(channel_id))
+            await webhook.edit_message(
+                int(message_id),
+                content=text,
+                allowed_mentions=_NO_MASS_MENTIONS,
+                **kwargs,
+            )
+        except Exception as error:
+            raise self._rich_failure(
+                error,
+                f"Discord refused the edit to {message_ref} in channel {channel_id}",
+                text,
+            ) from error
+
+    def _rich_failure(self, error: Exception, description: str, text: str) -> Exception:
+        """The exception to raise for `error`: Discord's refusal, or its own.
+
+        Raising the original back is what keeps an uncertain send's reservation
+        alive, so this returns rather than raises — the caller writes
+        `raise ... from error` and the chain stays intact either way.
+        """
+        return _as_rich_failure(error, description=description, text=text) or error
+
+    async def find_request_card(
+        self,
+        channel_id: str,
+        thread_root_id: str | None,
+        token: str,
+        created_at: datetime,
+        handle: str | None,
+    ) -> str | None:
+        """Look for a card this bridge may already have posted.
+
+        Asked when a post's outcome is unknown — the request timed out, or the
+        process died between sending and recording the id. The answer decides
+        between binding the reservation to what is there and asking the same
+        question twice, so a lookup that cannot be trusted comes back as
+        `None`: the reservation survives and the question is asked again later.
+
+        Two things have to hold, and neither is enough alone. The message must
+        have been posted by the publication webhook, which nothing but a status
+        or a card is ever sent through, so an agent's own words can never be
+        mistaken for one however closely they read like it — a reply beginning
+        "I can explain the request `R7` syntax" arrives on the webhook agents
+        speak through, and is not a candidate here at all. And it must carry a
+        card's heading line for this handle, which is what picks this card out
+        from the other publications beside it.
+
+        The heading is looked for line by line rather than at the top, because
+        the top of a card is the mention that notifies whoever asked, and in a
+        DM it is the agent's name as well.
+
+        A DM has no webhooks, so there the bot is the author and the heading
+        test is carrying the weight on its own. See `_is_publication`.
+
+        `handle` is `None` for a turn's activity, which prints no handle and so
+        cannot be found this way. That publication stays unconfirmed rather
+        than being posted twice — see the warning below, and D14.
+        """
+        if handle is None:
+            logger.warning(
+                "Cannot look for the Discord publication marked %s in channel %s: "
+                "a webhook message carries no metadata here, so only a request "
+                "card, which prints its own handle, can be recognised again. This "
+                "turn's status stays unconfirmed rather than being posted twice.",
+                token,
+                channel_id,
+            )
+            return None
+        client = self._client
+        if client is None:
+            logger.warning(
+                "Cannot look for card %s in Discord channel %s: not connected.",
+                handle,
+                channel_id,
+            )
+            return None
+
+        stamped = created_at if created_at.tzinfo else created_at.replace(tzinfo=UTC)
+        after = stamped - _RECOVERY_SKEW
+        wanted = f"· request `{self._rich_escape(handle)}`"
+        for place in await self._recovery_places(channel_id, thread_root_id):
+            author = await self._publication_author(place)
+            if author is None:
+                continue
+            try:
+                async for message in place.history(
+                    after=after, limit=_RECOVERY_LIMIT, oldest_first=True
+                ):
+                    if not self._is_publication(message, author):
+                        continue
+                    if self._heads_a_card(message.content or "", wanted):
+                        return f"{message.channel.id}:{message.id}"
+            except Exception as e:
+                logger.warning(
+                    "Could not read Discord channel %s looking for card %s: %s.",
+                    place.id,
+                    handle,
+                    e,
+                )
+        return None
+
+    @staticmethod
+    def _heads_a_card(content: str, wanted: str) -> bool:
+        """Whether this text carries a card's heading line for one handle.
+
+        A heading is a whole line, bold from its first character and ending in
+        the handle it answers to. Requiring both ends of the line means a
+        sentence that happens to quote the handle is not enough, and requiring
+        a line rather than the start of the message means the mention above it
+        does not hide it.
+        """
+        return any(
+            line.startswith("**") and line.endswith(wanted)
+            for line in content.split("\n")
+        )
+
+    async def _recovery_places(
+        self, channel_id: str, thread_root_id: str | None
+    ) -> list[Any]:
+        """Where a card posted for this channel and thread could have landed.
+
+        Both, in order, because `post_rich` falls back to the channel root when
+        a thread cannot be resolved — so a card whose outcome is unknown may be
+        in either. The thread is only looked up, never created: creating one
+        here would be answering "where is it?" by making a new empty place it
+        certainly is not in.
+        """
+        places: list[Any] = []
+        if thread_root_id:
+            thread_id = self._thread_channel_id(thread_root_id)
+            if thread_id is not None:
+                try:
+                    places.append(await self._get_channel(thread_id))
+                except Exception as e:
+                    logger.warning(
+                        "Could not open the Discord thread under %s: %s.",
+                        thread_root_id,
+                        e,
+                    )
+        try:
+            places.append(await self._get_channel(int(channel_id)))
+        except Exception as e:
+            logger.warning("Could not open Discord channel %s: %s.", channel_id, e)
+        return places
+
+    async def _publication_author(self, place: Any) -> int | None:
+        """Who a publication in `place` would have been posted by.
+
+        The publication webhook's id in a guild, the bot's own id in a DM,
+        where there are no webhooks to have. `None` means the question cannot
+        be answered here, and a search that cannot say who wrote a message has
+        no business adopting one — better an unbound reservation than a
+        reservation bound to somebody else's sentence.
+
+        Resolved rather than read off the cache. After a restart nothing has
+        posted to this channel yet, so the cache is empty and every message in
+        it would look like a stranger's.
+        """
+        parent = getattr(place, "parent", None) or place
+        if self._channel_type_of(parent) == "lobby":
+            return self._bot_user_id or None
+        try:
+            return (await self._publication_webhook(parent.id)).id
+        except Exception as e:
+            logger.warning(
+                "Could not resolve the Discord publication webhook for channel "
+                "%s, so nothing there can be told from anybody else's message: "
+                "%s.",
+                parent.id,
+                e,
+            )
+            return None
+
+    @staticmethod
+    def _is_publication(message: Any, author: int) -> bool:
+        """Whether this message came from the sender publications come from.
+
+        A guild message says so exactly: `webhook_id` is set by Discord, not by
+        anything that wrote the content, and only publications go through that
+        webhook. A DM message can only say that the bot sent it — the bot also
+        relays the agent's ordinary replies there, so in a DM this narrows the
+        field rather than settling it, and the caller's heading-line test is
+        what settles it. Recorded in D18 as the weaker of the two.
+        """
+        webhook_id = getattr(message, "webhook_id", None)
+        if webhook_id is not None:
+            return bool(webhook_id == author)
+        return bool(getattr(getattr(message, "author", None), "id", None) == author)
+
+    async def is_first_reply(
+        self, channel_id: str, root_ref: str, message_ref: str
+    ) -> bool:
+        """Whether this message is the first thing said inside a thread.
+
+        A Discord thread is a channel whose id is the id of the message it was
+        created from, and the root message itself lives in the parent channel —
+        so the thread's first message is the first reply, with nothing to skip
+        over. Read from Discord each time rather than counted here: two replies
+        arriving at once would both look like the first to anything counting
+        locally, and each would decide the request.
+
+        Never raises. This is on the inbound path of every message, ahead of
+        the relay, so an exception out of it is not a refused answer but a
+        message the room never sees.
+        """
+        thread_id = self._thread_channel_id(root_ref)
+        if thread_id is None or self._client is None:
+            logger.warning(
+                "Cannot read the Discord thread under %s in %s, so %s does not "
+                "answer the card there.",
+                root_ref,
+                channel_id,
+                message_ref,
+            )
+            return False
+        try:
+            thread = await self._get_channel(thread_id)
+            async for message in thread.history(limit=1, oldest_first=True):
+                return f"{message.channel.id}:{message.id}" == message_ref
+        except Exception as e:
+            logger.warning(
+                "Could not read the Discord thread under %s in %s: %s. Treating "
+                "%s as not the first reply.",
+                root_ref,
+                channel_id,
+                e,
+                message_ref,
+            )
+        return False
+
+    async def mark_activity(
+        self,
+        channel_id: str,
+        message_ref: str,
+        *,
+        agent_name: str,
+        mark: ActivityMark,
+        on: bool,
+        force: bool = False,
+    ) -> None:
+        """Put a mark on the message being worked on, or take it off.
+
+        One mark between every agent, because every agent posts through one
+        bot application here and a reaction belongs to whoever added it. The
+        publisher already counts the turns holding it, so the first to want it
+        adds it and the last to finish removes it.
+
+        `force` is the durable publisher reconciling after a restart, when this
+        process's record of what is already on the message is empty and wrong
+        rather than empty and right.
+
+        Raises where another attempt might work, so the publisher retries and
+        records the turn as drawn only once the channel shows what it says it
+        shows. A missing permission is not that: it would be retried for the
+        life of the turn and refused every time, so it is reported once and
+        the turn goes on without the mark.
+        """
+        _, message_id = self._parse_message_ref(message_ref)
+        if not message_id:
+            logger.warning(
+                "Cannot mark %s: not a Discord message reference.",
+                message_ref,
+            )
+            return
+        if not force and on == ((message_ref, mark) in self._marked):
+            return
+        await self._react(message_ref, mark=mark, on=on)
+
+    async def notify_working(
+        self, channel_id: str, agent_name: str, thread_root_id: str | None
+    ) -> None:
+        """The one-shot typing nudge, where the agent was asked.
+
+        Discord expires it after about ten seconds, so it costs the channel
+        nothing and it is the only signal that arrives before the first post.
+        Sent into a thread only if that thread already exists: a typing
+        indicator is not worth creating a thread for, and one created here
+        would be an empty thread on a message somebody may never get a reply in.
+        """
+        target: Any = None
+        if thread_root_id:
+            thread_id = self._thread_channel_id(thread_root_id)
+            if thread_id is not None and self._client is not None:
+                target = self._client.get_channel(thread_id)
+        if target is None:
+            try:
+                target = await self._get_channel(int(channel_id))
+            except Exception as e:
+                logger.warning(
+                    "Could not open Discord channel %s to signal that %s has "
+                    "started: %s.",
+                    channel_id,
+                    agent_name,
+                    e,
+                )
+                return
+        try:
+            await target.typing()
+        except Exception as e:
+            logger.warning(
+                "Could not signal in Discord channel %s that %s has started: %s.",
+                channel_id,
+                agent_name,
+                e,
+            )
+
+    @staticmethod
+    def _thread_channel_id(thread_root_ref: str) -> int | None:
+        """The id of the thread rooted at this message ref.
+
+        A Discord thread is a channel whose id equals the id of the message it
+        was created from, so the ref's message half is the thread's id —
+        whether or not the thread has been created yet.
+        """
+        try:
+            return int(thread_root_ref.split(":", 1)[-1])
+        except ValueError:
+            return None
 
     # ── Runtime state ────────────────────────────────────────────────────────
 
@@ -805,34 +1580,28 @@ class DiscordAdapter(CollaborationAdapter):
         as well as inside a thread — so it is the progress signal that is always
         available. A guild that has not granted the permission gets one warning
         and no reaction, rather than a mark that is not there.
+
+        This path has no durable record, so it answers the refused-removal
+        question from `self._marked` — which is sound only because it will not
+        attempt a removal at all unless this process put the mark there. The
+        reaction is then known to be outstanding, and is reported as such.
         """
-        location_id, message_id = self._parse_message_ref(message_ref)
+        _, message_id = self._parse_message_ref(message_ref)
         if not message_id or self._client is None:
             return
-        if working == (message_ref in self._eyes):
+        if working == ((message_ref, "working") in self._marked):
             return
 
         try:
-            channel = await self._get_channel(int(location_id))
-            message = channel.get_partial_message(int(message_id))
+            await self._react(message_ref, mark="working", on=working)
+        except ActivityMarkRefused as refusal:
             if working:
-                await message.add_reaction(_WORKING_REACTION)
-                self._eyes.add(message_ref)
+                logger.warning("%s", refusal)
             else:
-                await message.remove_reaction(_WORKING_REACTION, self._client.user)
-                self._eyes.discard(message_ref)
-        except discord.NotFound:
-            # The message (or the reaction) is gone; the end state is what was
-            # wanted either way.
-            self._eyes.discard(message_ref)
-        except discord.Forbidden:
-            logger.warning(
-                "Discord refused the working reaction on %s — the bot is missing "
-                "the Add Reactions permission here. Turns show the posted status "
-                "message; only the mark on the message being answered is missing. "
-                "Re-invite the bot with the permissions in DISCORD_SETUP.md.",
-                message_ref,
-            )
+                logger.error(
+                    "%s The mark this process put there is still on the message.",
+                    refusal,
+                )
         except (discord.HTTPException, ValueError) as e:
             logger.warning(
                 "Could not %s the working reaction on Discord message %s: %s",
@@ -840,6 +1609,54 @@ class DiscordAdapter(CollaborationAdapter):
                 message_ref,
                 e,
             )
+
+    async def _react(self, message_ref: str, *, mark: ActivityMark, on: bool) -> None:
+        """Add or remove a mark, letting through whatever another attempt might fix.
+
+        Two endings are final rather than worth retrying: the message is gone,
+        or this guild will never allow the reaction. Everything else is left to
+        raise, so a caller that can try again knows it should.
+
+        A missing permission is final *here* — the same call would be refused
+        the same way — so it is raised as `ActivityMarkRefused` rather than
+        swallowed. It is not final for the turn: access to a channel can come
+        back, and a mark that could not be *removed* is still on the message
+        saying an agent is working on something it finished. That is not an
+        absence but a false statement, and whether it is outstanding is a
+        question about what was put there, which the publisher's durable record
+        answers and this method cannot.
+        """
+        location_id, message_id = self._parse_message_ref(message_ref)
+        client = self._require_client()
+        key = (message_ref, mark)
+        try:
+            channel = await self._get_channel(int(location_id))
+            message = channel.get_partial_message(int(message_id))
+            if on:
+                await message.add_reaction(_REACTION[mark])
+                self._marked.add(key)
+            else:
+                await message.remove_reaction(_REACTION[mark], client.user)
+                self._marked.discard(key)
+        except discord.NotFound:
+            # The message (or the reaction) is gone; the end state is what was
+            # wanted either way.
+            self._marked.discard(key)
+        except discord.Forbidden as error:
+            if on:
+                raise ActivityMarkRefused(
+                    f"Discord refused the {mark} reaction on {message_ref} — the "
+                    f"bot is missing the Add Reactions permission here. Turns still "
+                    f"show their status message; only the mark on the message being "
+                    f"answered is missing. Re-invite the bot with the permissions "
+                    f"in DISCORD_SETUP.md."
+                ) from error
+            raise ActivityMarkRefused(
+                f"Discord refused to take the {mark} reaction off {message_ref}. "
+                f"Removing our own reaction needs no permission of its own, so this "
+                f"is the bot's access to the channel rather than the reaction: check "
+                f"it can still see {message_ref}."
+            ) from error
 
     async def _clear_working(self, channel_id: str, agent_name: str) -> None:
         live = self._working_msg.pop((channel_id, agent_name), None)
@@ -1575,20 +2392,40 @@ class DiscordAdapter(CollaborationAdapter):
         return member
 
     async def _get_webhook(self, channel_id: int) -> discord.Webhook:
-        cached = self._webhooks.get(channel_id)
+        return await self._named_webhook(channel_id, _WEBHOOK_NAME)
+
+    async def _publication_webhook(self, channel_id: int) -> discord.Webhook:
+        """The webhook nothing but a session publication is ever sent through.
+
+        A second webhook in the same channel, for one reason: it is the only
+        thing about a Discord message that says who wrote it and cannot be
+        written by anyone else. Recovery has to find a status or a card again
+        after a send whose outcome was lost, and it has nothing but the channel
+        history to look in. Sharing the agents' webhook made the sender useless
+        as evidence — every relayed reply came from it too, so an agent that
+        merely talked about a request looked exactly like the card, and
+        adopting one would have redrawn a sentence as a settled question.
+
+        Nobody but this method posts here, so anything found on it is a
+        publication. Guilds only: a DM has no webhooks at all.
+        """
+        return await self._named_webhook(channel_id, _PUBLICATION_WEBHOOK_NAME)
+
+    async def _named_webhook(self, channel_id: int, name: str) -> discord.Webhook:
+        cached = self._webhooks.get((channel_id, name))
         if cached is not None:
             return cached
 
         channel = await self._get_channel(channel_id)
         webhook: discord.Webhook | None = None
         for existing in await channel.webhooks():
-            if existing.name == _WEBHOOK_NAME and existing.token:
+            if existing.name == name and existing.token:
                 webhook = existing
                 break
         if webhook is None:
-            webhook = await channel.create_webhook(name=_WEBHOOK_NAME)
+            webhook = await channel.create_webhook(name=name)
 
-        self._webhooks[channel_id] = webhook
+        self._webhooks[(channel_id, name)] = webhook
         self._webhook_ids.add(webhook.id)
         return webhook
 

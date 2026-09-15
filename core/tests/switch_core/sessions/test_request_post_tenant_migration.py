@@ -23,6 +23,7 @@ async def test_request_post_tenant_backfill_preserves_card_and_answer_destinatio
     cards = SessionRequestCards(
         Platform(),
         bridge_id="bridge",
+        surface="slack",
         posts=SessionRequestPostStore(),
         session_factory=session_factory,
     )

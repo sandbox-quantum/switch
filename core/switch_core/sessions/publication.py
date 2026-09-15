@@ -4,12 +4,14 @@ import time
 from collections import OrderedDict
 from collections.abc import Callable
 from datetime import UTC, datetime
+from typing import Any
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.bridges.collaboration.adapter import RichContentThrottled
 from switch_core.bridges.collaboration.session.outbound import (
+    CardRefused,
     SessionRequestCards,
     SessionTurnActivity,
 )
@@ -24,6 +26,7 @@ from switch_core.db.models import (
     require_tenant_id,
 )
 from switch_core.db.stores.session_request_post_store import SessionRequestPostStore
+from switch_core.deeplinks import deeplink_for_platform
 from switch_core.sessions.contract import (
     TURN_ENDED,
     Command,
@@ -42,6 +45,10 @@ logger = logging.getLogger(__name__)
 
 def _always_recover(_token: str) -> bool:
     return True
+
+
+def _never_spent(_token: str) -> bool:
+    return False
 
 
 def _ignore_delay(_token: str, _delay: float) -> None:
@@ -67,8 +74,9 @@ class PublicationIncomplete(Exception):
     caller over HTTP acts on: this is an internal signal `publish_pending`
     reads to decide how loudly to say so. `errors` is what actually broke —
     still worth an error-level log with a traceback; `backed_off` is requests
-    still waiting out a recovery search's own backoff, which is working as
-    designed and must not read as a fresh failure on every retry.
+    deliberately not tried again yet, either a recovery search or a post to a
+    destination that keeps refusing, which is working as designed and must not
+    read as a fresh failure on every retry.
     """
 
     def __init__(
@@ -79,7 +87,7 @@ class PublicationIncomplete(Exception):
         self.backed_off = backed_off
         super().__init__(
             f"Session {session_id}: {len(errors)} request(s) failed to "
-            f"publish and {backed_off} are waiting out a recovery backoff."
+            f"publish and {backed_off} are waiting out a retry backoff."
         )
 
 
@@ -89,8 +97,13 @@ async def refresh_cards(
     session_id: str,
     cards: SessionRequestCards,
     *,
+    gateway_public_url: str | None = None,
     recovery_allowed: Callable[[str], bool] = _always_recover,
     recovery_succeeded: Callable[[str], None] = _ignore_recovery,
+    post_allowed: Callable[[str], bool] = _always_recover,
+    post_succeeded: Callable[[str], None] = _ignore_recovery,
+    post_spent: Callable[[str], bool] = _never_spent,
+    post_delayed: Callable[[str, float], None] = _ignore_delay,
     refresh_needed: Callable[[str, tuple[int, str]], bool] = _always_refresh,
     refreshed: Callable[[str, tuple[int, str]], None] = _ignore_refresh,
 ) -> None:
@@ -98,6 +111,32 @@ async def refresh_cards(
 
     `recovery_allowed` gates `recover` — the search for a card whose post is
     unconfirmed — per token, and `recovery_succeeded` is told when one lands.
+
+    `post_allowed` gates the *first* post of a card, keyed by session and
+    request rather than by token because a refused post releases its handle
+    and the next attempt mints a new one. It exists for the destination that
+    is permanently unavailable — a deleted channel, a thread nobody can write
+    in — where without it this reserved a handle, had the platform refuse it
+    and released it again on every publish cycle, forever, logging a failure
+    each time. The wait stretches instead, so a destination that comes back is
+    still picked up and one that does not stops drowning the log. It does not
+    decide what the channel is told: that is the platform's disclosure policy
+    and is deliberately not made here.
+
+    `post_spent` says that wait has stretched as far as it goes, and is where a
+    destination stops being treated as one that might come back: the card is
+    given up on, `cards.note_undeliverable` makes the single record of it, and
+    the request is skipped from then on rather than counted as a failure of
+    this session's publication on every later cycle. A caller that passes
+    nothing keeps the old behaviour — every refusal raised, forever.
+
+    `post_delayed` carries the platform's own Retry-After back to that wait,
+    and is the reason being rate limited cannot end in `post_spent`. A throttle
+    says the channel is busy, not that it is gone; if it stretched the same
+    wait, a channel busy enough for long enough would be written off as
+    undeliverable for the crime of being busy, and the card would never be
+    posted again.
+
     `refresh_needed` gates redrawing an already-confirmed card, per token and
     `(revision, state)`, and `refreshed` is told once one lands. Both parts of
     that pair matter: `request.submitting` moves a request from `open` to
@@ -115,6 +154,11 @@ async def refresh_cards(
     process, which has no memory to trust yet) get the defaults for both,
     which always act and track nothing: every confirmed card is compared
     against what is actually recorded for it, every time.
+
+    `gateway_public_url` is here for one message: the notice sent when a card's
+    delivery can never be confirmed, which is only useful if it can say where
+    the request *can* be answered. It may be None, and then the notice names
+    Console without linking to it.
     """
     posts = SessionRequestPostStore()
     async with session_factory() as db:
@@ -166,6 +210,16 @@ async def refresh_cards(
                     origin.thread_id or origin.message_id,
                 )
             )
+            # Where the command was addressed, which is not the same question
+            # as where its card goes: a thread the platform can no longer find
+            # is indistinguishable from one never made, so the channel root is
+            # only the audience that was asked when the asking happened there.
+            asked_at_root = origin.thread_id is None
+            # Only the first post of an open card asks anyone. A redraw leaves
+            # the recipient unset on purpose — the mention has been made and
+            # repeating it is a second notification — so "nobody to name" is
+            # only meaningful here, where naming someone was the intent.
+            asking = post is None and request.state == "open"
             recipient = (
                 await notification_recipient(
                     db,
@@ -175,18 +229,44 @@ async def refresh_cards(
                     agent=agent,
                     thread_id=thread_id,
                 )
-                if post is None and request.state == "open"
+                if asking
                 else None
             )
             publications.append(
-                (request, post, room.id, room.external_channel_id, thread_id, recipient)
+                (
+                    request,
+                    post,
+                    room.id,
+                    room.external_channel_id,
+                    thread_id,
+                    asked_at_root,
+                    recipient,
+                    asking and recipient is None and cards.notifies_only_by_mention,
+                    deeplink_for_platform(
+                        session_console_url(
+                            gateway_public_url, agent.id, room.id, row.id
+                        ),
+                        gateway_public_url,
+                        cards.renders_custom_url_schemes,
+                    ),
+                )
             )
         epoch = row.epoch
         agent_name = agent.name
         db.expunge_all()
     errors: list[BaseException] = []
     backed_off = 0
-    for request, post, room_id, channel_id, thread_id, recipient in publications:
+    for (
+        request,
+        post,
+        room_id,
+        channel_id,
+        thread_id,
+        asked_at_root,
+        recipient,
+        unreachable,
+        console_url,
+    ) in publications:
         state = (
             request.revision,
             request.state
@@ -200,23 +280,62 @@ async def refresh_cards(
             if post is None:
                 if request.state != "open":
                     continue
-                new_post = await cards.post(
-                    request,
-                    channel_id=channel_id,
-                    thread_root_id=thread_id,
-                    room_id=room_id,
-                    session_id=session_id,
-                    epoch=epoch,
-                    agent_name=agent_name,
-                    **({"notify_external_id": recipient} if recipient else {}),
-                    **(
-                        {"unavailable_reason": unavailable_reason}
-                        if unavailable_reason
-                        else {}
-                    ),
-                )
+                attempt = f"{session_id}:{request.request_id}"
+                if cards.undeliverable(attempt):
+                    continue
+                if not post_allowed(attempt):
+                    backed_off += 1
+                    continue
+                try:
+                    new_post = await cards.post(
+                        request,
+                        channel_id=channel_id,
+                        thread_root_id=thread_id,
+                        asked_at_root=asked_at_root,
+                        room_id=room_id,
+                        session_id=session_id,
+                        epoch=epoch,
+                        agent_name=agent_name,
+                        notify_external_id=recipient,
+                        notify_unreachable=unreachable,
+                        unavailable_reason=unavailable_reason,
+                    )
+                except RichContentThrottled as throttled:
+                    post_delayed(attempt, throttled.retry_after)
+                    backed_off += 1
+                    continue
+                except CardRefused as refusal:
+                    if not post_spent(attempt):
+                        raise
+                    cards.note_undeliverable(
+                        attempt,
+                        request_id=request.request_id,
+                        channel_id=channel_id,
+                        console_url=console_url,
+                        refusal=refusal,
+                    )
+                    continue
+                post_succeeded(attempt)
                 refreshed(new_post.token, state)
             elif post.external_post_id == post.token:
+                if post.unconfirmed_notice_at is not None:
+                    # Already disclosed as undeliverable. There is no message
+                    # to edit and nothing further to try, and treating it as a
+                    # failure again on every cycle would keep the session
+                    # reporting an error that has already been dealt with as
+                    # well as it can be.
+                    continue
+                if not cards.recovers_uncertain_posts:
+                    if cards.discloses_unconfirmed_posts:
+                        await cards.disclose_unconfirmed(post, console_url=console_url)
+                    else:
+                        # Nothing to search for and nothing this platform has
+                        # been cleared to say, so the reservation is simply
+                        # held: it is what stops a second card, and the
+                        # request is still answerable in Console. Said once
+                        # per process rather than on every cycle.
+                        cards.note_unconfirmed(post)
+                    continue
                 if not recovery_allowed(post.token):
                     backed_off += 1
                     continue
@@ -225,6 +344,7 @@ async def refresh_cards(
                 await cards.refresh(
                     post,
                     request,
+                    agent_name=agent_name,
                     **(
                         {"unavailable_reason": unavailable_reason}
                         if unavailable_reason
@@ -236,6 +356,7 @@ async def refresh_cards(
                 await cards.refresh(
                     post,
                     request,
+                    agent_name=agent_name,
                     **(
                         {"unavailable_reason": unavailable_reason}
                         if unavailable_reason
@@ -252,7 +373,7 @@ async def refresh_cards(
             # any that came after. Each is retried on its own next cycle
             # regardless — what this function reports below is what stops
             # `publish_pending` marking the session done while any request in
-            # it is still broken or waiting out a recovery backoff.
+            # it is still broken or waiting out a retry backoff.
             logger.exception(
                 "Could not publish request %s of session %s on bridge %s; "
                 "the rest of the session's requests were tried anyway.",
@@ -404,6 +525,7 @@ async def refresh_activity(
     session_id: str,
     activity: SessionTurnActivity,
     *,
+    surface: str,
     gateway_public_url: str | None = None,
     retry_allowed: Callable[[str], bool] = _always_recover,
     retry_succeeded: Callable[[str], None] = _ignore_recovery,
@@ -458,8 +580,15 @@ async def refresh_activity(
         turns = list(snapshot.turns)
         latest_turn_id = turns[-1].turn_id if turns else None
         known_commands = {turn.command_id for turn in turns}
-        # A presentation-only queued turn acknowledges accepted Slack input before
-        # the SDK reports a turn. Never write synthetic turns into the contract.
+        # Turns carried as errors only because the command was never
+        # acknowledged, which is not the same thing as one that failed.
+        unconfirmed: set[str] = set()
+        # A presentation-only queued turn acknowledges input this bridge itself
+        # accepted, before the SDK reports a turn. Scoped to commands that came
+        # in on `surface` because that is where the acknowledgement would go: a
+        # command typed in the console has no message in this channel to answer,
+        # and a turn drawn for it would be this bridge announcing work nobody
+        # here asked for. Never write synthetic turns into the contract.
         for pending_command in await db.scalars(
             select(SdkSessionCommand)
             .where(
@@ -475,17 +604,20 @@ async def refresh_activity(
             if (
                 command.command_id in known_commands
                 or command.epoch != row.epoch
-                or command.origin.surface != "slack"
+                or command.origin.surface != surface
                 or command.body.type != "message.send"
             ):
                 continue
             status = pending_command.status["status"]
             if status not in ("accepted", "dispatched", "unknown", "rejected"):
                 continue
+            turn_id = f"pending:{command.command_id}"
+            if status == "unknown":
+                unconfirmed.add(turn_id)
             turns.append(
                 TurnUpsert(
                     type="turn.upsert",
-                    turn_id=f"pending:{command.command_id}",
+                    turn_id=turn_id,
                     command_id=command.command_id,
                     status="queued"
                     if status in ("accepted", "dispatched")
@@ -497,10 +629,13 @@ async def refresh_activity(
                 continue
             items = [item for item in snapshot.items if item.turn_id == turn.turn_id]
             revisions = tuple(item.revision for item in items)
-            if turn.status == "running":
+            if turn.status == "running" and activity.redraws_for_elapsed_time:
                 revisions += (int(time.monotonic() // 5),)
             error_summary = activity_error_summary(
-                turn, snapshot.session, online=online
+                turn,
+                snapshot.session,
+                online=online,
+                unconfirmed=turn.turn_id in unconfirmed,
             )
             state = (
                 turn.status + (":" + error_summary if error_summary else ""),
@@ -575,22 +710,38 @@ async def refresh_activity(
                 )
                 or thread_root_id
             )
-            metadata = {
+            recipient = (
+                await notification_recipient(
+                    db,
+                    bridge_id=bridge_id,
+                    room_id=room.id,
+                    origin=origin,
+                    agent=agent,
+                    thread_id=thread_root_id,
+                )
+                if error_summary
+                else None
+            )
+            metadata: dict[str, Any] = {
                 key: value
                 for key, value in {
-                    "session_url": session_console_url(
-                        gateway_public_url, agent.id, room.id, row.id
+                    # Rewritten here rather than in the renderer: this is the
+                    # only place holding both the deeplink and the gateway URL
+                    # the redirect has to come from.
+                    "session_url": deeplink_for_platform(
+                        session_console_url(
+                            gateway_public_url, agent.id, room.id, row.id
+                        ),
+                        gateway_public_url,
+                        activity.renders_custom_url_schemes,
                     ),
-                    "notify_external_id": await notification_recipient(
-                        db,
-                        bridge_id=bridge_id,
-                        room_id=room.id,
-                        origin=origin,
-                        agent=agent,
-                        thread_id=thread_root_id,
-                    )
-                    if error_summary
-                    else None,
+                    "notify_external_id": recipient,
+                    # Somebody has to act on this and there is nobody here to
+                    # name. Only worth saying where a mention is the whole
+                    # notification; elsewhere the platform reaches them anyway.
+                    "notify_unreachable": bool(error_summary)
+                    and recipient is None
+                    and activity.notifies_only_by_mention,
                     "error_summary": error_summary,
                 }.items()
                 if value is not None
@@ -656,15 +807,18 @@ async def refresh_activity(
 
 
 class _RecoveryBackoff:
-    """Bounds how often `recover` re-scans a channel's history for one card.
+    """Bounds how often one card's platform call is attempted again.
 
-    Unbounded retries were the problem this closes: a card whose post
-    genuinely never landed had this run again every publish cycle, forever,
-    against a search that gets more expensive over time as the channel
-    accumulates history past the point it started from. The wait doubles per
-    token on every attempt that still finds nothing, up to `_MAX`, and clears
-    the moment one succeeds — so a card that does eventually turn up is not
-    left waiting out a long interval it no longer needs.
+    Unbounded retries were the problem this closes. A card whose post
+    genuinely never landed had `recover` re-scan the channel's history every
+    publish cycle, forever, against a search that gets more expensive over
+    time as the channel accumulates history past the point it started from;
+    and a card whose destination no longer exists had the post itself
+    reserved, refused and released on every cycle just as often. The wait
+    doubles per key on every attempt that does not get there, up to `_MAX`,
+    and clears the moment one succeeds — so a destination that comes back, or
+    a card that does eventually turn up, is not left waiting out a long
+    interval it no longer needs.
     """
 
     _MIN = 5.0
@@ -683,6 +837,17 @@ class _RecoveryBackoff:
         self._next_attempt[token] = now + interval
         self._interval[token] = min(interval * 2, self._max_interval)
         return True
+
+    def spent(self, token: str) -> bool:
+        """Whether this key's waits have stretched as far as they go.
+
+        True once the interval has doubled its way to `_MAX`, which takes
+        several failed attempts over several minutes. A caller that has a
+        terminal disposition for the thing it keeps retrying reads this to
+        decide the destination is not coming back inside a wait; one that has
+        none ignores it and keeps trying at the capped interval.
+        """
+        return self._interval.get(token, self._MIN) >= self._max_interval
 
     def delay(self, token: str, seconds: float) -> None:
         self._next_attempt[token] = time.monotonic() + seconds
@@ -811,10 +976,12 @@ class SessionPublisher:
         self._sessions = session_factory
         self._gateway_public_url = gateway_public_url
         self._bridge_id = bridge_id
+        self._surface = cards.surface
         self._cards = cards
         self._activity = activity
         self._published: dict[str, tuple[int, bool]] = {}
         self._recovery = _RecoveryBackoff()
+        self._card_post = _RecoveryBackoff()
         self._redraw = _RedrawGuard()
         self._turn_redraw = _TurnRedrawGuard()
         self._activity_retry = _RecoveryBackoff(max_interval=30.0)
@@ -859,6 +1026,7 @@ class SessionPublisher:
                         self._bridge_id,
                         session_id,
                         self._activity,
+                        surface=self._surface,
                         **(
                             {"gateway_public_url": self._gateway_public_url}
                             if self._gateway_public_url
@@ -928,8 +1096,13 @@ class SessionPublisher:
                         self._bridge_id,
                         session_id,
                         self._cards,
+                        gateway_public_url=self._gateway_public_url,
                         recovery_allowed=self._recovery.allowed,
                         recovery_succeeded=self._recovery.succeeded,
+                        post_allowed=self._card_post.allowed,
+                        post_succeeded=self._card_post.succeeded,
+                        post_spent=self._card_post.spent,
+                        post_delayed=self._card_post.delay,
                         refresh_needed=self._redraw.needed,
                         refreshed=self._redraw.drawn,
                     )
@@ -938,7 +1111,7 @@ class SessionPublisher:
                 if incomplete.errors:
                     logger.exception(
                         "Session %s card publication failed on bridge %s "
-                        "(%d failed, %d waiting on a recovery backoff); "
+                        "(%d failed, %d waiting on a retry backoff); "
                         "will retry.",
                         session_id,
                         self._bridge_id,
@@ -951,7 +1124,7 @@ class SessionPublisher:
                     # as one would put a real broken-and-continuing signal in
                     # the same stream as a wait that is working as designed.
                     logger.warning(
-                        "Session %s has %d request(s) waiting out a recovery "
+                        "Session %s has %d request(s) waiting out a retry "
                         "backoff on bridge %s.",
                         session_id,
                         incomplete.backed_off,

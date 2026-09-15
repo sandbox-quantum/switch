@@ -24,6 +24,7 @@ from switch_core.db.stores.external_user_store import ExternalUserStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.session_request_post_store import SessionRequestPostStore
 from switch_core.db.tenant_lookup import all_tenant_ids, tenant_of_collaboration_bridge
+from switch_core.deeplinks import gateway_url_warning
 from switch_core.provisioning import Provisioning
 from switch_core.tenant_context import current_tenant_id, no_tenant
 
@@ -482,18 +483,12 @@ class CollaborationBridgeLifecycleService:
         )
         adapter.set_max_attachment_bytes(self._config.agent_media_max_bytes)
 
-        if (
-            not adapter_cls.renders_custom_url_schemes
-            and not self._config.gateway_public_url
-        ):
+        gateway_warning = gateway_url_warning(
+            self._config.gateway_public_url, adapter_cls.renders_custom_url_schemes
+        )
+        if gateway_warning:
             logger.warning(
-                "GATEWAY_PUBLIC_URL is not set and %s only renders http(s) links, "
-                "so the 'Open in Switch Console' deeplink cannot be clickable on "
-                "bridge %s — it is posted as copyable text instead. Set "
-                "GATEWAY_PUBLIC_URL to the Switch API's public origin (scheme + "
-                "host, no path) to turn it into a real link",
-                bridge.type,
-                bridge_id,
+                "%s (bridge %s, %s)", gateway_warning, bridge_id, bridge.type
             )
 
         async with tenant_session(self._session_factory, tenant_id) as session:

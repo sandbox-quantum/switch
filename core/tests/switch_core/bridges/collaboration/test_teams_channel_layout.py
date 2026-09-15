@@ -143,12 +143,14 @@ def test_a_chat_channel_puts_the_room_linked_notice_at_the_root() -> None:
     assert connector.replies == []
 
 
+# `_apply_runtime_state` directly, for the reason given in
+# `test_teams_runtime_state_layout.py`: the legacy path has no caller left.
 def test_a_chat_channel_keeps_the_runtime_status_where_the_message_was() -> None:
     adapter, connector = _adapter(_Graph("chat"))
 
     # Triggered by a message at the root → the status belongs at the root.
     _run(
-        adapter.apply_runtime_state(
+        adapter._apply_runtime_state(
             _CHANNEL, "james", "working", mention_handle=None, thread_root_id=None
         )
     )
@@ -157,7 +159,7 @@ def test_a_chat_channel_keeps_the_runtime_status_where_the_message_was() -> None
 
     # Triggered from inside a thread → the status belongs in that thread.
     _run(
-        adapter.apply_runtime_state(
+        adapter._apply_runtime_state(
             _CHANNEL, "rita", "working", mention_handle=None, thread_root_id="msg-4"
         )
     )

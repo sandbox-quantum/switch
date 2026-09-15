@@ -72,16 +72,20 @@ async def test_native_stop_event_is_acknowledged_without_interrupting_an_sdk_tur
 async def test_reaction_cache_handles_expected_slack_refusals_quietly(error, caplog):
     slack, client = adapter()
     client.reaction_error = error
-    await slack.mark_activity("C1", "C1:1.0", working=True)
+    await slack.mark_activity(
+        "C1", "C1:1.0", agent_name="worker", mark="working", on=True
+    )
     client.reaction_error = None
-    await slack.mark_activity("C1", "1.0", working=True)
+    await slack.mark_activity("C1", "1.0", agent_name="worker", mark="working", on=True)
     assert not client.reactions
     assert not caplog.records
 
 
 async def test_reaction_force_reconciles_after_restart():
     slack, client = adapter()
-    await slack.mark_activity("C1", "C1:1.0", working=False, force=True)
+    await slack.mark_activity(
+        "C1", "C1:1.0", agent_name="worker", mark="working", on=False, force=True
+    )
     assert client.reactions == [("remove", "1.0", "eyes")]
 
 
@@ -98,6 +102,7 @@ async def test_activity_layout_is_an_adapter_capability_not_a_slack_type_check()
         post_rich=AsyncMock(side_effect=["C1:status", "C1:log"]),
         update_rich=AsyncMock(),
         mark_activity=AsyncMock(),
+        notify_working=AsyncMock(),
     )
     activity = SessionTurnActivity(platform)
     kwargs = dict(
@@ -113,13 +118,14 @@ async def test_activity_layout_is_an_adapter_capability_not_a_slack_type_check()
     status, log = platform.post_rich.call_args_list
     assert status.args[2].status_only
     assert log.args[2].tool_log
-    assert [call.args[1] for call in platform.update_rich.call_args_list] == [
-        "C1:status",
-        "C1:log",
+    assert [call.args[1:3] for call in platform.update_rich.call_args_list] == [
+        ("worker", "C1:status"),
+        ("worker", "C1:log"),
     ]
-    assert [
-        call.kwargs["working"] for call in platform.mark_activity.call_args_list
-    ] == [True, False]
+    assert [call.kwargs["on"] for call in platform.mark_activity.call_args_list] == [
+        True,
+        False,
+    ]
 
 
 async def test_typed_interrupt_still_routes_to_the_global_command():

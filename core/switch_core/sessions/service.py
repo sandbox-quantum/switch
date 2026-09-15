@@ -26,7 +26,9 @@ from switch_core.db.models import (
     ExternalUser,
     ExternalUserClaim,
     MediaBlob,
+    RoleLease,
     Room,
+    RoomRole,
     SdkSession,
     SdkSessionCommand,
     SdkSessionEvent,
@@ -34,6 +36,7 @@ from switch_core.db.models import (
     require_tenant_id,
 )
 from switch_core.db.session_scope import tenant_session
+from switch_core.db.stores.room_role_store import RoomRoleStore
 from switch_core.sessions.attachments import (
     MAX_ATTACHMENTS,
     attachment_metadata,
@@ -494,6 +497,8 @@ class SessionAuthority:
                     raise SessionError("NOT_FOUND", "Unknown command result.")
                 stored.status = status.model_dump(by_alias=True)
                 await self._append(db, row, status)
+            if isinstance(body, (CommandResult, SessionUpsert)):
+                await self._queue_room_control_followups(db, row)
             return row.host_sequence
 
     async def submit(
@@ -1058,6 +1063,7 @@ class SessionAuthority:
                         message="The request expired without an answer. Execution cancellation was queued; no approval was granted.",
                     ),
                 )
+            await self._queue_room_control_followups(db, row)
             records = (
                 await db.scalars(
                     select(SdkSessionCommand)
@@ -1190,7 +1196,7 @@ class SessionAuthority:
                 raise SessionError(
                     "UNSUPPORTED_CAPABILITY", "This room command is unsupported."
                 )
-            return await self._accept(
+            receipt = await self._accept(
                 db,
                 row,
                 Command(
@@ -1203,6 +1209,100 @@ class SessionAuthority:
                 ),
                 bridge.id if bridge else None,
             )
+
+            if receipt.status == "accepted" and action in ("reset", "compact"):
+                role = await db.scalar(
+                    select(RoomRole.name)
+                    .join(
+                        RoleLease,
+                        (RoleLease.tenant_id == RoomRole.tenant_id)
+                        & (RoleLease.role_id == RoomRole.id),
+                    )
+                    .where(
+                        RoomRole.tenant_id == row.tenant_id,
+                        RoomRole.room_id == room_id,
+                        RoleLease.agent_id == agent_id,
+                        RoleLease.last_seen_at
+                        > (await self._now(db)) - RoomRoleStore.LEASE_TTL,
+                    )
+                )
+                user = await db.scalar(
+                    select(Client.display_name).where(
+                        Client.tenant_id == row.tenant_id,
+                        Client.matrix_user_id == actor_id,
+                    )
+                )
+                instructions = [
+                    f"The requested {action} completed successfully.",
+                    f"Connect to Switch room {json.dumps(room_id)} (reuse its connection if already connected) and read_context before responding.",
+                ]
+                if role:
+                    instructions.append(
+                        f"Re-assume your previous role {json.dumps(role)} and follow its instructions. If it is unavailable, report that clearly instead of claiming it was restored."
+                    )
+                destination = f"to {json.dumps(user)}" if user else "in the room"
+                thread = f" in thread {json.dumps(thread_id)}" if thread_id else ""
+                instructions.append(
+                    f"Send a short {'targeted message' if user else 'message'} {destination}{thread} confirming the {action} succeeded and whether you are ready to continue."
+                )
+                stored = await db.get(
+                    SdkSessionCommand, (row.tenant_id, row.id, command_id)
+                )
+                if stored is None:
+                    raise SessionError("NOT_FOUND", "Accepted room control is missing.")
+                stored.room_control_followup = " ".join(instructions)
+            return receipt
+
+    async def _queue_room_control_followups(
+        self, db: AsyncSession, row: SdkSession
+    ) -> None:
+        snapshot = Snapshot.model_validate(row.snapshot)
+        if (
+            row.recovery.get("quiesced")
+            or snapshot.session.status not in ("ready", "running")
+            or row.lease_expires_at <= await self._now(db)
+        ):
+            return
+        records = (
+            await db.scalars(
+                select(SdkSessionCommand)
+                .where(
+                    SdkSessionCommand.tenant_id == row.tenant_id,
+                    SdkSessionCommand.session_id == row.id,
+                    SdkSessionCommand.room_control_followup.is_not(None),
+                    SdkSessionCommand.status["status"].astext == "applied",
+                )
+                .order_by(SdkSessionCommand.accepted_sequence)
+            )
+        ).all()
+        for record in records:
+            original = Command.model_validate(record.command)
+            if record.room_control_followup is None:
+                continue
+            await self._accept(
+                db,
+                row,
+                Command(
+                    contract_version=1,
+                    session_id=row.id,
+                    epoch=row.epoch,
+                    command_id=str(
+                        uuid.uuid5(
+                            uuid.NAMESPACE_URL,
+                            f"sdk-control-followup:{row.id}:{record.command_id}",
+                        )
+                    ),
+                    origin=original.origin,
+                    body=MessageSend(
+                        type="message.send",
+                        text=record.room_control_followup,
+                        attachments=[],
+                        delivery="queue",
+                    ),
+                ),
+                None,
+            )
+            record.room_control_followup = None
 
     async def bind_connection(
         self,

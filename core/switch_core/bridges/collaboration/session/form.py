@@ -143,6 +143,69 @@ def resolve_pressed_option(
     return _unknown(kind)
 
 
+def resolve_pressed_position(
+    form: dict[str, Any], position: int
+) -> RequestResult | Unanswerable:
+    """The answer a control at `position` stands for, against the record.
+
+    For a platform whose control payload is too small to carry an option id: it
+    sends where the control was instead, in the same numbering a typed answer
+    uses, and the id is the record's to supply. That is the stronger end of the
+    two, not a concession to a small budget — a press can only ever name
+    something the card actually offered, however the payload reaching us was
+    built.
+
+    The guards are `resolve_pressed_option`'s, because this resolves to an
+    option id and hands it there: what a press means on each kind of card is
+    decided in one place.
+    """
+    option_id = _option_at(form, position)
+    if isinstance(option_id, Unanswerable):
+        return option_id
+    return resolve_pressed_option(form, option_id)
+
+
+def _option_at(form: dict[str, Any], position: int) -> str | Unanswerable:
+    """The option the `position`th control on the card was for.
+
+    Render order is the record's order, which is what makes a position an
+    answer at all: `posted_form` wrote the options as the card drew them and
+    `_entries` refuses a record it cannot read whole rather than dropping
+    entries and shifting everything after them.
+    """
+    kind = form.get("kind")
+    if kind == "approval":
+        options = _entries(form, "options")
+        if options is None:
+            return _malformed(kind)
+        if not 1 <= position <= len(options):
+            return Unanswerable(
+                f"that card offered {len(options)} options, not {position}"
+            )
+        return _option_id_of(options[position - 1].get("optionId"))
+    if kind == "questions":
+        questions = _entries(form, "questions")
+        if questions is None:
+            return _malformed(kind)
+        if len(questions) != 1:
+            return Unanswerable(
+                f"a press answers one question and that card asks {len(questions)}"
+            )
+        option_ids = list(questions[0].get("optionIds") or [])
+        if not 1 <= position <= len(option_ids):
+            return Unanswerable(
+                f"that question offered {len(option_ids)} options, not {position}"
+            )
+        return _option_id_of(option_ids[position - 1])
+    return _unknown(kind)
+
+
+def _option_id_of(value: Any) -> str | Unanswerable:
+    if not isinstance(value, str) or not value:
+        return Unanswerable("the record for that option names no option")
+    return value
+
+
 def resolve_text_answer(
     form: dict[str, Any], answer: TextAnswer
 ) -> RequestResult | Unanswerable:

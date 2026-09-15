@@ -287,6 +287,11 @@ the message it is answering, and clears the reaction when the turn ends. It
 needs no administrator rights, and it is the same reaction the Slack and
 Mattermost bridges use, so a room reads the same wherever it is bridged.
 
+Only that one. Those bridges also show ⏳ on a message whose prompt is waiting
+behind one already running; Telegram does not, because a bot may hold exactly
+one reaction on a message and the mark that matters is the one saying work is
+under way.
+
 It marks the *last thing a person said* in the chat, because outside forum
 topics Telegram has no threads — only reply chains — so there is no thread for
 a status to belong to. If an agent is asked two things at once, both messages
@@ -295,9 +300,14 @@ are marked and both are cleared when the turn ends.
 A chat can have reactions switched off. Then the mark is lost and the turn
 carries on; the bridge logs it rather than failing the turn.
 
-**The "⚙️ Working on it…" message.** Alongside the reaction, the bridge posts a
-status message and edits it in place as the agent's activity changes, removing
-it when the turn ends.
+**The status message.** Alongside the reaction, the bridge posts a status
+message and edits it in place as the agent's activity changes: "Working… 41s"
+while the turn runs, "Worked for 2m 14s." when it finishes. It stays in the chat
+afterwards as the record of the turn, which is why it is kept short — a chat is
+the conversation itself, so the finished message carries the state, the
+duration, the agent's name, one Switch Console link and, where a tool call
+failed or was declined, the tally saying so. There is no tool log and no
+line naming the tool of the moment; Telegram declines both.
 
 Telegram has a native animated "Thinking…" placeholder — the one it uses for
 its own AI features — but it is **not reachable here**. It is written with

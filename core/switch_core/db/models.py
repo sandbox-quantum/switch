@@ -1466,6 +1466,16 @@ class SessionRequestPost(TenantScoped, Base):
     # it builds is one option or one per question, and it is read rather than
     # inferred. `session/form.py` is both ends of the shape.
     form: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    # When the channel was told that this card's delivery was never confirmed
+    # and the request has to be answered in Console instead. Set only on a
+    # platform whose history cannot be searched, where `external_post_id` stuck
+    # at `token` is permanent rather than a state a later lookup resolves. It is
+    # what makes that notice happen once: a second one says nothing new, and the
+    # publisher retries this row on every cycle for as long as the request is
+    # open.
+    unconfirmed_notice_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -1801,6 +1811,7 @@ class SdkSessionCommand(TenantScoped, Base):
     accepted_sequence: Mapped[int] = mapped_column(BigInteger, nullable=False)
     command: Mapped[dict] = mapped_column(JSONB, nullable=False)
     status: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    room_control_followup: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 # Same reasoning as the notify trigger above: `create_all` has to build the

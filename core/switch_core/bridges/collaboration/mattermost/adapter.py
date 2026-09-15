@@ -11,17 +11,32 @@ import uuid
 from collections import OrderedDict
 from collections.abc import Awaitable, Callable
 from dataclasses import replace
+from datetime import datetime
 from typing import Any, ClassVar
 
 import httpx
 import requests as sync_requests
 from mattermostdriver import Driver
-from mattermostdriver.exceptions import NoAccessTokenProvided
+from mattermostdriver.exceptions import (
+    ContentTooLarge,
+    FeatureDisabled,
+    InvalidOrMissingParameters,
+    MethodNotAllowed,
+    NoAccessTokenProvided,
+    NotEnoughPermissions,
+    ResourceNotFound,
+)
 
 from switch_core.agent_icon import default_icon_url
 from switch_core.bridges.collaboration.adapter import (
+    ActivityMark,
     CollaborationAdapter,
     LiveRuntimeIndicator,
+    RequestCard,
+    RichContent,
+    RichContentFailed,
+    RichContentThrottled,
+    TurnActivity,
     format_elapsed,
 )
 from switch_core.bridges.collaboration.models import (
@@ -36,6 +51,10 @@ from switch_core.bridges.collaboration.models import (
     InboundMessage,
     InboundUserJoin,
     OutboundAttachment,
+)
+from switch_core.bridges.collaboration.session.renderers.neutral import (
+    request_summary,
+    turn_status,
 )
 
 logger = logging.getLogger(__name__)
@@ -53,12 +72,94 @@ _MAX_BOT_ICON_BYTES = 5 * 1024 * 1024
 _JOINABLE_MM_CHANNEL_TYPES = frozenset({"O", "P"})
 
 # Emoji marking the message an agent is currently working on.
-_WORKING_REACTION = "eyes"
+_REACTION: dict[ActivityMark, str] = {
+    "working": "eyes",
+    "queued": "hourglass_flowing_sand",
+}
+
+# The post property carrying a publication's recovery marker. Props are part of
+# the post but not part of what anyone reads, which is exactly what this needs
+# to be: a marker in the message body would be visible clutter, and a marker
+# held only on this side is lost the moment a post's response is — which is the
+# one case it exists for. `patch_post` leaves props it is not given alone, so
+# editing the status in place cannot drop it.
+_PUBLICATION_PROP = "switch_publication"
+
+# How far before the recorded reservation time to start looking for a post that
+# may or may not exist. Covers ordinary clock skew between Switch and the
+# Mattermost server without widening the search into unrelated history.
+_RECOVERY_SKEW_MS = 60_000
+
+# Mattermost's own default `MaxPostSize`. Servers can raise it to 16383, and a
+# message cut to fit the default is a message that fits everywhere.
+_MAX_POST = 4000
 
 # The values of `TeamSettings.TeammateNameDisplay` under which Mattermost puts
 # a bot's display name in the post header. Under any other value — including
 # the server default, "username" — the display name is stored and never shown.
 _NAME_DISPLAY_SHOWS_LABEL = frozenset({"full_name", "nickname_full_name"})
+
+# The errors that mean Mattermost read the request and refused it. `mattermostdriver`
+# maps these statuses to named exceptions; every one of them says the post does
+# not exist and sending it again unchanged would be refused again.
+#
+# Everything else — a timeout, a dropped connection, a 5xx — leaves it unknown
+# whether the post is on the server with only its response lost, and that is a
+# different answer entirely: see `_as_rich_failure`.
+_DEFINITE_REFUSALS = (
+    InvalidOrMissingParameters,
+    NoAccessTokenProvided,
+    NotEnoughPermissions,
+    ResourceNotFound,
+    MethodNotAllowed,
+    ContentTooLarge,
+    FeatureDisabled,
+)
+
+# How long to wait after a rate limit that names no interval of its own.
+# Matches the Slack adapter's fallback, for the same reason: long enough not to
+# walk straight back into the limit, short enough that a live turn still moves.
+_THROTTLE_FALLBACK_SECONDS = 30.0
+
+
+def _throttle_delay(error: Exception) -> float | None:
+    """Seconds Mattermost asked us to wait, or None if it did not ask.
+
+    `mattermostdriver` has no exception for 429, so the underlying
+    `requests.HTTPError` arrives with its response still attached — which is
+    what carries the interval.
+    """
+    response = getattr(error, "response", None)
+    if response is None or getattr(response, "status_code", None) != 429:
+        return None
+    headers = getattr(response, "headers", None) or {}
+    try:
+        return max(0.0, float(headers.get("Retry-After", "")))
+    except (TypeError, ValueError):
+        return _THROTTLE_FALLBACK_SECONDS
+
+
+def _as_rich_failure(
+    error: Exception, *, description: str, text: str
+) -> RichContentFailed | None:
+    """What a publication should make of a Mattermost error, or nothing.
+
+    `None` means the outcome is unknown and the caller must let the error
+    propagate: a post whose response was lost may be sitting in the channel,
+    and `RichContentFailed` would have the caller drop its reservation and
+    post a second copy of something a reader is meant to see once. The
+    reservation survives instead, and `find_request_card` settles it.
+
+    Only a server that understood the request and refused it becomes
+    `RichContentFailed`, and only one asking us to slow down becomes
+    `RichContentThrottled`.
+    """
+    retry_after = _throttle_delay(error)
+    if retry_after is not None:
+        return RichContentThrottled(retry_after=retry_after, text=text)
+    if isinstance(error, _DEFINITE_REFUSALS):
+        return RichContentFailed(f"{description}: {error}", text=text)
+    return None
 
 
 class MattermostConnectionConfig(BridgeConnectionConfig):
@@ -84,10 +185,64 @@ class MattermostConnectionConfig(BridgeConnectionConfig):
 
 
 class MattermostAdapter(CollaborationAdapter):
+    publishes_sdk_sessions: ClassVar[bool] = True
+
+    #: One message, not two. The compact status carries its own tool counts, so
+    #: there is nothing left for a separate log to hold that is worth a second
+    #: message in the thread — and an expandable tool history is a later piece
+    #: of work, not something to approximate with an extra post now.
+    separate_activity_log: ClassVar[bool] = False
+
+    #: A problem somebody has to act on still gets its own reply, so it
+    #: notifies rather than arriving as a silent edit to a status the reader
+    #: has already scrolled past. One per turn, cleared when it clears.
+    separate_attention_slot: ClassVar[bool] = True
+
+    #: A Mattermost thread notifies only the people named in it, so the agent's
+    #: owner leads — they are who can open Console and act — and an attention
+    #: post with nobody to name says as much. This is the legacy ping's policy,
+    #: carried over: it is the one that reaches the person who can do something.
+    notifies_only_by_mention: ClassVar[bool] = True
+
+    #: The status is the turn's one post, not a line beside it, so the clock
+    #: advancing is not on its own worth rewriting what a reader is reading.
+    #: Elapsed time goes out with the next real change and with the ending.
+    redraws_for_elapsed_time: ClassVar[bool] = False
+
+    supports_activity_reactions: ClassVar[bool] = True
+    supports_queue_reaction: ClassVar[bool] = True
+
+    #: Each agent posts and reacts as its own bot here, so two agents working
+    #: on one message leave two independent 👀 and each is claimed and removed
+    #: on its own.
+    activity_reactions_per_agent: ClassVar[bool] = True
+
+    #: Off, because the SDK publication now draws the status. Leaving it on
+    #: would put two competing accounts of the same turn in the channel: the
+    #: legacy "working on it…" post edited to "✓ Done" beside the activity
+    #: message saying the same thing in more detail. The legacy renderer stays
+    #: in the file — it is what every unmigrated platform still uses — and this
+    #: flag is what stops it publishing here.
+    renders_legacy_runtime_state: ClassVar[bool] = False
+
     #: Mattermost renders a thread inline under its root as well as in the
     #: side panel, so anchoring the status to the message being worked on keeps
     #: it beside the answer instead of stranding it at the channel root.
+    #:
+    #: Read only by the legacy runtime-state path, which is off above. Kept
+    #: because it is a true statement about the platform, and the platform is
+    #: what the flag describes.
     runtime_state_follows_anchor: ClassVar[bool] = True
+
+    #: `find_request_card` reads the channel's recent posts back, so a card
+    #: whose send was never acknowledged can be bound to what is actually
+    #: there instead of being disclosed as lost.
+    recovers_uncertain_posts: ClassVar[bool] = True
+
+    #: Every publication carries its token in a post prop, which is exact and
+    #: invisible, so a status is as findable as a card despite printing no
+    #: handle of its own.
+    carries_publication_marker: ClassVar[bool] = True
 
     def __init__(self, *, config: MattermostConnectionConfig) -> None:
         super().__init__()
@@ -123,13 +278,19 @@ class MattermostAdapter(CollaborationAdapter):
         # (agent_name, post_id) currently carrying the working reaction. A
         # reaction belongs to the bot that added it, so two agents on the same
         # post are two independent marks.
-        self._eyes: set[tuple[str, str]] = set()
+        self._marked: set[tuple[str, str, ActivityMark]] = set()
 
         # (channel_id, agent_name) -> the posts that agent has marked. An agent
         # asked two things at once works on both, and the turn ends once — so
         # the marks are cleared together rather than only on the last thread
         # touched.
         self._agent_eyes: dict[tuple[str, str], set[str]] = {}
+
+        # Mattermost user id -> username, because a mention is written with the
+        # handle and Switch stores the id. Stable for the life of a user, so a
+        # hit here saves a round trip on every redraw that carries a mention.
+        self._usernames: OrderedDict[str, str] = OrderedDict()
+        self._usernames_max = 1000
 
         self._main_loop: asyncio.AbstractEventLoop | None = None
 
@@ -216,6 +377,7 @@ class MattermostAdapter(CollaborationAdapter):
         thread_root_id: str | None = None,
         *,
         message_type: str | None = None,
+        drawn: str | None = None,
     ) -> str | None:
         """Post an admin/system message natively on Mattermost.
 
@@ -228,7 +390,7 @@ class MattermostAdapter(CollaborationAdapter):
         conversion belongs here rather than at each of them — one of them
         forgetting is how a notice reached a channel with its markup showing.
         """
-        content = self.translate_outbound(content)
+        content = self._admin_body(self.translate_outbound(content), drawn)
         loop = self._main_loop
         if loop is None:
             logger.error("Cannot post admin message: event loop not initialized")
@@ -419,21 +581,44 @@ class MattermostAdapter(CollaborationAdapter):
         channel_id: str,
         content: str,
         thread_root_id: str | None,
+        props: dict[str, str] | None = None,
     ) -> str | None:
-        loop = self._main_loop
-        if loop is None:
-            logger.error("Cannot send message: event loop not initialized")
-            return None
-        post: dict[str, str] = {"channel_id": channel_id, "message": content}
-        if thread_root_id is not None:
-            post["root_id"] = thread_root_id
         try:
-            result = await loop.run_in_executor(None, driver.posts.create_post, post)
-            post_id: str = result.get("id", "")
-            return post_id or None
+            return await self._post_or_raise(
+                driver, channel_id, content, thread_root_id, props
+            )
         except Exception as e:
             logger.error("Failed to send Mattermost message to %s: %s", channel_id, e)
             return None
+
+    async def _post_or_raise(
+        self,
+        driver: Driver,
+        channel_id: str,
+        content: str,
+        thread_root_id: str | None,
+        props: dict[str, str] | None,
+    ) -> str:
+        """Create a post and hand back its id, or raise saying why not.
+
+        `_create_post` is the swallowing wrapper for callers whose failure is
+        cosmetic. A publication's is not: the exception carries what Mattermost
+        actually said, which is the difference between a caller that can retry
+        sensibly and one that only knows it got `None`.
+        """
+        loop = self._main_loop
+        if loop is None:
+            raise RuntimeError("Mattermost is not connected.")
+        post: dict[str, Any] = {"channel_id": channel_id, "message": content}
+        if thread_root_id is not None:
+            post["root_id"] = thread_root_id
+        if props:
+            post["props"] = props
+        result = await loop.run_in_executor(None, driver.posts.create_post, post)
+        post_id: str = result.get("id", "")
+        if not post_id:
+            raise RuntimeError("Mattermost accepted the post but returned no id.")
+        return post_id
 
     async def update_message(
         self, channel_id: str, message_ref: str, new_content: str
@@ -451,6 +636,364 @@ class MattermostAdapter(CollaborationAdapter):
             )
         except Exception as e:
             logger.error("Failed to update Mattermost post %s: %s", message_ref, e)
+
+    # ── SDK session publication ──────────────────────────────────────────────
+
+    def rich_fallback_limit(self) -> int:
+        return _MAX_POST
+
+    def rich_fallback_text(self, content: RichContent) -> str:
+        """What a publication says, with nothing that needed looking up.
+
+        The renderers are the same ones `post_rich` uses; what is missing is
+        the mention and the responder's handle, both of which come from an id
+        Switch holds and a call to Mattermost to turn it into a name. This is
+        the string that goes in a `RichContentFailed`, where a failed lookup
+        on top of a failed post would say nothing useful anyway.
+        """
+        return self._draw(content, mention=None, responder=None)
+
+    def _draw(
+        self, content: RichContent, *, mention: str | None, responder: str | None
+    ) -> str:
+        escape = self._rich_escape
+        limit = self.rich_fallback_limit()
+        markup = self.rich_markup()
+        if isinstance(content, TurnActivity):
+            # Charged to the same budget as the status it follows: a post that
+            # just fits, plus a line saying it reached nobody, is a post
+            # Mattermost refuses.
+            tail = f"\n{self.unnotified_notice()}" if content.notify_unreachable else ""
+            return (
+                turn_status(
+                    content.items,
+                    content.turn,
+                    escape=escape,
+                    limit=max(1, limit - len(tail)),
+                    markup=markup,
+                    elapsed_seconds=content.elapsed_seconds,
+                    session_url=content.session_url,
+                    mention=mention,
+                    error_summary=content.error_summary,
+                    tool_detail=True,
+                )
+                + tail
+            )
+        # The handle goes on its own line rather than in front of the heading:
+        # a card is a block, and a handle wedged before "**Permission needed**"
+        # reads as part of the heading. It is charged to the same budget, or a
+        # form that just fits becomes a post Mattermost refuses. So is the
+        # notice below it, which is the same admission the turn status makes:
+        # a request nobody was named in is a request nobody was asked.
+        lead = f"{mention}\n" if mention else ""
+        tail = f"\n{self.unnotified_notice()}" if content.notify_unreachable else ""
+        body = request_summary(
+            content.request,
+            content.reference,
+            escape=escape,
+            limit=max(1, limit - len(lead) - len(tail)),
+            markup=markup,
+            responder=responder,
+            unavailable_reason=content.unavailable_reason,
+        )
+        return f"{lead}{body}{tail}"
+
+    async def _render_rich(self, content: RichContent) -> str:
+        mention = await self._mention(content.notify_external_id)
+        responder = (
+            await self._mention(content.responder_external_id)
+            if isinstance(content, RequestCard)
+            else None
+        )
+        return self._draw(content, mention=mention, responder=responder)
+
+    async def post_rich(
+        self,
+        channel_id: str,
+        agent_name: str,
+        content: RichContent,
+        thread_root_id: str | None = None,
+    ) -> str:
+        """Post a turn's status or a request's form as the agent's own bot.
+
+        The recovery marker rides along in the post's props rather than in
+        anything a reader sees, so a post whose response was lost can be found
+        again by `find_request_card` instead of being sent twice.
+
+        Raises on every failure, unlike `send_message`, which reports one by
+        returning `None`: a publication that silently did not happen is a
+        reservation that never gets retried and a turn the channel never sees.
+        What it raises is the point — `RichContentFailed` is the caller's
+        licence to discard the reservation, so it is reserved for a refusal
+        Mattermost actually gave. A send whose outcome nobody knows raises the
+        transport's own error and keeps the reservation.
+        """
+        text = await self._render_rich(content)
+        driver = self._bot_drivers.get(agent_name)
+        if driver is None:
+            raise RichContentFailed(
+                f"No Mattermost bot for agent {agent_name!r}, so its activity "
+                f"cannot be posted in channel {channel_id}.",
+                text=text,
+            )
+        token = (
+            content.publication_token
+            if isinstance(content, TurnActivity)
+            else content.reference.token
+        )
+        try:
+            ref = await self._post_or_raise(
+                driver,
+                channel_id,
+                text,
+                thread_root_id,
+                {_PUBLICATION_PROP: token} if token else None,
+            )
+        except Exception as error:
+            failure = _as_rich_failure(
+                error,
+                description=f"Mattermost refused the post in channel {channel_id}",
+                text=text,
+            )
+            if failure is None:
+                raise
+            raise failure from error
+        return ref
+
+    async def update_rich(
+        self,
+        channel_id: str,
+        agent_name: str,
+        message_ref: str,
+        content: RichContent,
+        thread_root_id: str | None,
+    ) -> None:
+        """Redraw a publication in place, and say so when it did not happen.
+
+        Not `update_message`: that one logs and returns, which is right for the
+        legacy status line nobody is waiting on and wrong here. A card that
+        failed to redraw is still showing a settled request as open, and the
+        caller has a reply to post about it — but only if it is told.
+
+        Edited as the agent's own bot where there is one. Mattermost keeps the
+        original author through a patch either way, so the fallback to the
+        admin driver changes who a reader sees the post from not at all; what
+        it changes is the permission the edit is made with, and an agent bot
+        editing its own post is the narrower of the two.
+
+        Says "did not happen" only where Mattermost refused the edit. An edit
+        whose outcome is unknown may well have landed, and reporting it as a
+        refusal buys a fallback reply about a card that is already correct.
+        """
+        # A post notifies; an edit does not. Repeating the mention on every
+        # redraw would be a handle in the channel that never resolves to
+        # anything new for the person it names.
+        text = await self._render_rich(replace(content, notify_external_id=None))
+        driver = self._bot_drivers.get(agent_name) or self._admin_driver
+        loop = self._main_loop
+        if driver is None or loop is None:
+            raise RichContentFailed(
+                "Mattermost is not connected, so the post could not be updated.",
+                text=text,
+            )
+        try:
+            await loop.run_in_executor(
+                None, driver.posts.patch_post, message_ref, {"message": text}
+            )
+        except Exception as error:
+            failure = _as_rich_failure(
+                error,
+                description=(
+                    f"Mattermost refused the edit to post {message_ref} in "
+                    f"channel {channel_id}"
+                ),
+                text=text,
+            )
+            if failure is None:
+                raise
+            raise failure from error
+
+    async def find_request_card(
+        self,
+        channel_id: str,
+        thread_root_id: str | None,
+        token: str,
+        created_at: datetime,
+        handle: str | None,
+    ) -> str | None:
+        """Look for a publication this bridge may already have posted.
+
+        Asked when a post's outcome is unknown — the request timed out, or the
+        process died between sending and recording the id. The answer decides
+        between binding the reservation to what is there and posting a second
+        copy of a card somebody is meant to answer exactly once, so a lookup
+        that cannot be trusted must come back as "not found" rather than as a
+        guess: `None` keeps the reservation and asks again.
+
+        Matched on the props marker and on the post's author, because a token
+        quoted back in somebody's message must not be mistaken for the post
+        that carries it. `handle` is unused for the same reason it is on
+        Slack: the props marker is exact, and invisible to a reader.
+        """
+        driver = self._admin_driver
+        loop = self._main_loop
+        if driver is None or loop is None:
+            logger.warning(
+                "Cannot look for the publication marked %s in channel %s: "
+                "Mattermost is not connected.",
+                token,
+                channel_id,
+            )
+            return None
+        since = max(0, int(created_at.timestamp() * 1000) - _RECOVERY_SKEW_MS)
+
+        def _read() -> dict[str, Any]:
+            if thread_root_id:
+                return dict(driver.posts.get_thread(thread_root_id))
+            return dict(
+                driver.posts.get_posts_for_channel(channel_id, params={"since": since})
+            )
+
+        try:
+            page = await loop.run_in_executor(None, _read)
+        except Exception as e:
+            logger.warning(
+                "Could not read %s looking for the publication marked %s: %s.",
+                f"thread {thread_root_id}"
+                if thread_root_id
+                else f"channel {channel_id}",
+                token,
+                e,
+            )
+            return None
+        for post in (page.get("posts") or {}).values():
+            if post.get("user_id") not in self._bridge_bot_ids:
+                continue
+            if (post.get("props") or {}).get(_PUBLICATION_PROP) != token:
+                continue
+            found = str(post.get("id") or "")
+            if found:
+                return found
+        return None
+
+    async def is_first_reply(
+        self, channel_id: str, root_ref: str, message_ref: str
+    ) -> bool:
+        """Whether this message is the first thing said under a thread root.
+
+        Mattermost's websocket event names the root but not the position in the
+        thread, so the thread itself is the only place the answer is. Ordered
+        here on `create_at` rather than trusted from the API's own `order`: a
+        bare "yes" deciding a permission is not worth resting on a field whose
+        direction is not part of the contract.
+
+        Never raises. This is on the inbound path of every message, ahead of
+        the relay, so an exception out of it is not a refused answer but a
+        message the room never sees.
+        """
+        driver = self._admin_driver
+        loop = self._main_loop
+        if driver is None or loop is None:
+            logger.warning(
+                "Cannot read the thread under %s in %s: Mattermost is not "
+                "connected. Treating %s as not the first reply.",
+                root_ref,
+                channel_id,
+                message_ref,
+            )
+            return False
+        try:
+            thread = await loop.run_in_executor(None, driver.posts.get_thread, root_ref)
+        except Exception as e:
+            logger.warning(
+                "Could not read the thread under %s in %s: %s. Treating %s as "
+                "not the first reply.",
+                root_ref,
+                channel_id,
+                e,
+                message_ref,
+            )
+            return False
+        replies = sorted(
+            (
+                post
+                for post in (thread.get("posts") or {}).values()
+                if post.get("id") != root_ref and not post.get("delete_at")
+            ),
+            key=lambda post: (post.get("create_at") or 0, str(post.get("id") or "")),
+        )
+        return bool(replies) and replies[0].get("id") == message_ref
+
+    async def mark_activity(
+        self,
+        channel_id: str,
+        message_ref: str,
+        *,
+        agent_name: str,
+        mark: ActivityMark,
+        on: bool,
+        force: bool = False,
+    ) -> None:
+        """Put this agent's mark on the message, or take it off.
+
+        Per agent, because the reaction belongs to the bot that added it:
+        two agents on one message are two marks, and one finishing leaves the
+        other's alone. `force` is the durable publisher reconciling after a
+        restart, when this process's record of what is already there is empty
+        and wrong rather than empty and right.
+
+        Raises when the mark did not happen, including when there is no bot to
+        make it with. The publisher retries on that and records completion
+        only once the channel actually shows what it says it shows.
+        """
+        await self._react_or_raise(
+            agent_name, message_ref, mark=mark, on=on, force=force
+        )
+
+    async def notify_working(
+        self, channel_id: str, agent_name: str, thread_root_id: str | None
+    ) -> None:
+        """The one-shot typing nudge, at the place the agent was asked.
+
+        What the legacy runtime path sent as a turn opened, kept for the SDK
+        one: Mattermost expires it after a few seconds, so it costs the channel
+        nothing and it is the only signal that arrives before the first post.
+        """
+        await self._post_typing(channel_id, agent_name, thread_root_id)
+
+    async def _mention(self, external_user_id: str | None) -> str | None:
+        """`@handle` for a Mattermost user id, or None if it cannot be resolved.
+
+        None rather than the raw id: an id printed where a handle belongs
+        notifies nobody and reads as noise, and the message it decorates is
+        worth sending without it.
+        """
+        if not external_user_id:
+            return None
+        username = self._usernames.get(external_user_id)
+        if username is None:
+            driver = self._admin_driver
+            loop = self._main_loop
+            if driver is None or loop is None:
+                return None
+            try:
+                user = await loop.run_in_executor(
+                    None, driver.users.get_user, external_user_id
+                )
+            except Exception as e:
+                logger.warning(
+                    "Could not resolve Mattermost user %s to a handle: %s",
+                    external_user_id,
+                    e,
+                )
+                return None
+            username = str(user.get("username") or "")
+            if not username:
+                return None
+            self._usernames[external_user_id] = username
+            while len(self._usernames) > self._usernames_max:
+                self._usernames.popitem(last=False)
+        return f"@{username}"
 
     async def delete_message(self, channel_id: str, message_ref: str) -> None:
         if not self._admin_driver or not self._main_loop:
@@ -654,7 +1197,36 @@ class MattermostAdapter(CollaborationAdapter):
             await self._mark_being_read(agent_name, post_id, working=False)
 
     async def _mark_being_read(
-        self, agent_name: str, post_id: str, *, working: bool
+        self, agent_name: str, post_id: str, *, working: bool, force: bool = False
+    ) -> None:
+        """Best-effort 👀 for the legacy runtime path, which cannot act on failure.
+
+        Nothing on that path retries and nothing records what it did, so a
+        failure here is cosmetic and is logged rather than raised. The SDK seam
+        goes through `_react_or_raise`: its publisher writes a completion
+        receipt on the strength of what it is told, and a swallowed failure
+        there leaves 👀 on a finished turn for good.
+        """
+        try:
+            await self._react_or_raise(
+                agent_name, post_id, mark="working", on=working, force=force
+            )
+        except Exception as e:
+            logger.warning(
+                "Could not %s the working reaction on %s: %s",
+                "add" if working else "remove",
+                post_id,
+                e,
+            )
+
+    async def _react_or_raise(
+        self,
+        agent_name: str,
+        post_id: str,
+        *,
+        mark: ActivityMark,
+        on: bool,
+        force: bool,
     ) -> None:
         """Put 👀 on the post an agent is working on, and take it off after.
 
@@ -663,55 +1235,54 @@ class MattermostAdapter(CollaborationAdapter):
         message read as two. This is the progress signal that always works:
         unlike the status post it needs no thread, and unlike the typing
         indicator it does not expire.
+
+        `self._marked` is this process's memory of what it has already done,
+        and a restart empties it while the reactions stay in the channel.
+        `force` is for the caller that knows better from the journal: skipping
+        the call because the set is empty would strand a 👀 on a turn that
+        ended while the bridge was down. It is remembered per reaction: a
+        queued prompt that starts running loses the hourglass and keeps the
+        eyes, so one cannot answer for the other.
+
+        A failure leaves that memory alone, so the next attempt is a real
+        attempt rather than one the record talks out of trying. Removing a
+        reaction Mattermost says is not there is the exception: the channel is
+        already in the state being asked for, and there is nothing to retry.
         """
-        key = (agent_name, post_id)
-        if working == (key in self._eyes):
+        key = (agent_name, post_id, mark)
+        if not force and on == (key in self._marked):
             return
 
         bot_info = self._agent_bots.get(agent_name)
         driver = self._bot_drivers.get(agent_name)
         loop = self._main_loop
         if not bot_info or driver is None or loop is None:
-            logger.warning(
-                "Cannot %s the working reaction for %s: no connected bot",
-                "add" if working else "remove",
-                agent_name,
-            )
-            return
+            raise RuntimeError(f"no connected bot for {agent_name!r}")
         user_id = bot_info["user_id"]
 
-        try:
-            if working:
-                await loop.run_in_executor(
-                    None,
-                    driver.reactions.create_reaction,
-                    {
-                        "user_id": user_id,
-                        "post_id": post_id,
-                        "emoji_name": _WORKING_REACTION,
-                    },
-                )
-                self._eyes.add(key)
-            else:
-                await loop.run_in_executor(
-                    None,
-                    driver.reactions.delete_reaction,
-                    user_id,
-                    post_id,
-                    _WORKING_REACTION,
-                )
-                self._eyes.discard(key)
-        except Exception as e:
-            # Cosmetic, and the post may simply be gone. Record nothing and
-            # keep the turn going.
-            logger.warning(
-                "Could not %s the working reaction on %s: %s",
-                "add" if working else "remove",
-                post_id,
-                e,
+        if on:
+            await loop.run_in_executor(
+                None,
+                driver.reactions.create_reaction,
+                {
+                    "user_id": user_id,
+                    "post_id": post_id,
+                    "emoji_name": _REACTION[mark],
+                },
             )
-            if not working:
-                self._eyes.discard(key)
+            self._marked.add(key)
+            return
+        try:
+            await loop.run_in_executor(
+                None,
+                driver.reactions.delete_reaction,
+                user_id,
+                post_id,
+                _REACTION[mark],
+            )
+        except ResourceNotFound:
+            pass
+        self._marked.discard(key)
 
     async def _reposition_runtime_state(
         self, channel_id: str, agent_name: str, thread_root_id: str | None

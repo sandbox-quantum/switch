@@ -102,6 +102,51 @@ async def test_missing_actor_falls_back_to_claimed_owner_in_same_room():
     assert "client_rooms.room_id = 'room'" in query
 
 
+async def test_the_asker_leads_even_where_a_mention_is_the_whole_notification():
+    """The person waiting on the answer is named, not the agent's owner.
+
+    A platform that only notifies by mention is the tempting place to name the
+    owner instead — they are the one who can open Console — but the mention is
+    also how the asker learns their own turn needs them, and naming somebody
+    else leaves them watching a channel that never says their name."""
+    db = AsyncMock()
+    db.scalar.return_value = "UACTOR"
+
+    assert (
+        await notification_recipient(
+            db,
+            bridge_id="bridge",
+            room_id="room",
+            origin=origin("mattermost"),
+            agent=SimpleNamespace(owner_id="owner"),
+            thread_id="root-1",
+        )
+        == "UACTOR"
+    )
+    query = str(
+        db.scalar.call_args.args[0].compile(compile_kwargs={"literal_binds": True})
+    )
+    assert "clients.matrix_user_id = '@actor:switch'" in query
+    assert db.scalar.call_count == 1
+
+
+async def test_an_asker_with_no_account_here_still_reaches_the_owner():
+    db = AsyncMock()
+    db.scalar.side_effect = [None, None, "UOWNER"]
+
+    assert (
+        await notification_recipient(
+            db,
+            bridge_id="bridge",
+            room_id="room",
+            origin=origin("mattermost"),
+            agent=SimpleNamespace(owner_id="owner"),
+            thread_id="root-1",
+        )
+        == "UOWNER"
+    )
+
+
 @pytest.mark.parametrize(
     "turn_status,session_status,online,expected",
     [
@@ -118,12 +163,32 @@ def test_error_summary_uses_only_state(turn_status, session_status, online, expe
         type="turn.upsert", turn_id="turn", command_id="command", status=turn_status
     )
     result = activity_error_summary(
-        turn, SimpleNamespace(status=session_status), online=online
+        turn, SimpleNamespace(status=session_status), online=online, unconfirmed=False
     )
     if expected is None:
         assert result is None
     else:
         assert expected in result
+
+
+def test_an_unacknowledged_command_is_not_reported_as_a_failed_one():
+    """Nobody here knows whether the agent saw it, so nothing may claim it didn't.
+
+    The turn is carried as an error because there is no other status to carry
+    it as, which is exactly why the sentence cannot be read off the status.
+    """
+    turn = TurnUpsert(
+        type="turn.upsert", turn_id="turn", command_id="command", status="error"
+    )
+
+    summary = activity_error_summary(
+        turn, SimpleNamespace(status="ready"), online=True, unconfirmed=True
+    )
+
+    assert summary is not None
+    assert "could not complete" not in summary
+    assert "could not confirm" in summary
+    assert "not be resent" in summary
 
 
 @pytest.mark.parametrize(
@@ -167,7 +232,7 @@ async def test_request_publication_metadata_and_refresh(
             self.contents.append(content)
             return "channel-demo:111.0"
 
-        async def update_rich(self, channel, post, content):
+        async def update_rich(self, channel, agent, post, content, thread):
             self.contents.append(content)
 
     platform = Capture()
@@ -182,6 +247,57 @@ async def test_request_publication_metadata_and_refresh(
     assert len(platform.contents) == 2
     assert platform.contents[0].notify_external_id == recipient
     assert platform.contents[1].notify_external_id is None
+    # `Capture` does not claim to notify only by mention, so there is nothing
+    # for an unnamed card to admit to — see the mention-only case below.
+    assert not any(content.notify_unreachable for content in platform.contents)
+
+
+async def test_a_card_nobody_could_be_named_in_says_so_once_not_on_redraws(
+    session_factory,
+):
+    """The mention is made on the first post and deliberately left off every
+    redraw, so "nobody to name" is only ever a question about the first."""
+    from switch_core.db.models import ExternalUserClaim, SdkSessionCommand
+    from switch_core.sessions.publication import refresh_cards
+
+    from .test_authority import opened, setup
+    from .test_publication_retries import cards_for
+
+    service, epoch = await setup(session_factory)
+    await opened(service, epoch)
+    async with session_factory() as db, db.begin():
+        from sqlalchemy import delete, select
+
+        stored = await db.scalar(select(SdkSessionCommand))
+        command = dict(stored.command)
+        command["origin"] = {**command["origin"], "actorId": "nobody-linked-here"}
+        stored.command = command
+        # Nobody in this room has linked the owner's account, and the asker is
+        # not a platform user either: there is genuinely no one to name.
+        await db.execute(delete(ExternalUserClaim))
+
+    class MentionOnly:
+        notifies_only_by_mention = True
+
+        def __init__(self):
+            self.contents = []
+
+        async def post_rich(self, channel, agent, content, thread):
+            self.contents.append(content)
+            return "channel-demo:111.0"
+
+        async def update_rich(self, channel, agent, post, content, thread):
+            self.contents.append(content)
+
+    platform = MentionOnly()
+    cards = cards_for(session_factory, platform)
+    for _ in range(2):
+        await refresh_cards(session_factory, "bridge", "session-demo", cards)
+
+    assert [content.notify_unreachable for content in platform.contents] == [
+        True,
+        False,
+    ]
 
 
 async def test_live_session_fault_redraws_activity_with_safe_summary(session_factory):

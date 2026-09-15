@@ -254,7 +254,10 @@ def _post() -> SessionRequestPost:
         external_channel_id="C1",
         external_post_id="C1:111.0",
         room_id="room-demo",
-        thread_id="thread-demo",
+        # The thread the card was posted into, in the form the platform itself
+        # uses for a message: Slack's inbound path stores a thread root as
+        # `channel:ts`, not a bare id.
+        thread_id="C1:100.0",
         session_id="session-demo",
         epoch="epoch-demo",
         request_id="request-demo",
@@ -301,6 +304,7 @@ def _cards(adapter: SlackAdapter, post: SessionRequestPost) -> SessionRequestCar
         bridge_id="bridge-1",
         posts=_JustThisRow(post),
         session_factory=cast(Any, _NoDatabase),
+        surface="slack",
     )
 
 
@@ -322,7 +326,7 @@ async def test_the_card_is_edited_in_place_rather_than_reposted() -> None:
     adapter, client = _adapter()
     post = _post()
 
-    await _cards(adapter, post).refresh(post, request)
+    await _cards(adapter, post).refresh(post, request, agent_name="agent")
 
     assert len(client.updated) == 1
     edit = client.updated[0]
@@ -351,6 +355,11 @@ async def test_a_failed_edit_puts_the_outcome_in_the_thread_instead() -> None:
     failure to know to retry — but the reply is only posted once: a card
     stuck at the same revision and state would otherwise get the same notice
     again on every retry.
+
+    The notice goes into the conversation the card is in, which is the thread
+    it was posted into where there was one. Slack would have put it in the
+    same place either way; Teams would not, because there a reply is addressed
+    to the conversation and the card's own id is not one.
     """
     request = await _request(through=SETTLED)
     adapter, client = _adapter()
@@ -360,15 +369,35 @@ async def test_a_failed_edit_puts_the_outcome_in_the_thread_instead() -> None:
     cards = _cards(adapter, post)
     for _ in range(2):
         with pytest.raises(RichContentFailed):
-            await cards.refresh(post, request)
+            await cards.refresh(post, request, agent_name="agent")
 
     assert client.updated == []
     assert len(client.posted) == 1
     reply = client.posted[0]
-    assert reply["thread_ts"] == "111.0"
+    assert reply["thread_ts"] == "100.0"
     assert "R42" in reply["text"]
     assert "could not be updated" in reply["text"]
     assert "Allow once · actor-demo from Mattermost." in reply["text"]
+
+
+async def test_a_card_posted_at_the_channel_root_is_replied_to_under_itself() -> None:
+    """With no thread to reply into, the card itself is the thread to start.
+
+    This is the branch that keeps the flat-channel platforms reading the way
+    they did: the notice hangs off the card rather than landing loose in the
+    channel above it.
+    """
+    request = await _request(through=SETTLED)
+    adapter, client = _adapter()
+    client.update_error = "message_not_found"
+    post = _post()
+    post.thread_id = None
+
+    with pytest.raises(RichContentFailed):
+        await _cards(adapter, post).refresh(post, request, agent_name="agent")
+
+    assert len(client.posted) == 1
+    assert client.posted[0]["thread_ts"] == "111.0"
 
 
 async def test_resolved_plan_uses_display_name_and_keeps_slack_mention_in_details() -> (
@@ -381,8 +410,10 @@ async def test_resolved_plan_uses_display_name_and_keeps_slack_mention_in_detail
     )
     await adapter.update_rich(
         "C1",
+        "agent",
         "C1:111.0",
         RequestCard(request, REFERENCE, responder_external_id="UOWNER123"),
+        None,
     )
     plan = client.updated[0]["blocks"][0]
     assert "Example Owner" in plan["title"]

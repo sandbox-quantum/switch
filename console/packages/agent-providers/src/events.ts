@@ -102,7 +102,13 @@ export type ProviderRuntimeEvent = EventBase &
         turnId: string;
         requestId: string;
         requestType: RequestType;
+        /** Prose: what is being asked, in a sentence a reader can skim. */
         title: string;
+        /**
+         * The literal thing being approved — a command, a path — and nothing
+         * else. Consumers set it apart from the prose, in a code span where the
+         * surface has one, so a sentence here reads as something to type.
+         */
         detail?: string;
         options: ApprovalOption[];
       }
