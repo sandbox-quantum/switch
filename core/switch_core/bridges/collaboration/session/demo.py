@@ -193,6 +193,7 @@ class SessionDemo:
             request,
             channel_id=channel_id,
             thread_root_id=None,
+            asked_at_root=True,
             room_id=room_id,
             session_id=session_id,
             epoch=session.epoch,

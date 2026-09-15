@@ -174,6 +174,11 @@ async def refresh_cards(
                     origin.thread_id or origin.message_id,
                 )
             )
+            # Where the command was addressed, which is not the same question
+            # as where its card goes: a thread the platform can no longer find
+            # is indistinguishable from one never made, so the channel root is
+            # only the audience that was asked when the asking happened there.
+            asked_at_root = origin.thread_id is None
             # Only the first post of an open card asks anyone. A redraw leaves
             # the recipient unset on purpose — the mention has been made and
             # repeating it is a second notification — so "nobody to name" is
@@ -198,6 +203,7 @@ async def refresh_cards(
                     room.id,
                     room.external_channel_id,
                     thread_id,
+                    asked_at_root,
                     recipient,
                     asking and recipient is None and cards.notifies_only_by_mention,
                     deeplink_for_platform(
@@ -220,6 +226,7 @@ async def refresh_cards(
         room_id,
         channel_id,
         thread_id,
+        asked_at_root,
         recipient,
         unreachable,
         console_url,
@@ -241,6 +248,7 @@ async def refresh_cards(
                     request,
                     channel_id=channel_id,
                     thread_root_id=thread_id,
+                    asked_at_root=asked_at_root,
                     room_id=room_id,
                     session_id=session_id,
                     epoch=epoch,

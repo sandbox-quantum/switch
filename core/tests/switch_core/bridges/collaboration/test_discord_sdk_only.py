@@ -25,6 +25,7 @@ from switch_core.bridges.collaboration.adapter import (
     RequestCard,
     RichContentFailed,
     RichContentThrottled,
+    ThreadUnavailable,
     TurnActivity,
 )
 from switch_core.bridges.collaboration.discord.adapter import (
@@ -465,35 +466,35 @@ async def test_progress_is_suppressed_rather_than_spilled_into_the_channel() -> 
     assert webhook.sent == []
 
 
-async def test_a_card_falls_back_to_the_channel_root_when_its_thread_will_not_open(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    """A question in the wrong place is answerable; one nobody can see is not.
+async def test_a_missing_thread_is_reported_and_not_replaced_by_the_channel() -> None:
+    """A thread that is gone and one that was never made read the same here.
 
-    The root is a fallback only because the turn was addressed there: everyone
-    who could read the question can read the card.
+    Discord answers "no such channel" either way, and the second makes the
+    parent channel the audience that was asked while the first makes it an
+    audience that was not. Nothing this adapter can ask tells them apart, so it
+    states the fact and leaves the choice to the caller that recorded where the
+    command came from.
     """
     adapter, channel, webhook = _no_thread_yet()
-    channel.thread_error = discord.Forbidden(_Response(), "no Create Threads")  # type: ignore[arg-type]
+    channel.thread_error = discord.NotFound(_Response(), "unknown message")  # type: ignore[arg-type]
 
-    with caplog.at_level(logging.WARNING):
-        ref = await adapter.post_rich(
+    with pytest.raises(ThreadUnavailable):
+        await adapter.post_rich(
             str(CHANNEL_ID),
             "my-agent",
             await _card(),
             f"{CHANNEL_ID}:{ROOT_MESSAGE_ID}",
         )
 
-    assert "thread" in caplog.text
-    assert "thread" not in webhook.sent[0]
-    assert ref.endswith(":901")
+    assert channel.sent == []
+    assert webhook.sent == []
 
 
 async def test_a_thread_the_bot_cannot_open_never_becomes_the_whole_channel() -> None:
     """A private thread's request is not republished to its parent.
 
     A denied thread and an absent one look alike from outside, and only one of
-    them makes the channel an acceptable substitute. A request carries the
+    them is even a question the caller may answer. A request carries the
     agent's question and its options: handing that to the parent channel gives
     a private conversation an audience, and nothing takes it back.
     """
@@ -503,7 +504,7 @@ async def test_a_thread_the_bot_cannot_open_never_becomes_the_whole_channel() ->
         _Response(), "not a member of this thread"
     )
 
-    with pytest.raises(RichContentFailed):
+    with pytest.raises(RichContentFailed) as raised:
         await adapter.post_rich(
             str(CHANNEL_ID),
             "my-agent",
@@ -511,6 +512,9 @@ async def test_a_thread_the_bot_cannot_open_never_becomes_the_whole_channel() ->
             f"{CHANNEL_ID}:{ROOT_MESSAGE_ID}",
         )
 
+    # Not the absent-thread answer: a caller allowed to use the channel root
+    # would take that as licence, and this thread is there and is not ours.
+    assert not isinstance(raised.value, ThreadUnavailable)
     assert channel.sent == []
     assert webhook.sent == []
 

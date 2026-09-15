@@ -50,6 +50,7 @@ from switch_core.bridges.collaboration.adapter import (
     RequestCard,
     RichContentFailed,
     RichContentThrottled,
+    ThreadUnavailable,
     TurnActivity,
 )
 from switch_core.db.models import Client, ExternalUser, SessionRequestPost
@@ -1045,6 +1046,7 @@ class SessionRequestCards:
         *,
         channel_id: str,
         thread_root_id: str | None,
+        asked_at_root: bool,
         room_id: str,
         session_id: str,
         epoch: str,
@@ -1067,6 +1069,14 @@ class SessionRequestCards:
         the other thing this must not leave behind: a handle held for a card
         nobody can see, so it is released and the caller told, rather than
         left for `recover` to find nothing.
+
+        `asked_at_root` is where the command was addressed, and it is the only
+        thing that licenses posting the card in the channel rather than in a
+        thread. A platform that cannot find the thread cannot tell a thread
+        that was never made from one that was made privately and deleted; this
+        can, because the origin is recorded. Asked in a thread, a card with
+        nowhere to go is not posted at all — the question waits, rather than
+        being put to people who were never in the conversation.
         """
         form = posted_form(request)
         token = secrets.token_urlsafe(16)
@@ -1084,19 +1094,31 @@ class SessionRequestCards:
             )
             reference = RequestReference(token=post.token, handle=post.handle)
             await session.commit()
+            card = RequestCard(
+                request,
+                reference,
+                unavailable_reason=unavailable_reason,
+                notify_external_id=notify_external_id,
+                notify_unreachable=notify_unreachable,
+            )
             try:
-                ref = await self._adapter.post_rich(
-                    channel_id,
-                    agent_name,
-                    RequestCard(
-                        request,
-                        reference,
-                        unavailable_reason=unavailable_reason,
-                        notify_external_id=notify_external_id,
-                        notify_unreachable=notify_unreachable,
-                    ),
-                    thread_root_id,
-                )
+                try:
+                    ref = await self._adapter.post_rich(
+                        channel_id, agent_name, card, thread_root_id
+                    )
+                except ThreadUnavailable as missing:
+                    if not asked_at_root:
+                        raise
+                    logger.warning(
+                        "No thread for request %s in channel %s (%s); posting the "
+                        "card at the channel root, where it was asked.",
+                        request.request_id,
+                        channel_id,
+                        missing,
+                    )
+                    ref = await self._adapter.post_rich(
+                        channel_id, agent_name, card, None
+                    )
             except RichContentFailed as error:
                 await session.delete(post)
                 await session.commit()

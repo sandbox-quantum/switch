@@ -212,6 +212,21 @@ class RichContentThrottled(RichContentFailed):
         self.retry_after = retry_after
 
 
+class ThreadUnavailable(RichContentFailed):
+    """No thread exists under the root message, and none could be made.
+
+    A statement of fact, not a verdict on where the content should go instead.
+    An absent thread looks the same whether it was never made or was made
+    privately and then deleted, and only the caller knows which: it holds the
+    recorded origin of the command, and the platform does not. Posting to the
+    parent channel is right in the first case and hands a private
+    conversation's contents to an audience in the second.
+
+    Nothing has been posted when this is raised, so a caller may post
+    elsewhere — or release its reservation, as for any `RichContentFailed`.
+    """
+
+
 class ActivityMarkRefused(RuntimeError):
     """The platform will not change the work mark, and another attempt will not.
 

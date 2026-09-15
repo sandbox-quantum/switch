@@ -26,6 +26,7 @@ from switch_core.bridges.collaboration.adapter import (
     RichContent,
     RichContentFailed,
     RichContentThrottled,
+    ThreadUnavailable,
     TurnActivity,
 )
 from switch_core.bridges.collaboration.discord.chunking import (
@@ -955,21 +956,21 @@ class DiscordAdapter(CollaborationAdapter):
         Discord actually gave. A send whose outcome nobody knows raises the
         transport's own error and keeps the reservation.
 
-        A thread that cannot be resolved is where the two kinds of content part
-        company, but only in the one case where nothing is given away by it.
-        Where the turn began at the channel root and the reply thread has not
-        been made yet, the channel root is the origin: everyone who could read
-        the question there can read it there still, so a card is posted there
-        rather than not at all, while progress is suppressed because the
-        channel narrating every turn is the noise this presentation exists to
-        avoid.
+        A `thread_root_id` is where the content belongs, and this never
+        substitutes the parent channel for it. Where no thread exists and none
+        can be made, `ThreadUnavailable` says so and the caller decides: the
+        channel root is the same audience as a turn addressed to the channel
+        root, and a different one from a thread that has been deleted, and
+        nothing Discord can be asked distinguishes the two.
 
-        Where a thread already exists and Discord will not let us into it, both
-        are refused. That thread may be private, and a request carries the
+        Where a thread exists and Discord will not let us into it, that is
+        refused outright. The thread may be private, and a request carries the
         agent's question and its options — posting it to the parent would hand
         the contents of a conversation to people who were not in it. A question
         nobody can see is bad; a question the wrong people can see is worse,
         and unlike the first it cannot be undone.
+
+        Pass `thread_root_id=None` to post at the channel root deliberately.
         """
         fallback = self.rich_fallback_text(content)
         try:
@@ -1000,7 +1001,7 @@ class DiscordAdapter(CollaborationAdapter):
         thread: Any = None
         if thread_root_id:
             thread = await self._publication_thread(
-                int(channel_id), thread_root_id, content, text
+                int(channel_id), thread_root_id, text
             )
 
         try:
@@ -1025,22 +1026,20 @@ class DiscordAdapter(CollaborationAdapter):
         return f"{sent.channel.id}:{sent.id}"
 
     async def _publication_thread(
-        self, channel_id: int, thread_root_id: str, content: RichContent, text: str
+        self, channel_id: int, thread_root_id: str, text: str
     ) -> Any:
-        """The thread this publication goes in, or `None` to use its origin.
+        """The thread this publication goes in. Never the channel instead.
 
-        `None` is returned in exactly one situation: no thread exists under the
-        root message yet and one could not be made. The turn was addressed at
-        the channel root, so the root is where it came from and where its
-        readers already are — a card posted there reaches the same people who
-        asked, which is why this is a fallback and not a disclosure.
+        `ThreadUnavailable` when no thread exists under the root message and
+        one could not be made, which reads the same from here whether the
+        thread was never created or was created privately and deleted. Only the
+        caller can tell those apart, from where the command was addressed, and
+        only the caller may decide that the parent channel will do.
 
-        Every other failure raises. A thread that exists and will not open may
-        be private, and the difference between "in a thread" and "in the
-        channel" is then the difference between a conversation and an audience.
-        Progress raises too even in the first case: nobody asked the channel to
-        be told what a turn is doing, and the agent's reply is coming to it
-        anyway.
+        Every other failure raises as itself. A thread that exists and will not
+        open may be private, and the difference between "in a thread" and "in
+        the channel" is then the difference between a conversation and an
+        audience.
         """
         existing = await self._reachable_thread(channel_id, thread_root_id, text)
         if existing is not None:
@@ -1050,25 +1049,15 @@ class DiscordAdapter(CollaborationAdapter):
         except Exception as error:
             # The create may have been refused because the thread is already
             # there — the one failure that means the opposite of what it looks
-            # like. Ask again before treating the root as this turn's origin.
+            # like. Ask again before reporting that there is none.
             settled = await self._reachable_thread(channel_id, thread_root_id, text)
             if settled is not None:
                 return settled
-            if isinstance(content, TurnActivity):
-                raise RichContentFailed(
-                    f"Discord has no thread under {thread_root_id} in channel "
-                    f"{channel_id} to show this turn's progress in, and the "
-                    f"channel root is not a substitute for one: {error}",
-                    text=text,
-                ) from error
-            logger.warning(
-                "Could not open a Discord thread under %s in channel %s (%s); "
-                "posting the request where it was asked, at the channel root.",
-                thread_root_id,
-                channel_id,
-                error,
-            )
-            return None
+            raise ThreadUnavailable(
+                f"Discord has no thread under {thread_root_id} in channel "
+                f"{channel_id} and would not make one: {error}",
+                text=text,
+            ) from error
 
     async def _reachable_thread(
         self, channel_id: int, thread_root_id: str, text: str

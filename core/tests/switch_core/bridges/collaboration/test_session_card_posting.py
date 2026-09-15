@@ -149,6 +149,7 @@ async def _post_one(
         await _fixture_request(),
         channel_id=CHANNEL,
         thread_root_id=None,
+        asked_at_root=True,
         room_id=room_id,
         session_id=session_id,
         epoch="epoch-demo",
