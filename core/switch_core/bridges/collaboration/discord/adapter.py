@@ -1109,6 +1109,7 @@ class DiscordAdapter(CollaborationAdapter):
         agent_name: str,
         message_ref: str,
         content: RichContent,
+        thread_root_id: str | None,
     ) -> None:
         """Redraw a publication in place — or take it down, where it has served
         its purpose and staying would just be clutter.

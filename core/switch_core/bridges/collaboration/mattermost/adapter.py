@@ -759,6 +759,7 @@ class MattermostAdapter(CollaborationAdapter):
         agent_name: str,
         message_ref: str,
         content: RichContent,
+        thread_root_id: str | None,
     ) -> None:
         """Redraw a publication in place, and say so when it did not happen.
 

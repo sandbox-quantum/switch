@@ -689,21 +689,29 @@ class CollaborationAdapter(ABC):
         agent_name: str,
         message_ref: str,
         content: RichContent,
+        thread_root_id: str | None,
     ) -> None:
         """Redraw what `post_rich` posted, in place.
 
         Falls back the same way `post_rich` does. Most adapters'
         `update_message` swallows its own errors by design, for the
-        runtime-status paths that depend on that — but not all of them (Teams'
-        raises on any non-2xx status), so this catches broadly rather than
-        trusting the convention: whichever it does, a caller of `update_rich`
-        sees `RichContentFailed` or nothing.
+        runtime-status paths that depend on that — but not all of them, so this
+        catches broadly rather than trusting the convention: whichever it does,
+        a caller of `update_rich` sees `RichContentFailed` or nothing.
 
         `agent_name` is the same name `post_rich` was given, and is here for
         the platform that writes it into the body: one bot identity means the
         name is part of what was drawn, so a redraw that did not know it would
         quietly rewrite the message as somebody else. Passing it on every call
         keeps that out of an in-memory map that a restart empties.
+
+        `thread_root_id` is the same thread `post_rich` was given, for the same
+        reason. On most platforms a message id is an address on its own and
+        this is ignored; on Teams an edit is addressed to the *conversation*,
+        and for a reply inside a channel post that conversation is named by the
+        thread rather than by the message. Passing it keeps the one durable
+        answer flowing from the journal or the card row, instead of a
+        process-local map that a restart turns into a guess.
         """
         text = self.rich_fallback_text(content)
         try:

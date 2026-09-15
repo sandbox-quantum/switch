@@ -176,7 +176,7 @@ async def test_a_redraw_still_names_the_agent_after_a_restart() -> None:
     ref = await adapter.post_rich(CHANNEL, "my-agent", _activity(), None)
 
     restarted = _adapter()
-    await restarted.update_rich(CHANNEL, "my-agent", ref, _activity())
+    await restarted.update_rich(CHANNEL, "my-agent", ref, _activity(), None)
 
     assert "<b>my-agent</b>" in _edited(restarted)["text"]
 
@@ -268,7 +268,7 @@ async def test_a_redraw_does_not_repeat_the_mention() -> None:
     )
 
     await adapter.update_rich(
-        CHANNEL, "my-agent", ref, await _card(notify_external_id=ASKER)
+        CHANNEL, "my-agent", ref, await _card(notify_external_id=ASKER), None
     )
 
     assert "tg://user" in _posted(adapter)["text"]
@@ -437,7 +437,7 @@ async def test_a_failed_edit_is_reported_rather_than_logged_and_forgotten() -> N
     _bot(adapter).edit_error = BadRequest("message to edit not found")
 
     with pytest.raises(RichContentFailed):
-        await adapter.update_rich(CHANNEL, "my-agent", ref, await _card())
+        await adapter.update_rich(CHANNEL, "my-agent", ref, await _card(), None)
 
 
 async def test_an_edit_telegram_calls_unchanged_is_not_a_failure() -> None:
@@ -447,7 +447,7 @@ async def test_an_edit_telegram_calls_unchanged_is_not_a_failure() -> None:
     ref = await adapter.post_rich(CHANNEL, "my-agent", await _card(), None)
     _bot(adapter).edit_error = BadRequest("Message is not modified")
 
-    await adapter.update_rich(CHANNEL, "my-agent", ref, await _card())
+    await adapter.update_rich(CHANNEL, "my-agent", ref, await _card(), None)
 
 
 async def test_a_publication_is_never_retried_as_stripped_plain_text() -> None:
@@ -492,7 +492,7 @@ async def test_progress_arriving_faster_than_the_chat_can_take_it_waits() -> Non
     ref = await adapter.post_rich(CHANNEL, "my-agent", _activity(), None)
 
     with pytest.raises(RichContentThrottled) as caught:
-        await adapter.update_rich(CHANNEL, "my-agent", ref, _activity())
+        await adapter.update_rich(CHANNEL, "my-agent", ref, _activity(), None)
     assert 0 < caught.value.retry_after <= _REDRAW_INTERVAL
     assert _bot(adapter).edits == []
 
@@ -503,7 +503,7 @@ async def test_the_end_of_a_turn_is_never_held_back() -> None:
     adapter = _adapter()
     ref = await adapter.post_rich(CHANNEL, "my-agent", _activity(), None)
 
-    await adapter.update_rich(CHANNEL, "my-agent", ref, _ended())
+    await adapter.update_rich(CHANNEL, "my-agent", ref, _ended(), None)
 
     assert len(_bot(adapter).deletes) == 1
 
@@ -513,7 +513,7 @@ async def test_a_problem_somebody_has_to_act_on_is_never_held_back() -> None:
     ref = await adapter.post_rich(CHANNEL, "my-agent", _activity(), None)
 
     await adapter.update_rich(
-        CHANNEL, "my-agent", ref, _activity(error_summary="The agent went away.")
+        CHANNEL, "my-agent", ref, _activity(error_summary="The agent went away."), None
     )
 
     assert "went away" in _edited(adapter)["text"]
@@ -525,7 +525,7 @@ async def test_a_card_is_never_held_back() -> None:
     adapter = _adapter()
     ref = await adapter.post_rich(CHANNEL, "my-agent", await _card(), None)
 
-    await adapter.update_rich(CHANNEL, "my-agent", ref, await _card())
+    await adapter.update_rich(CHANNEL, "my-agent", ref, await _card(), None)
 
     assert len(_bot(adapter).edits) == 1
 
@@ -544,10 +544,10 @@ async def test_two_agents_publishing_in_one_chat_share_its_budget() -> None:
 
 async def test_one_agents_redraw_paces_the_next_agents() -> None:
     adapter = _adapter()
-    await adapter.update_rich(CHANNEL, "one", f"{CHAT_ID}:11", _activity())
+    await adapter.update_rich(CHANNEL, "one", f"{CHAT_ID}:11", _activity(), None)
 
     with pytest.raises(RichContentThrottled):
-        await adapter.update_rich(CHANNEL, "two", f"{CHAT_ID}:12", _activity())
+        await adapter.update_rich(CHANNEL, "two", f"{CHAT_ID}:12", _activity(), None)
     assert len(_bot(adapter).edits) == 1
 
 
@@ -571,7 +571,7 @@ async def test_a_finished_status_is_taken_out_of_the_chat() -> None:
     adapter = _adapter()
     ref = await adapter.post_rich(CHANNEL, "my-agent", _activity(), None)
 
-    await adapter.update_rich(CHANNEL, "my-agent", ref, _ended())
+    await adapter.update_rich(CHANNEL, "my-agent", ref, _ended(), None)
 
     assert _bot(adapter).deletes[0]["message_id"] == int(ref.split(":")[1])
     assert _bot(adapter).edits == []
@@ -584,7 +584,7 @@ async def test_a_finished_status_in_a_forum_topic_goes_the_same_way() -> None:
     _forum(adapter)
     ref = await adapter.post_rich(CHANNEL, "my-agent", _activity(), TOPIC_ID)
 
-    await adapter.update_rich(CHANNEL, "my-agent", ref, _ended())
+    await adapter.update_rich(CHANNEL, "my-agent", ref, _ended(), TOPIC_ID)
 
     assert len(_bot(adapter).deletes) == 1
 
@@ -596,7 +596,7 @@ async def test_a_finished_turn_that_still_has_a_problem_to_report_stays() -> Non
     ref = await adapter.post_rich(CHANNEL, "my-agent", _activity(), None)
 
     await adapter.update_rich(
-        CHANNEL, "my-agent", ref, _ended(error_summary="The host went away.")
+        CHANNEL, "my-agent", ref, _ended(error_summary="The host went away."), None
     )
 
     assert _bot(adapter).deletes == []
@@ -609,7 +609,7 @@ async def test_a_request_card_is_never_taken_down() -> None:
     adapter = _adapter()
     ref = await adapter.post_rich(CHANNEL, "my-agent", await _card(), None)
 
-    await adapter.update_rich(CHANNEL, "my-agent", ref, await _card())
+    await adapter.update_rich(CHANNEL, "my-agent", ref, await _card(), None)
 
     assert _bot(adapter).deletes == []
 
@@ -617,9 +617,9 @@ async def test_a_request_card_is_never_taken_down() -> None:
 async def test_a_status_taken_down_is_not_edited_afterwards() -> None:
     adapter = _adapter()
     ref = await adapter.post_rich(CHANNEL, "my-agent", _activity(), None)
-    await adapter.update_rich(CHANNEL, "my-agent", ref, _ended())
+    await adapter.update_rich(CHANNEL, "my-agent", ref, _ended(), None)
 
-    await adapter.update_rich(CHANNEL, "my-agent", ref, _ended())
+    await adapter.update_rich(CHANNEL, "my-agent", ref, _ended(), None)
 
     assert len(_bot(adapter).deletes) == 1
     assert _bot(adapter).edits == []
@@ -635,7 +635,7 @@ async def test_a_deletion_telegram_refuses_leaves_the_final_state_showing(
     ref = await adapter.post_rich(CHANNEL, "my-agent", _activity(), None)
     _bot(adapter).delete_error = BadRequest("message can't be deleted")
 
-    await adapter.update_rich(CHANNEL, "my-agent", ref, _ended())
+    await adapter.update_rich(CHANNEL, "my-agent", ref, _ended(), None)
 
     assert len(_bot(adapter).edits) == 1
     assert any("leaving its final state" in record.message for record in caplog.records)
@@ -651,9 +651,9 @@ async def test_a_deletion_whose_outcome_is_unknown_is_retried_rather_than_assume
     _bot(adapter).delete_error = TimedOut()
 
     with pytest.raises(TimedOut):
-        await adapter.update_rich(CHANNEL, "my-agent", ref, _ended())
+        await adapter.update_rich(CHANNEL, "my-agent", ref, _ended(), None)
 
-    await adapter.update_rich(CHANNEL, "my-agent", ref, _ended())
+    await adapter.update_rich(CHANNEL, "my-agent", ref, _ended(), None)
     assert len(_bot(adapter).deletes) == 1
 
 
@@ -984,7 +984,7 @@ async def test_a_settled_card_is_redrawn_without_its_buttons() -> None:
     settled = replace(
         card, request=card.request.model_copy(update={"state": "resolved"})
     )
-    await adapter.update_rich(CHANNEL, "my-agent", ref, settled)
+    await adapter.update_rich(CHANNEL, "my-agent", ref, settled, None)
 
     assert _keyboard(_posted(adapter)["reply_markup"]) != []
     assert _edited(adapter)["reply_markup"] is None
@@ -1071,7 +1071,7 @@ async def test_a_redraw_takes_the_buttons_off_a_card_that_stopped_fitting() -> N
     adapter = _adapter()
     ref = await adapter.post_rich(CHANNEL, "my-agent", await _card(), None)
 
-    await adapter.update_rich(CHANNEL, "my-agent", ref, await _clipped_detail())
+    await adapter.update_rich(CHANNEL, "my-agent", ref, await _clipped_detail(), None)
 
     assert _keyboard(_posted(adapter)["reply_markup"]) != []
     assert _edited(adapter)["reply_markup"] is None

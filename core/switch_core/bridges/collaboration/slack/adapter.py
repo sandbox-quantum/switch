@@ -528,6 +528,7 @@ class SlackAdapter(CollaborationAdapter):
         agent_name: str,
         message_ref: str,
         content: RichContent,
+        thread_root_id: str | None,
     ) -> None:
         """Redraw what `post_rich` posted, in place.
 

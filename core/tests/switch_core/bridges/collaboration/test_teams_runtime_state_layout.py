@@ -11,6 +11,14 @@ way Mattermost already does it for the same reason.
 
 A **chat**-layout channel drops a deleted message cleanly, so it keeps the
 original behaviour: the status disappears when the turn ends.
+
+These drive `_apply_runtime_state` and `_reposition_runtime_state` rather than
+the public entry points, because the public ones no longer reach them: Teams
+now publishes SDK sessions and declares `renders_legacy_runtime_state = False`,
+so the base class stops the legacy path before the adapter sees it. The
+implementation is still here and still correct; what it no longer has is a
+caller. Removing it is its own task — until then these keep it honest, and
+`test_teams_sdk_only.py` covers what replaced it.
 """
 
 from __future__ import annotations
@@ -110,7 +118,7 @@ def _text(activity: dict[str, Any]) -> str:
 
 def _work(adapter: TeamsAdapter, **kw: Any) -> None:
     _run(
-        adapter.apply_runtime_state(
+        adapter._apply_runtime_state(
             _CHANNEL, _AGENT, "working", mention_handle=None, thread_root_id=None, **kw
         )
     )
@@ -118,7 +126,7 @@ def _work(adapter: TeamsAdapter, **kw: Any) -> None:
 
 def _idle(adapter: TeamsAdapter) -> None:
     _run(
-        adapter.apply_runtime_state(
+        adapter._apply_runtime_state(
             _CHANNEL, _AGENT, "idle", mention_handle=None, thread_root_id=None
         )
     )
@@ -164,7 +172,7 @@ def test_an_operator_ping_is_resolved_by_editing_too() -> None:
 
     _work(adapter)
     _run(
-        adapter.apply_runtime_state(
+        adapter._apply_runtime_state(
             _CHANNEL,
             _AGENT,
             "awaiting-input",
@@ -186,7 +194,7 @@ def test_the_status_does_not_move_to_follow_the_conversation() -> None:
     _work(adapter)
     posted_before = list(connector.posted)
 
-    _run(adapter.reposition_runtime_state(_CHANNEL, _AGENT, "post-9"))
+    _run(adapter._reposition_runtime_state(_CHANNEL, _AGENT, "post-9"))
 
     assert connector.posted == posted_before
     assert connector.deletes == []
@@ -210,7 +218,7 @@ def test_a_chat_channel_still_moves_the_status_to_follow_the_conversation() -> N
     adapter, connector = _adapter("chat")
 
     _work(adapter)
-    _run(adapter.reposition_runtime_state(_CHANNEL, _AGENT, "msg-9"))
+    _run(adapter._reposition_runtime_state(_CHANNEL, _AGENT, "msg-9"))
 
     # Reposted first, then the original removed — never briefly absent.
     assert connector.deletes == ["M1"]
@@ -222,7 +230,7 @@ def test_a_chat_channel_still_removes_an_operator_ping() -> None:
 
     _work(adapter)
     _run(
-        adapter.apply_runtime_state(
+        adapter._apply_runtime_state(
             _CHANNEL,
             _AGENT,
             "awaiting-input",

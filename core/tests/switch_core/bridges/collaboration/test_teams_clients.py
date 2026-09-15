@@ -17,8 +17,15 @@ import httpx
 import pytest
 
 from switch_core.bridges.collaboration.teams.connector import (
+    ACTIVITY_SIZE_LIMIT,
     BotConnectorClient,
+    BotConnectorConflict,
     BotConnectorError,
+    BotConnectorGone,
+    BotConnectorRefused,
+    BotConnectorThrottled,
+    BotConnectorUnaddressable,
+    BotConnectorUnavailable,
 )
 from switch_core.bridges.collaboration.teams.graph import GraphClient, GraphError
 
@@ -243,21 +250,26 @@ def test_create_channel_thread_builds_body_and_parses_ids() -> None:
     assert body["channelData"]["channel"]["id"] == "19:c@thread.tacv2"
 
 
-def test_create_channel_thread_falls_back_to_id_when_no_activity_id() -> None:
-    # Some responses carry only ``id`` — it doubles as the activity id.
+def test_create_channel_thread_refuses_to_invent_an_activity_id() -> None:
+    # A response carrying only ``id`` names the conversation, not the message
+    # in it. Handing that back as the activity id addressed every later edit
+    # to the wrong thing, and the edit that failed looked like a platform
+    # fault rather than an id we made up.
     rec = _Recorder(201, {"id": "conv-1"})
     connector = _connector(rec)
 
-    conversation_id, activity_id = _run(
-        connector.create_channel_thread(
-            service_url="https://smba.example/amer/",
-            channel_id="19:c@thread.tacv2",
-            activity={"type": "message"},
+    with pytest.raises(BotConnectorUnaddressable) as raised:
+        _run(
+            connector.create_channel_thread(
+                service_url="https://smba.example/amer/",
+                channel_id="19:c@thread.tacv2",
+                activity={"type": "message"},
+            )
         )
-    )
 
-    assert conversation_id == "conv-1"
-    assert activity_id == "conv-1"
+    # Not a refusal: the post is presumably in the channel, so whoever
+    # reserved it keeps the reservation rather than sending a second copy.
+    assert not isinstance(raised.value, BotConnectorRefused)
 
 
 def test_create_channel_thread_error_raises() -> None:
@@ -431,3 +443,185 @@ def test_a_non_authorization_failure_is_not_retried() -> None:
         _run(_graph(recorder, _StaleTokens()).list_subscriptions())
 
     assert len(recorder.requests) == 1
+
+
+# ── The Bot Connector failure contract ───────────────────────────────────────
+#
+# Every method used to flatten `status >= 300` into one `BotConnectorError`
+# carrying a formatted string, and let raw `httpx` exceptions past. Nothing
+# above it could tell "Teams said no" from "Teams never answered", which is the
+# difference between discarding a reservation and keeping it.
+
+
+def _send(connector: BotConnectorClient) -> Any:
+    return connector.send_to_conversation(
+        service_url="https://smba.example/amer/",
+        conversation_id="19:c@thread.tacv2",
+        activity={"type": "message", "text": "hi"},
+    )
+
+
+def test_a_429_is_throttling_and_carries_the_wait_teams_asked_for() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(429, json={}, headers={"Retry-After": "17"})
+
+    connector = BotConnectorClient(
+        tokens=_FakeTokens(),  # type: ignore[arg-type]
+        http=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+    )
+
+    with pytest.raises(BotConnectorThrottled) as raised:
+        _run(_send(connector))
+
+    assert raised.value.retry_after == 17
+    # Throttling is a refusal: the activity was rejected, not half-written.
+    assert isinstance(raised.value, BotConnectorRefused)
+
+
+def test_an_unreadable_retry_after_leaves_the_wait_unstated() -> None:
+    # An HTTP-date rather than seconds. Reporting a made-up number as Teams'
+    # own would be worse than saying nothing and backing off locally.
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            429, json={}, headers={"Retry-After": "Wed, 21 Oct 2026 07:28:00 GMT"}
+        )
+
+    connector = BotConnectorClient(
+        tokens=_FakeTokens(),  # type: ignore[arg-type]
+        http=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+    )
+
+    with pytest.raises(BotConnectorThrottled) as raised:
+        _run(_send(connector))
+
+    assert raised.value.retry_after is None
+
+
+def test_a_404_says_the_target_is_gone() -> None:
+    with pytest.raises(BotConnectorGone):
+        _run(_send(_connector(_Recorder(404, {"error": "no such conversation"}))))
+
+
+def test_a_412_says_the_activity_moved_under_the_edit() -> None:
+    connector = _connector(_Recorder(412, {"error": "precondition"}))
+    with pytest.raises(BotConnectorConflict):
+        _run(
+            connector.update_activity(
+                service_url="https://smba.example/amer/",
+                conversation_id="19:c@thread.tacv2",
+                activity_id="act-1",
+                activity={"type": "message"},
+            )
+        )
+
+
+def test_a_400_is_a_refusal_nothing_was_written_for() -> None:
+    with pytest.raises(BotConnectorRefused) as raised:
+        _run(_send(_connector(_Recorder(400, {"error": "bad request"}))))
+
+    assert not isinstance(raised.value, BotConnectorUnavailable)
+
+
+def test_a_500_leaves_the_outcome_unknown() -> None:
+    # The message may be in the channel. Calling this a refusal is what
+    # throws away a reservation for a publication that actually happened.
+    with pytest.raises(BotConnectorUnavailable) as raised:
+        _run(_send(_connector(_Recorder(500, {"error": "boom"}))))
+
+    assert not isinstance(raised.value, BotConnectorRefused)
+
+
+def test_a_408_leaves_the_outcome_unknown_despite_being_a_4xx() -> None:
+    with pytest.raises(BotConnectorUnavailable):
+        _run(_send(_connector(_Recorder(408, {"error": "timeout"}))))
+
+
+def test_a_transport_failure_never_escapes_as_httpx() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("no route to host")
+
+    connector = BotConnectorClient(
+        tokens=_FakeTokens(),  # type: ignore[arg-type]
+        http=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+    )
+
+    with pytest.raises(BotConnectorUnavailable) as raised:
+        _run(_send(connector))
+
+    assert isinstance(raised.value.__cause__, httpx.ConnectError)
+    assert raised.value.status is None
+
+
+def test_an_accepted_send_with_no_id_is_not_reported_as_success() -> None:
+    with pytest.raises(BotConnectorUnaddressable):
+        _run(_send(_connector(_Recorder(200, {}))))
+
+
+def test_an_ephemeral_signal_does_not_need_an_id() -> None:
+    # A typing indicator is never addressed again, so the missing id that
+    # makes a message unusable says nothing about this one.
+    rec = _Recorder(200, {})
+    _run(
+        _connector(rec).send_signal(
+            service_url="https://smba.example/amer/",
+            conversation_id="19:c@thread.tacv2",
+            activity={"type": "typing"},
+        )
+    )
+    assert rec.last_json() == {"type": "typing"}
+
+
+def test_an_oversized_activity_is_refused_before_it_is_sent() -> None:
+    # Teams answers this with a 413 and the sender learns nothing it could not
+    # have worked out first. Refusing locally names the size instead, and the
+    # request is not made at all.
+    rec = _Recorder(200, {"id": "m1"})
+    connector = _connector(rec)
+
+    with pytest.raises(BotConnectorRefused, match="UTF-16"):
+        _run(
+            connector.send_to_conversation(
+                service_url="https://smba.example/amer/",
+                conversation_id="19:c@thread.tacv2",
+                activity={"type": "message", "text": "x" * ACTIVITY_SIZE_LIMIT},
+            )
+        )
+
+    assert rec.requests == []
+
+
+def test_the_guard_counts_utf16_rather_than_characters() -> None:
+    # An emoji is one character and four UTF-16 bytes, which is the unit
+    # Microsoft states the limit in. Counting characters would let a payload
+    # through at nearly four times the size it really is.
+    rec = _Recorder(200, {"id": "m1"})
+    connector = _connector(rec)
+    text = "😀" * (ACTIVITY_SIZE_LIMIT // 4)
+
+    with pytest.raises(BotConnectorRefused):
+        _run(
+            connector.send_to_conversation(
+                service_url="https://smba.example/amer/",
+                conversation_id="19:c@thread.tacv2",
+                activity={"type": "message", "text": text},
+            )
+        )
+
+    assert rec.requests == []
+
+
+def test_what_the_guard_measured_is_what_goes_on_the_wire() -> None:
+    # Serialised once. A second `json.dumps` with different options would send
+    # bytes the guard never saw — and non-ASCII is exactly where the two
+    # disagree.
+    rec = _Recorder(200, {"id": "m1"})
+    _run(
+        _connector(rec).send_to_conversation(
+            service_url="https://smba.example/amer/",
+            conversation_id="19:c@thread.tacv2",
+            activity={"type": "message", "text": "héllo 😀"},
+        )
+    )
+
+    assert rec.last_json()["text"] == "héllo 😀"
+    assert rec.last.headers["Content-Type"] == "application/json"

@@ -445,9 +445,13 @@ class SessionTurnActivity:
                 "attention",
             )
             if saved:
-                await self._adapter.update_rich(channel_id, agent_name, ref, content)
+                await self._adapter.update_rich(
+                    channel_id, agent_name, ref, content, thread_root_id
+                )
         else:
-            await self._adapter.update_rich(channel_id, agent_name, ref, content)
+            await self._adapter.update_rich(
+                channel_id, agent_name, ref, content, thread_root_id
+            )
         if record:
             record.data["attention_state"] = state
             await record.save()
@@ -818,6 +822,7 @@ class SessionTurnActivity:
                     status_only=self._separate_activity_log,
                     session_url=anchor.session_url,
                 ),
+                anchor.thread_root_id,
             )
         except RichContentThrottled:
             raise
@@ -860,7 +865,11 @@ class SessionTurnActivity:
                 )
             else:
                 await self._adapter.update_rich(
-                    anchor.channel_id, anchor.agent_name, anchor.log_ref, content
+                    anchor.channel_id,
+                    anchor.agent_name,
+                    anchor.log_ref,
+                    content,
+                    anchor.thread_root_id,
                 )
         except RichContentThrottled:
             raise
@@ -1579,6 +1588,7 @@ class SessionRequestCards:
                     responder_external_id=responder_external_id,
                     unavailable_reason=unavailable_reason,
                 ),
+                post.thread_id,
             )
         except RichContentThrottled:
             raise

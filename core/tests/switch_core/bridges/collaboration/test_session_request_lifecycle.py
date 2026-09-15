@@ -385,6 +385,7 @@ async def test_resolved_plan_uses_display_name_and_keeps_slack_mention_in_detail
         "agent",
         "C1:111.0",
         RequestCard(request, REFERENCE, responder_external_id="UOWNER123"),
+        None,
     )
     plan = client.updated[0]["blocks"][0]
     assert "Example Owner" in plan["title"]

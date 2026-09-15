@@ -785,6 +785,18 @@ class _RecordThenRaiseConnector(_FakeConnector):
     async def send_to_conversation(
         self, *, service_url: str, conversation_id: str, activity: dict[str, Any]
     ) -> str:
+        self._record(service_url, conversation_id, activity)
+        raise RuntimeError("boom")
+
+    async def send_signal(
+        self, *, service_url: str, conversation_id: str, activity: dict[str, Any]
+    ) -> None:
+        self._record(service_url, conversation_id, activity)
+        raise RuntimeError("boom")
+
+    def _record(
+        self, service_url: str, conversation_id: str, activity: dict[str, Any]
+    ) -> None:
         self.sends.append(
             {
                 "service_url": service_url,
@@ -792,7 +804,6 @@ class _RecordThenRaiseConnector(_FakeConnector):
                 "activity": activity,
             }
         )
-        raise RuntimeError("boom")
 
 
 def test_typing_failure_is_swallowed() -> None:
@@ -940,13 +951,19 @@ def _wire_counting(adapter: TeamsAdapter, connector: _CountingConnector) -> None
     adapter._channel_type["19:abc@thread.tacv2"] = "channel_public"
 
 
+# The runtime-state tests below drive `_apply_runtime_state` directly: Teams
+# publishes SDK sessions now and declares `renders_legacy_runtime_state =
+# False`, so the public entry point returns before the adapter is reached.
+# The renderer stays until the legacy indicator goes everywhere.
+
+
 def test_working_posts_status_card() -> None:
     adapter = _adapter()
     fake = _CountingConnector()
     _wire_counting(adapter, fake)
 
     _run(
-        adapter.apply_runtime_state(
+        adapter._apply_runtime_state(
             "19:abc@thread.tacv2",
             "worker",
             "working",
@@ -965,7 +982,7 @@ def test_working_detail_refreshes_in_place() -> None:
     _wire_counting(adapter, fake)
 
     _run(
-        adapter.apply_runtime_state(
+        adapter._apply_runtime_state(
             "19:abc@thread.tacv2",
             "worker",
             "working",
@@ -974,7 +991,7 @@ def test_working_detail_refreshes_in_place() -> None:
         )
     )
     _run(
-        adapter.apply_runtime_state(
+        adapter._apply_runtime_state(
             "19:abc@thread.tacv2",
             "worker",
             "working",
@@ -997,7 +1014,7 @@ def test_idle_retires_the_working_message_by_editing_it() -> None:
     _wire_counting(adapter, fake)
 
     _run(
-        adapter.apply_runtime_state(
+        adapter._apply_runtime_state(
             "19:abc@thread.tacv2",
             "worker",
             "working",
@@ -1006,7 +1023,7 @@ def test_idle_retires_the_working_message_by_editing_it() -> None:
         )
     )
     _run(
-        adapter.apply_runtime_state(
+        adapter._apply_runtime_state(
             "19:abc@thread.tacv2",
             "worker",
             "idle",
@@ -1031,7 +1048,7 @@ def test_awaiting_input_keeps_working_and_pings() -> None:
     key = ("19:abc@thread.tacv2", "worker")
 
     _run(
-        adapter.apply_runtime_state(
+        adapter._apply_runtime_state(
             "19:abc@thread.tacv2",
             "worker",
             "working",
@@ -1040,7 +1057,7 @@ def test_awaiting_input_keeps_working_and_pings() -> None:
         )
     )
     _run(
-        adapter.apply_runtime_state(
+        adapter._apply_runtime_state(
             "19:abc@thread.tacv2",
             "worker",
             "awaiting-input",
@@ -1054,7 +1071,7 @@ def test_awaiting_input_keeps_working_and_pings() -> None:
     assert adapter._input_pings[key] == ["M2"]
 
     _run(
-        adapter.apply_runtime_state(
+        adapter._apply_runtime_state(
             "19:abc@thread.tacv2",
             "worker",
             "idle",

@@ -46,6 +46,7 @@ class ActivitySlack(SlackAdapter):
         self.messages = {}
         self.post_count = 0
         self.edit_refs = []
+        self.edit_threads = []
         self.reactions = set()
         self.fail_after_post = False
 
@@ -58,9 +59,10 @@ class ActivitySlack(SlackAdapter):
             raise TimeoutError("Response lost after Slack accepted the post")
         return ref
 
-    async def update_rich(self, channel, agent, ref, content):
+    async def update_rich(self, channel, agent, ref, content, thread):
         assert ref in self.messages
         self.edit_refs.append(ref)
+        self.edit_threads.append(thread)
         self.messages[ref] = self._render_rich(content)
 
     async def find_request_card(self, channel, thread, token, created_at, handle):
@@ -210,10 +212,10 @@ async def test_final_log_edit_failure_is_retried_after_restart(
     await publish(activity(session_factory, platform))
     original = platform.update_rich
 
-    async def fail_log(channel, agent, ref, content):
+    async def fail_log(channel, agent, ref, content, thread):
         if content.tool_log:
             raise TimeoutError("Final log edit failed")
-        return await original(channel, agent, ref, content)
+        return await original(channel, agent, ref, content, thread)
 
     with monkeypatch.context() as patch:
         patch.setattr(platform, "update_rich", fail_log)
@@ -223,6 +225,25 @@ async def test_final_log_edit_failure_is_retried_after_restart(
     assert set(platform.messages) == {"channel-demo:1", "channel-demo:2"}
     assert platform.post_count == 2
     assert not platform.reactions
+
+
+async def test_a_redraw_is_given_the_thread_the_publication_went_into(
+    session_factory,
+):
+    """Not every platform can address an edit by the message alone. A Teams
+    edit is addressed to the *conversation*, which inside a channel post is
+    named by the thread — so the redraw has to carry it, and it has to come
+    from the journal's anchor rather than from a map the next restart empties.
+    Each `publish` here is a fresh renderer, which is that restart.
+    """
+    await setup(session_factory)
+    platform = ActivitySlack()
+    await publish(activity(session_factory, platform))
+
+    await publish(activity(session_factory, platform), "completed")
+
+    assert platform.edit_threads
+    assert set(platform.edit_threads) == {"channel-demo:root"}
 
 
 async def test_competing_publishers_share_one_durable_anchor(session_factory):

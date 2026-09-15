@@ -373,7 +373,7 @@ async def test_a_redraw_is_patched_by_the_bot_that_posted_it() -> None:
     adapter = _adapter("worker", "other")
     ref = await adapter.post_rich("chan-1", "worker", _activity())
 
-    await adapter.update_rich("chan-1", "worker", ref, _activity())
+    await adapter.update_rich("chan-1", "worker", ref, _activity(), None)
 
     assert _posts(adapter).patched[0][0] == ref
     assert _posts(adapter).patched_by == ["worker"]
@@ -386,7 +386,7 @@ async def test_a_redraw_is_still_the_agents_own_bot_after_a_restart() -> None:
     ref = await adapter.post_rich("chan-1", "worker", _activity())
 
     restarted = _adapter("worker", "other")
-    await restarted.update_rich("chan-1", "worker", ref, _activity())
+    await restarted.update_rich("chan-1", "worker", ref, _activity(), None)
 
     assert _posts(restarted).patched_by == ["worker"]
 
@@ -399,7 +399,7 @@ async def test_a_failed_redraw_raises_rather_than_leaving_a_stale_card() -> None
     _posts(adapter).patch_error = ResourceNotFound("404 post not found")
 
     with pytest.raises(RichContentFailed) as excinfo:
-        await adapter.update_rich("chan-1", "worker", ref, await _card())
+        await adapter.update_rich("chan-1", "worker", ref, await _card(), None)
 
     assert isinstance(excinfo.value.__cause__, ResourceNotFound)
     assert excinfo.value.text
@@ -414,7 +414,7 @@ async def test_a_redraw_that_may_have_landed_is_not_reported_as_refused() -> Non
     _posts(adapter).patch_error = _http_error(503)
 
     with pytest.raises(requests.HTTPError):
-        await adapter.update_rich("chan-1", "worker", ref, await _card())
+        await adapter.update_rich("chan-1", "worker", ref, await _card(), None)
 
 
 async def test_a_rate_limited_redraw_carries_the_wait_back_to_the_caller() -> None:
@@ -423,7 +423,7 @@ async def test_a_rate_limited_redraw_carries_the_wait_back_to_the_caller() -> No
     _posts(adapter).patch_error = _http_error(429, **{"Retry-After": "8"})
 
     with pytest.raises(RichContentThrottled) as excinfo:
-        await adapter.update_rich("chan-1", "worker", ref, await _card())
+        await adapter.update_rich("chan-1", "worker", ref, await _card(), None)
 
     assert excinfo.value.retry_after == 8
 
@@ -436,7 +436,7 @@ async def test_a_redraw_does_not_mention_the_recipient_a_second_time() -> None:
     ref = await adapter.post_rich("chan-1", "worker", card)
     assert "@owner" in _posts(adapter).created[0]["message"]
 
-    await adapter.update_rich("chan-1", "worker", ref, card)
+    await adapter.update_rich("chan-1", "worker", ref, card, None)
 
     assert "@owner" not in _posts(adapter).patched[0][1]["message"]
 

@@ -1611,6 +1611,7 @@ class TelegramAdapter(CollaborationAdapter):
         agent_name: str,
         message_ref: str,
         content: RichContent,
+        thread_root_id: str | None,
     ) -> None:
         """Redraw a publication in place — or take it down, once the turn it
         was reporting is over.

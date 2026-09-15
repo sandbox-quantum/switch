@@ -212,7 +212,7 @@ async def test_request_publication_metadata_and_refresh(
             self.contents.append(content)
             return "channel-demo:111.0"
 
-        async def update_rich(self, channel, agent, post, content):
+        async def update_rich(self, channel, agent, post, content, thread):
             self.contents.append(content)
 
     platform = Capture()
@@ -266,7 +266,7 @@ async def test_a_card_nobody_could_be_named_in_says_so_once_not_on_redraws(
             self.contents.append(content)
             return "channel-demo:111.0"
 
-        async def update_rich(self, channel, agent, post, content):
+        async def update_rich(self, channel, agent, post, content, thread):
             self.contents.append(content)
 
     platform = MentionOnly()

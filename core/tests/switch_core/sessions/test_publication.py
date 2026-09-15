@@ -36,6 +36,7 @@ class Platform:
     def __init__(self):
         self.posts = []
         self.edits = []
+        self.edit_threads = []
 
     async def post_rich(self, channel, agent, content: RequestCard, thread):
         message = render_request(
@@ -47,7 +48,7 @@ class Platform:
         self.posts.append((channel, message.text, message.blocks, thread))
         return f"{channel}:111.0"
 
-    async def update_rich(self, channel, agent, post, content: RequestCard):
+    async def update_rich(self, channel, agent, post, content: RequestCard, thread):
         message = render_request(
             content.request,
             content.reference,
@@ -55,6 +56,7 @@ class Platform:
             unavailable_reason=content.unavailable_reason,
         )
         self.edits.append((channel, post, message.text, message.blocks))
+        self.edit_threads.append(thread)
 
 
 async def test_card_callback_reservation_and_confirmed_settlement(session_factory):
@@ -210,6 +212,12 @@ async def test_permission_uses_activity_thread_and_persists_it(session_factory, 
     assert (
         await service.submit(reply, user_id=None, bridge_id="bridge")
     ).status == "accepted"
+
+    await refresh_cards(session_factory, "bridge", "session-demo", cards)
+    # Where an edit is addressed to the conversation rather than to the
+    # message, the stored thread is the address, and the row is what survives
+    # a restart.
+    assert platform.edit_threads == [expected]
 
 
 class ThreadlessPlatform(Platform):
