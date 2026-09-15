@@ -971,9 +971,10 @@ class SessionTurnActivity:
         ):
             return True
         mark = self._mark_key(anchor)
+        removing: set[tuple[str, str]] = set()
+        recorded_here = False
         if working:
-            await self._expect_mark(key, mark)
-            removing: set[tuple[str, str]] = set()
+            recorded_here = await self._expect_mark(key, mark)
         else:
             removing = await self._claimants(mark)
         try:
@@ -986,7 +987,8 @@ class SessionTurnActivity:
             )
         except ActivityMarkRefused as refusal:
             if working:
-                await self._retract_claim(key, mark)
+                if recorded_here:
+                    await self._retract_claim(key, mark)
                 logger.warning("%s The turn goes on without the mark.", refusal)
                 return True
             if not await self._mark_may_be_there(mark):
@@ -1030,7 +1032,7 @@ class SessionTurnActivity:
             "agent_name": anchor.agent_name if self._reactions_per_agent else "",
         }
 
-    async def _expect_mark(self, key: tuple[str, str], mark: dict[str, str]) -> None:
+    async def _expect_mark(self, key: tuple[str, str], mark: dict[str, str]) -> bool:
         """Record that this turn's mark may be on the message, before asking.
 
         Before, not after, because a request that fails without an answer may
@@ -1040,24 +1042,34 @@ class SessionTurnActivity:
 
         Recorded per turn rather than once per reaction, so that a retraction
         can say which attempt it is retracting.
+
+        Returns whether this attempt is the one that recorded the expectation.
+        A turn asks for the mark again whenever it is republished, so an
+        addition refused now can be the second attempt against a reaction an
+        earlier one already put there, or already left in doubt. The refusal
+        answers the attempt it was given, and grounds this turn already had are
+        not its to take away.
         """
         expecting = self._expecting.setdefault(_mark_id(mark), set())
-        if key in expecting:
-            return
-        expecting.add(key)
         record = self._record.get()
-        if record is None or record.data.get("mark") == mark:
-            return
-        record.data["mark"] = mark
-        await record.save()
+        already = key in expecting or (
+            record is not None and record.data.get("mark") == mark
+        )
+        expecting.add(key)
+        if record is not None and record.data.get("mark") != mark:
+            record.data["mark"] = mark
+            await record.save()
+        return not already
 
     async def _retract_claim(self, key: tuple[str, str], mark: dict[str, str]) -> None:
         """Drop this turn's expectation, after its own attempt was refused.
 
-        Only this turn's. A refusal describes the attempt it answers: it says
-        nothing about an addition another turn made earlier, which may well be
-        sitting on the message still. Erasing that one as well is how a mark
-        comes to be reported as cleaned up with the 👀 in plain sight.
+        Only this turn's, and only where this attempt is what recorded it. A
+        refusal describes the attempt it answers: it says nothing about an
+        addition made earlier — by another turn, or by this one before a
+        restart — which may well be sitting on the message still. Erasing that
+        as well is how a mark comes to be reported as cleaned up with the 👀 in
+        plain sight.
         """
         expecting = self._expecting.get(_mark_id(mark))
         if expecting is not None:
@@ -1102,6 +1114,15 @@ class SessionTurnActivity:
         what any process has written down. Taken together because a publisher
         with no journal has only the first, and a publisher restarted into one
         has only the second.
+
+        Turns, not attempts, and that is enough. What a snapshot of turns could
+        miss is a turn renewing its claim between the read and the answer, so
+        that the answer clears a mark put there after it. A turn claims only
+        while it has not ended and releases only once it has, and its two
+        publications cannot overlap: the journal holds the record lock for that
+        one turn across the whole of this, and a publisher without a journal
+        publishes a turn at a time. So the claim a removal clears under a given
+        turn is the claim it read.
         """
         claimants = set(self._expecting.get(_mark_id(mark), ()))
         if self._journal is None:

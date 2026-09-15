@@ -1359,3 +1359,84 @@ async def test_a_refused_addition_leaves_one_publishers_own_earlier_mark_standin
 
     assert not await publish(renderer, "completed", command="second")
     assert chat["reactions"] == {"channel-demo:question"}
+
+
+async def test_a_turn_refused_its_second_mark_still_owes_the_one_it_put_there(
+    session_factory,
+):
+    """No second turn needed: one turn, restarted, refused where it succeeded before.
+
+    A turn asks for the mark again every time it is published, so the addition
+    refused after a restart is a second attempt against a reaction the first
+    one already put there. Letting the refusal retract the turn's own earlier
+    grounds is the same mistake as letting it retract another turn's, and ends
+    the same way — a clean-looking finish under a visible 👀.
+    """
+    await setup(session_factory)
+    chat = {"reactions": set(), "messages": {}}
+    assert await publish(activity(session_factory, RefusingPlatform(chat)))
+    assert chat["reactions"] == {"channel-demo:question"}
+
+    after_restart = RefusingPlatform(chat, refuse_add=True)
+    renderer = activity(session_factory, after_restart)
+    assert await publish(renderer)
+    assert chat["reactions"] == {"channel-demo:question"}
+
+    after_restart.refuse_remove = True
+    assert not await publish(renderer, "completed")
+    assert chat["reactions"] == {"channel-demo:question"}
+
+    after_restart.refuse_remove = False
+    assert await publish(renderer, "completed")
+    assert not chat["reactions"]
+
+
+class LostAcknowledgement(RefusingPlatform):
+    """The reaction goes on and the answer to the request never comes back.
+
+    Indistinguishable, from here, from one that never landed — which is the
+    point: the expectation is written before the request and survives an answer
+    that does not arrive.
+    """
+
+    def __init__(self, chat):
+        super().__init__(chat)
+        self.lose_the_answer = True
+
+    async def mark_activity(self, channel, ref, *, agent_name, working, force=False):
+        await super().mark_activity(
+            channel, ref, agent_name=agent_name, working=working, force=force
+        )
+        if working and self.lose_the_answer:
+            raise TimeoutError("the answer to the reaction never came back")
+
+
+async def test_an_addition_whose_answer_was_lost_survives_a_refused_retry(
+    session_factory,
+):
+    """The other way a turn comes to attempt the mark twice.
+
+    The first request landed and its answer did not, so the turn retries — and
+    by then the chat will not take the reaction. Reading that second refusal as
+    proof the message is clear discards the one piece of evidence there was
+    that something may be sitting on it.
+    """
+    await setup(session_factory)
+    chat = {"reactions": set(), "messages": {}}
+    platform = LostAcknowledgement(chat)
+    renderer = activity(session_factory, platform)
+
+    assert await publish(renderer)
+    assert chat["reactions"] == {"channel-demo:question"}
+
+    platform.lose_the_answer = False
+    platform.refuse_add = True
+    assert await publish(renderer)
+
+    platform.refuse_remove = True
+    assert not await publish(renderer, "completed")
+    assert chat["reactions"] == {"channel-demo:question"}
+
+    platform.refuse_remove = False
+    assert await publish(renderer, "completed")
+    assert not chat["reactions"]
