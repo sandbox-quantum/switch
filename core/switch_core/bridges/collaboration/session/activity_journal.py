@@ -131,14 +131,20 @@ class ActivityJournal:
         mark: dict[str, str],
         *,
         sessions: async_sessionmaker[AsyncSession],
-    ) -> set[tuple[str, str]]:
-        """Which turns are expecting this reaction right now.
+    ) -> set[tuple[str, str, str]]:
+        """Which turns are expecting this reaction right now, and on what ask.
 
         Read immediately before a removal is asked for, so that what the
         removal later clears is what it was actually removing. A turn that
         starts expecting the mark after this read has asked for a reaction of
         its own, and the answer to a request issued before it existed says
         nothing about that one.
+
+        The ask as well as the turn, because a turn that already had the mark
+        can ask for it again — a restart, a publisher taking the message up
+        with no claim of its own — and the reaction the second ask puts there
+        is as new as any other turn's. A row written before the asks were
+        stamped carries no stamp, and is named by the empty one.
         """
         async with sessions() as db:
             rows = await db.scalars(
@@ -148,16 +154,19 @@ class ActivityJournal:
                     SessionActivityPost.data.contains({"mark": mark}),
                 )
             )
-            return {(row.session_id, row.command_id) for row in rows}
+            return {
+                (row.session_id, row.command_id, row.data.get("mark_attempt", ""))
+                for row in rows
+            }
 
     async def forget_mark(
         self,
         mark: dict[str, str],
         *,
-        holders: set[tuple[str, str]],
+        holders: set[tuple[str, str, str]],
         sessions: async_sessionmaker[AsyncSession],
     ) -> None:
-        """Erase the expectation of this reaction, for the given turns only.
+        """Erase the expectation of this reaction, for the given asks only.
 
         Called when the platform has taken the mark off. Every holder it was
         taken off on behalf of loses its expectation together, because they are
@@ -166,8 +175,10 @@ class ActivityJournal:
 
         `holders` rather than all of them, because a removal answers only for
         the claims that existed when it was issued. Its acknowledgement can
-        arrive after another publisher has put the mark back for a new turn,
-        and that turn's mark really is on the message.
+        arrive after another publisher has put the mark back — for a turn of
+        its own, or for one of these turns asking again — and that mark really
+        is on the message. So a row is cleared only while it still carries the
+        ask the removal was issued against.
         """
         if not holders:
             return
@@ -180,10 +191,16 @@ class ActivityJournal:
                 )
             )
             for row in rows:
-                if (row.session_id, row.command_id) not in holders:
+                held = (
+                    row.session_id,
+                    row.command_id,
+                    row.data.get("mark_attempt", ""),
+                )
+                if held not in holders:
                     continue
                 data = dict(row.data)
                 data.pop("mark", None)
+                data.pop("mark_attempt", None)
                 row.data = data
             await db.commit()
 

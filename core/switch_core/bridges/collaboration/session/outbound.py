@@ -107,6 +107,26 @@ class _Anchor:
     status_state: tuple[str, str, str | None] | None = None
 
 
+@dataclass(frozen=True)
+class _MarkAttempt:
+    """One request to put the reaction on a message, and what it renewed.
+
+    A turn asks for the mark again whenever a publisher takes the message up
+    with no holder of its own — a restart, or every claim here having been let
+    go — and any of those asks can be the one that puts the reaction there. So
+    the expectation is identified by the attempt rather than by the turn:
+    a removal answers for the attempts it was issued against, and an attempt
+    made while it was in flight is about a reaction added behind it.
+
+    `renewed` is the attempt this one displaced, where the turn already had
+    grounds. A refusal puts those back: it answers the attempt that provoked
+    it and says nothing about an addition an earlier one may have made.
+    """
+
+    token: str
+    renewed: str | None
+
+
 def _violates(error: IntegrityError, constraint: str) -> bool:
     """Whether Postgres refused this particular uniqueness.
 
@@ -203,7 +223,7 @@ class SessionTurnActivity:
         self._marks_publications = getattr(adapter, "carries_publication_marker", False)
         self._anchors: OrderedDict[tuple[str, str], _Anchor] = OrderedDict()
         self._thread_turns: dict[tuple[str, str, str], set[tuple[str, str]]] = {}
-        self._expecting: dict[tuple[str, str, str], set[tuple[str, str]]] = {}
+        self._expecting: dict[tuple[str, str, str], dict[tuple[str, str], str]] = {}
         self._attention: OrderedDict[tuple[str, str], tuple[str, str]] = OrderedDict()
 
     @property
@@ -971,19 +991,21 @@ class SessionTurnActivity:
         channel showing an agent still working on something it has finished.
 
         Which expectations a removal retracts is settled before it is sent, not
-        after it is answered. Between the two, another publisher can put the
-        mark back for a turn of its own, and that turn's expectation is not
-        this removal's to clear.
+        after it is answered. Between the two the mark can go back on — for a
+        turn of its own, or for one of the turns the removal was issued
+        against, asking again — and neither of those is this removal's to
+        clear, which is why an expectation is named by the ask and not only by
+        the turn that made it.
         """
         if anchor.reaction_ref is None or not getattr(
             self._adapter, "supports_activity_reactions", False
         ):
             return True
         mark = self._mark_key(anchor)
-        removing: set[tuple[str, str]] = set()
-        recorded_here = False
+        removing: set[tuple[str, str, str]] = set()
+        attempt: _MarkAttempt | None = None
         if working:
-            recorded_here = await self._expect_mark(key, mark)
+            attempt = await self._expect_mark(key, mark)
         else:
             removing = await self._claimants(mark)
         try:
@@ -996,8 +1018,8 @@ class SessionTurnActivity:
             )
         except ActivityMarkRefused as refusal:
             if working:
-                if recorded_here:
-                    await self._retract_claim(key, mark)
+                if attempt is not None:
+                    await self._retract_attempt(key, mark, attempt)
                 logger.warning("%s The turn goes on without the mark.", refusal)
                 return True
             if not await self._mark_may_be_there(mark):
@@ -1022,7 +1044,7 @@ class SessionTurnActivity:
             )
             return False
         if not working:
-            await self._mark_taken_off(mark, removing)
+            await self._mark_taken_off(key, mark, removing)
         return True
 
     def _mark_key(self, anchor: _Anchor) -> dict[str, str]:
@@ -1041,74 +1063,105 @@ class SessionTurnActivity:
             "agent_name": anchor.agent_name if self._reactions_per_agent else "",
         }
 
-    async def _expect_mark(self, key: tuple[str, str], mark: dict[str, str]) -> bool:
-        """Record that this turn's mark may be on the message, before asking.
+    async def _expect_mark(
+        self, key: tuple[str, str], mark: dict[str, str]
+    ) -> _MarkAttempt:
+        """Record that this attempt's mark may be on the message, before asking.
 
         Before, not after, because a request that fails without an answer may
         still have landed. Written where the answer will be needed: durably
         when there is a journal, since the turn that eventually takes the mark
         off may be running in a later process than the turn that put it on.
 
-        Recorded per turn rather than once per reaction, so that a retraction
-        can say which attempt it is retracting.
+        Recorded against the turn and stamped with the attempt, so that an
+        answer can say which of the two it is answering: a refusal speaks for
+        the attempt it was given, and a removal for the attempts that had been
+        made when it went out. A turn that asks again lands under the same
+        stamp neither of them can be about.
 
-        Returns whether this attempt is the one that recorded the expectation.
-        A turn asks for the mark again whenever it is republished, so an
-        addition refused now can be the second attempt against a reaction an
-        earlier one already put there, or already left in doubt. The refusal
-        answers the attempt it was given, and grounds this turn already had are
-        not its to take away.
+        An expectation written before attempts were stamped carries no stamp,
+        and is addressed by the empty one until the turn asks again.
         """
-        expecting = self._expecting.setdefault(_mark_id(mark), set())
+        expecting = self._expecting.setdefault(_mark_id(mark), {})
         record = self._record.get()
-        already = key in expecting or (
-            record is not None and record.data.get("mark") == mark
-        )
-        expecting.add(key)
-        if record is not None and record.data.get("mark") != mark:
+        renewed = expecting.get(key)
+        if renewed is None and record is not None and record.data.get("mark") == mark:
+            renewed = str(record.data.get("mark_attempt", ""))
+        attempt = _MarkAttempt(secrets.token_urlsafe(16), renewed)
+        expecting[key] = attempt.token
+        if record is not None:
             record.data["mark"] = mark
+            record.data["mark_attempt"] = attempt.token
             await record.save()
-        return not already
+        return attempt
 
-    async def _retract_claim(self, key: tuple[str, str], mark: dict[str, str]) -> None:
-        """Drop this turn's expectation, after its own attempt was refused.
+    async def _retract_attempt(
+        self, key: tuple[str, str], mark: dict[str, str], attempt: _MarkAttempt
+    ) -> None:
+        """Put the expectation back as it was, after this attempt was refused.
 
-        Only this turn's, and only where this attempt is what recorded it. A
+        Back to what the turn had before, which is nothing where this attempt
+        is what gave it grounds and the attempt it renewed where it is not. A
         refusal describes the attempt it answers: it says nothing about an
         addition made earlier — by another turn, or by this one before a
         restart — which may well be sitting on the message still. Erasing that
         as well is how a mark comes to be reported as cleaned up with the 👀 in
         plain sight.
+
+        Only where this attempt's stamp is still the one standing. A later
+        attempt is a claim in its own right, and this refusal is not about it.
         """
         expecting = self._expecting.get(_mark_id(mark))
-        if expecting is not None:
-            expecting.discard(key)
-            if not expecting:
-                del self._expecting[_mark_id(mark)]
+        if expecting is not None and expecting.get(key) == attempt.token:
+            if attempt.renewed is None:
+                del expecting[key]
+                if not expecting:
+                    del self._expecting[_mark_id(mark)]
+            else:
+                expecting[key] = attempt.renewed
         record = self._record.get()
-        if record is not None and record.data.pop("mark", None) is not None:
-            await record.save()
+        if record is None or record.data.get("mark_attempt") != attempt.token:
+            return
+        if attempt.renewed is None:
+            record.data.pop("mark", None)
+            record.data.pop("mark_attempt", None)
+        else:
+            record.data["mark_attempt"] = attempt.renewed
+        await record.save()
 
     async def _mark_taken_off(
-        self, mark: dict[str, str], holders: set[tuple[str, str]]
+        self,
+        key: tuple[str, str],
+        mark: dict[str, str],
+        holders: set[tuple[str, str, str]],
     ) -> None:
         """Drop the expectations the platform has just answered for.
 
-        Every holder the removal was made on behalf of, not only this turn,
+        Every attempt the removal was made on behalf of, not only this turn's,
         because they are all talking about the same reaction — one left behind
         would have a later turn on that message reporting a mark that is not
-        there and never finishing. `holders` is read before the removal is
-        sent, so a turn that claimed the mark while it was in flight keeps its
-        claim.
+        there and never finishing.
+
+        The attempts as they stood when the removal went out, not as they stand
+        now. A holder that has asked for the mark again since is asking about a
+        reaction put there behind the removal, which the platform's answer says
+        nothing about — and which really is on the message.
         """
         expecting = self._expecting.get(_mark_id(mark))
         if expecting is not None:
-            expecting -= holders
+            for session_id, command_id, token in holders:
+                if expecting.get((session_id, command_id)) == token:
+                    del expecting[(session_id, command_id)]
             if not expecting:
                 del self._expecting[_mark_id(mark)]
         record = self._record.get()
-        if record is not None and record.data.pop("mark", None) is not None:
-            await record.save()
+        if (
+            record is not None
+            and (*key, record.data.get("mark_attempt", "")) in holders
+        ):
+            if record.data.pop("mark", None) is not None:
+                record.data.pop("mark_attempt", None)
+                await record.save()
         if self._journal is not None:
             await self._journal.forget_mark(
                 mark,
@@ -1116,26 +1169,28 @@ class SessionTurnActivity:
                 sessions=record.sessions if record else self._journal.sessions,
             )
 
-    async def _claimants(self, mark: dict[str, str]) -> set[tuple[str, str]]:
-        """The turns expecting this mark, as of now.
+    async def _claimants(self, mark: dict[str, str]) -> set[tuple[str, str, str]]:
+        """The attempts expecting this mark, as of now.
 
         Both halves of the evidence: what this process remembers claiming, and
         what any process has written down. Taken together because a publisher
         with no journal has only the first, and a publisher restarted into one
         has only the second.
 
-        Turns, not attempts, and that is **not** currently enough. A snapshot
-        of turns can miss a turn renewing its claim between the read and the
-        answer, so that the answer clears a mark put there after it. The
-        serialisation that would rule that out does not: a removal's record
-        lock is its own turn's, and the publisher deliberately allows a
-        provisional outcome to be replaced by the real turn under the same
-        command key, so another turn can claim under a key while this removal
-        is in flight and have its evidence cleared by the reply. Closing that
-        means keying the removal snapshot by attempt rather than by turn,
-        which is not done here.
+        Attempts rather than turns, because nothing serialises a claim against
+        another turn's removal. A removal holds its own turn's record lock and
+        no other's, and the publisher deliberately allows a provisional outcome
+        to be replaced by the real turn under the same command key — so a turn
+        already in this snapshot can go on to ask for the mark again while the
+        removal is in flight, and the reaction that second ask puts there
+        outlives the answer to the first. Named by the ask, it survives it.
         """
-        claimants = set(self._expecting.get(_mark_id(mark), ()))
+        claimants = {
+            (session_id, command_id, token)
+            for (session_id, command_id), token in self._expecting.get(
+                _mark_id(mark), {}
+            ).items()
+        }
         if self._journal is None:
             return claimants
         record = self._record.get()

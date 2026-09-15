@@ -1356,6 +1356,64 @@ async def test_a_removal_in_flight_does_not_clear_a_mark_put_back_behind_it(
     assert chat["reactions"] == {"channel-demo:question"}
 
 
+async def test_a_removal_in_flight_does_not_clear_a_mark_its_own_holder_put_back(
+    session_factory,
+):
+    """The same window, where the turn that marks afresh is one it answers for.
+
+    A queued receipt claims the mark and ends; another turn runs on that
+    message and ends last, so its removal is issued on behalf of both. While
+    the answer is in flight the queued command becomes the real turn in place
+    — the publisher allows exactly that — asks for the mark again and puts it
+    back. A removal that clears by turn loses that claim, because the turn it
+    names is one of its own holders, and the real turn then finishes clean
+    with the 👀 in plain sight. What the answer settles is the ask it was
+    issued against.
+    """
+    await setup(session_factory)
+    chat = {"reactions": set(), "messages": {}}
+
+    async def published(platform, command, turn_id, status):
+        turn = _turn(status).model_copy(
+            update={"command_id": command, "turn_id": turn_id}
+        )
+        return await activity(session_factory, platform).publish(
+            [],
+            turn,
+            session_id="session-demo",
+            channel_id="channel-demo",
+            thread_root_id="channel-demo:root",
+            asked_on="channel-demo:question",
+            agent_name="Agent",
+            elapsed_seconds=12,
+        )
+
+    async def the_queued_command_becomes_its_real_turn():
+        assert await published(
+            RefusingPlatform(chat), "second", "real:second", "running"
+        )
+        assert chat["reactions"] == {"channel-demo:question"}
+
+    assert await published(RefusingPlatform(chat), "second", "pending:second", "queued")
+    assert await published(RefusingPlatform(chat), "first", "turn-first", "running")
+    assert await published(RefusingPlatform(chat), "second", "pending:second", "error")
+
+    assert await published(
+        DelayedRemoval(
+            chat, while_unacknowledged=the_queued_command_becomes_its_real_turn
+        ),
+        "first",
+        "turn-first",
+        "completed",
+    )
+    assert chat["reactions"] == {"channel-demo:question"}
+
+    assert not await published(
+        RefusingPlatform(chat, refuse_remove=True), "second", "real:second", "completed"
+    )
+    assert chat["reactions"] == {"channel-demo:question"}
+
+
 async def test_a_refused_addition_leaves_one_publishers_own_earlier_mark_standing(
     session_factory,
 ):
