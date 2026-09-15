@@ -1004,8 +1004,7 @@ class SessionTurnActivity:
         self, key: tuple[str, str], anchor: _Anchor, mark: ActivityMark
     ) -> None:
         """Add this turn to the set of turns holding `mark` on
-        `anchor.reaction_ref`, switching it on only if this turn is the
-        first to want it.
+        `anchor.reaction_ref`, asking the platform for it as it does.
 
         Two turns can resolve to the same asking message — one addressed at
         the channel root threads under it, and another already running in
@@ -1023,9 +1022,17 @@ class SessionTurnActivity:
         a stake without asking would be trusting a reading of the message taken
         before the stake was written down, and between those two the turn that
         put the mark there can end and take it off: a queued prompt left with
-        no hourglass, and nothing that will put one back. Asking closes that,
-        because a removal either sees the claim and leaves the mark alone, or
-        went first and this ask restores it.
+        no hourglass, and nothing that will put one back.
+
+        Asking narrows that rather than closing it. A removal that reads the
+        claims after this one is written stands down, and one that read them
+        before and has already taken the mark off is undone by this ask. The
+        order left open is a removal that read before and lands after: it
+        takes off a mark this turn has already asked for and recorded, and no
+        redraw puts it back, because the stake it would repair is exactly what
+        marks this turn as needing no repair. Closing that needs the claims
+        and the platform call to move together across publishers, which
+        nothing here does.
 
         The refusals stay the joining turn's own. A platform that will not add
         the reaction refuses every one of them, so each retracts its own
