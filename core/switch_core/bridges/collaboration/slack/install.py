@@ -39,6 +39,21 @@ logger = logging.getLogger(__name__)
 
 AUTHORIZE_URL = "https://slack.com/oauth/v2/authorize"
 
+#: Slack's ways of saying the token is finished already. Revoking one of these
+#: is the outcome the caller wanted, so it is a success — and it is the usual
+#: case, because the reason to be disconnecting is often that the customer
+#: removed the app first.
+_ALREADY_DEAD = frozenset({"invalid_auth", "token_revoked", "account_inactive"})
+
+#: The two events by which Slack says an install is over, and what each means
+#: in words an operator can read. `app_uninstalled` is the customer removing
+#: the app; `tokens_revoked` is the narrower case of the tokens being killed
+#: while the app stays. Both leave us unable to act in the workspace.
+_REVOCATION_EVENTS: dict[str, str] = {
+    "app_uninstalled": "the app was removed from the Slack workspace",
+    "tokens_revoked": "Slack revoked this workspace's tokens",
+}
+
 
 def _json_object(raw: bytes) -> dict[str, Any]:
     try:
@@ -163,6 +178,31 @@ class SlackAppInstaller(MessagingAppInstaller):
             scopes=response.get("scope") or "",
         )
 
+    async def revoke(self, *, bot_token: str) -> None:
+        try:
+            response = await AsyncWebClient(token=bot_token).auth_revoke()
+        except SlackApiError as error:
+            reason = error.response.get("error", "")
+            if reason in _ALREADY_DEAD:
+                logger.info(
+                    "Slack reports the bot token was already invalid (%s); "
+                    "treating the revocation as done",
+                    reason,
+                )
+                return
+            raise MessagingInstallError(
+                f"Slack refused to revoke the bot token: {reason or error}"
+            ) from error
+
+        # `revoked: false` with `ok: true` is Slack accepting the call and
+        # telling you it did nothing — which for a disconnect is the whole of
+        # what was asked for, so it cannot be read off `ok` alone.
+        if not response.get("revoked"):
+            raise MessagingInstallError(
+                "Slack accepted the revocation request and reported the token "
+                "was not revoked, so it is still valid."
+            )
+
     def verify_webhook(self, *, headers: Mapping[str, str], body: bytes) -> None:
         try:
             valid = self._verifier.is_valid_request(body, dict(headers))
@@ -235,6 +275,21 @@ class SlackAppInstaller(MessagingAppInstaller):
         if not isinstance(workspace_id, str) or not workspace_id:
             raise WebhookPayloadError("Slack event names no workspace")
         return workspace_id
+
+    def revocation_of_event(self, payload: Mapping[str, object]) -> str | None:
+        """Read the two end-of-install events out of an Events API envelope.
+
+        Only `event_callback` envelopes carry one. A slash command or an
+        interaction cannot say the app was uninstalled — there would be nobody
+        left to press the button — so the inner `event.type` is the only place
+        worth looking, and reading a `type` from anywhere else would let an
+        interaction payload with the right-looking field disconnect a
+        customer's workspace.
+        """
+        event = payload.get("event")
+        if not isinstance(event, dict):
+            return None
+        return _REVOCATION_EVENTS.get(event.get("type", ""))
 
     def connection_config(self, grant: InstallGrant) -> dict[str, object]:
         return {

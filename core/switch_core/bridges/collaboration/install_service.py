@@ -26,6 +26,27 @@ Step 5 last is deliberate too: a bridge that exists with no install row behind
 it is an orphan nothing can revoke, whereas an install row with no bridge is a
 recorded credential waiting to be used, which is a state the schema already
 allows for.
+
+**Ending one runs the same steps backwards, and there are two ways in.** An
+operator disconnects here, or the platform tells us the app is gone. They
+differ in exactly one step — whether there is a live token to revoke — and in
+nothing else, because both have to leave the same state behind: no bridge, no
+stored credential, a released workspace and a row saying what happened. A
+deployment that handled only the first would go on holding a dead token and a
+claim on a workspace whose owner believes they have left.
+
+The revoking order is: tell the platform first, then destroy things. A
+revocation we do not understand then leaves the install exactly as it was and
+the operator can try again, where the other order would have removed the
+bridge and left a working key into a customer's workspace in whatever dump was
+taken next.
+
+Then the row, and the bridge last — the reverse of the building order and for
+the same reason read backwards. The install's pointer at the bridge is a real
+foreign key, so the row has to let go before the bridge can be deleted at all;
+and if the deletion then fails, what is left is a bridge with no credential
+that an operator can see and remove, rather than an install still claiming a
+workspace it has already been thrown out of.
 """
 
 from __future__ import annotations
@@ -53,10 +74,15 @@ from switch_core.bridges.collaboration.install_state import (
 from switch_core.bridges.collaboration.lifecycle_service import (
     CollaborationBridgeLifecycleService,
 )
-from switch_core.crypto import encrypt_token
+from switch_core.crypto import decrypt_token, encrypt_token
 from switch_core.db.models import MessagingInstall
 from switch_core.db.session_scope import tenant_session
-from switch_core.db.stores.messaging_install_store import MessagingInstallStore
+from switch_core.db.stores.messaging_install_store import (
+    INSTALL_ACTIVE,
+    INSTALL_DISCONNECTED,
+    INSTALL_REVOKED,
+    MessagingInstallStore,
+)
 from switch_core.db.tenant_lookup import tenant_of_messaging_install
 from switch_core.tenant_context import no_tenant, tenant_scope
 
@@ -228,6 +254,127 @@ class MessagingInstallService:
                 bridge.id,
             )
             return attached
+
+    # ── Ending an install ────────────────────────────────────────────────────
+
+    async def disconnect(self, *, tenant_id: str, install_id: str) -> MessagingInstall:
+        """End an install because somebody here said to.
+
+        Idempotent: disconnecting an install that has already ended returns it
+        unchanged. An operator can reach this for a row the platform's own
+        `app_uninstalled` ended a second earlier, and that is not an error to
+        show them.
+
+        **Removing the bridge detaches every room that used it**, which become
+        internal-only. That is the honest consequence of disconnecting a
+        messaging app and it is not softened here — but it is the reason this
+        is an explicit action with a confirmation in front of it rather than
+        something inferred.
+        """
+        async with tenant_session(self._session_factory, tenant_id) as session:
+            install = await self._store.get(session, install_id=install_id)
+            platform = install.platform
+            workspace_id = install.external_workspace_id
+            bridge_id = install.bridge_id
+            token = install.encrypted_bot_token
+            already_ended = install.status != INSTALL_ACTIVE
+
+        if already_ended:
+            logger.info(
+                "Install %s of %s workspace %s had already ended; nothing to do",
+                install_id,
+                platform,
+                workspace_id,
+            )
+            async with tenant_session(self._session_factory, tenant_id) as session:
+                return await self._store.get(session, install_id=install_id)
+
+        with tenant_scope(tenant_id):
+            if token is not None:
+                await self._installers.get(platform).revoke(
+                    bot_token=decrypt_token(token, self._secret)
+                )
+
+            async with tenant_session(self._session_factory, tenant_id) as session:
+                ended = await self._store.end(
+                    session, install_id=install_id, status=INSTALL_DISCONNECTED
+                )
+                await session.commit()
+
+            if bridge_id is not None:
+                await self._lifecycle.remove(bridge_id)
+
+        logger.info(
+            "Disconnected %s workspace %s for tenant %s",
+            platform,
+            workspace_id,
+            tenant_id,
+        )
+        return ended
+
+    async def revoked(self, *, platform: str, workspace_id: str, reason: str) -> None:
+        """End an install because the platform said it is over.
+
+        Resolves the workspace itself rather than going through `resolve`,
+        which is built for delivering an event and insists on a running bridge.
+        Here a missing bridge is beside the point: the news is that the install
+        is finished, and a deployment that could only record that while the
+        bridge happened to be up would keep the dead ones it most needs to
+        clear.
+
+        A workspace that resolves to nobody is the ordinary case, not a fault.
+        The platform retries these events, so the second delivery arrives after
+        the first has already ended the install.
+
+        No revocation call: the token this would revoke is the one the platform
+        has just told us it killed.
+        """
+        tenant_id = await tenant_of_messaging_install(
+            self._session_factory, platform, workspace_id
+        )
+        if tenant_id is None:
+            logger.info(
+                "Ignoring end-of-install for %s workspace %s (%s): no tenant "
+                "holds it, so it has already ended",
+                platform,
+                workspace_id,
+                reason,
+            )
+            return
+
+        with tenant_scope(tenant_id):
+            async with tenant_session(self._session_factory, tenant_id) as session:
+                install = await self._store.get_for_workspace(
+                    session, platform=platform, external_workspace_id=workspace_id
+                )
+                if install is None:
+                    logger.warning(
+                        "End-of-install for %s workspace %s resolved to tenant "
+                        "%s and could not then be read as that tenant",
+                        platform,
+                        workspace_id,
+                        tenant_id,
+                    )
+                    return
+                install_id = install.id
+                bridge_id = install.bridge_id
+
+            async with tenant_session(self._session_factory, tenant_id) as session:
+                await self._store.end(
+                    session, install_id=install_id, status=INSTALL_REVOKED
+                )
+                await session.commit()
+
+            if bridge_id is not None:
+                await self._lifecycle.remove(bridge_id)
+
+        logger.warning(
+            "Ended the install of %s workspace %s for tenant %s: %s",
+            platform,
+            workspace_id,
+            tenant_id,
+            reason,
+        )
 
     # ── Inbound events ───────────────────────────────────────────────────────
     #
