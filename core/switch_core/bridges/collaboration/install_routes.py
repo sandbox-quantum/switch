@@ -240,6 +240,20 @@ def create_messaging_install_router(
             logger.info("Answered a %s URL verification", platform)
             return PlainTextResponse(event.handshake)
 
+        if event.delivery_attempt > 0:
+            # The only signal this deployment gets that its own acknowledgements
+            # are arriving too late. The event itself is handled normally — the
+            # receipt decides whether it is a duplicate — but a run of these is
+            # the platform saying the three-second answer is being missed, and
+            # nothing else in the system would say so.
+            logger.warning(
+                "%s is re-sending a %s event (attempt %s), which means an earlier "
+                "delivery was not acknowledged in time",
+                platform,
+                event.envelope_type,
+                event.delivery_attempt,
+            )
+
         try:
             # Before resolving, because this is the one event that arrives as
             # the bridge it would be resolved to is going away.

@@ -47,6 +47,7 @@ from switch_core.db.models import (
     User,
 )
 from switch_core.db.session_scope import tenant_session
+from switch_core.db.stores.messaging_event_store import MessagingEventReceiptStore
 from switch_core.db.stores.messaging_install_store import (
     INSTALL_ACTIVE,
     INSTALL_DISCONNECTED,
@@ -104,9 +105,15 @@ class _FakeInstaller(MessagingAppInstaller):
         return None
 
     def parse_webhook(
-        self, *, endpoint: WebhookEndpoint, body: bytes
+        self, *, endpoint: WebhookEndpoint, headers: Mapping[str, str], body: bytes
     ) -> InboundWebhook:
-        return InboundWebhook(envelope_type=endpoint, payload={}, handshake=None)
+        return InboundWebhook(
+            envelope_type=endpoint,
+            payload={},
+            handshake=None,
+            external_event_id=None,
+            delivery_attempt=0,
+        )
 
     def workspace_of_event(self, payload: Mapping[str, object]) -> str:
         return self.workspace_id
@@ -204,6 +211,7 @@ async def _fixture(harness: RLSHarness) -> _Fixture:
     fixture.service = MessagingInstallService(
         session_factory=harness.restricted,
         store=MessagingInstallStore(),
+        receipts=MessagingEventReceiptStore(),
         installers=installers,
         lifecycle=fixture.lifecycle,  # type: ignore[arg-type]
         public_origin=_ORIGIN,

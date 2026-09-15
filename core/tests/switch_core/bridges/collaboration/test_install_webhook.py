@@ -19,18 +19,21 @@ socket: the bridge lifecycle and the adapter at the end of it.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import hmac
 import json
 import time
 import uuid
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from urllib.parse import urlencode
 
 import httpx
 import pytest
 from fastapi import FastAPI
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from switch_core.bridges.collaboration.adapter import CollaborationAdapter
@@ -48,11 +51,16 @@ from switch_core.bridges.collaboration.slack.install import SlackAppInstaller
 from switch_core.db.models import (
     Client,
     CollaborationBridge,
+    MessagingEventReceipt,
     MessagingInstall,
     Tenant,
     User,
 )
 from switch_core.db.session_scope import tenant_session
+from switch_core.db.stores.messaging_event_store import (
+    RECEIPT_RETENTION,
+    MessagingEventReceiptStore,
+)
 from switch_core.db.stores.messaging_install_store import MessagingInstallStore
 from switch_core.tenant_context import current_tenant_id
 from tests.conftest import RLSHarness
@@ -123,6 +131,29 @@ class _RecordingAdapter(_SocketOnlyAdapter):
     ) -> None:
         self.dispatched.append((envelope_type, payload))
         self.tenants_bound.append(current_tenant_id())
+
+
+class _GatedAdapter(_SocketOnlyAdapter):
+    """An adapter that holds a dispatch open until it is let go.
+
+    What it buys is determinism. The race worth testing is a retry arriving
+    while the first delivery is still working — the whole reason the claim is
+    written before the dispatch rather than after — and an adapter that returns
+    instantly would let the first delivery finish before the second began,
+    proving only that a repeat is refused once the first is over.
+    """
+
+    def __init__(self) -> None:
+        self.dispatched: list[tuple[str, dict[str, Any]]] = []
+        self.entered = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def dispatch_event(
+        self, *, envelope_type: str, payload: dict[str, Any]
+    ) -> None:
+        self.dispatched.append((envelope_type, payload))
+        self.entered.set()
+        await self.release.wait()
 
 
 class _FakeLifecycle:
@@ -247,6 +278,7 @@ async def _fixture(harness: RLSHarness) -> _Fixture:
     fixture.service = MessagingInstallService(
         session_factory=harness.restricted,
         store=MessagingInstallStore(),
+        receipts=MessagingEventReceiptStore(),
         installers=installers,
         lifecycle=fixture.lifecycle,  # type: ignore[arg-type]
         public_origin=_ORIGIN,
@@ -269,6 +301,30 @@ def _event(workspace_id: str, text: str) -> bytes:
             "event": {"type": "message", "text": text, "channel": "C1"},
         }
     ).encode()
+
+
+def _numbered_event(workspace_id: str, text: str, event_id: str) -> bytes:
+    """An event carrying the id Slack puts on everything it retries.
+
+    Separate from `_event` rather than an argument to it, so the tests above go
+    on exercising the unnumbered path — which is the one a slash command and an
+    interaction take, and which must dispatch rather than being refused for
+    having nothing to deduplicate by.
+    """
+    return json.dumps(
+        {
+            "type": "event_callback",
+            "team_id": workspace_id,
+            "event_id": event_id,
+            "event": {"type": "message", "text": text, "channel": "C1"},
+        }
+    ).encode()
+
+
+async def _receipts(factory: async_sessionmaker, tenant_id: str) -> list[Any]:
+    async with tenant_session(factory, tenant_id) as session:
+        rows = await session.execute(select(MessagingEventReceipt))
+        return list(rows.scalars())
 
 
 def _uninstalled(workspace_id: str) -> bytes:
@@ -565,6 +621,197 @@ class TestABridgeThatCannotTakeEvents:
         target = await fixture.service.resolve(platform="slack", event=event)
         with pytest.raises(Exception, match="does not receive events over HTTP"):
             await fixture.service.deliver(target, event)
+
+
+class TestAnEventIsHandledOnce:
+    """The platform delivers at least once; the customer must hear once.
+
+    Slack allows three seconds to acknowledge and re-sends what it does not get
+    an answer to, so a deployment under load is told the same thing twice. The
+    payload of a retry is byte-identical to the original — the id is the only
+    thing that distinguishes it from someone saying the same words again — and
+    the visible failure is an agent answering one question twice in a
+    customer's channel.
+    """
+
+    async def test_a_retry_of_the_same_event_dispatches_once(
+        self, rls_harness: RLSHarness
+    ) -> None:
+        fixture = await _fixture(rls_harness)
+        body = _numbered_event(fixture.a.workspace_id, "hello", "Ev1")
+
+        first = await _post(fixture, events_path("slack"), body)
+        second = await _post(fixture, events_path("slack"), body)
+
+        assert (first.status_code, second.status_code) == (200, 200)
+        assert _texts(fixture.a.adapter) == ["hello"]
+
+    async def test_a_retry_arriving_mid_turn_loses_to_the_delivery_in_flight(
+        self, rls_harness: RLSHarness
+    ) -> None:
+        """The case the ordering exists for, and the only one that is a race.
+
+        Recording the receipt after the work instead of before would order the
+        two the wrong way round: both would find nothing claimed, both would
+        dispatch, and the duplicate would be noticed once it no longer
+        mattered.
+        """
+        fixture = await _fixture(rls_harness)
+        gated = _GatedAdapter()
+        fixture.lifecycle.adapters[fixture.a.bridge_id] = gated
+        body = _numbered_event(fixture.a.workspace_id, "hello", "Ev1")
+        event = fixture.service.authenticate(
+            platform="slack", endpoint="events", headers=_signed(body), body=body
+        )
+        target = await fixture.service.resolve(platform="slack", event=event)
+
+        in_flight = asyncio.create_task(fixture.service.deliver(target, event))
+        await gated.entered.wait()
+        await fixture.service.deliver(target, event)
+
+        assert len(gated.dispatched) == 1
+        gated.release.set()
+        await in_flight
+
+    async def test_an_event_with_no_id_is_dispatched_every_time(
+        self, rls_harness: RLSHarness
+    ) -> None:
+        """Not a weaker guarantee quietly accepted.
+
+        Slack numbers only the envelopes it retries, so one arriving without an
+        id arrives exactly once. Two of them are two real messages, and
+        refusing the second for having nothing to deduplicate by would drop a
+        customer's message on the floor.
+        """
+        fixture = await _fixture(rls_harness)
+        body = _event(fixture.a.workspace_id, "same words")
+
+        await _post(fixture, events_path("slack"), body)
+        await _post(fixture, events_path("slack"), body)
+
+        assert _texts(fixture.a.adapter) == ["same words", "same words"]
+        assert await _receipts(rls_harness.restricted, fixture.a.tenant_id) == []
+
+    async def test_one_tenants_event_ids_do_not_block_anothers(
+        self, rls_harness: RLSHarness
+    ) -> None:
+        """Uniqueness is per tenant, and this is why that is the shape to want.
+
+        Slack's ids are unique in its own namespace, so a deployment-wide index
+        would protect exactly as well — but it would let one customer's traffic
+        refuse another's, and a conflict would name a row the inserting tenant
+        cannot see.
+        """
+        fixture = await _fixture(rls_harness)
+
+        await _post(
+            fixture,
+            events_path("slack"),
+            _numbered_event(fixture.a.workspace_id, "a", "Ev-shared"),
+        )
+        await _post(
+            fixture,
+            events_path("slack"),
+            _numbered_event(fixture.b.workspace_id, "b", "Ev-shared"),
+        )
+
+        assert _texts(fixture.a.adapter) == ["a"]
+        assert _texts(fixture.b.adapter) == ["b"]
+
+    async def test_a_completed_delivery_is_recorded_as_handled(
+        self, rls_harness: RLSHarness
+    ) -> None:
+        """The absence of this is the useful half.
+
+        Claiming before the work chooses at-most-once: an event taken by a
+        process that then dies is not retried, because the platform has already
+        been told 200. `handled_at` is what keeps that loss findable — a
+        claimed receipt that never completed is a real event that reached
+        nobody.
+        """
+        fixture = await _fixture(rls_harness)
+
+        await _post(
+            fixture,
+            events_path("slack"),
+            _numbered_event(fixture.a.workspace_id, "hello", "Ev1"),
+        )
+
+        rows = await _receipts(rls_harness.restricted, fixture.a.tenant_id)
+        assert [(row.platform, row.external_event_id) for row in rows] == [
+            ("slack", "Ev1")
+        ]
+        assert rows[0].handled_at is not None
+
+    async def test_a_receipt_past_its_retention_is_pruned_by_the_next_event(
+        self, rls_harness: RLSHarness
+    ) -> None:
+        """Opportunistic, because this backend has no janitor to hang it on.
+
+        The table would otherwise grow with every message the busiest workspace
+        ever sends. Running the sweep off the traffic that creates the rows
+        keeps the work proportional to that traffic and needs nothing started
+        at boot.
+        """
+        fixture = await _fixture(rls_harness)
+        async with tenant_session(
+            rls_harness.restricted, fixture.a.tenant_id
+        ) as session:
+            session.add(
+                MessagingEventReceipt(
+                    tenant_id=fixture.a.tenant_id,
+                    platform="slack",
+                    external_event_id="Ev-ancient",
+                    received_at=datetime.now(UTC)
+                    - RECEIPT_RETENTION
+                    - timedelta(days=1),
+                )
+            )
+            await session.commit()
+
+        await _post(
+            fixture,
+            events_path("slack"),
+            _numbered_event(fixture.a.workspace_id, "hello", "Ev-fresh"),
+        )
+
+        rows = await _receipts(rls_harness.restricted, fixture.a.tenant_id)
+        assert [row.external_event_id for row in rows] == ["Ev-fresh"]
+
+    async def test_a_retry_of_an_event_nobody_holds_is_still_dropped_at_resolve(
+        self, rls_harness: RLSHarness
+    ) -> None:
+        """Deduplication sits after resolution, so an unknown workspace writes
+        no receipt at all — there is no tenant to write it as."""
+        fixture = await _fixture(rls_harness)
+
+        response = await _post(
+            fixture, events_path("slack"), _numbered_event("T-nobody", "x", "Ev1")
+        )
+
+        assert response.status_code == 200
+        assert await _receipts(rls_harness.restricted, fixture.a.tenant_id) == []
+
+    async def test_a_bridge_that_was_down_still_takes_the_retry(
+        self, rls_harness: RLSHarness
+    ) -> None:
+        """The 503 and the receipt compose, and this is the case that proves it.
+
+        A bridge mid-restart makes the event fail before any claim is written,
+        so the retry Slack sends in response finds nothing taken and is handled
+        normally. Claiming any earlier — before `resolve` — would turn a
+        transient outage into a permanently lost message.
+        """
+        fixture = await _fixture(rls_harness)
+        body = _numbered_event(fixture.a.workspace_id, "hello", "Ev1")
+        del fixture.lifecycle.adapters[fixture.a.bridge_id]
+
+        refused = await _post(fixture, events_path("slack"), body)
+        fixture.lifecycle.adapters[fixture.a.bridge_id] = fixture.a.adapter
+        retried = await _post(fixture, events_path("slack"), body)
+
+        assert (refused.status_code, retried.status_code) == (503, 200)
+        assert _texts(fixture.a.adapter) == ["hello"]
 
 
 class TestThePlatformSayingTheInstallIsOver:

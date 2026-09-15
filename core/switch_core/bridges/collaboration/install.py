@@ -139,11 +139,26 @@ class InboundWebhook:
     is `None` for every real event, and it arrives before any workspace has
     installed anything — so it must be answerable with no tenant, no install
     row, and nothing running.
+
+    `external_event_id` is the platform's own id for this delivery, and the
+    only thing two copies of one event have in common — the payload is
+    identical, so nothing else could tell a retry from a second message saying
+    the same words. `None` means the platform does not number this kind of
+    envelope, which on Slack means the kind it also does not retry; it never
+    means "this one was not checked".
+
+    `delivery_attempt` is how many times the platform has given up on us and
+    sent this again, zero on a first delivery. It changes nothing about how the
+    event is handled — the receipt decides that — and is carried because it is
+    the only place the deployment is told its own acknowledgements are arriving
+    too late.
     """
 
     envelope_type: str
     payload: dict[str, Any]
     handshake: str | None
+    external_event_id: str | None
+    delivery_attempt: int
 
 
 @dataclass(frozen=True)
@@ -245,9 +260,9 @@ class MessagingAppInstaller(ABC):
 
     @abstractmethod
     def parse_webhook(
-        self, *, endpoint: WebhookEndpoint, body: bytes
+        self, *, endpoint: WebhookEndpoint, headers: Mapping[str, str], body: bytes
     ) -> InboundWebhook:
-        """Read a verified request body into an event a running adapter takes.
+        """Read a verified request into an event a running adapter takes.
 
         Called only after :meth:`verify_webhook` has passed, and separate from
         it for exactly that reason: parsing before verifying is how an
@@ -256,6 +271,11 @@ class MessagingAppInstaller(ABC):
         Takes the raw bytes rather than a parsed payload because only this
         method knows the encoding, which is per platform and per endpoint —
         Slack posts JSON to one of its three and form data to the other two.
+
+        Takes the headers as well as the body because a delivery is described
+        in both: the event is in the body, and how many times it has been sent
+        is in a header. Which header, and whether there is one, is the
+        platform's business rather than the route's.
 
         Raise :class:`WebhookPayloadError` for a body that cannot be read.
         """

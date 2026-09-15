@@ -77,6 +77,7 @@ from switch_core.bridges.collaboration.lifecycle_service import (
 from switch_core.crypto import decrypt_token, encrypt_token
 from switch_core.db.models import MessagingInstall
 from switch_core.db.session_scope import tenant_session
+from switch_core.db.stores.messaging_event_store import MessagingEventReceiptStore
 from switch_core.db.stores.messaging_install_store import (
     INSTALL_ACTIVE,
     INSTALL_DISCONNECTED,
@@ -120,9 +121,15 @@ class Revocation:
 
 @dataclass(frozen=True)
 class WebhookTarget:
-    """Where one verified event goes: a tenant, a bridge, and its live adapter."""
+    """Where one verified event goes: a tenant, a bridge, and its live adapter.
+
+    `platform` is carried rather than passed alongside because it is part of
+    the answer: the same workspace id could in principle be issued by two
+    platforms, and every row written about this delivery is keyed by the pair.
+    """
 
     tenant_id: str
+    platform: str
     bridge_id: str
     adapter: CollaborationAdapter
 
@@ -144,6 +151,7 @@ class MessagingInstallService:
         *,
         session_factory: async_sessionmaker[AsyncSession],
         store: MessagingInstallStore,
+        receipts: MessagingEventReceiptStore,
         installers: MessagingInstallerRegistry,
         lifecycle: CollaborationBridgeLifecycleService,
         public_origin: str,
@@ -151,6 +159,7 @@ class MessagingInstallService:
     ) -> None:
         self._session_factory = session_factory
         self._store = store
+        self._receipts = receipts
         self._installers = installers
         self._lifecycle = lifecycle
         self._public_origin = public_origin
@@ -426,7 +435,7 @@ class MessagingInstallService:
         """
         installer = self._installers.get(platform)
         installer.verify_webhook(headers=headers, body=body)
-        return installer.parse_webhook(endpoint=endpoint, body=body)
+        return installer.parse_webhook(endpoint=endpoint, headers=headers, body=body)
 
     def revocation(self, *, platform: str, event: InboundWebhook) -> Revocation | None:
         """Whether this event is the platform ending the install, and for whom.
@@ -492,20 +501,75 @@ class MessagingInstallService:
                 f"{workspace_id}, is not running"
             )
         return WebhookTarget(
-            tenant_id=tenant_id, bridge_id=install.bridge_id, adapter=adapter
+            tenant_id=tenant_id,
+            platform=platform,
+            bridge_id=install.bridge_id,
+            adapter=adapter,
         )
 
     async def deliver(self, target: WebhookTarget, event: InboundWebhook) -> None:
-        """Hand a resolved event to the bridge, as its own transport would.
+        """Hand a resolved event to the bridge, at most once.
 
-        With **nothing bound**, which is not an oversight. A bridge that
-        receives over a socket dispatches from a task that binds no tenant, and
-        every handler below it binds the tenant of the room it is acting on.
-        Binding here would make the two delivery paths differ in the one
-        respect that decides who a message reaches, and would hide a handler
-        that had forgotten to bind for itself — for exactly as long as it took
-        someone to receive the same event over a socket instead.
+        Claiming comes first and the dispatch second, so a retry that arrives
+        while the first delivery is still working finds the event taken and
+        stops. That ordering is the whole of the deduplication: the platform
+        sends the same event again whenever it is not answered in time, and
+        the payload of a retry is identical to the original, so nothing later
+        in the stack could tell it from someone saying the same thing twice.
+
+        An event the platform does not number is dispatched without a claim.
+        That is not a weaker guarantee quietly accepted — Slack numbers what it
+        retries, so an envelope with no id is one that arrives exactly once.
+
+        The dispatch itself runs with **nothing bound**, which is not an
+        oversight. A bridge that receives over a socket dispatches from a task
+        that binds no tenant, and every handler below it binds the tenant of
+        the room it is acting on. Binding here would make the two delivery
+        paths differ in the one respect that decides who a message reaches, and
+        would hide a handler that had forgotten to bind for itself — for
+        exactly as long as it took someone to receive the same event over a
+        socket instead.
         """
+        if event.external_event_id is None:
+            await self._dispatch(target, event)
+            return
+
+        async with tenant_session(self._session_factory, target.tenant_id) as session:
+            receipt = await self._receipts.claim(
+                session,
+                platform=target.platform,
+                external_event_id=event.external_event_id,
+            )
+            if receipt is None:
+                logger.info(
+                    "Dropped a repeat delivery of %s event %s to bridge %s "
+                    "(attempt %s); it has already been taken",
+                    target.platform,
+                    event.external_event_id,
+                    target.bridge_id,
+                    event.delivery_attempt,
+                )
+                return
+            receipt_id = receipt.id
+            # Before the dispatch, not with it. The index entry this writes is
+            # what a concurrent retry collides with, and an uncommitted one
+            # makes that retry wait for the turn instead of losing to it.
+            await session.commit()
+
+        await self._dispatch(target, event)
+
+        async with tenant_session(self._session_factory, target.tenant_id) as session:
+            await self._receipts.mark_handled(session, receipt_id=receipt_id)
+            pruned = await self._receipts.prune(session)
+            await session.commit()
+        if pruned:
+            logger.info(
+                "Pruned %s expired messaging event receipts for tenant %s",
+                pruned,
+                target.tenant_id,
+            )
+
+    async def _dispatch(self, target: WebhookTarget, event: InboundWebhook) -> None:
         with no_tenant():
             await target.adapter.dispatch_event(
                 envelope_type=event.envelope_type, payload=event.payload
