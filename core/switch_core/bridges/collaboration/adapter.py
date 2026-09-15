@@ -48,9 +48,9 @@ def format_elapsed(seconds: float) -> str:
     "2m14s", "1h03m" — rather than as a precise duration nobody reads. Sub-
     second turns report "0s" instead of an empty string.
 
-    Lives here rather than beside one adapter because every platform that
-    retires a status line by editing it rather than deleting it wants the same
-    words on it.
+    Lives here rather than beside one adapter because every platform ends a
+    status line the same way — edited in place, left in the conversation — and
+    wants the same words on it.
     """
     total = max(0, int(seconds))
     if total < 60:

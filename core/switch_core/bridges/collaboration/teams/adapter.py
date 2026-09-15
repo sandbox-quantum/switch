@@ -59,7 +59,6 @@ from switch_core.bridges.collaboration.teams.cards import (
 from switch_core.bridges.collaboration.teams.connector import (
     BotConnectorClient,
     BotConnectorConflict,
-    BotConnectorGone,
     BotConnectorRefused,
     BotConnectorThrottled,
 )
@@ -69,7 +68,6 @@ from switch_core.bridges.collaboration.teams.crypto import (
     load_certificate_der_b64,
 )
 from switch_core.bridges.collaboration.teams.graph import GraphClient
-from switch_core.sessions.contract import TURN_ENDED
 
 logger = logging.getLogger(__name__)
 
@@ -231,27 +229,6 @@ class _TeamsMarkup(Markup):
 
 
 _TEAMS_MARKUP = _TeamsMarkup()
-
-
-def _retires(content: RichContent) -> bool:
-    """Whether this redraw is the end of something that should not stay.
-
-    A status says work is happening, and once it is not the message has said
-    everything it had to say. Two things stay: a request card, which is the
-    record of a decision and shows on its face what became of it, and anything
-    still reporting a problem or a reader nobody reached, which is the message
-    somebody has to act on and outlives the turn that raised it.
-
-    Whether retiring means removing it or writing its final state into it is
-    not decided here \u2014 in a Teams posts channel a deletion leaves wreckage
-    behind, and `_retire_rich` is where that is weighed.
-    """
-    return (
-        isinstance(content, TurnActivity)
-        and content.turn.status in TURN_ENDED
-        and not content.error_summary
-        and not content.notify_unreachable
-    )
 
 
 # A Teams identifier standing where a person's name should be: a channel
@@ -1616,7 +1593,16 @@ class TeamsAdapter(CollaborationAdapter):
         content: RichContent,
         thread_root_id: str | None,
     ) -> None:
-        """Redraw a publication in place — or retire it, once its turn is over.
+        """Redraw a publication in place, including the last time.
+
+        Nothing is taken down. A turn that has ended is edited to its final
+        state and stays in the conversation as the record that it ran, how long
+        it took and where to open it. A chat-layout channel used to delete it,
+        on the reasoning that a bot's own message goes there without trace and
+        a finished status is clutter; what went with it was the only account of
+        the turn anybody scrolling back could read. A posts channel already
+        kept it, because Teams leaves *"This message has been deleted."* behind
+        and that is worse than the line it replaces.
 
         Not `update_message`, for two reasons. That one replaces the whole
         activity with plain text, which would strip the agent's card off a
@@ -1636,93 +1622,7 @@ class TeamsAdapter(CollaborationAdapter):
                 text=text,
             )
         address = self._publication_address(channel_id, message_ref, thread_root_id)
-        if _retires(content):
-            await self._retire_rich(connector, agent_name, address, text)
-            return
         await self._edit_rich(connector, agent_name, address, text)
-
-    async def _retire_rich(
-        self,
-        connector: BotConnectorClient,
-        agent_name: str,
-        address: _Publication,
-        text: str,
-    ) -> None:
-        """Take a finished status out of the conversation, where that is clean.
-
-        In a chat, a group chat, or a chat-layout channel, a bot's own message
-        goes without trace and a finished status is clutter: it says work is
-        happening about work that has stopped. A posts channel is the opposite
-        — Teams replaces a deleted message with *"This message has been
-        deleted."* and keeps it in the post — so there the status is left
-        showing what the turn came to, which is worth more than the line it
-        replaces.
-
-        A deletion Teams refuses is not quietly treated as one that happened.
-        The message is still there, so it is written to its final state
-        instead and the refusal is logged. An outcome nobody knows is raised:
-        the publisher holds the anchor and can come back to it, and a status
-        recorded as cleaned up when it was not is one that never goes.
-
-        Gone is the one refusal that is neither. At an address Teams itself
-        confirmed, a 404 says the message is not there — most often because an
-        earlier delete landed and its acknowledgement did not — so the cleanup
-        this exists to do is already done, and editing instead would ask Teams
-        to rewrite a message that does not exist and fail on that too, every
-        cycle, forever. At an address this rebuilt, the same 404 may only mean
-        the address was wrong, so it says nothing about whether the status is
-        still showing and the cleanup must stay outstanding. It is a refusal
-        all the same, and it leaves through the port as one: `RichContentFailed`
-        rather than the connector's own exception, which no caller of this port
-        is expecting. Logged at error, because a status may be sitting in the
-        conversation with no address left that Teams has confirmed.
-        """
-        if await self._uses_post_layout(
-            address.channel_id, is_channel=address.in_a_channel
-        ):
-            await self._edit_rich(connector, agent_name, address, text)
-            return
-        try:
-            async with self._writes_to(address.conversation_id):
-                await connector.delete_activity(
-                    service_url=address.service_url,
-                    conversation_id=address.conversation_id,
-                    activity_id=address.activity_id,
-                )
-        except BotConnectorThrottled as error:
-            raise self._throttled(error, text) from error
-        except BotConnectorConflict as error:
-            raise self._conflicted(error, text) from error
-        except BotConnectorGone as error:
-            if not address.trusted:
-                logger.error(
-                    "Teams has no activity %s in conversation %s, and that "
-                    "conversation was rebuilt rather than confirmed, so "
-                    "whether the finished status is still showing is unknown "
-                    "and there is no other address to try.",
-                    address.activity_id,
-                    address.conversation_id,
-                )
-                raise RichContentFailed(
-                    f"Teams has no activity {address.activity_id} at the "
-                    f"rebuilt conversation {address.conversation_id}: {error}",
-                    text=text,
-                ) from error
-            logger.info(
-                "Teams has no activity %s in conversation %s; the finished "
-                "status is already gone, so its cleanup is complete.",
-                address.activity_id,
-                address.conversation_id,
-            )
-        except BotConnectorRefused as error:
-            logger.warning(
-                "Teams would not remove the finished status %s in conversation "
-                "%s (%s); leaving its final state there instead.",
-                address.activity_id,
-                address.conversation_id,
-                error,
-            )
-            await self._edit_rich(connector, agent_name, address, text)
 
     async def _edit_rich(
         self,
@@ -1770,8 +1670,7 @@ class TeamsAdapter(CollaborationAdapter):
         Superseded: `renders_legacy_runtime_state` is False, so nothing calls
         this. Kept until the legacy indicator is removed everywhere, because
         deleting one platform's copy ahead of the others makes the comparison
-        between them impossible to read. The layout rule below is what
-        `_retire_rich` now applies to an SDK status.
+        between them impossible to read.
 
         A "working on it…" card is posted (as the agent) while the agent works
         and edited in place as the activity detail changes; it stays up through

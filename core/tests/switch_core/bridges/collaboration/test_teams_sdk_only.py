@@ -456,10 +456,10 @@ def test_a_refused_edit_is_reported_rather_than_logged_and_forgotten() -> None:
         _run(adapter.update_rich(CHANNEL, AGENT, "MSG1", _activity(), ROOT))
 
 
-# ── Retiring a finished status, in each of the two layouts ───────────────────
+# ── A finished status stays, in both layouts ─────────────────────────────────
 
 
-def test_a_finished_status_is_edited_rather_than_deleted_in_a_posts_channel() -> None:
+def test_a_finished_status_is_edited_to_its_final_state_in_a_posts_channel() -> None:
     """Teams substitutes "This message has been deleted." and keeps it in the
     post, so deleting would leave one tombstone per turn per agent."""
     adapter, connector = _teams("post")
@@ -470,22 +470,28 @@ def test_a_finished_status_is_edited_rather_than_deleted_in_a_posts_channel() ->
     assert ENDED_LINE in _card_text(connector.updates[0]["activity"])
 
 
-def test_a_finished_status_is_removed_where_a_deletion_leaves_nothing() -> None:
+def test_a_chat_layout_channel_keeps_the_finished_status_too() -> None:
+    """A bot's own message goes from a chat-layout channel without trace, which
+    is why the status used to be deleted there. What went with it was the
+    record of the turn: that it ran, how long it took, and the link to open
+    it."""
     adapter, connector = _teams("chat")
 
     _run(adapter.update_rich(CHANNEL, AGENT, "MSG1", _ended(), ROOT))
 
-    assert connector.updates == []
-    assert connector.deletes[0]["activity_id"] == "MSG1"
-    assert connector.deletes[0]["conversation_id"] == f"{CHANNEL};messageid={ROOT}"
+    assert connector.deletes == []
+    assert connector.updates[0]["activity_id"] == "MSG1"
+    assert connector.updates[0]["conversation_id"] == f"{CHANNEL};messageid={ROOT}"
+    assert ENDED_LINE in _card_text(connector.updates[0]["activity"])
 
 
-def test_a_finished_status_is_removed_from_a_chat() -> None:
+def test_a_chat_keeps_it_as_well() -> None:
     adapter, connector = _teams(chat=True)
 
     _run(adapter.update_rich(CHAT, AGENT, "MSG1", _ended(), None))
 
-    assert connector.deletes[0]["conversation_id"] == CHAT
+    assert connector.deletes == []
+    assert connector.updates[0]["conversation_id"] == CHAT
 
 
 def test_a_request_card_is_never_taken_down() -> None:
@@ -511,70 +517,16 @@ def test_a_status_still_reporting_a_problem_outlives_its_turn() -> None:
     assert "Disk full." in _card_text(connector.updates[0]["activity"])
 
 
-def test_a_refused_removal_leaves_the_final_state_instead_of_pretending(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    """A deletion Teams refused is not a deletion. Left as "Working…" the post
-    would report a turn that ended minutes ago as still running.
-
-    A refusal, and not a 404: the message being absent is the one answer where
-    editing it instead cannot work, and that has its own handling below.
-    """
+def test_a_finished_status_is_still_redrawn_when_the_turn_says_more() -> None:
+    """Nothing is retired, so a late revision of a turn that has ended reaches
+    the conversation rather than being dropped on the floor."""
     adapter, connector = _teams("chat")
-    connector.fail_delete = BotConnectorRefused(
-        "forbidden", status=403, retry_after=None
-    )
 
-    with caplog.at_level(logging.WARNING):
-        _run(adapter.update_rich(CHANNEL, AGENT, "MSG1", _ended(), ROOT))
+    _run(adapter.update_rich(CHANNEL, AGENT, "MSG1", _ended(), ROOT))
+    _run(adapter.update_rich(CHANNEL, AGENT, "MSG1", _ended(), ROOT))
 
-    assert ENDED_LINE in _card_text(connector.updates[0]["activity"])
-    assert "would not remove" in caplog.text
-
-
-def test_a_removal_whose_outcome_is_unknown_is_not_recorded_as_done() -> None:
-    """The publisher holds the anchor and can come back to it. A status
-    recorded as cleaned up when it was not is one that never goes."""
-    adapter, connector = _teams("chat")
-    connector.fail_delete = BotConnectorUnavailable(
-        "timeout", status=None, retry_after=None
-    )
-
-    with pytest.raises(BotConnectorUnavailable):
-        _run(adapter.update_rich(CHANNEL, AGENT, "MSG1", _ended(), ROOT))
-
-    assert connector.updates == []
-
-
-def test_confirmed_absence_finishes_the_cleanup_rather_than_editing_nothing() -> None:
-    """A delete that landed and whose acknowledgement did not is answered 404
-    on the retry. Editing the missing message instead is refused too, so the
-    cleanup never settled and every later cycle tried it again."""
-    adapter, connector = _teams(chat=True)
-    ref = _run(adapter.post_rich(CHAT, AGENT, _activity(), None))
-    connector.fail_delete = BotConnectorGone("gone", status=404, retry_after=None)
-
-    _run(adapter.update_rich(CHAT, AGENT, ref, _ended(), None))
-
-    assert connector.updates == []
-
-
-def test_absence_at_an_address_this_rebuilt_is_not_taken_as_an_outcome() -> None:
-    """Without a stored address the 404 may only mean the address was wrong,
-    and a status wrongly recorded as removed is one that never goes.
-
-    It reaches the caller as `RichContentFailed`, which is what this port
-    promises a refusal looks like, rather than as the connector's own exception
-    — `_edit` catches the former and nothing catches the latter. The cleanup
-    stays outstanding either way; that is the property, not any claim about
-    what is still on screen."""
-    adapter, _connector = _teams("chat")
-    _connector.fail_delete = BotConnectorGone("gone", status=404, retry_after=None)
-
-    with pytest.raises(RichContentFailed):
-        _run(adapter.update_rich(CHANNEL, AGENT, "MSG1", _ended(), ROOT))
-
-    assert _connector.updates == []
+    assert connector.deletes == []
+    assert len(connector.updates) == 2
 
 
 # ── The address Teams confirmed is the one kept ──────────────────────────────
@@ -663,17 +615,18 @@ def test_a_chat_redraw_after_a_restart_does_not_become_a_channel_thread() -> Non
     assert connector.updates[0]["conversation_id"] == CHAT
 
 
-def test_a_chat_status_is_still_removed_rather_than_edited_after_a_restart() -> None:
-    """The same lost channel type decides whether a finished status is deleted
-    or left as a tombstone, so it has to come off the address too."""
+def test_a_chat_status_reaches_its_final_state_after_a_restart() -> None:
+    """The last redraw of a turn is the one that matters most, and a restart in
+    the middle of a turn is when the address is rebuilt rather than recalled."""
     adapter, connector = _teams(chat=True)
     ref = _run(adapter.post_rich(CHAT, AGENT, _activity(), None))
 
     _restart(adapter)
     _run(adapter.update_rich(CHAT, AGENT, ref, _ended(), None))
 
-    assert connector.updates == []
-    assert connector.deletes[0]["conversation_id"] == CHAT
+    assert connector.deletes == []
+    assert connector.updates[0]["conversation_id"] == CHAT
+    assert ENDED_LINE in _card_text(connector.updates[0]["activity"])
 
 
 def test_a_channel_reply_is_redrawn_in_its_post_after_a_restart() -> None:
@@ -742,20 +695,6 @@ def test_a_transient_edit_conflict_backs_off_instead_of_reporting_failure() -> N
         _run(adapter.update_rich(CHANNEL, AGENT, "MSG1", _activity(), ROOT))
 
     assert raised.value.retry_after > 0
-
-
-def test_a_conflict_on_removal_is_retried_rather_than_left_as_final_state() -> None:
-    """The status is still there and still removable; writing its final state
-    instead would leave a line in a chat that clears itself."""
-    adapter, connector = _teams("chat")
-    connector.fail_delete = BotConnectorConflict(
-        "changed", status=412, retry_after=None
-    )
-
-    with pytest.raises(RichContentThrottled):
-        _run(adapter.update_rich(CHANNEL, AGENT, "MSG1", _ended(), ROOT))
-
-    assert connector.updates == []
 
 
 def test_writes_to_one_conversation_do_not_overlap() -> None:

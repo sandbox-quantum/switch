@@ -204,8 +204,10 @@ class ActivityAbandoned(CardNotPosted):
 class SessionTurnActivity:
     """Publish SDK activity without exposing internal assistant narration.
 
-    Slack keeps the live status separate from the collapsible tool log.
-    When the turn ends, the log becomes the summary and the status is removed.
+    Slack keeps the live status separate from the collapsible tool log. When
+    the turn ends, the log becomes the summary and the status is edited to its
+    final state and left there — on every platform — as the record that the
+    turn ran, how long it took and where to open it.
 
     Production publishers use a durable journal to recover message anchors
     and uncertain deliveries after a restart.
