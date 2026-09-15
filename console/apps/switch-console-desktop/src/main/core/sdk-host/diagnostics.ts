@@ -17,7 +17,8 @@ if(fs.existsSync(directory))for(const name of fs.readdirSync(directory)){
  const root=path.join(directory,name),config=read(path.join(root,'config.json'));
  if(config?.session.agentId!==process.argv[1])continue;
  const running=live(read(path.join(root,'shared-owner.lock'))?.pid);
- result.push({running,enabled:read(path.join(root,'watch.json'))?.enabled??false,failure:running?null:read(path.join(root,'supervisor','failure.json'))?.message??null});
+ const resident=read(path.join(root,'resident.json'));
+ result.push({running,enabled:read(path.join(root,'watch.json'))?.enabled??false,failure:running?null:read(path.join(root,'supervisor','failure.json'))?.message??null,rooms:running&&resident?resident.sessions??[]:[],roomFailures:resident?.failures??[]});
 }
 console.log(JSON.stringify(result));
 `;
@@ -36,9 +37,19 @@ export async function sharedAgentDiagnostics(agentId: string) {
     fetchSdkSessions(server),
   ]);
   return {
+    // A resident host runs every room session of the agent, so its watcher row
+    // reports which rooms it holds and which ones failed to start.
     watchers: z
       .array(
-        z.object({ running: z.boolean(), enabled: z.boolean(), failure: z.string().nullable() })
+        z.object({
+          running: z.boolean(),
+          enabled: z.boolean(),
+          failure: z.string().nullable(),
+          rooms: z.array(z.object({ roomId: z.string(), sessionId: z.string() })).default([]),
+          roomFailures: z
+            .array(z.object({ roomId: z.string(), sessionId: z.string(), message: z.string() }))
+            .default([]),
+        })
       )
       .parse(JSON.parse(host.stdout)),
     sessions: sessionSchema

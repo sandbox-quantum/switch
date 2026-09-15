@@ -119,7 +119,10 @@ export class SharedWatchAssignments {
   current(): { roomId: string; config: SharedHostConfig }[] {
     return [
       ...new Map(
-        this.journal.records.map((record) => [record.roomId, { roomId: record.roomId, config: record.config }])
+        this.journal.records.map((record) => [
+          record.roomId,
+          { roomId: record.roomId, config: record.config },
+        ])
       ).values(),
     ];
   }

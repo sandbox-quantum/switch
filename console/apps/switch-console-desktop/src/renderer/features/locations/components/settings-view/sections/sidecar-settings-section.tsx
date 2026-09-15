@@ -41,6 +41,24 @@ export function SidecarSettingsSection({ agentId }: { agentId: string }) {
               <p className="mt-2 break-words">{watcher.failure}</p>
             </details>
           )}
+          {watcher.running && watcher.rooms.length > 0 && (
+            <p className="text-muted-foreground text-sm">
+              Running {watcher.rooms.length} room{' '}
+              {watcher.rooms.length === 1 ? 'session' : 'sessions'}.
+            </p>
+          )}
+          {watcher.roomFailures.length > 0 && (
+            <div role="alert" className="text-destructive">
+              <p>Some rooms could not start a session on this agent.</p>
+              <ul className="mt-1 space-y-1 text-sm">
+                {watcher.roomFailures.map((failure) => (
+                  <li key={failure.sessionId} className="break-words">
+                    {failure.roomId}: {failure.message}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
         </div>
       ))}
       {query.data.sessions.map((session) => (

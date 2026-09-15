@@ -72,6 +72,22 @@ export function roomSessionContext(roomId: string, config: SharedHostConfig): Ro
   });
 }
 
+/**
+ * What the host's own environment held when it started.
+ *
+ * Per-session identity reaches a provider through that child's environment and
+ * nowhere else. A resident host running many rooms must therefore never write
+ * these into its own environment: the next session to read them would inherit
+ * the previous one's identity. Whatever the host inherited is recorded once and
+ * then only checked for change — `executionEnvironment` already strips `SWITCH_*`
+ * out of what a provider child inherits, so an ambient value is harmless, and a
+ * *changed* one is the bug this catches.
+ */
+const HOST_ENVIRONMENT_BASELINE: Record<string, string | undefined> = Object.freeze({
+  SWITCH_CONNECTION_ID: process.env.SWITCH_CONNECTION_ID,
+  SWITCHDASH_SESSION_ID: process.env.SWITCHDASH_SESSION_ID,
+});
+
 /** Every provider child gets its identity from its own config, never from the host. */
 export function assertSessionEnvironment(
   context: RoomSessionContext,
@@ -88,11 +104,16 @@ export function assertSessionEnvironment(
     throw new Error(
       `Session ${context.sessionId} prepared a provider environment for session ${env.SWITCHDASH_SESSION_ID}.`
     );
-  for (const key of ['SWITCH_CONNECTION_ID', 'SWITCHDASH_SESSION_ID'])
-    if (process.env[key] !== undefined)
+  for (const [key, baseline] of Object.entries(HOST_ENVIRONMENT_BASELINE))
+    if (process.env[key] !== baseline)
       throw new Error(
-        `The resident host carries ${key} in its own environment. Per-session identity must reach a provider through its child environment only.`
+        `The resident host changed ${key} in its own environment. Per-session identity must reach a provider through that child's environment only.`
       );
+}
+
+/** The host's own environment as it was before any room session started. */
+export function hostEnvironmentBaseline(): Record<string, string | undefined> {
+  return { ...HOST_ENVIRONMENT_BASELINE };
 }
 
 /**

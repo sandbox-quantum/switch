@@ -95,5 +95,11 @@ it.each(['claude', 'codex', 'opencode', 'gemini', 'cursor'])(
       restarted.assign(template, { ...event, sequence: 11, messageId: 'after-crash' })
     ).rejects.toThrow('incomplete record');
     expect(restarted.cursor).toBe(10);
+    // Only the session now serving each room is restarted: the superseded one
+    // would otherwise race it for the room's connection.
+    expect(restarted.current()).toEqual([
+      { roomId: 'room', config: returned },
+      { roomId: 'another', config: another },
+    ]);
   }
 );
