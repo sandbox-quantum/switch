@@ -669,7 +669,7 @@ class MattermostAdapter(CollaborationAdapter):
                     session_url=content.session_url,
                     mention=mention,
                     error_summary=content.error_summary,
-                    current_tool=True,
+                    tool_detail=True,
                 )
                 + tail
             )

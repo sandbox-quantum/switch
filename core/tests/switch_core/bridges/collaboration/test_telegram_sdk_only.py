@@ -805,14 +805,41 @@ async def test_the_tool_log_is_not_drawn_into_the_chat_at_all() -> None:
     assert len(_bot(adapter).messages) == 1
 
 
-async def test_the_status_still_says_how_the_calls_went() -> None:
-    """Dropping the log is not dropping the outcome: nine done is one short
-    line, and it is the part a reader cannot get from the duration."""
+async def test_nine_healthy_calls_are_not_reported_at_all() -> None:
+    """Nine calls that worked is the activity detail this platform declines.
+
+    The state, the duration and the Console link are the record. How many
+    tool calls a turn made while getting there is not something the reader
+    does anything with, and it took a line of a status that lives in the
+    conversation for good.
+    """
     adapter = _adapter()
 
     await adapter.post_rich(CHANNEL, "my-agent", _tools(9), None)
 
-    assert "9 done" in _posted(adapter)["text"]
+    text = _posted(adapter)["text"]
+    assert "9 done" not in text
+    assert "running" not in text
+    assert "tool call" not in text
+
+
+async def test_a_call_that_failed_is_still_reported() -> None:
+    """The outcome is not the detail. A failed call is the thing a reader has
+    to act on, and it survives everything else being dropped — without
+    dragging the healthy counts back in beside it."""
+    adapter = _adapter()
+    items = [
+        _item(itemId="item-0", title="Read file", status="completed"),
+        _item(itemId="item-1", title="Write file", status="failed"),
+    ]
+
+    await adapter.post_rich(
+        CHANNEL, "my-agent", TurnActivity(items, _turn("running")), None
+    )
+
+    text = _posted(adapter)["text"]
+    assert "1 failed" in text
+    assert "1 done" not in text
 
 
 async def test_a_tool_title_cannot_reach_the_chat_as_markup() -> None:

@@ -38,7 +38,11 @@ TURN_STATE = {
 
 
 def turn_state(
-    items: list[Item], turn: TurnUpsert, *, elapsed_seconds: float | None = None
+    items: list[Item],
+    turn: TurnUpsert,
+    *,
+    tool_detail: bool,
+    elapsed_seconds: float | None = None,
 ) -> str:
     """Where a turn got to, and what it left behind if it stopped.
 
@@ -56,6 +60,12 @@ def turn_state(
     errored turn keeps its own phrase, since that is still worth knowing on
     its own, with the same account appended: the run still took the time it
     took either way.
+
+    `tool_detail` says whether this platform reports tool activity at all.
+    Where it does not, how many calls a turn made is the detail it is not
+    reporting — the duration stays, because that is the turn's own. What a
+    turn left unfinished is not covered by it: that is an outcome, and it is
+    reported wherever the turn is.
     """
     state = TURN_STATE[turn.status]
     if turn.status not in TURN_ENDED:
@@ -63,7 +73,7 @@ def turn_state(
             return f"{state} {_format_duration(elapsed_seconds)}"
         return state
     if elapsed_seconds is not None:
-        worked = _worked_for(elapsed_seconds, items)
+        worked = _worked_for(elapsed_seconds, items, tool_detail=tool_detail)
         state = worked if turn.status == "completed" else f"{state} {worked}"
     unfinished = sum(1 for item in items if item.status == "in-progress")
     if not unfinished:
@@ -72,11 +82,11 @@ def turn_state(
     return f"{state} {unfinished} {step} left unfinished."
 
 
-def _worked_for(elapsed_seconds: float, items: list[Item]) -> str:
+def _worked_for(elapsed_seconds: float, items: list[Item], *, tool_detail: bool) -> str:
     """How long a turn ran, and how much of that was tool calls."""
     calls = sum(1 for item in items if item.kind == "tool-activity")
     worked = f"Worked for {_format_duration(elapsed_seconds)}."
-    if not calls:
+    if not calls or not tool_detail:
         return worked
     noun = "call" if calls == 1 else "calls"
     return f"{worked} {calls} tool {noun}."

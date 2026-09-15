@@ -140,7 +140,7 @@ def turn_summary(
     cut when the budget is tight is what was said, not whether the turn is
     still going.
     """
-    state = turn_state(items, turn)
+    state = turn_state(items, turn, tool_detail=True)
     said = [item for item in items if item.kind == "assistant-message"]
     if not said:
         return _truncate(state, limit)
@@ -169,7 +169,7 @@ def turn_status(
     session_url: str | None = None,
     mention: str | None = None,
     error_summary: str | None = None,
-    current_tool: bool,
+    tool_detail: bool,
 ) -> str:
     """A turn's progress, compact enough to live in one message that is edited.
 
@@ -186,12 +186,15 @@ def turn_status(
     - what it is doing right now, while it is still doing something;
     - how the tool calls went, once there is more than one outcome to report.
 
-    `current_tool` is the middle one, and a platform can decline it. Where the
-    status shares the conversation with everything else that is said there, a
-    line naming the tool of the moment is the part that reads as noise: the
-    state and its link are the record, and what the turn is doing is in
-    Console. The outcome tally is not covered by it — a call that failed is
-    not chatter about progress.
+    `tool_detail` says whether this platform reports tool activity at all, and
+    a platform can decline it. Where the status shares the conversation with
+    everything else that is said there, the tool of the moment and a count of
+    healthy calls are both noise: the state, its duration and its link are the
+    record, and what the turn did is in Console.
+
+    What survives declining it is what a reader has to act on — a call that
+    failed or was declined is an outcome, not chatter about progress, and it
+    is reported wherever the turn is.
 
     `error_summary` is the attention slot rather than the status: a distinct
     problem somebody has to act on, said in one sentence with the mention that
@@ -208,7 +211,9 @@ def turn_status(
         )
 
     budget = _room(limit, mention)
-    state = turn_state(items, turn, elapsed_seconds=elapsed_seconds)
+    state = turn_state(
+        items, turn, tool_detail=tool_detail, elapsed_seconds=elapsed_seconds
+    )
     head = markup.bold(state)
     link = _link(_CONSOLE, session_url, markup)
     if link and len(head) + 3 + len(link) <= budget:
@@ -218,7 +223,7 @@ def turn_status(
     spent = len(head)
     did = [item for item in items if item.kind == "tool-activity"]
     for line in _doing(
-        did, turn, escape=escape, budget=budget, current_tool=current_tool
+        did, turn, escape=escape, budget=budget, tool_detail=tool_detail
     ):
         if spent + len(line) + 1 > budget:
             break
@@ -233,7 +238,7 @@ def _doing(
     *,
     escape: Callable[[str], str],
     budget: int,
-    current_tool: bool,
+    tool_detail: bool,
 ) -> list[str]:
     """The optional lines under the state: what is running, and how it is going.
 
@@ -241,12 +246,18 @@ def _doing(
     gets its total from `turn_state` ("Worked for 2m 5s. 7 tool calls."), so the
     only count worth adding is one the total hides — a call that failed or was
     declined reads as a completed turn otherwise.
+
+    Nothing here says a finished turn is running. A call the host never closed
+    keeps the status the host gave it, because the host is the only thing that
+    knows how it ended, but counting it as present-tense activity under a
+    headline saying the turn is over describes a turn nobody has. What the turn
+    left behind is `turn_state`'s to report, in the tense that belongs to it.
     """
     if not did:
         return []
     lines: list[str] = []
     ended = turn.status in TURN_ENDED
-    if current_tool and not ended:
+    if tool_detail and not ended:
         current = next(
             (item for item in reversed(did) if item.status == "in-progress"), None
         )
@@ -259,8 +270,12 @@ def _doing(
         status: sum(1 for item in did if item.status == status) for status in _OUTCOME
     }
     unwell = counts["failed"] + counts["declined"]
-    if ended and not unwell:
+    if not unwell and (ended or not tool_detail):
         return lines
+    if ended or not tool_detail:
+        counts["in-progress"] = 0
+    if not tool_detail:
+        counts["completed"] = 0
     tally = " · ".join(
         f"{_OUTCOME[status]} {count} {_OUTCOME_WORDS[status]}"
         for status, count in counts.items()

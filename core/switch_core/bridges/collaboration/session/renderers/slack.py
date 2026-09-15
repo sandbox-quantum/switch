@@ -927,7 +927,9 @@ def render_activity(
     just said.
     """
     if status_only:
-        state = turn_state(items, turn, elapsed_seconds=elapsed_seconds)
+        state = turn_state(
+            items, turn, tool_detail=True, elapsed_seconds=elapsed_seconds
+        )
         if turn.status not in TURN_ENDED:
             return SlackMessage(
                 text=state,
@@ -988,7 +990,9 @@ def render_activity(
     if did:
         blocks.append(_plan(items, did, turn, elapsed_seconds=elapsed_seconds))
     else:
-        state = turn_state(items, turn, elapsed_seconds=elapsed_seconds)
+        state = turn_state(
+            items, turn, tool_detail=True, elapsed_seconds=elapsed_seconds
+        )
         blocks.append(_context(f"_{state}_"))
     return SlackMessage(
         text=render_activity_text(items, turn, elapsed_seconds=elapsed_seconds),
@@ -1053,7 +1057,9 @@ def render_activity_text(
         lines.append(f"…{hidden} earlier in this turn, not shown.")
     lines += [_message_text(item) for item in said[len(said) - _MAX_MESSAGES :]]
     lines += _activity_lines(did)
-    lines.append(turn_state(items, turn, elapsed_seconds=elapsed_seconds))
+    lines.append(
+        turn_state(items, turn, tool_detail=True, elapsed_seconds=elapsed_seconds)
+    )
     return "\n".join(_within(lines, _MAX_TEXT))
 
 
@@ -1121,7 +1127,7 @@ def _plan(
     """
     kept = did[len(did) - _MAX_PLAN_TASKS :]
     dropped = len(did) - len(kept)
-    title = turn_state(items, turn, elapsed_seconds=elapsed_seconds)
+    title = turn_state(items, turn, tool_detail=True, elapsed_seconds=elapsed_seconds)
     if dropped:
         step = "step" if dropped == 1 else "steps"
         title = f"{title} …{dropped} earlier {step}, not shown."

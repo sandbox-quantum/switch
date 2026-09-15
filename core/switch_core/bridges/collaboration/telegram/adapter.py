@@ -1378,7 +1378,7 @@ class TelegramAdapter(CollaborationAdapter):
                 session_url=content.session_url,
                 mention=mention,
                 error_summary=content.error_summary,
-                current_tool=False,
+                tool_detail=False,
             )
             return Drawn(text=f"{prefix}{body}{tail}", answerable=False)
         # The mention goes on its own line rather than in front of the heading:
