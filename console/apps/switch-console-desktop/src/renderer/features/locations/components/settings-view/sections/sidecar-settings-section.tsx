@@ -13,23 +13,33 @@ export function SidecarSettingsSection({ agentId }: { agentId: string }) {
         {String(query.error)}
       </p>
     );
-  if (!query.data) return <p>Checking SDK hosts…</p>;
+  if (!query.data) return <p>Checking session availability…</p>;
   return (
     <div className="space-y-4">
-      <p>SDK sessions run on the execution host and continue when Console closes.</p>
+      <p>Sessions run on the agent’s computer and can continue after you close Console.</p>
       {query.data.watchers.length === 0 && (
-        <p>Automatic room startup is not enabled on this host.</p>
+        <p>Automatic sessions are off. Room messages will not start a session for this agent.</p>
       )}
       {query.data.watchers.map((watcher, index) => (
         <div key={index}>
           <p>
-            Room watcher:{' '}
-            {watcher.running ? 'Running' : watcher.enabled ? 'Unavailable' : 'Disabled'}
+            Automatic sessions:{' '}
+            {watcher.running ? 'Available' : watcher.enabled ? 'Unavailable' : 'Off'}
           </p>
-          {watcher.failure && (
+          {watcher.enabled && !watcher.running && (
             <p role="alert" className="text-destructive">
-              {watcher.failure}
+              New room messages cannot automatically start this agent.
+              {watcher.failure?.includes('watcher delivery gap') &&
+                ' Switch lost track of some room messages after a connection interruption.'}{' '}
+              Open a session for this agent in Console to continue. Check existing sessions before
+              sending an unanswered request again.
             </p>
+          )}
+          {watcher.failure && (
+            <details className="text-muted-foreground text-sm">
+              <summary className="cursor-pointer">Technical details</summary>
+              <p className="mt-2 break-words">{watcher.failure}</p>
+            </details>
           )}
         </div>
       ))}
@@ -42,8 +52,8 @@ export function SidecarSettingsSection({ agentId }: { agentId: string }) {
         </div>
       ))}
       <p className="text-muted-foreground text-sm">
-        Use the session transcript to interrupt or stop execution. Enable automatic sessions in the
-        agent’s settings.
+        Open a session to view its messages or stop it. You can turn automatic sessions on or off in
+        the agent’s settings.
       </p>
     </div>
   );

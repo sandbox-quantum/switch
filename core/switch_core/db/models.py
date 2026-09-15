@@ -1811,6 +1811,7 @@ class SdkSessionCommand(TenantScoped, Base):
     accepted_sequence: Mapped[int] = mapped_column(BigInteger, nullable=False)
     command: Mapped[dict] = mapped_column(JSONB, nullable=False)
     status: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    room_control_followup: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 # Same reasoning as the notify trigger above: `create_all` has to build the
