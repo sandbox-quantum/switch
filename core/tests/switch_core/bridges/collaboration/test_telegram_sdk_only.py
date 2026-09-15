@@ -7,9 +7,9 @@ attributed anywhere else, anchored to a forum topic or to a reply target
 depending on what the chat actually is, edited in place, paced under Telegram's
 own limits, and loud when any of that fails.
 
-The old runtime-state renderer is still in the file (removing it is its own
-task) but nothing routes to it any more. The first test holds that line: the
-two renderers must not both draw, or every turn appears twice.
+This adapter has no legacy renderer left, but the base class defaults the flag
+on for the platforms that still do. The first test holds that line: nothing
+inherited may draw alongside the publication, or every turn appears twice.
 """
 
 from __future__ import annotations
@@ -939,6 +939,48 @@ async def test_a_tool_title_cannot_reach_the_chat_as_markup() -> None:
 
 
 # ── The working reaction ─────────────────────────────────────────────────────
+
+
+async def test_the_mark_lands_on_the_message_the_reference_names() -> None:
+    """Telegram reports no thread, so the reference is the only thing saying
+    which message is being worked on — a chat has no other way to tell."""
+    adapter = _adapter()
+
+    await adapter.mark_activity(
+        CHANNEL, f"{CHAT_ID}:55", agent_name="one", mark="working", on=True
+    )
+
+    assert _bot(adapter).reactions[0]["chat_id"] == CHAT_ID
+    assert _bot(adapter).reactions[0]["message_id"] == 55
+    assert [r.emoji for r in _bot(adapter).reactions[0]["reaction"]] == ["👀"]
+
+
+async def test_the_mark_comes_off_the_message_it_went_on() -> None:
+    """Telegram takes a reaction off by being sent an empty set for it, so a
+    removal is the same call — which makes landing it on the right message the
+    difference between a clean chat and one wearing 👀 for good."""
+    adapter = _adapter()
+    await adapter.mark_activity(
+        CHANNEL, f"{CHAT_ID}:55", agent_name="one", mark="working", on=True
+    )
+
+    await adapter.mark_activity(
+        CHANNEL, f"{CHAT_ID}:55", agent_name="one", mark="working", on=False
+    )
+
+    assert _bot(adapter).reactions[-1]["message_id"] == 55
+    assert _bot(adapter).reactions[-1]["reaction"] == []
+
+
+async def test_a_reference_naming_no_message_is_not_reacted_to() -> None:
+    """Nothing to mark is not an error, and must not invent a message id."""
+    adapter = _adapter()
+
+    await adapter.mark_activity(
+        CHANNEL, "no-such-shape", agent_name="one", mark="working", on=True
+    )
+
+    assert _bot(adapter).reactions == []
 
 
 async def test_one_mark_is_shared_between_agents_and_not_added_twice() -> None:

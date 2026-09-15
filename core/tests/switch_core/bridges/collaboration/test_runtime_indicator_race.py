@@ -10,12 +10,10 @@ superseded message ref. The entry then points at a message the move has just
 deleted, and the message the move posted is referenced by nothing — so the
 end-of-turn clear cannot remove it and it stays in the channel forever.
 
-Every platform that publishes SDK sessions has left this path, so the races are
-reproduced against a Telegram adapter with the legacy indicator switched back
-on. The path itself is shared and still live — Teams renders its runtime state
-through exactly this locking — and Telegram remains the adapter whose
-implementation exercises it most directly, so this is a fixture for a real
-defect rather than a test of dead code.
+The lock and the reposition are both the base class's, and Teams is the one
+adapter still rendering through them, so that is what these run against. A
+**chat**-layout channel is the case that repositions at all: in a posts channel
+Teams declines the move rather than leave a tombstone per hop.
 
 The invariant each test asserts is the same: whatever is still posted on the
 platform is exactly what the adapter thinks is posted.
@@ -28,14 +26,14 @@ import time
 from typing import Any, ClassVar
 
 from switch_core.bridges.collaboration.adapter import LiveRuntimeIndicator
-from switch_core.bridges.collaboration.telegram.adapter import (
-    TelegramAdapter,
-    TelegramConnectionConfig,
+from switch_core.bridges.collaboration.teams.adapter import (
+    TeamsAdapter,
+    TeamsConnectionConfig,
 )
 
 
-class _LegacyIndicator(TelegramAdapter):
-    """Telegram with the legacy runtime indicator still switched on.
+class _LegacyIndicator(TeamsAdapter):
+    """Teams with the legacy runtime indicator still switched on.
 
     The lock these tests are about lives in the public `apply_runtime_state` /
     `reposition_runtime_state`, above the flag that now turns the whole path
@@ -47,7 +45,7 @@ class _LegacyIndicator(TelegramAdapter):
     renders_legacy_runtime_state: ClassVar[bool] = True
 
 
-CHANNEL = "chan-1"
+CHANNEL = "19:abc@thread.tacv2"
 AGENT = "worker"
 KEY = (CHANNEL, AGENT)
 
@@ -59,7 +57,7 @@ class _Platform:
     stands in for the network round trip each of these calls really makes.
     """
 
-    def __init__(self, adapter: TelegramAdapter, seeded_ref: str) -> None:
+    def __init__(self, adapter: TeamsAdapter, seeded_ref: str) -> None:
         self.live: set[str] = {seeded_ref}
         self.edits: list[tuple[str, str]] = []
         self._next = iter(f"msg-{n}" for n in range(2, 20))
@@ -75,25 +73,42 @@ class _Platform:
             self.live.add(ref)
             return ref
 
-        async def update_message(
-            channel_id: str, message_ref: str, new_content: str
+        async def refresh_card(
+            channel_id: str, message_ref: str, agent_name: str, body: str
         ) -> None:
             await asyncio.sleep(0)
-            self.edits.append((message_ref, new_content))
+            self.edits.append((message_ref, body))
 
         async def delete_message(channel_id: str, message_ref: str) -> None:
             await asyncio.sleep(0)
             self.live.discard(message_ref)
 
         adapter.send_message = send_message  # type: ignore[method-assign]
-        adapter.update_message = update_message  # type: ignore[method-assign]
+        adapter._refresh_card = refresh_card  # type: ignore[method-assign]
         adapter.delete_message = delete_message  # type: ignore[method-assign]
 
 
-def _adapter() -> tuple[TelegramAdapter, _Platform]:
+class _Graph:
+    """A chat-layout channel, the one where a delete leaves nothing behind."""
+
+    async def get_channel(self, *, team_id: str, channel_id: str) -> dict[str, Any]:
+        return {"id": channel_id, "displayName": "general", "layoutType": "chat"}
+
+
+def _adapter() -> tuple[TeamsAdapter, _Platform]:
     adapter = _LegacyIndicator(
-        config=TelegramConnectionConfig(bot_token="test", bot_username="test_bot")
+        config=TeamsConnectionConfig(
+            app_id="app-123",
+            app_password="secret",
+            tenant_id="tenant-9",
+            team_id="team-7",
+            public_base_url="https://switch.example",
+            client_state="s3cr3t",
+        )
     )
+    adapter._graph = _Graph()  # type: ignore[assignment]
+    adapter._default_service_url = "https://smba.example"
+    adapter._channel_type[CHANNEL] = "channel_public"
     adapter._working_msg[KEY] = LiveRuntimeIndicator(
         message_ref="msg-1",
         body="⚙️ _Working on it…_",
@@ -103,7 +118,7 @@ def _adapter() -> tuple[TelegramAdapter, _Platform]:
     return adapter, _Platform(adapter, "msg-1")
 
 
-def _refresh(adapter: TelegramAdapter, detail: str) -> Any:
+def _refresh(adapter: TeamsAdapter, detail: str) -> Any:
     return adapter.apply_runtime_state(
         CHANNEL,
         AGENT,
@@ -114,7 +129,7 @@ def _refresh(adapter: TelegramAdapter, detail: str) -> Any:
     )
 
 
-def _assert_consistent(adapter: TelegramAdapter, platform: _Platform) -> None:
+def _assert_consistent(adapter: TeamsAdapter, platform: _Platform) -> None:
     live = adapter._working_msg.get(KEY)
     tracked = {live.message_ref} if live is not None else set()
     assert platform.live == tracked, (

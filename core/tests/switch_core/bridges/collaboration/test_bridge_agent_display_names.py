@@ -1412,31 +1412,6 @@ def test_telegram_album_caption_uses_the_display_name() -> None:
     assert "switchdev" not in caption
 
 
-def test_telegram_runtime_status_edit_keeps_the_display_name() -> None:
-    """The live "working on it…" card is edited in place rather than reposted,
-    and that edit rebuilds the prefix itself instead of going through
-    `send_message`."""
-    bridge = _bridge(_agent("switchdev", "Switch Dev"))
-    adapter, bot = _telegram_adapter(bridge)
-
-    for detail in ("Reading foo.py", "Editing foo.py"):
-        _run(
-            adapter._apply_runtime_state(
-                TELEGRAM_CHAT,
-                "switchdev",
-                "working",
-                mention_handle=None,
-                thread_root_id=None,
-                detail=detail,
-            )
-        )
-
-    edited = bot.edits[0]["text"]
-    assert "<b>Switch Dev</b>" in edited
-    assert "switchdev" not in edited
-    assert "Editing foo.py" in edited
-
-
 def test_telegram_escapes_a_display_name_exactly_once_in_the_prefix() -> None:
     """The prefix is finished HTML, escaped by `_attribute` and nothing else,
     so one `html.escape` is the whole of what it needs. The body escape inserts
@@ -1588,9 +1563,9 @@ def test_a_telegram_display_name_cannot_mention_from_the_prefix() -> None:
 
 
 def test_telegram_defuses_the_label_in_every_prefix_it_builds() -> None:
-    """Four call sites build a prefix; the plain send is only one of them. An
-    attachment caption, an album caption and the in-place runtime edit each
-    assemble their own, so each has to reach for the escaped label itself."""
+    """Three call sites build a prefix; the plain send is only one of them. An
+    attachment caption and an album caption each assemble their own, so each
+    has to reach for the escaped label itself."""
     bridge = _bridge(_agent("switchdev", "@ceo_person"))
     adapter, bot = _telegram_adapter(bridge)
     files = [
@@ -1604,22 +1579,12 @@ def test_telegram_defuses_the_label_in_every_prefix_it_builds() -> None:
         )
     )
     _run(adapter.send_attachments(TELEGRAM_CHAT, "switchdev", files, "two charts"))
-    for detail in ("Reading foo.py", "Editing foo.py"):
-        _run(
-            adapter._apply_runtime_state(
-                TELEGRAM_CHAT,
-                "switchdev",
-                "working",
-                mention_handle=None,
-                thread_root_id=None,
-                detail=detail,
-            )
-        )
+    _run(adapter.send_message(TELEGRAM_CHAT, "switchdev", "on it"))
 
     built = [
         bot.photos[0]["caption"],
         bot.albums[0]["media"][0].caption,
-        bot.edits[0]["text"],
+        bot.messages[0]["text"],
     ]
     for prefix in built:
         assert "@\u200bceo_person" in prefix
