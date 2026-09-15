@@ -1356,13 +1356,22 @@ class TelegramAdapter(CollaborationAdapter):
         return TELEGRAM_HTML
 
     def rich_fallback_text(self, content: RichContent) -> str:
-        """The same drawing `post_rich` sends, without the agent's name on it.
+        """The drawing `post_rich` sends, minus the agent's name and the buttons.
 
         Only the text an error carries, so there is nothing here to attribute:
-        it is what a caller logs or shows in the Console when the post did not
-        happen, not something anyone reads in the chat.
+        it is what a caller republishes, logs or shows in the Console when the
+        publication did not happen, not something anyone reads under a
+        keyboard.
+
+        Which is why it is drawn with `controls=False`. A card that is going to
+        carry buttons leaves the options they spell out of its body, and this
+        text is for the places that have no buttons — republished on its own, a
+        card drawn the other way invites a numbered answer without printing the
+        numbers.
         """
-        return self._draw(content, mention=None, responder=None, prefix="").text
+        return self._draw(
+            content, mention=None, responder=None, prefix="", controls=False
+        ).text
 
     def _draw(
         self,
@@ -1371,6 +1380,7 @@ class TelegramAdapter(CollaborationAdapter):
         mention: str | None,
         responder: str | None,
         prefix: str,
+        controls: bool,
     ) -> Drawn:
         escape = self._rich_escape
         limit = max(1, self.rich_fallback_limit() - len(prefix))
@@ -1407,7 +1417,7 @@ class TelegramAdapter(CollaborationAdapter):
             markup=markup,
             responder=responder,
             unavailable_reason=content.unavailable_reason,
-            control_label_limit=_MAX_BUTTON_LABEL,
+            control_label_limit=_MAX_BUTTON_LABEL if controls else None,
         )
         return replace(drawn, text=f"{prefix}{lead}{drawn.text}{tail}")
 
@@ -1449,7 +1459,7 @@ class TelegramAdapter(CollaborationAdapter):
                     f"Cannot put a button on request {content.request.request_id} in "
                     f"Telegram: its press would carry {len(data.encode())} bytes and "
                     f"Telegram allows {_MAX_CALLBACK_BYTES}.",
-                    text=drawn.text,
+                    text=self.rich_fallback_text(content),
                 )
             rows.append(
                 [InlineKeyboardButton(text=_button_label(control), callback_data=data)]
@@ -1480,6 +1490,7 @@ class TelegramAdapter(CollaborationAdapter):
             mention=self._mention(content.notify_external_id),
             responder=responder,
             prefix=prefix,
+            controls=True,
         )
 
     def _mention(self, external_user_id: str | None) -> str | None:
@@ -1564,7 +1575,9 @@ class TelegramAdapter(CollaborationAdapter):
             )
         except Exception as error:
             raise self._rich_failure(
-                error, f"Telegram refused the post in chat {channel_id}", text
+                error,
+                f"Telegram refused the post in chat {channel_id}",
+                self.rich_fallback_text(content),
             ) from error
         ref = self._ref(sent)
         self._note_publication(channel_id)
@@ -1614,7 +1627,11 @@ class TelegramAdapter(CollaborationAdapter):
         self._refuse_while_throttled(drawn.text)
         self._pace_publication(channel_id, content, drawn.text)
         await self._edit_rich(
-            channel_id, message_ref, drawn.text, self._controls(content, drawn)
+            channel_id,
+            message_ref,
+            drawn.text,
+            self._controls(content, drawn),
+            content=content,
         )
 
     async def _edit_rich(
@@ -1623,6 +1640,8 @@ class TelegramAdapter(CollaborationAdapter):
         message_ref: str,
         text: str,
         controls: InlineKeyboardMarkup | None,
+        *,
+        content: RichContent,
     ) -> None:
         """Rewrite a publication, reporting a refusal rather than logging it.
 
@@ -1630,6 +1649,12 @@ class TelegramAdapter(CollaborationAdapter):
         addition to what it offered before: Telegram replaces the keyboard with
         what an edit carries, so passing none is how a settled card's buttons
         come off.
+
+        `content` is here for the refusal rather than the edit. What a
+        `RichContentFailed` carries is redrawn from it without a keyboard,
+        because the caller's answer to a refused edit is to republish the card
+        as plain text — and `text` is a drawing that left its options to the
+        buttons about to go with it.
         """
         chat_id, message_id = self._parse_message_ref(message_ref)
         try:
@@ -1650,13 +1675,13 @@ class TelegramAdapter(CollaborationAdapter):
             raise self._rich_failure(
                 error,
                 f"Telegram refused the edit to {message_ref} in chat {channel_id}",
-                text,
+                self.rich_fallback_text(content),
             ) from error
         except Exception as error:
             raise self._rich_failure(
                 error,
                 f"Telegram refused the edit to {message_ref} in chat {channel_id}",
-                text,
+                self.rich_fallback_text(content),
             ) from error
         self._note_publication(channel_id)
 

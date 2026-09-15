@@ -513,6 +513,40 @@ async def test_a_failed_edit_is_reported_rather_than_logged_and_forgotten() -> N
         await adapter.update_rich(CHANNEL, "my-agent", ref, await _card(), None)
 
 
+async def test_what_a_refusal_carries_is_answerable_without_the_buttons() -> None:
+    """The publisher republishes `error.text` as a plain message with no
+    keyboard under it, so the options cannot be left to one.
+
+    A posted card omits them — the buttons beside it spell them out, and
+    repeating them costs a line each. That drawing republished on its own ends
+    "Reply with `R7 1`" over a card that never printed a 1.
+    """
+    adapter = _adapter()
+    ref = await adapter.post_rich(CHANNEL, "my-agent", await _card(), None)
+    assert "1. Allow once" not in _posted(adapter)["text"]
+    _bot(adapter).edit_error = BadRequest("message to edit not found")
+
+    with pytest.raises(RichContentFailed) as caught:
+        await adapter.update_rich(CHANNEL, "my-agent", ref, await _card(), None)
+
+    lines = caught.value.text.splitlines()
+    assert "1. Allow once" in lines
+    assert "2. Deny" in lines
+    assert lines[-1] == "Reply with <code>R7 1</code>."
+
+
+async def test_a_refused_post_carries_the_same_buttonless_drawing() -> None:
+    """The card never reached the chat at all, so there is even less chance of
+    a keyboard wherever its text is shown instead."""
+    adapter = _adapter()
+    _bot(adapter).send_message_error = BadRequest("chat not found")
+
+    with pytest.raises(RichContentFailed) as caught:
+        await adapter.post_rich(CHANNEL, "my-agent", await _card(), None)
+
+    assert "1. Allow once" in caught.value.text.splitlines()
+
+
 async def test_an_edit_telegram_calls_unchanged_is_not_a_failure() -> None:
     """ "message is not modified" means the chat already shows what was asked
     for, which is the outcome the caller wanted."""
