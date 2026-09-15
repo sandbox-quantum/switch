@@ -94,8 +94,10 @@ class WebhookWorkspaceUnknown(RuntimeError):
 
     Ordinary rather than alarming: an app left in a workspace whose install was
     removed goes on posting for as long as someone leaves it there. It is still
-    an error, because the alternative is answering "fine" to traffic that
-    reaches nobody.
+    an error here, because a resolver that returned nothing would make "nobody
+    holds this" and "here is where it goes" the same shape — but it is one the
+    route absorbs rather than reports, since the platform cannot fix it and
+    telling it repeatedly that its posts fail is held against the app itself.
     """
 
 
@@ -106,6 +108,14 @@ class WebhookBridgeUnavailable(RuntimeError):
     for a recorded install yet — so it is worth telling the platform to try
     again rather than swallowing the event.
     """
+
+
+@dataclass(frozen=True)
+class Revocation:
+    """A platform saying, in an ordinary event, that an install is over."""
+
+    workspace_id: str
+    reason: str
 
 
 @dataclass(frozen=True)
@@ -254,6 +264,14 @@ class MessagingInstallService:
                 bridge.id,
             )
             return attached
+
+    async def list_installs(self, session: AsyncSession) -> list[MessagingInstall]:
+        """The bound tenant's installs, for the operator's own list.
+
+        On the caller's session like `begin`, and scoped by it: there is no
+        tenant argument because there is no tenant to choose.
+        """
+        return await self._store.list_for_tenant(session)
 
     # ── Ending an install ────────────────────────────────────────────────────
 
@@ -409,6 +427,26 @@ class MessagingInstallService:
         installer = self._installers.get(platform)
         installer.verify_webhook(headers=headers, body=body)
         return installer.parse_webhook(endpoint=endpoint, body=body)
+
+    def revocation(self, *, platform: str, event: InboundWebhook) -> Revocation | None:
+        """Whether this event is the platform ending the install, and for whom.
+
+        Asked before `resolve` and not after, because the two disagree about
+        what a missing bridge means. `resolve` insists on one, and the event
+        most worth reading here is precisely the one that arrives when the
+        bridge is on its way out — so an uninstall routed through the ordinary
+        path would be dropped exactly when it mattered.
+
+        Pure, like `authenticate`: it reads the payload and nothing else, so
+        the route can answer the platform before any of the work begins.
+        """
+        installer = self._installers.get(platform)
+        reason = installer.revocation_of_event(event.payload)
+        if reason is None:
+            return None
+        return Revocation(
+            workspace_id=installer.workspace_of_event(event.payload), reason=reason
+        )
 
     async def resolve(self, *, platform: str, event: InboundWebhook) -> WebhookTarget:
         """Turn a workspace id into the one bridge entitled to the event.

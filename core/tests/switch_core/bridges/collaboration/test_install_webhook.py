@@ -126,11 +126,28 @@ class _RecordingAdapter(_SocketOnlyAdapter):
 
 
 class _FakeLifecycle:
-    def __init__(self) -> None:
+    def __init__(self, factory: async_sessionmaker) -> None:
+        self._factory = factory
         self.adapters: dict[str, CollaborationAdapter] = {}
+        self.removed: list[str] = []
 
     def get_adapter(self, bridge_id: str) -> CollaborationAdapter | None:
         return self.adapters.get(bridge_id)
+
+    async def remove(self, bridge_id: str) -> None:
+        """Delete the row, on an unscoped session like the real one.
+
+        The real lifecycle opens a plain session and lets the tenant bound
+        around the call decide what it can see, so a fake that took a tenant
+        argument would not be exercising the same thing.
+        """
+        self.removed.append(bridge_id)
+        self.adapters.pop(bridge_id, None)
+        async with self._factory() as session:
+            bridge = await session.get(CollaborationBridge, bridge_id)
+            if bridge is not None:
+                await session.delete(bridge)
+            await session.commit()
 
 
 @dataclass
@@ -144,7 +161,7 @@ class _Workspace:
 class _Fixture:
     def __init__(self, harness: RLSHarness) -> None:
         self.harness = harness
-        self.lifecycle = _FakeLifecycle()
+        self.lifecycle = _FakeLifecycle(harness.restricted)
         self.a: _Workspace
         self.b: _Workspace
         self.client: httpx.AsyncClient
@@ -250,6 +267,16 @@ def _event(workspace_id: str, text: str) -> bytes:
             "type": "event_callback",
             "team_id": workspace_id,
             "event": {"type": "message", "text": text, "channel": "C1"},
+        }
+    ).encode()
+
+
+def _uninstalled(workspace_id: str) -> bytes:
+    return json.dumps(
+        {
+            "type": "event_callback",
+            "team_id": workspace_id,
+            "event": {"type": "app_uninstalled"},
         }
     ).encode()
 
@@ -389,21 +416,24 @@ class TestWhatTheEndpointRefuses:
         assert fixture.a.adapter.dispatched == []
         assert fixture.b.adapter.dispatched == []
 
-    async def test_an_unknown_workspace_is_not_reported_as_handled(
+    async def test_an_unknown_workspace_is_dropped_without_telling_the_platform(
         self, rls_harness: RLSHarness
     ) -> None:
-        """404 rather than a polite 200.
+        """200, and the one place this endpoint answers something other than
+        what happened.
 
-        The app is still installed somewhere we no longer serve, and the
-        honest answer is that this event reached nobody. A 200 would make it
-        invisible on both sides — a platform's own delivery log is often the
-        only place anyone would see it.
+        The app is still installed in a workspace we no longer serve, so it
+        posts for as long as someone leaves it there. The platform cannot act
+        on a refusal — there is nothing for it to fix — and it counts the
+        refusals against the app as a whole, so the honest 404 would be paid
+        for by every other customer's delivery. It is dropped, and it is in the
+        log.
         """
         fixture = await _fixture(rls_harness)
 
         response = await _post(fixture, events_path("slack"), _event("T-nobody", "x"))
 
-        assert response.status_code == 404
+        assert response.status_code == 200
         assert fixture.a.adapter.dispatched == []
         assert fixture.b.adapter.dispatched == []
 
@@ -535,3 +565,71 @@ class TestABridgeThatCannotTakeEvents:
         target = await fixture.service.resolve(platform="slack", event=event)
         with pytest.raises(Exception, match="does not receive events over HTTP"):
             await fixture.service.deliver(target, event)
+
+
+class TestThePlatformSayingTheInstallIsOver:
+    """`app_uninstalled` arrives on the same URL as everything else."""
+
+    async def test_it_ends_the_install_instead_of_dispatching(
+        self, rls_harness: RLSHarness
+    ) -> None:
+        fixture = await _fixture(rls_harness)
+
+        response = await _post(
+            fixture, events_path("slack"), _uninstalled(fixture.a.workspace_id)
+        )
+
+        assert response.status_code == 200
+        assert fixture.a.adapter.dispatched == []
+        assert fixture.lifecycle.removed == [fixture.a.bridge_id]
+
+        async with tenant_session(
+            rls_harness.restricted, fixture.a.tenant_id
+        ) as session:
+            installs = await MessagingInstallStore().list_for_tenant(session)
+        assert [install.status for install in installs] == ["revoked"]
+
+    async def test_it_ends_nobody_elses(self, rls_harness: RLSHarness) -> None:
+        """The payload decides here as well, and the blast radius is larger.
+
+        A revocation routed by anything but the workspace in the event would
+        disconnect a customer who did nothing.
+        """
+        fixture = await _fixture(rls_harness)
+
+        await _post(fixture, events_path("slack"), _uninstalled(fixture.a.workspace_id))
+        await _post(fixture, events_path("slack"), _event(fixture.b.workspace_id, "b"))
+
+        assert _texts(fixture.b.adapter) == ["b"]
+        assert fixture.lifecycle.removed == [fixture.a.bridge_id]
+
+    async def test_the_workspace_stops_resolving_to_anyone(
+        self, rls_harness: RLSHarness
+    ) -> None:
+        """Which is what frees it to be installed again.
+
+        An app removed from a workspace can still post on its way out, and an
+        ended install that went on answering for the workspace would route
+        those to a bridge that no longer exists.
+        """
+        fixture = await _fixture(rls_harness)
+        await _post(fixture, events_path("slack"), _uninstalled(fixture.a.workspace_id))
+
+        trailing = await _post(
+            fixture, events_path("slack"), _event(fixture.a.workspace_id, "late")
+        )
+
+        assert trailing.status_code == 200
+        assert fixture.a.adapter.dispatched == []
+
+    async def test_a_redelivery_is_not_an_error(self, rls_harness: RLSHarness) -> None:
+        """Slack retries what it is slow to hear back from, and it hears 200
+        from the first delivery only after the install has already gone."""
+        fixture = await _fixture(rls_harness)
+        body = _uninstalled(fixture.a.workspace_id)
+
+        first = await _post(fixture, events_path("slack"), body)
+        second = await _post(fixture, events_path("slack"), body)
+
+        assert (first.status_code, second.status_code) == (200, 200)
+        assert fixture.lifecycle.removed == [fixture.a.bridge_id]
