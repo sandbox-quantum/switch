@@ -1913,12 +1913,14 @@ class TelegramAdapter(CollaborationAdapter):
         to and there is nothing to send an action to but the chat, so it is
         not passed on: `message_thread_id` set to a reply target would aim the
         nudge at a topic that is not one. A forum whose topic cannot be
-        located gets no nudge at all rather than one in General.
+        located gets no nudge at all rather than one in General, and neither
+        does one whose chat cannot be read: working out where this belongs is
+        part of the best effort, not a precondition of the status that follows.
         """
-        topic = await self._topic_kwargs(channel_id, thread_root_id)
-        if topic is None:
-            return
         try:
+            topic = await self._topic_kwargs(channel_id, thread_root_id)
+            if topic is None:
+                return
             await self._require_bot().send_chat_action(
                 chat_id=self._chat_id(channel_id),
                 action=ChatAction.TYPING,

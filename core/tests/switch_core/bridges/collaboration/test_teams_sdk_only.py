@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -27,11 +28,13 @@ from switch_core.bridges.collaboration.adapter import (
     RichContentThrottled,
     TurnActivity,
 )
+from switch_core.bridges.collaboration.session.outbound import SessionRequestCards
 from switch_core.bridges.collaboration.session.renderers import RequestReference
 from switch_core.bridges.collaboration.session.transport import (
     FixtureEventSource,
     project,
 )
+from switch_core.bridges.collaboration.teams import adapter as teams_adapter
 from switch_core.bridges.collaboration.teams.adapter import (
     TeamsAdapter,
     _publication_ref,
@@ -558,11 +561,17 @@ def test_confirmed_absence_finishes_the_cleanup_rather_than_editing_nothing() ->
 
 def test_absence_at_an_address_this_rebuilt_is_not_taken_as_an_outcome() -> None:
     """Without a stored address the 404 may only mean the address was wrong,
-    and a status wrongly recorded as removed is one that never goes."""
+    and a status wrongly recorded as removed is one that never goes.
+
+    It reaches the caller as `RichContentFailed`, which is what this port
+    promises a refusal looks like, rather than as the connector's own exception
+    — `_edit` catches the former and nothing catches the latter. The cleanup
+    stays outstanding either way; that is the property, not any claim about
+    what is still on screen."""
     adapter, _connector = _teams("chat")
     _connector.fail_delete = BotConnectorGone("gone", status=404, retry_after=None)
 
-    with pytest.raises(BotConnectorGone):
+    with pytest.raises(RichContentFailed):
         _run(adapter.update_rich(CHANNEL, AGENT, "MSG1", _ended(), ROOT))
 
     assert _connector.updates == []
@@ -581,6 +590,64 @@ def test_the_conversation_the_server_returned_is_the_one_edited() -> None:
     _run(adapter.update_rich(CHANNEL, AGENT, ref, _activity(), None))
 
     assert connector.updates[0]["conversation_id"] == connector.conversation
+
+
+def test_a_publication_into_a_carried_reference_keeps_its_region() -> None:
+    """The reference names a conversation *and* the service holding it. Taking
+    the conversation from it and the region from whatever this process last
+    heard from sends the card to the wrong region — and writes that region into
+    the reference it returns, so every later redraw repeats it."""
+    adapter, connector = _teams()
+    adapter._default_service_url = "https://smba.example/other-region/"
+    carried = _publication_ref(SERVICE_URL, "19:confirmed@thread.tacv2", "card-1")
+
+    ref = _run(adapter.post_rich(CHANNEL, AGENT, _activity(), carried))
+
+    assert connector.sends[0]["service_url"] == SERVICE_URL
+    assert connector.sends[0]["conversation_id"] == "19:confirmed@thread.tacv2"
+    assert ref.startswith(
+        _publication_ref(SERVICE_URL, "19:confirmed@thread.tacv2", "")
+    )
+
+
+def test_a_notice_about_a_card_goes_to_the_address_teams_confirmed() -> None:
+    """A row can hold both a raw thread root and the reference Teams gave back.
+    The edit already used the reference; the notice about that edit failing was
+    still rebuilding `channel;messageid=root` in the current default region, so
+    the correction could land somewhere the card is not."""
+    adapter, _connector = _teams()
+    carried = _publication_ref(SERVICE_URL, "19:confirmed@thread.tacv2", "card-1")
+
+    assert adapter.notice_address(carried, ROOT) == carried
+    assert adapter.notice_address("MSG1", ROOT) == ROOT
+    assert adapter.notice_address("MSG1", None) == "MSG1"
+
+    connector = _Connector()
+    adapter._connector = connector  # type: ignore[assignment]
+    adapter._default_service_url = "https://smba.example/other-region/"
+    connector.fail_update = BotConnectorRefused("no edit", status=403, retry_after=None)
+    request = _run(_card()).request
+    post = SimpleNamespace(
+        token="tok",
+        handle="R7",
+        external_channel_id=CHANNEL,
+        external_post_id=carried,
+        thread_id=ROOT,
+        request_id=request.request_id,
+    )
+    cards = SessionRequestCards(
+        adapter,
+        bridge_id="bridge-1",
+        surface="teams",
+        posts=None,  # type: ignore[arg-type]
+        session_factory=None,  # type: ignore[arg-type]
+    )
+
+    with pytest.raises(RichContentFailed):
+        _run(cards.refresh(post, request, agent_name=AGENT))  # type: ignore[arg-type]
+
+    assert connector.sends[0]["service_url"] == SERVICE_URL
+    assert connector.sends[0]["conversation_id"] == "19:confirmed@thread.tacv2"
 
 
 def test_a_chat_redraw_after_a_restart_does_not_become_a_channel_thread() -> None:
@@ -718,6 +785,59 @@ def test_writes_to_one_conversation_do_not_overlap() -> None:
     _run(both())
 
     assert len(connector.updates) == 2
+    assert overlapped is False
+
+
+def test_a_conversation_with_a_writer_queued_behind_it_is_not_evicted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The registry is bounded, and a lock it drops has to be one nobody is
+    using. `locked()` cannot answer that: it reads False from the moment a lock
+    is released until the waiter it woke gets a turn to run, so a conversation
+    with someone queued on it looks idle for exactly long enough to be thrown
+    away. The next writer then takes a brand-new lock and runs beside the
+    waiter, which is the ordering the lock was there to provide."""
+    monkeypatch.setattr(teams_adapter, "_MAX_CONVERSATION_LOCKS", 1)
+    inside = 0
+    overlapped = False
+
+    async def scenario() -> None:
+        nonlocal inside, overlapped
+        adapter, _connector = _teams()
+        holding = asyncio.Event()
+        queue_formed = asyncio.Event()
+
+        async def write(conversation: str) -> None:
+            nonlocal inside, overlapped
+            async with adapter._writes_to(conversation):
+                inside += 1
+                overlapped = overlapped or inside > 1
+                for _ in range(3):
+                    await asyncio.sleep(0)
+                inside -= 1
+
+        async def hold_then_write_elsewhere() -> None:
+            async with adapter._writes_to("conversation-A"):
+                holding.set()
+                await queue_formed.wait()
+            # Released, and the waiter is awake but has not resumed: this is
+            # the whole window the bug lived in. Writing elsewhere now is what
+            # a bounded registry does on a busy bridge.
+            async with adapter._writes_to("conversation-B"):
+                pass
+
+        first = asyncio.create_task(hold_then_write_elsewhere())
+        await holding.wait()
+        queued = asyncio.create_task(write("conversation-A"))
+        await asyncio.sleep(0)
+        queue_formed.set()
+        await asyncio.sleep(0)
+        await first
+        later = asyncio.create_task(write("conversation-A"))
+        await asyncio.gather(queued, later)
+
+    _run(scenario())
+
     assert overlapped is False
 
 

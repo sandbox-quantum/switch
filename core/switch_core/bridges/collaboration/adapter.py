@@ -713,7 +713,14 @@ class CollaborationAdapter(ABC):
         `update_message` swallows its own errors by design, for the
         runtime-status paths that depend on that — but not all of them, so this
         catches broadly rather than trusting the convention: whichever it does,
-        a caller of `update_rich` sees `RichContentFailed` or nothing.
+        a caller of *this* wrapper sees `RichContentFailed` or nothing.
+
+        That is the default, not the port's whole contract. An adapter with its
+        own failure policy overrides this, and the overrides deliberately let a
+        throttle and an unknown outcome through unwrapped, because a caller has
+        to be able to tell "refused" from "come back to this". What the port
+        does promise is that a *refusal* arrives as `RichContentFailed`, never
+        as a platform client's own exception.
 
         `agent_name` is the same name `post_rich` was given, and is here for
         the platform that writes it into the body: one bot identity means the
@@ -738,6 +745,23 @@ class CollaborationAdapter(ABC):
                 f"channel {channel_id}: {error}",
                 text=text,
             ) from error
+
+    def notice_address(self, message_ref: str, thread_root_id: str | None) -> str:
+        """Where a notice *about* a publication has to be said.
+
+        Beside the publication, so the people who can see the stale card are
+        the people who read the correction: the thread it went into where there
+        was one, and otherwise the publication itself, which is then the root
+        of its own conversation.
+
+        Not the publication's id where a thread exists — on a platform that
+        addresses a reply by its conversation rather than by the message, a
+        publication that is itself a reply names no conversation, and a notice
+        nobody can see is worse than the stale card it is about. An adapter
+        whose own reference carries a confirmed conversation overrides this to
+        prefer it: a rebuilt address is the weaker of the two.
+        """
+        return thread_root_id or message_ref
 
     def rich_fallback_text(self, content: RichContent) -> str:
         """The neutral text form of `content`, for `post_rich` / `update_rich`'s

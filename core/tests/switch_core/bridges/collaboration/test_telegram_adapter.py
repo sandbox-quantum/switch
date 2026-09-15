@@ -6,7 +6,7 @@ from typing import Any
 from unittest.mock import patch
 
 import pytest
-from telegram.error import BadRequest, Conflict, TelegramError
+from telegram.error import BadRequest, Conflict, TelegramError, TimedOut
 
 from switch_core.bridges.collaboration.models import (
     InboundCommand,
@@ -179,6 +179,7 @@ class _FakeBot:
         self.chat: _FakeChat = _FakeChat()
         # What getChatMember reports for the bot itself in `chat`.
         self.member_status = "administrator"
+        self.get_chat_error: Exception | None = None
         self.get_chat_member_error: Exception | None = None
         self._next_id = 500
         # Set to an exception to make the next send_message raise it once.
@@ -255,6 +256,8 @@ class _FakeBot:
         self.published_commands = list(commands)
 
     async def get_chat(self, chat_id: Any) -> _FakeChat:
+        if self.get_chat_error is not None:
+            raise self.get_chat_error
         return self.chat
 
     async def get_chat_member(self, **kwargs: Any) -> _FakeMember:
@@ -1027,6 +1030,18 @@ def test_an_ordinary_chat_still_gets_its_nudge() -> None:
 
     assert len(_bot(adapter).actions) == 1
     assert "message_thread_id" not in _bot(adapter).actions[0]
+
+
+def test_a_chat_that_cannot_be_read_costs_the_nudge_and_nothing_else() -> None:
+    # Placing the nudge needs a getChat on a cold cache, and that call can time
+    # out. The nudge is worth five seconds; the status it precedes is worth the
+    # turn, so a failure to place one must not take the other down with it.
+    adapter = _adapter()
+    _bot(adapter).get_chat_error = TimedOut()
+
+    _run(adapter.notify_working(str(CHAT_ID), "scout", f"{CHAT_ID}:88"))
+
+    assert _bot(adapter).actions == []
 
 
 def test_markup_telegram_rejects_is_resent_as_plain_text() -> None:

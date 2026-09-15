@@ -1651,15 +1651,7 @@ class SessionRequestCards:
                     f"The card for request {post.handle} above could not be updated, "
                     f"so it may still be offering buttons that no longer "
                     f"work.\n{error.text}",
-                    # The conversation the card is in, which is the thread it
-                    # was posted into where there was one. Not the card's own
-                    # id: where a platform addresses a reply by its
-                    # conversation rather than by the message — Teams — a card
-                    # that is itself a reply names no conversation, and a
-                    # notice about a card people cannot see is worse than the
-                    # stale card. Where the card opened the conversation, it
-                    # is the root, and that is the unchanged behaviour.
-                    post.thread_id or post.external_post_id,
+                    self._adapter.notice_address(post.external_post_id, post.thread_id),
                 )
                 self._reported_edit_failures[post.token] = state
             raise

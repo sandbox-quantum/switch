@@ -9,7 +9,8 @@ import re
 import secrets
 import time
 from collections import OrderedDict
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from typing import Any, ClassVar
@@ -114,7 +115,7 @@ _MAX_CONVERSATION_LOCKS = 512
 """How many conversations' write locks one adapter keeps.
 
 Enough for every conversation a bridge is realistically mid-turn in at once.
-Only an unheld lock is ever dropped — see `_writes_to`.
+Only a lock nobody is using is ever dropped — see `_writes_to`.
 """
 
 _PUBLICATION_MARK = "teams1"
@@ -198,6 +199,20 @@ class _Publication:
         exactly when the message is in a post.
         """
         return self.conversation_id != self.channel_id
+
+
+@dataclass
+class _ConversationWrites:
+    """One conversation's write lock, and how many writers are on it.
+
+    `users` counts everyone between asking for the lock and finishing with it,
+    holder and queue alike, because the lock itself cannot be asked: it reports
+    unheld from the moment it is released until the waiter it woke gets a turn
+    to run. Eviction reads this instead.
+    """
+
+    lock: asyncio.Lock
+    users: int
 
 
 class _TeamsMarkup(Markup):
@@ -646,7 +661,7 @@ class TeamsAdapter(CollaborationAdapter):
         # message id -> (service_url, conversation_id) for later edit/delete.
         self._sent: dict[str, tuple[str, str]] = {}
         # conversation id -> the lock ordering this bridge's writes to it.
-        self._conversation_writes: OrderedDict[str, asyncio.Lock] = OrderedDict()
+        self._conversation_writes: OrderedDict[str, _ConversationWrites] = OrderedDict()
         # Inbound de-duplication — the Bot Framework and Graph capture paths can
         # both deliver the same channel message, keyed on the Teams message id.
         self._seen: OrderedDict[str, None] = OrderedDict()
@@ -955,8 +970,9 @@ class TeamsAdapter(CollaborationAdapter):
             return None
         return self._thread_conversation(channel_id, thread_root_id)
 
-    def _writes_to(self, conversation_id: str) -> asyncio.Lock:
-        """The lock that orders this bridge's own writes to one conversation.
+    @asynccontextmanager
+    async def _writes_to(self, conversation_id: str) -> AsyncIterator[None]:
+        """Order this bridge's own writes to one conversation.
 
         Teams answers an edit to an activity it is still processing with 412,
         and two publishers redrawing in one conversation generate those against
@@ -964,28 +980,38 @@ class TeamsAdapter(CollaborationAdapter):
         turns the race into a queue; it says nothing about writers in another
         process, which is what the 412 handling is still for.
 
-        Bounded, and only ever forgetting a lock nobody holds — dropping a held
-        one would hand the next writer a fresh lock and quietly undo the
-        ordering it asked for.
+        Bounded, and the registry counts its own users rather than asking the
+        lock whether it is held. `asyncio.Lock.locked()` is False for the whole
+        window between a release and the woken waiter resuming, so a lock with
+        someone queued behind it looks idle; dropping it there would hand the
+        next writer a brand-new lock and run the two side by side — which is
+        the ordering this exists to provide, quietly withdrawn under load.
+        An entry with a user is never evicted, so everyone who asks for one
+        conversation holds the same lock.
         """
-        lock = self._conversation_writes.get(conversation_id)
-        if lock is None:
-            lock = asyncio.Lock()
-            self._conversation_writes[conversation_id] = lock
+        entry = self._conversation_writes.get(conversation_id)
+        if entry is None:
+            entry = _ConversationWrites(asyncio.Lock(), 0)
+            self._conversation_writes[conversation_id] = entry
         self._conversation_writes.move_to_end(conversation_id)
+        entry.users += 1
         while len(self._conversation_writes) > _MAX_CONVERSATION_LOCKS:
-            idle = next(
+            unused = next(
                 (
                     key
-                    for key, held in self._conversation_writes.items()
-                    if key != conversation_id and not held.locked()
+                    for key, waiting in self._conversation_writes.items()
+                    if not waiting.users
                 ),
                 None,
             )
-            if idle is None:
+            if unused is None:
                 break
-            del self._conversation_writes[idle]
-        return lock
+            del self._conversation_writes[unused]
+        try:
+            async with entry.lock:
+                yield
+        finally:
+            entry.users -= 1
 
     async def _channel_layout(self, channel_id: str) -> str | None:
         """The channel's conversation layout as Graph reports it, or None.
@@ -1400,6 +1426,19 @@ class TeamsAdapter(CollaborationAdapter):
             else None,
         )
 
+    def notice_address(self, message_ref: str, thread_root_id: str | None) -> str:
+        """The reference wins over the thread, where the publication has one.
+
+        Both name the same conversation, but the reference names the one Teams
+        confirmed, service URL included, while the thread is a root this
+        rebuilds into `channel;messageid=root` in whatever region the process
+        last heard from. A notice about a card in another region would go to
+        the region this happens to know.
+        """
+        if _read_publication_ref(message_ref) is not None:
+            return message_ref
+        return thread_root_id or message_ref
+
     def _publication_conversation(self, channel_id: str, root_id: str | None) -> str:
         """Where a *new* publication goes, from durable facts only.
 
@@ -1515,7 +1554,12 @@ class TeamsAdapter(CollaborationAdapter):
         `thread_root_id` is used as given. `_post_to_answer_in`, which the
         relay uses to steer an untied reply into whatever post the channel last
         spoke in, is not consulted: a publication has a durable address to keep
-        and a guess is not one.
+        and a guess is not one. Where the root is itself a publication
+        reference, both halves of it are kept — the conversation *and* the
+        service that holds it. Taking the conversation and the region from
+        different places sends a card in one region to another, and writes the
+        wrong region into the reference that comes back, so the next redraw
+        repeats it.
 
         What comes back is that address rather than a message id — see
         `_publication_ref`. It is what the caller stores, and the only thing
@@ -1527,7 +1571,8 @@ class TeamsAdapter(CollaborationAdapter):
             raise RichContentFailed(
                 "Teams is not connected, so the publication was not sent.", text=text
             )
-        service_url = self._service_url_for(channel_id)
+        carried = _read_publication_ref(thread_root_id) if thread_root_id else None
+        service_url = carried[0] if carried else self._service_url_for(channel_id)
         activity = await self._message_activity(agent_name, text)
         opening = self._is_channel(channel_id) and thread_root_id is None
         # A new post has no conversation to queue behind yet, so its writes are
@@ -1624,7 +1669,12 @@ class TeamsAdapter(CollaborationAdapter):
         this exists to do is already done, and editing instead would ask Teams
         to rewrite a message that does not exist and fail on that too, every
         cycle, forever. At an address this rebuilt, the same 404 may only mean
-        the address was wrong, which is not an outcome, so it is raised.
+        the address was wrong, so it says nothing about whether the status is
+        still showing and the cleanup must stay outstanding. It is a refusal
+        all the same, and it leaves through the port as one: `RichContentFailed`
+        rather than the connector's own exception, which no caller of this port
+        is expecting. Logged at error, because a status may be sitting in the
+        conversation with no address left that Teams has confirmed.
         """
         if await self._uses_post_layout(
             address.channel_id, is_channel=address.in_a_channel
@@ -1642,9 +1692,21 @@ class TeamsAdapter(CollaborationAdapter):
             raise self._throttled(error, text) from error
         except BotConnectorConflict as error:
             raise self._conflicted(error, text) from error
-        except BotConnectorGone:
+        except BotConnectorGone as error:
             if not address.trusted:
-                raise
+                logger.error(
+                    "Teams has no activity %s in conversation %s, and that "
+                    "conversation was rebuilt rather than confirmed, so "
+                    "whether the finished status is still showing is unknown "
+                    "and there is no other address to try.",
+                    address.activity_id,
+                    address.conversation_id,
+                )
+                raise RichContentFailed(
+                    f"Teams has no activity {address.activity_id} at the "
+                    f"rebuilt conversation {address.conversation_id}: {error}",
+                    text=text,
+                ) from error
             logger.info(
                 "Teams has no activity %s in conversation %s; the finished "
                 "status is already gone, so its cleanup is complete.",
