@@ -759,7 +759,7 @@ async def test_a_request_form_says_its_handle_and_how_to_answer_it() -> None:
 
     message = _posts(adapter).created[0]["message"]
     assert "`R7`" in message
-    assert "Reply with `R7 " in message
+    assert "Reply with `R7` and your choice, e.g. `R7 1`." in message
 
 
 async def test_a_status_stays_inside_one_mattermost_post() -> None:

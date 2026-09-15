@@ -244,7 +244,7 @@ async def test_a_request_card_falls_back_to_a_form_that_can_be_answered() -> Non
     assert ref == "C1:1.0"
     text = adapter.sent[0][2]
     assert "`R1`" in text
-    assert "Reply with `R1 " in text
+    assert "Reply with `R1` and your choice, e.g. `R1 1`." in text
     assert "1." in text
     assert content.request.content.title in text
 

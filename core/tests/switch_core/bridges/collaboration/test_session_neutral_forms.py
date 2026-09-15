@@ -100,7 +100,7 @@ def test_a_permission_label_is_shown_whole_rather_than_cut_to_a_short_ceiling():
 
     assert "test_a.py" in text
     assert "test_b.py" in text
-    assert "Reply with `R42 1`." in text
+    assert "Reply with `R42` and your choice, e.g. `R42 1`." in text
 
 
 def test_options_that_cannot_be_told_apart_are_not_answered_by_number():
@@ -229,7 +229,7 @@ def test_a_question_whose_title_did_not_fit_is_not_answerable_here():
 def test_a_question_that_fits_is_still_answered_by_number():
     text = _render(_questions(_question("Which branch?", "main", "release")))
 
-    assert "Reply with `R42 1`." in text
+    assert "Reply with `R42` and your answer, e.g. `R42 1`." in text
 
 
 def test_options_told_apart_only_by_their_descriptions_are_not_cut_there():
@@ -249,7 +249,7 @@ def test_options_told_apart_only_by_their_descriptions_are_not_cut_there():
 
     assert "to staging" in text
     assert "to production" in text
-    assert "Reply with `R42 1`." in text
+    assert "Reply with `R42` and your answer, e.g. `R42 1`." in text
 
 
 def test_a_description_too_long_for_even_that_stops_the_form_asking():
@@ -316,7 +316,7 @@ def test_an_option_its_button_says_in_full_is_not_printed_under_it():
         "**Permission needed** · request `R42`",
         "Run a command?",
         "`pnpm test`",
-        "Reply with `R42 1`.",
+        "Reply with `R42` and your choice, e.g. `R42 1`.",
     ]
 
 
@@ -355,7 +355,7 @@ def test_an_option_that_outlasts_the_turn_keeps_the_line_saying_so():
 
     assert lines[-2:] == [
         "2. Allow for this session (applies for the rest of this session)",
-        "Reply with `R42 1`.",
+        "Reply with `R42` and your choice, e.g. `R42 1`.",
     ]
 
 

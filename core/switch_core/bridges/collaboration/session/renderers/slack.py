@@ -455,11 +455,19 @@ def _footer(
             # length, and the schema is still the wrong place to add one — see
             # `unanswerable`, which refuses the same defect a question apart.
             return NO_OPTIONS
-        # A code span, because the reader is meant to copy this and quote marks
-        # around it are not part of the answer: `"R42 1"` parses as a handle of
-        # `"R42`, which resolves to nothing and changes nothing on the card.
+        # Code spans, because the reader is meant to copy these and quote marks
+        # around them are not part of the answer: `"R42 1"` parses as a handle
+        # of `"R42`, which resolves to nothing and changes nothing on the card.
         # Slack draws a span from the backticks and the grammar strips them.
-        return f"Reply with `{escape_mrkdwn(reference.handle)} 1`, or press a button."
+        #
+        # The handle and the example are both shown because `R42 1` on its own
+        # reads as one fixed string to type, and the number in it is the whole
+        # decision.
+        handle = escape_mrkdwn(reference.handle)
+        return (
+            f"Reply with `{handle}` and your choice, "
+            f"e.g. `{handle} 1`, or press a button."
+        )
     if request.state == "submitting":
         if request.decided_by is None:
             return "An answer is on its way."
@@ -744,11 +752,15 @@ def _questions_footer(
         if stuck is not None:
             return stuck
         example = f"`{_example(reference.handle, content.questions)}`"
+        start = f"Reply with `{escape_mrkdwn(reference.handle)}`"
         if buttons:
-            return f"Reply with {example}, or press a button."
+            return f"{start} and your answer, e.g. {example}, or press a button."
         if len(content.questions) > 1:
-            return f"Reply with {example} — every question needs an answer."
-        return f"Reply with {example}."
+            return (
+                f"{start} and your answers, e.g. {example} "
+                "— every question needs an answer."
+            )
+        return f"{start} and your answer, e.g. {example}."
     if request.state == "submitting":
         if request.decided_by is None:
             return "An answer is on its way."

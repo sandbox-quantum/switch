@@ -165,19 +165,24 @@ def test_the_card_carries_nothing_that_names_the_session() -> None:
 def test_the_example_on_the_card_parses_and_answers_that_card(named: str) -> None:
     """The instruction, the grammar and the record are one claim.
 
-    Whatever the footer offers to copy has to come back through the parser as
-    an answer, and that answer has to resolve against the form the same card
-    was drawn from. This is the test the approval card did not have, and it is
-    exactly what the missing one would have caught: an example that reads
-    perfectly well and parses as nothing.
+    Whatever the footer offers as the answer to copy has to come back through
+    the parser as an answer, and that answer has to resolve against the form
+    the same card was drawn from. This is the test the approval card did not
+    have, and it is exactly what the missing one would have caught: an example
+    that reads perfectly well and parses as nothing.
+
+    The footer spans the handle on its own before it spans the example, so the
+    example is the last of them — the handle alone is the thing to type first,
+    not a whole answer.
     """
     request, reference = (_form(), FORM) if named == "form" else (_one_question(), ONE)
 
     footer = _footer(render_questions(request, reference).blocks)
-    example = re.search(r"`([^`]+)`", footer)
+    spans = re.findall(r"`([^`]+)`", footer)
 
-    assert example is not None, f"the card offers no example to copy: {footer}"
-    answer = parse_text_answer(example.group(1))
+    assert spans, f"the card offers no example to copy: {footer}"
+    assert spans[0] == reference.handle
+    answer = parse_text_answer(spans[-1])
     assert answer is not None, f"the card's own instruction does not parse: {footer}"
 
     resolved = resolve_text_answer(posted_form(request), answer)
@@ -186,12 +191,12 @@ def test_the_example_on_the_card_parses_and_answers_that_card(named: str) -> Non
 
 def test_the_example_says_which_question_only_when_there_is_more_than_one() -> None:
     """A form of one question takes a bare number, and saying `q1=` would be noise."""
-    assert "Reply with `R44 1`, or press a button." == _footer(
-        render_questions(_one_question(), ONE).blocks
+    assert "Reply with `R44` and your answer, e.g. `R44 1`, or press a button." == (
+        _footer(render_questions(_one_question(), ONE).blocks)
     )
     assert _footer(render_questions(_form(), FORM).blocks) == (
-        'Reply with `R43 q1=1; q2=1,2; q3="your answer"` — '
-        "every question needs an answer."
+        "Reply with `R43` and your answers, e.g. "
+        '`R43 q1=1; q2=1,2; q3="your answer"` — every question needs an answer.'
     )
 
 
@@ -199,7 +204,7 @@ def test_a_question_with_nothing_to_number_is_shown_as_words_to_write() -> None:
     """There is no option 1 on it, so an example offering one would be a lie."""
     request = _amend(_one_question(), options=[], allow_custom_answer=True)
 
-    assert 'Reply with `R44 "your answer"`.' == _footer(
+    assert 'Reply with `R44` and your answer, e.g. `R44 "your answer"`.' == _footer(
         render_questions(request, ONE).blocks
     )
 
@@ -287,9 +292,9 @@ def test_no_form_shape_makes_the_card_offer_an_answer_it_would_refuse() -> None:
         if footer.startswith("This card cannot be answered"):
             continue
 
-        example = re.search(r"`([^`]+)`", footer)
-        assert example is not None, f"no example in {footer!r}"
-        answer = parse_text_answer(example.group(1))
+        spans = re.findall(r"`([^`]+)`", footer)
+        assert spans, f"no example in {footer!r}"
+        answer = parse_text_answer(spans[-1])
         assert answer is not None, f"{footer!r} does not parse"
         resolved = resolve_text_answer(posted_form(request), answer)
         assert not isinstance(resolved, Unanswerable), f"{footer!r}: {resolved}"

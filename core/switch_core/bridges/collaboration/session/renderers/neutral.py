@@ -490,11 +490,18 @@ def _approval_footer(
     if request.state == "open":
         if not content.options:
             return NO_OPTIONS
-        # A code span, because the reader is meant to copy this and quote marks
-        # around it are not part of the answer: `"R42 1"` parses as a handle of
-        # `"R42`, which resolves to nothing and changes nothing on the card.
+        # Code spans, because the reader is meant to copy these and quote marks
+        # around them are not part of the answer: `"R42 1"` parses as a handle
+        # of `"R42`, which resolves to nothing and changes nothing on the card.
         # The grammar strips the backticks the span is drawn from.
-        return f"Reply with {markup.code(f'{handle} 1')}."
+        #
+        # The handle and the example are both shown because `R42 1` on its own
+        # reads as one fixed string to type, and the number in it is the whole
+        # decision.
+        return (
+            f"Reply with {markup.code(handle)} and your choice, "
+            f"e.g. {markup.code(f'{handle} 1')}."
+        )
     if request.state == "submitting":
         return _in_flight(request, responder=responder, limit=limit, escape=escape)
     if request.state == "resolved":
@@ -647,9 +654,13 @@ def _questions_footer(
         if stuck is not None:
             return stuck
         example = markup.code(_example(handle, content.questions))
+        start = f"Reply with {markup.code(handle)}"
         if len(content.questions) > 1:
-            return f"Reply with {example} — every question needs an answer."
-        return f"Reply with {example}."
+            return (
+                f"{start} and your answers, e.g. {example} "
+                "— every question needs an answer."
+            )
+        return f"{start} and your answer, e.g. {example}."
     if request.state == "submitting":
         return _in_flight(request, responder=responder, limit=limit, escape=escape)
     if request.state == "resolved":

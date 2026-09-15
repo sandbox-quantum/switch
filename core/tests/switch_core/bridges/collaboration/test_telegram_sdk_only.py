@@ -519,7 +519,8 @@ async def test_what_a_refusal_carries_is_answerable_without_the_buttons() -> Non
 
     A posted card omits them — the buttons beside it spell them out, and
     repeating them costs a line each. That drawing republished on its own ends
-    "Reply with `R7 1`" over a card that never printed a 1.
+    "Reply with `R7` and your choice, e.g. `R7 1`" over a card that never
+    printed a 1.
     """
     adapter = _adapter()
     ref = await adapter.post_rich(CHANNEL, "my-agent", await _card(), None)
@@ -532,7 +533,10 @@ async def test_what_a_refusal_carries_is_answerable_without_the_buttons() -> Non
     lines = caught.value.text.splitlines()
     assert "1. Allow once" in lines
     assert "2. Deny" in lines
-    assert lines[-1] == "Reply with <code>R7 1</code>."
+    assert (
+        lines[-1]
+        == "Reply with <code>R7</code> and your choice, e.g. <code>R7 1</code>."
+    )
 
 
 async def test_a_refused_post_carries_the_same_buttonless_drawing() -> None:
@@ -1063,7 +1067,7 @@ async def test_the_body_does_not_repeat_what_the_buttons_already_say() -> None:
     text = _posted(adapter)["text"]
     assert "1. Allow once" not in text
     assert "2. Deny" not in text
-    assert "Reply with <code>R7 1</code>." in text
+    assert "Reply with <code>R7</code> and your choice, e.g. <code>R7 1</code>." in text
 
 
 async def test_a_press_carries_the_request_and_where_the_control_was() -> None:
