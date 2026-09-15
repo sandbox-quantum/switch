@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from switch_core.addressing import parse_policy
+from switch_core.addressing import AddressingPolicy, AddressingRule, parse_policy
 from switch_core.bridges.agent.protocol.service import ProtocolService
 from switch_core.db.models import TENANT_ZERO_ID, ApiKey
 from tests.switch_core.bridges.agent.protocol.registration_harness import (
@@ -159,6 +159,78 @@ class TestRegistrationDefaultPolicy:
         assert again == agent_id
         raw = await _policy_of(svc, session_factory, agent_id)
         assert raw == {"rules": [{"users": ["ext-3"], "agents": []}]}
+
+
+class TestRegistrationExplicitPolicy:
+    """A caller that states the policy at registration gets it (CHOO-2801).
+
+    The console's create-agent form collects the choice up front; before this
+    it was applied by a second request afterwards, so the "anyone" choice —
+    which has no rules to send — silently kept the owner-only default.
+    """
+
+    async def test_explicit_open_policy_overrides_the_owner_only_default(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        svc = make_service(session_factory)
+        owner_id = await make_owner(session_factory)
+        agent_id = await register(
+            svc, "open-by-request", owner_id, addressing_policy=AddressingPolicy()
+        )
+
+        raw = await _policy_of(svc, session_factory, agent_id)
+        assert raw is None
+        assert parse_policy(raw).is_open() is True
+
+    async def test_explicit_policy_is_stored_verbatim(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        svc = make_service(session_factory)
+        owner_id = await make_owner(session_factory)
+        chosen = AddressingPolicy(
+            rules=[AddressingRule(users=["ext-7"], agents=[], owner=False)]
+        )
+        agent_id = await register(svc, "narrow", owner_id, addressing_policy=chosen)
+
+        policy = parse_policy(await _policy_of(svc, session_factory, agent_id))
+        assert policy.is_open() is False
+        assert (
+            policy.allows(
+                room_id="any-room",
+                group_id=None,
+                sender_kind="user",
+                sender_id="ext-7",
+                sender_user_ids=["ext-7"],
+                sender_owner_user_id=None,
+                owner_user_id=owner_id,
+            )
+            is True
+        )
+        assert (
+            policy.allows(
+                room_id="any-room",
+                group_id=None,
+                sender_kind="user",
+                sender_id="ext-9",
+                sender_user_ids=["ext-9"],
+                sender_owner_user_id=None,
+                owner_user_id=owner_id,
+            )
+            is False
+        )
+
+    async def test_no_explicit_policy_still_defaults_to_owner_only(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        # The override is opt-in: every caller that says nothing keeps the
+        # CHOO-2137 default rather than falling open.
+        svc = make_service(session_factory)
+        owner_id = await make_owner(session_factory)
+        agent_id = await register(svc, "unstated", owner_id, addressing_policy=None)
+
+        policy = parse_policy(await _policy_of(svc, session_factory, agent_id))
+        assert policy.is_open() is False
+        assert policy.requires_owner_identity() is True
 
 
 class TestRegisterWithTokenPassesThrough:

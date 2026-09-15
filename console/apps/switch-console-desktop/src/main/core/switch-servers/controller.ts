@@ -36,6 +36,7 @@ import { log } from '@main/lib/logger';
 import { agentAvatarUrlForName } from '@shared/core/agents/agent-avatar';
 import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
 import { HostUnreachableError } from '@shared/core/remote-hosts/reachability';
+import { ownerOnlyPolicy } from '@shared/core/switch-servers/owner-policy';
 import type {
   AddressingPolicy,
   AddServerParams,
@@ -787,6 +788,8 @@ export const switchServersController = createRPCController({
       // Provisioning writes `.claude/settings.local.json` — this is the Claude
       // Code path by construction, not a fallback.
       agentType: knownAgentTypeForProvider('claude'),
+      // This flow collects no addressing choice, so it stays owner-only.
+      addressingPolicy: ownerOnlyPolicy(),
     });
     if (registered.kind !== 'created') return registered;
 
@@ -844,6 +847,8 @@ export const switchServersController = createRPCController({
       displayName: null,
       // Remote provisioning likewise writes `.claude/settings.local.json`.
       agentType: knownAgentTypeForProvider('claude'),
+      // As locally: no addressing choice is collected here.
+      addressingPolicy: ownerOnlyPolicy(),
     });
     if (registered.kind !== 'created') return registered;
 

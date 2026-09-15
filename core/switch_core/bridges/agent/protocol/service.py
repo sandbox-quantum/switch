@@ -309,6 +309,7 @@ class ProtocolService:
         overwrite: bool = False,
         addressable_by_agent_ids: list[str] | None = None,
         owner_only: bool = True,
+        addressing_policy: AddressingPolicy | None = None,
     ) -> RegistrationResult:
         """Register or re-register an agent.
 
@@ -325,6 +326,11 @@ class ProtocolService:
         orchestrator agent) is let in. Pass ``owner_only=False`` to create an
         agent anyone may address, the pre-CHOO-2137 default. Re-registration
         leaves an existing agent's policy alone either way.
+
+        ``addressing_policy`` overrides that default with a policy the caller
+        chose — a policy with no rules means anyone may address the agent. When
+        it is None the ``owner_only`` / ``addressable_by_agent_ids`` default
+        above applies.
 
         If an agent with this name already exists, the call fails with
         ``AgentExistsError`` unless ``overwrite=True`` is passed. Re-registering
@@ -368,6 +374,13 @@ class ProtocolService:
 
         validated_icon_url = normalise_icon_url(icon_url)
         validated_display_name = normalise_display_name(display_name)
+
+        if addressing_policy is not None:
+            initial_policy = None if addressing_policy.is_open() else addressing_policy
+        elif owner_only:
+            initial_policy = owner_only_policy(addressable_by_agent_ids or [])
+        else:
+            initial_policy = None
 
         tool_specs = tools or []
         model_specs = models or []
@@ -437,11 +450,7 @@ class ProtocolService:
                     encrypted_key=encrypted_key,
                     tools=tool_specs,
                     models=model_specs,
-                    addressing_policy=(
-                        owner_only_policy(addressable_by_agent_ids or [])
-                        if owner_only
-                        else None
-                    ),
+                    addressing_policy=initial_policy,
                 )
                 logger.info("Registered agent: %s (%s)", name, agent_id)
 

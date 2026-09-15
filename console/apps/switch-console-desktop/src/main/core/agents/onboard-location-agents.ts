@@ -13,6 +13,7 @@ import { agentAvatarUrlForName } from '@shared/core/agents/agent-avatar';
 import type { Agent } from '@shared/core/agents/agents';
 import type { OnboardAgentError } from '@shared/core/agents/onboarding';
 import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
+import { ownerOnlyPolicy } from '@shared/core/switch-servers/owner-policy';
 import type { SwitchServer } from '@shared/core/switch-servers/switch-servers';
 import { basenameFromAnyPath } from '@shared/path-name';
 import { agentEvents } from './agent-events';
@@ -137,6 +138,9 @@ async function resolveIdentity(
     iconUrl: agentAvatarUrlForName(name),
     // The definition file carries no human label, so there is none to adopt.
     displayName: null,
+    // Nobody is at a form to choose who may address it, so it adopts the
+    // owner-only default and the owner can widen it afterwards.
+    addressingPolicy: ownerOnlyPolicy(),
   });
   if (registered.kind !== 'created') {
     const message = 'message' in registered ? registered.message : '';

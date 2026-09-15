@@ -358,6 +358,11 @@ class RegisterKnownAgentRequest(BaseModel):
     display_name: str | None = None
     options: dict[str, Any] = {}
     overwrite: bool = False
+    # The scoped addressing policy to give the new agent. Omit it (null) to
+    # accept the server default of owner-only; pass a policy with no rules for
+    # an agent anyone may address. Ignored when re-registering an existing
+    # agent, whose policy is left alone.
+    addressing_policy: AddressingPolicy | None = None
 
 
 class BulkSubagentSpec(BaseModel):

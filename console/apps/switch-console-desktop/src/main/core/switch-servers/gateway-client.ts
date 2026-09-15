@@ -322,6 +322,10 @@ export async function registerKnownAgent(
      * same reason as `iconUrl`: the create form holds a label the user typed,
      * and an omitted field would drop it without saying so. */
     displayName: string | null;
+    /** Who may address the agent, applied at registration. Null means anyone,
+     * and is sent as a rule-less policy rather than omitted — leaving the field
+     * out would let the gateway's owner-only default stand instead (CHOO-2801). */
+    addressingPolicy: AddressingPolicy | null;
   }
 ): Promise<RegisteredAgent> {
   const res = await gatewayFetch(server, '/agents/register', {
@@ -335,6 +339,7 @@ export async function registerKnownAgent(
       icon_url: params.iconUrl,
       display_name: params.displayName,
       overwrite: false,
+      addressing_policy: params.addressingPolicy ?? { rules: [] },
     },
   });
   const json = (await res.json()) as { id: string; api_key: string };

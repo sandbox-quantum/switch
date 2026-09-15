@@ -339,6 +339,7 @@ export const AddAgentModal = observer(function AddAgentModal({
         iconUrl: form.iconUrl,
         autoSession: form.autoSession,
         autoApprove: form.autoApprove,
+        addressingPolicy: form.addressingPolicy,
         definitionAttributes: advancedAttributesRef.current,
         providerConfig: launchProfileConfigRef.current,
         entryPoint,
@@ -348,13 +349,6 @@ export const AddAgentModal = observer(function AddAgentModal({
         setCloseGuard(false);
         setSubmitState('idle');
         return;
-      }
-      if (form.addressingPolicy !== null && result.agent.switchAgentId) {
-        await rpc.switchServers.updateAddressingPolicy({
-          serverId: pickState.serverId,
-          agentId: result.agent.switchAgentId,
-          policy: form.addressingPolicy,
-        });
       }
       await agentsStore.load();
       finishWith(result.agent);

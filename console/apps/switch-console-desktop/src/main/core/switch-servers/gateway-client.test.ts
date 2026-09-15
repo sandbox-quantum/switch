@@ -506,6 +506,7 @@ describe('registerKnownAgent', () => {
       options: { channels_enabled: true, repo_dir: '/repo' },
       iconUrl: null,
       displayName: null,
+      addressingPolicy: null,
     });
 
     expect(registered).toEqual({ id: 'sw-1', apiKey: 'tok-123' });
@@ -518,6 +519,7 @@ describe('registerKnownAgent', () => {
       icon_url: null,
       display_name: null,
       overwrite: false,
+      addressing_policy: { rules: [] },
     });
   });
 
@@ -532,6 +534,7 @@ describe('registerKnownAgent', () => {
       options: { channels_enabled: true, repo_dir: '/repo' },
       iconUrl: null,
       displayName: 'Switch Dev',
+      addressingPolicy: null,
     });
 
     const [, init] = fetchMock.mock.calls[0] as unknown as [string, { body: string }];
