@@ -2,6 +2,7 @@ import AddLinkOutlined from "@mui/icons-material/AddLinkOutlined";
 import AddOutlined from "@mui/icons-material/AddOutlined";
 import DeleteOutline from "@mui/icons-material/DeleteOutline";
 import {
+  Alert,
   Box,
   Button,
   Chip,
@@ -25,6 +26,7 @@ import { useAuth } from "../../data/AuthContext";
 import { useBridges } from "../../data/hooks";
 import { formatDate, titleCase } from "../../theme/hootFormat";
 import AddToChatDialog from "./AddToChatDialog";
+import InstalledAppsSection from "./InstalledAppsSection";
 import RegisterMessagingAppDialog from "./RegisterMessagingAppDialog";
 
 type BridgeRow = BridgeDetail & { id: string };
@@ -41,6 +43,7 @@ export default function CollaborationsPage() {
   const { data: bridges, loading, refetch } = useBridges();
   const [deleteTarget, setDeleteTarget] = useState<BridgeDetail | null>(null);
   const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
   const [savingId, setSavingId] = useState<string | null>(null);
   const [registerOpen, setRegisterOpen] = useState(false);
   const [installTarget, setInstallTarget] = useState<BridgeDetail | null>(null);
@@ -48,10 +51,19 @@ export default function CollaborationsPage() {
   const handleDelete = useCallback(async () => {
     if (!deleteTarget) return;
     setDeleting(true);
-    await deleteBridge(deleteTarget.bridge_id);
-    setDeleteTarget(null);
-    setDeleting(false);
-    refetch();
+    setDeleteError(null);
+    try {
+      await deleteBridge(deleteTarget.bridge_id);
+      setDeleteTarget(null);
+      refetch();
+    } catch (e) {
+      // A connection an install created is refused here, and the refusal says
+      // to disconnect the app instead. Closing the dialog on it would leave
+      // the operator clicking Delete at a row that will never go.
+      setDeleteError(e instanceof Error ? e.message : "Failed to delete");
+    } finally {
+      setDeleting(false);
+    }
   }, [deleteTarget, refetch]);
 
   const handleToggleGreetings = useCallback(
@@ -221,6 +233,8 @@ export default function CollaborationsPage() {
         <DataTable rows={rows} columns={columns} />
       )}
 
+      <InstalledAppsSection isAdmin={isAdmin} onConnectionsChanged={refetch} />
+
       <RegisterMessagingAppDialog
         open={registerOpen}
         onClose={() => setRegisterOpen(false)}
@@ -232,7 +246,14 @@ export default function CollaborationsPage() {
         onClose={() => setInstallTarget(null)}
       />
 
-      <Dialog open={!!deleteTarget} onClose={() => setDeleteTarget(null)}>
+      <Dialog
+        open={!!deleteTarget}
+        onClose={() => {
+          if (deleting) return;
+          setDeleteError(null);
+          setDeleteTarget(null);
+        }}
+      >
         <DialogTitle>Delete collaboration bridge</DialogTitle>
         <DialogContent>
           <DialogContentText>
@@ -241,9 +262,22 @@ export default function CollaborationsPage() {
             {deleteTarget?.room_count ?? 0} associated room
             {deleteTarget?.room_count === 1 ? "" : "s"} and external users.
           </DialogContentText>
+          {deleteError && (
+            <Alert severity="error" sx={{ mt: 2 }}>
+              {deleteError}
+            </Alert>
+          )}
         </DialogContent>
         <DialogActions>
-          <Button onClick={() => setDeleteTarget(null)}>Cancel</Button>
+          <Button
+            onClick={() => {
+              setDeleteError(null);
+              setDeleteTarget(null);
+            }}
+            disabled={deleting}
+          >
+            Cancel
+          </Button>
           <Button
             color="error"
             variant="contained"

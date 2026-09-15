@@ -816,11 +816,12 @@ export async function fetchAllExternalUsers(): Promise<
   return [...byId.values()];
 }
 
-export async function deleteBridge(bridgeId: string): Promise<boolean> {
-  const res = await fetchJson<{ ok: boolean }>(`/collaborations/${bridgeId}`, {
-    method: "DELETE",
-  });
-  return res?.ok ?? false;
+// Throws rather than returning false: a connection created by installing the
+// Switch app is refused here with a 409 saying to disconnect the app instead,
+// and a caller that only sees "it didn't work" would leave the operator
+// clicking Delete at a row that will never go.
+export async function deleteBridge(bridgeId: string): Promise<{ ok: boolean }> {
+  return jsonRequest<{ ok: boolean }>(`/collaborations/${bridgeId}`, "DELETE");
 }
 
 export interface BridgeUpdateInput {
@@ -837,6 +838,62 @@ export async function updateBridge(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(update),
   });
+}
+
+// ── Installed apps ───────────────────────────────────────────────────────────
+//
+// The other way a connection comes into being: instead of an operator
+// registering their own app and pasting its credentials, they install this
+// deployment's app into their workspace and the platform hands the credential
+// back. Most deployments have no app of their own, so `fetchInstallablePlatforms`
+// answering with an empty list is the ordinary case and not a failure.
+
+export interface InstalledApp {
+  id: string;
+  platform: string;
+  external_workspace_id: string;
+  // "active", "disconnected" (ended here) or "revoked" (ended at the
+  // platform). The last two are kept apart because an operator whose
+  // connection stopped working needs to know which of the two it was.
+  status: string;
+  // The platform's own spelling of what was granted, shown verbatim.
+  scopes: string;
+  bridge_id: string | null;
+  installed_at: string;
+  ended_at: string | null;
+}
+
+export async function fetchInstallablePlatforms(): Promise<string[] | null> {
+  const res = await fetchJson<{ platforms: string[] }>("/messaging-apps");
+  return res === null ? null : res.platforms;
+}
+
+export async function fetchInstalledApps(): Promise<InstalledApp[] | null> {
+  const res = await fetchJson<{ installs: InstalledApp[] }>(
+    "/messaging-apps/installs",
+  );
+  return res === null ? null : res.installs;
+}
+
+// Answers with a URL rather than redirecting, because the install has to begin
+// in a top-level window on the platform's own domain — a redirect returned to
+// this fetch would be followed by the fetch.
+export async function beginAppInstall(platform: string): Promise<string> {
+  const res = await jsonRequest<{ authorize_url: string }>(
+    `/messaging-apps/${platform}/install`,
+    "POST",
+  );
+  return res.authorize_url;
+}
+
+// Throwing, because 502 here means the platform refused to revoke, nothing was
+// destroyed, and trying again is the right next move — all of which is in the
+// message and none of which survives a boolean.
+export async function disconnectApp(installId: string): Promise<InstalledApp> {
+  return jsonRequest<InstalledApp>(
+    `/messaging-apps/installs/${installId}`,
+    "DELETE",
+  );
 }
 
 // ── Auth ────────────────────────────────────────────────────────────────────
