@@ -944,11 +944,6 @@ class SessionTurnActivity:
         anchor.log_state = state
         return True
 
-    @property
-    def _reacts(self) -> bool:
-        """Whether the adapter marks a message with a reaction at all."""
-        return bool(getattr(self._adapter, "supports_activity_reactions", False))
-
     def _wanted_mark(self, turn: TurnUpsert) -> ActivityMark:
         """Which mark this turn's current state earns.
 
@@ -1018,31 +1013,32 @@ class SessionTurnActivity:
         reaction already there and skip it, nor the first's own end wipe it
         out from under the second.
 
-        Only the first asks the platform, and where the mark is there to be
-        held every one of them records it, because only the ask is redundant
-        and not the stake in what is on the message. A holder whose stake lives
-        in this process's memory alone is a holder only until the process
-        restarts, and the reaction outlives that: the rest of them end, each
-        finding nothing of its own to take off, and the mark stays on a message
-        with no turn left to answer for it.
+        Every one of them asks, rather than only the first. The ask is
+        redundant where the reaction is already there, and adding a mark that
+        is already on the message is an operation this whole design leans on
+        anyway — it is what reconciliation after a restart does — so the
+        redundant half costs a call the platform answers with "already". What
+        the second ask buys is that the stake and the reaction are established
+        together, in that order, by the same turn. A joining turn that recorded
+        a stake without asking would be trusting a reading of the message taken
+        before the stake was written down, and between those two the turn that
+        put the mark there can end and take it off: a queued prompt left with
+        no hourglass, and nothing that will put one back. Asking closes that,
+        because a removal either sees the claim and leaves the mark alone, or
+        went first and this ask restores it.
 
-        Where the mark is not there the joining turn records nothing, and the
-        first one's refusal is how that is known — a platform that would not
-        add the reaction is not holding one, and a turn claiming otherwise
-        would have its own end wait on a mark nobody can remove.
+        The refusals stay the joining turn's own. A platform that will not add
+        the reaction refuses every one of them, so each retracts its own
+        expectation and none is left waiting to remove a mark nobody could put
+        there.
         """
         if anchor.reaction_ref is None:
             return
         turns = self._thread_turns.setdefault(self._thread_key(anchor, mark), set())
         if key in turns:
             return
-        if not turns:
-            if not await self._mark_thread(key, anchor, mark=mark, on=True):
-                return
-        elif self._reacts:
-            held = self._mark_key(anchor, mark)
-            if await self._mark_may_be_there(held):
-                await self._expect_mark(key, held)
+        if not await self._mark_thread(key, anchor, mark=mark, on=True):
+            return
         turns.add(key)
 
     async def _release_marks(self, key: tuple[str, str], anchor: _Anchor) -> bool:
@@ -1152,7 +1148,9 @@ class SessionTurnActivity:
         clear, which is why an expectation is named by the ask and not only by
         the turn that made it.
         """
-        if anchor.reaction_ref is None or not self._reacts:
+        if anchor.reaction_ref is None or not getattr(
+            self._adapter, "supports_activity_reactions", False
+        ):
             return True
         held = self._mark_key(anchor, mark)
         removing: set[tuple[str, str, str]] = set()
@@ -1236,12 +1234,21 @@ class SessionTurnActivity:
         stamp neither of them can be about.
 
         An expectation written before attempts were stamped carries no stamp,
-        and is addressed by the empty one until the turn asks again.
+        and is addressed by the empty one until the turn asks again. One
+        written before the mark was named is read for the mark it names now,
+        the same way every other reader of a claim reads it: an older claim
+        that this ask renews is still an older claim, and treating it as
+        nothing is how a refusal comes to erase a reaction that is really
+        there.
         """
         expecting = self._expecting.setdefault(_mark_id(mark), {})
         record = self._record.get()
         renewed = expecting.get(key)
-        if renewed is None and record is not None and record.data.get("mark") == mark:
+        if (
+            renewed is None
+            and record is not None
+            and claims(record.data.get("mark"), mark)
+        ):
             renewed = str(record.data.get("mark_attempt", ""))
         attempt = _MarkAttempt(secrets.token_urlsafe(16), renewed)
         expecting[key] = attempt.token

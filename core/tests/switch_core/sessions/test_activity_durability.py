@@ -1175,8 +1175,7 @@ class RefusingHourglass(ActivitySlack):
 async def test_a_shared_hourglass_outlives_a_restart_until_its_last_holder_ends(
     session_factory,
 ):
-    """Both prompts waiting behind one message hold its hourglass, and only the
-    first of them asked the platform for it.
+    """Both prompts waiting behind one message hold its hourglass.
 
     A holder whose stake is only this process's memory stops being a holder
     when the process does. The reaction does not: the second turn ends finding
@@ -1196,6 +1195,31 @@ async def test_a_shared_hourglass_outlives_a_restart_until_its_last_holder_ends(
     )
 
     assert not platform.hourglass
+
+
+async def test_a_prompt_joining_a_queue_puts_back_an_hourglass_taken_behind_it(
+    session_factory,
+):
+    """A second prompt waiting behind the same message asks for the hourglass
+    too, rather than taking the first one's word that it is there.
+
+    The word can be out of date. Another publisher ends the first prompt and
+    takes the reaction off, and this one is not told: its memory still has a
+    holder and a standing expectation, both describing a message that no longer
+    carries the mark. A joining prompt that only wrote down a stake would be
+    left queued with nothing to show for it and nothing that would put one
+    back.
+    """
+    await setup(session_factory)
+    platform = ActivitySlack()
+    renderer = activity(session_factory, platform)
+    await publish(renderer, "queued")
+    await publish(activity(session_factory, platform), "completed")
+    assert not platform.hourglass
+
+    await publish(renderer, "queued", agent="Other", command="other")
+
+    assert platform.hourglass == {"channel-demo:question"}
 
 
 async def test_a_refused_hourglass_removal_is_asked_again_when_the_turn_ends():
@@ -1240,6 +1264,34 @@ async def test_a_claim_written_before_the_hourglass_still_answers_for_the_eyes(
 
     platform.mark_activity = refuse
     ended = await publish(activity(session_factory, platform), "completed")
+
+    assert platform.reactions == {"channel-demo:question"}
+    assert ended is False
+
+
+async def test_a_claim_written_before_the_hourglass_survives_a_refused_retry(
+    session_factory,
+):
+    """A retry renews a claim from before the two marks were told apart.
+
+    Read as naming no mark, the retry is a claim in its own right and the
+    refusal that answers it erases the row's evidence altogether — so the
+    turn's own end finds nothing recorded, reports the cleanup done and leaves
+    the 👀 on the message. The older claim is the one this ask renews, and a
+    refusal says nothing about the reaction that claim is still describing.
+    """
+    await setup(session_factory)
+    platform = ActivitySlack()
+    await publish(activity(session_factory, platform))
+    await _unstamp_the_mark(session_factory)
+
+    async def refuse(*args, **kwargs):
+        raise ActivityMarkRefused("Reactions are not allowed in this channel")
+
+    platform.mark_activity = refuse
+    restarted = activity(session_factory, platform)
+    await publish(restarted, "running")
+    ended = await publish(restarted, "completed")
 
     assert platform.reactions == {"channel-demo:question"}
     assert ended is False
