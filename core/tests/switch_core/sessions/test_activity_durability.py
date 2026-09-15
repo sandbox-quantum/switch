@@ -54,6 +54,7 @@ class ActivitySlack(SlackAdapter):
         self.edit_refs = []
         self.edit_threads = []
         self.reactions = set()
+        self.hourglass = set()
         self.fail_after_post = False
 
     async def post_rich(self, channel, agent, content, thread):
@@ -81,10 +82,11 @@ class ActivitySlack(SlackAdapter):
         return None
 
     async def mark_activity(self, channel, ref, *, agent_name, mark, on, force=False):
+        marked = self.reactions if mark == "working" else self.hourglass
         if on:
-            self.reactions.add(ref)
+            marked.add(ref)
         else:
-            self.reactions.discard(ref)
+            marked.discard(ref)
 
 
 class UnsearchablePlatform(ActivitySlack):
@@ -136,12 +138,14 @@ class PerAgentSlack(ActivitySlack):
     def __init__(self):
         super().__init__()
         self.reactions = set()
+        self.hourglass = set()
 
     async def mark_activity(self, channel, ref, *, agent_name, mark, on, force=False):
+        marked = self.reactions if mark == "working" else self.hourglass
         if on:
-            self.reactions.add((agent_name, ref))
+            marked.add((agent_name, ref))
         else:
-            self.reactions.discard((agent_name, ref))
+            marked.discard((agent_name, ref))
 
 
 OUTBOUND_LOGGER = "switch_core.bridges.collaboration.session.outbound"
@@ -1019,6 +1023,136 @@ async def test_a_shared_bots_single_mark_survives_one_of_two_turns_ending(
     assert platform.reactions == {"channel-demo:question"}
 
 
+# ── The hourglass, for a prompt the agent has but has not started ────────────
+
+
+class OneReactionPlatform(ActivitySlack):
+    """Telegram's shape: one reaction per message, so no room for a second.
+
+    A bot gets a single reaction there, and a queued mark could only go on by
+    taking the working one off — a prompt saying nothing beats a running one
+    that has stopped saying it is being read. The queued state is carried by
+    the status text instead.
+    """
+
+    supports_queue_reaction = False
+
+
+async def test_a_queued_prompt_is_marked_as_waiting_rather_than_as_read(
+    session_factory,
+):
+    """👀 says the agent picked the message up. A prompt behind another turn
+    has not been picked up, and saying so was the whole of R7."""
+    await setup(session_factory)
+    platform = ActivitySlack()
+
+    await publish(activity(session_factory, platform), "queued")
+
+    assert platform.hourglass == {"channel-demo:question"}
+    assert not platform.reactions
+
+
+async def test_a_prompt_that_starts_loses_the_hourglass_and_gains_the_eyes(
+    session_factory,
+):
+    """The transition is the point: an hourglass left on a running turn says
+    the agent is still waiting to start, which is no longer true."""
+    await setup(session_factory)
+    platform = ActivitySlack()
+    renderer = activity(session_factory, platform)
+    await publish(renderer, "queued")
+
+    await publish(renderer, "running")
+
+    assert platform.reactions == {"channel-demo:question"}
+    assert not platform.hourglass
+
+
+async def test_a_restarted_publisher_still_takes_the_hourglass_off(session_factory):
+    """A row carries one claim, so claiming the eyes overwrites the evidence
+    that this turn ever asked for the hourglass. Read before it is overwritten
+    or the reaction is one nothing will ever remove."""
+    await setup(session_factory)
+    platform = ActivitySlack()
+    await publish(activity(session_factory, platform), "queued")
+
+    await publish(activity(session_factory, platform), "running")
+
+    assert platform.reactions == {"channel-demo:question"}
+    assert not platform.hourglass
+
+
+async def test_a_prompt_cancelled_before_it_started_takes_its_hourglass_with_it(
+    session_factory,
+):
+    """A turn ends from whichever state it was in, and this one never passed
+    through the working mark at all."""
+    await setup(session_factory)
+    platform = ActivitySlack()
+    renderer = activity(session_factory, platform)
+    await publish(renderer, "queued")
+
+    await publish(renderer, "interrupted")
+
+    assert not platform.hourglass
+    assert not platform.reactions
+
+
+async def test_one_turn_starting_leaves_another_turns_hourglass_alone(
+    session_factory,
+):
+    """Two prompts can be queued behind the same asking message, and the first
+    to start must not clear the second's mark on the way past.
+
+    The evidence is the claim rather than the anchor: both turns are anchored
+    here and only one of them is still waiting, and which is which is a
+    property of the turn's state that the row does not record.
+    """
+    await setup(session_factory)
+    platform = ActivitySlack()
+    await publish(activity(session_factory, platform), "queued")
+    await publish(
+        activity(session_factory, platform), "queued", agent="Other", command="other"
+    )
+
+    await publish(activity(session_factory, platform), "running")
+
+    assert platform.hourglass == {"channel-demo:question"}
+    assert platform.reactions == {"channel-demo:question"}
+
+
+async def test_a_turn_that_ends_holding_the_eyes_leaves_a_queued_ones_hourglass(
+    session_factory,
+):
+    """The two marks are cleaned up independently, so a running turn finishing
+    says nothing about the prompt still waiting behind it."""
+    await setup(session_factory)
+    platform = ActivitySlack()
+    await publish(activity(session_factory, platform), "running")
+    await publish(
+        activity(session_factory, platform), "queued", agent="Other", command="other"
+    )
+
+    await publish(activity(session_factory, platform), "completed")
+
+    assert not platform.reactions
+    assert platform.hourglass == {"channel-demo:question"}
+
+
+async def test_a_platform_with_one_reaction_marks_a_queued_prompt_as_it_always_did(
+    session_factory,
+):
+    """Nothing changes where there is no room for a second mark: the working
+    reaction goes on as before and the status text carries the rest."""
+    await setup(session_factory)
+    platform = OneReactionPlatform()
+
+    await publish(activity(session_factory, platform), "queued")
+
+    assert platform.reactions == {"channel-demo:question"}
+    assert not platform.hourglass
+
+
 async def test_busy_journal_is_skipped_until_next_sweep(session_factory):
     await setup(session_factory)
     journal = ActivityJournal(session_factory, "bridge")
@@ -1182,19 +1316,21 @@ class RefusingPlatform(ActivitySlack):
     def __init__(self, chat, *, refuse_add=False, refuse_remove=False):
         super().__init__()
         self.reactions = chat["reactions"]
+        self.hourglass = chat.setdefault("hourglass", set())
         self.messages = chat["messages"]
         self.refuse_add = refuse_add
         self.refuse_remove = refuse_remove
 
     async def mark_activity(self, channel, ref, *, agent_name, mark, on, force=False):
+        marked = self.reactions if mark == "working" else self.hourglass
         if on:
             if self.refuse_add:
                 raise ActivityMarkRefused("reactions are switched off in this chat")
-            self.reactions.add(ref)
+            marked.add(ref)
         elif self.refuse_remove:
             raise ActivityMarkRefused("the bot may no longer react here")
         else:
-            self.reactions.discard(ref)
+            marked.discard(ref)
 
 
 async def test_a_mark_left_on_the_message_after_a_restart_is_not_reported_as_cleaned_up(
@@ -1596,7 +1732,11 @@ async def test_an_addition_whose_answer_was_lost_survives_a_refused_retry(
 # and holds only its own turn's advisory lock. Whatever it does to a holder's
 # row it does while that holder is free to be writing to it.
 
-MARK = {"channel_id": "channel-demo", "reaction_ref": "channel-demo:question"}
+MARK = {
+    "channel_id": "channel-demo",
+    "reaction_ref": "channel-demo:question",
+    "mark": "working",
+}
 
 
 async def _row(sessions):

@@ -45,6 +45,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.bridges.collaboration.adapter import (
+    ActivityMark,
     ActivityMarkRefused,
     CollaborationAdapter,
     RequestCard,
@@ -142,9 +143,24 @@ def _violates(error: IntegrityError, constraint: str) -> bool:
     return f'"{constraint}"' in str(error.orig)
 
 
-def _mark_id(mark: dict[str, str]) -> tuple[str, str, str]:
+#: The marks a message can carry, in the order a turn passes through them.
+#:
+#: A turn holds exactly one at a time — a prompt is either waiting to start or
+#: being worked on, never both — but a message can show both at once, because
+#: two turns can be anchored to the same asking message and be in different
+#: states. Platforms that cannot hold two reactions on one message carry only
+#: the working one and say the rest in the status text.
+_MARKS: tuple[ActivityMark, ...] = ("queued", "working")
+
+
+def _mark_id(mark: dict[str, str]) -> tuple[str, str, str, str]:
     """The same reaction as a key this process can look it up by."""
-    return (mark["channel_id"], mark["reaction_ref"], mark["agent_name"])
+    return (
+        mark["channel_id"],
+        mark["reaction_ref"],
+        mark["agent_name"],
+        mark["mark"],
+    )
 
 
 class CardNotPosted(RuntimeError):
@@ -235,13 +251,16 @@ class SessionTurnActivity:
         self._reactions_per_agent = getattr(
             adapter, "activity_reactions_per_agent", False
         )
+        self._queue_reaction = getattr(adapter, "supports_queue_reaction", False)
         self._timer_redraws = getattr(adapter, "redraws_for_elapsed_time", False)
         self._only_mentions_notify = getattr(adapter, "notifies_only_by_mention", False)
         self._recovers_posts = getattr(adapter, "recovers_uncertain_posts", False)
         self._marks_publications = getattr(adapter, "carries_publication_marker", False)
         self._anchors: OrderedDict[tuple[str, str], _Anchor] = OrderedDict()
-        self._thread_turns: dict[tuple[str, str, str], set[tuple[str, str]]] = {}
-        self._expecting: dict[tuple[str, str, str], dict[tuple[str, str], str]] = {}
+        self._thread_turns: dict[tuple[str, str, str, str], set[tuple[str, str]]] = {}
+        self._expecting: dict[
+            tuple[str, str, str, str], dict[tuple[str, str], str]
+        ] = {}
         self._attention: OrderedDict[tuple[str, str], tuple[str, str]] = OrderedDict()
 
     @property
@@ -417,7 +436,7 @@ class SessionTurnActivity:
                         )
                     self._anchors[key] = anchor
                     if turn.status in TURN_ENDED:
-                        await self._release_thread(key, anchor)
+                        await self._release_marks(key, anchor)
                 drawn = await draw()
                 if drawn and turn.status in TURN_ENDED:
                     if not turn.turn_id.startswith("pending:"):
@@ -713,7 +732,7 @@ class SessionTurnActivity:
             self._anchors[key] = anchor
             await self._save_anchor(anchor)
             if not ended:
-                await self._claim_thread(key, anchor)
+                await self._hold_mark(key, anchor, turn)
             drawn = (
                 await self._edit(
                     anchor,
@@ -729,7 +748,7 @@ class SessionTurnActivity:
         else:
             anchor.session_url = session_url
             if not ended:
-                await self._claim_thread(key, anchor)
+                await self._hold_mark(key, anchor, turn)
             drawn = await self._edit(
                 anchor,
                 items,
@@ -747,7 +766,7 @@ class SessionTurnActivity:
             if record and drawn:
                 record.data["ended"] = True
                 await record.save()
-            drawn = await self._release_thread(key, anchor) and drawn
+            drawn = await self._release_marks(key, anchor) and drawn
             if not drawn or turn.turn_id.startswith("pending:"):
                 self._anchors[key] = anchor
                 self._anchors.move_to_end(key)
@@ -925,8 +944,60 @@ class SessionTurnActivity:
         anchor.log_state = state
         return True
 
-    async def _claim_thread(self, key: tuple[str, str], anchor: _Anchor) -> None:
-        """Add this turn to the set of turns holding the reaction on
+    def _wanted_mark(self, turn: TurnUpsert) -> ActivityMark:
+        """Which mark this turn's current state earns.
+
+        A prompt the agent has but has not started on is waiting, not being
+        read, and saying so is the whole point of the second reaction. Where
+        the platform has no room for it the queued state is carried by the
+        status text and the working mark goes on as before, which is what a
+        reader there has always seen.
+        """
+        if self._queue_reaction and turn.status == "queued":
+            return "queued"
+        return "working"
+
+    async def _hold_mark(
+        self, key: tuple[str, str], anchor: _Anchor, turn: TurnUpsert
+    ) -> None:
+        """Move this turn onto the one mark its state earns, and off the other.
+
+        Off first. A row carries one claim, so claiming the working mark
+        overwrites the evidence that this turn ever asked for the hourglass —
+        and an hourglass nobody is recorded as holding is one nothing will take
+        off. If the platform will not remove it the turn keeps waiting for its
+        eyes rather than stranding the reaction it already has; the next
+        redraw tries again.
+        """
+        wanted = self._wanted_mark(turn)
+        for mark in _MARKS:
+            if mark == wanted or not self._holds(key, anchor, mark):
+                continue
+            if not await self._release_thread(key, anchor, mark):
+                return
+        await self._claim_thread(key, anchor, wanted)
+
+    def _holds(self, key: tuple[str, str], anchor: _Anchor, mark: ActivityMark) -> bool:
+        """Whether this turn's own ask may have put `mark` on the message.
+
+        Both halves, for the same reason `_claimants` reads both: this
+        process's memory is empty after a restart and the row's claim is not,
+        and a publisher with no journal has only the memory. A turn the second
+        to want a mark has no claim of its own — the first turn's covers the
+        reaction they share — and is answered by the memory alone, which is
+        where its place among the holders is kept.
+        """
+        if key in self._thread_turns.get(self._thread_key(anchor, mark), frozenset()):
+            return True
+        record = self._record.get()
+        return record is not None and record.data.get("mark") == self._mark_key(
+            anchor, mark
+        )
+
+    async def _claim_thread(
+        self, key: tuple[str, str], anchor: _Anchor, mark: ActivityMark
+    ) -> None:
+        """Add this turn to the set of turns holding `mark` on
         `anchor.reaction_ref`, switching it on only if this turn is the
         first to want it.
 
@@ -938,14 +1009,36 @@ class SessionTurnActivity:
         """
         if anchor.reaction_ref is None:
             return
-        turns = self._thread_turns.setdefault(self._thread_key(anchor), set())
+        turns = self._thread_turns.setdefault(self._thread_key(anchor, mark), set())
         first = not turns
-        if not first or await self._mark_thread(key, anchor, working=True):
+        if not first or await self._mark_thread(key, anchor, mark=mark, on=True):
             turns.add(key)
 
-    async def _release_thread(self, key: tuple[str, str], anchor: _Anchor) -> bool:
+    async def _release_marks(self, key: tuple[str, str], anchor: _Anchor) -> bool:
+        """Take this turn off every mark it could be holding.
+
+        A turn ends from whichever state it was in, and a queued one that is
+        cancelled before it starts never passes through the working mark at
+        all — so which one it was holding cannot be assumed from the fact that
+        it ended.
+
+        The working mark is asked for unconditionally, as it always has been: a
+        turn whose claim was refused, or made in a process that has since
+        restarted, still has to ask. The hourglass is asked for only where this
+        turn may have been the one to put it there, because a turn that was
+        never queued taking it off would be taking it off whoever is.
+        """
+        done = True
+        for mark in _MARKS:
+            if mark == "working" or self._holds(key, anchor, mark):
+                done = await self._release_thread(key, anchor, mark) and done
+        return done
+
+    async def _release_thread(
+        self, key: tuple[str, str], anchor: _Anchor, mark: ActivityMark
+    ) -> bool:
         """The inverse of `_claim_thread`: drop this turn from the holders of
-        `anchor.reaction_ref`, switching the reaction off once none are left.
+        `mark` on `anchor.reaction_ref`, switching it off once none are left.
 
         A turn that never claimed it still reaches this — published already
         ended, or one whose claim this process never recorded at all (a
@@ -961,7 +1054,7 @@ class SessionTurnActivity:
         """
         if anchor.reaction_ref is None:
             return True
-        thread_key = self._thread_key(anchor)
+        thread_key = self._thread_key(anchor, mark)
         turns = self._thread_turns.get(thread_key)
         if turns is not None:
             turns.discard(key)
@@ -969,17 +1062,22 @@ class SessionTurnActivity:
                 return True
             del self._thread_turns[thread_key]
         record = self._record.get()
+        waiting = self._mark_key(anchor, "queued") if self._queue_reaction else None
         if self._journal and await self._journal.reaction_held(
             key,
             anchor.channel_id,
             anchor.reaction_ref,
             agent_name=anchor.agent_name if self._reactions_per_agent else None,
+            claiming=waiting if mark == "queued" else None,
+            not_claiming=waiting if mark == "working" else None,
             sessions=record.sessions if record else self._journal.sessions,
         ):
             return True
-        return await self._mark_thread(key, anchor, working=False)
+        return await self._mark_thread(key, anchor, mark=mark, on=False)
 
-    def _thread_key(self, anchor: _Anchor) -> tuple[str, str, str]:
+    def _thread_key(
+        self, anchor: _Anchor, mark: ActivityMark
+    ) -> tuple[str, str, str, str]:
         """Who is holding what, keyed by whose reaction it actually is.
 
         Where each agent reacts as its own bot the marks are independent, so
@@ -991,12 +1089,12 @@ class SessionTurnActivity:
         wants.
         """
         agent = anchor.agent_name if self._reactions_per_agent else ""
-        return (anchor.channel_id, anchor.reaction_ref or "", agent)
+        return (anchor.channel_id, anchor.reaction_ref or "", agent, mark)
 
     async def _mark_thread(
-        self, key: tuple[str, str], anchor: _Anchor, *, working: bool
+        self, key: tuple[str, str], anchor: _Anchor, *, mark: ActivityMark, on: bool
     ) -> bool:
-        """Put `:eyes:` on the message that actually asked, or take it off.
+        """Put `mark` on the message that actually asked, or take it off.
 
         Not necessarily the thread root — a turn threaded under a reply deep
         in the thread reacts to that reply, resolved once by `_begin` and
@@ -1027,29 +1125,29 @@ class SessionTurnActivity:
             self._adapter, "supports_activity_reactions", False
         ):
             return True
-        mark = self._mark_key(anchor)
+        held = self._mark_key(anchor, mark)
         removing: set[tuple[str, str, str]] = set()
         attempt: _MarkAttempt | None = None
-        if working:
-            attempt = await self._expect_mark(key, mark)
+        if on:
+            attempt = await self._expect_mark(key, held)
         else:
-            removing = await self._claimants(mark)
+            removing = await self._claimants(held)
         try:
             await self._adapter.mark_activity(
                 anchor.channel_id,
                 anchor.reaction_ref,
                 agent_name=anchor.agent_name,
-                mark="working",
-                on=working,
+                mark=mark,
+                on=on,
                 **({"force": True} if self._journal else {}),
             )
         except ActivityMarkRefused as refusal:
-            if working:
+            if on:
                 if attempt is not None:
-                    await self._retract_attempt(key, mark, attempt)
+                    await self._retract_attempt(key, held, attempt)
                 logger.warning("%s The turn goes on without the mark.", refusal)
                 return True
-            if not await self._mark_may_be_there(mark):
+            if not await self._mark_may_be_there(held):
                 logger.warning(
                     "%s Nothing was ever put on it, so there is nothing to take off.",
                     refusal,
@@ -1063,18 +1161,19 @@ class SessionTurnActivity:
             return False
         except Exception:
             logger.warning(
-                "Could not %s the activity reaction on %s in %s.",
-                "add" if working else "remove",
+                "Could not %s the %s reaction on %s in %s.",
+                "add" if on else "remove",
+                mark,
                 anchor.reaction_ref,
                 anchor.channel_id,
                 exc_info=True,
             )
             return False
-        if not working:
-            await self._mark_taken_off(key, mark, removing)
+        if not on:
+            await self._mark_taken_off(key, held, removing)
         return True
 
-    def _mark_key(self, anchor: _Anchor) -> dict[str, str]:
+    def _mark_key(self, anchor: _Anchor, mark: ActivityMark) -> dict[str, str]:
         """Identify the reaction itself, which several turns can share.
 
         The same shape as `_thread_key` and for the same reason: where every
@@ -1088,6 +1187,7 @@ class SessionTurnActivity:
             "channel_id": anchor.channel_id,
             "reaction_ref": anchor.reaction_ref or "",
             "agent_name": anchor.agent_name if self._reactions_per_agent else "",
+            "mark": mark,
         }
 
     async def _expect_mark(
@@ -1253,7 +1353,7 @@ class SessionTurnActivity:
                 session_id,
             )
             if self._journal is None:
-                await self._release_thread(key, anchor)
+                await self._release_marks(key, anchor)
 
 
 class SessionRequestCards:

@@ -188,6 +188,8 @@ class ActivityJournal:
         ref: str,
         *,
         agent_name: str | None = None,
+        claiming: dict[str, str] | None = None,
+        not_claiming: dict[str, str] | None = None,
         sessions: async_sessionmaker[AsyncSession],
     ) -> bool:
         """Whether another live turn still wants the mark on this message.
@@ -197,16 +199,33 @@ class ActivityJournal:
         its own reaction there says nothing about whether this one's should
         come off. Left None where every agent shares a bot and there is a
         single reaction between them.
+
+        `claiming` and `not_claiming` say what the mark is evidenced by, and
+        the two marks differ. Being anchored here is enough to want the working
+        mark — every live turn does, whether or not its own attempt has landed,
+        which is why narrowing that one to its claimants would take the
+        reaction off under a turn whose claim was refused. A turn waiting to
+        start is the exception, because it wants the hourglass *instead*: it is
+        named by `not_claiming` and does not hold the eyes. The hourglass
+        itself runs the other way — only a turn still waiting wants it, its
+        status is not in the row and its claim is, so `claiming` makes the
+        claim the whole of the evidence.
         """
         anchor: dict[str, str] = {"channel_id": channel, "reaction_ref": ref}
         if agent_name is not None:
             anchor["agent_name"] = agent_name
+        held: dict[str, Any] = {"anchor": anchor}
+        if claiming is not None:
+            held["mark"] = claiming
+        criteria = [SessionActivityPost.data.contains(held)]
+        if not_claiming is not None:
+            criteria.append(~SessionActivityPost.data.contains({"mark": not_claiming}))
         async with sessions() as db:
             rows = await db.scalars(
                 select(SessionActivityPost).where(
                     SessionActivityPost.tenant_id == require_tenant_id(),
                     SessionActivityPost.bridge_id == self.bridge_id,
-                    SessionActivityPost.data.contains({"anchor": anchor}),
+                    *criteria,
                 )
             )
             return any(
