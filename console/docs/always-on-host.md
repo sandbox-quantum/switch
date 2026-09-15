@@ -36,12 +36,20 @@ its own: its provider and MCP children, through its own adapter instance, and
 its ownership record, so the next start of that room is not refused by a live
 owner that happens to be this very host.
 
+Providers and their MCP servers are spawned into their own process group, so
+teardown reaches the tools they spawned rather than orphaning them. A group that
+cannot be proven gone is a teardown failure: the session keeps its ownership
+records, the room refuses to start another session, and nothing tells Switch
+this host quiesced while a provider may still be executing. There is no
+automatic recovery from that.
+
 A fault, a stop, a lease expiry or a room the server will not admit ends one
 room session, records the reason against that room, and leaves the host and the
 other rooms running. The watcher chain that carries every room never fails on
-one of them. Stopping is bounded: a session that will not drain is named in the
-log and left behind so the host can still exit. A fault in the host itself is
-still a shared failure, and is visible as one.
+one of them. Stopping is bounded twice over: the host names sessions that
+outlive the drain and exits on a code of its own, and the supervisor fences the
+worker's group if it has not gone after the grace period. A fault in the host
+itself is still a shared failure, and is visible as one.
 
 ## Per-agent vs per-session
 
@@ -64,6 +72,12 @@ room — the first dispatch happens before any binding exists. The host's room �
 session map is therefore the only thing enforcing correct admission, so events
 are routed by `event.room_id` and never to whichever session ran last. Two live
 sessions claiming one room is refused.
+
+A room session is pinned to its room. `SWITCH_BOUND_ROOM_ID` reaches the
+provider's Switch tools, and `connect_to_room` refuses another room there —
+before the call, because Switch grants a claim the moment it is asked and may
+evict whoever held that room. The inbox keeps a second check that stops the
+session if an unexpected room change still lands.
 
 Switch allows 32 connections per agent; discovery spends one and each room
 session one more. The local budget of 31 is an early warning only — other
@@ -100,3 +114,5 @@ harder to contain: today an evicted room connection stops one room.
   rather than relaunching it the way the supervisor did.
 - Restarting a single room session from Console is refused with a message
   naming the host to restart instead.
+- Claude's SDK spawns its own provider process, so the process-group fencing
+  covers the stdio providers and OpenCode's server but not Claude's child.

@@ -103,6 +103,7 @@ it('records a room it cannot admit instead of stopping the agent', async () => {
   const admitted: string[] = [];
   const rejected: { roomId: string; message: string }[] = [];
   const dispatcher: SessionDispatcher = {
+    incomplete: false,
     dispatch: vi.fn(async (roomId: string) => {
       if (roomId === 'room-refused')
         throw new Error('Room room-refused is already served by session other.');

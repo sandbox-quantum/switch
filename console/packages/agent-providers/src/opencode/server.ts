@@ -3,6 +3,7 @@ import { randomBytes } from 'node:crypto';
 import { rm } from 'node:fs/promises';
 import { createServer } from 'node:net';
 import { ProviderUnavailableError } from '../adapter';
+import { GROUPED_CHILDREN, stopProcessTree } from '../process-tree';
 import type { OpencodeConfigFile } from './config';
 import { prepareOpencodeHome } from './home';
 
@@ -61,6 +62,8 @@ export async function startOpencodeServer(input: StartServerInput): Promise<Open
   const configHome = await prepareOpencodeHome(input.config, input.skills, input.env);
 
   const child = spawn(input.binaryPath, ['serve', '--hostname=127.0.0.1', `--port=${port}`], {
+    // Its own process group, so teardown reaches the tools the server spawns.
+    detached: GROUPED_CHILDREN,
     cwd: input.cwd,
     env: {
       ...input.env,
@@ -135,26 +138,13 @@ export async function stopOpencodeServer(
   server: Pick<OpencodeServerHandle, 'process' | 'configHome'>
 ): Promise<void> {
   const child = server.process;
-  if (child.pid && child.exitCode === null && child.signalCode === null) {
-    await new Promise<void>((resolve, reject) => {
-      const kill = setTimeout(() => child.kill('SIGKILL'), 2000);
-      const timeout = setTimeout(() => {
-        cleanup();
-        reject(new Error('OpenCode process did not exit after termination.'));
-      }, 5000);
-      const cleanup = () => {
-        clearTimeout(kill);
-        clearTimeout(timeout);
-        child.removeListener('exit', exited);
-      };
-      const exited = () => {
-        cleanup();
-        resolve();
-      };
-      child.once('exit', exited);
-      child.kill('SIGTERM');
+  if (child.pid && child.exitCode === null && child.signalCode === null)
+    await stopProcessTree(child, {
+      grouped: GROUPED_CHILDREN,
+      escalateAfterMs: 2000,
+      deadlineMs: 5000,
+      description: 'OpenCode server process group',
     });
-  }
   await rm(server.configHome, { recursive: true, force: true });
 }
 

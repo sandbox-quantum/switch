@@ -985,6 +985,20 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
   if (name === 'select_agent') {
     return handleSelectAgent(req.params.arguments ?? {});
   }
+  /**
+   * A session the host pinned to one room cannot claim another.
+   *
+   * A resident host runs many rooms in one process, one conversation each, and its
+   * room-to-session map is what keeps a room's traffic out of another room's
+   * conversation. A session that moved would silently take its own room's
+   * messages with it, so the move is refused here and never reaches Switch.
+   */
+  function boundRoomRefusal(requested: unknown): string | null {
+    const bound = process.env.SWITCH_BOUND_ROOM_ID?.trim();
+    if (!bound || typeof requested !== 'string' || requested === bound) return null;
+    return `This session is bound to room ${bound} and cannot connect to ${requested}. It runs inside an always-on agent host that keeps one conversation per room; another room's work belongs to that room's own session.`;
+  }
+
   // Every route below stamps the agent id into a URL, so none of them mean
   // anything yet. One guard here covers the whole surface.
   if (!isBound()) {
@@ -995,6 +1009,13 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
   }
   if (name === 'send_attachment') {
     return handleSendAttachment(req.params.arguments ?? {});
+  }
+  if (name === 'connect_to_room') {
+    const refusal = boundRoomRefusal((req.params.arguments ?? {}).room_id);
+    // Before the call, deliberately. The server grants a claim the moment it is
+    // asked and may evict whoever held the room; a refusal that arrives after
+    // that has already done the damage it was meant to prevent.
+    if (refusal) return { isError: true, content: [{ type: 'text', text: refusal }] };
   }
   if (operations.some((op) => op.name === name)) {
     const result = await callOperation(name, req.params.arguments ?? {});

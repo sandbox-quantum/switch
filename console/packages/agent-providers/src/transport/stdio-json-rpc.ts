@@ -1,6 +1,7 @@
 import { type ChildProcess, spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { Transform } from 'node:stream';
+import { GROUPED_CHILDREN, stopProcessTree } from '../process-tree';
 
 export interface ProviderLogger {
   debug(message: string, context?: Record<string, unknown>): void;
@@ -63,6 +64,7 @@ const STDERR_TAIL_LIMIT = 8_000;
  */
 export class StdioJsonRpcClient {
   private readonly child: ChildProcess;
+
   private readonly pending = new Map<number, PendingRequest>();
   private readonly notificationHandlers = new Map<string, NotificationHandler[]>();
   private readonly serverRequestHandlers = new Map<string, ServerRequestHandler>();
@@ -76,6 +78,8 @@ export class StdioJsonRpcClient {
     this.logger = options.logger;
     this.onExit = options.onExit;
     this.child = spawn(options.command, options.args, {
+      // Its own process group, so teardown can reach the tools it spawns.
+      detached: GROUPED_CHILDREN,
       cwd: options.cwd,
       env: options.env,
       stdio: ['pipe', 'pipe', 'pipe'],
@@ -175,26 +179,14 @@ export class StdioJsonRpcClient {
     this.serverRequestHandlers.set(method, handler);
   }
 
+  /** Stops the provider and every process it spawned; see `stopProcessTree`. */
   async dispose(): Promise<void> {
     if (this.exited) return;
-    await new Promise<void>((resolve, reject) => {
-      const kill = setTimeout(() => this.child.kill('SIGKILL'), 2000);
-      const timeout = setTimeout(() => {
-        cleanup();
-        reject(new Error('Provider process did not exit after termination.'));
-      }, 5000);
-      const cleanup = () => {
-        clearTimeout(kill);
-        clearTimeout(timeout);
-        this.child.removeListener('exit', exited);
-      };
-      const exited = () => {
-        cleanup();
-        resolve();
-      };
-      this.child.once('exit', exited);
-      this.child.stdin?.end();
-      this.child.kill('SIGTERM');
+    await stopProcessTree(this.child, {
+      grouped: GROUPED_CHILDREN,
+      escalateAfterMs: 2000,
+      deadlineMs: 5000,
+      description: 'Provider process group',
     });
   }
 

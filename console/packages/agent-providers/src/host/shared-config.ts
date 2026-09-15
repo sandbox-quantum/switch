@@ -34,7 +34,16 @@ export const sharedConfigSchema = z.strictObject({
 });
 export type SharedHostConfig = z.infer<typeof sharedConfigSchema>;
 
-export async function prepareSharedConfig(root: string, config: SharedHostConfig) {
+/**
+ * `boundRoomId` pins the session's Switch tools to one room. A resident host
+ * passes its room session's room; a session that may move between rooms passes
+ * null.
+ */
+export async function prepareSharedConfig(
+  root: string,
+  config: SharedHostConfig,
+  boundRoomId: string | null
+) {
   if (config.session.provider !== config.start.provider)
     throw new Error('Shared SDK host provider mismatch.');
   let agentApiUrl = process.env.SWITCH_API_ENDPOINT;
@@ -64,6 +73,7 @@ export async function prepareSharedConfig(root: string, config: SharedHostConfig
       ...credentials,
       SWITCH_CONNECTION_ID: config.roomConnection?.connectionId ?? '',
       SWITCH_CHANNEL_DISABLE_POLL: '1',
+      ...(boundRoomId ? { SWITCH_BOUND_ROOM_ID: boundRoomId } : {}),
     };
     if (!switchEnv.SWITCH_CONNECTION_ID)
       throw new Error('Shared SDK execution requires a persistent room connection.');

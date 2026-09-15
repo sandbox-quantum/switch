@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { mkdir, readFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
-import { LEASE_EXPIRED_EXIT_CODE } from './exit-codes';
+import { LEASE_EXPIRED_EXIT_CODE, STOP_INCOMPLETE_EXIT_CODE } from './exit-codes';
 import { ensureSharedProcess } from './launch';
 import { replaceOwner } from './ownership-lock';
 import { ownProcessGroup } from './process-fence';
@@ -109,14 +109,17 @@ async function main(): Promise<void> {
     const stop = new AbortController();
     process.on('SIGTERM', () => stop.abort());
     process.on('SIGINT', () => stop.abort());
-    await runSharedWatcher(
-      root,
+    const dispatcher =
       process.env.SWITCH_SDK_SESSION_DISPATCH === 'spawn'
         ? spawningDispatcher(process.argv[1])
-        : residentDispatcher(resolve(root)),
-      config,
-      stop.signal
-    );
+        : residentDispatcher(resolve(root));
+    await runSharedWatcher(root, dispatcher, config, stop.signal);
+    // A room session that outlived the drain, or a provider child still holding
+    // a handle, would keep this process alive with nothing left to run it.
+    // Exiting on a code of its own is what lets the supervisor fence the
+    // remains instead of waiting on them.
+    if (dispatcher.incomplete) process.exit(STOP_INCOMPLETE_EXIT_CODE);
+    process.exit(0);
   } else if (process.platform !== 'win32' && (await ownProcessGroup()) === null) {
     const child = spawn(process.execPath, process.argv.slice(1), {
       detached: true,
@@ -132,7 +135,7 @@ async function main(): Promise<void> {
       process.exitCode = code ?? 1;
     });
   } else {
-    const { agentApiUrl, token, input } = await prepareSharedConfig(root, config);
+    const { agentApiUrl, token, input } = await prepareSharedConfig(root, config, null);
     const readiness = await checkProviderReadiness({
       provider: config.start.provider,
       binaryPath:

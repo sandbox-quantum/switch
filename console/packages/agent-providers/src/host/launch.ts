@@ -28,8 +28,41 @@ type LaunchInput = {
   restart: boolean;
 };
 
+/** The lock that serializes every claim on a session's state directory. */
+export function launchLock(root: string): string {
+  return join(root, 'launch');
+}
+
+/**
+ * The process that owns this session directory, or null when none is alive.
+ *
+ * A live owner is never displaced: a launch adopts it, and a resident host
+ * refuses to claim the directory out from under it.
+ */
+export async function liveSessionOwner(
+  root: string
+): Promise<{ pid: number; resident: boolean } | null> {
+  let owner: { pid?: unknown; resident?: unknown };
+  try {
+    owner = JSON.parse(await readFile(join(root, 'supervisor', 'owner.json'), 'utf8'));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw error;
+  }
+  const pid = owner.pid;
+  if (typeof pid !== 'number' || !Number.isSafeInteger(pid) || pid <= 0)
+    throw new Error('Invalid shared host supervisor owner.');
+  try {
+    process.kill(pid, 0);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ESRCH') return null;
+    throw error;
+  }
+  return { pid, resident: owner.resident === true };
+}
+
 export async function ensureSharedProcess(input: LaunchInput): Promise<{ created: boolean }> {
-  return withOwnershipLock(join(input.root, 'launch'), () => launch(input));
+  return withOwnershipLock(launchLock(input.root), () => launch(input));
 }
 
 async function launch(input: LaunchInput): Promise<{ created: boolean }> {
@@ -91,15 +124,7 @@ async function launch(input: LaunchInput): Promise<{ created: boolean }> {
       roomConnection: saved.roomConnection,
     });
   }
-  try {
-    const owner = JSON.parse(await readFile(join(input.root, 'supervisor', 'owner.json'), 'utf8'));
-    if (!Number.isSafeInteger(owner.pid) || owner.pid <= 0)
-      throw new Error('Invalid shared host supervisor owner.');
-    process.kill(owner.pid, 0);
-    return { created };
-  } catch (error) {
-    if (!['ENOENT', 'ESRCH'].includes((error as NodeJS.ErrnoException).code ?? '')) throw error;
-  }
+  if (await liveSessionOwner(input.root)) return { created };
   await unlink(join(input.root, 'supervisor', 'failure.json')).catch(
     (error: NodeJS.ErrnoException) => {
       if (error.code !== 'ENOENT') throw error;

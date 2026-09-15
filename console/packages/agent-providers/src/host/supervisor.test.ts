@@ -168,3 +168,42 @@ it('does not relaunch a worker that exits with a fatal code', async () => {
     JSON.parse(await readFile(join(root, 'supervisor', 'failure.json'), 'utf8')).message
   ).toContain('worker.log');
 });
+
+it('fences a worker that will not stop, and the tools it left running', async () => {
+  const root = await fixture();
+  // A worker that ignores SIGTERM and holds a tool process open — the shape of
+  // a provider child that will not drain.
+  const script = `
+    const fs = require('node:fs');
+    const { spawn } = require('node:child_process');
+    const root = ${JSON.stringify(root)};
+    process.on('SIGTERM', () => {});
+    const child = spawn('sleep', ['1000'], { stdio: 'ignore' });
+    fs.writeFileSync(root + '/child.pid', String(child.pid));
+    setInterval(() => {}, 1000);
+  `;
+  const stop = new AbortController();
+  const supervising = superviseSharedHost({
+    root,
+    executable: process.execPath,
+    args: ['-e', script],
+    env: process.env,
+    signal: stop.signal,
+  });
+  let childPid = 0;
+  for (let attempt = 0; attempt < 200 && !childPid; attempt++) {
+    childPid = Number(await readFile(join(root, 'child.pid'), 'utf8').catch(() => 0));
+    if (!childPid) await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  expect(childPid).toBeGreaterThan(0);
+
+  const startedAt = Date.now();
+  stop.abort();
+  await supervising;
+
+  // Bounded: the grace period plus the kill wait, not for ever.
+  expect(Date.now() - startedAt).toBeLessThan(60_000);
+  // The tool the worker left running went with its group.
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  expect(() => process.kill(childPid, 0)).toThrow();
+}, 90_000);

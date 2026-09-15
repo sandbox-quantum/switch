@@ -445,6 +445,18 @@ export async function runSharedHost(
       await flush();
       if (rooms && options.roomConnection) {
         const current = JSON.stringify(rooms.currentRooms());
+        // The room switch is refused before it reaches Switch, so reaching here
+        // means that guard was bypassed. Stop rather than rebind: the host's
+        // room-to-session map still names the old room, and serving a room this
+        // session does not own is how one room's work lands in another's
+        // conversation.
+        if (
+          options.resident &&
+          rooms.currentRooms().some((room) => !options.roomConnection!.rooms.includes(room))
+        )
+          throw new Error(
+            `ROOM_BINDING_CHANGED: this session is bound to ${options.roomConnection.rooms.join(', ')} but its connection now serves ${rooms.currentRooms().join(', ')}. Resident room sessions cannot move between rooms.`
+          );
         if (current !== roomBinding) {
           await request(`${sessionPath}/room-connection`, {
             ...hostLease,

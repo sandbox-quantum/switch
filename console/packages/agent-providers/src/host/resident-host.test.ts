@@ -1,11 +1,13 @@
 import { randomUUID } from 'node:crypto';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, expect, it, vi } from 'vitest';
+import type * as LaunchModule from './launch';
 import {
   RESIDENT_STOP_TIMEOUT_MS,
   ResidentSessions,
+  ResidentTeardownError,
   assertSessionEnvironment,
   hostEnvironmentBaseline,
   roomSessionContext,
@@ -16,7 +18,9 @@ import {
 import { sharedConfigSchema, type SharedHostConfig } from './shared-config';
 
 const paths = vi.hoisted(() => ({ root: '' }));
-vi.mock('./launch', () => ({
+vi.mock('./launch', async (importOriginal) => ({
+  // Only the state-directory location is redirected; ownership is the real thing.
+  ...(await importOriginal<typeof LaunchModule>()),
   sharedSessionRoot: (id: string) => join(paths.root, id),
   ensureSharedProcess: vi.fn(),
 }));
@@ -362,6 +366,90 @@ it('replaces a room fault rather than accumulating one per retry, and clears it 
     expect(host.failures()).toEqual([]);
   } finally {
     errors.mockRestore();
+  }
+  await host.stopAll();
+});
+
+it('refuses a room whose session could not be proven stopped', async () => {
+  const root = await workspace();
+  const config = configFor({
+    cwd: root,
+    roomId: 'room-a',
+    sessionId: 'session-a',
+    connectionId: 'a',
+  });
+  const run: RoomSessionRun = async ({ context }) => {
+    throw new ResidentTeardownError(context, new Error('provider child would not exit'), null);
+  };
+  const host = new ResidentSessions(root, run, RESIDENT_STOP_TIMEOUT_MS);
+  const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+  try {
+    // A session that could not be torn down keeps its ownership record; the
+    // record is what stops anything else concluding the provider stopped.
+    const owner = join(root, 'session-a', 'supervisor', 'owner.json');
+    await mkdir(join(root, 'session-a', 'supervisor'), { recursive: true });
+    await writeFile(owner, JSON.stringify({ pid: process.pid, resident: true }));
+
+    await host.dispatch('room-a', config);
+    await vi.waitFor(() => expect(host.failures()).toHaveLength(1));
+    await vi.waitFor(() => expect(host.live()).toEqual([]));
+
+    await expect(host.dispatch('room-a', config)).rejects.toThrow(
+      /cannot start a session yet.*could not be proven stopped/s
+    );
+    // The record was not cleared behind the refusal.
+    expect(JSON.parse(await readFile(owner, 'utf8'))).toEqual({
+      pid: process.pid,
+      resident: true,
+    });
+
+    // Once the processes are gone and the record with them, the room reopens.
+    await rm(owner);
+    await expect(host.dispatch('room-a', config)).resolves.toBeUndefined();
+    await vi.waitFor(() => expect(host.live()).toEqual([]));
+  } finally {
+    errors.mockRestore();
+  }
+  await host.stopAll();
+});
+
+it('admits a replacement once the old session has left the room', async () => {
+  const root = await workspace();
+  const runner = recordingRunner();
+  const host = new ResidentSessions(root, runner.run, RESIDENT_STOP_TIMEOUT_MS);
+  const first = configFor({
+    cwd: root,
+    roomId: 'room-a',
+    sessionId: 'session-a',
+    connectionId: 'a',
+  });
+  const warnings = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  try {
+    await host.dispatch('room-a', first);
+    // The session's connection reports it is serving another room. Fixed-room
+    // ownership says it is no longer this room's session.
+    await mkdir(join(root, 'session-a'), { recursive: true });
+    await writeFile(
+      join(root, 'session-a', 'room-inbox.jsonl'),
+      JSON.stringify({ type: 'rooms', rooms: ['room-b'] }) + '\n'
+    );
+
+    const replacement = configFor({
+      cwd: root,
+      roomId: 'room-a',
+      sessionId: 'session-a2',
+      connectionId: 'a2',
+    });
+    await expect(host.dispatch('room-a', replacement)).resolves.toBeUndefined();
+
+    // Room A has exactly one live session and it is the new one. Nothing was
+    // started for room B: a room session does not move.
+    expect(host.live()).toEqual([
+      { roomId: 'room-a', sessionId: 'session-a2', connectionId: 'a2' },
+    ]);
+    expect(runner.finished.map((context) => context.sessionId)).toEqual(['session-a']);
+  } finally {
+    warnings.mockRestore();
   }
   await host.stopAll();
 });

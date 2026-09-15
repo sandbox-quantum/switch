@@ -5,9 +5,20 @@ import { mkdir, open, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { z } from 'zod';
-import { LEASE_EXPIRED_EXIT_CODE } from './exit-codes';
+import { GROUPED_CHILDREN, stopProcessTree } from '../process-tree';
+import { LEASE_EXPIRED_EXIT_CODE, STOP_INCOMPLETE_EXIT_CODE } from './exit-codes';
 import { releaseOwner, replaceOwner, withOwnershipLock } from './ownership-lock';
 import { fenceDeadOwner } from './process-fence';
+
+/**
+ * How long a worker has to stop on its own before the supervisor fences it.
+ *
+ * Asking a resident host to stop is not the same as it stopping: a provider
+ * child that will not drain, or a socket nobody closed, keeps the process alive
+ * with nothing left running in it. Waiting on that for ever is how a supervisor
+ * that exists to bound failures becomes one.
+ */
+const STOP_GRACE_MS = 30000;
 
 function alive(pid: number): boolean {
   try {
@@ -64,7 +75,25 @@ export async function superviseSharedHost(input: {
       });
       const exited = once(child, 'exit');
       await log.close();
-      const stop = () => child.kill('SIGTERM');
+      let escalation: Promise<void> | null = null;
+      const stop = () => {
+        child.kill('SIGTERM');
+        escalation ??= (async () => {
+          await delay(STOP_GRACE_MS);
+          if (child.exitCode !== null || child.signalCode !== null) return;
+          console.warn(
+            `The SDK host has not exited ${STOP_GRACE_MS}ms after being asked to stop; fencing its process group.`
+          );
+          await stopProcessTree(child, {
+            grouped: GROUPED_CHILDREN,
+            escalateAfterMs: 0,
+            deadlineMs: 10000,
+            description: 'SDK host process group',
+          });
+        })().catch((error: unknown) => {
+          console.error('The SDK host could not be fenced after a stop request:', String(error));
+        });
+      };
       input.signal.addEventListener('abort', stop, { once: true });
       if (input.signal.aborted) stop();
       let code: number | null;
@@ -73,6 +102,7 @@ export async function superviseSharedHost(input: {
         [code, signal] = await exited;
       } finally {
         input.signal.removeEventListener('abort', stop);
+        await escalation;
       }
       if (child.pid) {
         await fenceDeadOwner(child.pid, child.pid);
@@ -86,6 +116,14 @@ export async function superviseSharedHost(input: {
       }
       if (input.signal.aborted) return;
       if (code === 0) return;
+      if (code === STOP_INCOMPLETE_EXIT_CODE) {
+        // The host stopped but left sessions behind and said so. Its group has
+        // just been fenced above, which is the escalation it was asking for.
+        console.warn(
+          'The SDK host stopped with room sessions still draining; its process group was fenced.'
+        );
+        return;
+      }
       if (code === LEASE_EXPIRED_EXIT_CODE) {
         console.warn('Shared SDK host lease expired; relaunching from saved state after fencing.');
         await delay(1000, undefined, { signal: input.signal });

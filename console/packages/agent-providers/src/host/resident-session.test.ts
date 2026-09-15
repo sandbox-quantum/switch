@@ -113,3 +113,39 @@ it('owns its state directory before the provider probe, and clears a recovered f
     'session-a'
   );
 });
+
+it('leaves a live foreign owner of the state directory untouched', async () => {
+  const workspace = await mkdtemp(join(tmpdir(), 'resident-owner-test-'));
+  roots.push(workspace);
+  const root = join(workspace, 'session');
+  await mkdir(join(root, 'supervisor'), { recursive: true });
+  // A per-room worker from the previous launch path can outlive the watcher
+  // that started it. Its marker is how anything else knows not to compete.
+  const owner = { pid: process.ppid, token: 'existing-supervisor' };
+  process.kill(owner.pid, 0);
+  await writeFile(join(root, 'supervisor', 'owner.json'), JSON.stringify(owner));
+  await writeFile(join(root, 'config.json'), JSON.stringify({ saved: 'by the live owner' }));
+  await writeFile(join(root, 'supervisor', 'failure.json'), JSON.stringify({ message: 'theirs' }));
+
+  await expect(
+    runResidentRoomSession(
+      {
+        context: { roomId: 'room-a', sessionId: 'session-a', connectionId: 'a' },
+        root,
+        config: configFor(workspace),
+        signal: new AbortController().signal,
+      },
+      new Map()
+    )
+  ).rejects.toThrow(`owned by a live process (pid ${owner.pid})`);
+
+  expect(JSON.parse(await readFile(join(root, 'supervisor', 'owner.json'), 'utf8'))).toEqual(owner);
+  expect(JSON.parse(await readFile(join(root, 'config.json'), 'utf8'))).toEqual({
+    saved: 'by the live owner',
+  });
+  expect(JSON.parse(await readFile(join(root, 'supervisor', 'failure.json'), 'utf8'))).toEqual({
+    message: 'theirs',
+  });
+  // It never reached the work, so nothing of this session's was prepared.
+  expect(seen.owner).toBe('');
+});
