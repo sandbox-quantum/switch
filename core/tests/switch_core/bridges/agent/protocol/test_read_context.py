@@ -326,6 +326,40 @@ class TestEntries:
         assert by_id["$kick"]["sender_kind"] == "platform"
         assert by_id["$kick"]["on_behalf_of"] == "Abel"
 
+    async def test_a_kickoff_flagged_for_the_channel_reads_as_its_own_root(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """Threaded under the headline in the room, top-level in the history
+        an agent reads, so the work it starts is answered in the channel."""
+        async with session_factory() as session:
+            room_id, client_id = await _make_room(session)
+            await _write(
+                session, room_id, client_id, "$head", at=0, body="Template kickoff"
+            )
+            await _write(
+                session,
+                room_id,
+                client_id,
+                "$kick",
+                at=1,
+                thread_root="$head",
+                body="@scout go",
+                content={
+                    "body": "@scout go",
+                    PLATFORM_MARKER: {
+                        "on_behalf_of": {"user_id": "user-9", "name": "Abel"},
+                        "reply_in_channel": True,
+                    },
+                },
+            )
+            await session.commit()
+
+        result = await _service(session_factory).read_context("agent-1", room_id)
+
+        roots = {t["root"]["id"]: t for t in result["threads"]}
+        assert set(roots) == {"$head", "$kick"}
+        assert roots["$head"]["replies"] == []
+
 
 class TestTruncation:
     """`truncated` is now exact rather than conservative.

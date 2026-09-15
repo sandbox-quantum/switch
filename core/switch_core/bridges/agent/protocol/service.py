@@ -57,7 +57,10 @@ from switch_core.bridges.agent.registration_bootstrap import (
 )
 from switch_core.bridges.resource.service import ResourceService
 from switch_core.clients.admin_messages import PLATFORM_MARKER as _PLATFORM_MARKER
-from switch_core.clients.admin_messages import platform_on_behalf_of
+from switch_core.clients.admin_messages import (
+    platform_on_behalf_of,
+    platform_replies_in_channel,
+)
 from switch_core.crypto import encrypt_token
 from switch_core.db.models import (
     Agent,
@@ -1770,7 +1773,15 @@ class ProtocolService:
 
     @staticmethod
     def _thread_root_id(message: Message) -> str:
-        """A threaded reply belongs to its root; anything else is its own root."""
+        """A threaded reply belongs to its root; anything else is its own root.
+
+        A platform message flagged reply_in_channel (a template's kickoff
+        text, threaded under its headline only to keep the channel tidy) is
+        read as its own root, so an agent catching up sees the work it starts
+        at the top level and answers there.
+        """
+        if platform_replies_in_channel(message.content or {}):
+            return message.transport_event_id
         return message.thread_root_event_id or message.transport_event_id
 
     async def read_context(
