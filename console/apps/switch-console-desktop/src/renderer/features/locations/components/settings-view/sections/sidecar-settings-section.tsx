@@ -47,18 +47,27 @@ export function SidecarSettingsSection({ agentId }: { agentId: string }) {
               {watcher.rooms.length === 1 ? 'session' : 'sessions'}.
             </p>
           )}
-          {watcher.roomFailures.length > 0 && (
-            <div role="alert" className="text-destructive">
-              <p>Some rooms could not start a session on this agent.</p>
-              <ul className="mt-1 space-y-1 text-sm">
-                {watcher.roomFailures.map((failure) => (
-                  <li key={failure.sessionId} className="break-words">
-                    {failure.roomId}: {failure.message}
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
+          {(() => {
+            // A room that is running again has recovered, whatever the last
+            // recorded reason was.
+            const running = new Set(watcher.rooms.map((room) => room.roomId));
+            const unresolved = watcher.roomFailures.filter(
+              (failure) => !running.has(failure.roomId)
+            );
+            if (unresolved.length === 0) return null;
+            return (
+              <div role="alert" className="text-destructive">
+                <p>Some rooms could not start a session on this agent.</p>
+                <ul className="mt-1 space-y-1 text-sm">
+                  {unresolved.map((failure) => (
+                    <li key={failure.roomId} className="break-words">
+                      {failure.roomId}: {failure.message}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            );
+          })()}
         </div>
       ))}
       {query.data.sessions.map((session) => (

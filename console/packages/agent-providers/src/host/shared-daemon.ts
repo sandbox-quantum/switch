@@ -109,9 +109,6 @@ async function main(): Promise<void> {
     const stop = new AbortController();
     process.on('SIGTERM', () => stop.abort());
     process.on('SIGINT', () => stop.abort());
-    // The resident host runs every room session of this agent in this process.
-    // SWITCH_SDK_SESSION_DISPATCH=spawn selects the previous behaviour — a
-    // supervisor, a worker and a host process per room — for comparison.
     await runSharedWatcher(
       root,
       process.env.SWITCH_SDK_SESSION_DISPATCH === 'spawn'
@@ -159,6 +156,7 @@ async function main(): Promise<void> {
           resumeOperationId: config.resumeOperationId,
           input,
           roomConnection: config.roomConnection,
+          log: console,
         },
         adapterFor(config.start.provider, config.execution?.binaryPath),
         stop.signal

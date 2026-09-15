@@ -1,12 +1,13 @@
 import { mkdir, readFile, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { EventStreamLogger } from '@sandboxaq/switch-agent-runtime';
+import type { ProviderAdapter } from '../adapter';
 import { ensureSharedProcess, sharedSessionRoot } from './launch';
 import { replaceOwner, withOwnershipLock } from './ownership-lock';
 import { checkProviderReadiness } from './provider-readiness';
 import { adapterFor } from './server';
 import { prepareSharedConfig, type SharedHostConfig } from './shared-config';
-import { runSharedHost, SharedHostLeaseExpiredError, type ResidentSupport } from './shared-host';
+import { runSharedHost, SharedHostLeaseExpiredError } from './shared-host';
 
 /**
  * Switch caps an agent at 32 open connections. The resident host spends one on
@@ -19,6 +20,13 @@ export const ROOM_CONNECTION_BUDGET = 31;
 
 /** A room session that cannot be admitted is a visible failure, not a long wait. */
 export const ROOM_ADMISSION_TIMEOUT_MS = 60000;
+
+/**
+ * How long a stopping room session has to drain before the host stops waiting
+ * on it. A provider child that never exits must not hold the host — and its
+ * supervisor — open through a SIGTERM.
+ */
+export const RESIDENT_STOP_TIMEOUT_MS = 15000;
 
 /** Immutable identity carried by every provider and tool call of one room session. */
 export type RoomSessionContext = {
@@ -38,6 +46,13 @@ export type RoomSessionFault = { context: RoomSessionContext; message: string };
 
 export interface SessionDispatcher {
   dispatch(roomId: string, config: SharedHostConfig): Promise<void>;
+  /**
+   * Records a room that could not be admitted at all. Dispatch refuses some
+   * rooms — a second session claiming one, a config bound elsewhere — and the
+   * caller holds every other room of the agent, so the refusal is recorded
+   * against the room rather than raised at whoever was dispatching.
+   */
+  reject(roomId: string, config: SharedHostConfig, error: unknown): Promise<void>;
   stop(sessionId: string): Promise<void>;
   live(): RoomSessionContext[];
   failures(): RoomSessionFault[];
@@ -173,20 +188,51 @@ export async function releaseSessionOwnership(root: string): Promise<void> {
   });
 }
 
+async function unlinkIfPresent(path: string): Promise<void> {
+  await unlink(path).catch((error: NodeJS.ErrnoException) => {
+    if (error.code !== 'ENOENT') throw error;
+  });
+}
+
 /**
- * `ensureSharedProcess` adopts a session whose supervisor is alive instead of
- * starting a competitor. A resident host is that owner, so it records itself
- * here and marks the record so a restart request names the host to restart.
+ * Take ownership of a room session's state directory before anything slow runs.
+ *
+ * `ensureSharedProcess` adopts a session whose supervisor is alive rather than
+ * starting a competitor, and it decides that from `supervisor/owner.json` and
+ * the saved `config.json`. Both are written here, under the directory's own
+ * ownership lock and before the provider probe, so there is no window in which a
+ * Console `--ensure` sees an unowned directory and spawns a rival supervisor.
+ * The `resident` mark is what turns a restart request into an error naming the
+ * host to restart. A failure recorded by an earlier run is cleared at the same
+ * time; leaving it would report a fault this session has already recovered from.
  */
-async function markResidentOwner(root: string, resident: boolean): Promise<void> {
+async function claimResidentSession(root: string, config: SharedHostConfig): Promise<void> {
   const directory = join(root, 'supervisor');
   await mkdir(directory, { recursive: true, mode: 0o700 });
-  const path = join(directory, 'owner.json');
-  if (resident) await replaceOwner(path, { pid: process.pid, resident: true });
-  else
-    await unlink(path).catch((error: NodeJS.ErrnoException) => {
-      if (error.code !== 'ENOENT') throw error;
-    });
+  await withOwnershipLock(root, async () => {
+    await unlinkIfPresent(join(directory, 'failure.json'));
+    await replaceOwner(join(root, 'config.json'), config);
+    await replaceOwner(join(directory, 'owner.json'), { pid: process.pid, resident: true });
+  });
+}
+
+/** Only this host's own record is dropped; a later owner's is left alone. */
+async function releaseResidentSession(root: string): Promise<void> {
+  const path = join(root, 'supervisor', 'owner.json');
+  await withOwnershipLock(root, async () => {
+    try {
+      const owner: unknown = JSON.parse(await readFile(path, 'utf8'));
+      if (
+        owner &&
+        typeof owner === 'object' &&
+        'pid' in owner &&
+        (owner as { pid: unknown }).pid === process.pid
+      )
+        await unlink(path);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    }
+  });
 }
 
 async function recordFailure(root: string, message: string): Promise<void> {
@@ -201,68 +247,70 @@ export async function runResidentRoomSession(
 ): Promise<void> {
   const { context, root, config, signal } = input;
   await mkdir(root, { recursive: true, mode: 0o700 });
-  const prepared = await prepareSharedConfig(root, config);
-  assertSessionEnvironment(context, prepared.input.env, prepared.input.sessionId);
-  const binaryPath =
-    config.execution?.binaryPath ??
-    (config.start.provider === 'cursor' ? 'agent' : config.start.provider);
-  // Sessions of one agent share a provider, a working directory and an
-  // installation, so the sign-in probe is a host-level check, not a per-room one.
-  const key = JSON.stringify([config.start.provider, binaryPath, prepared.input.cwd]);
-  let probe = readiness.get(key);
-  if (!probe) {
-    probe = (async () => {
-      const result = await checkProviderReadiness({
-        provider: config.start.provider,
-        binaryPath,
-        cwd: prepared.input.cwd,
-        env: prepared.input.env,
-      });
-      if (result.status === 'unauthenticated') throw new Error(result.message);
-      if (result.status === 'unknown') console.warn(result.message);
-    })();
-    readiness.set(key, probe);
-    probe.catch(() => readiness.delete(key));
-  }
-  await probe;
-  const adapter = adapterFor(config.start.provider, config.execution?.binaryPath);
-  const admission = streamAdmissionLog(console);
-  const resident: ResidentSupport = {
-    admissionTimeoutMs: ROOM_ADMISSION_TIMEOUT_MS,
-    log: admission.log,
-    lastRefusal: admission.lastRefusal,
-  };
-  await markResidentOwner(root, true);
+  await claimResidentSession(root, config);
+  let adapter: ProviderAdapter | null = null;
   try {
-    await runSharedHost(
-      {
-        root,
-        agentApiUrl: prepared.agentApiUrl,
-        token: prepared.token,
-        session: config.session,
-        resumeOperationId: config.resumeOperationId,
-        input: prepared.input,
-        roomConnection: config.roomConnection,
-        resident,
-      },
-      adapter,
-      signal
-    );
-  } catch (error) {
-    if (!(error instanceof SharedHostLeaseExpiredError)) throw error;
-    console.warn(
-      `Room session ${context.sessionId} lost its Switch lease; execution stopped. The next addressed message in ${context.roomId} starts it again.`
-    );
+    const prepared = await prepareSharedConfig(root, config);
+    assertSessionEnvironment(context, prepared.input.env, prepared.input.sessionId);
+    const binaryPath =
+      config.execution?.binaryPath ??
+      (config.start.provider === 'cursor' ? 'agent' : config.start.provider);
+    // Sessions of one agent share a provider, a working directory and an
+    // installation, so the sign-in probe is a host-level check, not a per-room one.
+    const key = JSON.stringify([config.start.provider, binaryPath, prepared.input.cwd]);
+    let probe = readiness.get(key);
+    if (!probe) {
+      probe = (async () => {
+        const result = await checkProviderReadiness({
+          provider: config.start.provider,
+          binaryPath,
+          cwd: prepared.input.cwd,
+          env: prepared.input.env,
+        });
+        if (result.status === 'unauthenticated') throw new Error(result.message);
+        if (result.status === 'unknown') console.warn(result.message);
+      })();
+      readiness.set(key, probe);
+      probe.catch(() => readiness.delete(key));
+    }
+    await probe;
+    adapter = adapterFor(config.start.provider, config.execution?.binaryPath);
+    const admission = streamAdmissionLog(console);
+    try {
+      await runSharedHost(
+        {
+          root,
+          agentApiUrl: prepared.agentApiUrl,
+          token: prepared.token,
+          session: config.session,
+          resumeOperationId: config.resumeOperationId,
+          input: prepared.input,
+          roomConnection: config.roomConnection,
+          log: admission.log,
+          resident: {
+            admissionTimeoutMs: ROOM_ADMISSION_TIMEOUT_MS,
+            lastRefusal: admission.lastRefusal,
+          },
+        },
+        adapter,
+        signal
+      );
+    } catch (error) {
+      if (!(error instanceof SharedHostLeaseExpiredError)) throw error;
+      console.warn(
+        `Room session ${context.sessionId} lost its Switch lease; execution stopped. The next addressed message in ${context.roomId} starts it again.`
+      );
+    }
   } finally {
     // Per-session teardown: this session's provider and MCP children only. The
     // host and every other room session keep running.
-    await adapter.stopAll().catch((error: unknown) => {
+    await adapter?.stopAll().catch((error: unknown) => {
       console.error(
         `Room session ${context.sessionId} could not stop its provider processes:`,
         String(error)
       );
     });
-    await markResidentOwner(root, false);
+    await releaseResidentSession(root);
     await releaseSessionOwnership(root);
   }
 }
@@ -274,12 +322,14 @@ export class ResidentSessions implements SessionDispatcher {
     { context: RoomSessionContext; controller: AbortController; done: Promise<void> }
   >();
   private readonly rooms = new Map<string, string>();
-  private readonly faults: RoomSessionFault[] = [];
+  /** One fault per room: the latest reason that room has no session. */
+  private readonly faults = new Map<string, RoomSessionFault>();
   private published: Promise<void> = Promise.resolve();
 
   constructor(
     private readonly root: string,
-    private readonly run: RoomSessionRun
+    private readonly run: RoomSessionRun,
+    private readonly stopTimeoutMs: number
   ) {}
 
   live(): RoomSessionContext[] {
@@ -287,7 +337,7 @@ export class ResidentSessions implements SessionDispatcher {
   }
 
   failures(): RoomSessionFault[] {
-    return [...this.faults];
+    return [...this.faults.values()];
   }
 
   async dispatch(roomId: string, config: SharedHostConfig): Promise<void> {
@@ -304,6 +354,7 @@ export class ResidentSessions implements SessionDispatcher {
       );
     const controller = new AbortController();
     const entry = { context, controller, done: Promise.resolve() };
+    this.faults.delete(roomId);
     this.rooms.set(roomId, context.sessionId);
     this.sessions.set(context.sessionId, entry);
     entry.done = (async () => {
@@ -315,7 +366,8 @@ export class ResidentSessions implements SessionDispatcher {
           signal: controller.signal,
         });
       } catch (error) {
-        // One room session's fault never reaches the host or its siblings.
+        // A room session that faults is recorded against its room and dropped.
+        // The host and its other rooms keep running.
         await this.fault(context, error);
       } finally {
         this.sessions.delete(context.sessionId);
@@ -326,17 +378,60 @@ export class ResidentSessions implements SessionDispatcher {
     this.publish();
   }
 
+  async reject(roomId: string, config: SharedHostConfig, error: unknown): Promise<void> {
+    await this.fault(
+      {
+        roomId,
+        sessionId: config.session.sessionId,
+        connectionId: config.roomConnection?.connectionId ?? '',
+      },
+      error
+    );
+  }
+
   async stop(sessionId: string): Promise<void> {
     const entry = this.sessions.get(sessionId);
     if (!entry) return;
     entry.controller.abort();
-    await entry.done;
+    await this.drain([entry]);
   }
 
   async stopAll(): Promise<void> {
-    for (const entry of this.sessions.values()) entry.controller.abort();
-    await Promise.all([...this.sessions.values()].map((entry) => entry.done));
+    const entries = [...this.sessions.values()];
+    for (const entry of entries) entry.controller.abort();
+    await this.drain(entries);
     await this.published;
+  }
+
+  /**
+   * Wait for stopping sessions, but not for ever. A provider child that will not
+   * drain would otherwise hold the host open through its own SIGTERM, so the
+   * ones that outlive the deadline are named and the host goes on stopping.
+   */
+  private async drain(
+    entries: { context: RoomSessionContext; done: Promise<void> }[]
+  ): Promise<void> {
+    if (entries.length === 0) return;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const expired = new Promise<'timeout'>((resolve) => {
+      timer = setTimeout(() => resolve('timeout'), this.stopTimeoutMs);
+    });
+    try {
+      const outcome = await Promise.race([
+        Promise.all(entries.map((entry) => entry.done)).then(() => 'drained' as const),
+        expired,
+      ]);
+      if (outcome === 'timeout') {
+        const stuck = entries.filter((entry) => this.sessions.has(entry.context.sessionId));
+        console.error(
+          `Room sessions did not stop within ${this.stopTimeoutMs}ms and were left running: ${stuck
+            .map((entry) => `${entry.context.roomId} (${entry.context.sessionId})`)
+            .join(', ')}.`
+        );
+      }
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
   }
 
   private async fault(context: RoomSessionContext, error: unknown): Promise<void> {
@@ -344,7 +439,7 @@ export class ResidentSessions implements SessionDispatcher {
     console.error(
       `Room session ${context.sessionId} for room ${context.roomId} failed: ${message}`
     );
-    this.faults.push({ context, message });
+    this.faults.set(context.roomId, { context, message });
     try {
       await recordFailure(sharedSessionRoot(context.sessionId), message);
       await releaseSessionOwnership(sharedSessionRoot(context.sessionId));
@@ -362,7 +457,10 @@ export class ResidentSessions implements SessionDispatcher {
       pid: process.pid,
       updatedAt: new Date().toISOString(),
       sessions: this.live(),
-      failures: this.faults.map((fault) => ({ ...fault.context, message: fault.message })),
+      failures: [...this.faults.values()].map((fault) => ({
+        ...fault.context,
+        message: fault.message,
+      })),
     };
     this.published = this.published
       .then(() => replaceOwner(join(this.root, 'resident.json'), state))
@@ -372,13 +470,17 @@ export class ResidentSessions implements SessionDispatcher {
   }
 }
 
-/** The default: every room session of this agent runs inside this process. */
+/** Every room session of this agent runs inside this process. */
 export function residentDispatcher(root: string): ResidentSessions {
   const readiness = new Map<string, Promise<void>>();
-  return new ResidentSessions(root, (input) => runResidentRoomSession(input, readiness));
+  return new ResidentSessions(
+    root,
+    (input) => runResidentRoomSession(input, readiness),
+    RESIDENT_STOP_TIMEOUT_MS
+  );
 }
 
-/** The previous behaviour, kept for comparison: a process tree per room session. */
+/** A process tree per room session: a supervisor, a worker and a host. */
 export function spawningDispatcher(entrypoint: string): SessionDispatcher {
   return {
     async dispatch(roomId, config) {
@@ -391,6 +493,12 @@ export function spawningDispatcher(entrypoint: string): SessionDispatcher {
         watcher: false,
         restart: false,
       });
+    },
+    async reject(roomId, config, error) {
+      console.error(
+        `Room ${roomId} could not start session ${config.session.sessionId}:`,
+        String(error)
+      );
     },
     async stop() {},
     live: () => [],

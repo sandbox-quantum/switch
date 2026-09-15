@@ -27,7 +27,6 @@ import { SharedState } from './shared-state';
  */
 export type ResidentSupport = {
   admissionTimeoutMs: number;
-  log: EventStreamLogger;
   lastRefusal(): string | null;
 };
 
@@ -39,6 +38,7 @@ export type SharedHostOptions = {
   session: Session;
   input: ProviderSessionStartInput;
   roomConnection?: z.infer<typeof roomConnectionSchema>;
+  log: EventStreamLogger;
   resident?: ResidentSupport;
 };
 
@@ -344,7 +344,7 @@ export async function runSharedHost(
           failure = error;
           stopped.abort(error);
         },
-        options.resident?.log ?? console
+        options.log
       );
       if (options.resident)
         await admitRooms(connecting, options.resident, options.roomConnection.rooms);

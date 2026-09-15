@@ -148,6 +148,7 @@ async function fixture() {
       session,
       agentApiUrl: 'http://127.0.0.1/agent',
       token: randomUUID(),
+      log: console,
       input: {
         sessionId: 'session',
         cwd: root,

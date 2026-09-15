@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, expect, it, vi } from 'vitest';
 import {
+  RESIDENT_STOP_TIMEOUT_MS,
   ResidentSessions,
   assertSessionEnvironment,
   hostEnvironmentBaseline,
@@ -102,7 +103,7 @@ function recordingRunner() {
 it('dispatches two rooms into one host as two isolated sessions', async () => {
   const root = await workspace();
   const runner = recordingRunner();
-  const host = new ResidentSessions(root, runner.run);
+  const host = new ResidentSessions(root, runner.run, RESIDENT_STOP_TIMEOUT_MS);
   const first = configFor({
     cwd: root,
     roomId: 'room-a',
@@ -136,7 +137,7 @@ it('dispatches two rooms into one host as two isolated sessions', async () => {
 it('keeps the other room running when one room session is stopped', async () => {
   const root = await workspace();
   const runner = recordingRunner();
-  const host = new ResidentSessions(root, runner.run);
+  const host = new ResidentSessions(root, runner.run, RESIDENT_STOP_TIMEOUT_MS);
   await host.dispatch(
     'room-a',
     configFor({ cwd: root, roomId: 'room-a', sessionId: 'session-a', connectionId: 'a' })
@@ -165,7 +166,7 @@ it('contains a faulting room session instead of taking the host down', async () 
   const root = await workspace();
   const runner = recordingRunner();
   runner.faults.set('session-a', new Error('provider exploded'));
-  const host = new ResidentSessions(root, runner.run);
+  const host = new ResidentSessions(root, runner.run, RESIDENT_STOP_TIMEOUT_MS);
   const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
   try {
     await host.dispatch(
@@ -201,7 +202,7 @@ it('contains a faulting room session instead of taking the host down', async () 
 it('gives every room session its own immutable provider environment', async () => {
   const root = await workspace();
   const runner = recordingRunner();
-  const host = new ResidentSessions(root, runner.run);
+  const host = new ResidentSessions(root, runner.run, RESIDENT_STOP_TIMEOUT_MS);
   await host.dispatch(
     'room-a',
     configFor({ cwd: root, roomId: 'room-a', sessionId: 'session-a', connectionId: 'connection-a' })
@@ -238,7 +239,7 @@ it('gives every room session its own immutable provider environment', async () =
 it('refuses a room that already has a live session rather than guessing', async () => {
   const root = await workspace();
   const runner = recordingRunner();
-  const host = new ResidentSessions(root, runner.run);
+  const host = new ResidentSessions(root, runner.run, RESIDENT_STOP_TIMEOUT_MS);
   await host.dispatch(
     'room-a',
     configFor({ cwd: root, roomId: 'room-a', sessionId: 'session-a', connectionId: 'a' })
@@ -291,4 +292,76 @@ it('keeps the server refusal that explains why a room was never admitted', () =>
   expect(admission.lastRefusal()).toContain('32 open connections');
   expect(base.warn).toHaveBeenCalled();
   expect(base.debug).toHaveBeenCalled();
+});
+
+it('stops waiting on a room session that will not drain, and still lets the host exit', async () => {
+  const root = await workspace();
+  const stuck = new Set(['session-stuck']);
+  const run: RoomSessionRun = async ({ context, signal }) => {
+    if (stuck.has(context.sessionId)) return new Promise<void>(() => {});
+    await new Promise<void>((resolve) => {
+      if (signal.aborted) return resolve();
+      signal.addEventListener('abort', () => resolve(), { once: true });
+    });
+  };
+  const host = new ResidentSessions(root, run, 20);
+  const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+  try {
+    await host.dispatch(
+      'room-stuck',
+      configFor({ cwd: root, roomId: 'room-stuck', sessionId: 'session-stuck', connectionId: 's' })
+    );
+    await host.dispatch(
+      'room-ok',
+      configFor({ cwd: root, roomId: 'room-ok', sessionId: 'session-ok', connectionId: 'o' })
+    );
+
+    // Bounded: this resolves even though one session never finishes draining.
+    await host.stopAll();
+
+    expect(errors.mock.calls.flat().join(' ')).toContain('room-stuck (session-stuck)');
+    expect(host.live().map((context) => context.sessionId)).toEqual(['session-stuck']);
+  } finally {
+    errors.mockRestore();
+  }
+});
+
+it('replaces a room fault rather than accumulating one per retry, and clears it on restart', async () => {
+  const root = await workspace();
+  const runner = recordingRunner();
+  runner.faults.set('session-a', new Error('first failure'));
+  const host = new ResidentSessions(root, runner.run, RESIDENT_STOP_TIMEOUT_MS);
+  const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+  try {
+    const failing = configFor({
+      cwd: root,
+      roomId: 'room-a',
+      sessionId: 'session-a',
+      connectionId: 'a',
+    });
+    const settled = async () => {
+      await vi.waitFor(() => expect(host.live()).toEqual([]));
+    };
+    await host.dispatch('room-a', failing);
+    await settled();
+    expect(host.failures()).toHaveLength(1);
+
+    runner.faults.set('session-a', new Error('second failure'));
+    await host.dispatch('room-a', failing);
+    await settled();
+    expect(host.failures()).toEqual([
+      {
+        context: { roomId: 'room-a', sessionId: 'session-a', connectionId: 'a' },
+        message: 'second failure',
+      },
+    ]);
+
+    // A room that starts again has no outstanding failure.
+    runner.faults.clear();
+    await host.dispatch('room-a', failing);
+    expect(host.failures()).toEqual([]);
+  } finally {
+    errors.mockRestore();
+  }
+  await host.stopAll();
 });

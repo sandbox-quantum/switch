@@ -175,7 +175,14 @@ export async function runSharedWatcher(
     const assignments = await SharedWatchAssignments.open(root);
     const launch = async (roomId: string, config: SharedHostConfig) => {
       if (!(await enabled()) || (await stopped(config.session.sessionId))) return;
-      await dispatcher.dispatch(roomId, config);
+      try {
+        await dispatcher.dispatch(roomId, config);
+      } catch (error) {
+        // This chain carries every room of the agent and its discovery
+        // connection. One room that cannot be admitted is recorded against that
+        // room; raising it here would stop the agent.
+        await dispatcher.reject(roomId, config, error);
+      }
     };
     for (const session of assignments.current()) await launch(session.roomId, session.config);
     const stream = new SwitchEventStream({

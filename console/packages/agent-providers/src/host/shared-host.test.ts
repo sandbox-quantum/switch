@@ -164,6 +164,7 @@ it('executes server commands and uploads cancellation without server-owned event
       root: join(root, 'session'),
       agentApiUrl: 'http://127.0.0.1/agent',
       token: randomUUID(),
+      log: console,
       session,
       input: {
         sessionId: 'session',
