@@ -378,6 +378,22 @@ class CollaborationAdapter(ABC):
     #: publications it could not recognise before become recoverable.
     carries_publication_marker: ClassVar[bool] = False
 
+    #: Whether this platform may say in the channel that a card's delivery was
+    #: never confirmed.
+    #:
+    #: Deliberately not implied by `recovers_uncertain_posts`. That one is a
+    #: fact about the adapter — whether a lost publication can be looked for.
+    #: This is a decision about what the people in the channel are told when it
+    #: cannot be, and it posts a message they did not ask for into a
+    #: conversation this bridge does not own. The two were one flag, and a
+    #: platform gaining the first answer silently acquired the second.
+    #:
+    #: False here so a new platform discloses nothing until somebody has agreed
+    #: it should. Where it is False and recovery is impossible, the reservation
+    #: is still kept and the request is still answerable in Console — what is
+    #: withheld is the notice, not the request.
+    discloses_unconfirmed_posts: ClassVar[bool] = False
+
     def __init__(self) -> None:
         self._on_message: Callable[[InboundMessage], Awaitable[None]] | None = None
         self._on_command: Callable[[InboundCommand], Awaitable[None]] | None = None

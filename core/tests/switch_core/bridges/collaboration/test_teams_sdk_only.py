@@ -14,6 +14,7 @@ two renderers must not both draw, or every turn appears twice.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from pathlib import Path
 from typing import Any
@@ -31,9 +32,14 @@ from switch_core.bridges.collaboration.session.transport import (
     FixtureEventSource,
     project,
 )
-from switch_core.bridges.collaboration.teams.adapter import TeamsAdapter
+from switch_core.bridges.collaboration.teams.adapter import (
+    TeamsAdapter,
+    _publication_ref,
+)
 from switch_core.bridges.collaboration.teams.connector import (
+    BotConnectorConflict,
     BotConnectorGone,
+    BotConnectorRefused,
     BotConnectorThrottled,
     BotConnectorUnavailable,
 )
@@ -64,21 +70,36 @@ class _Connector:
         self.fail_send: Exception | None = None
         self.fail_update: Exception | None = None
         self.fail_delete: Exception | None = None
+        # What a create answers with. Teams is entitled to name the
+        # conversation itself rather than after the post it opened.
+        self.conversation: str | None = None
 
     async def create_channel_thread(
         self, *, service_url: str, channel_id: str, activity: dict[str, Any]
     ) -> tuple[str, str]:
         if self.fail_send is not None:
             raise self.fail_send
-        self.threads.append({"channel_id": channel_id, "activity": activity})
-        return f"{channel_id};messageid={ROOT}", ROOT
+        self.threads.append(
+            {
+                "channel_id": channel_id,
+                "activity": activity,
+                "service_url": service_url,
+            }
+        )
+        return (self.conversation or f"{channel_id};messageid={ROOT}", ROOT)
 
     async def send_to_conversation(
         self, *, service_url: str, conversation_id: str, activity: dict[str, Any]
     ) -> str:
         if self.fail_send is not None:
             raise self.fail_send
-        self.sends.append({"conversation_id": conversation_id, "activity": activity})
+        self.sends.append(
+            {
+                "conversation_id": conversation_id,
+                "activity": activity,
+                "service_url": service_url,
+            }
+        )
         return "MSG1"
 
     async def send_signal(
@@ -101,6 +122,7 @@ class _Connector:
                 "conversation_id": conversation_id,
                 "activity_id": activity_id,
                 "activity": activity,
+                "service_url": service_url,
             }
         )
 
@@ -110,7 +132,11 @@ class _Connector:
         if self.fail_delete is not None:
             raise self.fail_delete
         self.deletes.append(
-            {"conversation_id": conversation_id, "activity_id": activity_id}
+            {
+                "conversation_id": conversation_id,
+                "activity_id": activity_id,
+                "service_url": service_url,
+            }
         )
 
 
@@ -127,6 +153,21 @@ def _teams(
         adapter._channel_type[CHANNEL] = "channel_public"
         adapter._channel_layouts[CHANNEL] = layout
     return adapter, connector
+
+
+def _restart(adapter: TeamsAdapter) -> None:
+    """Everything this process learned about a conversation, gone.
+
+    What a restart leaves is what was written down — the publication reference
+    the caller stored — and nothing else. `_channel_type` emptying is the one
+    that bit: an id it has not heard of reads as a channel, so a chat came back
+    as a post inside itself.
+    """
+    adapter._sent.clear()
+    adapter._channel_type.clear()
+    adapter._channel_layouts.clear()
+    adapter._last_post.clear()
+    adapter._service_url.clear()
 
 
 def _activity(**kwargs: Any) -> TurnActivity:
@@ -236,7 +277,7 @@ def test_a_publication_with_no_thread_opens_its_own_post() -> None:
 
     ref = _run(adapter.post_rich(CHANNEL, AGENT, _activity(), None))
 
-    assert ref == ROOT
+    assert ref == _publication_ref(SERVICE_URL, f"{CHANNEL};messageid={ROOT}", ROOT)
     assert [t["channel_id"] for t in connector.threads] == [CHANNEL]
 
 
@@ -471,9 +512,15 @@ def test_a_refused_removal_leaves_the_final_state_instead_of_pretending(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     """A deletion Teams refused is not a deletion. Left as "Working…" the post
-    would report a turn that ended minutes ago as still running."""
+    would report a turn that ended minutes ago as still running.
+
+    A refusal, and not a 404: the message being absent is the one answer where
+    editing it instead cannot work, and that has its own handling below.
+    """
     adapter, connector = _teams("chat")
-    connector.fail_delete = BotConnectorGone("gone", status=404, retry_after=None)
+    connector.fail_delete = BotConnectorRefused(
+        "forbidden", status=403, retry_after=None
+    )
 
     with caplog.at_level(logging.WARNING):
         _run(adapter.update_rich(CHANNEL, AGENT, "MSG1", _ended(), ROOT))
@@ -494,3 +541,203 @@ def test_a_removal_whose_outcome_is_unknown_is_not_recorded_as_done() -> None:
         _run(adapter.update_rich(CHANNEL, AGENT, "MSG1", _ended(), ROOT))
 
     assert connector.updates == []
+
+
+def test_confirmed_absence_finishes_the_cleanup_rather_than_editing_nothing() -> None:
+    """A delete that landed and whose acknowledgement did not is answered 404
+    on the retry. Editing the missing message instead is refused too, so the
+    cleanup never settled and every later cycle tried it again."""
+    adapter, connector = _teams(chat=True)
+    ref = _run(adapter.post_rich(CHAT, AGENT, _activity(), None))
+    connector.fail_delete = BotConnectorGone("gone", status=404, retry_after=None)
+
+    _run(adapter.update_rich(CHAT, AGENT, ref, _ended(), None))
+
+    assert connector.updates == []
+
+
+def test_absence_at_an_address_this_rebuilt_is_not_taken_as_an_outcome() -> None:
+    """Without a stored address the 404 may only mean the address was wrong,
+    and a status wrongly recorded as removed is one that never goes."""
+    adapter, _connector = _teams("chat")
+    _connector.fail_delete = BotConnectorGone("gone", status=404, retry_after=None)
+
+    with pytest.raises(BotConnectorGone):
+        _run(adapter.update_rich(CHANNEL, AGENT, "MSG1", _ended(), ROOT))
+
+    assert _connector.updates == []
+
+
+# ── The address Teams confirmed is the one kept ──────────────────────────────
+
+
+def test_the_conversation_the_server_returned_is_the_one_edited() -> None:
+    """Teams may name the conversation itself rather than after the post it
+    opened. Rebuilding `channel;messageid=root` then edits somewhere else."""
+    adapter, connector = _teams()
+    connector.conversation = "19:opaque-conversation@thread.tacv2"
+
+    ref = _run(adapter.post_rich(CHANNEL, AGENT, _activity(), None))
+    _run(adapter.update_rich(CHANNEL, AGENT, ref, _activity(), None))
+
+    assert connector.updates[0]["conversation_id"] == connector.conversation
+
+
+def test_a_chat_redraw_after_a_restart_does_not_become_a_channel_thread() -> None:
+    """`_channel_type` empties on restart and an unknown id reads as a channel,
+    so a chat's card was edited at `chat;messageid=card` — a conversation that
+    does not exist, and every later edit of that card was refused."""
+    adapter, connector = _teams(chat=True)
+    ref = _run(adapter.post_rich(CHAT, AGENT, _activity(), None))
+
+    _restart(adapter)
+    _run(adapter.update_rich(CHAT, AGENT, ref, _activity(), None))
+
+    assert connector.updates[0]["conversation_id"] == CHAT
+
+
+def test_a_chat_status_is_still_removed_rather_than_edited_after_a_restart() -> None:
+    """The same lost channel type decides whether a finished status is deleted
+    or left as a tombstone, so it has to come off the address too."""
+    adapter, connector = _teams(chat=True)
+    ref = _run(adapter.post_rich(CHAT, AGENT, _activity(), None))
+
+    _restart(adapter)
+    _run(adapter.update_rich(CHAT, AGENT, ref, _ended(), None))
+
+    assert connector.updates == []
+    assert connector.deletes[0]["conversation_id"] == CHAT
+
+
+def test_a_channel_reply_is_redrawn_in_its_post_after_a_restart() -> None:
+    adapter, connector = _teams()
+    ref = _run(adapter.post_rich(CHANNEL, AGENT, _activity(), ROOT))
+
+    _restart(adapter)
+    _run(adapter.update_rich(CHANNEL, AGENT, ref, _activity(), ROOT))
+
+    assert connector.updates[0]["conversation_id"] == f"{CHANNEL};messageid={ROOT}"
+    assert connector.updates[0]["activity_id"] == "MSG1"
+
+
+def test_a_publications_own_region_is_the_one_it_is_edited_in() -> None:
+    """The service URL is regional and learned from inbound traffic. A process
+    that has since heard from one other region sent the edit there instead."""
+    adapter, connector = _teams()
+    ref = _run(adapter.post_rich(CHANNEL, AGENT, _activity(), ROOT))
+
+    _restart(adapter)
+    adapter._default_service_url = "https://smba.example/emea/"
+    _run(adapter.update_rich(CHANNEL, AGENT, ref, _activity(), ROOT))
+
+    assert connector.updates[0]["service_url"] == SERVICE_URL
+
+
+def test_a_notice_about_a_card_lands_in_the_card_s_own_conversation() -> None:
+    """`admin_message` is given the card's publication reference as its thread
+    root, because a card that opened its own post *is* that conversation."""
+    adapter, connector = _teams()
+    ref = _run(adapter.post_rich(CHANNEL, AGENT, _run(_card()), None))
+
+    _restart(adapter)
+    _run(adapter.admin_message(CHANNEL, "That card is stale.", ref))
+
+    assert connector.sends[0]["conversation_id"] == f"{CHANNEL};messageid={ROOT}"
+
+
+def test_a_reference_without_an_address_is_rebuilt_and_said_so(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Anything stored before publications carried their address is a bare
+    message id. It still works where the guess holds, and the guess is named."""
+    adapter, connector = _teams()
+
+    with caplog.at_level(logging.WARNING):
+        _run(adapter.update_rich(CHANNEL, AGENT, "MSG1", _activity(), ROOT))
+
+    assert connector.updates[0]["conversation_id"] == f"{CHANNEL};messageid={ROOT}"
+    assert "carries no address" in caplog.text
+
+
+# ── A conflict is a wait, not a refusal ──────────────────────────────────────
+
+
+def test_a_transient_edit_conflict_backs_off_instead_of_reporting_failure() -> None:
+    """412 means something wrote to the activity first, so the card is one
+    revision behind rather than broken. Reported as a failure it put a "could
+    not be updated" notice in the channel for something that fixes itself."""
+    adapter, connector = _teams()
+    connector.fail_update = BotConnectorConflict(
+        "changed", status=412, retry_after=None
+    )
+
+    with pytest.raises(RichContentThrottled) as raised:
+        _run(adapter.update_rich(CHANNEL, AGENT, "MSG1", _activity(), ROOT))
+
+    assert raised.value.retry_after > 0
+
+
+def test_a_conflict_on_removal_is_retried_rather_than_left_as_final_state() -> None:
+    """The status is still there and still removable; writing its final state
+    instead would leave a line in a chat that clears itself."""
+    adapter, connector = _teams("chat")
+    connector.fail_delete = BotConnectorConflict(
+        "changed", status=412, retry_after=None
+    )
+
+    with pytest.raises(RichContentThrottled):
+        _run(adapter.update_rich(CHANNEL, AGENT, "MSG1", _ended(), ROOT))
+
+    assert connector.updates == []
+
+
+def test_writes_to_one_conversation_do_not_overlap() -> None:
+    """Two publishers redrawing in the same conversation generate 412s against
+    each other for as long as both keep retrying. One lock makes it a queue."""
+    adapter, connector = _teams()
+    overlapped = False
+    inside = False
+
+    async def update_activity(**kwargs: Any) -> None:
+        nonlocal overlapped, inside
+        if inside:
+            overlapped = True
+        inside = True
+        await asyncio.sleep(0)
+        inside = False
+        connector.updates.append(kwargs)
+
+    connector.update_activity = update_activity  # type: ignore[assignment]
+
+    async def both() -> None:
+        await asyncio.gather(
+            adapter.update_rich(CHANNEL, AGENT, "MSG1", _activity(), ROOT),
+            adapter.update_rich(CHANNEL, AGENT, "MSG1", _activity(), ROOT),
+        )
+
+    _run(both())
+
+    assert len(connector.updates) == 2
+    assert overlapped is False
+
+
+# ── A mention that cannot be made is said out loud ───────────────────────────
+
+
+def test_a_recipient_whose_name_cannot_be_resolved_is_disclosed() -> None:
+    """The publisher only knows about the recipient it could not *find*. A name
+    that fails to resolve here loses the mention as well, and a card that names
+    nobody reads as one whose reader has already seen it."""
+    adapter, connector = _teams()
+
+    _run(
+        adapter.post_rich(
+            CHANNEL, AGENT, _run(_card(notify_external_id="aad-unknown")), ROOT
+        )
+    )
+
+    body = _card_text(connector.sends[0]["activity"])
+    assert "notified no one" in body
+    # Not the "nobody is linked" line: somebody is, and sending them to link an
+    # account they have already linked fixes nothing.
+    assert "Link your" not in body

@@ -11,15 +11,22 @@ from switch_core.bridges.collaboration.teams.auth import TeamsTokenProvider
 logger = logging.getLogger(__name__)
 
 ACTIVITY_SIZE_LIMIT = 64 * 1024
-"""Refuse an activity larger than this, measured as UTF-16 bytes.
+"""Refuse an activity that measures more than this against Teams' own metric.
 
 Microsoft asks that a bot message stay within 80 KB and describes its own
 ceiling of 100 KB as approximate, counted in UTF-16. Two readings of "80 KB"
 are possible — bytes, or code units — so this sits below the smaller of them
-with room to spare, and the count includes everything on the wire: the card,
+with room to spare, and the measurement covers the whole activity: the card,
 the mention entities, and the body text repeated in `summary` and
 `fallbackText`. Going over earns a 413 the sender cannot do anything useful
 with; refusing here names the size instead.
+
+This is the platform's metric and not the bytes actually sent, which are
+UTF-8. Neither encoding is reliably the larger — ASCII doubles in UTF-16 while
+CJK grows in UTF-8 instead — so the budget is set far enough under the
+platform's ceiling to cover the gap either way rather than guessing which text
+is coming. A refusal reports both numbers so the reader can tell which one was
+measured.
 """
 
 
@@ -111,15 +118,17 @@ def _failure(operation: str, resp: httpx.Response) -> BotConnectorError:
 
 def _payload(operation: str, body: dict[str, Any]) -> bytes:
     text = json.dumps(body, ensure_ascii=False)
+    wire = text.encode()
     measured = len(text.encode("utf-16-le"))
     if measured > ACTIVITY_SIZE_LIMIT:
         raise BotConnectorRefused(
-            f"{operation} was not attempted: the activity is {measured} bytes of "
-            f"UTF-16 and Teams accepts up to about {ACTIVITY_SIZE_LIMIT}.",
+            f"{operation} was not attempted: the activity measures {measured} "
+            f"bytes against Teams' UTF-16 metric, over the {ACTIVITY_SIZE_LIMIT} "
+            f"allowed here. It is {len(wire)} bytes of UTF-8 on the wire.",
             status=None,
             retry_after=None,
         )
-    return text.encode()
+    return wire
 
 
 class BotConnectorClient:
@@ -188,14 +197,19 @@ class BotConnectorClient:
                 retry_after=None,
             ) from error
         value = data.get(field) if isinstance(data, dict) else None
-        if not value:
+        # A string, and not merely something truthy: this becomes the address
+        # the message is edited and deleted at, and `str()` of a number, a
+        # `True` or a nested object would turn a malformed answer into an
+        # address this claims to have confirmed.
+        if not isinstance(value, str) or not value.strip():
             raise BotConnectorUnaddressable(
                 f"{operation} was accepted ({resp.status_code}) but returned no "
-                f"{field}, so the message it wrote cannot be edited or deleted.",
+                f"usable {field} ({value!r}), so the message it wrote cannot be "
+                "edited or deleted.",
                 status=resp.status_code,
                 retry_after=None,
             )
-        return str(value)
+        return value
 
     async def create_channel_thread(
         self, *, service_url: str, channel_id: str, activity: dict[str, Any]

@@ -1124,14 +1124,16 @@ class SessionTurnActivity:
         with no journal has only the first, and a publisher restarted into one
         has only the second.
 
-        Turns, not attempts, and that is enough. What a snapshot of turns could
-        miss is a turn renewing its claim between the read and the answer, so
-        that the answer clears a mark put there after it. A turn claims only
-        while it has not ended and releases only once it has, and its two
-        publications cannot overlap: the journal holds the record lock for that
-        one turn across the whole of this, and a publisher without a journal
-        publishes a turn at a time. So the claim a removal clears under a given
-        turn is the claim it read.
+        Turns, not attempts, and that is **not** currently enough. A snapshot
+        of turns can miss a turn renewing its claim between the read and the
+        answer, so that the answer clears a mark put there after it. The
+        serialisation that would rule that out does not: a removal's record
+        lock is its own turn's, and the publisher deliberately allows a
+        provisional outcome to be replaced by the real turn under the same
+        command key, so another turn can claim under a key while this removal
+        is in flight and have its evidence cleared by the reply. Closing that
+        means keying the removal snapshot by attempt rather than by turn,
+        which is not done here.
         """
         claimants = set(self._expecting.get(_mark_id(mark), ()))
         if self._journal is None:
@@ -1199,6 +1201,7 @@ class SessionRequestCards:
         self._posts = posts
         self._session_factory = session_factory
         self._reported_edit_failures: dict[str, tuple[int, str]] = {}
+        self._noted_unconfirmed: set[str] = set()
 
     @property
     def surface(self) -> str:
@@ -1235,10 +1238,23 @@ class SessionRequestCards:
         """Whether a card whose send was never acknowledged can be found again.
 
         Where it is False there is nothing to wait for: the publisher stops
-        searching and discloses the card as unanswerable in the channel rather
-        than re-asking a question the platform cannot answer.
+        searching rather than re-asking a question the platform cannot answer.
+        Whether it then *says* so in the channel is a separate question, and
+        `discloses_unconfirmed_posts` is the one that answers it.
         """
         return bool(getattr(self._adapter, "recovers_uncertain_posts", False))
+
+    @property
+    def discloses_unconfirmed_posts(self) -> bool:
+        """Whether this platform may post the unconfirmed-card notice.
+
+        Kept apart from `recovers_uncertain_posts` so that adding a platform
+        that cannot search does not, by that fact alone, start writing an
+        unrequested message into its channels. Where this is False the
+        reservation is still held and the request is still answerable in
+        Console; what is withheld is the notice.
+        """
+        return bool(getattr(self._adapter, "discloses_unconfirmed_posts", False))
 
     async def post(
         self,
@@ -1365,6 +1381,34 @@ class SessionRequestCards:
             stored.external_post_id = ref
             await session.commit()
             return stored
+
+    def note_unconfirmed(self, post: SessionRequestPost) -> None:
+        """Record an unconfirmed card that this platform may not disclose.
+
+        The honest middle of the two things that would be worse. Posting a
+        notice into a conversation nobody has agreed to write into is the
+        first; treating an unconfirmed send as a refusal, discarding the
+        reservation and asking the same question a second time, is the other.
+        So the reservation stays, and the operator gets one record of it
+        rather than one per cycle for as long as the request is open.
+
+        Not stamped on the row: `unconfirmed_notice_at` means the channel was
+        told, and it must stay true, so that when a disclosure policy is
+        agreed the notice can still be made. Memory is the right lifetime for
+        "this process has already said this".
+        """
+        if post.token in self._noted_unconfirmed:
+            return
+        self._noted_unconfirmed.add(post.token)
+        logger.error(
+            "Delivery of card %s in channel %s was never confirmed, and %s can "
+            "neither search for it nor say so in the channel. The reservation is "
+            "held and request %s can still be answered in Console.",
+            post.handle,
+            post.external_channel_id,
+            self._surface,
+            post.request_id,
+        )
 
     async def disclose_unconfirmed(
         self, post: SessionRequestPost, *, console_url: str | None
@@ -1607,7 +1651,15 @@ class SessionRequestCards:
                     f"The card for request {post.handle} above could not be updated, "
                     f"so it may still be offering buttons that no longer "
                     f"work.\n{error.text}",
-                    post.external_post_id,
+                    # The conversation the card is in, which is the thread it
+                    # was posted into where there was one. Not the card's own
+                    # id: where a platform addresses a reply by its
+                    # conversation rather than by the message — Teams — a card
+                    # that is itself a reply names no conversation, and a
+                    # notice about a card people cannot see is worse than the
+                    # stale card. Where the card opened the conversation, it
+                    # is the root, and that is the unchanged behaviour.
+                    post.thread_id or post.external_post_id,
                 )
                 self._reported_edit_failures[post.token] = state
             raise

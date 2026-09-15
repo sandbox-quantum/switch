@@ -69,8 +69,9 @@ class PublicationIncomplete(Exception):
     caller over HTTP acts on: this is an internal signal `publish_pending`
     reads to decide how loudly to say so. `errors` is what actually broke —
     still worth an error-level log with a traceback; `backed_off` is requests
-    still waiting out a recovery search's own backoff, which is working as
-    designed and must not read as a fresh failure on every retry.
+    deliberately not tried again yet, either a recovery search or a post to a
+    destination that keeps refusing, which is working as designed and must not
+    read as a fresh failure on every retry.
     """
 
     def __init__(
@@ -81,7 +82,7 @@ class PublicationIncomplete(Exception):
         self.backed_off = backed_off
         super().__init__(
             f"Session {session_id}: {len(errors)} request(s) failed to "
-            f"publish and {backed_off} are waiting out a recovery backoff."
+            f"publish and {backed_off} are waiting out a retry backoff."
         )
 
 
@@ -94,6 +95,8 @@ async def refresh_cards(
     gateway_public_url: str | None = None,
     recovery_allowed: Callable[[str], bool] = _always_recover,
     recovery_succeeded: Callable[[str], None] = _ignore_recovery,
+    post_allowed: Callable[[str], bool] = _always_recover,
+    post_succeeded: Callable[[str], None] = _ignore_recovery,
     refresh_needed: Callable[[str, tuple[int, str]], bool] = _always_refresh,
     refreshed: Callable[[str, tuple[int, str]], None] = _ignore_refresh,
 ) -> None:
@@ -101,6 +104,18 @@ async def refresh_cards(
 
     `recovery_allowed` gates `recover` — the search for a card whose post is
     unconfirmed — per token, and `recovery_succeeded` is told when one lands.
+
+    `post_allowed` gates the *first* post of a card, keyed by session and
+    request rather than by token because a refused post releases its handle
+    and the next attempt mints a new one. It exists for the destination that
+    is permanently unavailable — a deleted channel, a thread nobody can write
+    in — where without it this reserved a handle, had the platform refuse it
+    and released it again on every publish cycle, forever, logging a failure
+    each time. The wait stretches instead, so a destination that comes back is
+    still picked up and one that does not stops drowning the log. It does not
+    decide what the channel is told: that is the platform's disclosure policy
+    and is deliberately not made here.
+
     `refresh_needed` gates redrawing an already-confirmed card, per token and
     `(revision, state)`, and `refreshed` is told once one lands. Both parts of
     that pair matter: `request.submitting` moves a request from `open` to
@@ -244,6 +259,10 @@ async def refresh_cards(
             if post is None:
                 if request.state != "open":
                     continue
+                attempt = f"{session_id}:{request.request_id}"
+                if not post_allowed(attempt):
+                    backed_off += 1
+                    continue
                 new_post = await cards.post(
                     request,
                     channel_id=channel_id,
@@ -257,6 +276,7 @@ async def refresh_cards(
                     notify_unreachable=unreachable,
                     unavailable_reason=unavailable_reason,
                 )
+                post_succeeded(attempt)
                 refreshed(new_post.token, state)
             elif post.external_post_id == post.token:
                 if post.unconfirmed_notice_at is not None:
@@ -267,7 +287,15 @@ async def refresh_cards(
                     # well as it can be.
                     continue
                 if not cards.recovers_uncertain_posts:
-                    await cards.disclose_unconfirmed(post, console_url=console_url)
+                    if cards.discloses_unconfirmed_posts:
+                        await cards.disclose_unconfirmed(post, console_url=console_url)
+                    else:
+                        # Nothing to search for and nothing this platform has
+                        # been cleared to say, so the reservation is simply
+                        # held: it is what stops a second card, and the
+                        # request is still answerable in Console. Said once
+                        # per process rather than on every cycle.
+                        cards.note_unconfirmed(post)
                     continue
                 if not recovery_allowed(post.token):
                     backed_off += 1
@@ -306,7 +334,7 @@ async def refresh_cards(
             # any that came after. Each is retried on its own next cycle
             # regardless — what this function reports below is what stops
             # `publish_pending` marking the session done while any request in
-            # it is still broken or waiting out a recovery backoff.
+            # it is still broken or waiting out a retry backoff.
             logger.exception(
                 "Could not publish request %s of session %s on bridge %s; "
                 "the rest of the session's requests were tried anyway.",
@@ -731,15 +759,18 @@ async def refresh_activity(
 
 
 class _RecoveryBackoff:
-    """Bounds how often `recover` re-scans a channel's history for one card.
+    """Bounds how often one card's platform call is attempted again.
 
-    Unbounded retries were the problem this closes: a card whose post
-    genuinely never landed had this run again every publish cycle, forever,
-    against a search that gets more expensive over time as the channel
-    accumulates history past the point it started from. The wait doubles per
-    token on every attempt that still finds nothing, up to `_MAX`, and clears
-    the moment one succeeds — so a card that does eventually turn up is not
-    left waiting out a long interval it no longer needs.
+    Unbounded retries were the problem this closes. A card whose post
+    genuinely never landed had `recover` re-scan the channel's history every
+    publish cycle, forever, against a search that gets more expensive over
+    time as the channel accumulates history past the point it started from;
+    and a card whose destination no longer exists had the post itself
+    reserved, refused and released on every cycle just as often. The wait
+    doubles per key on every attempt that does not get there, up to `_MAX`,
+    and clears the moment one succeeds — so a destination that comes back, or
+    a card that does eventually turn up, is not left waiting out a long
+    interval it no longer needs.
     """
 
     _MIN = 5.0
@@ -891,6 +922,7 @@ class SessionPublisher:
         self._activity = activity
         self._published: dict[str, tuple[int, bool]] = {}
         self._recovery = _RecoveryBackoff()
+        self._card_post = _RecoveryBackoff()
         self._redraw = _RedrawGuard()
         self._turn_redraw = _TurnRedrawGuard()
         self._activity_retry = _RecoveryBackoff(max_interval=30.0)
@@ -1008,6 +1040,8 @@ class SessionPublisher:
                         gateway_public_url=self._gateway_public_url,
                         recovery_allowed=self._recovery.allowed,
                         recovery_succeeded=self._recovery.succeeded,
+                        post_allowed=self._card_post.allowed,
+                        post_succeeded=self._card_post.succeeded,
                         refresh_needed=self._redraw.needed,
                         refreshed=self._redraw.drawn,
                     )
@@ -1016,7 +1050,7 @@ class SessionPublisher:
                 if incomplete.errors:
                     logger.exception(
                         "Session %s card publication failed on bridge %s "
-                        "(%d failed, %d waiting on a recovery backoff); "
+                        "(%d failed, %d waiting on a retry backoff); "
                         "will retry.",
                         session_id,
                         self._bridge_id,
@@ -1029,7 +1063,7 @@ class SessionPublisher:
                     # as one would put a real broken-and-continuing signal in
                     # the same stream as a wait that is working as designed.
                     logger.warning(
-                        "Session %s has %d request(s) waiting out a recovery "
+                        "Session %s has %d request(s) waiting out a retry "
                         "backoff on bridge %s.",
                         session_id,
                         incomplete.backed_off,

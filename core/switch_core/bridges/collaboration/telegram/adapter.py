@@ -425,6 +425,11 @@ class TelegramAdapter(CollaborationAdapter):
 
     renders_legacy_runtime_state: ClassVar[bool] = False
 
+    # Telegram's is the one disclosure that has been agreed: T2, accepted for
+    # this platform on this platform's evidence. It does not travel to another
+    # adapter that happens to share the inability to search.
+    discloses_unconfirmed_posts: ClassVar[bool] = True
+
     def __init__(self, *, config: TelegramConnectionConfig) -> None:
         super().__init__()
         self._config = config

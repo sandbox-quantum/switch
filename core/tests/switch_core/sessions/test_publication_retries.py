@@ -73,6 +73,14 @@ def cards_for(factory, platform):
 async def test_host_ack_and_retry_survive_publication_failure(
     session_factory, monkeypatch, caplog
 ):
+    """What a refused first post must not cost: the host's acknowledgement.
+
+    The floor on the publisher's post backoff is taken out of the way so the
+    retry happens on the very next cycle. That the backoff is there at all is
+    `test_a_card_that_cannot_be_posted_is_not_retried_every_cycle`'s claim;
+    this one is about the ack surviving and the card arriving in the end.
+    """
+    monkeypatch.setattr(_RecoveryBackoff, "_MIN", 0.0)
     service, epoch = await setup(session_factory)
     await opened(service, epoch)
     platform = RecoverablePlatform()
@@ -284,9 +292,13 @@ class UnsearchablePlatform(Platform):
     whose response was lost can never be matched to what is in the chat. It
     also declines to linkify a `switchdash://` URL, so the Console link in the
     notice has to be the gateway's https redirect to be a link at all.
+
+    It is also the one platform cleared to say so in the channel, which is a
+    separate flag on purpose — see `UndisclosingPlatform`.
     """
 
     renders_custom_url_schemes = False
+    discloses_unconfirmed_posts = True
 
     def __init__(self):
         super().__init__()
@@ -295,6 +307,17 @@ class UnsearchablePlatform(Platform):
     async def admin_message(self, channel, content, thread=None, *, message_type=None):
         self.notices.append((channel, content, thread))
         return f"{channel}:333.0"
+
+
+class UndisclosingPlatform(UnsearchablePlatform):
+    """Cannot search either, and has not been cleared to say so in the channel.
+
+    Teams is the real one. The notice writes an unrequested message into a
+    conversation this bridge does not own, and whether that is wanted is a
+    decision about the channel rather than a fact about the adapter.
+    """
+
+    discloses_unconfirmed_posts = False
 
 
 async def _lose_the_card(session_factory, platform, monkeypatch):
@@ -408,6 +431,35 @@ async def test_a_notice_that_cannot_be_sent_is_not_retried_into_a_cascade(
     refused.assert_awaited_once()
     assert platform.notices == []
     assert "nothing in the channel says so" in caplog.text
+
+
+async def test_a_platform_not_cleared_to_disclose_says_nothing_in_the_channel(
+    session_factory, monkeypatch, caplog
+):
+    """Being unable to search does not, by itself, authorise the notice.
+
+    The two used to be one flag, so a new platform declaring it could not look
+    for a lost card silently started posting an unrequested message into its
+    channels. Here the reservation is kept — no second card, and the request is
+    still answerable in Console — and the operator is told once.
+    """
+    platform = UndisclosingPlatform()
+    await _lose_the_card(session_factory, platform, monkeypatch)
+    cards = cards_for(session_factory, platform)
+
+    with caplog.at_level(logging.ERROR):
+        for _ in range(3):
+            await refresh_cards(session_factory, "bridge", "session-demo", cards)
+
+    assert platform.notices == []
+    assert platform.posts == []
+    assert len([r for r in caplog.records if "never confirmed" in r.message]) == 1
+    async with session_factory() as db:
+        post = (await db.scalars(select(SessionRequestPost))).one()
+        assert post.external_post_id == post.token
+        # Not stamped: the mark means the channel was told, and it has to stay
+        # true so the notice can still be made once a policy is agreed.
+        assert post.unconfirmed_notice_at is None
 
 
 async def test_a_platform_that_can_search_still_waits_for_its_card(
@@ -667,6 +719,37 @@ async def test_the_publisher_does_not_re_search_every_cycle_for_a_card_that_neve
     assert find.await_count == 1  # backing off; not attempted again immediately
 
 
+async def test_a_card_that_cannot_be_posted_is_not_retried_every_cycle(
+    session_factory, monkeypatch, caplog
+):
+    """A refused post leaves no row, so the next cycle sees a request with no
+    card and reserves, posts and releases all over again — at whatever rate
+    the publisher runs, against a destination that is saying no. The first
+    post of a card is on the same backoff the recovery search is, so a
+    channel the bot has been removed from costs one attempt and then a
+    widening wait rather than a permanent spin."""
+    service, epoch = await setup(session_factory)
+    await opened(service, epoch)
+    platform = RecoverablePlatform()
+    refused = AsyncMock(side_effect=RichContentFailed("no such channel", text="gone"))
+    monkeypatch.setattr(platform, "post_rich", refused)
+    publisher = SessionPublisher(
+        session_factory, "bridge", cards_for(session_factory, platform)
+    )
+
+    await publisher.publish_pending()
+    assert refused.await_count == 1
+    async with session_factory() as db:
+        # Refused outright, so the handle went back rather than being held
+        # against a card nobody can see.
+        assert (await db.scalars(select(SessionRequestPost))).all() == []
+
+    caplog.clear()
+    await publisher.publish_pending()
+    assert refused.await_count == 1
+    assert "waiting out a retry backoff" in caplog.text
+
+
 # ── A confirmed card is only redrawn when something about it changed ────────
 
 
@@ -810,7 +893,7 @@ async def test_a_pure_backoff_wait_logs_a_warning_not_an_exception(
     assert not any(record.levelname == "ERROR" for record in caplog.records)
     assert any(
         record.levelname == "WARNING"
-        and "waiting out a recovery backoff" in record.message
+        and "waiting out a retry backoff" in record.message
         for record in caplog.records
     )
 
