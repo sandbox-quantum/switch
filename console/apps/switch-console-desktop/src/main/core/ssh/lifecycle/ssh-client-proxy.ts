@@ -46,8 +46,7 @@ const MAX_CONCURRENT_EXEC = 4;
  * wedge watchdog. The slot is held only until the server answers, then freed
  * while the channel lives on.
  *
- * `RemoteAttachmentPool` already serialises attaches per host; this is the
- * backstop for every other path that opens a pty.
+ * Lifecycle terminals share this limit when opening their PTY channels.
  */
 const MAX_CONCURRENT_PTY_OPENS = 2;
 

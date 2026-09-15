@@ -1,6 +1,6 @@
 import { err, ok, type Result } from '@switch-console/shared';
 import { eq, sql } from 'drizzle-orm';
-import { isAttachableRuntime } from '@main/core/agent-runtime/attachment/types';
+import { providerAdapterRegistry } from '@main/core/agent-runtime/impl/provider-adapter-registry';
 import { getAgentById } from '@main/core/agents/getAgentById';
 import { locationManager } from '@main/core/locations/location-manager';
 import { db } from '@main/db/client';
@@ -15,19 +15,26 @@ import { provisionSessionRuntime } from '../session-builder';
 import { sessionRuntimeManager } from '../session-runtime-manager';
 import { mapSessionRowToSession } from '../utils/utils';
 
-/**
- * Eager create (decision A): inserts the session row and immediately provisions
- * the runtime in the location dir, then spawns the agent. Every session runs in
- * the directory resolved via session → agent → location.
- */
 export async function createSession(
   params: CreateSessionParams
 ): Promise<Result<CreateSessionSuccess, CreateSessionError>> {
   const agent = await getAgentById(params.agentId);
   if (!agent) return err({ type: 'agent-not-found' });
 
-  const location = locationManager.getLocation(agent.locationId);
-  if (!location) return err({ type: 'agent-not-found' });
+  const adopted = params.startSource === 'adopted';
+  const location = adopted ? null : locationManager.getLocation(agent.locationId);
+  if (!adopted && !location) return err({ type: 'agent-not-found' });
+
+  if (!providerAdapterRegistry.supports(agent.providerId))
+    return err({
+      type: 'spawn-failed',
+      message: 'SDK sessions support Claude Code, Codex, OpenCode, Gemini CLI and Cursor.',
+    });
+  if (!adopted && process.platform === 'win32' && location?.transport.kind !== 'ssh')
+    return err({
+      type: 'spawn-failed',
+      message: 'SDK sessions require a POSIX execution host. Select an SSH host.',
+    });
 
   const configObj: SessionConfig = {};
   if (params.autoApprove !== undefined) configObj.autoApprove = params.autoApprove;
@@ -45,7 +52,6 @@ export async function createSession(
       title: params.title,
       shellId: params.shellId ?? 'system',
       config,
-      agentSessionId: params.id,
       isInitialSession: false,
       status: 'in_progress',
       updatedAt: sql`CURRENT_TIMESTAMP`,
@@ -62,21 +68,20 @@ export async function createSession(
 
   const session = mapSessionRowToSession(row, agent.providerId, agent.name);
 
+  if (adopted) return ok({ session });
+  if (!location) return err({ type: 'agent-not-found' });
   try {
     const built = await provisionSessionRuntime(session, location);
     await sessionRuntimeManager.registerSession(session.id, built, location.ctx);
 
-    if (params.attach === false && isAttachableRuntime(built.agent)) {
-      // Adopting a session the VM already started: the agent is running in its
-      // tmux pane, so only the sidecar and its shared relay are needed. Opening
-      // a terminal for each adopted session would put a whole host's worth of
-      // channels on one transport in a single reconcile pass.
-      await built.agent.ensureAttachable(session);
-    } else {
-      await built.agent.start(session, params.initialSize, false, params.initialPrompt);
-    }
+    await built.agent.start(
+      session,
+      params.initialSize,
+      params.attach === false,
+      params.initialPrompt
+    );
   } catch (e) {
-    await db.delete(sessions).where(eq(sessions.id, params.id));
+    await db.update(sessions).set({ status: 'review' }).where(eq(sessions.id, session.id));
     return err({ type: 'spawn-failed', message: e instanceof Error ? e.message : String(e) });
   }
 

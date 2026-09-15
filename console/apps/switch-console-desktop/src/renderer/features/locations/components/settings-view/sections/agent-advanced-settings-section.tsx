@@ -152,7 +152,9 @@ export const AgentAdvancedSettingsSection = observer(function AgentAdvancedSetti
   const onSave = useCallback(async () => {
     await saveMutation();
   }, [saveMutation]);
-  const onRevert = useCallback(() => setForm(savedForm), [savedForm]);
+  const onRevert = useCallback(() => {
+    setForm(savedForm);
+  }, [savedForm]);
 
   const [restartFailed, setRestartFailed] = useState<string[]>([]);
   const restart = useMutation({

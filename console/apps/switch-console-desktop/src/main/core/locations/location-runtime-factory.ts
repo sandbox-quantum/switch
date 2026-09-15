@@ -1,5 +1,3 @@
-import { LocalAgentRuntime } from '@main/core/agent-runtime/impl/local-agent-runtime';
-import { SshAgentRuntime } from '@main/core/agent-runtime/impl/ssh-agent-runtime';
 import type { AgentRuntimeProvider } from '@main/core/agent-runtime/types';
 import { LocalExecutionContext } from '@main/core/execution-context/local-execution-context';
 import { SshExecutionContext } from '@main/core/execution-context/ssh-execution-context';
@@ -10,17 +8,12 @@ import type { FileSystemProvider } from '@main/core/fs/types';
 import { LifecycleScriptService } from '@main/core/locations/lifecycle-service';
 import type { LocationRuntime } from '@main/core/locations/location-runtime';
 import { type LocationRuntimeFactoryResult } from '@main/core/locations/location-runtime-registry';
-import { preflightRemoteSession } from '@main/core/sessions/remote-session-preflight';
-import { appSettingsService } from '@main/core/settings/settings-service';
+import { SharedAgentRuntime } from '@main/core/sdk-host/shared-agent-runtime';
 import { ensureSshConnected } from '@main/core/ssh/connect/connect-agent-ssh';
-import { sshConnectionManager } from '@main/core/ssh/lifecycle/production-ssh-connection-manager';
 import type { SshClientProxy } from '@main/core/ssh/lifecycle/ssh-client-proxy';
-import { resolveLocalAutomationShellWithSystemFallback } from '@main/core/terminal-shell/resolver';
-import type { ResolvedShellProfile } from '@main/core/terminal-shell/types';
 import { LocalTerminalProvider } from '@main/core/terminals/impl/local-terminal-provider';
 import { SshTerminalProvider } from '@main/core/terminals/impl/ssh-terminal-provider';
 import { runLifecycleScriptWithPolicy } from '@main/core/terminals/lifecycle-script-coordinator';
-import { log } from '@main/lib/logger';
 import type { Session } from '@shared/core/sessions/sessions';
 import { getEffectiveSessionSettings } from '../locations/settings/effective-session-settings';
 import type { LocationSettingsProvider } from '../locations/settings/provider';
@@ -81,9 +74,7 @@ export function createLocationRuntimeFactory(
       rootPath: workDir,
       portSeed: workDir,
     });
-    // Remote sessions require tmux — it is the persistence substrate the sidecar
-    // injects into and reattaches to across UI disconnects.
-    const tmuxEnabled = transport.kind === 'ssh' ? true : (locationSettings.tmux ?? false);
+    const tmuxEnabled = locationSettings.tmux ?? false;
     const sessionLevelSettings = await getEffectiveSessionSettings({
       locationSettings: context.settings,
       sessionFs: runtimeFs,
@@ -213,27 +204,9 @@ type AgentRuntimeOpts = {
   locationId: string;
   sessionId: string;
   sessionPath: string;
-  tmuxEnabled: boolean;
   shellSetup?: string;
   sessionEnvVars: Record<string, string>;
-  /** Candidate creds files (relative to the working dir) the remote preflight
-   * checks, in priority order — the agent's neutral `.switch/agents/<name>.json`
-   * first, then the legacy `.claude/settings.local.json` (CHOO-1440). */
-  credsRelPaths: string[];
 };
-
-async function resolveLocalAgentShellProfile(sessionId: string): Promise<ResolvedShellProfile> {
-  const { defaultShell } = await appSettingsService.get('terminal');
-  return await resolveLocalAutomationShellWithSystemFallback({
-    intent: defaultShell,
-    onFallback: (error) => {
-      log.warn('buildAgentRuntime: preferred local agent shell unavailable, using fallback', {
-        shell: error.shell,
-        sessionId,
-      });
-    },
-  });
-}
 
 /**
  * Creates the session's agent runtime for the given transport. The exec
@@ -243,49 +216,7 @@ export async function buildAgentRuntime(
   transport: LocationTransport,
   opts: AgentRuntimeOpts
 ): Promise<AgentRuntimeProvider> {
-  if (transport.kind === 'ssh') {
-    const proxy = await connectSshTransport(transport);
-    const ctx = new SshExecutionContext(proxy, { root: transport.dir });
-    const fs = new SshFileSystem(proxy, transport.dir);
-    // Gate remote session start: fail loud now (missing tools / absent creds /
-    // no egress to Switch) rather than spawning an agent that never connects.
-    await preflightRemoteSession({
-      ctx,
-      fs,
-      log,
-      host: transport.host,
-      workDir: transport.dir,
-      credsRelPaths: opts.credsRelPaths,
-      isAuthSuspended: () => sshConnectionManager.isAuthSuspended(transport.connectionId),
-    });
-    // Remote sessions always run under tmux — it persists the agent's PTY and
-    // is the pane the sidecar injects into and reattaches to.
-    return new SshAgentRuntime({
-      locationId: opts.locationId,
-      sessionPath: opts.sessionPath,
-      sessionId: opts.sessionId,
-      tmux: true,
-      shellSetup: opts.shellSetup,
-      ctx,
-      fs,
-      proxy,
-      connectionId: transport.connectionId,
-      sessionEnvVars: opts.sessionEnvVars,
-    });
-  }
-
-  const ctx = new LocalExecutionContext();
-  const agentShellProfile = await resolveLocalAgentShellProfile(opts.sessionId);
-  return new LocalAgentRuntime({
-    locationId: opts.locationId,
-    sessionPath: opts.sessionPath,
-    sessionId: opts.sessionId,
-    tmux: opts.tmuxEnabled,
-    shellSetup: opts.shellSetup,
-    shellProfile: agentShellProfile,
-    ctx,
-    sessionEnvVars: opts.sessionEnvVars,
-  });
+  return new SharedAgentRuntime(transport, opts);
 }
 
 /**
@@ -299,7 +230,6 @@ export async function resolveSessionEnv(
   settings: LocationSettingsProvider
 ): Promise<{
   sessionEnvVars: Record<string, string>;
-  tmuxEnabled: boolean;
   shellSetup?: string;
 }> {
   const locationSettings = await settings.get();
@@ -315,7 +245,6 @@ export async function resolveSessionEnv(
       rootPath: runtime.path,
       portSeed: runtime.path,
     }),
-    tmuxEnabled: locationSettings.tmux ?? false,
     shellSetup: sessionLevelSettings.shellSetup ?? locationSettings.shellSetup,
   };
 }

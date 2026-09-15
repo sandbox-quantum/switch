@@ -328,7 +328,7 @@ def _expected_predicate(tenant_column: str) -> str:
     )
 
 
-def _migration_module() -> ModuleType:
+def _migration_module(revision_id: str) -> ModuleType:
     """The `265ed188ad6f` revision module, loaded through Alembic.
 
     Alembic's own loader, rather than an `importlib` call on a path, so this
@@ -338,7 +338,7 @@ def _migration_module() -> ModuleType:
     core = Path(switch_core.__file__).resolve().parents[1]
     config = Config(str(core / "alembic.ini"))
     config.set_main_option("script_location", str(core / "switch_core" / "migrations"))
-    revision = ScriptDirectory.from_config(config).get_revision(_RLS_REVISION)
+    revision = ScriptDirectory.from_config(config).get_revision(revision_id)
     return revision.module
 
 
@@ -433,7 +433,10 @@ class TestCatalogueCoverage:
         statement, and it sees every later revision.
         """
         from_models = scoped_tables(Base.metadata)
-        from_migration = dict(_migration_module().SCOPED_TABLES)
+        from_migration = dict(_migration_module(_RLS_REVISION).SCOPED_TABLES)
+        from_migration.update(
+            {table: "tenant_id" for table in _migration_module("c83f6e0a4129").TABLES}
+        )
 
         stale = {
             table: column

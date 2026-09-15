@@ -98,7 +98,7 @@ const SESSION_1 = {
   shellId: 'xterm',
   status: 'in_progress',
   statusChangedAt: '2025-01-01T00:00:00Z',
-  agentSessionId: null,
+
   isInitialSession: false,
   isPinned: false,
   createdAt: '2025-01-01T00:00:00Z',
@@ -249,39 +249,9 @@ describe('ControlService routes', () => {
     });
   });
 
-  describe('POST /agents/:agentId/sidecar/restart', () => {
-    it('restarts the sidecar', async () => {
-      mockGetAgentById.mockResolvedValue(AGENT_A);
-      const mockStatus = { agentId: 'agent-aaa', running: true };
-      mockSidecarRestart.mockResolvedValue(mockStatus);
-      const res = await request(port, 'POST', '/agents/agent-aaa/sidecar/restart', token);
-      expect(res.status).toBe(200);
-      expect(JSON.parse(res.body)).toEqual({ status: mockStatus });
-    });
-
-    it('returns 404 for unknown agent', async () => {
-      mockGetAgentById.mockResolvedValue(undefined);
-      const res = await request(port, 'POST', '/agents/nonexistent/sidecar/restart', token);
-      expect(res.status).toBe(404);
-    });
-
-    it('returns 500 on sidecar error', async () => {
-      mockGetAgentById.mockResolvedValue(AGENT_A);
-      mockSidecarRestart.mockRejectedValue(new Error('ssh connection failed'));
-      const res = await request(port, 'POST', '/agents/agent-aaa/sidecar/restart', token);
-      expect(res.status).toBe(500);
-    });
-  });
-
-  describe('GET /agents/:agentId/sidecar/status', () => {
-    it('returns sidecar status', async () => {
-      mockGetAgentById.mockResolvedValue(AGENT_A);
-      const mockStatus = { agentId: 'agent-aaa', running: false };
-      mockSidecarGetStatus.mockResolvedValue(mockStatus);
-      const res = await request(port, 'GET', '/agents/agent-aaa/sidecar/status', token);
-      expect(res.status).toBe(200);
-      expect(JSON.parse(res.body)).toEqual({ status: mockStatus });
-    });
+  it('does not expose the superseded sidecar execution endpoints', async () => {
+    const response = await request(port, 'POST', '/agents/agent-aaa/sidecar/restart', token);
+    expect(response.status).toBe(404);
   });
 
   describe('token file', () => {

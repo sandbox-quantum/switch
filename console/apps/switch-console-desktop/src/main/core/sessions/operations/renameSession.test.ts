@@ -22,7 +22,6 @@ function makeSessionRow(values: Partial<SessionRow>): SessionRow {
     config: values.config ?? null,
     shellId: values.shellId ?? 'system',
     status: values.status ?? 'in_progress',
-    agentSessionId: values.agentSessionId ?? null,
     agentStatus: values.agentStatus ?? null,
     agentStatusSeen: values.agentStatusSeen ?? 1,
     isInitialSession: values.isInitialSession ?? false,

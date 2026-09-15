@@ -218,7 +218,6 @@ export class SessionManagerStore {
         shellId: params.shellId ?? 'system',
         status: 'in_progress',
         statusChangedAt: now,
-        agentSessionId: null,
         isInitialSession: true,
         isPinned: false,
         autoApprove: params.autoApprove ?? false,

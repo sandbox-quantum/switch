@@ -1,10 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { IExecutionContext } from '@main/core/execution-context/types';
-import {
-  makeAgentTmuxSessionName as makeSidecarAgentTmuxSessionName,
-  parseAgentTmuxSessionName,
-} from '../../../sidecar/vm-tmux';
-import { buildTmuxShellLine, killTmuxSession, makeAgentTmuxSessionName } from './tmux-session-name';
+import { buildTmuxShellLine, killTmuxSession } from './tmux-session-name';
 
 const originalPlatform = Object.getOwnPropertyDescriptor(process, 'platform');
 
@@ -81,39 +77,5 @@ describe('buildTmuxShellLine', () => {
 
     expect(result).toContain('new-session -d -s \\"agent-session\\"');
     expect(result).not.toContain('-e ');
-  });
-});
-
-describe('makeAgentTmuxSessionName', () => {
-  const sessionId = 'c1fc96ca-d642-4a5e-a392-8205391e2d11';
-
-  it('derives the pane name from the sessionId alone (no locationId)', () => {
-    // The core CHOO-1181 guarantee: two Switch Console clients with DIFFERENT local
-    // locationIds/scopeIds must compute the SAME tmux name for the same shared
-    // session, so they attach to one pane instead of each spawning a blank
-    // one. So the name must be a pure function of the sessionId.
-    const name = makeAgentTmuxSessionName(sessionId);
-    expect(name).toBe(
-      `switchdash-${Buffer.from(`session-${sessionId}`, 'utf8').toString('base64url')}`
-    );
-  });
-
-  it('matches the sidecar (VM) derivation so a client attaches to the sidecar-spawned pane', () => {
-    expect(makeAgentTmuxSessionName(sessionId)).toBe(makeSidecarAgentTmuxSessionName(sessionId));
-  });
-
-  it('round-trips through parseAgentTmuxSessionName (lets the sidecar enumerate panes)', () => {
-    expect(parseAgentTmuxSessionName(makeAgentTmuxSessionName(sessionId))).toBe(sessionId);
-  });
-
-  it('parseAgentTmuxSessionName ignores non-agent tmux sessions', () => {
-    expect(parseAgentTmuxSessionName('switchdash-sidecar-320390b87bfaee19')).toBeNull();
-    // A terminal / legacy pane whose decoded payload is not `session-<id>`.
-    expect(
-      parseAgentTmuxSessionName(
-        `switchdash-${Buffer.from('proj:scope:leaf').toString('base64url')}`
-      )
-    ).toBeNull();
-    expect(parseAgentTmuxSessionName('some-other-session')).toBeNull();
   });
 });

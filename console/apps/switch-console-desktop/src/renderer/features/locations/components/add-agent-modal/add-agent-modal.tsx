@@ -195,6 +195,9 @@ export const AddAgentModal = observer(function AddAgentModal({
     launchProfileConfigRef.current = config;
   }, []);
 
+  // Drive the agent through its provider's own server rather than a terminal.
+  // Held in state rather than a ref: the switch has to render what it holds.
+
   const trimmedRemoteDir = canonicalDir(remoteRepoDir);
   const dir = isRemoteRun ? trimmedRemoteDir : pickState.path;
 
@@ -515,7 +518,12 @@ export const AddAgentModal = observer(function AddAgentModal({
 
         {canConfigureAgent && !!pickState.providerId && (
           <>
-            <AgentAdvancedConfig providerId={pickState.providerId} onChange={onAdvancedChange} />
+            <AgentAdvancedConfig
+              providerId={pickState.providerId}
+              sshHost={isRemoteRun ? runHost : null}
+              dir={dir}
+              onChange={onAdvancedChange}
+            />
             <LaunchProfileConfig
               providerId={pickState.providerId}
               sshHost={isRemoteRun ? runHost : null}

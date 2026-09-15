@@ -7,7 +7,6 @@ import { SWITCH_CONSOLE_DOCS_URL } from '@shared/urls';
 import { AgentsSettingsPage } from '../agents-page/AgentsSettingsPage';
 import NotificationSettingsCard from './NotificationSettingsCard';
 import { OnboardingChecklistRow } from './OnboardingSettingsRow';
-import RemoteAttachmentSettingsCard from './RemoteAttachmentSettingsCard';
 import {
   AutoGenerateSessionNamesRow,
   AutoTrustWorktreesRow,
@@ -63,7 +62,6 @@ function InterfaceSettingsPage() {
       />
       <ThemeCard />
       <TerminalSettingsCard />
-      <RemoteAttachmentSettingsCard />
     </div>
   );
 }

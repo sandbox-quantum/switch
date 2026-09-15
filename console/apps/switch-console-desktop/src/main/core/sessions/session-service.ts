@@ -28,7 +28,6 @@ import type { SessionProvisionTrigger } from '@shared/core/telemetry/reporting';
 import { archiveSession } from './operations/archiveSession';
 import { createSession } from './operations/createSession';
 import { deleteSession } from './operations/deleteSession';
-import { ensureSessionAttachable } from './operations/ensureSessionAttachable';
 import { getSession } from './operations/getSession';
 import { getSessions } from './operations/getSessions';
 import { renameSession } from './operations/renameSession';
@@ -139,6 +138,7 @@ function notOpenMessage(agentName: string | undefined): string {
 }
 
 export class SessionService implements Hookable<SessionLifecycleHooks> {
+  private readonly _provisions = new Map<string, Promise<ProvisionResult>>();
   private readonly _hooks = new HookCore<SessionLifecycleHooks>((name, e) =>
     log.error(`SessionService: ${String(name)} hook error`, e)
   );
@@ -173,27 +173,6 @@ export class SessionService implements Hookable<SessionLifecycleHooks> {
    * emits the `session:provisioned` IPC event on success.
    */
   /**
-   * Bring a remote session's sidecar and relay up as part of provisioning.
-   *
-   * A remote runtime joins the attachment pool the moment it is registered, but
-   * it learns which session it serves only from `ensureAttachable`. Without this
-   * the pool holds a runtime that refuses every attach, so opening the session
-   * shows an empty terminal for good. Local sessions have no sidecar and return
-   * false. Best-effort: an unreachable host must not fail provisioning, and the
-   * next attach reports the real error.
-   */
-  private async _makeAttachable(sessionId: string): Promise<void> {
-    try {
-      await ensureSessionAttachable(sessionId);
-    } catch (error) {
-      log.warn('SessionService: could not make session attachable', {
-        sessionId,
-        error: String(error),
-      });
-    }
-  }
-
-  /**
    * Bring a session's runtime up, reporting the outcome rather than throwing it.
    *
    * It used to declare a `Result` and never return the error branch: every
@@ -208,7 +187,16 @@ export class SessionService implements Hookable<SessionLifecycleHooks> {
     trigger: SessionProvisionTrigger = 'initial'
   ): Promise<Result<ProvisionResult, ProvisionSessionError>> {
     try {
-      const result = await this._provision(sessionId);
+      let pending = this._provisions.get(sessionId);
+      if (!pending) {
+        pending = this._provision(sessionId);
+        this._provisions.set(sessionId, pending);
+        void pending.then(
+          () => this._provisions.delete(sessionId),
+          () => this._provisions.delete(sessionId)
+        );
+      }
+      const result = await pending;
       reportProvisionRetry(sessionId, trigger, 'success');
       return ok(result);
     } catch (error) {
@@ -232,7 +220,6 @@ export class SessionService implements Hookable<SessionLifecycleHooks> {
         path: location.dir,
         locationId: sessionRuntimeManager.getLocationId(sessionId) ?? location.locationId,
       };
-      await this._makeAttachable(sessionId);
       this._hooks.callHookBackground('session:runtime-ready', sessionId, provisionResult);
       events.emit(sessionProvisionedChannel, { sessionId, ...provisionResult });
       return provisionResult;
@@ -240,7 +227,6 @@ export class SessionService implements Hookable<SessionLifecycleHooks> {
 
     const built = await provisionSessionRuntime(session.session, location);
     await this._registerAndPersist(sessionId, built);
-    await this._makeAttachable(sessionId);
 
     const provisionResult: ProvisionResult = { path: built.path, locationId: built.locationId };
     this._hooks.callHookBackground('session:runtime-ready', sessionId, provisionResult);

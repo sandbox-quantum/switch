@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AppDb } from '@main/db/client';
 import { agents, locations, switchServers } from '@main/db/schema';
 import { propagateServerApiUrl } from './propagate-server-api-url';
-import { SWITCH_SETTINGS_RELATIVE_PATH } from './switch-settings-paths';
+import { agentSettingsRelativePath, SWITCH_SETTINGS_RELATIVE_PATH } from './switch-settings-paths';
 
 const mocks = vi.hoisted(() => ({
   db: undefined as AppDb | undefined,
@@ -93,6 +93,7 @@ describe('propagateServerApiUrl', () => {
       id: 'agent-1',
       locationId: 'loc-1',
       name: 'provisioned-agent',
+      switchAgentId: 'switch-agent-1',
       providerId: 'claude',
       apiEndpoint: 'https://old-api.example.com',
       serverId: 'pilot',
@@ -123,6 +124,109 @@ describe('propagateServerApiUrl', () => {
       .from(agents)
       .where(eq(agents.id, 'agent-1'));
     expect(row?.apiEndpoint).toBe('https://new-api.example.com');
+  });
+
+  it.each(['claude', 'codex', 'opencode', 'gemini', 'cursor'] as const)(
+    'updates named %s credentials without changing another agent',
+    async (providerId) => {
+      const dir = path.join(tmpRoot, 'named');
+      const file = path.join(dir, agentSettingsRelativePath('named-agent'));
+      await nodeFs.mkdir(path.dirname(file), { recursive: true });
+      const env = {
+        SWITCH_API_ENDPOINT: 'https://old-api.example.com',
+        SWITCH_AGENT_ID: 'named-identity',
+        EXISTING_KEY: 'preserved',
+      };
+      await nodeFs.writeFile(file, JSON.stringify({ env }));
+      await writeSettings(dir, {
+        env: {
+          SWITCH_API_ENDPOINT: 'https://other-api.example.com',
+          SWITCH_AGENT_ID: 'other-identity',
+        },
+      });
+      await fixture.db
+        .insert(locations)
+        .values({ id: 'named-location', name: 'Local', sshHost: '', dir });
+      await fixture.db.insert(agents).values({
+        id: 'named-agent',
+        locationId: 'named-location',
+        name: 'named-agent',
+        providerId,
+        serverId: 'pilot',
+        apiEndpoint: env.SWITCH_API_ENDPOINT,
+      });
+      expect(await propagateServerApiUrl('pilot', 'https://new-api.example.com')).toMatchObject([
+        { agentId: 'named-agent', outcome: 'updated' },
+      ]);
+      expect(JSON.parse(await nodeFs.readFile(file, 'utf8')).env).toEqual({
+        ...env,
+        SWITCH_API_ENDPOINT: 'https://new-api.example.com',
+      });
+      expect((await readEnv(dir)).SWITCH_API_ENDPOINT).toBe('https://other-api.example.com');
+    }
+  );
+
+  it('reports malformed named credentials without changing the legacy file', async () => {
+    const dir = path.join(tmpRoot, 'malformed');
+    const file = path.join(dir, agentSettingsRelativePath('broken-agent'));
+    await nodeFs.mkdir(path.dirname(file), { recursive: true });
+    await nodeFs.writeFile(file, '{');
+    await writeSettings(dir, {
+      env: {
+        SWITCH_API_ENDPOINT: 'https://old-api.example.com',
+        SWITCH_AGENT_ID: 'legacy-identity',
+      },
+    });
+    await fixture.db
+      .insert(locations)
+      .values({ id: 'broken-location', name: 'Local', sshHost: '', dir });
+    await fixture.db.insert(agents).values({
+      id: 'broken-agent',
+      locationId: 'broken-location',
+      name: 'broken-agent',
+      providerId: 'codex',
+      serverId: 'pilot',
+    });
+    expect(await propagateServerApiUrl('pilot', 'https://new-api.example.com')).toMatchObject([
+      { agentId: 'broken-agent', outcome: 'failed', error: expect.stringContaining('invalid') },
+    ]);
+    expect(await nodeFs.readFile(file, 'utf8')).toBe('{');
+    expect((await readEnv(dir)).SWITCH_API_ENDPOINT).toBe('https://old-api.example.com');
+  });
+
+  it('does not rewrite a legacy file owned by another agent in the same directory', async () => {
+    const dir = path.join(tmpRoot, 'shared-location');
+    await writeSettings(dir, {
+      env: {
+        SWITCH_API_ENDPOINT: 'https://other-api.example.com',
+        SWITCH_AGENT_ID: 'agent-b-identity',
+      },
+    });
+    await fixture.db
+      .insert(locations)
+      .values({ id: 'shared-location', name: 'Local', sshHost: '', dir });
+    await fixture.db.insert(agents).values([
+      {
+        id: 'agent-a',
+        locationId: 'shared-location',
+        name: 'agent-a',
+        providerId: 'codex',
+        serverId: 'pilot',
+        switchAgentId: 'agent-a-identity',
+      },
+      {
+        id: 'agent-b',
+        locationId: 'shared-location',
+        name: 'agent-b',
+        providerId: 'claude',
+        serverId: 'other',
+        switchAgentId: 'agent-b-identity',
+      },
+    ]);
+    expect(await propagateServerApiUrl('pilot', 'https://new-api.example.com')).toMatchObject([
+      { agentId: 'agent-a', outcome: 'not-provisioned' },
+    ]);
+    expect((await readEnv(dir)).SWITCH_API_ENDPOINT).toBe('https://other-api.example.com');
   });
 
   it('reports an unprovisioned agent as not-provisioned without writing a file', async () => {

@@ -1,4 +1,4 @@
-import { readFile } from 'node:fs/promises';
+import { rm } from 'node:fs/promises';
 import { build } from 'esbuild';
 
 /**
@@ -35,34 +35,19 @@ const guardForbiddenImports = {
   },
 };
 
-const OUTFILE = 'dist-sidecar/sidecar.mjs';
+await rm('dist-sidecar/sidecar.mjs', { force: true });
 
 await build({
-  entryPoints: ['src/sidecar/index.ts'],
+  entryPoints: ['../../packages/agent-providers/src/host/shared-daemon.ts'],
   bundle: true,
   platform: 'node',
   format: 'esm',
   target: 'node20',
-  outfile: OUTFILE,
+  outfile: 'dist-sidecar/shared-host.mjs',
   tsconfig: 'tsconfig.json',
+  banner: {
+    js: "import { createRequire as createSharedHostRequire } from 'node:module'; const require = createSharedHostRequire(import.meta.url);",
+  },
   logLevel: 'info',
   plugins: [guardForbiddenImports],
 });
-
-/**
- * The sidecar runs under raw Node, where `import.meta.env` is undefined — unlike
- * the Vite-built renderer/main (and unlike Vitest, which defines it, so a unit
- * test cannot catch this). An UNGUARDED `import.meta.env.X` read therefore
- * crashes the sidecar on boot; the guarded `import.meta.env?.X` is fine. Shared
- * code the sidecar bundles must use the optional-chained form (see
- * `src/shared/logger.ts`). Fail the build loudly if an unguarded read slips in,
- * rather than shipping a bundle that dies on the VM (CHOO-1425).
- */
-const bundle = await readFile(OUTFILE, 'utf8');
-const unguarded = bundle.match(/import\.meta\.env\.[A-Za-z_]/g);
-if (unguarded) {
-  throw new Error(
-    `sidecar bundle contains unguarded import.meta.env access (${[...new Set(unguarded)].join(', ')}) — ` +
-      'use import.meta.env?.X in shared code; it is undefined under raw Node and crashes the sidecar on boot'
-  );
-}

@@ -59,5 +59,22 @@ export const provider = registerPluginBehavior(plugin, {
         extraEnv: ctx.autoApprove ? { GEMINI_CLI_TRUST_WORKSPACE: 'true' } : {},
       }),
   },
-  mcp: geminiMcpAdapter(),
+  mcp: {
+    ...geminiMcpAdapter(),
+    launchProfileFields: () => [
+      {
+        key: 'model',
+        label: 'Model',
+        type: 'text',
+        catalogue: { kind: 'model' },
+        help: 'Blank uses the Gemini CLI default on the execution machine.',
+      },
+      {
+        key: 'instructions',
+        label: 'Instructions',
+        type: 'textarea',
+        help: 'Additional instructions for SDK sessions.',
+      },
+    ],
+  },
 });

@@ -102,13 +102,15 @@ export function DefinitionFieldInput({
   suggestions?: LaunchProfileModel[];
 }) {
   const id = `agent-definition-${field.key}`;
-  if (suggestions) {
+  if (field.key === 'model' || suggestions) {
     return (
       <ModelCombobox
         id={id}
         value={String(value)}
-        models={suggestions}
-        placeholder={field.placeholder}
+        models={suggestions ?? []}
+        placeholder={
+          field.key === 'model' ? 'Default — choose or enter a model' : field.placeholder
+        }
         disabled={disabled}
         onChange={onChange}
       />
