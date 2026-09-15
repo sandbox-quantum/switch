@@ -31,13 +31,11 @@ from switch_core.agent_icon import default_icon_url
 from switch_core.bridges.collaboration.adapter import (
     ActivityMark,
     CollaborationAdapter,
-    LiveRuntimeIndicator,
     RequestCard,
     RichContent,
     RichContentFailed,
     RichContentThrottled,
     TurnActivity,
-    format_elapsed,
 )
 from switch_core.bridges.collaboration.models import (
     Attachment,
@@ -217,12 +215,10 @@ class MattermostAdapter(CollaborationAdapter):
     #: on its own.
     activity_reactions_per_agent: ClassVar[bool] = True
 
-    #: Off, because the SDK publication now draws the status. Leaving it on
-    #: would put two competing accounts of the same turn in the channel: the
-    #: legacy "working on it…" post edited to "✓ Done" beside the activity
-    #: message saying the same thing in more detail. The legacy renderer stays
-    #: in the file — it is what every unmigrated platform still uses — and this
-    #: flag is what stops it publishing here.
+    #: Off, because the SDK publication draws the status. This adapter has no
+    #: legacy renderer left to run, but the base class defaults the flag on for
+    #: the platforms that still do, so saying so here is what keeps the base
+    #: class's own fallback from drawing a second account of the turn.
     renders_legacy_runtime_state: ClassVar[bool] = False
 
     #: Mattermost renders a thread inline under its root as well as in the
@@ -267,24 +263,10 @@ class MattermostAdapter(CollaborationAdapter):
         self._seen_post_ids_max = 1000
         self._seen_lock = threading.Lock()
 
-        # (channel_id, thread root post id) -> the post that actually asked.
-        # Inside a thread that is the reply, not the root the reply hangs off.
-        # Bounded like _seen_post_ids: it grows with inbound traffic and only
-        # the recent entries can still be the subject of a live turn.
-        self._thread_trigger: OrderedDict[tuple[str, str], str] = OrderedDict()
-        self._thread_trigger_max = 1000
-        self._thread_trigger_lock = threading.Lock()
-
         # (agent_name, post_id) currently carrying the working reaction. A
         # reaction belongs to the bot that added it, so two agents on the same
         # post are two independent marks.
         self._marked: set[tuple[str, str, ActivityMark]] = set()
-
-        # (channel_id, agent_name) -> the posts that agent has marked. An agent
-        # asked two things at once works on both, and the turn ends once — so
-        # the marks are cleared together rather than only on the last thread
-        # touched.
-        self._agent_eyes: dict[tuple[str, str], set[str]] = {}
 
         # Mattermost user id -> username, because a mention is written with the
         # handle and Switch stores the id. Stable for the life of a user, so a
@@ -1053,171 +1035,7 @@ class MattermostAdapter(CollaborationAdapter):
         except Exception as e:
             logger.debug("Failed to send MM typing for %s: %s", sender_name, e)
 
-    # ── Runtime state ──────────────────────────────────────────────────────────
-
-    async def _apply_runtime_state(
-        self,
-        channel_id: str,
-        agent_name: str,
-        state: str,
-        *,
-        mention_handle: str | None,
-        thread_root_id: str | None,
-        deeplink_url: str | None = None,
-        detail: str | None = None,
-        trigger_thread_root_id: str | None = None,
-        anchor_message_ref: str | None = None,
-    ) -> None:
-        """Surface runtime state as a posted message that is **never deleted**.
-
-        Mattermost's web client replaces any message deleted while it is on
-        screen with a "(message deleted)" placeholder, and only drops that on
-        reload. It does so however the message was removed — a permanent delete
-        looks the same to it as a soft one — so a status line that appears and
-        vanishes each turn leaves a trail of placeholders behind it. There is no
-        server setting that turns this off. The only way not to provoke it is
-        not to delete: every status message here is retired by editing it in
-        place.
-
-        - ``working`` → post "working on it…" as the agent (in-thread when the
-          trigger was threaded); it stays up across intermediate replies and
-          through ``awaiting-input``.
-        - ``idle`` (where ``completed`` collapses) → edit the working message
-          into a "done" marker, and resolve any pings the same way.
-        - ``awaiting-input`` → leave the working message up; post a separate
-          operator ping (tracked for resolution when the turn ends).
-
-        The message that triggered the turn is marked with 👀 throughout, and
-        unmarked when it ends — see ``_track_eyes``.
-        """
-        await self._track_eyes(channel_id, agent_name, state, thread_root_id)
-
-        key = (channel_id, agent_name)
-        if state == "working":
-            # Resuming work means the requested input was provided — remove the
-            # now-resolved pings, then ensure the working indicator is up.
-            await self._clear_input_pings(channel_id, agent_name)
-            body = self._working_body(detail, deeplink_url)
-            existing = self._working_msg.get(key)
-            if existing is not None:
-                # Refresh the live message in place with the latest activity.
-                await self._patch_post_as(agent_name, existing.message_ref, body)
-                self._working_msg[key] = replace(existing, body=body)
-                return
-            ref = await self.send_message(channel_id, agent_name, body, thread_root_id)
-            if ref is not None:
-                self._working_msg[key] = LiveRuntimeIndicator(
-                    message_ref=ref,
-                    body=body,
-                    thread_root_id=thread_root_id,
-                    started_at=time.monotonic(),
-                )
-                # Where the message came from, not where the status went. The
-                # status is pinned to the thread the answer will land in, but
-                # typing is for whoever is waiting — and someone who wrote at
-                # the channel root is watching the root, not a thread they have
-                # not opened.
-                #
-                # Only as the turn opens. Mattermost expires a typing indicator
-                # after a few seconds, and the posted message is what carries
-                # the state from there on — repeating it on every activity
-                # refresh would say "typing" for as long as the agent runs.
-                await self._post_typing(channel_id, agent_name, trigger_thread_root_id)
-        elif state == "awaiting-input":
-            ref = await self._ping_operator(
-                channel_id,
-                agent_name,
-                mention_handle,
-                thread_root_id,
-                deeplink_url,
-                detail,
-            )
-            if ref is not None:
-                self._input_pings.setdefault(key, []).append(ref)
-        else:
-            await self._dispose_working(channel_id, agent_name)
-            await self._clear_input_pings(channel_id, agent_name)
-
-    async def _clear_input_pings(self, channel_id: str, agent_name: str) -> None:
-        """Resolve the tracked operator pings when the turn ends.
-
-        Edited rather than removed, for the same reason as the working message:
-        a delete would leave a placeholder in every client that had the ping on
-        screen — which, for a ping, is precisely the people it was aimed at."""
-        for post_id in self._input_pings.pop((channel_id, agent_name), []):
-            await self._patch_post_as(
-                agent_name, post_id, self.translate_outbound("✓ Input received")
-            )
-
     # ── The eyes on the message being worked on ──────────────────────────────
-
-    def _remember_trigger(self, channel_id: str, root_id: str, post_id: str) -> None:
-        """Record the latest post in a thread, so the eyes land on what asked.
-
-        Written from the websocket thread and read from the main loop, hence
-        the lock. Oldest entries are dropped past the cap: a thread nobody has
-        written in for a thousand messages is not the subject of a live turn,
-        and losing the entry only puts the mark on the thread root.
-        """
-        with self._thread_trigger_lock:
-            self._thread_trigger[(channel_id, root_id)] = post_id
-            self._thread_trigger.move_to_end((channel_id, root_id))
-            while len(self._thread_trigger) > self._thread_trigger_max:
-                self._thread_trigger.popitem(last=False)
-
-    async def _track_eyes(
-        self,
-        channel_id: str,
-        agent_name: str,
-        state: str,
-        thread_root_id: str | None,
-    ) -> None:
-        """Mark every message this agent is working on, and clear them together.
-
-        ``thread_root_id`` is where the answer will land: the thread the agent
-        was addressed in, or — since this adapter follows the anchor — the
-        message itself when it was addressed at the channel root. The mark
-        belongs on what was actually said, so a threaded turn is traced back
-        through ``_thread_trigger`` to the reply that asked rather than being
-        put on the root it hangs off.
-        """
-        akey = (channel_id, agent_name)
-
-        if state in ("working", "awaiting-input"):
-            if thread_root_id is None:
-                return
-            asked_on = self._thread_trigger.get(
-                (channel_id, thread_root_id), thread_root_id
-            )
-            self._agent_eyes.setdefault(akey, set()).add(asked_on)
-            await self._mark_being_read(agent_name, asked_on, working=True)
-            return
-
-        for post_id in sorted(self._agent_eyes.pop(akey, set())):
-            await self._mark_being_read(agent_name, post_id, working=False)
-
-    async def _mark_being_read(
-        self, agent_name: str, post_id: str, *, working: bool, force: bool = False
-    ) -> None:
-        """Best-effort 👀 for the legacy runtime path, which cannot act on failure.
-
-        Nothing on that path retries and nothing records what it did, so a
-        failure here is cosmetic and is logged rather than raised. The SDK seam
-        goes through `_react_or_raise`: its publisher writes a completion
-        receipt on the strength of what it is told, and a swallowed failure
-        there leaves 👀 on a finished turn for good.
-        """
-        try:
-            await self._react_or_raise(
-                agent_name, post_id, mark="working", on=working, force=force
-            )
-        except Exception as e:
-            logger.warning(
-                "Could not %s the working reaction on %s: %s",
-                "add" if working else "remove",
-                post_id,
-                e,
-            )
 
     async def _react_or_raise(
         self,
@@ -1283,53 +1101,6 @@ class MattermostAdapter(CollaborationAdapter):
         except ResourceNotFound:
             pass
         self._marked.discard(key)
-
-    async def _reposition_runtime_state(
-        self, channel_id: str, agent_name: str, thread_root_id: str | None
-    ) -> None:
-        """Leave the indicator where it was first posted.
-
-        Moving it means removing it from where it is, and any removal shows as
-        "(message deleted)" to everyone currently looking at the channel — once
-        per move, so an active conversation accumulates them fastest. The
-        indicator is pinned to the point the turn began instead: less precise
-        about where the agent is up to, but it costs the reader nothing.
-        """
-        return
-
-    async def _dispose_working(self, channel_id: str, agent_name: str) -> None:
-        """Retire the live "working on it…" message when the turn ends.
-
-        Edited into a terminal marker rather than removed — see
-        ``_apply_runtime_state`` for why nothing here is ever deleted. Kept to
-        the bare fact that the turn finished and how long it took: this line
-        stays in the channel for good, so it earns its place by being small.
-        The session link belongs on the live indicator, where it is still
-        actionable, not on the record of a turn that is over."""
-        live = self._working_msg.pop((channel_id, agent_name), None)
-        if live is None:
-            return
-        elapsed = format_elapsed(time.monotonic() - live.started_at)
-        await self._patch_post_as(
-            agent_name,
-            live.message_ref,
-            self.translate_outbound(f"✓ Done · {elapsed}"),
-        )
-
-    async def _patch_post_as(self, agent_name: str, post_id: str, content: str) -> None:
-        driver = self._bot_drivers.get(agent_name) or self._admin_driver
-        loop = self._main_loop
-        if driver is None or loop is None:
-            logger.error("Cannot edit runtime-state post: Mattermost not connected")
-            return
-        try:
-            await loop.run_in_executor(
-                None, driver.posts.patch_post, post_id, {"message": content}
-            )
-        except Exception as e:
-            logger.error(
-                "Failed to edit Mattermost runtime-state post %s: %s", post_id, e
-            )
 
     # ── Channel creation ──────────────────────────────────────────────────────
 
@@ -1987,7 +1758,6 @@ class MattermostAdapter(CollaborationAdapter):
         message = post.get("message", "")
         # Mattermost sets root_id to the thread root for replies, "" otherwise.
         root_id = post.get("root_id", "") or None
-        self._remember_trigger(channel_id, root_id or post_id, post_id)
         mm_channel_type = data.get("channel_type", "")
         channel_name = str(data.get("channel_display_name", "")) or None
 

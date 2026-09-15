@@ -613,21 +613,6 @@ async def test_clearing_a_mark_mattermost_says_is_gone_is_not_a_failure() -> Non
     ]
 
 
-async def test_the_legacy_path_still_logs_a_failed_mark_rather_than_raising(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    """Nothing on that path retries or records what it did, so raising there
-    would lose a message over a cosmetic reaction."""
-    adapter = _adapter()
-    driver: Any = adapter._bot_drivers["worker"]
-    driver.reactions.create_error = ConnectionError("temporary network failure")
-
-    with caplog.at_level(logging.WARNING):
-        await adapter._track_eyes("chan-1", "worker", "working", "root-1")
-
-    assert caplog.records
-
-
 async def test_a_mark_left_over_from_before_a_restart_is_still_cleared() -> None:
     """After a restart the in-process record is empty, but the 👀 is still in
     the channel. Without `force` the removal is skipped as already done."""
