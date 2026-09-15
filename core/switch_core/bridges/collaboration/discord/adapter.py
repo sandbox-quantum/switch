@@ -19,6 +19,7 @@ from pydantic import Field
 from switch_core.bridges.agent.commands import COMMANDS_BY_NAME
 from switch_core.bridges.agent.commands import Command as InRoomCommand
 from switch_core.bridges.collaboration.adapter import (
+    ActivityMarkRefused,
     CollaborationAdapter,
     LiveRuntimeIndicator,
     RequestCard,
@@ -1654,6 +1655,11 @@ class DiscordAdapter(CollaborationAdapter):
         as well as inside a thread — so it is the progress signal that is always
         available. A guild that has not granted the permission gets one warning
         and no reaction, rather than a mark that is not there.
+
+        This path has no durable record, so it answers the refused-removal
+        question from `self._eyes` — which is sound only because it will not
+        attempt a removal at all unless this process put the mark there. The
+        reaction is then known to be outstanding, and is reported as such.
         """
         _, message_id = self._parse_message_ref(message_ref)
         if not message_id or self._client is None:
@@ -1663,6 +1669,14 @@ class DiscordAdapter(CollaborationAdapter):
 
         try:
             await self._react(message_ref, working=working)
+        except ActivityMarkRefused as refusal:
+            if working:
+                logger.warning("%s", refusal)
+            else:
+                logger.error(
+                    "%s The mark this process put there is still on the message.",
+                    refusal,
+                )
         except (discord.HTTPException, ValueError) as e:
             logger.warning(
                 "Could not %s the working reaction on Discord message %s: %s",
@@ -1678,12 +1692,14 @@ class DiscordAdapter(CollaborationAdapter):
         or this guild will never allow the reaction. Everything else is left to
         raise, so a caller that can try again knows it should.
 
-        The two finals are not the same failure, and the log says which. A mark
-        that could not be added is a mark nobody sees, and the turn goes on
-        without it. A mark that could not be *removed* is still on the message,
-        saying an agent is working on something it finished — worse than the
-        first, because it is not an absence but a false statement, and no
-        retry here will take it back.
+        A missing permission is final *here* — the same call would be refused
+        the same way — so it is raised as `ActivityMarkRefused` rather than
+        swallowed. It is not final for the turn: access to a channel can come
+        back, and a mark that could not be *removed* is still on the message
+        saying an agent is working on something it finished. That is not an
+        absence but a false statement, and whether it is outstanding is a
+        question about what was put there, which the publisher's durable record
+        answers and this method cannot.
         """
         location_id, message_id = self._parse_message_ref(message_ref)
         client = self._require_client()
@@ -1700,28 +1716,21 @@ class DiscordAdapter(CollaborationAdapter):
             # The message (or the reaction) is gone; the end state is what was
             # wanted either way.
             self._eyes.discard(message_ref)
-        except discord.Forbidden:
+        except discord.Forbidden as error:
             if working:
-                logger.warning(
-                    "Discord refused the working reaction on %s — the bot is "
-                    "missing the Add Reactions permission here. Turns still show "
-                    "their status message; only the mark on the message being "
-                    "answered is missing. Re-invite the bot with the permissions "
-                    "in DISCORD_SETUP.md.",
-                    message_ref,
-                )
-                return
-            logger.error(
-                "Discord refused to take the working reaction off %s, so %s is "
-                "left on a message whose turn has ended and the channel shows an "
-                "agent still working on something it has finished. Removing our "
-                "own reaction needs no permission of its own, so this is the "
-                "bot's access to the channel rather than the reaction: check it "
-                "can still see %s. The mark will not come off by retrying.",
-                message_ref,
-                _WORKING_REACTION,
-                message_ref,
-            )
+                raise ActivityMarkRefused(
+                    f"Discord refused the working reaction on {message_ref} — the "
+                    f"bot is missing the Add Reactions permission here. Turns still "
+                    f"show their status message; only the mark on the message being "
+                    f"answered is missing. Re-invite the bot with the permissions "
+                    f"in DISCORD_SETUP.md."
+                ) from error
+            raise ActivityMarkRefused(
+                f"Discord refused to take the working reaction off {message_ref}. "
+                f"Removing our own reaction needs no permission of its own, so this "
+                f"is the bot's access to the channel rather than the reaction: check "
+                f"it can still see {message_ref}."
+            ) from error
 
     async def _clear_working(self, channel_id: str, agent_name: str) -> None:
         live = self._working_msg.pop((channel_id, agent_name), None)

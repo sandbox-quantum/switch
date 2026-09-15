@@ -36,6 +36,7 @@ from telegram.ext import Application, ApplicationBuilder, TypeHandler
 
 from switch_core.bridges.agent.commands import COMMANDS, COMMANDS_BY_NAME, CommandArg
 from switch_core.bridges.collaboration.adapter import (
+    ActivityMarkRefused,
     CollaborationAdapter,
     LiveRuntimeIndicator,
     RequestCard,
@@ -1831,20 +1832,18 @@ class TelegramAdapter(CollaborationAdapter):
 
         Raises where another attempt might work, so the publisher retries and
         records the turn as drawn only once the chat shows what it says it
-        shows. A chat that refuses to *add* the mark is not that: reactions are
-        switched off there, or the bot may not use them, and it would be
-        refused the same way for the life of the turn — so it is reported once
-        and the turn goes on without it.
+        shows. A chat that will not take the mark at all is not that — reactions
+        are switched off there, or the bot may not use them, and it would be
+        refused the same way for the life of the turn — so that is raised as
+        `ActivityMarkRefused` and the publisher decides what it means.
 
-        A refused *removal* of a mark this process put there is the opposite
-        case and is raised. The mark is on the message and the chat is showing
-        this turn as still running; reporting that as cleaned up would have the
-        publisher stop asking, and permission coming back later would change
-        nothing. Retried and still outstanding is the truth, so that is what the
-        caller is told. Where the mark is not this process's — a reconciling
-        `force` after a restart, or a chat that refused to add one at all —
-        there is nothing known to be outstanding, and the refusal is reported
-        the way a refused addition is rather than held against a turn forever.
+        It decides, and not this method, because the question a refused
+        *removal* asks is whether a mark is still sitting on the message, and
+        the answer does not live here. `self._reacted` is this process's memory
+        and a restart empties it; empty then means "no idea", not "nothing was
+        added". Treating those as the same is how a turn came to be recorded as
+        cleaned up with the 👀 still on the message. The durable record knows
+        whether an addition was ever refused, so the durable record is asked.
         """
         _, message_id = self._parse_message_ref(message_ref)
         if not message_id:
@@ -1863,19 +1862,10 @@ class TelegramAdapter(CollaborationAdapter):
                 reaction=[ReactionTypeEmoji(_WORKING_REACTION)] if working else [],
             )
         except (BadRequest, Forbidden) as error:
-            if not working and key in self._reacted:
-                raise
-            # Reactions are off in this chat, or the bot may not react in it.
-            # Refused now is refused for the rest of the turn.
-            logger.warning(
-                "Telegram will not %s the working reaction on %s in chat %s "
-                "(%s); the turn goes on without it.",
-                "add" if working else "remove",
-                message_id,
-                channel_id,
-                error,
-            )
-            return
+            raise ActivityMarkRefused(
+                f"Telegram will not {'add' if working else 'remove'} the working "
+                f"reaction on {message_id} in chat {channel_id} ({error})."
+            ) from error
         if working:
             self._reacted.add(key)
         else:

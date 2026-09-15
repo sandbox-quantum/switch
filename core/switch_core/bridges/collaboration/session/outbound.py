@@ -45,6 +45,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.bridges.collaboration.adapter import (
+    ActivityMarkRefused,
     CollaborationAdapter,
     RequestCard,
     RichContentFailed,
@@ -818,6 +819,17 @@ class SessionTurnActivity:
         kept on the anchor as `reaction_ref` for exactly this. Adapter-owned
         and best effort: errors do not interrupt rendering. Return whether it worked so
         callers can retry a failed claim or unfinished terminal cleanup.
+
+        A platform that refuses the mark outright raises `ActivityMarkRefused`,
+        and what that means depends on which way it was going. Refused on the
+        way *on*, the mark is simply absent: the turn goes on without it, and
+        the refusal is recorded so a later removal knows there was never
+        anything there. Refused on the way *off*, the question is whether a
+        mark is still sitting on the message, and only the durable record can
+        answer it once a restart has emptied this process's memory. No recorded
+        refusal means the cleanup is unfinished, and saying otherwise would
+        leave a channel showing an agent still working on something it has
+        finished.
         """
         if anchor.reaction_ref is None or not getattr(
             self._adapter, "supports_activity_reactions", False
@@ -832,6 +844,26 @@ class SessionTurnActivity:
                 **({"force": True} if self._journal else {}),
             )
             return True
+        except ActivityMarkRefused as refusal:
+            if working:
+                await self._remember_refusal()
+                logger.warning(
+                    "%s The turn goes on without the mark.",
+                    refusal,
+                )
+                return True
+            if await self._nothing_was_marked(anchor):
+                logger.warning(
+                    "%s Nothing was ever put on it, so there is nothing to take off.",
+                    refusal,
+                )
+                return True
+            logger.error(
+                "%s The mark is still on the message and this turn is not "
+                "finished until it comes off.",
+                refusal,
+            )
+            return False
         except Exception:
             logger.warning(
                 "Could not %s the activity reaction on %s in %s.",
@@ -841,6 +873,39 @@ class SessionTurnActivity:
                 exc_info=True,
             )
             return False
+
+    async def _remember_refusal(self) -> None:
+        """Record that this message would not take the mark at all.
+
+        On the turn's own journal row, which is discarded when the turn
+        completes — so the memory lasts exactly as long as it can be relevant.
+        Without a journal there is nothing to remember it in, and a restart is
+        not survivable anyway.
+        """
+        record = self._record.get()
+        if record is None:
+            return
+        record.data["reaction_refused"] = True
+        await record.save()
+
+    async def _nothing_was_marked(self, anchor: _Anchor) -> bool:
+        """Whether a refused removal is safe to treat as already done.
+
+        Only a recorded refusal makes it safe. Absence of evidence is not
+        evidence, so an unjournalled publisher — which cannot survive a restart
+        to be wrong in the first place — keeps the behaviour it had.
+        """
+        if self._journal is None:
+            return True
+        record = self._record.get()
+        if record is not None and record.data.get("reaction_refused"):
+            return True
+        return await self._journal.reaction_refused(
+            anchor.channel_id,
+            anchor.reaction_ref or "",
+            agent_name=anchor.agent_name if self._reactions_per_agent else None,
+            sessions=record.sessions if record else self._journal.sessions,
+        )
 
     async def _forget_the_oldest(self) -> None:
         """Bound the in-memory cache, retaining durable message references.

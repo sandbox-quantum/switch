@@ -94,6 +94,51 @@ class ActivityJournal:
                 for row in rows
             )
 
+    async def reaction_refused(
+        self,
+        channel: str,
+        ref: str,
+        *,
+        agent_name: str | None = None,
+        sessions: async_sessionmaker[AsyncSession],
+    ) -> bool:
+        """Whether a turn on this message was refused the mark outright.
+
+        Asked when a *removal* is refused, to tell a mark that is still sitting
+        on the message from one that was never put there. A process's own
+        memory cannot answer it: a restart empties that, and empty then means
+        "no idea" rather than "nothing was added". Recording the refusal is
+        what survives.
+
+        Absence is not evidence, so absence means outstanding. A turn whose
+        addition succeeded records nothing here and a refused removal is
+        therefore treated as a mark still on the message, which is the truthful
+        direction: the cost of being wrong is a retry, and the cost of the
+        opposite is a channel showing an agent working on something it
+        finished.
+
+        Ended turns are counted, unlike `reaction_held`. A turn being over says
+        nothing about whether it left a mark behind — that is the whole of what
+        went wrong before.
+        """
+        anchor: dict[str, str] = {"channel_id": channel, "reaction_ref": ref}
+        if agent_name is not None:
+            anchor["agent_name"] = agent_name
+        async with sessions() as db:
+            return bool(
+                (
+                    await db.scalars(
+                        select(SessionActivityPost).where(
+                            SessionActivityPost.tenant_id == require_tenant_id(),
+                            SessionActivityPost.bridge_id == self.bridge_id,
+                            SessionActivityPost.data.contains(
+                                {"anchor": anchor, "reaction_refused": True}
+                            ),
+                        )
+                    )
+                ).first()
+            )
+
     @asynccontextmanager
     async def open(
         self, session_id: str, command_id: str

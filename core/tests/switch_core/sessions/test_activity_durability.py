@@ -6,7 +6,10 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from mattermostdriver.exceptions import NotEnoughPermissions
 
-from switch_core.bridges.collaboration.adapter import RichContentThrottled
+from switch_core.bridges.collaboration.adapter import (
+    ActivityMarkRefused,
+    RichContentThrottled,
+)
 from switch_core.bridges.collaboration.session.activity_journal import ActivityJournal
 from switch_core.bridges.collaboration.session.outbound import (
     CardNotPosted,
@@ -750,3 +753,74 @@ async def test_a_post_mattermost_refused_is_reserved_again_and_retried(
     posts.create_error = None
     assert await publish(activity(session_factory, adapter))
     assert len(posts.created) == 1
+
+
+class RefusingPlatform(ActivitySlack):
+    """A chat that will not take the mark, keeping its own state across a restart.
+
+    The reactions live in a set owned by the test rather than by the adapter,
+    because that is the arrangement the defect needs: the channel remembers
+    what is on the message and a new process does not.
+    """
+
+    def __init__(self, chat, *, refuse_add=False, refuse_remove=False):
+        super().__init__()
+        self.reactions = chat["reactions"]
+        self.messages = chat["messages"]
+        self.refuse_add = refuse_add
+        self.refuse_remove = refuse_remove
+
+    async def mark_activity(self, channel, ref, *, agent_name, working, force=False):
+        if working:
+            if self.refuse_add:
+                raise ActivityMarkRefused("reactions are switched off in this chat")
+            self.reactions.add(ref)
+        elif self.refuse_remove:
+            raise ActivityMarkRefused("the bot may no longer react here")
+        else:
+            self.reactions.discard(ref)
+
+
+async def test_a_mark_left_on_the_message_after_a_restart_is_not_reported_as_cleaned_up(
+    session_factory,
+):
+    """Add the mark, restart, lose the permission, end the turn.
+
+    The mark is still on the message, so the chat is saying an agent is working
+    on something it has finished. Reporting the turn as finished stops the
+    publisher asking, and permission coming back later then changes nothing.
+    The old code decided this from a process-local set that the restart had
+    emptied, read an empty set as "nothing was added", and returned success.
+    """
+    await setup(session_factory)
+    chat = {"reactions": set(), "messages": {}}
+    assert await publish(activity(session_factory, RefusingPlatform(chat)))
+    assert chat["reactions"] == {"channel-demo:question"}
+
+    after_restart = RefusingPlatform(chat, refuse_remove=True)
+    drawn = await publish(activity(session_factory, after_restart), "completed")
+
+    assert chat["reactions"] == {"channel-demo:question"}
+    assert not drawn
+
+
+async def test_a_chat_that_never_took_the_mark_does_not_hold_the_turn_open(
+    session_factory,
+):
+    """The other half, and the reason the answer cannot simply be "always raise".
+
+    A chat with reactions switched off refuses to clear a mark as readily as to
+    add one, and there is nothing there to clear. Holding the turn open for it
+    would leave every turn in that chat retrying its cleanup for ever. The
+    refusal to add is recorded when it happens, so the refusal to remove is
+    still understood after a restart.
+    """
+    await setup(session_factory)
+    chat = {"reactions": set(), "messages": {}}
+    first = RefusingPlatform(chat, refuse_add=True)
+    assert await publish(activity(session_factory, first))
+    assert not chat["reactions"]
+
+    after_restart = RefusingPlatform(chat, refuse_add=True, refuse_remove=True)
+
+    assert await publish(activity(session_factory, after_restart), "completed")

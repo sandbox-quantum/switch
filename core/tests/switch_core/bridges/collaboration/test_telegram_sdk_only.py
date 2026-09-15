@@ -29,6 +29,7 @@ from telegram.error import (
 )
 
 from switch_core.bridges.collaboration.adapter import (
+    ActivityMarkRefused,
     CollaborationAdapter,
     RequestCard,
     RichContentFailed,
@@ -806,51 +807,44 @@ async def test_a_transient_reaction_failure_raises_so_the_publisher_retries() ->
         )
 
 
-async def test_a_chat_with_reactions_off_is_not_retried_for_the_whole_turn(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    """Refused now is refused every time, so it is said once and the turn goes
-    on without the mark."""
+async def test_a_chat_with_reactions_off_says_so_rather_than_swallowing_it() -> None:
+    """Refused now is refused every time, and the adapter says which kind of
+    failure that is. What it means for the turn is the publisher's to decide."""
     adapter = _adapter()
     _bot(adapter).reaction_error = BadRequest("REACTION_INVALID")
 
-    await adapter.mark_activity(
-        CHANNEL, f"{CHAT_ID}:55", agent_name="one", working=True
-    )
+    with pytest.raises(ActivityMarkRefused):
+        await adapter.mark_activity(
+            CHANNEL, f"{CHAT_ID}:55", agent_name="one", working=True
+        )
 
-    assert any("without it" in record.message for record in caplog.records)
 
+async def test_a_refused_removal_is_reported_whatever_this_process_remembers() -> None:
+    """The adapter does not decide whether a mark is outstanding.
 
-async def test_a_mark_that_could_not_be_removed_is_not_reported_as_removed() -> None:
-    """Add the eyes, lose the permission, end the turn: the mark is still on
-    the message. Reported as cleaned up, the publisher stops asking and the
-    chat shows the turn as running for good."""
+    It used to, by looking in a set that a restart empties — so after one, a
+    refused removal looked like nothing to remove. Both of these refuse
+    identically now; the difference is the durable record's to know, and
+    `test_activity_durability` is where that is pinned.
+    """
     adapter = _adapter()
     await adapter.mark_activity(
         CHANNEL, f"{CHAT_ID}:55", agent_name="one", working=True
     )
     _bot(adapter).reaction_error = Forbidden("the bot may no longer react here")
 
-    with pytest.raises(Forbidden):
+    with pytest.raises(ActivityMarkRefused):
         await adapter.mark_activity(
             CHANNEL, f"{CHAT_ID}:55", agent_name="one", working=False
         )
 
+    fresh = _adapter()
+    _bot(fresh).reaction_error = Forbidden("the bot may no longer react here")
 
-async def test_clearing_a_mark_nothing_put_there_is_not_held_against_the_turn(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    """A chat with reactions switched off refuses to clear one as readily as to
-    add one, and there is nothing there to clear. Raising would leave every
-    turn in that chat retrying its cleanup for ever."""
-    adapter = _adapter()
-    _bot(adapter).reaction_error = BadRequest("REACTION_INVALID")
-
-    await adapter.mark_activity(
-        CHANNEL, f"{CHAT_ID}:55", agent_name="one", working=False, force=True
-    )
-
-    assert any("without it" in record.message for record in caplog.records)
+    with pytest.raises(ActivityMarkRefused):
+        await fresh.mark_activity(
+            CHANNEL, f"{CHAT_ID}:55", agent_name="one", working=False, force=True
+        )
 
 
 async def test_the_typing_nudge_is_sent_where_the_agent_was_asked() -> None:

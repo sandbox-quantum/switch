@@ -212,6 +212,19 @@ class RichContentThrottled(RichContentFailed):
         self.retry_after = retry_after
 
 
+class ActivityMarkRefused(RuntimeError):
+    """The platform will not change the work mark, and another attempt will not.
+
+    Reactions switched off in the chat, or a permission the bot does not have:
+    refused now means refused for the life of the turn. Anything a retry might
+    fix is left to raise as itself, so the publisher can tell the two apart.
+
+    Raised for a refused *removal* as well as a refused addition. Whether that
+    matters is not the adapter's to decide — it depends on whether a mark was
+    ever put there, which only the durable record knows after a restart.
+    """
+
+
 class CollaborationAdapter(ABC):
     # Platforms opt in only when their SDK request and activity rendering is ready.
     publishes_sdk_sessions: ClassVar[bool] = False

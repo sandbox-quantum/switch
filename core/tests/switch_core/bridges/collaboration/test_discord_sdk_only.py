@@ -21,6 +21,7 @@ import discord
 import pytest
 
 from switch_core.bridges.collaboration.adapter import (
+    ActivityMarkRefused,
     RequestCard,
     RichContentFailed,
     RichContentThrottled,
@@ -941,13 +942,11 @@ async def test_force_marks_again_because_the_record_may_be_empty_and_wrong() -> 
     assert channel.reactions == [("👀", True), ("👀", True)]
 
 
-async def test_a_missing_permission_is_not_retried_for_the_life_of_the_turn(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
+async def test_a_missing_permission_is_refused_rather_than_swallowed() -> None:
     adapter, channel, _thread, _webhook = _guild_setup()
     channel.reaction_error = discord.Forbidden(_Response(), "no Add Reactions")  # type: ignore[arg-type]
 
-    with caplog.at_level(logging.WARNING):
+    with pytest.raises(ActivityMarkRefused, match="Add Reactions"):
         await adapter.mark_activity(
             str(CHANNEL_ID),
             f"{CHANNEL_ID}:{ROOT_MESSAGE_ID}",
@@ -955,17 +954,14 @@ async def test_a_missing_permission_is_not_retried_for_the_life_of_the_turn(
             working=True,
         )
 
-    assert "Add Reactions" in caplog.text
 
-
-async def test_a_mark_that_cannot_be_taken_off_is_an_error_not_a_shrug(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
+async def test_a_mark_that_cannot_be_taken_off_is_refused_not_shrugged_away() -> None:
     """A missing mark is an absence; a stuck one is a false statement.
 
-    The channel goes on showing an agent working on something it finished, and
-    no retry here takes it back, so this is not the same event as a mark that
-    could not be added in the first place.
+    Both are refusals the adapter reports rather than logs, because whether a
+    mark is still on the message depends on what was put there — a question
+    this adapter cannot answer once a restart has emptied its memory, and the
+    publisher's durable record can.
     """
     adapter, channel, _thread, _webhook = _guild_setup()
     ref = f"{CHANNEL_ID}:{ROOT_MESSAGE_ID}"
@@ -974,13 +970,39 @@ async def test_a_mark_that_cannot_be_taken_off_is_an_error_not_a_shrug(
     )
     channel.reaction_error = discord.Forbidden(_Response(), "cannot see the channel")  # type: ignore[arg-type]
 
-    with caplog.at_level(logging.WARNING):
+    with pytest.raises(ActivityMarkRefused, match="still see"):
         await adapter.mark_activity(
             str(CHANNEL_ID), ref, agent_name="my-agent", working=False
         )
 
+
+async def test_the_pre_sdk_path_still_says_which_refusal_it_hit(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A turn with no durable record behind it answers the question itself.
+
+    It can, because it only reaches a removal for a mark this process put
+    there: an absent mark is a warning and a stuck one is an error, as they
+    were before the refusal became an exception.
+    """
+    adapter, channel, _thread, _webhook = _guild_setup()
+    ref = f"{CHANNEL_ID}:{ROOT_MESSAGE_ID}"
+    channel.reaction_error = discord.Forbidden(_Response(), "no Add Reactions")  # type: ignore[arg-type]
+
+    with caplog.at_level(logging.WARNING):
+        await adapter._track_turn(str(CHANNEL_ID), ref, "my-agent", state="working")
+    assert [record.levelname for record in caplog.records] == ["WARNING"]
+
+    caplog.clear()
+    channel.reaction_error = None
+    await adapter._track_turn(str(CHANNEL_ID), ref, "my-agent", state="working")
+    channel.reaction_error = discord.Forbidden(_Response(), "cannot see the channel")  # type: ignore[arg-type]
+
+    with caplog.at_level(logging.WARNING):
+        await adapter._track_turn(str(CHANNEL_ID), ref, "my-agent", state="completed")
+
     assert [record.levelname for record in caplog.records] == ["ERROR"]
-    assert "will not come off by retrying" in caplog.text
+    assert "still on the message" in caplog.text
 
 
 async def test_a_transient_reaction_failure_raises_so_the_publisher_retries() -> None:
