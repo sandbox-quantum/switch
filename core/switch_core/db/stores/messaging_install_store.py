@@ -46,6 +46,16 @@ class MessagingInstallStateError(RuntimeError):
     """A state could not be redeemed: already used, expired, or not ours."""
 
 
+class MessagingInstallNotFound(RuntimeError):
+    """No install of that id is visible to the tenant bound on this session.
+
+    "Not visible" rather than "does not exist", and the two are deliberately
+    not distinguished: the reads here are scoped, so an id belonging to
+    another tenant misses exactly as an invented one does. Telling them apart
+    would be a way to ask whether an id exists elsewhere.
+    """
+
+
 class MessagingInstallStore:
     async def start_install(
         self, session: AsyncSession, *, platform: str, user_id: str
@@ -171,13 +181,78 @@ class MessagingInstallStore:
         )
         return result.scalars().one_or_none()
 
+    async def get(self, session: AsyncSession, *, install_id: str) -> MessagingInstall:
+        """One of the bound tenant's installs, by id, or raise."""
+        install = await session.get(MessagingInstall, install_id)
+        if install is None:
+            raise MessagingInstallNotFound(
+                f"no install {install_id} belongs to this organisation"
+            )
+        return install
+
+    async def list_for_tenant(self, session: AsyncSession) -> list[MessagingInstall]:
+        """Every install this tenant has ever made, newest first.
+
+        Ended ones included, and that is the point of the method rather than a
+        side effect. An operator looking at this list is usually looking at it
+        because something stopped working, and a list of only the live installs
+        answers "there is nothing here" to the question "what happened to the
+        one that was here yesterday".
+        """
+        result = await session.execute(
+            select(MessagingInstall).order_by(
+                MessagingInstall.installed_at.desc(), MessagingInstall.id
+            )
+        )
+        return list(result.scalars())
+
+    async def end(
+        self, session: AsyncSession, *, install_id: str, status: str
+    ) -> MessagingInstall:
+        """Mark an install finished, and discard the credential and bridge with it.
+
+        `status` says which of the two ways it ended — see
+        `INSTALL_DISCONNECTED` and `INSTALL_REVOKED`. Anything else is a
+        programming error rather than a state the column may hold: the
+        uniqueness index reads `status = 'active'`, so a typo here would leave
+        a row that is neither serving nor releasing its workspace.
+
+        **Ending an install twice is success.** The platform retries the event
+        that says an app was uninstalled, and an operator can click disconnect
+        on a row a retry has already ended; both must reach the same place.
+        That is also why this is an ordinary read-then-write rather than the
+        single conditional statement `redeem_state` uses — there is no race to
+        lose here, because two writers racing to end the same install both want
+        what the other is doing.
+        """
+        if status not in (INSTALL_DISCONNECTED, INSTALL_REVOKED):
+            raise ValueError(
+                f"{status!r} is not a way an install can end; expected "
+                f"{INSTALL_DISCONNECTED!r} or {INSTALL_REVOKED!r}"
+            )
+        install = await self.get(session, install_id=install_id)
+        if install.status != INSTALL_ACTIVE:
+            return install
+
+        install.status = status
+        install.ended_at = datetime.now(UTC)
+        # The token is worthless the moment the platform is told so, and a
+        # worthless credential still reads like a live one to whoever finds
+        # the dump. Keeping the row is the record; keeping the secret is not
+        # part of it.
+        install.encrypted_bot_token = None
+        # And the pointer goes with it, because the bridge is about to. The
+        # foreign key has no `ON DELETE`, so a row still naming the bridge is
+        # what would refuse its deletion.
+        install.bridge_id = None
+        await session.flush()
+        return install
+
     async def attach_bridge(
         self, session: AsyncSession, *, install_id: str, bridge_id: str
     ) -> MessagingInstall:
         """Point an install at the bridge now serving it."""
-        install = await session.get(MessagingInstall, install_id)
-        if install is None:
-            raise MessagingInstallStateError(f"install not found: {install_id}")
+        install = await self.get(session, install_id=install_id)
         install.bridge_id = bridge_id
         await session.flush()
         return install
