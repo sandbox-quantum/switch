@@ -304,7 +304,8 @@ def request_summary(
 
     A platform with no controls of its own has nothing to do with the rest of
     the result: the body already says how to answer, or says it cannot be
-    answered here.
+    answered here. Nothing else carries the options either, which is why the
+    body here always prints them.
     """
     return render_request(
         request,
@@ -314,6 +315,7 @@ def request_summary(
         markup=markup,
         responder=responder,
         unavailable_reason=unavailable_reason,
+        control_label_limit=None,
     ).text
 
 
@@ -326,6 +328,7 @@ def render_request(
     markup: Markup,
     responder: str | None,
     unavailable_reason: str | None,
+    control_label_limit: int | None,
 ) -> Drawn:
     """The text form of a request: the question, the options, and how to answer.
 
@@ -344,6 +347,14 @@ def render_request(
     syntax, and is not escaped: the adapter resolved it from an id Switch
     holds. Without one the card falls back to the Switch identity, which is
     correct but not a name anybody in the channel recognises.
+
+    `control_label_limit` is how much of an option's label a control beside
+    this card will show, or None where the platform draws no controls. Where a
+    control carries the whole of an option, the body stops repeating it: the
+    same choices printed under the buttons offering them are the screen the
+    instruction needed, on the platform where the screen is a phone. What a
+    control cannot show — a label too long for a button, a scope the button
+    has no room for — keeps its line, so no option is ever only half visible.
 
     `unavailable_reason` replaces the instruction rather than joining it. It
     exists for a card that cannot be answered where it is showing, and leaving
@@ -372,6 +383,7 @@ def render_request(
             limit=limit,
             markup=markup,
             responder=responder,
+            control_label_limit=control_label_limit,
         )
     else:
         head, body, footer, invites_answer = _questions_form(
@@ -406,6 +418,7 @@ def _approval_form(
     limit: int,
     markup: Markup,
     responder: str | None,
+    control_label_limit: int | None,
 ) -> tuple[list[str], list[str], str, bool]:
     fit = _Faithful(escape)
     handle = escape(reference.handle)
@@ -424,9 +437,14 @@ def _approval_form(
     body: list[str] = []
     if request.state == "open":
         budget = _label_budget(limit)
-        body = [
-            f"{index}. {fit(option.label, budget)}{_scope(option)}"
+        numbered = [
+            (option, f"{index}. {fit(option.label, budget)}{_scope(option)}")
             for index, option in enumerate(content.options, start=1)
+        ]
+        body = [
+            line
+            for option, line in numbered
+            if not _carried(option, control_label_limit)
         ]
     # The one state whose footer is an instruction. `_approval_footer` says
     # why the others are not: nothing to choose, or already answered.
@@ -878,6 +896,29 @@ def _scope(option: ApprovalOption) -> str:
     reader choosing between them by number needs the difference said.
     """
     return _FOR_SESSION if option.decision == "acceptForSession" else ""
+
+
+def _carried(option: ApprovalOption, control_label_limit: int | None) -> bool:
+    """Whether a control beside the card already shows the whole of this option.
+
+    An option a reader can press, spelled out again underneath, is the same
+    choice twice — and on a phone the second copy is what pushes the rest of
+    the card off the screen. It is only the same choice if the control shows
+    all of it, which is two things: a label short enough that the button did
+    not have to cut it, and nothing said beside the label that a button has no
+    room for. A scope is exactly that, so an option reaching past this turn
+    keeps its line while the ones a button says in full lose theirs.
+
+    Every line is fitted before this is asked, kept or not. A label too long
+    for the card is a form that cannot honestly ask for a number, and that is
+    as true of a label on a button as of one in the body.
+
+    None where the platform draws no controls, which is most of them: nothing
+    but the body is carrying the choices there.
+    """
+    if control_label_limit is None or _scope(option):
+        return False
+    return len(option.label.strip()) <= control_label_limit
 
 
 def _share(limit: int, most: int, denominator: int) -> int:

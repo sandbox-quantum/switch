@@ -13,7 +13,10 @@ from switch_core.bridges.collaboration.session.renderers import (
     MARKDOWN,
     RequestReference,
 )
-from switch_core.bridges.collaboration.session.renderers.neutral import request_summary
+from switch_core.bridges.collaboration.session.renderers.neutral import (
+    render_request,
+    request_summary,
+)
 from switch_core.sessions.contract import (
     ApprovalContent,
     ApprovalOption,
@@ -273,3 +276,125 @@ def test_a_prompt_cut_short_is_not_answered_by_number_either():
 
     assert "Reply with" not in text
     assert "Switch Console" in text
+
+
+# ── What the buttons already say, where there are buttons ─────────────────────
+#
+# Telegram is the one platform here that draws controls beside the body. An
+# option printed under the button offering it is the same choice twice, and on
+# a phone the second copy is what pushes the rest of the card off the screen.
+# These are the cases where the button says the whole of it and the cases where
+# it cannot.
+
+BUTTON = 48
+
+
+def _pressable(request: SnapshotRequest, *, limit: int = 4000) -> list[str]:
+    """The card as a platform with `BUTTON`-wide controls would draw it."""
+    return render_request(
+        request,
+        REFERENCE,
+        escape=_identity,
+        limit=limit,
+        markup=MARKDOWN,
+        responder=None,
+        unavailable_reason=None,
+        control_label_limit=BUTTON,
+    ).text.splitlines()
+
+
+def test_an_option_its_button_says_in_full_is_not_printed_under_it():
+    lines = _pressable(
+        _approval(
+            _option("yes", "Allow once"),
+            _option("no", "Decline", decision="decline"),
+            detail="pnpm test",
+        )
+    )
+
+    assert lines == [
+        "**Permission needed** · request `R42`",
+        "Run a command?",
+        "`pnpm test`",
+        "Reply with `R42 1`.",
+    ]
+
+
+def test_the_same_card_still_lists_its_options_where_nothing_else_carries_them():
+    """The platforms sharing this renderer mostly have no controls at all, and
+    dropping the list there would be dropping the choices."""
+    request = _approval(
+        _option("yes", "Allow once"), _option("no", "Decline", decision="decline")
+    )
+
+    assert "1. Allow once" in _render(request)
+
+
+def test_a_label_too_long_for_a_button_keeps_the_line_that_shows_it_whole():
+    """Telegram cuts an over-long button label. The body is then the only
+    place the option exists in full, so it stays."""
+    label = "Allow running " + "x" * BUTTON
+    lines = _pressable(
+        _approval(_option("yes", label), _option("no", "Decline", decision="decline"))
+    )
+
+    assert f"1. {label}" in lines
+    assert "2. Decline" not in lines
+
+
+def test_an_option_that_outlasts_the_turn_keeps_the_line_saying_so():
+    """A button carries the label and nothing beside it, and how far an
+    approval reaches is beside it."""
+    lines = _pressable(
+        _approval(
+            _option("once", "Allow once"),
+            _option("always", "Allow for this session", decision="acceptForSession"),
+            _option("no", "Decline", decision="decline"),
+        )
+    )
+
+    assert lines[-2:] == [
+        "2. Allow for this session (applies for the rest of this session)",
+        "Reply with `R42 1`.",
+    ]
+
+
+def test_a_kept_line_keeps_the_number_its_button_was_given():
+    """Pressing and typing have to mean the same thing by the same number, so
+    the surviving lines are not renumbered around the dropped ones."""
+    lines = _pressable(
+        _approval(
+            _option("once", "Allow once"),
+            _option("no", "Decline", decision="decline"),
+            _option("always", "Allow from now on", decision="acceptForSession"),
+        )
+    )
+
+    assert "3. Allow from now on (applies for the rest of this session)" in lines
+
+
+def test_a_card_with_buttons_still_refuses_a_label_it_could_not_fit():
+    """The line is dropped for being said elsewhere, not for being short
+    enough. A label the card itself had to cut is still a form that cannot
+    honestly ask for a number — and the button shows even less of it."""
+    shared = "Allow access to " + "x" * 4000
+    lines = _pressable(
+        _approval(_option("one", f"{shared} once"), _option("two", f"{shared} always"))
+    )
+
+    assert "Reply with" not in "\n".join(lines)
+    assert "Switch Console" in "\n".join(lines)
+
+
+def test_a_dropped_line_is_still_measured_against_what_the_card_can_hold():
+    """A short message gives a label less room than a button does, so an
+    option can fit the button and not the card. It is dropped from the body
+    either way — but the card has still failed to show it whole, and a form
+    that cannot show what it is asking does not ask for a number."""
+    label = "Allow the deployment to proceed"
+    assert len(label) <= BUTTON
+
+    lines = _pressable(_approval(_option("yes", label)), limit=90)
+
+    assert "Reply with" not in "\n".join(lines)
+    assert "Too long to show in full here" in "\n".join(lines)

@@ -102,7 +102,9 @@ _MAX_CALLBACK_BYTES = 64
 
 # A button's label is one line on a phone, and Telegram truncates the middle of
 # an over-long one rather than wrapping it. Cut here instead, at the end, where
-# the reader can tell something was cut.
+# the reader can tell something was cut. The renderer is given the same number,
+# because an option the button says in full is one the body stops repeating and
+# an option the button had to cut is one the body has to keep.
 _MAX_BUTTON_LABEL = 48
 
 # Telegram's own limit on the text of a reply to a press.
@@ -1394,6 +1396,7 @@ class TelegramAdapter(CollaborationAdapter):
             markup=markup,
             responder=responder,
             unavailable_reason=content.unavailable_reason,
+            control_label_limit=_MAX_BUTTON_LABEL,
         )
         return replace(drawn, text=f"{prefix}{lead}{drawn.text}{tail}")
 

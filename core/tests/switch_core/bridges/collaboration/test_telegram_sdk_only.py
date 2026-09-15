@@ -1001,7 +1001,8 @@ async def _press(
 
 
 async def test_an_open_card_offers_a_button_for_every_option_it_lists() -> None:
-    """Numbered the way the body numbers them, so pressing and typing agree."""
+    """Numbered the way a typed answer numbers them, so pressing and typing
+    agree."""
     adapter = _adapter()
 
     await adapter.post_rich(CHANNEL, "my-agent", await _card(), None)
@@ -1010,6 +1011,20 @@ async def test_an_open_card_offers_a_button_for_every_option_it_lists() -> None:
         ("1. Allow once", "sw:tok-1:1"),
         ("2. Deny", "sw:tok-1:2"),
     ]
+
+
+async def test_the_body_does_not_repeat_what_the_buttons_already_say() -> None:
+    """A phone shows a few lines at a time, and the options printed above the
+    buttons offering them are the lines that push the rest of the card off the
+    screen. Typing still answers it — the numbers are on the buttons."""
+    adapter = _adapter()
+
+    await adapter.post_rich(CHANNEL, "my-agent", await _card(), None)
+
+    text = _posted(adapter)["text"]
+    assert "1. Allow once" not in text
+    assert "2. Deny" not in text
+    assert "Reply with <code>R7 1</code>." in text
 
 
 async def test_a_press_carries_the_request_and_where_the_control_was() -> None:
