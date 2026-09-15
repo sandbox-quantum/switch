@@ -131,7 +131,10 @@ are deployment-level environment config on switch-core:
   disclosed fallback). Applies to every platform, and is **required** on
   Discord, Telegram and Teams, which render only http(s) links — Teams goes
   further and strips a link on any other scheme entirely, label included, so
-  without this the deeplink renders as empty brackets.
+  without this the deeplink renders as empty brackets. It must be reachable from
+  where people *read* the message, not from the Switch host — a loopback origin
+  builds links that work only on the machine running Switch, so each bridge warns
+  at startup when it finds one.
 - **Teams** additionally needs public HTTPS ingress to the bridge's listener, on
   its own port — it is the only bridge Switch does not reach outbound. See
   [`TEAMS_SETUP.md`](TEAMS_SETUP.md) for the bridge side, and the Helm chart's

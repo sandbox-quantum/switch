@@ -48,6 +48,8 @@ from tests.conftest import RLSHarness
 def _service(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> CollaborationBridgeLifecycleService:
+    config = MagicMock()
+    config.gateway_public_url = "https://gw.example"
     return CollaborationBridgeLifecycleService(
         bridge_store=CollaborationBridgeStore(),
         external_user_store=MagicMock(),
@@ -60,7 +62,7 @@ def _service(
         room_service=MagicMock(),
         matrix_admin=MagicMock(),
         session_factory=session_factory,
-        config=MagicMock(),
+        config=config,
         client_factory=MagicMock(),
     )
 
