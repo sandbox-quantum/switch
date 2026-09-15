@@ -90,7 +90,11 @@ export async function prepareSharedConfig(root: string, config: SharedHostConfig
         context: execution.context,
         mcpServerNames: Object.keys(input.mcpServers),
       });
-    if (config.start.provider === 'cursor' || config.start.provider === 'opencode')
+    if (
+      config.start.provider === 'claude' ||
+      config.start.provider === 'cursor' ||
+      config.start.provider === 'opencode'
+    )
       input.systemContext = execution.context;
   }
   if (!agentApiUrl || !token)

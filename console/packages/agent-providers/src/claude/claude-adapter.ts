@@ -310,7 +310,7 @@ export class ClaudeAdapter implements ProviderAdapter {
     const prompt = new PromptQueue();
     const mcpServers: Record<string, McpServerConfig> = {};
     for (const [name, spec] of Object.entries(input.mcpServers)) {
-      mcpServers[name] = toMcpServerConfig(spec);
+      mcpServers[name] = toMcpServerConfig(spec, input.env);
     }
     const permissionMode = PERMISSION_MODE_BY_RUNTIME_MODE[input.runtimeMode];
     const effort = effortFrom(input.model);
