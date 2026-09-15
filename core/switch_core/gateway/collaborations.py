@@ -19,6 +19,7 @@ from switch_core.bridges.collaboration.models import (
 from switch_core.db.models import CollaborationBridge, ExternalUser, User
 from switch_core.db.stores.collaboration_bridge_store import CollaborationBridgeStore
 from switch_core.db.stores.external_user_store import ExternalUserStore
+from switch_core.db.stores.messaging_install_store import MessagingInstallStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.user_store import UserStore
 from switch_core.gateway.auth import (
@@ -30,6 +31,7 @@ from switch_core.gateway.dependencies import (
     get_bridge_store,
     get_collab_lifecycle,
     get_external_user_store,
+    get_install_store,
     get_room_service,
     get_room_store,
     get_session,
@@ -677,6 +679,7 @@ async def delete_bridge(
     bridge_store: Annotated[CollaborationBridgeStore, Depends(get_bridge_store)],
     room_store: Annotated[RoomStore, Depends(get_room_store)],
     room_service: Annotated[RoomService, Depends(get_room_service)],
+    install_store: Annotated[MessagingInstallStore, Depends(get_install_store)],
     collab_lifecycle: Annotated[
         CollaborationBridgeLifecycleService, Depends(get_collab_lifecycle)
     ],
@@ -687,6 +690,25 @@ async def delete_bridge(
     bridge = await bridge_store.get(session, bridge_id)
     if bridge is None:
         raise HTTPException(status_code=404, detail="Bridge not found")
+
+    # Before a single room is deleted, because the rooms do not come back. A
+    # bridge built by an install holds a token this deployment did not issue
+    # and the platform still honours, and the install row's pointer at it is a
+    # real foreign key — so this delete would destroy every room on the bridge
+    # and *then* be refused by Postgres, leaving the bridge running, the rooms
+    # gone and a live credential nobody has revoked.
+    install = await install_store.get_for_bridge(session, bridge_id=bridge_id)
+    if install is not None:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"This connection was created by installing the Switch app into "
+                f"{install.platform} workspace {install.external_workspace_id}, so "
+                "it cannot be deleted here — the app would stay installed and its "
+                "token would stay valid. Disconnect the app instead, which revokes "
+                "the token at the platform and then removes this connection."
+            ),
+        )
 
     rooms = await room_store.get_by_bridge(session, bridge_id)
     for room in rooms:
