@@ -123,7 +123,7 @@ def _violates(error: IntegrityError, constraint: str) -> bool:
 
 
 def _mark_id(mark: dict[str, str]) -> tuple[str, str, str]:
-    """The same reaction as a key this process can hold in a set."""
+    """The same reaction as a key this process can look it up by."""
     return (mark["channel_id"], mark["reaction_ref"], mark["agent_name"])
 
 
@@ -203,7 +203,7 @@ class SessionTurnActivity:
         self._marks_publications = getattr(adapter, "carries_publication_marker", False)
         self._anchors: OrderedDict[tuple[str, str], _Anchor] = OrderedDict()
         self._thread_turns: dict[tuple[str, str, str], set[tuple[str, str]]] = {}
-        self._expecting: set[tuple[str, str, str]] = set()
+        self._expecting: dict[tuple[str, str, str], set[tuple[str, str]]] = {}
         self._attention: OrderedDict[tuple[str, str], tuple[str, str]] = OrderedDict()
 
     @property
@@ -885,7 +885,7 @@ class SessionTurnActivity:
             return
         turns = self._thread_turns.setdefault(self._thread_key(anchor), set())
         first = not turns
-        if not first or await self._mark_thread(anchor, working=True):
+        if not first or await self._mark_thread(key, anchor, working=True):
             turns.add(key)
 
     async def _release_thread(self, key: tuple[str, str], anchor: _Anchor) -> bool:
@@ -922,7 +922,7 @@ class SessionTurnActivity:
             sessions=record.sessions if record else self._journal.sessions,
         ):
             return True
-        return await self._mark_thread(anchor, working=False)
+        return await self._mark_thread(key, anchor, working=False)
 
     def _thread_key(self, anchor: _Anchor) -> tuple[str, str, str]:
         """Who is holding what, keyed by whose reaction it actually is.
@@ -938,7 +938,9 @@ class SessionTurnActivity:
         agent = anchor.agent_name if self._reactions_per_agent else ""
         return (anchor.channel_id, anchor.reaction_ref or "", agent)
 
-    async def _mark_thread(self, anchor: _Anchor, *, working: bool) -> bool:
+    async def _mark_thread(
+        self, key: tuple[str, str], anchor: _Anchor, *, working: bool
+    ) -> bool:
         """Put `:eyes:` on the message that actually asked, or take it off.
 
         Not necessarily the thread root — a turn threaded under a reply deep
@@ -948,16 +950,21 @@ class SessionTurnActivity:
         callers can retry a failed claim or unfinished terminal cleanup.
 
         A platform that refuses the mark outright raises `ActivityMarkRefused`.
-        Refused on the way *on*, the mark is simply absent and the turn goes on
-        without it. Refused on the way *off*, the question is whether a mark is
-        still sitting on the message — and that is a question about the mark,
-        not about this turn, because turns share one. It is answered from
-        `_expecting`, which is written before the platform is called and
-        retracted only when the platform says outright that nothing was put
-        there. Anything less certain leaves the expectation standing, so an
-        addition whose outcome is unknown counts as a mark that may be on the
-        message. Claiming otherwise would leave a channel showing an agent
-        still working on something it has finished.
+        Refused on the way *on*, this turn's own attempt put nothing there and
+        the turn goes on without it. Refused on the way *off*, the question is
+        whether a mark is still sitting on the message — and that is a question
+        about the mark, not about this turn, because turns share one. It is
+        answered from the expectations recorded against that mark, written
+        before the platform is called and retracted only when the platform says
+        outright what became of them. Anything less certain leaves an
+        expectation standing, so an addition whose outcome is unknown counts as
+        a mark that may be on the message. Claiming otherwise would leave a
+        channel showing an agent still working on something it has finished.
+
+        Which expectations a removal retracts is settled before it is sent, not
+        after it is answered. Between the two, another publisher can put the
+        mark back for a turn of its own, and that turn's expectation is not
+        this removal's to clear.
         """
         if anchor.reaction_ref is None or not getattr(
             self._adapter, "supports_activity_reactions", False
@@ -965,7 +972,10 @@ class SessionTurnActivity:
             return True
         mark = self._mark_key(anchor)
         if working:
-            await self._expect_mark(mark)
+            await self._expect_mark(key, mark)
+            removing: set[tuple[str, str]] = set()
+        else:
+            removing = await self._claimants(mark)
         try:
             await self._adapter.mark_activity(
                 anchor.channel_id,
@@ -976,7 +986,7 @@ class SessionTurnActivity:
             )
         except ActivityMarkRefused as refusal:
             if working:
-                await self._forget_mark(mark)
+                await self._retract_claim(key, mark)
                 logger.warning("%s The turn goes on without the mark.", refusal)
                 return True
             if not await self._mark_may_be_there(mark):
@@ -1001,7 +1011,7 @@ class SessionTurnActivity:
             )
             return False
         if not working:
-            await self._forget_mark(mark)
+            await self._mark_taken_off(mark, removing)
         return True
 
     def _mark_key(self, anchor: _Anchor) -> dict[str, str]:
@@ -1020,41 +1030,87 @@ class SessionTurnActivity:
             "agent_name": anchor.agent_name if self._reactions_per_agent else "",
         }
 
-    async def _expect_mark(self, mark: dict[str, str]) -> None:
-        """Record that a mark may be on this message, before asking for it.
+    async def _expect_mark(self, key: tuple[str, str], mark: dict[str, str]) -> None:
+        """Record that this turn's mark may be on the message, before asking.
 
         Before, not after, because a request that fails without an answer may
         still have landed. Written where the answer will be needed: durably
         when there is a journal, since the turn that eventually takes the mark
         off may be running in a later process than the turn that put it on.
+
+        Recorded per turn rather than once per reaction, so that a retraction
+        can say which attempt it is retracting.
         """
-        if _mark_id(mark) in self._expecting:
+        expecting = self._expecting.setdefault(_mark_id(mark), set())
+        if key in expecting:
             return
-        self._expecting.add(_mark_id(mark))
+        expecting.add(key)
         record = self._record.get()
         if record is None or record.data.get("mark") == mark:
             return
         record.data["mark"] = mark
         await record.save()
 
-    async def _forget_mark(self, mark: dict[str, str]) -> None:
-        """Drop the expectation, once the mark is known not to be there.
+    async def _retract_claim(self, key: tuple[str, str], mark: dict[str, str]) -> None:
+        """Drop this turn's expectation, after its own attempt was refused.
 
-        Two ways to know: the platform refused to put it there at all, or it
-        took it off. Every holder's evidence goes, not only this turn's, because
-        they are all talking about the same reaction — one left behind would
-        have a later turn on that message reporting a mark that is not there
-        and never finishing.
+        Only this turn's. A refusal describes the attempt it answers: it says
+        nothing about an addition another turn made earlier, which may well be
+        sitting on the message still. Erasing that one as well is how a mark
+        comes to be reported as cleaned up with the 👀 in plain sight.
         """
-        self._expecting.discard(_mark_id(mark))
+        expecting = self._expecting.get(_mark_id(mark))
+        if expecting is not None:
+            expecting.discard(key)
+            if not expecting:
+                del self._expecting[_mark_id(mark)]
+        record = self._record.get()
+        if record is not None and record.data.pop("mark", None) is not None:
+            await record.save()
+
+    async def _mark_taken_off(
+        self, mark: dict[str, str], holders: set[tuple[str, str]]
+    ) -> None:
+        """Drop the expectations the platform has just answered for.
+
+        Every holder the removal was made on behalf of, not only this turn,
+        because they are all talking about the same reaction — one left behind
+        would have a later turn on that message reporting a mark that is not
+        there and never finishing. `holders` is read before the removal is
+        sent, so a turn that claimed the mark while it was in flight keeps its
+        claim.
+        """
+        expecting = self._expecting.get(_mark_id(mark))
+        if expecting is not None:
+            expecting -= holders
+            if not expecting:
+                del self._expecting[_mark_id(mark)]
         record = self._record.get()
         if record is not None and record.data.pop("mark", None) is not None:
             await record.save()
         if self._journal is not None:
             await self._journal.forget_mark(
                 mark,
+                holders=holders,
                 sessions=record.sessions if record else self._journal.sessions,
             )
+
+    async def _claimants(self, mark: dict[str, str]) -> set[tuple[str, str]]:
+        """The turns expecting this mark, as of now.
+
+        Both halves of the evidence: what this process remembers claiming, and
+        what any process has written down. Taken together because a publisher
+        with no journal has only the first, and a publisher restarted into one
+        has only the second.
+        """
+        claimants = set(self._expecting.get(_mark_id(mark), ()))
+        if self._journal is None:
+            return claimants
+        record = self._record.get()
+        return claimants | await self._journal.mark_holders(
+            mark,
+            sessions=record.sessions if record else self._journal.sessions,
+        )
 
     async def _mark_may_be_there(self, mark: dict[str, str]) -> bool:
         """Whether a refused removal leaves something behind.
@@ -1065,7 +1121,7 @@ class SessionTurnActivity:
         this process's memory, which is sound for a publisher that has no
         durable state to be restarted into.
         """
-        if _mark_id(mark) in self._expecting:
+        if self._expecting.get(_mark_id(mark)):
             return True
         if self._journal is None:
             return False

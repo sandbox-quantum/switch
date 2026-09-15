@@ -126,18 +126,19 @@ class ActivityJournal:
                 ).first()
             )
 
-    async def forget_mark(
+    async def mark_holders(
         self,
         mark: dict[str, str],
         *,
         sessions: async_sessionmaker[AsyncSession],
-    ) -> None:
-        """Erase every turn's expectation of this reaction at once.
+    ) -> set[tuple[str, str]]:
+        """Which turns are expecting this reaction right now.
 
-        Called when the platform has said the mark is not there — it was
-        refused, or it has been taken off. One reaction, so one answer: a
-        holder left still expecting it would have the next turn on that message
-        refuse to finish, waiting on a mark nobody can remove.
+        Read immediately before a removal is asked for, so that what the
+        removal later clears is what it was actually removing. A turn that
+        starts expecting the mark after this read has asked for a reaction of
+        its own, and the answer to a request issued before it existed says
+        nothing about that one.
         """
         async with sessions() as db:
             rows = await db.scalars(
@@ -147,7 +148,40 @@ class ActivityJournal:
                     SessionActivityPost.data.contains({"mark": mark}),
                 )
             )
+            return {(row.session_id, row.command_id) for row in rows}
+
+    async def forget_mark(
+        self,
+        mark: dict[str, str],
+        *,
+        holders: set[tuple[str, str]],
+        sessions: async_sessionmaker[AsyncSession],
+    ) -> None:
+        """Erase the expectation of this reaction, for the given turns only.
+
+        Called when the platform has taken the mark off. Every holder it was
+        taken off on behalf of loses its expectation together, because they are
+        all talking about one reaction and one left behind would have a later
+        turn on that message waiting forever on a mark nobody can remove.
+
+        `holders` rather than all of them, because a removal answers only for
+        the claims that existed when it was issued. Its acknowledgement can
+        arrive after another publisher has put the mark back for a new turn,
+        and that turn's mark really is on the message.
+        """
+        if not holders:
+            return
+        async with sessions() as db:
+            rows = await db.scalars(
+                select(SessionActivityPost).where(
+                    SessionActivityPost.tenant_id == require_tenant_id(),
+                    SessionActivityPost.bridge_id == self.bridge_id,
+                    SessionActivityPost.data.contains({"mark": mark}),
+                )
+            )
             for row in rows:
+                if (row.session_id, row.command_id) not in holders:
+                    continue
                 data = dict(row.data)
                 data.pop("mark", None)
                 row.data = data

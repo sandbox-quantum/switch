@@ -1242,3 +1242,120 @@ async def test_a_publisher_with_no_journal_still_owes_a_mark_it_put_there(
     unmarked = SessionTurnActivity(elsewhere)
     assert await publish(unmarked)
     assert await publish(unmarked, "completed")
+
+
+async def test_a_refused_addition_does_not_speak_for_a_mark_already_there(
+    session_factory,
+):
+    """One turn's mark goes on; a later turn is refused its own; the first ends last.
+
+    The refusal answers the attempt that provoked it. It is not a report on the
+    message, and the reaction the earlier turn put there is still in plain
+    sight. Reading it as one retracts everybody's evidence at once, and the
+    turn that actually owes the cleanup then finishes with the 👀 still on.
+    """
+    await setup(session_factory)
+    chat = {"reactions": set(), "messages": {}}
+    assert await publish(
+        activity(session_factory, RefusingPlatform(chat)), command="first"
+    )
+    assert chat["reactions"] == {"channel-demo:question"}
+
+    after_restart = RefusingPlatform(chat, refuse_add=True)
+    renderer = activity(session_factory, after_restart)
+    assert await publish(renderer, command="second")
+    assert chat["reactions"] == {"channel-demo:question"}
+
+    # The first turn is still running, so the second leaves the shared mark be.
+    assert await publish(renderer, "completed", command="second")
+    assert chat["reactions"] == {"channel-demo:question"}
+
+    after_restart.refuse_remove = True
+    assert not await publish(renderer, "completed", command="first")
+    assert chat["reactions"] == {"channel-demo:question"}
+
+    after_restart.refuse_remove = False
+    assert await publish(renderer, "completed", command="first")
+    assert not chat["reactions"]
+
+
+class DelayedRemoval(RefusingPlatform):
+    """A removal the platform has carried out whose answer is still in flight.
+
+    Another publisher gets the message in that gap and puts the mark back. What
+    the acknowledgement then settles is the reaction that came off, not the one
+    now sitting there.
+    """
+
+    def __init__(self, chat, *, while_unacknowledged):
+        super().__init__(chat)
+        self.while_unacknowledged = while_unacknowledged
+
+    async def mark_activity(self, channel, ref, *, agent_name, working, force=False):
+        await super().mark_activity(
+            channel, ref, agent_name=agent_name, working=working, force=force
+        )
+        if not working:
+            await self.while_unacknowledged()
+
+
+async def test_a_removal_in_flight_does_not_clear_a_mark_put_back_behind_it(
+    session_factory,
+):
+    """Two publishers, one reaction, and an acknowledgement that arrives late.
+
+    The removal is answering for the claims that existed when it was sent. By
+    the time it comes back another publisher has started a turn on the same
+    message and marked it afresh, and that mark is really there. Clearing every
+    claim on the strength of one removal loses it, and after a restart there is
+    nothing left to say the reaction was ever added.
+    """
+    await setup(session_factory)
+    chat = {"reactions": set(), "messages": {}}
+    second = activity(session_factory, RefusingPlatform(chat))
+
+    async def another_publisher_takes_the_message():
+        assert await publish(second, command="second")
+        assert chat["reactions"] == {"channel-demo:question"}
+
+    first = activity(
+        session_factory,
+        DelayedRemoval(chat, while_unacknowledged=another_publisher_takes_the_message),
+    )
+    assert await publish(first, command="first")
+    assert chat["reactions"] == {"channel-demo:question"}
+    assert await publish(first, "completed", command="first")
+    assert chat["reactions"] == {"channel-demo:question"}
+
+    after_restart = activity(
+        session_factory, RefusingPlatform(chat, refuse_remove=True)
+    )
+
+    assert not await publish(after_restart, "completed", command="second")
+    assert chat["reactions"] == {"channel-demo:question"}
+
+
+async def test_a_refused_addition_leaves_one_publishers_own_earlier_mark_standing(
+    session_factory,
+):
+    """The same confusion within one process, where memory is the only evidence.
+
+    A turn puts the mark on and cannot get it off; permission goes; the next
+    turn on that message is refused the addition. Both turns are held by the
+    one publisher, so one shared note of "expected" is all there was to lose.
+    """
+    await setup(session_factory)
+    chat = {"reactions": set(), "messages": {}}
+    platform = RefusingPlatform(chat)
+    renderer = SessionTurnActivity(platform)
+
+    assert await publish(renderer, command="first")
+    platform.refuse_remove = True
+    assert not await publish(renderer, "completed", command="first")
+    assert chat["reactions"] == {"channel-demo:question"}
+
+    platform.refuse_add = True
+    assert await publish(renderer, command="second")
+
+    assert not await publish(renderer, "completed", command="second")
+    assert chat["reactions"] == {"channel-demo:question"}
