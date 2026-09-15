@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -1753,3 +1754,85 @@ async def test_a_turn_that_ends_holding_the_mark_keeps_the_ask_it_made(
     receipt = await _row(session_factory)
     assert receipt["mark"] == MARK | {"agent_name": ""}
     assert receipt["mark_attempt"]
+
+
+class PausedReceipt(ActivityJournal):
+    """Holds one turn's receipt at the moment before it is written.
+
+    The turn has finished and its receipt is assembled; the write has not
+    happened. That gap is real — the platform calls of an ending turn sit in
+    it — and it is where another turn gets to take the shared mark off.
+    """
+
+    def __init__(self, sessions, bridge_id, *, command, meanwhile):
+        super().__init__(sessions, bridge_id)
+        self.command = command
+        self.meanwhile = meanwhile
+        self.paused = False
+
+    @asynccontextmanager
+    async def open(self, session_id, command_id):
+        async with super().open(session_id, command_id) as record:
+            if record is None or command_id != self.command:
+                yield record
+                return
+            write = record.save
+
+            async def save():
+                if record.data.get("completed") and not self.paused:
+                    self.paused = True
+                    await self.meanwhile()
+                await write()
+
+            record.save = save
+            yield record
+
+
+async def test_a_late_receipt_does_not_put_back_a_mark_another_turn_took_off(
+    session_factory,
+):
+    """The same race the other way round: the removal lands first.
+
+    Two turns share the mark. The first ends while the second is still running,
+    so it leaves the mark alone and settles down to write its receipt. The
+    second ends in that gap, takes the mark off the message and clears both
+    claims. The first then writes a receipt built from a row it read before any
+    of that, and a whole-document write puts the claim back.
+
+    Nothing will ever answer for it. The reaction is off the message, so no
+    removal is coming, and the claim outlives its turn: a later turn on that
+    message, in a chat that has since stopped letting the bot react, asks
+    whether a mark may still be there, is told yes by a row describing a
+    reaction that is not, and never reports itself finished.
+    """
+    await setup(session_factory)
+    chat = {"reactions": set(), "messages": {}}
+    platform = RefusingPlatform(chat)
+    second = activity(session_factory, platform)
+
+    async def the_other_turn_ends():
+        assert await publish(second, "completed", command="second")
+        assert not chat["reactions"]
+
+    first = SessionTurnActivity(
+        platform,
+        journal=PausedReceipt(
+            session_factory, "bridge", command="first", meanwhile=the_other_turn_ends
+        ),
+    )
+    assert await publish(first, command="first")
+    assert await publish(second, command="second")
+    assert chat["reactions"] == {"channel-demo:question"}
+
+    assert await publish(first, "completed", command="first")
+
+    assert not chat["reactions"]
+    journal = ActivityJournal(session_factory, "bridge")
+    assert not await journal.mark_expected(
+        MARK | {"agent_name": ""}, sessions=session_factory
+    )
+
+    refusing = RefusingPlatform(chat, refuse_add=True, refuse_remove=True)
+    later = activity(session_factory, refusing)
+    assert await publish(later, command="third")
+    assert await publish(later, "completed", command="third")

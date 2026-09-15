@@ -14,12 +14,41 @@ pre-journal live messages cannot be adopted automatically and may be duplicated.
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from typing import Any
 
-from sqlalchemy import Text, cast, func, select, text, update
+from sqlalchemy import Text, cast, func, literal, select, text, update
 from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
+from sqlalchemy.sql.elements import ColumnElement
 
 from switch_core.db.models import SessionActivityPost, require_tenant_id
+
+
+def _without_claim(document: Any) -> ColumnElement:
+    """The document with the reaction claim taken out of it."""
+    stripped: ColumnElement = (
+        document.op("-")(cast("mark", Text))
+        .op("-")(cast("mark_attempt", Text))
+        .cast(JSONB)
+    )
+    return stripped
+
+
+def _claim_in(document: Any) -> ColumnElement:
+    """Just the reaction claim, as the row holds it at this moment.
+
+    Empty where the row carries none: an absent key reads as SQL NULL, becomes
+    a JSON null in the object built from it, and is stripped back out.
+    """
+    return func.jsonb_strip_nulls(
+        func.jsonb_build_object(
+            "mark",
+            document["mark"],
+            "mark_attempt",
+            document["mark_attempt"],
+        )
+    )
 
 
 @dataclass
@@ -29,20 +58,110 @@ class ActivityRecord:
     data: dict
 
     async def save(self) -> None:
+        """Write this turn's own state, leaving the shared claim where it is.
+
+        Everything in `data` belongs to this turn and is written whole — the
+        anchor it redraws from, the delivery reservation, the end of the turn.
+        The reaction claim does not. Turns share one mark, so the turn that
+        takes it off is routinely another one, and it clears the claim holding
+        no lock this turn holds. The copy in `data` was read when the record
+        was opened, which may be long before this write: a platform call sits
+        in between. Writing it back is how a reaction genuinely taken off the
+        message returns as an expectation nothing will ever answer for, and a
+        later turn on that message waits forever on it.
+
+        So the two claim keys are carried across from the row as it stands when
+        the statement runs, and are changed only by `claim` and `disclaim`,
+        which say which attempt they speak for. The row is written in one
+        statement for the same reason: there is no moment between reading it
+        and writing it for a removal to fall into.
+        """
+        insert = pg_insert(SessionActivityPost).values(
+            tenant_id=self.key[0],
+            bridge_id=self.key[1],
+            session_id=self.key[2],
+            command_id=self.key[3],
+            data=self.data.copy(),
+        )
         async with self.sessions() as db:
-            row = await db.get(SessionActivityPost, self.key)
-            if row is None:
-                row = SessionActivityPost(
-                    tenant_id=self.key[0],
-                    bridge_id=self.key[1],
-                    session_id=self.key[2],
-                    command_id=self.key[3],
-                    data=self.data.copy(),
+            await db.execute(
+                insert.on_conflict_do_update(
+                    index_elements=[
+                        SessionActivityPost.tenant_id,
+                        SessionActivityPost.bridge_id,
+                        SessionActivityPost.session_id,
+                        SessionActivityPost.command_id,
+                    ],
+                    set_={
+                        "data": _without_claim(insert.excluded.data).op("||")(
+                            _claim_in(SessionActivityPost.data)
+                        )
+                    },
                 )
-                db.add(row)
-            else:
-                row.data = self.data.copy()
+            )
             await db.commit()
+
+    async def claim(self, mark: dict[str, str], attempt: str) -> None:
+        """Take the reaction claim for this attempt, whatever the row held.
+
+        Its own statement rather than part of the next `save`, because the two
+        answer to different owners: the rest of the row is this turn's and the
+        claim is shared with whichever turn eventually takes the mark off. A
+        fresh attempt supersedes what was there unconditionally — this turn is
+        asking for the reaction now, and that is true whoever asked before.
+        """
+        async with self.sessions() as db:
+            await db.execute(
+                update(SessionActivityPost)
+                .where(*self._row())
+                .values(
+                    data=SessionActivityPost.data.op("||")(
+                        literal({"mark": mark, "mark_attempt": attempt}, JSONB)
+                    )
+                )
+            )
+            await db.commit()
+        self.data["mark"] = mark
+        self.data["mark_attempt"] = attempt
+
+    async def disclaim(self, attempt: str, *, renewed: str | None) -> None:
+        """Give the claim up, or put it back to the attempt this one renewed.
+
+        Only while the row still names the attempt being given up. A refusal
+        speaks for the attempt it answers and for nothing that happened after
+        it: a later ask is a claim in its own right, and a removal issued
+        against an earlier one has already cleared what it was entitled to.
+        """
+        held = func.coalesce(SessionActivityPost.data["mark_attempt"].astext, "")
+        forgotten = (
+            _without_claim(SessionActivityPost.data)
+            if renewed is None
+            else SessionActivityPost.data.op("||")(
+                literal({"mark_attempt": renewed}, JSONB)
+            )
+        )
+        async with self.sessions() as db:
+            await db.execute(
+                update(SessionActivityPost)
+                .where(*self._row(), held == attempt)
+                .values(data=forgotten)
+            )
+            await db.commit()
+        if self.data.get("mark_attempt") != attempt:
+            return
+        if renewed is None:
+            self.data.pop("mark", None)
+            self.data.pop("mark_attempt", None)
+        else:
+            self.data["mark_attempt"] = renewed
+
+    def _row(self) -> tuple[ColumnElement, ...]:
+        return (
+            SessionActivityPost.tenant_id == self.key[0],
+            SessionActivityPost.bridge_id == self.key[1],
+            SessionActivityPost.session_id == self.key[2],
+            SessionActivityPost.command_id == self.key[3],
+        )
 
 
 class ActivityJournal:
@@ -189,17 +308,16 @@ class ActivityJournal:
         newer attempt, a delivery reservation or the end of its turn. Writing
         back a whole edited copy would erase all of it — and the stale attempt
         it carried would reinstate a claim this removal never answered for.
+
+        Rows are taken in a fixed order so that two removals clearing an
+        overlapping set cannot each hold a row the other is waiting for.
         """
         if not holders:
             return
         held = func.coalesce(SessionActivityPost.data["mark_attempt"].astext, "")
-        forgotten = (
-            SessionActivityPost.data.op("-")(cast("mark", Text))
-            .op("-")(cast("mark_attempt", Text))
-            .cast(JSONB)
-        )
+        forgotten = _without_claim(SessionActivityPost.data)
         async with sessions() as db:
-            for session_id, command_id, attempt in holders:
+            for session_id, command_id, attempt in sorted(holders):
                 await db.execute(
                     update(SessionActivityPost)
                     .where(

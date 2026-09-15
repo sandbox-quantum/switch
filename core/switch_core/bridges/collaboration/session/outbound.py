@@ -425,19 +425,18 @@ class SessionTurnActivity:
                         # discard delivery reservations and reaction/log anchors.
                         # An outstanding mark is not this turn's to discard: the
                         # holder that takes it off may be another turn entirely,
-                        # and it needs to know the mark is there. The stamp goes
-                        # with it — a claim is named by the ask that made it, and
-                        # one reduced to an unstamped claim is one no removal
-                        # issued against the real ask can ever clear.
-                        claim = {
-                            field: record.data[field]
-                            for field in ("mark", "mark_attempt")
-                            if field in record.data
-                        }
+                        # and it needs to know the mark is there. The row keeps
+                        # it either way — a save cannot write the claim — so
+                        # this carries it across to keep the copy here honest
+                        # about what the row still says.
                         record.data = {
                             "turn_id": turn.turn_id,
                             "ended": True,
-                            **claim,
+                            **{
+                                field: record.data[field]
+                                for field in ("mark", "mark_attempt")
+                                if field in record.data
+                            },
                         }
                     record.data["completed"] = True
                     await record.save()
@@ -1118,9 +1117,7 @@ class SessionTurnActivity:
         attempt = _MarkAttempt(secrets.token_urlsafe(16), renewed)
         expecting[key] = attempt.token
         if record is not None:
-            record.data["mark"] = mark
-            record.data["mark_attempt"] = attempt.token
-            await record.save()
+            await record.claim(mark, attempt.token)
         return attempt
 
     async def _retract_attempt(
@@ -1148,14 +1145,8 @@ class SessionTurnActivity:
             else:
                 expecting[key] = attempt.renewed
         record = self._record.get()
-        if record is None or record.data.get("mark_attempt") != attempt.token:
-            return
-        if attempt.renewed is None:
-            record.data.pop("mark", None)
-            record.data.pop("mark_attempt", None)
-        else:
-            record.data["mark_attempt"] = attempt.renewed
-        await record.save()
+        if record is not None:
+            await record.disclaim(attempt.token, renewed=attempt.renewed)
 
     async def _mark_taken_off(
         self,
@@ -1187,9 +1178,8 @@ class SessionTurnActivity:
             record is not None
             and (*key, record.data.get("mark_attempt", "")) in holders
         ):
-            if record.data.pop("mark", None) is not None:
-                record.data.pop("mark_attempt", None)
-                await record.save()
+            record.data.pop("mark", None)
+            record.data.pop("mark_attempt", None)
         if self._journal is not None:
             await self._journal.forget_mark(
                 mark,
