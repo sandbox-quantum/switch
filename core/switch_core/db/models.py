@@ -1145,19 +1145,33 @@ class MessagingInstall(TenantScoped, Base):
     token, and what it may do.
 
     **`(platform, external_workspace_id)` is unique across the whole
-    deployment, not per tenant**, and that is the single most important line
-    here. Inbound events arrive over one public endpoint carrying a workspace
-    id and no tenant, so a workspace claimed by two tenants is a message with
-    two possible destinations and no way to choose — which is the failure this
-    whole phase exists to make unrepresentable. The database decides it rather
-    than a read-then-insert in application code, because the check and the
-    write cannot be made atomic from outside.
+    deployment among rows that are still `active`**, and that is the single
+    most important line here. Inbound events arrive over one public endpoint
+    carrying a workspace id and no tenant, so a workspace claimed by two
+    tenants is a message with two possible destinations and no way to choose —
+    which is the failure this whole phase exists to make unrepresentable. The
+    database decides it rather than a read-then-insert in application code,
+    because the check and the write cannot be made atomic from outside.
 
-    That constraint is also the one place a tenant learns something about
-    another: claiming a workspace somebody else already claimed fails, and the
-    failure says so. It is the right answer — the alternative is a silent
-    second claim — and what it discloses is that *some* tenant holds a
-    workspace the caller was already able to name.
+    It is a *partial* index rather than a plain constraint because an install
+    has to be able to end. A customer who removes the app in Slack, or an
+    operator who disconnects it here, leaves a row behind — and a row that
+    still occupied the workspace would mean nobody could ever install that
+    workspace again, including the customer who just removed it. Ending an
+    install therefore frees the workspace, and keeps the record of the one
+    that ended.
+
+    That index is also the one place a tenant learns something about another:
+    claiming a workspace somebody else already holds fails, and the failure
+    says so. It is the right answer — the alternative is a silent second claim
+    — and what it discloses is that *some* tenant holds a workspace the caller
+    was already able to name.
+
+    `status` is `active`, `disconnected` (an operator here ended it) or
+    `revoked` (the platform told us it was over). The two endings are recorded
+    apart because they call for different things: one is somebody's decision
+    and the other is news, and an operator looking at a bridge that stopped
+    working needs to know which.
 
     `bridge_id` is nullable because the install row is written before anything
     is built on it, and because removing a bridge should not force the
@@ -1167,7 +1181,10 @@ class MessagingInstall(TenantScoped, Base):
     `encrypted_bot_token` uses the same key as every other credential this
     schema stores (`crypto.encrypt_token` over the configured secret), so it
     is protected against a stolen dump and not against a compromised process.
-    A per-tenant key is a stronger boundary and a later decision.
+    A per-tenant key is a stronger boundary and a later decision. It is
+    nullable so that an install which has ended can keep its record without
+    keeping its secret: the token is worthless by then, and a worthless
+    credential still reads like a credential to whoever finds the dump.
 
     `scopes` is the platform's own spelling of what was granted, stored
     verbatim rather than parsed into a list — a scope string that means
@@ -1177,10 +1194,12 @@ class MessagingInstall(TenantScoped, Base):
 
     __tablename__ = "messaging_installs"
     __table_args__ = (
-        UniqueConstraint(
+        Index(
+            "uq_messaging_installs_workspace",
             "platform",
             "external_workspace_id",
-            name="uq_messaging_installs_workspace",
+            unique=True,
+            postgresql_where=text("status = 'active'"),
         ),
         UniqueConstraint("id", "tenant_id", name="uq_messaging_installs_id_tenant"),
         ForeignKeyConstraint(
@@ -1193,7 +1212,7 @@ class MessagingInstall(TenantScoped, Base):
     id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
     platform: Mapped[str] = mapped_column(Text, nullable=False)
     external_workspace_id: Mapped[str] = mapped_column(Text, nullable=False)
-    encrypted_bot_token: Mapped[str] = mapped_column(Text, nullable=False)
+    encrypted_bot_token: Mapped[str | None] = mapped_column(Text, nullable=True)
     scopes: Mapped[str] = mapped_column(Text, nullable=False)
     status: Mapped[str] = mapped_column(Text, nullable=False)
     installed_by_user_id: Mapped[str] = mapped_column(
@@ -1202,6 +1221,9 @@ class MessagingInstall(TenantScoped, Base):
     bridge_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     installed_at: Mapped[str] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    ended_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
     )
 
 

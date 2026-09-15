@@ -19,16 +19,26 @@ That refusal discloses one bit — some tenant holds this workspace — to a cal
 who could already name it. That is deliberate, and the alternative is worse: a
 silent second claim, discovered when a customer's messages start arriving in
 somebody else's rooms.
+
+The claim covers **active** installs only, and the second half of this file is
+about that. A claim that outlived the install would mean a workspace could be
+connected once ever — including by the customer who had just disconnected it —
+so ending an install releases the workspace. The lookup has to agree with the
+index about which rows count, and the tests below measure that agreement from
+both directions: a released workspace can be claimed again, and a workspace
+with history resolves to whoever holds it now rather than refusing because
+two rows name it.
 """
 
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.ext.asyncio import async_sessionmaker
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.db.models import MessagingInstall, Tenant, User
 from switch_core.db.session_scope import tenant_session
@@ -73,6 +83,20 @@ def _install(fixture: _Fixture, tenant_id: str) -> MessagingInstall:
         scopes="chat:write",
         status="active",
         installed_by_user_id=fixture.user_id,
+    )
+
+
+async def _end(session: AsyncSession, install_id: str, status: str) -> None:
+    """End an install the way the store will, without depending on it yet.
+
+    A direct write, because what is under test here is the index and the
+    lookup: the properties have to hold for any row in that state, not only
+    for rows a particular method happened to produce.
+    """
+    await session.execute(
+        update(MessagingInstall)
+        .where(MessagingInstall.id == install_id)
+        .values(status=status, ended_at=datetime.now(UTC), encrypted_bot_token=None)
     )
 
 
@@ -148,4 +172,97 @@ async def test_the_same_workspace_on_another_platform_is_a_separate_claim(
             rls_harness.restricted, "teams", fixture.workspace
         )
         == fixture.tenant_b
+    )
+
+
+async def test_an_install_that_ended_releases_the_workspace(
+    rls_harness: RLSHarness,
+) -> None:
+    """The claim lasts as long as the install and not a moment longer.
+
+    A permanent claim is not a stricter version of this guarantee, it is a
+    different and wrong one: a customer who tries Switch, disconnects, and
+    comes back finds their own workspace held by a row nobody can see and
+    nobody can release.
+    """
+    fixture = await _two_tenants_and_a_workspace(rls_harness.owner)
+
+    async with tenant_session(rls_harness.restricted, fixture.tenant_a) as session:
+        install = _install(fixture, fixture.tenant_a)
+        session.add(install)
+        await session.flush()
+        await _end(session, install.id, "disconnected")
+        await session.commit()
+
+    async with tenant_session(rls_harness.restricted, fixture.tenant_b) as session:
+        session.add(_install(fixture, fixture.tenant_b))
+        await session.commit()
+
+    assert (
+        await tenant_of_messaging_install(
+            rls_harness.restricted, "slack", fixture.workspace
+        )
+        == fixture.tenant_b
+    )
+
+
+async def test_the_lookup_does_not_answer_twice_for_a_workspace_with_history(
+    rls_harness: RLSHarness,
+) -> None:
+    """The failure the status predicate exists to prevent.
+
+    The lookup refuses an ambiguous answer rather than picking one, which is
+    right — but it makes a second row for the same workspace an outage for the
+    live install rather than a stale record. So the predicate on the function
+    has to be the index's predicate, and this measures it with enough history
+    to catch a lookup that merely takes the first row: two ended installs and
+    one live one, inserted in that order.
+    """
+    fixture = await _two_tenants_and_a_workspace(rls_harness.owner)
+
+    for _ in range(2):
+        async with tenant_session(rls_harness.restricted, fixture.tenant_a) as session:
+            install = _install(fixture, fixture.tenant_a)
+            session.add(install)
+            await session.flush()
+            await _end(session, install.id, "revoked")
+            await session.commit()
+
+    async with tenant_session(rls_harness.restricted, fixture.tenant_a) as session:
+        session.add(_install(fixture, fixture.tenant_a))
+        await session.commit()
+
+    assert (
+        await tenant_of_messaging_install(
+            rls_harness.restricted, "slack", fixture.workspace
+        )
+        == fixture.tenant_a
+    )
+
+
+async def test_a_workspace_nobody_holds_any_longer_resolves_to_nobody(
+    rls_harness: RLSHarness,
+) -> None:
+    """An ended install must not go on routing the workspace's traffic.
+
+    The app can still be sitting in the customer's Slack after a disconnect
+    here, posting events at us for as long as someone leaves it there. Those
+    events belong to no tenant now, and the lookup saying so is what turns
+    them into a refusal instead of a delivery into rooms the customer has
+    stopped paying for.
+    """
+    fixture = await _two_tenants_and_a_workspace(rls_harness.owner)
+
+    async with tenant_session(rls_harness.restricted, fixture.tenant_a) as session:
+        install = _install(fixture, fixture.tenant_a)
+        session.add(install)
+        await session.flush()
+        await _end(session, install.id, "disconnected")
+        await session.commit()
+
+    assert (
+        await tenant_of_messaging_install(
+            rls_harness.restricted, "slack", fixture.workspace
+        )
+        is None
     )
