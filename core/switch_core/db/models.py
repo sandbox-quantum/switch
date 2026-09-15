@@ -1280,6 +1280,72 @@ class MessagingInstallState(TenantScoped, Base):
     )
 
 
+class MessagingEventReceipt(TenantScoped, Base):
+    """One inbound platform event, claimed once so it is handled once.
+
+    Platforms deliver at least once. Slack gives three seconds to acknowledge
+    an event and retries what it does not get an answer to — so a deployment
+    under load, or one restarted mid-request, is told the same thing again.
+    Without a record of what has been taken, the second telling produces a
+    second answer in the customer's channel, which is the visible failure: an
+    agent replying twice to one question.
+
+    **The row is written before the work, not after**, and the unique index is
+    what arbitrates. Two retries in flight at once both reach the insert and
+    exactly one survives it; the loser stops there. Recording afterwards would
+    order the two the wrong way round — both would dispatch, and the duplicate
+    would be detected once it no longer mattered.
+
+    That ordering chooses at-most-once over at-least-once, which is worth
+    stating plainly: an event claimed by a process that then dies is not
+    retried, because the platform has already been told 200 and this table says
+    the event is taken. It is not a new loss. The route has acknowledged before
+    handling since it was written — it has to, the deadline is shorter than a
+    turn — so the event was already unrecoverable at that point. What this adds
+    is `handled_at`, which makes the loss visible: a claimed row that never
+    completed is a real event that reached nobody, and it can be found.
+
+    `external_event_id` is the platform's own id for the delivery, and only
+    some envelopes have one. Slack numbers Events API envelopes and retries
+    only those; a slash command and an interaction get one shot and no id, so
+    there is nothing to deduplicate and no row here. A missing id means "the
+    platform does not retry this", not "this was not checked".
+
+    Uniqueness is `(tenant_id, platform, external_event_id)` and not the
+    deployment-wide pair, unlike the workspace claim on `messaging_installs`.
+    The two would be equivalent — an event id is unique in the platform's own
+    namespace and a workspace belongs to one tenant — so the tenant-local index
+    is the one to prefer: it keeps one customer's event ids out of another's
+    namespace entirely, and it means a conflict is always with a row the
+    inserting tenant can actually see rather than an opaque refusal naming
+    somebody else's.
+    """
+
+    __tablename__ = "messaging_event_receipts"
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id",
+            "platform",
+            "external_event_id",
+            name="uq_messaging_event_receipts_event",
+        ),
+        # Pruning reads this and nothing else. Receipts are only useful for as
+        # long as the platform might still retry, and the table would otherwise
+        # grow with every message the busiest workspace ever sends.
+        Index("ix_messaging_event_receipts_received_at", "received_at"),
+    )
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
+    platform: Mapped[str] = mapped_column(Text, nullable=False)
+    external_event_id: Mapped[str] = mapped_column(Text, nullable=False)
+    received_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    handled_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+
 # ── Server-Side Connectors ────────────────────────────────────────────────────
 
 

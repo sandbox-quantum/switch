@@ -21,6 +21,7 @@ from switch_core.bridges.collaboration.install import (
     MessagingInstallerRegistry,
     MessagingInstallError,
     WebhookAuthenticityError,
+    WebhookEndpoint,
     WebhookPayloadError,
     events_path,
     oauth_callback_path,
@@ -234,7 +235,7 @@ class TestParsingAWebhook:
             }
         ).encode()
 
-        parsed = installer.parse_webhook(endpoint="events", body=body)
+        parsed = installer.parse_webhook(endpoint="events", headers={}, body=body)
 
         assert parsed.envelope_type == "events_api"
         assert parsed.handshake is None
@@ -254,7 +255,7 @@ class TestParsingAWebhook:
         """
         body = json.dumps({"type": "url_verification", "challenge": "abc123"}).encode()
 
-        parsed = installer.parse_webhook(endpoint="events", body=body)
+        parsed = installer.parse_webhook(endpoint="events", headers={}, body=body)
 
         assert parsed.handshake == "abc123"
 
@@ -263,7 +264,7 @@ class TestParsingAWebhook:
     ) -> None:
         with pytest.raises(WebhookPayloadError, match="challenge"):
             installer.parse_webhook(
-                endpoint="events", body=b'{"type":"url_verification"}'
+                endpoint="events", headers={}, body=b'{"type":"url_verification"}'
             )
 
     def test_a_slash_command_is_its_form_fields(
@@ -273,7 +274,7 @@ class TestParsingAWebhook:
             {"command": "/agents-status", "text": "", "team_id": "T1", "user_id": "U1"}
         ).encode()
 
-        parsed = installer.parse_webhook(endpoint="commands", body=body)
+        parsed = installer.parse_webhook(endpoint="commands", headers={}, body=body)
 
         assert parsed.envelope_type == "slash_commands"
         assert parsed.payload["command"] == "/agents-status"
@@ -287,7 +288,7 @@ class TestParsingAWebhook:
         inner = {"type": "block_actions", "team": {"id": "T1"}}
         body = urlencode({"payload": json.dumps(inner)}).encode()
 
-        parsed = installer.parse_webhook(endpoint="interactive", body=body)
+        parsed = installer.parse_webhook(endpoint="interactive", headers={}, body=body)
 
         assert parsed.envelope_type == "interactive"
         assert parsed.payload == inner
@@ -296,7 +297,106 @@ class TestParsingAWebhook:
         self, installer: SlackAppInstaller
     ) -> None:
         with pytest.raises(WebhookPayloadError, match="payload"):
-            installer.parse_webhook(endpoint="interactive", body=b"other=1")
+            installer.parse_webhook(endpoint="interactive", headers={}, body=b"other=1")
+
+    def test_an_event_callback_carries_slacks_own_event_id(
+        self, installer: SlackAppInstaller
+    ) -> None:
+        """The id is the only thing two copies of one event have in common.
+
+        The payload of a retry is byte-identical to the original, so without
+        this nothing downstream could tell a re-send from somebody saying the
+        same words twice.
+        """
+        body = json.dumps(
+            {"type": "event_callback", "team_id": "T1", "event_id": "Ev123"}
+        ).encode()
+
+        parsed = installer.parse_webhook(endpoint="events", headers={}, body=body)
+
+        assert parsed.external_event_id == "Ev123"
+
+    @pytest.mark.parametrize(
+        "envelope",
+        [
+            pytest.param({"type": "event_callback", "team_id": "T1"}, id="absent"),
+            pytest.param(
+                {"type": "event_callback", "team_id": "T1", "event_id": ""},
+                id="empty",
+            ),
+            pytest.param(
+                {"type": "event_callback", "team_id": "T1", "event_id": 7},
+                id="not-a-string",
+            ),
+        ],
+    )
+    def test_an_event_callback_with_no_usable_id_deduplicates_by_nothing(
+        self, installer: SlackAppInstaller, envelope: dict[str, object]
+    ) -> None:
+        """No id means dispatch it, never refuse it.
+
+        An empty or missing `event_id` is not a reason to drop a real message
+        from a customer's channel — it only means there is nothing to key a
+        receipt on, so the event is handled the way an unnumbered one is.
+        """
+        parsed = installer.parse_webhook(
+            endpoint="events", headers={}, body=json.dumps(envelope).encode()
+        )
+
+        assert parsed.external_event_id is None
+
+    @pytest.mark.parametrize(
+        ("endpoint", "body"),
+        [
+            pytest.param(
+                "commands", urlencode({"team_id": "T1"}).encode(), id="command"
+            ),
+            pytest.param(
+                "interactive",
+                urlencode({"payload": json.dumps({"team": {"id": "T1"}})}).encode(),
+                id="interaction",
+            ),
+        ],
+    )
+    def test_the_form_endpoints_carry_no_id_because_slack_sends_them_once(
+        self, installer: SlackAppInstaller, endpoint: WebhookEndpoint, body: bytes
+    ) -> None:
+        """Slack retries neither, so there is nothing to deduplicate.
+
+        A command and an interaction are a person waiting on a dialog. Slack
+        sends each exactly once and puts no id on it.
+        """
+        parsed = installer.parse_webhook(endpoint=endpoint, headers={}, body=body)
+
+        assert parsed.external_event_id is None
+
+    @pytest.mark.parametrize(
+        ("headers", "expected"),
+        [
+            pytest.param({}, 0, id="first-delivery"),
+            pytest.param({"x-slack-retry-num": "2"}, 2, id="second-retry"),
+            pytest.param({"x-slack-retry-num": "nonsense"}, 0, id="unparseable"),
+        ],
+    )
+    def test_the_retry_count_is_read_as_a_hint_and_never_as_a_decision(
+        self,
+        installer: SlackAppInstaller,
+        headers: dict[str, str],
+        expected: int,
+    ) -> None:
+        """Unsigned input, so a bad value must not be able to refuse an event.
+
+        The retry header is outside the signature — which covers the body and
+        the timestamp — so a garbled or forged one degrades to zero rather than
+        raising. The worst a forgery achieves is a wrong number in a log line.
+        """
+        body = json.dumps(
+            {"type": "event_callback", "team_id": "T1", "event_id": "Ev1"}
+        ).encode()
+
+        parsed = installer.parse_webhook(endpoint="events", headers=headers, body=body)
+
+        assert parsed.delivery_attempt == expected
 
     @pytest.mark.parametrize(
         "body",
@@ -316,7 +416,7 @@ class TestParsingAWebhook:
         rather than a shrug.
         """
         with pytest.raises(WebhookPayloadError):
-            installer.parse_webhook(endpoint="events", body=body)
+            installer.parse_webhook(endpoint="events", headers={}, body=body)
 
 
 class TestWhichWorkspaceSentIt:
