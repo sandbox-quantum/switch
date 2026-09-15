@@ -191,7 +191,7 @@ Under **OAuth & Permissions → Scopes → Bot Token Scopes**:
 - `users:read` — resolve user display names.
 - `files:read`, `files:write` — relay attachments (incl. agent image uploads).
 - `reactions:read`, `reactions:write` — reaction-based acknowledgements, and
-  the 👀 that marks the message an agent is working on.
+  the 👀 and ⏳ that mark the message an agent is working on or holding.
 - `assistant:write` — declares the app an Agent, which is what lets it open the
   session its progress card lives in. Slack adds this scope itself when the
   Agents feature is switched on.
@@ -304,9 +304,10 @@ messages at once has a card and a mark on each, and both are cleared together
 when its turn finishes.
 
 Separately, and needing nothing but the reaction scopes: the message that asked
-is marked with **👀** for the duration of the turn — the message itself, not the
-thread it sits in. That works at the channel root as well as in a thread, so it
-is the one progress signal that is always available.
+is marked for the duration of the turn — **👀** while an agent is working on it,
+**⏳** while a prompt is waiting behind one already running. The message itself,
+not the thread it sits in. That works at the channel root as well as in a
+thread, so it is the one progress signal that is always available.
 
 The stop button is wired to the same interrupt an operator can type, so
 pressing it stops the agent whose turn it is. Setting `agent_sessions: false`
@@ -347,8 +348,9 @@ What a workspace still gets with both off:
   is the autocomplete, not the addressing.
 - An agent's progress appears as a status message posted under its own name and
   icon, carrying the **Open in Switch Console** link.
-- The message being worked on is marked with **👀** for the turn. That needs
-  only the reaction scopes, so it works on any plan and in any channel.
+- The message being worked on is marked with **👀** for the turn, or **⏳** while
+  its prompt waits behind one already running. That needs only the reaction
+  scopes, so it works on any plan and in any channel.
 
 ### Turning it on for an existing bridge
 

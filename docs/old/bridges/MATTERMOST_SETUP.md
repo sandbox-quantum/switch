@@ -92,15 +92,18 @@ don't onboard Mattermost by hand — it's already there after setup. Log in at
 
 Three signals, in order of how long they last. Nothing here needs configuring.
 
-- **👀 on the message that asked.** Added when the agent picks the message up and
-  removed when its turn ends. Inside a thread it goes on the reply, not the root
-  the reply hangs off — the mark says *which* message is being handled. It is
-  added by the agent's own bot, so two agents on one message show two
-  reactions and hovering names them. This is the signal that always works: it
-  needs no thread and it does not expire.
-- **A posted status line** — "⚙️ Working on it…", edited in place as the agent
-  reports activity and retired to "✓ Done · 2m14s" when the turn finishes. It is
-  edited rather than deleted because Mattermost's client leaves a
+- **A reaction on the message that asked** — 👀 while an agent is working on it,
+  ⏳ while a prompt is waiting behind one already running. Cleared when the turn
+  ends. Inside a thread it goes on the reply, not the root the reply hangs off —
+  the mark says *which* message is being handled. It is added by the agent's own
+  bot, so two agents on one message show two reactions and hovering names them.
+  This is the signal that always works: it needs no thread and it does not
+  expire.
+- **A posted status line**, edited in place as the agent reports activity:
+  "Working… 41s" while the turn runs, "Worked for 2m 14s." when it finishes. It
+  stays in the channel after the turn rather than being taken down, so someone
+  scrolling back can still see that the turn ran and how long it took. Editing
+  is also the only clean option: Mattermost's client leaves a
   "(message deleted)" placeholder behind any post removed while it is on screen.
 - **The typing indicator**, nudged once as the turn opens. Mattermost expires it
   after about five seconds, so treat it as a first flicker rather than a

@@ -1038,12 +1038,14 @@ question and reads as a non-sequitur. So:
 - A post an *agent* opened never displaces a real message as the one later
   answers land in.
 - **A working agent's status is posted once, stays where it is, and is edited
-  to `✓ Done` when the turn ends.** It is never deleted, because Teams replaces
-  a deleted message with *"This message has been deleted."* and keeps it in the
-  post — so a status that vanished each turn would leave one of those behind
-  every time, and another every time it moved. In a threads-layout channel a
-  delete is clean, so there the status disappears and follows the conversation
-  as it does on every other platform.
+  in place to `Worked for 2m 14s.` when the turn ends.** It is never deleted, in
+  either layout. In a posts channel a delete is not clean — Teams replaces the
+  message with *"This message has been deleted."* and keeps it in the post, so a
+  status that vanished each turn would leave one of those behind every time, and
+  another every time it moved. In a chat or a threads-layout channel a delete
+  *is* clean, and the status is still kept: it is the only account a reader
+  scrolling back can find of the turn having run, how long it took and where to
+  open it. Teams is not special here — every platform keeps it.
 
 If Switch cannot read a channel's layout — Graph refusing the read is the usual
 reason — it assumes posts. That is Graph's own default for a channel it
