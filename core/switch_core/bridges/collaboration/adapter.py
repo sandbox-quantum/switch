@@ -5,7 +5,7 @@ import logging
 from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
-from typing import ClassVar
+from typing import Any, ClassVar
 
 from switch_core.agent_display_name import defuse_label_markup
 from switch_core.agent_icon import default_icon_url
@@ -20,6 +20,7 @@ from switch_core.bridges.collaboration.models import (
     InboundMessage,
     InboundUserJoin,
     OutboundAttachment,
+    WebhookDeliveryUnsupported,
 )
 
 logger = logging.getLogger(__name__)
@@ -247,6 +248,29 @@ class CollaborationAdapter(ABC):
 
     @abstractmethod
     async def stop(self) -> None: ...
+
+    async def dispatch_event(
+        self, *, envelope_type: str, payload: dict[str, Any]
+    ) -> None:
+        """Handle one event that arrived over the public webhook.
+
+        Concrete on the base and raising, rather than abstract, because
+        receiving events over HTTP is a property of a platform and of which app
+        a bridge's token came from — most adapters dial out and are handed
+        their events on a connection they opened, and have nothing to override
+        here.
+
+        Raising rather than returning quietly matters: the caller is a route
+        that has already proved the request genuine and resolved which bridge
+        it belongs to, so reaching an adapter that cannot take it means a
+        workspace's traffic is being delivered nowhere. Silence there is the
+        failure that reads as "the platform has gone quiet".
+        """
+        raise WebhookDeliveryUnsupported(
+            f"{type(self).__name__} does not receive events over HTTP, so the "
+            "event posted for this bridge cannot be delivered. A bridge reached "
+            "this way was installed as a distributed app; this one was not."
+        )
 
     @abstractmethod
     async def send_message(
