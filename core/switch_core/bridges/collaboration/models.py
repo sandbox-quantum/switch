@@ -85,6 +85,12 @@ class InboundMessage(BaseModel):
     # itself (e.g. Slack's "Agent Switch" app). None when the bot was not
     # tagged. Lets the bridge guide users who tag the app instead of an agent.
     self_mention_token: str | None = None
+    # The platform reported this post as coming from an app rather than a
+    # person (a Slack workflow, a third-party integration). Such a post is
+    # relayed like any other, but it cannot answer a request: a decision is
+    # attributed to whoever made it, and an app made none. Only Slack reports
+    # it today, and Slack is the only platform posting request cards.
+    sender_is_app: bool = False
 
 
 class InboundCommand(BaseModel):
@@ -106,6 +112,25 @@ class InboundCommand(BaseModel):
     root_id: str | None = None
     agent_name: str | None = None
     channel_name: str | None = None
+
+
+class InboundInteraction(BaseModel):
+    """Someone operated a control the bridge put on one of its own messages.
+
+    Unlike a message this carries no words. What it means is entirely in the
+    control's id and in `value`, an opaque token the bridge minted when it
+    posted the message and resolves against its own record. Neither is identity:
+    who acted is `sender_id`, which comes from the platform's envelope.
+    """
+
+    channel_id: str
+    sender_id: str
+    sender_name: str
+    action_id: str
+    value: str
+    # The platform's id for the message the control sits on, in the same form
+    # `InboundMessage.message_ref` uses.
+    message_ref: str | None = None
 
 
 class InboundAgentJoin(BaseModel):

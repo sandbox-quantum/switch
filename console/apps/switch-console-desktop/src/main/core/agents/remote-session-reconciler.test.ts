@@ -10,6 +10,7 @@ const mocks = vi.hoisted(() => ({
   mirror: vi.fn(),
   clear: vi.fn(),
   updateStatus: vi.fn(),
+  syncActivity: vi.fn(),
   emit: vi.fn(),
   rows: [] as { id: string }[],
 }));
@@ -28,6 +29,9 @@ vi.mock('@main/core/switch-servers/servers-store', () => ({
 vi.mock('@main/core/switch-servers/gateway-client', () => ({
   fetchSdkSessions: mocks.list,
   fetchSdkSnapshot: mocks.snapshot,
+}));
+vi.mock('@main/core/sdk-host/session-activity', () => ({
+  syncSdkSessionActivity: mocks.syncActivity,
 }));
 vi.mock('@main/core/sessions/session-service', () => ({
   sessionService: {
@@ -113,6 +117,9 @@ it('refreshes existing room associations from the list without fetching transcri
   await tick();
   expect(mocks.create).not.toHaveBeenCalled();
   expect(mocks.snapshot).not.toHaveBeenCalled();
+  expect(mocks.syncActivity).toHaveBeenCalledWith(
+    expect.objectContaining({ sessionId: 'shared', status: 'ready' })
+  );
   expect(mocks.mirror).toHaveBeenCalledWith(
     expect.objectContaining({ sessionId: 'shared' }),
     'room',

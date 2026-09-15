@@ -1353,6 +1353,130 @@ class BridgeMessageMap(TenantScoped, Base):
     )
 
 
+# ── Session requests on an external surface ─────────────────────────────────
+
+
+class SessionActivityPost(TenantScoped, Base):
+    """Durable publication journal for one command's activity on one bridge."""
+
+    __tablename__ = "session_activity_posts"
+    __table_args__ = (
+        PrimaryKeyConstraint("tenant_id", "bridge_id", "session_id", "command_id"),
+        ForeignKeyConstraint(
+            ["tenant_id", "bridge_id"],
+            ["collaboration_bridges.tenant_id", "collaboration_bridges.id"],
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "session_id"],
+            ["sdk_sessions.tenant_id", "sdk_sessions.id"],
+            ondelete="CASCADE",
+        ),
+    )
+    bridge_id: Mapped[str] = mapped_column(Text, nullable=False)
+    session_id: Mapped[str] = mapped_column(Text, nullable=False)
+    command_id: Mapped[str] = mapped_column(Text, nullable=False)
+    data: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+
+
+Index(
+    "ix_session_activity_reaction",
+    SessionActivityPost.data,
+    postgresql_using="gin",
+    postgresql_ops={"data": "jsonb_path_ops"},
+)
+
+
+class SessionRequestPost(TenantScoped, Base):
+    """A session's request for a decision, as it was posted onto a platform.
+
+    One row per request per bridge. It is what a pressed button resolves
+    against: the callback a platform sends back carries the opaque token and
+    nothing else worth having, so which session, which epoch and which revision
+    the answer stands against are read from here rather than from anything the
+    platform returned. `bridge_id` is the workspace fence — a token is only ever
+    looked up within the bridge it was minted for.
+
+    Distinct from `bridge_message_map`, which correlates one bridged message
+    with one external post. This is per *request*, it outlives any single post,
+    and it carries state that changes as the request does.
+    """
+
+    __tablename__ = "session_request_posts"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["tenant_id", "bridge_id"],
+            ["collaboration_bridges.tenant_id", "collaboration_bridges.id"],
+            name="fk_session_request_posts_bridge",
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "room_id"],
+            ["rooms.tenant_id", "rooms.id"],
+            name="fk_session_request_posts_room",
+            ondelete="CASCADE",
+        ),
+        UniqueConstraint("token", name="uq_session_request_posts_token"),
+        UniqueConstraint(
+            "bridge_id",
+            "session_id",
+            "request_id",
+            name="uq_session_request_posts_request",
+        ),
+        # A handle is matched without regard to case, so it has to be unique
+        # without regard to case: the lookup reads one row or none, and "R42"
+        # beside "r42" in one channel would make it raise instead — into the
+        # relay, where the cost is the message never reaching the room.
+        Index(
+            "uq_session_request_posts_handle",
+            "bridge_id",
+            "external_channel_id",
+            text("lower(handle)"),
+            unique=True,
+        ),
+        # One posted card stands for one request, and the bare form reads a
+        # request back off the card it replies to. Same lookup, same reason.
+        UniqueConstraint(
+            "bridge_id",
+            "external_post_id",
+            name="uq_session_request_posts_post",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
+    bridge_id: Mapped[str] = mapped_column(Text, nullable=False)
+    # What a control's callback payload carries, and what a person types
+    # instead. Both name the row and neither names the session.
+    token: Mapped[str] = mapped_column(Text, nullable=False)
+    handle: Mapped[str] = mapped_column(Text, nullable=False)
+    external_channel_id: Mapped[str] = mapped_column(Text, nullable=False)
+    external_post_id: Mapped[str] = mapped_column(Text, nullable=False)
+    room_id: Mapped[str] = mapped_column(Text, nullable=False)
+    thread_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    session_id: Mapped[str] = mapped_column(Text, nullable=False)
+    epoch: Mapped[str] = mapped_column(Text, nullable=False)
+    request_id: Mapped[str] = mapped_column(Text, nullable=False)
+    # The revision an answer is submitted against. The session rejects an answer
+    # that names a revision it has moved past.
+    revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    # What the card offered, in the order it offered it, and which sort of
+    # answer it takes: an approval's options, or a question's options per
+    # question. A typed "1" names a position on the card the person can see and
+    # this is what that resolves against; `kind` is what says whether the answer
+    # it builds is one option or one per question, and it is read rather than
+    # inferred. `session/form.py` is both ends of the shape.
+    form: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+
 # ── Feature flags ────────────────────────────────────────────────────────────
 
 

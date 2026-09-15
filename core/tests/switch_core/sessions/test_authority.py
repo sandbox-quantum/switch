@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from switch_core.addressing import AddressingPolicy, owner_only_policy
 from switch_core.db.models import (
     Agent,
     ApiKey,
@@ -37,7 +38,7 @@ EXAMPLES = json.loads(
 )
 
 
-async def setup(session_factory):
+async def setup(session_factory, *, policy: AddressingPolicy | None = None):
     async with session_factory() as db, db.begin():
         user = User(id="owner", name="Owner", email="owner@example.test", role="user")
         db.add(user)
@@ -85,6 +86,9 @@ async def setup(session_factory):
             client_id=client.id,
             api_key_id=key.id,
             owner_id=user.id,
+            addressing_policy=(
+                policy if policy is not None else owner_only_policy([])
+            ).model_dump(),
         )
         bridge = CollaborationBridge(
             id="bridge",
@@ -118,7 +122,14 @@ async def setup(session_factory):
             external_username="owner",
             client_id=actor.id,
         )
-        db.add(external)
+        unclaimed = ExternalUser(
+            id="external-outsider",
+            bridge_id=bridge.id,
+            external_user_id="platform-outsider",
+            external_username="outsider",
+            client_id=outsider.id,
+        )
+        db.add_all([external, unclaimed])
         await db.flush()
         db.add(ExternalUserClaim(external_user_id=external.id, user_id=user.id))
     service = SessionAuthority(session_factory)
@@ -257,6 +268,21 @@ async def test_room_viewer_cannot_reserve_but_verified_owner_can(session_factory
             )
             is None
         )
+
+
+async def test_an_open_addressing_policy_lets_an_unclaimed_room_member_answer(
+    session_factory,
+):
+    service, epoch = await setup(session_factory, policy=AddressingPolicy())
+    await opened(service, epoch)
+    result = await service.submit(
+        answer(
+            epoch, "outsider-answer", actor="@outsider:example.test", surface="slack"
+        ),
+        user_id=None,
+        bridge_id="bridge",
+    )
+    assert result.status == "accepted"
 
 
 async def test_host_cannot_forge_a_settlement_and_replay_keeps_confirmed_actor(

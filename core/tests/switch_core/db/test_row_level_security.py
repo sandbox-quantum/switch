@@ -423,6 +423,14 @@ class TestCatalogueCoverage:
             {table: "tenant_id" for table in _migration_module("c83f6e0a4129").TABLES}
         )
 
+        # Later Slack migrations explicitly enable RLS on these tables.
+        from_migration.update(
+            {
+                "session_request_posts": "tenant_id",
+                "session_activity_posts": "tenant_id",
+            }
+        )
+
         assert from_migration == from_models, (
             "the frozen table inventories in the scoping migrations no longer "
             "matches the models: only in the migration "
