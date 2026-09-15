@@ -15,8 +15,10 @@ from dataclasses import dataclass
 
 from switch_core.sessions.contract import (
     TURN_ENDED,
+    ApprovalContent,
     Item,
     Question,
+    SnapshotRequest,
     Surface,
     TurnUpsert,
 )
@@ -194,6 +196,88 @@ def parse_answer_action(action_id: str) -> str | None:
         return None
     option_id = action_id[len(prefix) :]
     return option_id or None
+
+
+# The same control on a platform whose payload is too small to carry an option
+# id. Telegram allows 64 bytes for everything a press hands back, and an option
+# id is an unbounded, possibly non-ASCII string the host chose, so the press
+# names where the control was on the card and the server resolves that against
+# the form the card rendered. Shorter than the id it replaces on purpose: what
+# is left of the budget is the request token, and both have to fit.
+POSITION_ACTION = "switch:request-option"
+
+
+def position_action(position: int) -> str:
+    """The action id for the control drawn `position`th on the card."""
+    return f"{POSITION_ACTION}:{position}"
+
+
+def parse_answer_position(action_id: str) -> int | None:
+    """Where on the card the operated control was, or None if not one of ours.
+
+    A count, in ASCII digits, from one. Anything else is refused here rather
+    than carried inwards as a number: `int` accepts digits from any script and
+    a payload that was not ours is not owed a resolution against a form.
+    """
+    prefix = f"{POSITION_ACTION}:"
+    if not action_id.startswith(prefix):
+        return None
+    digits = action_id[len(prefix) :]
+    if not digits.isascii() or not digits.isdecimal():
+        return None
+    position = int(digits)
+    return position if position > 0 else None
+
+
+@dataclass(frozen=True)
+class Control:
+    """One press a card offers: what it says, and where on the card it is.
+
+    `position` is the number printed beside the option in the body, which is
+    also what a typed answer names — so the two ways of answering a card mean
+    the same thing by the same number, and a control that carries a position
+    resolves to the option the reader was looking at.
+
+    The option's own id is deliberately not here. A platform whose control can
+    carry one reads it off the request directly; a platform whose control
+    cannot is the reason this exists, and handing it an id it has no room for
+    invites the payload this shape was made to avoid.
+    """
+
+    position: int
+    label: str
+
+
+def offered_controls(request: SnapshotRequest) -> list[Control]:
+    """The controls a card for `request` may draw, in the order it draws them.
+
+    Empty is the ordinary answer rather than a failure: a settled request has
+    nothing left to press, and neither has a form whose answer one press cannot
+    be. The rule is the one `resolve_pressed_option` applies when the press
+    comes back — one question, one choice out of a list — stated here so that a
+    card does not draw a control whose press is going to be refused.
+
+    A platform may still decline to draw what this offers, because a limit on
+    how many controls fit is the platform's own. What it must not do is offer
+    more.
+    """
+    if request.state != "open":
+        return []
+    content = request.content
+    if isinstance(content, ApprovalContent):
+        return [
+            Control(position=position, label=option.label)
+            for position, option in enumerate(content.options, start=1)
+        ]
+    if len(content.questions) != 1:
+        return []
+    question = content.questions[0]
+    if question.multi_select:
+        return []
+    return [
+        Control(position=position, label=option.label)
+        for position, option in enumerate(question.options, start=1)
+    ]
 
 
 class Markup:

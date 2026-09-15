@@ -20,7 +20,11 @@ from switch_core.bridges.collaboration.session.inbound import (
     Refused,
     SessionInteractions,
 )
-from switch_core.bridges.collaboration.session.renderers import ANSWER_ACTION
+from switch_core.bridges.collaboration.session.renderers import (
+    ANSWER_ACTION,
+    POSITION_ACTION,
+    position_action,
+)
 from switch_core.db.models import SessionRequestPost
 
 REPO_ROOT = Path(__file__).resolve().parents[5]
@@ -267,3 +271,107 @@ def test_callback_cannot_reuse_a_token_on_another_message_or_channel() -> None:
     assert _run(interactions.command_for(_press(channel_id="another-channel"))) is None
     assert _run(interactions.command_for(_press(message_ref="C1:222.0"))) is None
     assert _run(interactions.command_for(_press(message_ref=None))) is None
+
+
+# ── The same press, from a platform with no room for an option id ────────────
+
+
+def test_a_press_by_position_answers_the_option_the_card_drew_there() -> None:
+    """Telegram's press: the second control on the card, and nothing else."""
+    interactions = _interactions(_post())
+
+    command = _run(interactions.command_for(_press(action_id=position_action(2))))
+
+    assert command is not None
+    assert command.body.answer.option_id == "deny"  # type: ignore[union-attr]
+
+
+def test_a_position_and_the_option_id_it_stands_for_are_one_command() -> None:
+    """Two platforms, two payload shapes, one decision — so one command id.
+
+    What is being checked is that the position resolves to the option rather
+    than travelling on into the command as a number of its own.
+    """
+    by_position = _run(
+        _interactions(_post()).command_for(_press(action_id=position_action(1)))
+    )
+    by_id = _run(
+        _interactions(_post()).command_for(
+            _press(action_id=f"{ANSWER_ACTION}:allow-once")
+        )
+    )
+
+    assert by_position is not None and by_id is not None
+    assert by_position.command_id == by_id.command_id
+
+
+def test_the_record_says_which_option_a_position_is() -> None:
+    """The card's order, not the request's now: the record is what was drawn."""
+    reordered = _post(
+        form=_approval_form(("deny", "decline"), ("allow-once", "accept"))
+    )
+
+    command = _run(
+        _interactions(reordered).command_for(_press(action_id=position_action(1)))
+    )
+
+    assert command is not None
+    assert command.body.answer.option_id == "deny"  # type: ignore[union-attr]
+
+
+def test_a_press_past_the_end_of_the_card_is_refused() -> None:
+    """A number no control was drawn at. The record is the only thing that
+    could say so, and it says so before anything is decided."""
+    interactions = _interactions(_post())
+
+    refused = _run(interactions.command_for(_press(action_id=position_action(9))))
+
+    assert isinstance(refused, Refused)
+    assert "2 options, not 9" in refused.reason
+
+
+def test_a_position_that_is_not_a_count_names_no_control() -> None:
+    """Nothing this layer wrote looks like these, so none of them is ours.
+
+    `int` would take the Arabic-Indic digits, and a form resolved against a
+    number nobody can type is a press that cannot be reproduced by hand.
+    """
+    interactions = _interactions(_post())
+
+    for action_id in (
+        f"{POSITION_ACTION}:0",
+        f"{POSITION_ACTION}:-1",
+        f"{POSITION_ACTION}:1.0",
+        f"{POSITION_ACTION}:",
+        f"{POSITION_ACTION}:٢",
+        f"{POSITION_ACTION}x:1",
+    ):
+        assert _run(interactions.command_for(_press(action_id=action_id))) is None
+
+
+def test_a_press_by_position_answers_a_single_question() -> None:
+    post = _post(form=_questions_form(("q1", ["red", "blue"], False, False)))
+
+    command = _run(
+        _interactions(post).command_for(_press(action_id=position_action(2)))
+    )
+
+    assert command is not None
+    assert command.body.answer.answers[0].selected_option_ids == ["blue"]  # type: ignore[union-attr]
+
+
+def test_a_press_by_position_refuses_the_forms_a_press_cannot_answer() -> None:
+    """The same two refusals a press by id gets, reached the same way: one
+    press is one option, and it has to belong to one question."""
+    two_questions = _post(
+        form=_questions_form(
+            ("q1", ["red"], False, False), ("q2", ["blue"], False, False)
+        )
+    )
+    many_at_once = _post(form=_questions_form(("q1", ["red", "blue"], True, False)))
+
+    for post in (two_questions, many_at_once):
+        refused = _run(
+            _interactions(post).command_for(_press(action_id=position_action(1)))
+        )
+        assert isinstance(refused, Refused)

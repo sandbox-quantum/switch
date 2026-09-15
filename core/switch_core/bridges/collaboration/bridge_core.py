@@ -1309,11 +1309,11 @@ class BridgeCore:
         outcome = await interactions.command_for(interaction)
         if isinstance(outcome, Refused):
             # outcome.card_ref is available here too, but deliberately unused:
-            # a press only reaches a platform whose buttons are live, which
-            # today is Slack alone, and there tell_actor's reply is already
-            # private to the actor — thread_ref only chooses where that
-            # ephemeral appears on screen, not who sees it. None is the
-            # current choice, not an oversight.
+            # a press only reaches a platform whose buttons are live, and on
+            # each of those the reply to a press is already private to whoever
+            # pressed — Slack's ephemeral, Telegram's alert on the press
+            # itself. thread_ref would only choose where a private notice
+            # appeared on screen, not who saw it.
             await self._tell_refused(interaction, outcome, thread_ref=None)
             return
         await self._submit_session_command(

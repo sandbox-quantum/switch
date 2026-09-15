@@ -137,6 +137,25 @@ class _FakeInbound:
             setattr(self, field, value)
 
 
+class _FakeCallbackQuery:
+    """A press on an inline button. Only the fields the adapter reads."""
+
+    def __init__(
+        self,
+        *,
+        data: str,
+        query_id: str = "cq-1",
+        message: Any = "default",
+        from_user: Any = "default",
+    ) -> None:
+        self.id = query_id
+        self.data = data
+        self.message = (
+            _FakeSentMessage(_FakeChat(), 11) if message == "default" else message
+        )
+        self.from_user = _FakeUser() if from_user == "default" else from_user
+
+
 class _FakeMember:
     def __init__(self, status: str) -> None:
         self.status = status
@@ -152,6 +171,7 @@ class _FakeBot:
         self.deletes: list[dict[str, Any]] = []
         self.actions: list[dict[str, Any]] = []
         self.reactions: list[dict[str, Any]] = []
+        self.answers: list[dict[str, Any]] = []
         self.files: dict[str, _FakeFileHandle] = {}
         # Set to an exception to make every set_message_reaction raise it.
         self.reaction_error: Exception | None = None
@@ -169,6 +189,8 @@ class _FakeBot:
         self.edit_error: Exception | None = None
         # Set to an exception to make the next delete_message raise it once.
         self.delete_error: Exception | None = None
+        # Set to an exception to make answer_callback_query raise it.
+        self.answer_error: Exception | None = None
 
     def _mint(self, chat_id: Any) -> _FakeSentMessage:
         self._next_id += 1
@@ -218,6 +240,11 @@ class _FakeBot:
 
     async def send_chat_action(self, **kwargs: Any) -> None:
         self.actions.append(kwargs)
+
+    async def answer_callback_query(self, **kwargs: Any) -> None:
+        if self.answer_error is not None:
+            raise self.answer_error
+        self.answers.append(kwargs)
 
     async def set_message_reaction(self, **kwargs: Any) -> None:
         if self.reaction_error is not None:
@@ -637,10 +664,17 @@ class _FakeChatMemberUpdate:
 
 
 class _FakeUpdate:
-    def __init__(self, *, message: Any = None, my_chat_member: Any = None) -> None:
+    def __init__(
+        self,
+        *,
+        message: Any = None,
+        my_chat_member: Any = None,
+        callback_query: Any = None,
+    ) -> None:
         self.message = message
         self.channel_post = None
         self.my_chat_member = my_chat_member
+        self.callback_query = callback_query
 
 
 # ── Sender names ─────────────────────────────────────────────────────────────
@@ -1681,6 +1715,7 @@ def test_starting_begins_polling_and_learns_the_bot_id() -> None:
         "message",
         "channel_post",
         "my_chat_member",
+        "callback_query",
     ]
 
 

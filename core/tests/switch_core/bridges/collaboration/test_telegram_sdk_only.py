@@ -14,6 +14,7 @@ two renderers must not both draw, or every turn appears twice.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -34,7 +35,15 @@ from switch_core.bridges.collaboration.adapter import (
     RichContentThrottled,
     TurnActivity,
 )
-from switch_core.bridges.collaboration.session.renderers import RequestReference
+from switch_core.bridges.collaboration.models import InboundInteraction
+from switch_core.bridges.collaboration.session.form import (
+    posted_form,
+    resolve_pressed_position,
+)
+from switch_core.bridges.collaboration.session.renderers import (
+    RequestReference,
+    parse_answer_position,
+)
 from switch_core.bridges.collaboration.session.transport import (
     FixtureEventSource,
     project,
@@ -43,12 +52,25 @@ from switch_core.bridges.collaboration.telegram.adapter import (
     _REDRAW_INTERVAL,
     TelegramAdapter,
 )
+from switch_core.sessions.contract import ApprovalResult
 
 from .test_session_activity import _item, _turn
-from .test_telegram_adapter import CHAT_ID, _adapter, _bot
+from .test_telegram_adapter import (
+    CHAT_ID,
+    _adapter,
+    _bot,
+    _FakeCallbackQuery,
+    _FakeChat,
+    _FakeSentMessage,
+    _FakeUpdate,
+    _FakeUser,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[5]
 EXAMPLES_PATH = REPO_ROOT / "console/packages/shared/src/session-v1/examples.json"
+QUESTIONS_PATH = (
+    REPO_ROOT / "console/packages/shared/src/session-v1/examples.questions.json"
+)
 
 CHANNEL = str(CHAT_ID)
 TOPIC_ID = "88"
@@ -858,3 +880,322 @@ async def test_a_reply_target_is_not_sent_as_though_it_were_a_topic() -> None:
     await adapter.notify_working(CHANNEL, "my-agent", TOPIC_ID)
 
     assert "message_thread_id" not in _bot(adapter).actions[0]
+
+
+# ── The card's buttons, and the press that comes back ────────────────────────
+
+
+def _keyboard(markup: Any) -> list[tuple[str, str]]:
+    """Every button on a message, as the label and the payload it carries."""
+    if markup is None:
+        return []
+    return [
+        (button.text, button.callback_data)
+        for row in markup.inline_keyboard
+        for button in row
+    ]
+
+
+async def _press(
+    adapter: TelegramAdapter, data: str, **overrides: Any
+) -> list[InboundInteraction]:
+    """Drive a press from the update Telegram would deliver."""
+    seen: list[InboundInteraction] = []
+
+    async def record(interaction: InboundInteraction) -> None:
+        seen.append(interaction)
+
+    adapter.set_interaction_handler(record)
+    await adapter._handle_update(
+        _FakeUpdate(callback_query=_FakeCallbackQuery(data=data, **overrides))
+    )
+    return seen
+
+
+async def test_an_open_card_offers_a_button_for_every_option_it_lists() -> None:
+    """Numbered the way the body numbers them, so pressing and typing agree."""
+    adapter = _adapter()
+
+    await adapter.post_rich(CHANNEL, "my-agent", await _card(), None)
+
+    assert _keyboard(_posted(adapter)["reply_markup"]) == [
+        ("1. Allow once", "sw:tok-1:1"),
+        ("2. Deny", "sw:tok-1:2"),
+    ]
+
+
+async def test_a_press_carries_the_request_and_where_the_control_was() -> None:
+    """And nothing else. The option's own id never goes into the payload: it
+    is unbounded text the host chose, and 64 bytes is the whole budget."""
+    adapter = _adapter()
+
+    await adapter.post_rich(CHANNEL, "my-agent", await _card(), None)
+
+    payloads = [data for _, data in _keyboard(_posted(adapter)["reply_markup"])]
+    assert all(len(data.encode()) <= 64 for data in payloads)
+    assert not any("allow-once" in data or "deny" in data for data in payloads)
+
+
+async def test_a_press_payload_stays_inside_the_limit_on_a_wordy_card() -> None:
+    """The budget is bytes, not characters, and a label is host text in any
+    script. What the button carries is bounded by the token and a count, so
+    neither the label nor the option id can push it over."""
+    adapter = _adapter()
+    card = await _card()
+    wordy = card.request.model_copy(
+        update={
+            "content": card.request.content.model_copy(
+                update={
+                    "options": [
+                        option.model_copy(
+                            update={
+                                "option_id": f"опция-{index}-{'x' * 200}",
+                                "label": f"Разрешить однократно {'ё' * 100}",
+                            }
+                        )
+                        for index, option in enumerate(card.request.content.options)
+                    ]
+                }
+            )
+        }
+    )
+
+    await adapter.post_rich(CHANNEL, "my-agent", replace(card, request=wordy), None)
+
+    buttons = _keyboard(_posted(adapter)["reply_markup"])
+    assert [data for _, data in buttons] == ["sw:tok-1:1", "sw:tok-1:2"]
+    assert all(len(data.encode()) <= 64 for _, data in buttons)
+    assert all(len(label) <= 52 for label, _ in buttons)
+
+
+async def test_a_press_that_would_not_fit_is_refused_rather_than_truncated() -> None:
+    """A token this long is not something Switch mints, so it is a change
+    somewhere upstream — and a cut payload resolves to another request or to
+    none, which is the one outcome worse than not posting the card."""
+    adapter = _adapter()
+    card = await _card()
+    oversized = RequestCard(card.request, RequestReference(token="t" * 64, handle="R7"))
+
+    with pytest.raises(RichContentFailed):
+        await adapter.post_rich(CHANNEL, "my-agent", oversized, None)
+
+
+async def test_a_settled_card_is_redrawn_without_its_buttons() -> None:
+    """An edit carries the whole keyboard, so a redraw with none takes them
+    off — a settled request must not still be offering an answer."""
+    adapter = _adapter()
+    card = await _card()
+    ref = await adapter.post_rich(CHANNEL, "my-agent", card, None)
+
+    settled = replace(
+        card, request=card.request.model_copy(update={"state": "resolved"})
+    )
+    await adapter.update_rich(CHANNEL, "my-agent", ref, settled)
+
+    assert _keyboard(_posted(adapter)["reply_markup"]) != []
+    assert _edited(adapter)["reply_markup"] is None
+
+
+async def test_a_card_that_cannot_be_answered_here_offers_nothing_to_press() -> None:
+    """It says why in its own words. A live button under that sentence is an
+    invitation to the refusal it just explained."""
+    adapter = _adapter()
+
+    await adapter.post_rich(
+        CHANNEL,
+        "my-agent",
+        await _card(unavailable_reason="Answer this one in the Console."),
+        None,
+    )
+
+    assert _posted(adapter)["reply_markup"] is None
+
+
+async def test_a_status_has_nothing_to_press() -> None:
+    adapter = _adapter()
+
+    await adapter.post_rich(CHANNEL, "my-agent", _activity(), None)
+
+    assert _posted(adapter)["reply_markup"] is None
+
+
+async def test_the_card_and_the_press_agree_on_the_option() -> None:
+    """The loop: the adapter draws the control, Telegram hands the payload
+    back, and the record turns it into the option the reader pressed."""
+    adapter = _adapter()
+    card = await _card()
+    await adapter.post_rich(CHANNEL, "my-agent", card, None)
+    _, deny = _keyboard(_posted(adapter)["reply_markup"])
+
+    interaction = (await _press(adapter, deny[1]))[0]
+
+    assert interaction.value == card.reference.token
+    answer = resolve_pressed_position(
+        posted_form(card.request),
+        parse_answer_position(interaction.action_id) or 0,
+    )
+    assert answer == ApprovalResult(kind="approval", option_id="deny")
+
+
+async def test_a_press_is_attributed_to_the_account_that_sent_it() -> None:
+    """Telegram fills in who pressed; the payload says only which request and
+    which control. An id in the data would be a claim rather than a sender."""
+    adapter = _adapter()
+
+    interaction = (
+        await _press(
+            adapter,
+            "sw:tok-1:2",
+            from_user=_FakeUser(user_id=ASKER_ID, username="asker"),
+            message=_FakeSentMessage(_FakeChat(), 404),
+        )
+    )[0]
+
+    assert interaction.sender_id == ASKER
+    assert interaction.sender_name == "asker"
+    assert interaction.channel_id == CHANNEL
+    assert interaction.message_ref == f"{CHAT_ID}:404"
+    assert interaction.action_id.endswith(":2")
+
+
+async def test_a_press_on_a_keyboard_we_did_not_write_is_closed_and_ignored() -> None:
+    """Another bot's buttons in the same chat. The press is still answered:
+    an unanswered one spins on the presser's client until it gives up."""
+    adapter = _adapter()
+
+    for data in ("", "other-app:go", "sw:tok-1:0", "sw:tok-1:x", "sw:tok-1", "sw::1"):
+        assert await _press(adapter, data) == []
+
+    assert len(_bot(adapter).answers) == 6
+    assert {answer["text"] for answer in _bot(adapter).answers} == {None}
+
+
+async def test_a_press_whose_handling_fails_still_closes_the_press() -> None:
+    """The failure belongs in the log, not on a button that never stops
+    loading."""
+    adapter = _adapter()
+
+    async def explode(_interaction: InboundInteraction) -> None:
+        raise RuntimeError("the room went away")
+
+    adapter.set_interaction_handler(explode)
+
+    with pytest.raises(RuntimeError):
+        await adapter._handle_update(
+            _FakeUpdate(callback_query=_FakeCallbackQuery(data="sw:tok-1:1"))
+        )
+
+    assert len(_bot(adapter).answers) == 1
+
+
+async def test_a_refused_press_is_told_to_the_presser_and_to_nobody_else() -> None:
+    """Telegram's reply to a press is an alert on that person's client. The
+    chat is not told that somebody's answer did not land."""
+    adapter = _adapter()
+
+    async def refuse(interaction: InboundInteraction) -> None:
+        await adapter.tell_actor(
+            interaction.channel_id,
+            interaction.sender_id,
+            interaction.sender_name,
+            None,
+            "Your answer to R7 did not land, because that card is no longer open.",
+        )
+
+    adapter.set_interaction_handler(refuse)
+    await adapter._handle_update(
+        _FakeUpdate(callback_query=_FakeCallbackQuery(data="sw:tok-1:1"))
+    )
+
+    answer = _bot(adapter).answers[0]
+    assert answer["callback_query_id"] == "cq-1"
+    assert answer["show_alert"] is True
+    assert "no longer open" in answer["text"]
+    assert _bot(adapter).messages == []
+
+
+async def test_a_notice_longer_than_telegram_shows_is_cut_rather_than_dropped() -> None:
+    adapter = _adapter()
+
+    async def refuse(interaction: InboundInteraction) -> None:
+        await adapter.tell_actor(
+            interaction.channel_id, interaction.sender_id, "someone", None, "why " * 100
+        )
+
+    adapter.set_interaction_handler(refuse)
+    await adapter._handle_update(
+        _FakeUpdate(callback_query=_FakeCallbackQuery(data="sw:tok-1:1"))
+    )
+
+    text = _bot(adapter).answers[0]["text"]
+    assert len(text) == 200
+    assert text.startswith("why why")
+    assert text.endswith("…")
+
+
+async def test_a_press_taken_without_a_refusal_claims_nothing() -> None:
+    """The card's redraw is what says an answer was taken. Saying so here
+    would be saying it before the redraw that proves it."""
+    adapter = _adapter()
+
+    await _press(adapter, "sw:tok-1:1")
+
+    assert _bot(adapter).answers[0]["text"] is None
+    assert _bot(adapter).answers[0]["show_alert"] is False
+
+
+async def test_a_typed_answers_refusal_is_still_said_in_the_cards_thread() -> None:
+    """There is no press to reply to, and a bot cannot message someone who has
+    never opened a chat with it, so the thread is what is left."""
+    adapter = _adapter()
+
+    await adapter.tell_actor(CHANNEL, ASKER, "asker", f"{CHAT_ID}:99", "Not this one.")
+
+    assert "Not this one." in _bot(adapter).messages[0]["text"]
+
+
+async def test_telegram_refusing_the_acknowledgement_is_logged_and_left(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The query expires on its own and the answer it acknowledged is already
+    decided, so this must not cost the room the press."""
+    adapter = _adapter()
+    _bot(adapter).answer_error = BadRequest("query is too old")
+
+    with caplog.at_level("WARNING"):
+        assert len(await _press(adapter, "sw:tok-1:1")) == 1
+
+    assert any("would not acknowledge" in record.message for record in caplog.records)
+
+
+async def _asked(request_id: str) -> RequestCard:
+    """A card for one of the recorded question forms."""
+    source = FixtureEventSource.from_examples(QUESTIONS_PATH, events=[])
+    projection = await project(source, "session-questions")
+    request = next(
+        one for one in projection.snapshot.requests if one.request_id == request_id
+    )
+    return RequestCard(request, RequestReference(token="tok-1", handle="R43"))
+
+
+async def test_one_question_with_one_choice_to_make_is_pressable() -> None:
+    """The one form a press finishes, so the one form that gets buttons."""
+    adapter = _adapter()
+
+    await adapter.post_rich(CHANNEL, "my-agent", await _asked("request-one"), None)
+
+    assert _keyboard(_posted(adapter)["reply_markup"]) == [
+        ("1. Staging", "sw:tok-1:1"),
+        ("2. Production", "sw:tok-1:2"),
+    ]
+
+
+async def test_a_form_no_single_press_can_finish_is_answered_in_words() -> None:
+    """Three questions, and one press is one option. Buttons here would submit
+    whichever part was pressed last as though it were the whole answer."""
+    adapter = _adapter()
+
+    await adapter.post_rich(CHANNEL, "my-agent", await _asked("request-form"), None)
+
+    assert _posted(adapter)["reply_markup"] is None
+    assert "R43" in _posted(adapter)["text"]

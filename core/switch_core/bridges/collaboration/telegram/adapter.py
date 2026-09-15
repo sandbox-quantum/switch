@@ -7,12 +7,15 @@ import re
 import time
 from collections import OrderedDict
 from collections.abc import Awaitable, Callable, Coroutine
+from contextvars import ContextVar
 from dataclasses import replace
 from typing import Any, ClassVar, NamedTuple
 
 from telegram import (
     BotCommand,
     ForceReply,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
     InputMediaDocument,
     InputMediaPhoto,
     LinkPreviewOptions,
@@ -51,11 +54,17 @@ from switch_core.bridges.collaboration.models import (
     InboundAgentJoin,
     InboundAppJoin,
     InboundCommand,
+    InboundInteraction,
     InboundMessage,
     InboundUserJoin,
     OutboundAttachment,
 )
-from switch_core.bridges.collaboration.session.renderers import Markup
+from switch_core.bridges.collaboration.session.renderers import (
+    Control,
+    Markup,
+    offered_controls,
+    position_action,
+)
 from switch_core.bridges.collaboration.session.renderers.neutral import (
     activity_detail,
     request_summary,
@@ -81,7 +90,74 @@ _MAX_DOWNLOAD_BYTES = 20 * 1024 * 1024
 _MEDIA_GROUP_MIN = 2
 _MEDIA_GROUP_MAX = 10
 
-_ALLOWED_UPDATES = ["message", "channel_post", "my_chat_member"]
+_ALLOWED_UPDATES = ["message", "channel_post", "my_chat_member", "callback_query"]
+
+# What a press on a card's button hands back. Telegram allows 64 bytes for the
+# whole of it, so it holds the request token and the option's position on the
+# card and nothing else — the prefix is two characters for the same reason.
+# Every byte spent here is one the token cannot have.
+_CALLBACK_PREFIX = "sw"
+_MAX_CALLBACK_BYTES = 64
+
+# A button's label is one line on a phone, and Telegram truncates the middle of
+# an over-long one rather than wrapping it. Cut here instead, at the end, where
+# the reader can tell something was cut.
+_MAX_BUTTON_LABEL = 48
+
+# Telegram's own limit on the text of a reply to a press.
+_MAX_ALERT = 200
+
+# The notice a press is owed, collected while the press is being handled.
+#
+# A refusal is raised deep inside the shared inbound path, which knows the
+# person and the reason and nothing about Telegram; the only private way to
+# tell them is a reply to the callback query, and the id for that belongs to
+# the press rather than to the person. A context variable is what joins the
+# two: `tell_actor` leaves the notice here and the press answers with it, so
+# nothing has to be looked up by actor — two people pressing at once are two
+# tasks with a context each, and the same person pressing twice is two presses
+# rather than one notice overwriting another.
+_PRESS_NOTICE: ContextVar[list[str] | None] = ContextVar(
+    "switch_telegram_press_notice", default=None
+)
+
+
+def _callback_data(token: str, position: int) -> str:
+    return f"{_CALLBACK_PREFIX}:{token}:{position}"
+
+
+def _parse_callback(data: str) -> tuple[str, int] | None:
+    """The request and the control a press names, or None if it is not ours.
+
+    Telegram hands back exactly what was put in the button, so this is read as
+    strictly as it is written: a prefix this bridge minted, a token, and a
+    count in ASCII digits from one. Neither value is trusted past its shape —
+    the token is resolved against the record and the position against the form
+    that record holds.
+    """
+    parts = data.split(":")
+    if len(parts) != 3 or parts[0] != _CALLBACK_PREFIX:
+        return None
+    token, digits = parts[1], parts[2]
+    if not token or not digits.isascii() or not digits.isdecimal():
+        return None
+    position = int(digits)
+    return (token, position) if position > 0 else None
+
+
+def _button_label(control: Control) -> str:
+    """What the button says: the option's number, and as much of it as fits.
+
+    Numbered because the body numbers it. A card is answerable by typing
+    whether or not it has buttons, and a reader looking at "2" in the text and
+    "Decline" on a button should not have to work out that they are the same
+    thing.
+    """
+    label = control.label.strip() or f"Option {control.position}"
+    if len(label) > _MAX_BUTTON_LABEL:
+        label = label[: _MAX_BUTTON_LABEL - 1].rstrip() + "…"
+    return f"{control.position}. {label}"
+
 
 # Switch's own in-room prefix, plus Telegram's native one.
 _COMMAND_PREFIXES = ("!", "/")
@@ -1368,6 +1444,42 @@ class TelegramAdapter(CollaborationAdapter):
         quoted = "\n".join(lines)
         return f"\n{_EXPAND_OPEN}{quoted}{_EXPAND_CLOSE}"
 
+    def _controls(self, content: RichContent, text: str) -> InlineKeyboardMarkup | None:
+        """The card's options as buttons, or nothing where a press cannot land.
+
+        One per row. An option's label is a phrase more often than a word, and
+        Telegram gives the buttons in a row equal width and truncates what does
+        not fit, so a second column would cost the labels rather than save the
+        space.
+
+        Nothing at all is the ordinary answer: a status has no options, a
+        settled card has none left, and a card that cannot be answered where it
+        is showing says so — a live control under that sentence is an
+        invitation to the refusal it just explained. Since `update_rich` draws
+        the keyboard on every redraw, the controls come off a card at the
+        moment it stops being pressable, without anything having to remember
+        that it once had them.
+
+        `text` is the drawing these belong to, carried only so a refusal can
+        report what could not be posted.
+        """
+        if not isinstance(content, RequestCard) or content.unavailable_reason:
+            return None
+        rows: list[list[InlineKeyboardButton]] = []
+        for control in offered_controls(content.request):
+            data = _callback_data(content.reference.token, control.position)
+            if len(data.encode()) > _MAX_CALLBACK_BYTES:
+                raise RichContentFailed(
+                    f"Cannot put a button on request {content.request.request_id} in "
+                    f"Telegram: its press would carry {len(data.encode())} bytes and "
+                    f"Telegram allows {_MAX_CALLBACK_BYTES}.",
+                    text=text,
+                )
+            rows.append(
+                [InlineKeyboardButton(text=_button_label(control), callback_data=data)]
+            )
+        return InlineKeyboardMarkup(rows) if rows else None
+
     async def _render_rich(self, content: RichContent, agent_name: str) -> str:
         """Draw `content` as the agent, for one Telegram chat.
 
@@ -1462,6 +1574,7 @@ class TelegramAdapter(CollaborationAdapter):
         text = await self._render_rich(content, agent_name)
         self._refuse_while_throttled(text)
         self._pace_publication(channel_id, content, text)
+        controls = self._controls(content, text)
         anchor = await self._publication_anchor(channel_id, thread_root_id, text)
         try:
             sent = await self._require_bot().send_message(
@@ -1469,6 +1582,7 @@ class TelegramAdapter(CollaborationAdapter):
                 text=self._clamp(text),
                 parse_mode=ParseMode.HTML,
                 link_preview_options=_NO_PREVIEW,
+                reply_markup=controls,
                 **anchor,
             )
         except Exception as error:
@@ -1527,7 +1641,9 @@ class TelegramAdapter(CollaborationAdapter):
             await self._retire_rich(channel_id, message_ref, text)
             return
         self._pace_publication(channel_id, content, text)
-        await self._edit_rich(channel_id, message_ref, text)
+        await self._edit_rich(
+            channel_id, message_ref, text, self._controls(content, text)
+        )
 
     async def _retire_rich(self, channel_id: str, message_ref: str, text: str) -> None:
         """Take a finished status out of the chat, or say why it is still there.
@@ -1555,7 +1671,7 @@ class TelegramAdapter(CollaborationAdapter):
                 channel_id,
                 error,
             )
-            await self._edit_rich(channel_id, message_ref, text)
+            await self._edit_rich(channel_id, message_ref, text, None)
             return
         except Forbidden as error:
             logger.warning(
@@ -1565,13 +1681,25 @@ class TelegramAdapter(CollaborationAdapter):
                 channel_id,
                 error,
             )
-            await self._edit_rich(channel_id, message_ref, text)
+            await self._edit_rich(channel_id, message_ref, text, None)
             return
         self._note_publication(channel_id)
         self._retire_ref(message_ref)
 
-    async def _edit_rich(self, channel_id: str, message_ref: str, text: str) -> None:
-        """Rewrite a publication, reporting a refusal rather than logging it."""
+    async def _edit_rich(
+        self,
+        channel_id: str,
+        message_ref: str,
+        text: str,
+        controls: InlineKeyboardMarkup | None,
+    ) -> None:
+        """Rewrite a publication, reporting a refusal rather than logging it.
+
+        `controls` is the whole of what the message offers afterwards, not an
+        addition to what it offered before: Telegram replaces the keyboard with
+        what an edit carries, so passing none is how a settled card's buttons
+        come off.
+        """
         chat_id, message_id = self._parse_message_ref(message_ref)
         try:
             await self._require_bot().edit_message_text(
@@ -1580,6 +1708,7 @@ class TelegramAdapter(CollaborationAdapter):
                 text=self._clamp(text),
                 parse_mode=ParseMode.HTML,
                 link_preview_options=_NO_PREVIEW,
+                reply_markup=controls,
             )
         except BadRequest as error:
             # The one refusal that means the work is already done: an edit to
@@ -2040,11 +2169,152 @@ class TelegramAdapter(CollaborationAdapter):
             await self._handle_my_chat_member(chat_member)
             return
 
+        callback = getattr(update, "callback_query", None)
+        if callback is not None:
+            await self._handle_callback_query(callback)
+            return
+
         message = getattr(update, "message", None) or getattr(
             update, "channel_post", None
         )
         if message is not None:
             await self._handle_message(message)
+
+    async def _handle_callback_query(self, query: Any) -> None:
+        """Someone pressed a button on a card this bridge posted.
+
+        Who pressed comes from `from_user`, which Telegram fills in and the
+        payload cannot: the data in the button says which request and which
+        option, never who. So a press replayed from someone else's client is
+        still attributed to whoever actually sent it, and the identity check
+        downstream is against a real account rather than a claim.
+
+        The press is answered on every path out of here. Until it is, the
+        presser's client keeps the button in a loading state and will
+        eventually decide for itself that something broke — including on the
+        paths where nothing happened, which is what a press on a keyboard this
+        bridge did not write is.
+
+        A refusal reaches the presser through `tell_actor`, which leaves it in
+        `_PRESS_NOTICE` for the answer below rather than posting it in the
+        chat. It is collected in a `finally` so that a handler which raises
+        still closes the press: the exception belongs in the log, not on the
+        button.
+
+        Nothing here dedupes. Telegram redelivers an update it was not
+        acknowledged for, and the same press twice is the same option, by the
+        same person, against the same revision — which the shared layer derives
+        one command id from, so the second is the first rather than a second
+        answer.
+        """
+        query_id = str(getattr(query, "id", "") or "")
+        message = getattr(query, "message", None)
+        chat = getattr(message, "chat", None)
+        user = getattr(query, "from_user", None)
+        press = _parse_callback(str(getattr(query, "data", "") or ""))
+        if press is None or chat is None or user is None:
+            await self._answer_callback(query_id, None)
+            return
+        if self._on_interaction is None:
+            logger.warning(
+                "A press on a Switch card in chat %s has nowhere to go: this "
+                "bridge handles no interactions, so the card should not have "
+                "been drawn with buttons.",
+                getattr(chat, "id", "?"),
+            )
+            await self._answer_callback(query_id, None)
+            return
+
+        token, position = press
+        name = self._display_name(user)
+        # A press is a sighting of that account in this chat, and the same
+        # thing a message teaches: the name a mention needs, and the id a
+        # handle resolves to.
+        self._user_names[user.id] = name
+        self._username_to_id[name] = user.id
+
+        notices: list[str] = []
+        held = _PRESS_NOTICE.set(notices)
+        try:
+            await self._on_interaction(
+                InboundInteraction(
+                    channel_id=str(chat.id),
+                    sender_id=str(user.id),
+                    sender_name=name,
+                    action_id=position_action(position),
+                    value=token,
+                    message_ref=self._ref(message),
+                )
+            )
+        finally:
+            _PRESS_NOTICE.reset(held)
+            await self._answer_callback(query_id, notices[0] if notices else None)
+
+    async def _answer_callback(self, query_id: str, notice: str | None) -> None:
+        """Close a press on the presser's own client, and say why if it failed.
+
+        `show_alert` for a notice, because a toast is gone in a moment and what
+        is being said is why an answer did not land. Without one this is the
+        acknowledgement Telegram requires and nothing more: the card's own
+        redraw is what says an answer was taken, and claiming it here would be
+        claiming it before the redraw that proves it.
+
+        Plain text, unescaped, because an alert is not markup — the reason
+        quotes back what the host called an option, and HTML escaping it would
+        put the escapes on the screen.
+
+        A refusal from Telegram is logged and left. The query expires by
+        itself, nothing downstream waits on it, and the answer it would have
+        acknowledged has already been decided either way.
+        """
+        if not query_id:
+            return
+        text = None
+        if notice is not None:
+            text = (
+                notice
+                if len(notice) <= _MAX_ALERT
+                else notice[: _MAX_ALERT - 1].rstrip() + "…"
+            )
+        try:
+            await self._require_bot().answer_callback_query(
+                callback_query_id=query_id, text=text, show_alert=text is not None
+            )
+        except Exception as error:
+            logger.warning(
+                "Telegram would not acknowledge a press (%s). The notice, if "
+                "there was one, went unsaid: %s",
+                error,
+                text,
+            )
+
+    async def tell_actor(
+        self,
+        channel_id: str,
+        actor_ref: str,
+        actor_name: str,
+        thread_ref: str | None,
+        text: str,
+    ) -> None:
+        """Tell one person their answer did not land, where they can see it.
+
+        A press is told in the reply to the press itself: an alert on their
+        client alone, which costs the chat nothing and reaches them whether or
+        not they have ever opened a chat with the bot — a bot cannot message
+        someone who has not. It is left here for the press to carry rather than
+        sent from here, because the id that addresses it belongs to the press.
+
+        A typed answer has no press to reply to, so it falls back to the base:
+        said in the card's own thread, where everyone reading it sees a notice
+        addressed to someone else. That is the platform's limit rather than a
+        choice — Telegram gives a bot no private reply in a group it can use
+        unprompted.
+        """
+        notices = _PRESS_NOTICE.get()
+        if notices is not None:
+            notices.append(text)
+            return
+        await super().tell_actor(channel_id, actor_ref, actor_name, thread_ref, text)
 
     async def _handle_my_chat_member(self, event: Any) -> None:
         """The bot's own membership changed. Being added is Telegram's
@@ -2204,11 +2474,14 @@ class TelegramAdapter(CollaborationAdapter):
         Enough to tell whether Telegram is delivering, without putting message
         bodies or sender names into the log — this runs server-side, where the
         desktop app's redaction does not reach."""
-        for field in ("message", "channel_post", "my_chat_member"):
+        for field in ("message", "channel_post", "my_chat_member", "callback_query"):
             payload = getattr(update, field, None)
             if payload is None:
                 continue
-            chat = getattr(payload, "chat", None)
+            # A press has no chat of its own; the message its button is on has.
+            chat = getattr(payload, "chat", None) or getattr(
+                getattr(payload, "message", None), "chat", None
+            )
             return f"{field} in chat {getattr(chat, 'id', '?')}"
         return "no recognised payload"
 

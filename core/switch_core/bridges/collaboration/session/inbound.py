@@ -52,10 +52,11 @@ from switch_core.sessions.contract import (
 from .form import (
     Unanswerable,
     resolve_pressed_option,
+    resolve_pressed_position,
     resolve_text_answer,
     takes_a_bare_decision,
 )
-from .renderers import parse_answer_action
+from .renderers import parse_answer_action, parse_answer_position
 from .text import TextAnswer, parse_text_answer
 
 if TYPE_CHECKING:
@@ -213,9 +214,16 @@ class SessionInteractions:
         Only a control this layer did not write is None here. Everything else
         is someone pressing a button we put in front of them, which is as clear
         an attempt to answer as there is.
+
+        A control names the option it is for in one of two ways, and which one
+        is the platform's to choose: by id, where the payload has room for one,
+        and by where it sat on the card, where it has not. Both land on the
+        same record and both are resolved against it.
         """
-        option_id = parse_answer_action(interaction.action_id)
-        if option_id is None:
+        pressed: str | int | None = parse_answer_action(interaction.action_id)
+        if pressed is None:
+            pressed = parse_answer_position(interaction.action_id)
+        if pressed is None:
             return None
 
         async with self._session_factory() as session:
@@ -242,7 +250,11 @@ class SessionInteractions:
             )
             return None
 
-        answer = resolve_pressed_option(post.form, option_id)
+        answer = (
+            resolve_pressed_option(post.form, pressed)
+            if isinstance(pressed, str)
+            else resolve_pressed_position(post.form, pressed)
+        )
         if isinstance(answer, Unanswerable):
             logger.warning(
                 "Ignoring a press on request %s on bridge %s, because %s.",
