@@ -15,7 +15,8 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 
-from sqlalchemy import select, text
+from sqlalchemy import Text, cast, func, select, text, update
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from switch_core.db.models import SessionActivityPost, require_tenant_id
@@ -179,29 +180,38 @@ class ActivityJournal:
         its own, or for one of these turns asking again — and that mark really
         is on the message. So a row is cleared only while it still carries the
         ask the removal was issued against.
+
+        Each row is tested and cleared by one statement, and the two keys are
+        dropped from whatever the row holds at the moment it runs rather than
+        from a copy read earlier. Nothing serialises this against the holder
+        itself: the remover holds its own turn's advisory lock and not that
+        holder's, so between a read and a write the holder can have saved a
+        newer attempt, a delivery reservation or the end of its turn. Writing
+        back a whole edited copy would erase all of it — and the stale attempt
+        it carried would reinstate a claim this removal never answered for.
         """
         if not holders:
             return
+        held = func.coalesce(SessionActivityPost.data["mark_attempt"].astext, "")
+        forgotten = (
+            SessionActivityPost.data.op("-")(cast("mark", Text))
+            .op("-")(cast("mark_attempt", Text))
+            .cast(JSONB)
+        )
         async with sessions() as db:
-            rows = await db.scalars(
-                select(SessionActivityPost).where(
-                    SessionActivityPost.tenant_id == require_tenant_id(),
-                    SessionActivityPost.bridge_id == self.bridge_id,
-                    SessionActivityPost.data.contains({"mark": mark}),
+            for session_id, command_id, attempt in holders:
+                await db.execute(
+                    update(SessionActivityPost)
+                    .where(
+                        SessionActivityPost.tenant_id == require_tenant_id(),
+                        SessionActivityPost.bridge_id == self.bridge_id,
+                        SessionActivityPost.session_id == session_id,
+                        SessionActivityPost.command_id == command_id,
+                        SessionActivityPost.data.contains({"mark": mark}),
+                        held == attempt,
+                    )
+                    .values(data=forgotten)
                 )
-            )
-            for row in rows:
-                held = (
-                    row.session_id,
-                    row.command_id,
-                    row.data.get("mark_attempt", ""),
-                )
-                if held not in holders:
-                    continue
-                data = dict(row.data)
-                data.pop("mark", None)
-                data.pop("mark_attempt", None)
-                row.data = data
             await db.commit()
 
     @asynccontextmanager

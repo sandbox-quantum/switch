@@ -6,7 +6,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 from mattermostdriver.exceptions import NotEnoughPermissions
-from sqlalchemy import select
+from sqlalchemy import select, text, update
 
 from switch_core.bridges.collaboration.adapter import (
     ActivityMarkRefused,
@@ -1587,3 +1587,169 @@ async def test_an_addition_whose_answer_was_lost_survives_a_refused_retry(
     platform.refuse_remove = False
     assert await publish(renderer, "completed")
     assert not chat["reactions"]
+
+
+# ── One removal, one holder, and no lock between them ────────────────────────
+#
+# `forget_mark` clears rows belonging to turns other than the one running it,
+# and holds only its own turn's advisory lock. Whatever it does to a holder's
+# row it does while that holder is free to be writing to it.
+
+MARK = {"channel_id": "channel-demo", "reaction_ref": "channel-demo:question"}
+
+
+async def _row(sessions):
+    async with sessions() as db:
+        row = await db.get(
+            SessionActivityPost,
+            (require_tenant_id(), "bridge", "session-demo", "message-demo"),
+        )
+        return dict(row.data) if row is not None else None
+
+
+async def _claim(sessions, data):
+    async with sessions() as db:
+        db.add(
+            SessionActivityPost(
+                tenant_id=require_tenant_id(),
+                bridge_id="bridge",
+                session_id="session-demo",
+                command_id="message-demo",
+                data=data,
+            )
+        )
+        await db.commit()
+
+
+async def _waiting_on_a_lock(sessions):
+    """Block until some backend is stuck behind another's row lock."""
+    for _ in range(200):
+        async with sessions() as db:
+            blocked = await db.scalar(
+                text(
+                    "SELECT count(*) FROM pg_stat_activity "
+                    "WHERE wait_event_type = 'Lock'"
+                )
+            )
+        if blocked:
+            return
+        await asyncio.sleep(0.05)
+    raise AssertionError("no backend ever blocked on a row lock")
+
+
+async def test_a_removal_does_not_write_back_over_what_its_holder_saved(
+    session_factory,
+):
+    """The window between reading a holder's row and writing it back.
+
+    The holder is another turn, running in another task or another process,
+    and nothing serialises the two. It asks for the mark again and saves the
+    new stamp; the removal, having read the row before that, writes back an
+    edited copy of what it saw. The holder's stamp goes, and with it every
+    other thing the holder had written down — the anchor it needs to redraw,
+    the fact that its turn ended.
+
+    Worse than losing the fields: the row it writes says the mark is gone, and
+    the mark the holder's second ask put there really is on the message.
+    """
+    await setup(session_factory)
+    journal = ActivityJournal(session_factory, "bridge")
+    await _claim(
+        session_factory,
+        {
+            "turn_id": "turn-1",
+            "ended": False,
+            "mark": MARK,
+            "mark_attempt": "first-ask",
+        },
+    )
+
+    holder = session_factory()
+    await holder.execute(
+        update(SessionActivityPost)
+        .where(SessionActivityPost.command_id == "message-demo")
+        .values(
+            data={
+                "turn_id": "turn-1",
+                "ended": True,
+                "mark": MARK,
+                "mark_attempt": "second-ask",
+                "anchor": {"channel_id": "channel-demo"},
+            }
+        )
+    )
+
+    removal = asyncio.create_task(
+        journal.forget_mark(
+            MARK,
+            holders={("session-demo", "message-demo", "first-ask")},
+            sessions=session_factory,
+        )
+    )
+    try:
+        await _waiting_on_a_lock(session_factory)
+        assert not removal.done()
+        await holder.commit()
+    finally:
+        await holder.close()
+    await asyncio.wait_for(removal, 5)
+
+    assert await _row(session_factory) == {
+        "turn_id": "turn-1",
+        "ended": True,
+        "mark": MARK,
+        "mark_attempt": "second-ask",
+        "anchor": {"channel_id": "channel-demo"},
+    }
+
+
+async def test_a_removal_still_clears_the_ask_it_was_issued_against(
+    session_factory,
+):
+    """The same statement, where nothing has moved underneath it. Only the two
+    keys go; the rest of the row is the holder's and is left alone."""
+    await setup(session_factory)
+    journal = ActivityJournal(session_factory, "bridge")
+    await _claim(
+        session_factory,
+        {
+            "turn_id": "turn-1",
+            "ended": True,
+            "mark": MARK,
+            "mark_attempt": "first-ask",
+            "anchor": {"channel_id": "channel-demo"},
+        },
+    )
+
+    await journal.forget_mark(
+        MARK,
+        holders={("session-demo", "message-demo", "first-ask")},
+        sessions=session_factory,
+    )
+
+    assert await _row(session_factory) == {
+        "turn_id": "turn-1",
+        "ended": True,
+        "anchor": {"channel_id": "channel-demo"},
+    }
+
+
+async def test_a_turn_that_ends_holding_the_mark_keeps_the_ask_it_made(
+    session_factory,
+):
+    """Compaction reduces a finished turn to a receipt and keeps the mark,
+    because another turn may still be waiting to take it off. The stamp has to
+    go with it: a claim is named by the ask that made it, and one reduced to an
+    unstamped claim is one no removal issued against the real ask can clear —
+    so the row keeps the mark for good and a later turn on that message waits
+    on a reaction nobody will ever remove."""
+    await setup(session_factory)
+    platform = ActivitySlack()
+    await publish(activity(session_factory, platform))
+    await publish(activity(session_factory, platform), agent="Other", command="other")
+
+    await publish(activity(session_factory, platform), "completed")
+
+    receipt = await _row(session_factory)
+    assert receipt["mark"] == MARK | {"agent_name": ""}
+    assert receipt["mark_attempt"]

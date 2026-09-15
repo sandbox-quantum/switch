@@ -425,11 +425,20 @@ class SessionTurnActivity:
                         # discard delivery reservations and reaction/log anchors.
                         # An outstanding mark is not this turn's to discard: the
                         # holder that takes it off may be another turn entirely,
-                        # and it needs to know the mark is there.
-                        mark = record.data.get("mark")
-                        record.data = {"turn_id": turn.turn_id, "ended": True}
-                        if mark is not None:
-                            record.data["mark"] = mark
+                        # and it needs to know the mark is there. The stamp goes
+                        # with it — a claim is named by the ask that made it, and
+                        # one reduced to an unstamped claim is one no removal
+                        # issued against the real ask can ever clear.
+                        claim = {
+                            field: record.data[field]
+                            for field in ("mark", "mark_attempt")
+                            if field in record.data
+                        }
+                        record.data = {
+                            "turn_id": turn.turn_id,
+                            "ended": True,
+                            **claim,
+                        }
                     record.data["completed"] = True
                     await record.save()
                 return drawn
