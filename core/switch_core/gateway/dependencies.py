@@ -24,6 +24,7 @@ from switch_core.db.stores.api_key_store import ApiKeyStore
 from switch_core.db.stores.collaboration_bridge_store import CollaborationBridgeStore
 from switch_core.db.stores.external_user_store import ExternalUserStore
 from switch_core.db.stores.invitation_store import InvitationStore
+from switch_core.db.stores.messaging_install_store import MessagingInstallStore
 from switch_core.db.stores.room_group_store import RoomGroupStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.server_connector_store import ServerConnectorStore
@@ -218,6 +219,21 @@ def get_config() -> SwitchConfig:
 
 def get_protocol() -> ProtocolService:
     return _state["protocol"]  # type: ignore[no-any-return]
+
+
+def get_install_store() -> MessagingInstallStore:
+    """Built here rather than threaded through `init_dependencies`.
+
+    It is stateless — no connection, no configuration, nothing for a shared
+    instance to own — and `get_room_yaml_service` above already constructs
+    rather than reads.
+
+    Deliberately not reached through `get_install_service`, which is `None` on
+    a deployment that registered no app of its own. Install rows outlive those
+    credentials: a bridge built by an install has to stay protected after the
+    credentials are taken away, which is exactly when the service is gone.
+    """
+    return MessagingInstallStore()
 
 
 def get_install_service() -> MessagingInstallService | None:

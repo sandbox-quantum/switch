@@ -181,6 +181,27 @@ class MessagingInstallStore:
         )
         return result.scalars().one_or_none()
 
+    async def get_for_bridge(
+        self, session: AsyncSession, *, bridge_id: str
+    ) -> MessagingInstall | None:
+        """The live install a bridge was built for, if it was built for one.
+
+        Asked from the other direction than the rest of this store, and by
+        something that does not otherwise know installs exist: the bridge
+        delete endpoint, which has to refuse rather than tear down a bridge
+        whose credential is a token nobody here has revoked.
+
+        Live installs only. An ended one has already released its pointer, so a
+        row matching here is always a bridge that is still somebody's install.
+        """
+        result = await session.execute(
+            select(MessagingInstall).where(
+                MessagingInstall.bridge_id == bridge_id,
+                MessagingInstall.status == INSTALL_ACTIVE,
+            )
+        )
+        return result.scalars().one_or_none()
+
     async def get(self, session: AsyncSession, *, install_id: str) -> MessagingInstall:
         """One of the bound tenant's installs, by id, or raise."""
         install = await session.get(MessagingInstall, install_id)
