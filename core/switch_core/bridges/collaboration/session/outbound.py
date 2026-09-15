@@ -143,6 +143,32 @@ class CardAlreadyPosted(CardNotPosted):
     """
 
 
+class ActivityAbandoned(CardNotPosted):
+    """A turn's activity slot that will never be settled, whatever happens.
+
+    Raised for a reservation whose send was never acknowledged on a platform
+    that cannot search for what it posted. Nothing about that changes with
+    time: the message is either in the chat or it is not, and there is no way
+    left to find out which, so a caller waiting for a later attempt to succeed
+    is waiting for something that cannot arrive.
+
+    A subclass because it is still true that nothing was drawn. What the
+    separate type adds is that retrying is pointless — a caller that treats it
+    as a fresh failure reports the same permanent condition on every cycle and
+    never lets the session settle, which buries the failures that are new.
+
+    Already reported by the time a caller sees it. What each caller still has
+    to decide is what the loss costs: a status is the whole of a turn's
+    display, so there is nothing left to draw, while an attention message is
+    one message and the turn carries on without it.
+    """
+
+    def __init__(self, message: str, *, slot: str, abandoned_at: str) -> None:
+        super().__init__(message)
+        self.slot = slot
+        self.abandoned_at = abandoned_at
+
+
 class SessionTurnActivity:
     """Publish SDK activity without exposing internal assistant narration.
 
@@ -161,6 +187,7 @@ class SessionTurnActivity:
             "activity_record", default=None
         )
         self._adapter = adapter
+        self._abandoned: OrderedDict[tuple[str, ...], None] = OrderedDict()
         self._separate_activity_log = getattr(adapter, "separate_activity_log", False)
         self._separate_attention_slot = getattr(
             adapter, "separate_attention_slot", False
@@ -257,7 +284,9 @@ class SessionTurnActivity:
         error_summary: str | None = None,
     ) -> bool:
         async def attend() -> None:
-            if self._separate_attention_slot:
+            if not self._separate_attention_slot:
+                return
+            try:
                 await self._refresh_attention(
                     session_id,
                     channel_id,
@@ -268,6 +297,14 @@ class SessionTurnActivity:
                     notify_unreachable,
                     error_summary,
                 )
+            except ActivityAbandoned:
+                # An attention message whose own delivery can never be
+                # confirmed costs that message and nothing else — the status
+                # beside it is still being drawn, and holding the turn open
+                # for a repost that may duplicate what is already there would
+                # trade a lost notice for two of them. Reported when it was
+                # given up on, and not raised past here.
+                pass
 
         async def draw() -> bool:
             try:
@@ -408,6 +445,37 @@ class SessionTurnActivity:
             while len(self._attention) > _MAX_ANCHORS:
                 self._attention.popitem(last=False)
 
+    def _report_abandoned(
+        self, key: tuple[str, ...], slot: str, reason: str, abandoned_at: str
+    ) -> None:
+        """Say once, here, that a slot has been given up on.
+
+        Reported where the decision is made rather than by each caller,
+        because the callers differ in what they do about it and not in what
+        happened. Once per process: the condition is permanent, so a line per
+        publish cycle would be the same sentence every few seconds for as long
+        as the bridge runs, and a restart genuinely is worth one line — it is
+        the only place an operator learns that a turn on this platform is
+        showing less than it should.
+
+        Bounded, and an eviction costs one repeated warning rather than a
+        missed one, which is the right way round.
+        """
+        seen = (*key, slot)
+        if seen in self._abandoned:
+            return
+        self._abandoned[seen] = None
+        while len(self._abandoned) > _MAX_ANCHORS:
+            self._abandoned.popitem(last=False)
+        logger.warning(
+            "Giving up on the %s message for %s: %s Abandoned at %s; it will "
+            "not be drawn or retried.",
+            slot,
+            "/".join(key[2:]),
+            reason,
+            abandoned_at,
+        )
+
     async def _save_anchor(self, anchor: _Anchor) -> None:
         record = self._record.get()
         if record:
@@ -422,6 +490,16 @@ class SessionTurnActivity:
         thread: str | None,
         slot: str,
     ) -> str:
+        """Post one of a turn's messages, reserving it in the journal first.
+
+        The journal holds one entry per slot, and the shape of that entry is
+        the whole of what a restart has to go on: a `token` and no `ref` is a
+        send whose outcome was never learned, and `abandoned_at` says that
+        question has been closed as unanswerable rather than still being
+        asked. Written down rather than recomputed so the record says why a
+        reservation has sat unfinished, and so a log after a restart can tell
+        an old decision from a new one.
+        """
         record = self._record.get()
         if record is None:
             return await self._adapter.post_rich(channel, agent, content, thread)
@@ -440,12 +518,20 @@ class SessionTurnActivity:
                 # the chat per cycle, so the reservation is kept and this slot
                 # stays as it is. The attention message is published
                 # separately and is not held up by it.
-                raise CardNotPosted(
+                abandoned_at = delivery.get("abandoned_at")
+                if not abandoned_at:
+                    abandoned_at = datetime.now(UTC).isoformat()
+                    delivery["abandoned_at"] = abandoned_at
+                    record.data[slot] = delivery
+                    await record.save()
+                reason = (
                     f"The {slot} message sent as {delivery['token']} in "
                     f"{delivery['channel']} was never acknowledged, and this "
                     "platform cannot search for it. Keeping its reservation "
                     "rather than posting a second one that may duplicate it."
                 )
+                self._report_abandoned(record.key, slot, reason, abandoned_at)
+                raise ActivityAbandoned(reason, slot=slot, abandoned_at=abandoned_at)
             ref = await self._adapter.find_request_card(
                 delivery["channel"],
                 delivery["thread"],

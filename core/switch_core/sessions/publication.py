@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.bridges.collaboration.adapter import RichContentThrottled
 from switch_core.bridges.collaboration.session.outbound import (
+    ActivityAbandoned,
     SessionRequestCards,
     SessionTurnActivity,
 )
@@ -716,6 +717,14 @@ async def refresh_activity(
             retry_delayed(token, error.retry_after)
             backed_off += 1
             continue
+        except ActivityAbandoned:
+            # Settled, in the only sense left: this turn's display can never
+            # be confirmed, so there is nothing to come back for. Counting it
+            # as a failure would report the same permanent condition every
+            # cycle and hold the session open for a retry that cannot change
+            # anything. Already reported where it was decided.
+            hold_back(session_id, turn.turn_id)
+            continue
         except Exception:
             logger.exception("Could not recover activity for turn %s", turn.turn_id)
             failed.append(turn.turn_id)
@@ -843,7 +852,12 @@ class _TurnRedrawGuard:
 
 
 class _PermanentlyHeldBack:
-    """Ended turns a first sweep decided never to draw, kept per session.
+    """Turns nothing will draw again, kept per session.
+
+    Two ways in, and they meet here because what follows is the same: a turn
+    a first sweep decided never to draw because it had already ended, and a
+    turn whose reserved message can never be confirmed on a platform that
+    cannot search for what it posted. Neither can change with a later look.
 
     Not `_TurnRedrawGuard`: that one is bounded and shared across every
     session on the bridge, evicting whichever entry was least recently

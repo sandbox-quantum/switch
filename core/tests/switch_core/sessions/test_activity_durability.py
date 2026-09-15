@@ -1,10 +1,12 @@
 """Restart and uncertain-delivery tests using real PostgreSQL checkpoints."""
 
 import asyncio
+import logging
 from datetime import UTC, datetime, timedelta
 
 import pytest
 from mattermostdriver.exceptions import NotEnoughPermissions
+from sqlalchemy import select
 
 from switch_core.bridges.collaboration.adapter import (
     ActivityMarkRefused,
@@ -12,6 +14,7 @@ from switch_core.bridges.collaboration.adapter import (
 )
 from switch_core.bridges.collaboration.session.activity_journal import ActivityJournal
 from switch_core.bridges.collaboration.session.outbound import (
+    ActivityAbandoned,
     CardNotPosted,
     SessionTurnActivity,
 )
@@ -19,7 +22,7 @@ from switch_core.bridges.collaboration.slack.adapter import (
     SlackAdapter,
     SlackConnectionConfig,
 )
-from switch_core.db.models import SdkSession, require_tenant_id
+from switch_core.db.models import SdkSession, SessionActivityPost, require_tenant_id
 from switch_core.sessions.publication import SessionPublisher
 
 from ..bridges.collaboration.test_mattermost_sdk_only import (
@@ -108,6 +111,9 @@ class PerAgentSlack(ActivitySlack):
             self.reactions.add((agent_name, ref))
         else:
             self.reactions.discard((agent_name, ref))
+
+
+OUTBOUND_LOGGER = "switch_core.bridges.collaboration.session.outbound"
 
 
 def activity(factory, platform):
@@ -344,6 +350,147 @@ async def test_a_status_a_platform_cannot_search_is_never_posted_a_second_time(
         with pytest.raises(CardNotPosted):
             await publish(activity(session_factory, platform))
     assert platform.post_count == 1
+
+
+async def test_a_status_nobody_can_confirm_is_written_off_once_and_not_again(
+    session_factory,
+):
+    """The journal records the decision, not just the unfinished reservation.
+
+    A slot holding a token and no reference is a question still being asked.
+    One that has been given up on is a question closed, and the two look
+    identical to anything reading the row afterwards — including a restart,
+    which would otherwise report a months-old conclusion as though it had just
+    reached it. The stamp is taken once and kept.
+    """
+    await setup(session_factory)
+    platform = UnsearchablePlatform()
+    platform.fail_after_post = True
+    with pytest.raises(TimeoutError):
+        await publish(activity(session_factory, platform))
+
+    with pytest.raises(ActivityAbandoned) as written_off:
+        await publish(activity(session_factory, platform))
+    assert written_off.value.slot == "status"
+
+    async with session_factory() as db:
+        row = await db.scalar(select(SessionActivityPost))
+        assert row.data["status"]["abandoned_at"] == written_off.value.abandoned_at
+
+    with pytest.raises(ActivityAbandoned) as again:
+        await publish(activity(session_factory, platform))
+    assert again.value.abandoned_at == written_off.value.abandoned_at
+    assert platform.post_count == 1
+
+
+async def test_a_status_nobody_can_confirm_stops_being_reported_as_a_new_failure(
+    session_factory, caplog
+):
+    """Said once, then left alone — the publisher has to be able to settle.
+
+    Nothing about this turn can change: its status is either in the chat or it
+    is not, and this platform cannot find out which. Treating that as a fresh
+    failure on every cycle put a traceback in the log every few seconds for
+    the life of the process, and kept the session out of the publisher's
+    "nothing to do here" set, so its whole publication pass ran again each
+    time. One warning is the right amount of noise for a permanent condition.
+    """
+    service, epoch = await setup(session_factory)
+    await opened(service, epoch)
+    # The state a lost response leaves behind, written directly: a reservation
+    # with a token and no reference. Reaching it by timing a post out would
+    # put the turn into a retry backoff first, and what is under test here is
+    # what happens once the backoff has let it through.
+    async with session_factory() as db:
+        db.add(
+            SessionActivityPost(
+                tenant_id=require_tenant_id(),
+                bridge_id="bridge",
+                session_id="session-demo",
+                command_id="message-demo",
+                data={
+                    "status": {
+                        "token": "lost-token",
+                        "channel": "channel-demo",
+                        "thread": "channel-demo:root",
+                        "created_at": datetime.now(UTC).isoformat(),
+                    }
+                },
+            )
+        )
+        await db.commit()
+    platform = UnsearchablePlatform()
+    publisher = SessionPublisher(
+        session_factory,
+        "bridge",
+        cards_for(session_factory, platform),
+        activity(session_factory, platform),
+    )
+
+    caplog.clear()
+    with caplog.at_level(logging.WARNING):
+        await publisher.publish_pending()
+    assert [(record.name, record.levelno) for record in caplog.records] == [
+        (OUTBOUND_LOGGER, logging.WARNING)
+    ]
+    assert "status" in caplog.records[0].getMessage()
+
+    caplog.clear()
+    with caplog.at_level(logging.WARNING):
+        await publisher.publish_pending()
+    assert [record.getMessage() for record in caplog.records] == []
+
+
+class UnsearchableAttention(UnsearchablePlatform):
+    """Loses the response to the attention message and nothing else.
+
+    The mirror image of the platform above, and the case that decides how
+    broad "abandoned" is allowed to be: the status is fine and still being
+    drawn, so writing the whole turn off because a separate notice cannot be
+    confirmed would take away a display that is working.
+    """
+
+    def __init__(self):
+        super().__init__()
+        self.dropped = False
+
+    async def post_rich(self, channel, agent, content, thread):
+        ref = await super().post_rich(channel, agent, content, thread)
+        if getattr(content, "error_summary", None) and not self.dropped:
+            self.dropped = True
+            raise TimeoutError("Response lost after the attention post landed")
+        return ref
+
+
+async def test_an_attention_message_nobody_can_confirm_leaves_the_turn_drawing(
+    session_factory,
+):
+    """One lost notice is one lost notice, not the end of the turn's status."""
+    await setup(session_factory)
+    platform = UnsearchableAttention()
+
+    async def report(renderer, status="running"):
+        return await renderer.publish(
+            [],
+            _turn(status).model_copy(update={"command_id": "message-demo"}),
+            session_id="session-demo",
+            channel_id="channel-demo",
+            thread_root_id="channel-demo:root",
+            asked_on="channel-demo:question",
+            agent_name="Agent",
+            elapsed_seconds=12,
+            error_summary="The host went away.",
+        )
+
+    with pytest.raises(TimeoutError):
+        await report(activity(session_factory, platform))
+    posted = platform.post_count
+
+    await report(activity(session_factory, platform))
+    assert platform.post_count == posted  # Nothing reposted over the lost one.
+
+    await publish(activity(session_factory, platform), status="completed", tools=False)
+    assert platform.edit_refs  # The status is still being drawn.
 
 
 async def test_an_unconfirmed_status_does_not_swallow_the_attention_message(
