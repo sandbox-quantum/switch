@@ -25,6 +25,11 @@ MATTERMOST_URL_FOR_SWITCH = os.environ.get(
 # channel deeplinks. Differs from MATTERMOST_URL_FOR_SWITCH, which is the
 # internal address Switch connects to. Optional — falls back to the internal URL.
 MATTERMOST_PUBLIC_URL = os.environ.get("MATTERMOST_PUBLIC_URL")
+# Where the Mattermost *server* reaches switch-core's callback listener, for the
+# button presses it delivers by HTTP. A third address, unrelated to the two
+# above: those are routes to Mattermost, this is the route back. Optional —
+# without it cards carry no buttons and stay answerable by typing.
+MATTERMOST_CALLBACK_BASE_URL = os.environ.get("MATTERMOST_CALLBACK_BASE_URL")
 MATTERMOST_ADMIN_USER = os.environ["MATTERMOST_ADMIN_USER"]
 MATTERMOST_ADMIN_PASSWORD = os.environ["MATTERMOST_ADMIN_PASSWORD"]
 MATTERMOST_ADMIN_EMAIL = os.environ.get(
@@ -254,6 +259,8 @@ def register_bridge(client: httpx.Client) -> str:
     }
     if MATTERMOST_PUBLIC_URL:
         connection_config["public_url"] = MATTERMOST_PUBLIC_URL
+    if MATTERMOST_CALLBACK_BASE_URL:
+        connection_config["callback_base_url"] = MATTERMOST_CALLBACK_BASE_URL
     resp = client.post(
         "/gateway/collaborations",
         json={
