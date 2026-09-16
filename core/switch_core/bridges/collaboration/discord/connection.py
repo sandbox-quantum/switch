@@ -48,6 +48,30 @@ class DiscordConnection:
         self._tree: app_commands.CommandTree[Any] | None = None
         self._connect_task: asyncio.Task[None] | None = None
         self._bot_user_id: int = 0
+        # Inbound message routing. A guild's messages go to the handler
+        # registered for its id; a direct message (no guild) goes to the DM
+        # handler if one is set, and is dropped otherwise. The self-registered
+        # adapter registers one guild handler plus the DM handler; a shared
+        # multi-tenant connection registers a handler per installed guild and
+        # leaves the DM slot empty, so DMs — which carry no guild to attribute
+        # them to a tenant — are dropped.
+        self._message_handlers: dict[
+            int, Callable[[discord.Message], Awaitable[None]]
+        ] = {}
+        self._dm_handler: Callable[[discord.Message], Awaitable[None]] | None = None
+
+    def register_message_handler(
+        self, guild_id: int, handler: Callable[[discord.Message], Awaitable[None]]
+    ) -> None:
+        self._message_handlers[guild_id] = handler
+
+    def unregister_message_handler(self, guild_id: int) -> None:
+        self._message_handlers.pop(guild_id, None)
+
+    def set_dm_handler(
+        self, handler: Callable[[discord.Message], Awaitable[None]] | None
+    ) -> None:
+        self._dm_handler = handler
 
     @property
     def client(self) -> discord.Client:
@@ -67,16 +91,20 @@ class DiscordConnection:
         self,
         *,
         commands: list[app_commands.Command[Any, ..., Any]],
-        on_message: Callable[[discord.Message], Awaitable[None]],
     ) -> None:
         """Open the Gateway connection and block until it is ready.
+
+        Message handlers are registered separately (before or after this call)
+        via `register_message_handler` / `set_dm_handler`, and are looked up
+        live per message — so a shared connection can register a guild's handler
+        the moment its install resolves, after the socket is already open.
 
         Raises if the connection fails or does not become ready within
         `_READY_TIMEOUT`. On timeout the half-open client is torn down; on a
         connect-task failure it is left as-is for the caller's `close()`.
         """
         client = discord.Client(intents=self._intents)
-        client.event(self._make_on_message(on_message))
+        client.event(self._make_on_message())
         self._tree = app_commands.CommandTree(client)
         guild = (
             discord.Object(id=self._command_guild_id)
@@ -162,11 +190,22 @@ class DiscordConnection:
         )
 
     def _make_on_message(
-        self, handler: Callable[[discord.Message], Awaitable[None]]
+        self,
     ) -> Callable[[discord.Message], Coroutine[Any, Any, None]]:
         # client.event registers by function __name__, so hand it a closure
         # named exactly like the gateway event.
         async def on_message(message: discord.Message) -> None:
+            # Route to the handler registered for this message's guild, or the
+            # DM handler for a guild-less message. Look up live per message so
+            # handlers registered after connect() still receive events. An event
+            # for a guild (or a DM) with no registered handler is dropped.
+            guild = message.guild
+            if guild is None:
+                handler = self._dm_handler
+            else:
+                handler = self._message_handlers.get(guild.id)
+            if handler is None:
+                return
             try:
                 await handler(message)
             except Exception:

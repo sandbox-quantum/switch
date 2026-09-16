@@ -316,12 +316,10 @@ def test_own_webhook_message_dropped_but_foreign_webhook_bridged() -> None:
     assert captured[0].message_ref == f"{CHANNEL_ID}:2"
 
 
-def test_other_guild_and_system_messages_skipped() -> None:
+def test_system_messages_skipped() -> None:
     adapter = _adapter()
     captured = _capture_messages(adapter)
 
-    other_guild_channel = _FakeChannel(guild=_FakeGuild(guild_id=999))
-    _run(adapter._handle_message(_gateway_message(channel=other_guild_channel)))
     _run(
         adapter._handle_message(
             _gateway_message(
@@ -331,6 +329,54 @@ def test_other_guild_and_system_messages_skipped() -> None:
     )
 
     assert captured == []
+
+
+def _connection() -> Any:
+    return connection_module.DiscordConnection(
+        bot_token="token",
+        intents=discord.Intents.none(),
+        command_guild_id=GUILD_ID,
+    )
+
+
+def test_connection_routes_messages_to_the_matching_guild_handler() -> None:
+    # The guild filter that used to live in _handle_message now lives in the
+    # connection: a message reaches only the handler registered for its guild.
+    conn = _connection()
+    delivered: list[Any] = []
+
+    async def handler(message: Any) -> None:
+        delivered.append(message)
+
+    conn.register_message_handler(GUILD_ID, handler)
+    on_message = conn._make_on_message()
+
+    _run(on_message(_gateway_message(channel=_FakeChannel())))
+    _run(
+        on_message(
+            _gateway_message(channel=_FakeChannel(guild=_FakeGuild(guild_id=999)))
+        )
+    )
+
+    assert len(delivered) == 1
+
+
+def test_connection_drops_dms_unless_a_dm_handler_is_set() -> None:
+    conn = _connection()
+    delivered: list[Any] = []
+
+    async def handler(message: Any) -> None:
+        delivered.append(message)
+
+    conn.register_message_handler(GUILD_ID, handler)
+    on_message = conn._make_on_message()
+
+    _run(on_message(_gateway_message(channel=_FakeDMChannel())))
+    assert delivered == []
+
+    conn.set_dm_handler(handler)
+    _run(on_message(_gateway_message(channel=_FakeDMChannel())))
+    assert len(delivered) == 1
 
 
 def test_duplicate_message_ids_deduplicated() -> None:
