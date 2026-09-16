@@ -9,6 +9,7 @@ import pytest
 
 from switch_core.bridges.agent.commands import COMMANDS
 from switch_core.bridges.collaboration.discord import adapter as adapter_module
+from switch_core.bridges.collaboration.discord import connection as connection_module
 from switch_core.bridges.collaboration.discord.adapter import (
     DiscordAdapter,
     DiscordConnectionConfig,
@@ -25,7 +26,7 @@ def _adapter() -> DiscordAdapter:
     adapter = DiscordAdapter(
         config=DiscordConnectionConfig(bot_token="token", guild_id=str(GUILD_ID))
     )
-    adapter._bot_user_id = BOT_USER_ID
+    adapter._connection._bot_user_id = BOT_USER_ID
     return adapter
 
 
@@ -315,12 +316,10 @@ def test_own_webhook_message_dropped_but_foreign_webhook_bridged() -> None:
     assert captured[0].message_ref == f"{CHANNEL_ID}:2"
 
 
-def test_other_guild_and_system_messages_skipped() -> None:
+def test_system_messages_skipped() -> None:
     adapter = _adapter()
     captured = _capture_messages(adapter)
 
-    other_guild_channel = _FakeChannel(guild=_FakeGuild(guild_id=999))
-    _run(adapter._handle_message(_gateway_message(channel=other_guild_channel)))
     _run(
         adapter._handle_message(
             _gateway_message(
@@ -330,6 +329,54 @@ def test_other_guild_and_system_messages_skipped() -> None:
     )
 
     assert captured == []
+
+
+def _connection() -> Any:
+    return connection_module.DiscordConnection(
+        bot_token="token",
+        intents=discord.Intents.none(),
+        command_guild_id=GUILD_ID,
+    )
+
+
+def test_connection_routes_messages_to_the_matching_guild_handler() -> None:
+    # The guild filter that used to live in _handle_message now lives in the
+    # connection: a message reaches only the handler registered for its guild.
+    conn = _connection()
+    delivered: list[Any] = []
+
+    async def handler(message: Any) -> None:
+        delivered.append(message)
+
+    conn.register_message_handler(GUILD_ID, handler)
+    on_message = conn._make_on_message()
+
+    _run(on_message(_gateway_message(channel=_FakeChannel())))
+    _run(
+        on_message(
+            _gateway_message(channel=_FakeChannel(guild=_FakeGuild(guild_id=999)))
+        )
+    )
+
+    assert len(delivered) == 1
+
+
+def test_connection_drops_dms_unless_a_dm_handler_is_set() -> None:
+    conn = _connection()
+    delivered: list[Any] = []
+
+    async def handler(message: Any) -> None:
+        delivered.append(message)
+
+    conn.register_message_handler(GUILD_ID, handler)
+    on_message = conn._make_on_message()
+
+    _run(on_message(_gateway_message(channel=_FakeDMChannel())))
+    assert delivered == []
+
+    conn.set_dm_handler(handler)
+    _run(on_message(_gateway_message(channel=_FakeDMChannel())))
+    assert len(delivered) == 1
 
 
 def test_duplicate_message_ids_deduplicated() -> None:
@@ -444,7 +491,7 @@ def test_a_command_argument_picked_from_the_at_menu_arrives_as_a_name() -> None:
             return _Guild() if guild_id == GUILD_ID else None
 
     adapter = _adapter()
-    adapter._client = _Client()  # type: ignore[assignment]
+    adapter._connection._client = _Client()  # type: ignore[assignment]
     commands = _capture_commands(adapter)
 
     _run(
@@ -558,7 +605,7 @@ def test_oversize_attachment_reported_as_failure() -> None:
 def test_send_message_posts_via_webhook_with_agent_identity() -> None:
     adapter = _adapter()
     channel = _FakeChannel()
-    adapter._client = _FakeClient({CHANNEL_ID: channel})
+    adapter._connection._client = _FakeClient({CHANNEL_ID: channel})
     webhook = _FakeWebhook()
     adapter._webhooks[CHANNEL_ID] = webhook
 
@@ -578,7 +625,7 @@ def test_send_message_posts_via_webhook_with_agent_identity() -> None:
 def test_long_message_is_split_across_posts_not_dropped() -> None:
     adapter = _adapter()
     channel = _FakeChannel()
-    adapter._client = _FakeClient({CHANNEL_ID: channel})
+    adapter._connection._client = _FakeClient({CHANNEL_ID: channel})
     webhook = _FakeWebhook()
     adapter._webhooks[CHANNEL_ID] = webhook
     body = "\n".join(f"line {i}" for i in range(1000))
@@ -599,7 +646,7 @@ def test_long_message_is_split_across_posts_not_dropped() -> None:
 def test_long_admin_message_is_split_across_posts() -> None:
     adapter = _adapter()
     channel = _FakeChannel()
-    adapter._client = _FakeClient({CHANNEL_ID: channel})
+    adapter._connection._client = _FakeClient({CHANNEL_ID: channel})
     body = "\n".join(f"- `!cmd-{i}` — does a thing" for i in range(200))
 
     ref = _run(adapter.admin_message(str(CHANNEL_ID), body))
@@ -613,7 +660,7 @@ def test_long_admin_message_is_split_across_posts() -> None:
 def test_failed_part_leaves_a_visible_truncation_notice() -> None:
     adapter = _adapter()
     channel = _FakeChannel()
-    adapter._client = _FakeClient({CHANNEL_ID: channel})
+    adapter._connection._client = _FakeClient({CHANNEL_ID: channel})
     webhook = _FakeWebhook()
     adapter._webhooks[CHANNEL_ID] = webhook
     body = "\n".join(f"line {i}" for i in range(1000))
@@ -642,7 +689,7 @@ def test_send_message_with_thread_root_posts_into_thread() -> None:
     root = _FakeMessage(channel, message_id=4000)
     root.content = "the root message"
     channel.messages[4000] = root
-    adapter._client = _FakeClient({CHANNEL_ID: channel})
+    adapter._connection._client = _FakeClient({CHANNEL_ID: channel})
     webhook = _FakeWebhook()
     adapter._webhooks[CHANNEL_ID] = webhook
 
@@ -662,7 +709,7 @@ def test_send_message_reuses_existing_thread() -> None:
     adapter = _adapter()
     channel = _FakeChannel()
     thread = _FakeThread(parent=channel, thread_id=4000)
-    adapter._client = _FakeClient({CHANNEL_ID: channel, 4000: thread})
+    adapter._connection._client = _FakeClient({CHANNEL_ID: channel, 4000: thread})
     webhook = _FakeWebhook()
     adapter._webhooks[CHANNEL_ID] = webhook
 
@@ -678,7 +725,7 @@ def test_send_message_reuses_existing_thread() -> None:
 def test_send_message_to_dm_falls_back_to_bot_post() -> None:
     adapter = _adapter()
     dm = _FakeDMChannel()
-    adapter._client = _FakeClient({dm.id: dm})
+    adapter._connection._client = _FakeClient({dm.id: dm})
 
     ref = _run(adapter.send_message(str(dm.id), "my-agent", "hi"))
 
@@ -692,7 +739,7 @@ def test_send_message_to_dm_falls_back_to_bot_post() -> None:
 def test_send_attachment_posts_via_webhook_with_agent_identity() -> None:
     adapter = _adapter()
     channel = _FakeChannel()
-    adapter._client = _FakeClient({CHANNEL_ID: channel})
+    adapter._connection._client = _FakeClient({CHANNEL_ID: channel})
     webhook = _FakeWebhook()
     adapter._webhooks[CHANNEL_ID] = webhook
 
@@ -723,7 +770,7 @@ def test_send_attachment_posts_via_webhook_with_agent_identity() -> None:
 def test_send_attachment_without_caption_sends_empty_content() -> None:
     adapter = _adapter()
     channel = _FakeChannel()
-    adapter._client = _FakeClient({CHANNEL_ID: channel})
+    adapter._connection._client = _FakeClient({CHANNEL_ID: channel})
     webhook = _FakeWebhook()
     adapter._webhooks[CHANNEL_ID] = webhook
 
@@ -741,7 +788,7 @@ def test_send_attachment_into_thread() -> None:
     adapter = _adapter()
     channel = _FakeChannel()
     thread = _FakeThread(parent=channel, thread_id=4000)
-    adapter._client = _FakeClient({CHANNEL_ID: channel, 4000: thread})
+    adapter._connection._client = _FakeClient({CHANNEL_ID: channel, 4000: thread})
     webhook = _FakeWebhook()
     adapter._webhooks[CHANNEL_ID] = webhook
 
@@ -763,7 +810,7 @@ def test_send_attachment_into_thread() -> None:
 def test_send_attachment_to_dm_posts_file_as_bot() -> None:
     adapter = _adapter()
     dm = _FakeDMChannel()
-    adapter._client = _FakeClient({dm.id: dm})
+    adapter._connection._client = _FakeClient({dm.id: dm})
 
     ref = _run(
         adapter.send_attachment(
@@ -785,7 +832,7 @@ def test_send_attachment_falls_back_to_text_note_on_http_error() -> None:
 
     adapter = _adapter()
     channel = _FakeChannel()
-    adapter._client = _FakeClient({CHANNEL_ID: channel})
+    adapter._connection._client = _FakeClient({CHANNEL_ID: channel})
     webhook = _FileRejectingWebhook()
     adapter._webhooks[CHANNEL_ID] = webhook
 
@@ -811,7 +858,7 @@ def test_send_attachment_falls_back_to_text_note_on_http_error() -> None:
 def test_admin_message_posts_as_bot_not_webhook() -> None:
     adapter = _adapter()
     channel = _FakeChannel()
-    adapter._client = _FakeClient({CHANNEL_ID: channel})
+    adapter._connection._client = _FakeClient({CHANNEL_ID: channel})
 
     ref = _run(adapter.admin_message(str(CHANNEL_ID), "system notice"))
 
@@ -823,7 +870,7 @@ def test_admin_message_posts_as_bot_not_webhook() -> None:
 def test_update_message_edits_via_webhook_with_thread() -> None:
     adapter = _adapter()
     channel = _FakeChannel()
-    adapter._client = _FakeClient({CHANNEL_ID: channel})
+    adapter._connection._client = _FakeClient({CHANNEL_ID: channel})
     webhook = _FakeWebhook()
     adapter._webhooks[CHANNEL_ID] = webhook
 
@@ -840,7 +887,7 @@ def test_update_message_falls_back_to_bot_message_edit() -> None:
     channel = _FakeChannel()
     bot_msg = _FakeMessage(channel, message_id=502)
     channel.messages[502] = bot_msg
-    adapter._client = _FakeClient({CHANNEL_ID: channel})
+    adapter._connection._client = _FakeClient({CHANNEL_ID: channel})
     webhook = _FakeWebhook()
     webhook.edit_raises_not_found = True
     adapter._webhooks[CHANNEL_ID] = webhook
@@ -858,7 +905,7 @@ def test_delete_message_goes_through_the_webhook_that_sent_it() -> None:
     channel = _FakeChannel()
     webhook = _FakeWebhook()
     channel.existing_webhooks = [webhook]
-    adapter._client = _FakeClient({CHANNEL_ID: channel})
+    adapter._connection._client = _FakeClient({CHANNEL_ID: channel})
 
     _run(adapter.delete_message(str(CHANNEL_ID), f"{CHANNEL_ID}:901"))
 
@@ -872,7 +919,7 @@ def test_delete_message_in_a_thread_passes_the_thread_through() -> None:
     webhook = _FakeWebhook()
     channel.existing_webhooks = [webhook]
     thread = _FakeThread(parent=channel, thread_id=4000)
-    adapter._client = _FakeClient({CHANNEL_ID: channel, 4000: thread})
+    adapter._connection._client = _FakeClient({CHANNEL_ID: channel, 4000: thread})
 
     _run(adapter.delete_message(str(CHANNEL_ID), "4000:901"))
 
@@ -891,7 +938,7 @@ def test_delete_message_falls_back_to_the_bot_for_its_own_posts() -> None:
     thread = _FakeThread(parent=channel, thread_id=4000)
     thread.deleted_ids = []  # type: ignore[attr-defined]
     thread.get_partial_message = lambda mid: _FakePartialMessage(thread, mid)  # type: ignore[attr-defined]
-    adapter._client = _FakeClient({CHANNEL_ID: channel, 4000: thread})
+    adapter._connection._client = _FakeClient({CHANNEL_ID: channel, 4000: thread})
 
     _run(adapter.delete_message(str(CHANNEL_ID), "4000:901"))
 
@@ -902,7 +949,7 @@ def test_delete_message_falls_back_to_the_bot_for_its_own_posts() -> None:
 def test_send_typing_triggers_once_and_off_is_noop() -> None:
     adapter = _adapter()
     channel = _FakeChannel()
-    adapter._client = _FakeClient({CHANNEL_ID: channel})
+    adapter._connection._client = _FakeClient({CHANNEL_ID: channel})
 
     _run(adapter.send_typing(str(CHANNEL_ID), "my-agent", True))
     _run(adapter.send_typing(str(CHANNEL_ID), "my-agent", False))
@@ -916,7 +963,7 @@ def test_send_typing_triggers_once_and_off_is_noop() -> None:
 def _runtime_setup() -> tuple[DiscordAdapter, _FakeChannel, _FakeWebhook]:
     adapter = _adapter()
     channel = _FakeChannel()
-    adapter._client = _FakeClient({CHANNEL_ID: channel})
+    adapter._connection._client = _FakeClient({CHANNEL_ID: channel})
     webhook = _FakeWebhook()
     adapter._webhooks[CHANNEL_ID] = webhook
     return adapter, channel, webhook
@@ -1055,7 +1102,7 @@ def test_get_webhook_adopts_existing_bridge_webhook() -> None:
     channel = _FakeChannel()
     existing = _FakeWebhook(name="Switch Bridge", webhook_id=555)
     channel.existing_webhooks = [_FakeWebhook(name="other", webhook_id=1), existing]
-    adapter._client = _FakeClient({CHANNEL_ID: channel})
+    adapter._connection._client = _FakeClient({CHANNEL_ID: channel})
 
     webhook = _run(adapter._get_webhook(CHANNEL_ID))
 
@@ -1067,7 +1114,7 @@ def test_get_webhook_adopts_existing_bridge_webhook() -> None:
 def test_get_webhook_creates_when_missing() -> None:
     adapter = _adapter()
     channel = _FakeChannel()
-    adapter._client = _FakeClient({CHANNEL_ID: channel})
+    adapter._connection._client = _FakeClient({CHANNEL_ID: channel})
 
     webhook = _run(adapter._get_webhook(CHANNEL_ID))
 
@@ -1085,7 +1132,9 @@ def test_get_webhook_creates_when_missing() -> None:
 def test_translate_inbound_converts_user_and_channel_mentions() -> None:
     adapter = _adapter()
     adapter._user_names[7] = "louis"
-    adapter._client = _FakeClient({CHANNEL_ID: _FakeChannel(name="general")})
+    adapter._connection._client = _FakeClient(
+        {CHANNEL_ID: _FakeChannel(name="general")}
+    )
 
     out = adapter.translate_inbound(f"hi <@7> and <@!7>, see <#{CHANNEL_ID}> or <@99>")
 
@@ -1196,10 +1245,10 @@ def test_start_becomes_ready_then_stop_closes_client() -> None:
     async def scenario() -> None:
         with patch.object(adapter_module.discord, "Client", lambda **kw: fake):
             await adapter.start(*_noop_callbacks())
-            assert adapter._client is fake
+            assert adapter._connection._client is fake
             assert fake.logged_in
             assert fake.registered_events  # on_message handler registered
-            assert adapter._bot_user_id == BOT_USER_ID
+            assert adapter._connection._bot_user_id == BOT_USER_ID
 
             # Slash commands are published to the configured GUILD, never
             # globally: the adapter is single-guild by construction, guild
@@ -1215,8 +1264,8 @@ def test_start_becomes_ready_then_stop_closes_client() -> None:
 
             await adapter.stop()
             assert fake.closed
-            assert adapter._client is None
-            assert adapter._tree is None
+            assert adapter._connection._client is None
+            assert adapter._connection._tree is None
 
     _run(scenario())
 
@@ -1249,13 +1298,13 @@ def test_start_times_out_when_never_ready_and_stops() -> None:
     async def scenario() -> None:
         with (
             patch.object(adapter_module.discord, "Client", lambda **kw: fake),
-            patch.object(adapter_module, "_READY_TIMEOUT", 0.05),
+            patch.object(connection_module, "_READY_TIMEOUT", 0.05),
         ):
             with pytest.raises(RuntimeError, match="not ready"):
                 await adapter.start(*_noop_callbacks())
             # Timeout path tears the half-open client down.
             assert fake.closed
-            assert adapter._client is None
+            assert adapter._connection._client is None
 
     _run(scenario())
 

@@ -44,6 +44,10 @@ regexes = [
   # Collaboration-adapter type registration; the mattermost-access-token
   # rule mistakes the identifier sequence for a token. No secret here.
   '''"mattermost", MattermostAdapter, MattermostConnectionConfig''',
+  # A Discord client/application id is a *public* identifier, not a secret, and
+  # these are obvious dummies in a config-validator test — but the default
+  # `discord-client-id` rule flags any 17-19 digit number next to the keyword.
+  '''discord_app_(?:client|application)_id="\d{17,19}"''',
 ]
 paths = [
   # Log-redaction tests exercise deliberately fake vendor tokens. Both spellings

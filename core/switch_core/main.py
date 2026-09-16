@@ -49,6 +49,8 @@ from switch_core.bridges.collaboration.discord.adapter import (
     DiscordAdapter,
     DiscordConnectionConfig,
 )
+from switch_core.bridges.collaboration.discord.gateway import DiscordGatewayClient
+from switch_core.bridges.collaboration.discord.install import DiscordAppInstaller
 from switch_core.bridges.collaboration.install import MessagingInstallerRegistry
 from switch_core.bridges.collaboration.install_routes import (
     create_messaging_install_router,
@@ -500,6 +502,16 @@ async def run(config: SwitchConfig) -> None:
                 signing_secret=config.slack_app_signing_secret,
             )
         )
+    if config.discord_app_client_id:
+        assert config.discord_app_client_secret is not None
+        assert config.discord_app_application_id is not None
+        installers.register(
+            DiscordAppInstaller(
+                client_id=config.discord_app_client_id,
+                client_secret=config.discord_app_client_secret,
+                application_id=config.discord_app_application_id,
+            )
+        )
 
     install_service: MessagingInstallService | None = None
     if installers.platforms():
@@ -593,6 +605,31 @@ async def run(config: SwitchConfig) -> None:
 
     # ── Start runtime ────────────────────────────────────────────────────────
     await client_lifecycle.start_all()
+
+    # The one shared Discord Gateway connection, up before its inert bridges
+    # would attach to it. A configured-but-unreachable Discord app must not take
+    # down a pod that serves every other platform, so a failure here is logged
+    # and Discord installs stay inert until it recovers, rather than fatal.
+    discord_gateway: DiscordGatewayClient | None = None
+    if config.discord_app_bot_token:
+        # install_service is present whenever an installer is registered, and the
+        # Discord bot token being set means the Discord installer is — so this is
+        # not None here. Asserted rather than branched to say that out loud.
+        assert install_service is not None
+        discord_gateway = DiscordGatewayClient(
+            bot_token=config.discord_app_bot_token,
+            message_content=config.discord_app_message_content,
+            members=config.discord_app_members,
+            install_service=install_service,
+        )
+        try:
+            await discord_gateway.start()
+        except Exception:
+            logger.exception(
+                "The shared Discord Gateway connection failed to start; Discord "
+                "installs will be inert until it is reconnected"
+            )
+
     await collab_lifecycle.start_all()
 
     # Backfill room membership: system clients (e.g. the admin client) added
@@ -624,6 +661,7 @@ async def run(config: SwitchConfig) -> None:
                     collab_lifecycle,
                     connector_lifecycle,
                     matrix_admin,
+                    discord_gateway,
                 )
             ),
         )
@@ -1071,11 +1109,14 @@ async def _shutdown(
     collab_lifecycle: CollaborationBridgeLifecycleService,
     connector_lifecycle: ServerSideConnectorLifecycleService,
     matrix_admin: Provisioning,
+    discord_gateway: DiscordGatewayClient | None,
 ) -> None:
     logger.info("Shutting down...")
     server.should_exit = True
     await connector_lifecycle.stop_all()
     await collab_lifecycle.stop_all()
+    if discord_gateway is not None:
+        await discord_gateway.stop()
     await client_lifecycle.stop_all()
     await matrix_admin.close()
 

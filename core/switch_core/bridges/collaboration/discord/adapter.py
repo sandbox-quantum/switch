@@ -1,18 +1,17 @@
 from __future__ import annotations
 
-import asyncio
 import io
 import logging
 import re
 import time
 from collections import OrderedDict
-from collections.abc import Awaitable, Callable, Coroutine
+from collections.abc import Awaitable, Callable
 from dataclasses import replace
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Literal
 
 import discord
-from discord import app_commands
-from pydantic import Field
+from pydantic import Field, model_validator
+from pydantic.json_schema import SkipJsonSchema
 
 from switch_core.bridges.agent.commands import COMMANDS_BY_NAME
 from switch_core.bridges.agent.commands import Command as InRoomCommand
@@ -21,6 +20,7 @@ from switch_core.bridges.collaboration.adapter import (
     LiveRuntimeIndicator,
 )
 from switch_core.bridges.collaboration.discord.chunking import chunk_message
+from switch_core.bridges.collaboration.discord.connection import DiscordConnection
 from switch_core.bridges.collaboration.discord.slash import (
     SlashArgError,
     build_app_commands,
@@ -44,8 +44,6 @@ logger = logging.getLogger(__name__)
 # Webhook minted by the bridge in each channel it posts to; agents share it
 # via per-message username/avatar overrides.
 _WEBHOOK_NAME = "Switch Bridge"
-
-_READY_TIMEOUT = 30.0
 
 # Put on the message an agent is working on for as long as its turn lasts.
 _WORKING_REACTION = "👀"
@@ -120,8 +118,26 @@ class _WebhookIdentity:
 
 
 class DiscordConnectionConfig(BridgeConnectionConfig):
-    bot_token: str
+    #: Optional because it depends on `event_delivery`, which the validator
+    #: below enforces: the self-registered bridge opens its own connection and
+    #: needs a token; the distributed bridge routes through the one shared
+    #: connection and carries none — its token is deployment config.
+    bot_token: str | None = None
     guild_id: str
+    #: How this bridge's events reach it, and which is decided by which Discord
+    #: app the install came from rather than by an operator's preference.
+    #:
+    #: `own_connection` is the self-registered app: Switch opens a Gateway
+    #: connection scoped to this guild with the token above. `shared` is the
+    #: distributed app: the bridge opens nothing and registers its guild with
+    #: the one deployment-level connection instead, so it holds no token.
+    #:
+    #: Hidden from the registration form because it is not a question the
+    #: operator filling that form can be asked: reaching the form means the
+    #: self-registered app, and the shared value is written by the install flow.
+    event_delivery: SkipJsonSchema[Literal["own_connection", "shared"]] = (
+        "own_connection"
+    )
     # Both registration forms build themselves from this schema, so what is
     # written here is the only explanation an operator gets next to the
     # checkbox.
@@ -133,6 +149,29 @@ class DiscordConnectionConfig(BridgeConnectionConfig):
             "when you type @. Needs Manage Roles."
         ),
     )
+
+    @model_validator(mode="after")
+    def _token_matches_delivery(self) -> DiscordConnectionConfig:
+        """Refuse the two half-states that look configured and cannot work.
+
+        An own-connection bridge with no bot token opens no Gateway connection,
+        so it would receive nothing — the silent failure the token is there to
+        prevent. A shared bridge carrying a token is the opposite mistake: a
+        credential for a connection this bridge does not own, read as evidence
+        that it does.
+        """
+        if self.event_delivery == "own_connection" and not self.bot_token:
+            raise ValueError(
+                "bot_token is required: without it Switch opens no Gateway "
+                "connection and this bridge would receive no Discord events."
+            )
+        if self.event_delivery == "shared" and self.bot_token:
+            raise ValueError(
+                "bot_token must be empty for a shared-connection bridge; the "
+                "distributed Discord app's token is deployment config, not "
+                "this install's."
+            )
+        return self
 
 
 class DiscordAdapter(CollaborationAdapter):
@@ -159,10 +198,23 @@ class DiscordAdapter(CollaborationAdapter):
         super().__init__()
         self._config = config
         self._guild_id = int(config.guild_id)
-        self._client: discord.Client | None = None
-        self._tree: app_commands.CommandTree[Any] | None = None
-        self._connect_task: asyncio.Task[None] | None = None
-        self._bot_user_id: int = 0
+        # The Gateway socket lives on the connection, not the adapter: the
+        # socket is per bot token and the adapter is per guild. Intents are
+        # built here and handed over, so the socket owner does not decide them.
+        #
+        # A self-registered bridge owns its connection, built now from its
+        # token. A distributed (shared-delivery) bridge owns none: it is inert
+        # until it is attached to the one deployment-level connection, which is
+        # not built yet — so `_connection` stays None and every outbound path
+        # fails loud through `_require_connection` rather than pretending.
+        self._connection: DiscordConnection | None = None
+        if config.event_delivery == "own_connection":
+            assert config.bot_token is not None  # guaranteed by the validator
+            self._connection = DiscordConnection(
+                bot_token=config.bot_token,
+                intents=self._build_intents(),
+                command_guild_id=self._guild_id,
+            )
         # channel id -> webhook the bridge posts through in that channel.
         self._webhooks: dict[int, discord.Webhook] = {}
         # Ids of webhooks the bridge has minted/adopted, for echo dropping.
@@ -211,123 +263,103 @@ class DiscordAdapter(CollaborationAdapter):
         self._on_user_joined = on_user_joined
         self._on_app_joined = on_app_joined
 
+        if self._config.event_delivery == "shared":
+            # Inert: a shared-delivery bridge opens no connection of its own and
+            # is not yet attached to the shared one. It exists as a bridge — its
+            # rooms, the operator's list, moderation — but neither sends nor
+            # receives until the shared Gateway connection is built and hands it
+            # its guild. The callbacks are kept for that moment.
+            logger.info(
+                "Discord bridge for guild %s registered inert (shared delivery); "
+                "awaiting the shared Gateway connection",
+                self._config.guild_id,
+            )
+            return
+
+        # One guild, one handler; the DM handler is the same adapter so direct
+        # messages still reach it. The connection routes each message by guild
+        # id, which for a single-guild bridge is exactly the old filter.
+        conn = self._require_connection()
+        conn.register_message_handler(self._guild_id, self._handle_message)
+        conn.set_dm_handler(self._handle_message)
+        await conn.connect(
+            commands=build_app_commands(self._handle_slash_command),
+        )
+        logger.info(
+            "Discord adapter connected as %s (guild %s)",
+            conn.client.user,
+            self._config.guild_id,
+        )
+
+    @staticmethod
+    def _build_intents() -> discord.Intents:
         intents = discord.Intents.none()
         intents.guilds = True
         intents.guild_messages = True
         intents.dm_messages = True
         intents.message_content = True
         intents.members = True
-
-        client = discord.Client(intents=intents)
-        client.event(self._make_on_message())
-        self._tree = app_commands.CommandTree(client)
-        guild = discord.Object(id=self._guild_id)
-        for app_command in build_app_commands(self._handle_slash_command):
-            # Bound to the guild, not global — see _sync_slash_commands. Adding
-            # them globally here would leave the guild-scoped sync below with an
-            # empty payload, registering nothing at all.
-            self._tree.add_command(app_command, guild=guild)
-        self._client = client
-
-        await client.login(self._config.bot_token)
-        self._connect_task = asyncio.create_task(
-            client.connect(), name=f"discord-gateway-{self._config.guild_id}"
-        )
-        ready = asyncio.ensure_future(client.wait_until_ready())
-        done, _ = await asyncio.wait(
-            {ready, self._connect_task},
-            timeout=_READY_TIMEOUT,
-            return_when=asyncio.FIRST_COMPLETED,
-        )
-        if self._connect_task in done:
-            ready.cancel()
-            exc = self._connect_task.exception()
-            raise RuntimeError("Discord gateway connection failed") from exc
-        if ready not in done:
-            ready.cancel()
-            await self.stop()
-            raise RuntimeError(f"Discord gateway not ready after {_READY_TIMEOUT:.0f}s")
-
-        assert client.user is not None
-        self._bot_user_id = client.user.id
-        logger.info(
-            "Discord adapter connected as %s (guild %s)",
-            client.user,
-            self._config.guild_id,
-        )
-        await self._sync_slash_commands()
-
-    async def _sync_slash_commands(self) -> None:
-        """Publish the in-room command set as guild-scoped application commands.
-
-        Guild-scoped rather than global, because the adapter is single-guild by
-        construction (`DiscordConnectionConfig.guild_id` is required and every
-        lookup is scoped to it). Guild commands also apply immediately, where
-        global ones propagate for up to an hour, and global registration is
-        per-application — so on an instance running several Discord bridges it
-        would leak each bridge's commands into the others' guilds, where they
-        could only fail. Syncing is a bulk overwrite, so re-running it on every
-        start reconciles renames and removals rather than accumulating them.
-
-        Any sync failure is logged and left non-fatal — hence the broad catch:
-        the bridge still works over `!`-commands and messages, and dropping the
-        whole bridge over a missing `applications.commands` scope is a worse
-        outcome than running without the slash surface. The degradation is
-        visible in the logs rather than silent.
-        """
-        if self._tree is None:
-            return
-        try:
-            synced = await self._tree.sync(guild=discord.Object(id=self._guild_id))
-        except Exception:
-            logger.exception(
-                "Failed to sync Discord slash commands for guild %s — the bridge "
-                "will run without them (check the bot's applications.commands scope)",
-                self._config.guild_id,
-            )
-            return
-        logger.info(
-            "Synced %d Discord slash commands to guild %s",
-            len(synced),
-            self._config.guild_id,
-        )
-
-    def _make_on_message(
-        self,
-    ) -> Callable[[discord.Message], Coroutine[Any, Any, None]]:
-        # client.event registers by function __name__, so hand it a closure
-        # named exactly like the gateway event.
-        async def on_message(message: discord.Message) -> None:
-            try:
-                await self._handle_message(message)
-            except Exception:
-                logger.exception("Failed to handle inbound Discord message")
-
-        return on_message
+        return intents
 
     async def stop(self) -> None:
-        if self._client:
-            try:
-                await self._client.close()
-            except Exception:
-                pass
-        task = self._connect_task
-        self._connect_task = None
-        if task:
-            task.cancel()
-            try:
-                await task
-            except (asyncio.CancelledError, Exception):
-                pass
-        self._client = None
-        self._tree = None
+        # A shared-delivery bridge has no connection of its own to close;
+        # stopping it is just dropping its per-guild state.
+        if self._connection is not None:
+            await self._connection.close()
         self._webhooks.clear()
         logger.info("Discord adapter stopped")
 
+    def ensure_shared_connection(self, connection: DiscordConnection) -> None:
+        """Attach the shared Gateway connection the first time this bridge is used.
+
+        A shared-delivery bridge is built inert (no connection of its own); the
+        deployment-level Gateway client injects its connection here so the
+        adapter's inbound handling and its outbound posting both run against it.
+        Idempotent and set-once: an own-connection bridge already has one and is
+        left alone, and repeated calls after the first are no-ops.
+        """
+        if self._connection is None:
+            self._connection = connection
+
+    async def dispatch_inbound(self, message: discord.Message) -> None:
+        """Handle one inbound Gateway message the shared client routed here.
+
+        The shared connection resolves a guild to this bridge and calls this;
+        the self-registered connection calls the same handler directly. Kept a
+        thin public entry so the shared client does not reach into the adapter.
+        """
+        await self._handle_message(message)
+
+    async def dispatch_slash(
+        self,
+        interaction: discord.Interaction,
+        command: InRoomCommand,
+        values: dict[str, Any],
+    ) -> None:
+        """Handle one slash invocation the shared client routed here by guild.
+
+        The self-registered connection reaches the same handler through the
+        command tree it owns; the shared connection registers commands globally
+        and routes each invocation to the bridge its guild resolves to.
+        """
+        await self._handle_slash_command(interaction, command, values)
+
+    def _require_connection(self) -> DiscordConnection:
+        """The bridge's Gateway connection, or a loud error if it has none.
+
+        A shared-delivery bridge is inert until it is attached to the shared
+        connection; reaching an outbound path before that is a bug, and this
+        surfaces it rather than letting the call no-op or crash obscurely.
+        """
+        if self._connection is None:
+            raise RuntimeError(
+                "this Discord bridge uses shared delivery and is not attached to "
+                "the shared Gateway connection yet"
+            )
+        return self._connection
+
     def _require_client(self) -> discord.Client:
-        if self._client is None:
-            raise RuntimeError("Discord client not connected")
-        return self._client
+        return self._require_connection().client
 
     # ── Messaging ────────────────────────────────────────────────────────────
 
@@ -780,7 +812,8 @@ class DiscordAdapter(CollaborationAdapter):
         and no reaction, rather than a mark that is not there.
         """
         location_id, message_id = self._parse_message_ref(message_ref)
-        if not message_id or self._client is None:
+        client = self._require_connection().client_or_none
+        if not message_id or client is None:
             return
         if working == (message_ref in self._eyes):
             return
@@ -792,7 +825,7 @@ class DiscordAdapter(CollaborationAdapter):
                 await message.add_reaction(_WORKING_REACTION)
                 self._eyes.add(message_ref)
             else:
-                await message.remove_reaction(_WORKING_REACTION, self._client.user)
+                await message.remove_reaction(_WORKING_REACTION, client.user)
                 self._eyes.discard(message_ref)
         except discord.NotFound:
             # The message (or the reaction) is gone; the end state is what was
@@ -1129,7 +1162,8 @@ class DiscordAdapter(CollaborationAdapter):
         )
 
     def _guild_from_cache(self) -> Any:
-        return self._client.get_guild(self._guild_id) if self._client else None
+        client = self._require_connection().client_or_none
+        return client.get_guild(self._guild_id) if client else None
 
     def _role_name(self, role_id: int) -> str | None:
         guild = self._guild_from_cache()
@@ -1218,9 +1252,8 @@ class DiscordAdapter(CollaborationAdapter):
             return f"@{name}" if name else match.group(0)
 
         def _replace_channel(match: re.Match[str]) -> str:
-            channel = (
-                self._client.get_channel(int(match.group(1))) if self._client else None
-            )
+            client = self._require_connection().client_or_none
+            channel = client.get_channel(int(match.group(1))) if client else None
             name = getattr(channel, "name", None)
             return f"#{name}" if name else match.group(0)
 
@@ -1237,14 +1270,14 @@ class DiscordAdapter(CollaborationAdapter):
     )
 
     async def _handle_message(self, message: Any) -> None:
-        guild = getattr(message, "guild", None)
-        if guild is not None and guild.id != self._guild_id:
-            return
-
+        # The connection routes each message here by guild id (or as a DM), so
+        # this handler only ever sees its own guild's messages and DMs — the
+        # guild filter that used to live here now lives in DiscordConnection.
         author = message.author
+        bot_user_id = self._require_connection().bot_user_id
         # Drop only our own posts (loop prevention): the bot itself and the
         # bridge's webhooks. Third-party bots/webhooks are still bridged.
-        if author.id == self._bot_user_id:
+        if author.id == bot_user_id:
             return
         webhook_id = getattr(message, "webhook_id", None)
         if webhook_id and webhook_id in self._webhook_ids:
@@ -1310,8 +1343,7 @@ class DiscordAdapter(CollaborationAdapter):
             getattr(message, "attachments", []) or []
         )
         self_mention = (
-            bool(self._bot_user_id)
-            and re.search(rf"<@!?{self._bot_user_id}>", content) is not None
+            bool(bot_user_id) and re.search(rf"<@!?{bot_user_id}>", content) is not None
         )
         await self._on_message(
             InboundMessage(
@@ -1325,7 +1357,7 @@ class DiscordAdapter(CollaborationAdapter):
                 channel_name=channel_name,
                 attachments=attachments,
                 attachment_failures=attachment_failures,
-                self_mention_token=str(self._bot_user_id) if self_mention else None,
+                self_mention_token=str(bot_user_id) if self_mention else None,
             )
         )
 

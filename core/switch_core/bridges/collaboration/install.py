@@ -175,6 +175,14 @@ class InstallGrant:
     where the alternative is a row of opaque platform ids. It is the customer's
     own text and is never matched on.
 
+    `bot_token` is `None` for a platform whose credential is not per-install.
+    A Discord install grants no per-guild token — the bot authenticates to
+    every guild with the one deployment-level application token — so its grant
+    is a guild id and a name and nothing to store. A Slack grant always carries
+    one; the requirement lives on that platform's `connection_config` validator,
+    not here (`SlackConnectionConfig.bot_token` is required), so an optional
+    field here does not weaken it.
+
     `scopes` is the platform's own spelling, kept verbatim. A scope string that
     means nothing to us is still the thing to show an operator asking why a
     call was refused, and parsing it into a list here would be a parser to keep
@@ -183,7 +191,7 @@ class InstallGrant:
 
     external_workspace_id: str
     workspace_name: str
-    bot_token: str
+    bot_token: str | None
     scopes: str
 
 

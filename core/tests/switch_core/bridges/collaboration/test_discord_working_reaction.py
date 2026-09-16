@@ -89,7 +89,7 @@ def adapter(channel: _FakeChannel) -> DiscordAdapter:
     made = DiscordAdapter(
         config=DiscordConnectionConfig(bot_token="token", guild_id=str(GUILD_ID))
     )
-    made._client = _FakeClient({CHANNEL_ID: channel})  # type: ignore[assignment]
+    made._connection._client = _FakeClient({CHANNEL_ID: channel})  # type: ignore[assignment]
     return made
 
 
@@ -201,7 +201,7 @@ def test_a_message_inside_a_thread_is_marked_in_that_thread(
     only place the reaction can be added.
     """
     thread = _FakeChannel(channel_id=777)
-    adapter._client._channels[777] = thread  # type: ignore[union-attr]
+    adapter._connection._client._channels[777] = thread  # type: ignore[union-attr]
 
     _state(adapter, "working", anchor="777:33")
 
