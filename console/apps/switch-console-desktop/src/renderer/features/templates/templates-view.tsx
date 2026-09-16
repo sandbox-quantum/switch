@@ -406,7 +406,8 @@ const TemplatesPanel = observer(function TemplatesPanel() {
   }, [serverId, reloadKey]);
 
   const { builtIn, onWorkspace } = useMemo(() => {
-    const byName = new Map(templates.filter((t) => t.kind === 'agent').map((t) => [t.name, t]));
+    // A workspace row with a built-in's name is its saved copy, whatever its kind.
+    const byName = new Map(templates.map((t) => [t.name, t]));
     const builtIn: Listed[] = [];
     for (const b of bundledTemplates) {
       const copy = byName.get(b.name) ?? null;
