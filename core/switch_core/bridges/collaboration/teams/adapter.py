@@ -52,6 +52,7 @@ from switch_core.bridges.collaboration.session.renderers import (
 )
 from switch_core.bridges.collaboration.session.renderers.neutral import (
     activity_log,
+    in_activity_log,
     render_request,
     turn_status,
 )
@@ -1481,7 +1482,7 @@ class TeamsAdapter(CollaborationAdapter):
         return self._controls(content, drawn)
 
     def _activity_detail(self, content: TurnActivity) -> list[dict[str, Any]]:
-        """An ended turn's tool calls, folded away under its status.
+        """An ended turn's work and its own words, folded away under its status.
 
         Offered on an ended turn only, and that restriction is the design
         rather than a simplification. Every change to a running turn rewrites
@@ -1490,9 +1491,10 @@ class TeamsAdapter(CollaborationAdapter):
         the next tool call. An ended turn has no further changes to redraw for,
         so what a reader opens stays open.
 
-        A turn that called no tools is offered nothing. The fold is a promise
-        that there is something behind it, and "No tool calls." under a status
-        line that already says the same is not something anyone pressed for.
+        A turn that neither called anything nor said anything is offered
+        nothing. The fold is a promise that there is something behind it, and
+        "No activity." under a status line that already says the same is not
+        something anyone pressed for.
 
         The status above carries the Console link, so the log does not repeat
         it, and it does not repeat the state line either — it would sit
@@ -1500,7 +1502,7 @@ class TeamsAdapter(CollaborationAdapter):
         """
         if content.turn.status not in TURN_ENDED:
             return []
-        if not any(item.kind == "tool-activity" for item in content.items):
+        if not any(in_activity_log(item) for item in content.items):
             return []
         return activity_detail(
             activity_log(

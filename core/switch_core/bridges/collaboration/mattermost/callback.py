@@ -22,12 +22,12 @@ CONTEXT_KEY = "switch"
 _ANSWER_PURPOSE = "answer"
 _ACTIVITY_PURPOSE = "activity"
 
-# The button that opens a turn's tool calls, and what it says. One per status
+# The button that opens a turn's activity, and what it says. One per status
 # post, and the same on every status post in a channel: which turn is being
 # asked about is the post the press arrives on, which the Mattermost server
 # fills in and a client cannot write.
 ACTIVITY_ACTION_ID = "switchactivity"
-ACTIVITY_LABEL = "Show tool calls"
+ACTIVITY_LABEL = "Show activity"
 
 # How much of an option a button shows. Not a server limit — Mattermost
 # documents none — but a width past which a control stops reading as a control

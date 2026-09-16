@@ -137,6 +137,25 @@ async def test_a_turn_is_posted_once_and_edited_every_time_after() -> None:
     assert [call["ts"] for call in client.updated] == ["1.0"]
 
 
+async def test_a_sentence_being_written_is_not_on_its_own_a_reason_to_redraw() -> None:
+    """What the agent says reaches the drawing whole now, and a host revises it
+    on every token. If that counted as a change, a turn would rewrite its
+    status message continuously while the agent talked — which costs a chat its
+    edit budget, and, on the platforms that fold the log into that same
+    message, snaps it shut in the face of whoever had it open. It goes out with
+    the next call, and with the edit that ends the turn."""
+    client = FakeWebClient()
+    activity = SessionTurnActivity(_adapter(client))
+    said = _item()
+    revised = said.model_copy(update={"revision": 2, "text": "Working on it still"})
+
+    await _publish(activity, [said], _turn("running"))
+    await _publish(activity, [revised], _turn("running"))
+
+    assert len(client.posted) == 1
+    assert client.updated == []
+
+
 async def test_the_last_edit_is_the_state_the_turn_ended_in() -> None:
     """What the channel is left with once the session has stopped talking.
 

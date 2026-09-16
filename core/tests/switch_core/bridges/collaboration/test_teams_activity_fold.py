@@ -98,9 +98,13 @@ def test_a_running_turn_is_offered_no_fold_because_the_next_call_would_shut_it()
     assert _fold(connector) == {}
 
 
-def test_a_turn_that_called_no_tools_is_offered_nothing_to_open() -> None:
-    """The fold promises something is behind it. "No tool calls." under a
-    status line already saying so is not what anybody pressed for."""
+def test_a_turn_with_nothing_behind_it_is_offered_nothing_to_open() -> None:
+    """The fold promises something is behind it. "No activity." under a status
+    line already saying so is not what anybody pressed for.
+
+    An item a host has opened and not yet filled is nothing behind it: the
+    agent has not said anything yet, it has been given somewhere to say it.
+    """
     adapter, connector = _teams()
 
     _run(
@@ -125,6 +129,41 @@ def test_the_fold_arrives_on_the_redraw_that_ends_the_turn() -> None:
 
     edited = connector.updates[0]["activity"]["attachments"][0]["content"]
     assert _log_lines(edited) == ["✓ Ran a test"]
+
+
+def test_what_the_agent_said_is_in_the_fold_and_not_on_the_card() -> None:
+    """The prose an agent produces beside its work never reached a Teams
+    channel at all. It arrives folded rather than in the status, because the
+    reply is what the channel gets unprompted and much of the rest is the agent
+    narrating itself."""
+    adapter, connector = _teams()
+    items = [
+        _item(itemId="item-1", title="Ran the tests"),
+        _item(itemId="item-2", kind="assistant-message", title="", text="All green."),
+    ]
+
+    _run(
+        adapter.post_rich(CHANNEL, AGENT, TurnActivity(items, _turn("completed")), ROOT)
+    )
+
+    card = _posted(connector)
+    assert _log_lines(card) == ["\u2713 Ran the tests", "\u00bb All green."]
+    assert "All green." not in card["fallbackText"]
+
+
+def test_a_turn_that_only_talked_is_still_worth_a_fold() -> None:
+    """It used to be offered nothing, because it called nothing. Now the thing
+    it produced is the thing behind the fold."""
+    adapter, connector = _teams()
+    said = _item(kind="assistant-message", title="", text="Fixed yesterday.")
+
+    _run(
+        adapter.post_rich(
+            CHANNEL, AGENT, TurnActivity([said], _turn("completed")), ROOT
+        )
+    )
+
+    assert _log_lines(_posted(connector)) == ["\u00bb Fixed yesterday."]
 
 
 # ── What opening it does ─────────────────────────────────────────────────────
@@ -152,8 +191,8 @@ def test_opening_and_closing_are_exact_opposites_of_each_other() -> None:
     fold = _fold(connector)
     show = fold[SHOW_ID]["actions"][0]
     hide = fold[HIDE_ID]["actions"][0]
-    assert show["title"] == "Show tool calls"
-    assert hide["title"] == "Hide tool calls"
+    assert show["title"] == "Show activity"
+    assert hide["title"] == "Hide activity"
     assert show["targetElements"] == [
         {"elementId": SHOW_ID, "isVisible": False},
         {"elementId": DETAIL_ID, "isVisible": True},

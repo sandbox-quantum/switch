@@ -32,8 +32,8 @@ _BASE_VERSION = "1.4"
 _DETAIL_ID = "switchActivityDetail"
 _SHOW_ID = "switchActivityShow"
 _HIDE_ID = "switchActivityHide"
-_SHOW_TITLE = "Show tool calls"
-_HIDE_TITLE = "Hide tool calls"
+_SHOW_TITLE = "Show activity"
+_HIDE_TITLE = "Hide activity"
 
 # How much of an option's label a button shows. Not a documented Teams limit —
 # it is where a row of buttons stops being readable. Safe to impose because the
@@ -168,7 +168,7 @@ def _action_title(control: Control) -> str:
 
 
 def activity_detail(log: str) -> list[dict[str, Any]]:
-    """A turn's tool calls, folded away under its status with a button to open.
+    """A turn's activity, folded away under its status with a button to open.
 
     `Action.ToggleVisibility` is drawn entirely by the reader's own client:
     nothing reaches Switch when it is pressed, so opening the log is local to

@@ -70,6 +70,7 @@ from switch_core.bridges.collaboration.session.renderers import (
 )
 from switch_core.bridges.collaboration.session.renderers.neutral import (
     activity_log,
+    in_activity_log,
     render_request,
     turn_status,
 )
@@ -1251,7 +1252,7 @@ class TelegramAdapter(CollaborationAdapter):
         return replace(drawn, text=f"{prefix}{lead}{drawn.text}{tail}")
 
     def _activity_fold(self, content: TurnActivity, budget: int) -> str:
-        """A finished turn's tool calls, collapsed under its own status.
+        """A finished turn's work and its own words, collapsed under its status.
 
         Offered on an ended turn only, and that restriction is observed rather
         than assumed: an edit closes a block a reader had opened, so a log
@@ -1261,11 +1262,11 @@ class TelegramAdapter(CollaborationAdapter):
         makes it worth having at all — opening it is one reader's business and
         costs the chat neither a message nor an edit.
 
-        Nothing is offered where there is nothing behind it. A turn that called
-        no tools would open onto "No tool calls." beneath a status line already
-        saying as much, and the separate message a failure gets here is drawn
-        with no items at all — so one check keeps the same list from appearing
-        in the chat twice as well.
+        Nothing is offered where there is nothing behind it. A turn that neither
+        called anything nor said anything would open onto "No activity." beneath
+        a status line already saying as much, and the separate message a
+        failure gets here is drawn with no items at all — so one check keeps the
+        same list from appearing in the chat twice as well.
 
         Whatever the status left of the message is the whole of the budget. The
         fold shares that message rather than taking one of its own, so
@@ -1276,7 +1277,7 @@ class TelegramAdapter(CollaborationAdapter):
         """
         if content.turn.status not in TURN_ENDED:
             return ""
-        if not any(item.kind == "tool-activity" for item in content.items):
+        if not any(in_activity_log(item) for item in content.items):
             return ""
         log = activity_log(
             content.items,
@@ -1470,8 +1471,9 @@ class TelegramAdapter(CollaborationAdapter):
         wants and what a deletion left them without. It is compact for the same
         reason it used to be deleted: a Telegram chat or topic is the
         conversation itself, so while the turn runs the status is a line and
-        its link rather than a running commentary on tool calls. The calls
-        arrive with the last edit, folded away. An answered request card does
+        its link rather than a running commentary on tool calls. The calls,
+        and what the agent said while making them, arrive with the last edit,
+        folded away. An answered request card does
         come down, through `remove_publication` and never through a redraw.
 
         `agent_name` is what the redraw writes back into the body. The name is

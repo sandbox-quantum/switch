@@ -749,6 +749,37 @@ async def test_a_long_log_says_how_much_of_itself_it_is_not_showing() -> None:
     assert len(text) <= 2000
 
 
+async def test_the_view_carries_what_the_agent_said_as_well_as_what_it_did() -> None:
+    """Prose the agent produced beside its work never reached this channel at
+    all — the reply is posted on its own and the rest stayed in the session. It
+    comes back here, to one reader, in the order the turn produced it."""
+    adapter, channel = _guild_with({READER_ID})
+    _resolving(
+        adapter,
+        _snapshot(
+            items=[
+                _item(itemId="a", title="Ran the tests", status="completed"),
+                _item(
+                    itemId="b",
+                    kind="assistant-message",
+                    title="",
+                    text="Both write to the same fixture user.",
+                    status="completed",
+                ),
+            ]
+        ),
+    )
+    press = _status_press(channel)
+
+    await adapter._handle_interaction(press)  # type: ignore[arg-type]
+
+    lines = _shown(press).splitlines()
+    assert lines[1:3] == [
+        "\u2713 Ran the tests",
+        "\u00bb Both write to the same fixture user.",
+    ]
+
+
 async def test_a_turn_with_no_tool_calls_says_that_too() -> None:
     adapter, channel = _guild_with({READER_ID})
     _resolving(adapter, _snapshot(items=[]))
@@ -756,7 +787,7 @@ async def test_a_turn_with_no_tool_calls_says_that_too() -> None:
 
     await adapter._handle_interaction(press)  # type: ignore[arg-type]
 
-    assert "No tool calls." in _shown(press)
+    assert "No activity." in _shown(press)
 
 
 async def test_a_turn_with_no_console_link_offers_only_refresh() -> None:

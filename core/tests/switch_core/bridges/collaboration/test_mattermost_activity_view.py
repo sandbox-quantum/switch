@@ -353,6 +353,34 @@ async def test_the_log_is_the_calls_oldest_first_under_the_state_line() -> None:
     assert lines[1:3] == ["✓ Read config.toml", "✓ Ran the tests — 42 passed"]
 
 
+async def test_the_log_carries_what_the_agent_said_as_well_as_what_it_did() -> None:
+    """Prose the agent produced beside its work never reached this channel at
+    all — the reply is posted on its own and the rest stayed in the session. It
+    comes back here, privately, in the order the turn produced it."""
+    adapter, _ = _viewer()
+    _resolving(
+        adapter,
+        _snapshot(
+            items=[
+                _item(itemId="a", kind="tool-activity", title="Ran the tests"),
+                _item(
+                    itemId="b",
+                    kind="assistant-message",
+                    title="",
+                    text="Both write to the same fixture user.",
+                ),
+            ]
+        ),
+    )
+
+    lines = _shown(await adapter._handle_callback(_press())).splitlines()
+
+    assert lines[1:3] == [
+        "\u2713 Ran the tests",
+        "\u00bb Both write to the same fixture user.",
+    ]
+
+
 async def test_the_state_line_carries_the_way_into_console() -> None:
     """The status post has the link too, but this reply is read on its own —
     an ephemeral message has no message above it."""

@@ -92,9 +92,13 @@ async def test_the_fold_arrives_on_the_edit_that_ends_the_turn() -> None:
     assert _fold(_last_edit(adapter)) == ["✓ Ran a test"]
 
 
-async def test_a_turn_that_called_no_tools_is_offered_nothing_to_open() -> None:
-    """The block promises something is behind it. "No tool calls." under a
-    status line already saying so is not what anybody went looking for."""
+async def test_a_turn_with_nothing_behind_it_is_offered_nothing_to_open() -> None:
+    """The block promises something is behind it. "No activity." under a status
+    line already saying so is not what anybody went looking for.
+
+    An item a host has opened and not yet filled is nothing behind it: the
+    agent has not said anything yet, it has been given somewhere to say it.
+    """
     adapter = _adapter()
 
     await adapter.post_rich(
@@ -206,6 +210,46 @@ async def test_the_notice_that_nobody_was_reached_stays_out_of_the_fold() -> Non
     text = _sent(adapter)
     assert adapter.unnotified_notice() in text
     assert _fold(text) == ["✓ Ran a test"]
+
+
+async def test_what_the_agent_said_is_in_the_fold_and_not_in_the_chat() -> None:
+    """The prose an agent produces beside its work never reached this chat at
+    all. It arrives folded rather than in the status line, because the reply is
+    what the chat gets unprompted and much of the rest is the agent narrating
+    itself."""
+    adapter = _adapter()
+    said = _item(itemId="item-2", kind="assistant-message", title="", text="All green.")
+
+    await adapter.post_rich(
+        CHANNEL,
+        "my-agent",
+        TurnActivity(
+            [_item(itemId="item-1", title="Ran the tests"), said], _turn("completed")
+        ),
+        None,
+    )
+
+    text = _sent(adapter)
+    assert _fold(text) == ["✓ Ran the tests", "» All green."]
+    assert "All green." not in text.split("\n<blockquote")[0]
+
+
+async def test_a_turn_that_only_talked_is_still_worth_a_fold() -> None:
+    """It used to be offered nothing, because it called nothing. Now the thing
+    it produced is the thing behind the block."""
+    adapter = _adapter()
+
+    await adapter.post_rich(
+        CHANNEL,
+        "my-agent",
+        TurnActivity(
+            [_item(kind="assistant-message", title="", text="Fixed yesterday.")],
+            _turn("completed"),
+        ),
+        None,
+    )
+
+    assert _fold(_sent(adapter)) == ["» Fixed yesterday."]
 
 
 # ── What it costs the message ────────────────────────────────────────────────

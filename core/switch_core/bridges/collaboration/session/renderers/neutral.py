@@ -16,10 +16,10 @@ Four renderings live here:
   where the turn got to, how long it has been going, what it is doing now, how
   the tool calls went, and one link to the Console. One message, edited, never
   a second one.
-- `activity_log` — the calls behind that status, one to a line. Not part of the
-  status and not posted beside it: what a platform draws where it has somewhere
-  to put a list, which on Discord is a message only the reader who asked for it
-  can see.
+- `activity_log` — the calls behind that status and what the agent said while
+  making them, one to a line. Not part of the status and not posted beside it:
+  what a platform draws where it has somewhere to put a list, which on Discord
+  is a message only the reader who asked for it can see.
 - `request_summary` — the text form of a request, in every state it can be in,
   with the typed-answer grammar the card is asking for spelled out against
   this particular form.
@@ -108,9 +108,16 @@ _LOG_TITLE = 200
 _LOG_DETAIL = 120
 
 _LOG_UNTITLED = "(untitled)"
-_LOG_EMPTY = "No tool calls."
-_LOG_EMPTY_YET = "No tool calls yet."
+_LOG_EMPTY = "No activity."
+_LOG_EMPTY_YET = "No activity yet."
 _LOG_CUT = "…{left} earlier in this turn, not shown."
+
+# What the agent said, and how much of it. The marker is not one of the outcome
+# glyphs because a sentence has no outcome, and a tick beside one would read as
+# a call that succeeded. The ceiling is a call's two ceilings added, so neither
+# kind of line is the systematically longer one.
+_LOG_SAID = "»"
+_LOG_SAID_TEXT = _LOG_TITLE + _LOG_DETAIL
 
 # What a reader is told, privately and in place of the log, when the press
 # asking for it cannot be answered. Said rather than left silent: a button that
@@ -354,6 +361,35 @@ def _doing(
     return lines
 
 
+def in_activity_log(item: Item) -> bool:
+    """Whether this item is one of the turn's own lines in the log.
+
+    A call always is. What the agent said is, when there is something it said:
+    a host opens the item before the first token arrives, and a marker with
+    nothing after it is a line that tells a reader less than no line at all.
+    """
+    if item.kind == "tool-activity":
+        return True
+    return item.kind == "assistant-message" and bool(item.text)
+
+
+def _log_line(item: Item, *, escape: Callable[[str], str]) -> str:
+    """One item as the single line the log gives it.
+
+    What the agent said is folded onto one line like everything else in here,
+    its own paragraph breaks removed: a sentence spread over four lines is
+    indistinguishable from four things having happened.
+    """
+    if item.kind == "assistant-message":
+        said = _fit(" ".join(item.text.split()), _LOG_SAID_TEXT, escape=escape)
+        return f"{_LOG_SAID} {said}"
+    title = _fit(item.title, _LOG_TITLE, escape=escape) if item.title else _LOG_UNTITLED
+    line = f"{_OUTCOME[item.status]} {title}"
+    if item.text:
+        line += f" — {_fit(item.text, _LOG_DETAIL, escape=escape)}"
+    return line
+
+
 def activity_log(
     items: list[Item],
     turn: TurnUpsert,
@@ -365,13 +401,21 @@ def activity_log(
     session_url: str | None,
     heading: bool,
 ) -> str:
-    """The tool calls behind a turn, one to a line, oldest cut first.
+    """What a turn did and what it said, one to a line, oldest cut first.
 
     `turn_status` is the line that sits beside a running turn and says what it
     is doing. This is the list behind that line and says what it did. Slack
     already posts the same list into the conversation as a message of its own,
     so a platform drawing it somewhere narrower is deciding where it is read,
     not what is in it.
+
+    The agent's own prose is interleaved in the order the session produced it,
+    rather than gathered at one end, because the order is the point: a sentence
+    is usually about the calls either side of it. It is here and not in the
+    status because it is the half a reader does not need — most of what an
+    agent says beside its work is said again, better, in the reply it posts —
+    and because the reply is what the room gets unprompted. This costs a reader
+    nothing until they ask for it.
 
     The cut is at the front because the newest end is what a reader came for,
     and it says how many it took: a log that quietly showed its tail reads as
@@ -397,8 +441,8 @@ def activity_log(
         if link and len(head) + 3 + len(link) <= limit:
             head = f"{head} · {link}"
 
-    did = [item for item in items if item.kind == "tool-activity"]
-    if not did:
+    shown = [item for item in items if in_activity_log(item)]
+    if not shown:
         nothing = _LOG_EMPTY if turn.status in TURN_ENDED else _LOG_EMPTY_YET
         return _truncate(nothing if head is None else f"{head}\n{nothing}", limit)
 
@@ -408,15 +452,10 @@ def activity_log(
         spent = len(head)
     lines: list[str] = []
     omitted = 0
-    for position, item in enumerate(reversed(did), start=1):
-        title = (
-            _fit(item.title, _LOG_TITLE, escape=escape) if item.title else _LOG_UNTITLED
-        )
-        line = f"{_OUTCOME[item.status]} {title}"
-        if item.text:
-            line += f" — {_fit(item.text, _LOG_DETAIL, escape=escape)}"
+    for position, item in enumerate(reversed(shown), start=1):
+        line = _log_line(item, escape=escape)
         if spent + len(line) + 1 > limit:
-            omitted = len(did) - position + 1
+            omitted = len(shown) - position + 1
             break
         lines.append(line)
         spent += len(line) + 1

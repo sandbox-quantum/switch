@@ -326,6 +326,13 @@ class SessionTurnActivity:
         even where the log is a message of its own. The clock counts only
         where the platform redraws for it; elsewhere the elapsed time goes out
         with the next change to either.
+
+        What the agent is saying does not count, even where a platform folds it
+        into this same message. Prose is revised on every token, so counting it
+        would rewrite the message continuously for a reader who has not opened
+        the fold — and an edit closes a fold for the reader who has. It goes
+        out with the next call, and with the edit that ends the turn, which is
+        the one a finished turn's fold is drawn by.
         """
         clock = (
             f"{int(elapsed_seconds) if elapsed_seconds is not None else ''}"
@@ -333,9 +340,32 @@ class SessionTurnActivity:
             else ""
         )
         drawn = f"{clock}/" + ",".join(
-            f"{item.item_id}:{item.revision}" for item in items
+            f"{item.item_id}:{item.revision}"
+            for item in items
+            if item.kind == "tool-activity"
         )
         return (turn.turn_id, f"{turn.status}:{drawn}", session_url)
+
+    def _log_state(
+        self, items: list[Item], turn: TurnUpsert
+    ) -> tuple[tuple[str, int], ...]:
+        """What a separate tool log is already showing.
+
+        A tool log is the tool calls — `render_activity` drops everything else
+        before drawing one — so what the agent said is not a change to it and
+        redrawing for one would spend an edit on a message that would come back
+        identical.
+
+        No adapter sets `separate_activity_log` today, so nothing observes this
+        and no test can distinguish it from the version that counts everything.
+        It is written for the behaviour the flag asks for rather than for the
+        behaviour nothing currently exercises.
+        """
+        return tuple(
+            (item.item_id, item.revision)
+            for item in items
+            if item.kind == "tool-activity"
+        ) + ((turn.status, 0),)
 
     async def recorded_commands(self, session_id: str) -> set[str]:
         return (
@@ -732,13 +762,17 @@ class SessionTurnActivity:
         `False` on any refusal along the way, so it knows not to treat a
         refusal as the turn's current state having been shown.
 
+        The turn arrives whole — what the agent said as well as what it did —
+        and stays that way as far as the adapter, which is the only thing that
+        knows where on its own platform prose can be shown and where it would
+        only be the reply said twice. Whatever must not see it narrows for
+        itself: `_status_state` and `_log_state` below, and every renderer that
+        draws a list of calls rather than a turn.
+
         Retain anchors until the final summary edit succeeds.
         A failed final publication retries the same messages instead of posting
         duplicate history. The journal retains them across process restarts.
         """
-        # The SDK transcript includes internal narration such as "Answered in
-        # the room". Activity is a tool log; the actual reply is delivered separately.
-        items = [item for item in items if item.kind == "tool-activity"]
         # Reuse the receipt message when an accepted command gains an SDK turn ID.
         key = (session_id, turn.command_id or turn.turn_id)
         anchor = self._anchors.get(key)
@@ -884,8 +918,7 @@ class SessionTurnActivity:
             status_state=self._status_state(turn, items, elapsed_seconds, session_url)
             if self._journal is None
             else None,
-            log_state=tuple((item.item_id, item.revision) for item in items)
-            + ((turn.status, 0),),
+            log_state=self._log_state(items, turn),
         )
 
     async def _edit(
@@ -944,9 +977,7 @@ class SessionTurnActivity:
         self, anchor: _Anchor, items: list[Item], turn: TurnUpsert
     ) -> bool:
         # Reserve the second reply before requests arrive, even before the first tool.
-        state = tuple((item.item_id, item.revision) for item in items) + (
-            (turn.status, 0),
-        )
+        state = self._log_state(items, turn)
         if state == anchor.log_state and anchor.log_ref:
             return True
         content = TurnActivity(items, turn, tool_log=True)
