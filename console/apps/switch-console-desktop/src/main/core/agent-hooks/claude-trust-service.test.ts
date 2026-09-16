@@ -210,41 +210,7 @@ describe('ClaudeTrustService', () => {
     expect(JSON.parse(String(claudeJson?.[1]))).not.toHaveProperty('hasCompletedOnboarding');
   });
 
-  it('adds Copilot trusted folders', async () => {
-    const service = makeService();
-    mockReadFile.mockResolvedValue(JSON.stringify({ trustedFolders: ['/already/trusted'] }));
 
-    await service.maybeAutoTrustLocal({
-      providerId: 'copilot',
-      cwd: '/tmp/worktree',
-      homedir: '/home/local-user',
-    });
-
-    expect(mockMkdir).toHaveBeenCalledWith('/home/local-user/.copilot', { recursive: true });
-    const [tmpPath, content] = mockWriteFile.mock.calls[0];
-    const [renameFrom, renameTo] = mockRename.mock.calls[0];
-    expect(tmpPath).toContain('/home/local-user/.copilot/config.json.');
-    expect(renameFrom).toBe(tmpPath);
-    expect(renameTo).toBe('/home/local-user/.copilot/config.json');
-    expect(JSON.parse(String(content)).trustedFolders).toEqual([
-      '/already/trusted',
-      '/tmp/worktree',
-    ]);
-  });
-
-  it('does not rewrite Copilot config when folder is already trusted', async () => {
-    const service = makeService();
-    mockReadFile.mockResolvedValue(JSON.stringify({ trustedFolders: ['/tmp/worktree'] }));
-
-    await service.maybeAutoTrustLocal({
-      providerId: 'copilot',
-      cwd: '/tmp/worktree',
-      homedir: '/home/local-user',
-    });
-
-    expect(mockWriteFile).not.toHaveBeenCalled();
-    expect(mockRename).not.toHaveBeenCalled();
-  });
 
   it('is idempotent when already trusted', async () => {
     const service = makeService();

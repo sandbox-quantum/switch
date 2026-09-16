@@ -8,6 +8,11 @@ from switch_core.sessions.contract import Attachment
 
 MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024
 MAX_ATTACHMENTS = 8
+# Kept identical to `ATTACHMENT_MIME_TYPES` in
+# `console/packages/agent-providers/src/host/attachments.ts`: the host stages
+# only what that list holds, so a type accepted here and missing there is
+# delivered to a session that then refuses it.
+# `core/tests/switch_core/sessions/test_attachment_mime.py` compares the two.
 MIME_TYPES = {
     "image/png",
     "image/jpeg",
@@ -21,6 +26,17 @@ MIME_TYPES = {
 }
 
 
+def normalise_mime_type(value: str) -> str:
+    """The bare media type: no parameters, lowercased, whitespace trimmed.
+
+    Platforms report a type with parameters attached — Mattermost and Discord
+    hand back ``text/plain; charset=utf-8`` for a plain text file — and the
+    allowlist holds bare types, so the parameter has to come off before either
+    end compares them.
+    """
+    return value.split(";", 1)[0].strip().lower()
+
+
 def attachment_uri(session_id: str, attachment_id: str) -> str:
     uuid.UUID(attachment_id)
     return (
@@ -30,6 +46,7 @@ def attachment_uri(session_id: str, attachment_id: str) -> str:
 
 
 def validate_attachment(name: str, mime_type: str, data: bytes) -> None:
+    mime_type = normalise_mime_type(mime_type)
     if (
         not name
         or len(name.encode()) > 180

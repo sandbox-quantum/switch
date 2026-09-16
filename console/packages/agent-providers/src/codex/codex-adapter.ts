@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { basename } from 'node:path';
+import { z } from 'zod';
 import {
   type ModelSelection,
   type ProviderAdapter,
@@ -274,6 +275,11 @@ export class CodexAdapter implements ProviderAdapter {
       };
       await client.request(CODEX_CLIENT_METHODS.initialize, initializeParams);
       client.notify(CODEX_CLIENT_NOTIFICATIONS.initialized, null);
+      const account = z
+        .object({ account: z.unknown().nullable(), requiresOpenaiAuth: z.boolean() })
+        .parse(await client.request('account/read', { refreshToken: false }));
+      if (!account.account && account.requiresOpenaiAuth)
+        throw new Error('Sign in on the execution machine with codex login.');
 
       const mode = threadModeConfig(input.runtimeMode);
       const config = {

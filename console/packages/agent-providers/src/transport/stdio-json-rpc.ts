@@ -23,6 +23,7 @@ export interface StdioJsonRpcClientOptions {
   logger: ProviderLogger;
   /** Called once when the process goes away, whether or not it was asked to. */
   onExit: (reason: string) => void;
+  rejectOutputLine?: (line: string) => string | undefined;
 }
 
 export class JsonRpcError extends Error {
@@ -71,6 +72,7 @@ export class StdioJsonRpcClient {
   private stderrTail = '';
   private nextId = 0;
   private exited = false;
+  private processExited = false;
 
   constructor(options: StdioJsonRpcClientOptions) {
     this.logger = options.logger;
@@ -106,18 +108,34 @@ export class StdioJsonRpcClient {
     });
     stdout.pipe(bounded);
     createInterface({ input: bounded })
-      .on('line', (line) => this.handleLine(line))
+      .on('line', (line) => {
+        const error = options.rejectOutputLine?.(line);
+        if (error) {
+          this.handleExit(error);
+          this.child.kill('SIGTERM');
+        } else this.handleLine(line);
+      })
       .on('error', (error) => this.handleExit(error.message));
     stderr.on('data', (chunk: Buffer) => {
       this.stderrTail = `${this.stderrTail}${chunk.toString('utf8')}`.slice(-STDERR_TAIL_LIMIT);
+      const error = options.rejectOutputLine?.(this.stderrTail);
+      if (error) {
+        this.stderrTail = error;
+        this.handleExit(error);
+        this.child.kill('SIGTERM');
+      }
     });
 
-    this.child.on('error', (error) => this.handleExit(`spawn failed: ${error.message}`));
-    this.child.on('exit', (code, signal) =>
+    this.child.on('error', (error) => {
+      this.processExited = true;
+      this.handleExit(`spawn failed: ${error.message}`);
+    });
+    this.child.on('exit', (code, signal) => {
+      this.processExited = true;
       this.handleExit(
         `provider process exited (code ${code ?? 'null'}, signal ${signal ?? 'null'})`
-      )
-    );
+      );
+    });
   }
 
   get stderr(): string {
@@ -176,7 +194,7 @@ export class StdioJsonRpcClient {
   }
 
   async dispose(): Promise<void> {
-    if (this.exited) return;
+    if (this.processExited) return;
     await new Promise<void>((resolve, reject) => {
       const kill = setTimeout(() => this.child.kill('SIGKILL'), 2000);
       const timeout = setTimeout(() => {

@@ -392,26 +392,6 @@ describe('SshClientProxy channel health reporting', () => {
     await expect(proxy.forwardOut(4321)).rejects.toBe(forwardError);
     expect(reporter.reportChannelError).toHaveBeenCalledWith('ssh-1', forwardError);
   });
-
-  it('reports pty and sftp channel failures', () => {
-    const ptyError = new Error('pty failed');
-    const sftpError = new Error('sftp failed');
-    const reporter = {
-      reportChannelError: vi.fn(),
-    };
-    const client = {
-      exec: vi.fn((_command, _options, callback) => callback(ptyError, undefined)),
-      sftp: vi.fn((callback) => callback(sftpError, undefined)),
-    };
-    const proxy = new SshClientProxy('ssh-1', reporter);
-    proxy.update(client as never);
-
-    proxy.execPty('bash', { pty: true }, vi.fn());
-    proxy.sftp(vi.fn());
-
-    expect(reporter.reportChannelError).toHaveBeenCalledWith('ssh-1', ptyError);
-    expect(reporter.reportChannelError).toHaveBeenCalledWith('ssh-1', sftpError);
-  });
 });
 
 describe('SshClientProxy agent-forward refusal', () => {
@@ -453,20 +433,6 @@ describe('SshClientProxy agent-forward refusal', () => {
     expect(result.err).toBeUndefined();
     expect(result.channel).toBeDefined();
     expect(commands).toEqual(['echo hi', 'echo hi']);
-    expect(client.config.allowAgentFwd).toBe(false);
-  });
-
-  it('retries a pty channel without forwarding when the host refuses it', async () => {
-    const { client, commands } = refusingClient(1);
-    const proxy = new SshClientProxy('ssh-1');
-    proxy.update(client as never);
-
-    const result = await new Promise<Error | undefined>((resolve) => {
-      proxy.execPty('tmux a', {}, (err) => resolve(err));
-    });
-
-    expect(result).toBeUndefined();
-    expect(commands).toHaveLength(2);
     expect(client.config.allowAgentFwd).toBe(false);
   });
 

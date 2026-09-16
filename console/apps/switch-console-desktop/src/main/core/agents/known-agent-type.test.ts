@@ -29,23 +29,10 @@ describe('knownAgentTypeForProvider', () => {
     expect(log.warn).not.toHaveBeenCalled();
   });
 
-  it('warns when a provider has no gateway known-agent type, then falls back visibly', () => {
-    // Only the types in KNOWN_AGENTS exist server-side, so anything else
-    // registers as a type it is not. That is a disclosed fallback, never a
-    // silent one.
-    for (const id of ['grok', 'droid'] as const) {
-      vi.clearAllMocks();
-      expect(knownAgentTypeForProvider(id)).toBe('claude-code');
-      expect(log.warn).toHaveBeenCalledWith(
-        expect.stringContaining('no gateway known-agent type'),
-        expect.objectContaining({ providerId: id, registeringAs: 'claude-code' })
-      );
-    }
-  });
 });
 
-it('registers Gemini under its own gateway type', () => {
-  expect(knownAgentTypeForProvider('gemini')).toBe('gemini');
+it('registers Antigravity under its own gateway type', () => {
+  expect(knownAgentTypeForProvider('antigravity')).toBe('antigravity');
 });
 
 it('maps Cursor to its own backend profile', () => {

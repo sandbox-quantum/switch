@@ -8,7 +8,6 @@ import { WorkspaceLayoutContextProvider } from './lib/layout/layout-provider';
 import { WorkspaceViewProvider } from './lib/layout/provider';
 import { ModalRenderer } from './lib/modal/modal-renderer';
 import { ThemeProvider } from './lib/providers/theme-provider';
-import { TerminalPoolProvider } from './lib/pty/pty-pool-provider';
 import { queryClient } from './lib/query-client';
 import { RightSidebarProvider } from './lib/ui/right-sidebar';
 import { TooltipProvider } from './lib/ui/tooltip';
@@ -17,20 +16,18 @@ function AppContent() {
   return (
     <TooltipProvider delay={300}>
       <WorkspaceLayoutContextProvider>
-        <TerminalPoolProvider>
-          <WorkspaceViewProvider>
-            <AppMenuEvents />
-            <AgentCrudEvents />
-            <SessionDeeplinkListener />
-            <RightSidebarProvider>
-              <ThemeProvider>
-                <ModalRenderer />
-                <TelemetryConsentGate />
-                <Workspace />
-              </ThemeProvider>
-            </RightSidebarProvider>
-          </WorkspaceViewProvider>
-        </TerminalPoolProvider>
+        <WorkspaceViewProvider>
+          <AppMenuEvents />
+          <AgentCrudEvents />
+          <SessionDeeplinkListener />
+          <RightSidebarProvider>
+            <ThemeProvider>
+              <ModalRenderer />
+              <TelemetryConsentGate />
+              <Workspace />
+            </ThemeProvider>
+          </RightSidebarProvider>
+        </WorkspaceViewProvider>
       </WorkspaceLayoutContextProvider>
     </TooltipProvider>
   );

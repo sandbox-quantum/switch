@@ -305,6 +305,58 @@ describe('session-v1 client transport', () => {
     await client.send('Hello', 'send');
     expect(client.getSnapshot().snapshot?.commandStatuses[0].status).toBe('applied');
   });
+  it('keeps a confirmed receipt when an older unknown event arrives', async () => {
+    const wire = transport();
+    const client = new SessionChatClient('session-demo', wire.api);
+    await client.connect();
+    vi.mocked(wire.api.submit).mockResolvedValueOnce({ ...wire.receipt, status: 'applied' });
+    await client.send('Hello', 'send');
+    wire.emit(
+      event(11, {
+        ...wire.receipt,
+        status: 'unknown',
+        code: 'HOST_RESTARTED',
+        message: 'The command was not confirmed. It will not be resent.',
+      })
+    );
+    expect(
+      client.getSnapshot().snapshot?.commandStatuses.find((s) => s.commandId === 'send')?.status
+    ).toBe('applied');
+    expect(client.getSnapshot().snapshot?.throughSequence).toBe(11);
+    client.dispose();
+  });
+
+  it('uses a confirmed event when an older unknown receipt arrives', async () => {
+    const wire = transport();
+    const client = new SessionChatClient('session-demo', wire.api);
+    await client.connect();
+    vi.mocked(wire.api.submit).mockImplementationOnce(async () => {
+      wire.emit(event(11, { ...wire.receipt, status: 'applied' }));
+      return { ...wire.receipt, status: 'unknown' };
+    });
+    await expect(client.send('Hello', 'send')).resolves.toMatchObject({ status: 'applied' });
+    expect(client.hasPendingCommand()).toBe(false);
+    client.dispose();
+  });
+
+  it('replaces a real unknown outcome only when confirmation arrives', () => {
+    const replica = new SessionReplica(initial());
+    const status = {
+      type: 'command.status' as const,
+      commandId: 'send',
+      code: null,
+      message: null,
+    };
+    replica.apply(event(11, { ...status, status: 'unknown' }));
+    expect(replica.snapshot().commandStatuses.find((s) => s.commandId === 'send')?.status).toBe(
+      'unknown'
+    );
+    replica.apply(event(12, { ...status, status: 'applied' }));
+    expect(replica.snapshot().commandStatuses.find((s) => s.commandId === 'send')?.status).toBe(
+      'applied'
+    );
+  });
+
   it('refuses pages from different snapshot versions', async () => {
     const wire = transport();
     vi.mocked(wire.api.snapshot)

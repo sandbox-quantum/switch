@@ -121,7 +121,7 @@ describe('codexLaunchProfile', () => {
   });
 
   it('keeps a system prompt inside the one profile file, off the command line', () => {
-    // The argv is re-rendered as a shell string on the SSH and tmux paths, so a
+    // The argv is re-rendered as a shell string on the SSH paths, so a
     // free-form body there would be mangled (newlines flattened) or executed
     // (`$(…)`, backticks). Two fixed tokens is the whole command-line surface.
     const instructions = 'be terse\n$(whoami) and "quotes"';

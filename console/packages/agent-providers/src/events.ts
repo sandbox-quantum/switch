@@ -7,7 +7,7 @@
  * SSE events) into these; `raw` keeps the native payload for debugging only.
  */
 
-export type ProviderKind = 'opencode' | 'claude' | 'codex' | 'gemini' | (string & {});
+export type ProviderKind = 'opencode' | 'claude' | 'codex' | 'antigravity' | (string & {});
 
 export type SessionStatus = 'starting' | 'ready' | 'running' | 'stopped' | 'error';
 

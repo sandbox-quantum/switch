@@ -15,6 +15,10 @@ beforeEach(() => {
   vi.resetAllMocks();
   mock.dispose.mockResolvedValue(undefined);
 });
+vi.mock('node:fs/promises', () => ({
+  mkdir: vi.fn(async () => {}),
+  writeFile: vi.fn(async () => {}),
+}));
 const input = { binaryPath: 'provider', cwd: '/tmp', env: {} };
 it('blocks missing Codex credentials only when the backend requires authentication', async () => {
   mock.request
@@ -32,28 +36,30 @@ it('allows a Codex backend that does not require OpenAI login', async () => {
     .mockResolvedValueOnce({ account: null, requiresOpenaiAuth: false });
   expect((await checkProviderReadiness({ ...input, provider: 'codex' })).status).toBe('unknown');
 });
-it('recognizes Gemini missing-key rejection and cleans up', async () => {
+it('recognizes a Codex sign-in rejection and cleans up', async () => {
   mock.request
     .mockResolvedValueOnce({})
-    .mockRejectedValueOnce(
-      new JsonRpcError(-32000, 'Gemini API key is missing or not configured.')
-    );
-  expect((await checkProviderReadiness({ ...input, provider: 'gemini' })).status).toBe(
+    .mockRejectedValueOnce(new JsonRpcError(-32000, 'Please log in to continue.'));
+  expect((await checkProviderReadiness({ ...input, provider: 'codex' })).status).toBe(
     'unauthenticated'
   );
   expect(mock.dispose).toHaveBeenCalledOnce();
 });
 it('does not classify a transport failure as missing credentials', async () => {
   mock.request.mockRejectedValue(new Error('Connection closed'));
-  expect((await checkProviderReadiness({ ...input, provider: 'gemini' })).status).toBe('unknown');
+  expect((await checkProviderReadiness({ ...input, provider: 'codex' })).status).toBe('unknown');
   expect(mock.dispose).toHaveBeenCalledOnce();
 });
-it('reads Gemini models without sending a prompt', async () => {
-  mock.request.mockResolvedValueOnce({}).mockResolvedValueOnce({
-    models: { availableModels: [{ modelId: 'example-model', name: 'Example' }] },
-  });
-  expect((await checkProviderReadiness({ ...input, provider: 'gemini' })).models).toEqual([
-    { id: 'example-model', name: 'Example' },
-  ]);
-  expect(mock.request.mock.calls.map((call) => call[0])).toEqual(['initialize', 'session/new']);
+it('checks Antigravity authentication on ACP without opening a conversation', async () => {
+  mock.request.mockResolvedValueOnce({}).mockResolvedValueOnce({});
+  const result = await checkProviderReadiness({ ...input, provider: 'antigravity' });
+  expect(result.status).toBe('authenticated');
+  expect(mock.request.mock.calls.map((call) => call[0])).toEqual(['initialize', 'authenticate']);
+  expect(mock.dispose).toHaveBeenCalledOnce();
+});
+it('reports Antigravity sign-in failures', async () => {
+  mock.request.mockResolvedValueOnce({}).mockRejectedValueOnce(new Error('Sign in required'));
+  expect((await checkProviderReadiness({ ...input, provider: 'antigravity' })).status).toBe(
+    'unauthenticated'
+  );
 });

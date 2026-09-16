@@ -212,3 +212,24 @@ it('retains a zero checkpoint and gap before the next message arrives', async ()
   await next.stream.onEvent(message(1, true));
   expect(next.inbox.pending()[0].gap?.reason).toBe('buffer reset');
 });
+
+it.each(['heartbeat lapsed', 'heartbeat lapsed; reopen the stream and resume from your cursor'])(
+  'keeps the session alive during recoverable eviction: %s',
+  async (reason) => {
+    const { stream, failures } = await connected();
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    stream.onEvicted(reason);
+    expect(failures).toEqual([]);
+    expect(warning).toHaveBeenCalledWith(
+      'Room heartbeat lapsed; reconnecting from the saved cursor.'
+    );
+  }
+);
+
+it('still fails visibly on a non-recoverable eviction', async () => {
+  const { stream, failures } = await connected();
+  stream.onEvicted('credentials revoked');
+  expect(failures.map((error) => error.message)).toEqual([
+    'Room connection was evicted: credentials revoked',
+  ]);
+});

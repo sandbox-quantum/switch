@@ -58,7 +58,7 @@ export class LocalExecutionContext implements IExecutionContext {
     const spawnSpec = this.resolveSpawn(command, args);
     return execFileAsync(spawnSpec.command, spawnSpec.args, {
       cwd: this.root || undefined,
-      env: command === 'git' ? buildNonInteractiveGitEnv() : undefined,
+      env: { ...(command === 'git' ? buildNonInteractiveGitEnv() : process.env), ...opts.env },
       timeout,
       maxBuffer,
       signal: this._signal(opts.signal),

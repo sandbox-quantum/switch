@@ -4,14 +4,14 @@ from types import SimpleNamespace
 
 from switch_core.gateway.known_agents import (
     KNOWN_AGENTS,
+    AntigravityKnownAgent,
+    AntigravityOptions,
     ClaudeCodeKnownAgent,
     ClaudeCodeOptions,
     CodexKnownAgent,
     CodexOptions,
     CursorKnownAgent,
     CursorOptions,
-    GeminiKnownAgent,
-    GeminiOptions,
     OpenCodeKnownAgent,
     OpenCodeOptions,
     known_agent_for,
@@ -644,30 +644,35 @@ class TestKnownAgentFor:
         assert options.repo_dir is None
 
 
-class TestGeminiKnownAgent:
+class TestAntigravityKnownAgent:
     def test_registry_and_profile(self) -> None:
-        assert KNOWN_AGENTS["gemini"] is GeminiKnownAgent
+        assert KNOWN_AGENTS["antigravity"] is AntigravityKnownAgent
         for auto_session, expected in [
             (False, "session_addressable"),
             (True, "auto_session"),
         ]:
-            profile = GeminiKnownAgent.build_profile(
-                GeminiOptions(auto_session=auto_session)
+            profile = AntigravityKnownAgent.build_profile(
+                AntigravityOptions(auto_session=auto_session)
             )
             assert profile.connection_model == expected
             assert profile.message_exchange
             assert profile.command_capabilities.interrupt == "session_dependent"
             assert profile.pre_invocation_mediation == []
 
-    def test_onboarding_requires_console_acp(self) -> None:
-        options = GeminiKnownAgent.parse_options({"repo_dir": " "})
+    def test_onboarding_requires_console_runtime(self) -> None:
+        options = AntigravityKnownAgent.parse_options({"repo_dir": " "})
         assert options.repo_dir is None
-        agent = _agent_named("gemini.test")
-        assert GeminiKnownAgent.connect_command(options, agent, "hub", None) is None
-        text = GeminiKnownAgent.start_session_instructions(options, agent, "hub", None)
-        assert "Gemini CLI ACP" in text
+        agent = _agent_named("antigravity.test")
+        assert (
+            AntigravityKnownAgent.connect_command(options, agent, "hub", None) is None
+        )
+        text = AntigravityKnownAgent.start_session_instructions(
+            options, agent, "hub", None
+        )
+        assert "Antigravity CLI" in text
+        assert "`agy`" in text
         assert "local session" in text
-        assert "gemini.test" in text
+        assert "antigravity.test" in text
 
 
 class TestCursorKnownAgent:

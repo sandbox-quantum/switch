@@ -27,7 +27,7 @@ function aptInstall(packages: string): string {
 
 /**
  * Core host tools a remote host needs to run Switch Console agent sessions: the
- * same binaries the remote-session preflight verifies (tmux, node, git). Unlike
+ * same binaries the remote-session preflight verifies (node, git). Unlike
  * agent dependencies (built from the plugin registry), these are static — the
  * plugin system has no notion of host tooling.
  *
@@ -54,24 +54,6 @@ export const CORE_DEPENDENCIES: DependencyDescriptor[] = [
         },
       ],
       windows: [{ method: 'winget', command: 'winget install --id Git.Git', recommended: true }],
-    },
-  },
-  {
-    id: 'tmux',
-    name: 'tmux',
-    category: 'core',
-    commands: ['tmux'],
-    versionArgs: ['-V'],
-    docUrl: 'https://github.com/tmux/tmux/wiki/Installing',
-    installCommands: {
-      macos: [{ method: 'homebrew', command: 'brew install tmux', recommended: true }],
-      linux: [
-        {
-          method: 'apt',
-          command: aptInstall('tmux'),
-          recommended: true,
-        },
-      ],
     },
   },
   {

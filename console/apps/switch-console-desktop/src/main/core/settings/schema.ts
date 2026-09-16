@@ -2,17 +2,8 @@ import z from 'zod';
 import { BROWSER_ISOLATED_PROFILE_ID } from '@shared/browser';
 import { AGENT_PROVIDER_IDS } from '@shared/core/providers/agent-provider-registry';
 import type { AppSettingsKeyName } from '@shared/core/settings/setting-keys';
-import {
-  TERMINAL_FONT_SIZE_MAX,
-  TERMINAL_FONT_SIZE_MIN,
-  TERMINAL_SHELL_IDS,
-} from '@shared/core/terminals/terminal-settings';
 import { openInAppIdSchema } from '@shared/openInApps';
 import { DEFAULT_AGENT_ID } from './settings-registry';
-
-export const locationSettingsSchema = z.object({
-  tmuxByDefault: z.boolean(),
-});
 
 export const localLocationSettingsSchema = z.object({
   defaultLocationsDirectory: z.string(),
@@ -31,14 +22,6 @@ export const sessionSettingsSchema = z.object({
   autoGenerateName: z.boolean(),
   autoTrustWorktrees: z.boolean(),
   preserveNameCapitalization: z.boolean(),
-});
-
-export const terminalSettingsSchema = z.object({
-  fontFamily: z.string().optional(),
-  fontSize: z.number().min(TERMINAL_FONT_SIZE_MIN).max(TERMINAL_FONT_SIZE_MAX).optional(),
-  autoCopyOnSelection: z.boolean(),
-  macOptionIsMeta: z.boolean(),
-  defaultShell: z.enum(TERMINAL_SHELL_IDS),
 });
 
 export const themeSchema = z
@@ -136,14 +119,12 @@ export const onboardingSettingsSchema = z.object({
 
 export const APP_SETTINGS_SCHEMA_MAP = {
   localLocation: localLocationSettingsSchema,
-  location: locationSettingsSchema,
   sessions: sessionSettingsSchema,
   defaultAgent: defaultAgentSchema,
   notifications: notificationSettingsSchema,
   theme: themeSchema,
   openIn: openInSettingsSchema,
   interface: interfaceSettingsSchema,
-  terminal: terminalSettingsSchema,
   browserPreview: browserPreviewSettingsSchema,
   browser: browserSettingsSchema,
   changesViewMode: changesViewModeSchema,
@@ -169,14 +150,12 @@ void _settingKeysAreComplete;
 
 export const appSettingsSchema = z.object({
   localLocation: localLocationSettingsSchema,
-  location: locationSettingsSchema,
   sessions: sessionSettingsSchema,
   defaultAgent: defaultAgentSchema,
   notifications: notificationSettingsSchema,
   theme: themeSchema,
   openIn: openInSettingsSchema,
   interface: interfaceSettingsSchema,
-  terminal: terminalSettingsSchema,
   browserPreview: browserPreviewSettingsSchema,
   browser: browserSettingsSchema,
   changesViewMode: changesViewModeSchema,

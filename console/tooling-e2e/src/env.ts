@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
  * from a gitignored `.env` beside this package.
  */
 /** The Switch known-agent type the harness registers its throwaway agent as. */
-export type HarnessAgentType = 'opencode' | 'claude-code' | 'codex' | 'gemini' | 'cursor';
+export type HarnessAgentType = 'opencode' | 'claude-code' | 'codex' | 'antigravity' | 'cursor';
 
 /**
  * How the `question` scenario expects the agent to ask.
@@ -143,7 +143,7 @@ const AGENT_TYPES: readonly HarnessAgentType[] = [
   'opencode',
   'claude-code',
   'codex',
-  'gemini',
+  'antigravity',
   'cursor',
 ];
 

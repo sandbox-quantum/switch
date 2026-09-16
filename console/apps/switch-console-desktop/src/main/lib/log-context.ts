@@ -5,7 +5,7 @@ import { mergeLogContext, type LogContext } from '@shared/logger';
 /**
  * Ambient log context for the main process.
  *
- * Work started at an entry point (an RPC call, a PTY spawn, a sidecar launch)
+ * Work started at an entry point (an RPC call, a SDK host launch, a sidecar launch)
  * runs inside a scope carrying the ids that identify it. Code far below can
  * then log without every intermediate signature having to forward a session id
  * it has no other use for.

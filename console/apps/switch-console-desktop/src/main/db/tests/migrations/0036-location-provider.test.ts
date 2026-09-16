@@ -51,14 +51,20 @@ describe('migration 0036: workspaceProvider -> locationProvider', () => {
 
   it('moves the provider object to locationProvider and drops the old key', async () => {
     fixture = await openFixture('empty');
-    seedLocation('with-provider', { tmux: true, workspaceProvider: PROVIDER });
-    seedLocation('no-provider', { tmux: false });
+    seedLocation('with-provider', {
+      autoRunSetupScriptOnSessionCreation: true,
+      workspaceProvider: PROVIDER,
+    });
+    seedLocation('no-provider', { autoRunSetupScriptOnSessionCreation: false });
     seedLocation('empty', {});
 
     fixture.sqlite.exec(MIGRATION_SQL);
 
-    expect(baseSettings('with-provider')).toEqual({ tmux: true, locationProvider: PROVIDER });
-    expect(baseSettings('no-provider')).toEqual({ tmux: false });
+    expect(baseSettings('with-provider')).toEqual({
+      autoRunSetupScriptOnSessionCreation: true,
+      locationProvider: PROVIDER,
+    });
+    expect(baseSettings('no-provider')).toEqual({ autoRunSetupScriptOnSessionCreation: false });
     expect(baseSettings('empty')).toEqual({});
   });
 });

@@ -27,9 +27,9 @@
       "types": "./dist/codex-skill.d.mts",
       "default": "./dist/codex-skill.mjs"
     },
-    "./agents/gemini/skill": {
-      "types": "./dist/gemini-skill.d.mts",
-      "default": "./dist/gemini-skill.mjs"
+    "./agents/antigravity/skill": {
+      "types": "./dist/antigravity-skill.d.mts",
+      "default": "./dist/antigravity-skill.mjs"
     },
     "./agents/cursor/skill": {
       "types": "./dist/cursor-skill.d.mts",

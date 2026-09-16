@@ -2767,7 +2767,7 @@ class TelegramAdapter(CollaborationAdapter):
 
         Deliberately not a provider logo. The server only distinguishes
         `claude-code` from `codex`, and Switch Console registers every other
-        provider — Gemini, Cursor, the rest — as `claude-code`; a logo drawn
+        provider — Antigravity, Cursor, the rest — as `claude-code`; a logo drawn
         from that would confidently label most agents wrongly.
         """
         digest = hashlib.blake2b(sender_name.encode("utf-8"), digest_size=8).digest()

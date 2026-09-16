@@ -126,7 +126,7 @@ describe('propagateServerApiUrl', () => {
     expect(row?.apiEndpoint).toBe('https://new-api.example.com');
   });
 
-  it.each(['claude', 'codex', 'opencode', 'gemini', 'cursor'] as const)(
+  it.each(['claude', 'codex', 'opencode', 'antigravity', 'cursor'] as const)(
     'updates named %s credentials without changing another agent',
     async (providerId) => {
       const dir = path.join(tmpRoot, 'named');

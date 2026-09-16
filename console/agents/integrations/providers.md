@@ -1,78 +1,33 @@
 # Providers
 
-## Source Of Truth
+The supported provider IDs are `claude`, `codex`, `opencode`, `antigravity`, and
+`cursor`. Every session runs through its adapter in `packages/agent-providers`.
+Local and SSH locations use the same persistent SDK host.
 
-- `packages/plugins/src/agents/impl/<id>/index.ts` — the provider plugin. Authoritative for
-  everything behavioral.
-- `src/shared/core/providers/agent-provider-registry.ts` — ids, display metadata, and a
-  descriptive mirror of the plugin's argv. Never authoritative.
-- `src/main/core/dependencies/registry.ts`
-- `src/main/core/pty/`
+## Source of truth
 
-## Current Providers (31)
+- `packages/agent-providers/src/` owns native SDK/protocol execution.
+- `packages/plugins/src/agents/impl/<id>/` owns CLI detection, installation,
+  native skills, MCP configuration and launch profiles.
+- `src/shared/core/providers/agent-provider-registry.ts` owns supported IDs and
+  display metadata. Unsupported stored IDs must fail explicitly.
+- `src/main/core/sdk-host/` handles deployment and the desktop host client.
+- `packages/agent-providers/src/host/` owns persistent execution and recovery.
 
-codex, claude, grok, devin, cursor, gemini, antigravity, qwen, droid, amp, commandcode, opencode, hermes, copilot, charm, auggie, goose, kimi, kilocode, kiro, rovo, cline, continue, codebuff, freebuff, mistral, jules, junie, pi, letta, autohand
+## Native transports
 
-## Where Provider Metadata Lives
+Claude uses the Claude Agent SDK; Codex uses app-server JSON-RPC; OpenCode uses
+its HTTP/SSE SDK; Antigravity and Cursor use ACP.
+Cursor ACP is the native adapter transport. Native capability limits must be
+reported explicitly rather than replaced with synthetic prompts.
 
-The plugin (`packages/plugins/src/agents/impl/<id>/index.ts`) owns everything that affects
-behavior:
+## Changing providers
 
-- argv shaping — auto-approve flags, initial prompt handling, resume and session flags,
-  default args — via the `buildStandardCommand` spec in `behavior.prompt.buildCommand`
-- CLI name, detection commands, and version args — via `hostDependency`
-- prompt delivery mode, including keystroke injection — via `capabilities.prompt.kind`
-- hook support — via `capabilities.hooks`
-- the provider icon — via the plugin's `icon` asset
+Keep the adapter, plugin metadata, desktop registry, and host environment in
+sync. The desktop environment allowlist is `src/main/core/sdk-host/agent-env.ts`.
+Keep MCP helpers shared when retained providers import them. Model catalogues
+come from the provider on the execution host. Test both local and SSH setup;
+credentials and native configuration belong to that host.
 
-`agent-provider-registry.ts` holds the `AGENT_PROVIDER_IDS` list, per-provider display
-metadata (name, one-line description, docs URL, icon, install command), and a mirror of the
-argv fields above. It builds no commands and nothing reads the mirror at spawn time — it
-exists so the provider table can be read in one place. Change the plugin first, then the
-mirror. `src/main/core/providers/provider-argv-parity.test.ts` fails if Codex's two drift
-apart; the other providers' mirrors are unguarded, so treat them as hints, not facts.
-
-## Agent Hooks And Notifications
-
-Agent activity, completion, and attention notifications come from explicit hooks or plugins
-installed by `src/main/core/agent-hooks/`. Switch Console does not infer agent status from terminal
-output. If a provider has no hook/plugin integration for an event, the renderer should not show
-or notify an inferred status for that event.
-
-## Provider Runtime Notes
-
-- Claude uses deterministic `--session-id` values for conversation isolation.
-- Agents that cannot receive an interactive initial prompt via argv or stdin use keystroke
-  injection — Switch Console types the prompt into the TUI after startup.
-- `src/main/core/agent-hooks/agent-hook-service.ts` forwards hook events to renderer windows and can show OS notifications. It also writes hook config files for hook-capable providers, including `.claude/settings.local.json`, `.qwen/settings.json`, and provider-specific global hook files.
-- Qwen Code hooks use the documented Qwen settings schema in `.qwen/settings.json`. Switch Console installs command hooks for permission requests and session end/stop events while preserving unrelated user hooks.
-
-## Adding Or Changing A Provider
-
-1. add or update the plugin in `packages/plugins/src/agents/impl/<id>/index.ts` — this is where
-   argv, dependencies, capabilities, and hooks are defined
-2. for a new provider only, add the id to `AGENT_PROVIDER_IDS` and a display entry to
-   `AGENT_PROVIDERS` in `src/shared/core/providers/agent-provider-registry.ts`
-   (`plugin-registry.ts` fails at load if the id list and the plugins disagree)
-3. update allowlisted agent env vars in `src/main/core/pty/pty-env.ts` if needed
-4. validate detection behavior in `src/main/core/dependencies/`
-5. add or update tests for any non-standard behavior
-
-## Gemini ACP
-
-Gemini's Switch integration is local and uses `@switch-console/agent-providers`.
-Enable its provider runtime to receive room messages, show the transcript and
-answer permissions in Console or the room. Its existing TUI descriptor supplies
-CLI detection; no standalone connector or remote sidecar integration is claimed.
-SSH hosts retain the existing PTY path; Gemini room integration requires a local ACP session. The Gemini room skill
-is sourced from `connectors/gemini-cli/skills/switch/SKILL.md` and embedded by the
-plugins package, with a parity test.
-
-### Cursor ACP
-
-Cursor uses `agent acp`, session MCP registration, and existing Cursor login.
-New local Cursor agents use the provider runtime automatically. The provider
-settings card describes the bundled setup; no marketplace connector is installed.
-Its native question and plan extension handlers support both ordinary and
-underscore-prefixed ACP methods. Ordinary prompts queue behind active turns.
-Remote/terminal Switch sessions are not supported for this provider.
+Run the affected package tests, workspace typechecks, and desktop lint. Follow
+[SDK sessions](../../docs/sdk-sessions.md) for recovery and live-test constraints.

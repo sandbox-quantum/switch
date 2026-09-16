@@ -4,7 +4,6 @@ import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Attachment, Session } from '@switch-console/shared/session-v1';
 import { expect, it } from 'vitest';
-import { prepareGeminiHome } from '../gemini/home';
 import { echoMcpServerSpec } from '../testing/fixtures';
 import { stageAttachment } from './attachments';
 import { adapterFor } from './server';
@@ -12,7 +11,7 @@ import { HostedSession } from './session-host';
 
 it
   .skipIf(process.env.SDK_ATTACHMENTS_LIVE !== '1')
-  .each(['claude', 'codex', 'opencode', 'gemini', 'cursor'] as const)(
+  .each(['claude', 'codex', 'opencode', 'antigravity', 'cursor'] as const)(
   'delivers real file bytes, a project skill and MCP to %s',
   async (provider) => {
     const root = await mkdtemp(join(tmpdir(), 'sdk-attachment-live-'));
@@ -45,7 +44,7 @@ it
       claude: '.claude',
       codex: '.agents',
       opencode: '.opencode',
-      gemini: '.gemini',
+      antigravity: '.agents',
       cursor: '.cursor',
     }[provider];
     const skill = join(cwd, skillDirectory, 'skills/sdk-verification');
@@ -54,14 +53,6 @@ it
       join(skill, 'SKILL.md'),
       `---\nname: sdk-verification\ndescription: Verify attached documents using the echo tool.\n---\nRead the attached document. Invoke the switch_echo MCP tool with its contents. Include ${skillToken} in your final response.\n`
     );
-    if (provider === 'gemini')
-      env.GEMINI_CLI_HOME = await prepareGeminiHome({
-        root,
-        sessionId: 'home',
-        sourceHome: join(homedir(), '.gemini'),
-        context: '',
-        mcpServerNames: ['echo'],
-      });
     if (provider === 'codex') {
       env.CODEX_HOME = join(root, 'codex-home');
       await mkdir(env.CODEX_HOME);

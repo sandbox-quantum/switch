@@ -86,9 +86,13 @@ describe('describeInstallFailure', () => {
 
   it('leaves an error it does not recognise exactly as the installer put it', () => {
     // Guessing at an unfamiliar failure would be worse than quoting it.
-    expect(describeInstallFailure('tmux', 'E: Unable to locate package tmux', 'some output')).toBe(
-      'E: Unable to locate package tmux'
-    );
+    expect(
+      describeInstallFailure(
+        'example-tool',
+        'E: Unable to locate package example-tool',
+        'some output'
+      )
+    ).toBe('E: Unable to locate package example-tool');
   });
 });
 

@@ -93,6 +93,7 @@ from switch_core.events import (
     ToolCallReport as MatrixToolCallReport,
 )
 from switch_core.messages.recorded_types import MEMBERSHIP_EVENT_TYPE
+from switch_core.sessions.attachments import normalise_mime_type
 from switch_core.tenant_context import tenant_scope
 from switch_core.transport import (
     TransportError,
@@ -1125,6 +1126,10 @@ class ProtocolService:
         """
         if not files:
             raise ValueError("no attachments provided")
+        files = [
+            (data, filename, normalise_mime_type(mimetype))
+            for data, filename, mimetype in files
+        ]
         max_bytes = self.config.agent_media_max_bytes
         for data, filename, _mimetype in files:
             if not data:

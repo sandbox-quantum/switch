@@ -4,15 +4,8 @@ import { resolveLocationRuntime } from '../locations/utils';
 import { runLifecycleScript } from './runLifecycleScript';
 
 const runCoordinator = vi.hoisted(() =>
-  vi.fn(async ({ runtime, type, script, shellSetup, policy }) => {
-    await runtime.lifecycleService.runLifecycleScript(
-      { type, script, shellSetup },
-      {
-        exit: policy.exit ?? true,
-        waitForExit: policy.waitForExit ?? true,
-        respawnAfterExit: policy.respawnAfterExit ?? false,
-      }
-    );
+  vi.fn(async ({ runtime, type, script, shellSetup }) => {
+    await runtime.lifecycleService.runLifecycleScript({ type, script, shellSetup });
   })
 );
 
@@ -33,7 +26,7 @@ describe('runLifecycleScript', () => {
     vi.resetAllMocks();
   });
 
-  it('runs manual lifecycle scripts with exit and restores the prompt afterward', async () => {
+  it('runs manual lifecycle commands with the location settings', async () => {
     const lifecycleRun = vi.fn(async () => {});
     vi.mocked(resolveLocationRuntime).mockReturnValue({
       settings: {},
@@ -55,10 +48,11 @@ describe('runLifecycleScript', () => {
       type: 'run',
     });
 
-    expect(lifecycleRun).toHaveBeenCalledWith(
-      { type: 'run', script: 'pnpm dev', shellSetup: 'source .envrc' },
-      { exit: true, waitForExit: true, respawnAfterExit: true }
-    );
+    expect(lifecycleRun).toHaveBeenCalledWith({
+      type: 'run',
+      script: 'pnpm dev',
+      shellSetup: 'source .envrc',
+    });
     expect(runCoordinator).toHaveBeenCalledWith({
       runtime: expect.any(Object),
       locationId: 'loc-1',
@@ -68,7 +62,6 @@ describe('runLifecycleScript', () => {
       shellSetup: 'source .envrc',
       origin: 'manual',
       policy: {
-        respawnAfterExit: true,
         logFailure: true,
         surfaceFailure: true,
         continueOnFailure: false,

@@ -1,13 +1,10 @@
 import type { ILifecycle } from '@switch-console/shared';
-import { LifecycleScriptsStore } from './lifecycle-scripts';
 
 export class SessionRuntimeStore implements ILifecycle {
   readonly path: string;
-  readonly lifecycleScripts: LifecycleScriptsStore;
 
-  constructor(locationId: string, path: string) {
+  constructor(_locationId: string, path: string) {
     this.path = path;
-    this.lifecycleScripts = new LifecycleScriptsStore(locationId);
   }
 
   activate(): void {}
@@ -16,7 +13,5 @@ export class SessionRuntimeStore implements ILifecycle {
     this.activate();
   }
 
-  dispose(): void {
-    this.lifecycleScripts.dispose();
-  }
+  dispose(): void {}
 }

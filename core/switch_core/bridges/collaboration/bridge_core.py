@@ -54,6 +54,7 @@ from switch_core.db.tenant_lookup import tenant_of_room
 from switch_core.logging_context import log_context
 from switch_core.provisioning import Provisioning
 from switch_core.room_service import RoomCreateConfig
+from switch_core.sessions.attachments import normalise_mime_type
 from switch_core.sessions.contract import Command, Surface
 from switch_core.tenant_context import no_tenant, tenant_scope
 from switch_core.transport import (
@@ -1875,9 +1876,11 @@ class BridgeCore:
         caption = event.body if explicit_filename else None
 
         info = event_content.get("info") or {}
-        mimetype = str(
-            (info.get("mimetype") if isinstance(info, dict) else None)
-            or "application/octet-stream"
+        mimetype = normalise_mime_type(
+            str(
+                (info.get("mimetype") if isinstance(info, dict) else None)
+                or "application/octet-stream"
+            )
         )
 
         message_ref: str | None

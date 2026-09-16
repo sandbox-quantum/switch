@@ -151,20 +151,4 @@ describe('pluginRegistry', () => {
     }
   });
 
-  it('passes Grok initial prompts as positional argv for interactive sessions', () => {
-    const result = pluginRegistry.get('grok')!.behavior.prompt!.buildCommand({
-      cli: 'grok',
-      autoApprove: true,
-      initialPrompt: 'Fix the bug',
-      sessionId: 'session-1',
-      isResuming: false,
-      model: '',
-    });
-
-    expect(result).toEqual({
-      command: 'grok',
-      args: ['--always-approve', 'Fix the bug'],
-      env: {},
-    });
-  });
 });
