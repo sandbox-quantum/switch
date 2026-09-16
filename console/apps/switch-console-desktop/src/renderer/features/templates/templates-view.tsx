@@ -270,6 +270,8 @@ function RecentsSection({
   serverId,
   serverName,
   onWorkspace,
+  kind,
+  query,
   onSaved,
 }: {
   serverId: string;
