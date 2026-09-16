@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import type { EventStreamLogger } from '@sandboxaq/switch-agent-runtime';
 import { z } from 'zod';
 import type { ProviderAdapter } from '../adapter';
-import { onProcessGroupsChanged, processGroupsFor, sweepProcessGroups } from '../process-tree';
+import { onProcessGroupsChanged, sweepProcessGroups } from '../process-tree';
 import { ensureSharedProcess, launchLock, liveSessionOwner, sharedSessionRoot } from './launch';
 import { replaceOwner, withOwnershipLock } from './ownership-lock';
 import { checkProviderReadiness } from './provider-readiness';
