@@ -276,6 +276,9 @@ function RecentsSection({
   serverName: string | null;
   /** Names already saved on the workspace: those need no Save button. */
   onWorkspace: ReadonlySet<string>;
+  /** The page's filters apply here too; a recent is yours by definition. */
+  kind: KindFilter;
+  query: string;
   onSaved: () => void;
 }) {
   const { navigate } = useNavigate();
@@ -316,7 +319,13 @@ function RecentsSection({
     }
   };
 
-  if (!recents || recents.length === 0) return null;
+  const needle = query.trim().toLowerCase();
+  const shown = (recents ?? []).filter(
+    (r) =>
+      (kind === 'all' || documentKind(r.yamlText) === kind) &&
+      (needle.length === 0 || r.name.toLowerCase().includes(needle))
+  );
+  if (shown.length === 0) return null;
 
   return (
     <section>
@@ -329,7 +338,7 @@ function RecentsSection({
         everyone on the workspace can find.
       </p>
       <div className="flex flex-col gap-1">
-        {recents.map((r) => (
+        {shown.map((r) => (
           <div key={r.yamlText} className="flex items-center gap-1">
             <button
               type="button"
@@ -636,14 +645,14 @@ const TemplatesPanel = observer(function TemplatesPanel() {
               )}
             </Section>
 
-            {!filtering && (
-              <RecentsSection
-                serverId={serverId}
-                serverName={server?.name ?? null}
-                onWorkspace={new Set(templates.map((t) => t.name))}
-                onSaved={reload}
-              />
-            )}
+            <RecentsSection
+              serverId={serverId}
+              serverName={server?.name ?? null}
+              onWorkspace={new Set(templates.map((t) => t.name))}
+              kind={kind}
+              query={query}
+              onSaved={reload}
+            />
           </div>
         )}
       </div>
