@@ -117,6 +117,13 @@ from switch_core.gateway.app import create_gateway_app
 from switch_core.gateway.auth import hash_password
 from switch_core.logging_config import configure_logging
 from switch_core.messages.notify import MessageListener
+from switch_core.observability.bootstrap import (
+    Observability,
+    RuntimeProbes,
+    start_observability,
+)
+from switch_core.observability.pool import pool_stats
+from switch_core.observability.runtime import EventLoopLag
 from switch_core.provisioning import Provisioning
 from switch_core.provisioning.postgres import PostgresProvisioning
 from switch_core.room_service import RoomService
@@ -152,7 +159,7 @@ async def _runtime_state_sweep_loop(protocol: ProtocolService) -> None:
                 logger.exception("Runtime-state sweep failed")
 
 
-async def _connection_sweep_loop(protocol: ProtocolService) -> None:
+async def _connection_sweep_loop(protocol: ProtocolService, lag: EventLoopLag) -> None:
     """Expire connections whose client has stopped beating.
 
     Skips a round after the event loop has been blocked. A stall stops us
@@ -161,11 +168,16 @@ async def _connection_sweep_loop(protocol: ProtocolService) -> None:
     leases, then every client reconnects together, which is a worse stall. The
     clients were never given the chance to beat, so the honest reading is "we
     were not listening", not "they went away".
+
+    This runs on a fixed short interval and is therefore also the process's
+    most sensitive witness to the loop being blocked at all, so every round's
+    oversleep is reported — not only the ones large enough to skip a sweep.
     """
     while True:
         started = time.monotonic()
         await asyncio.sleep(_CONNECTION_SWEEP_INTERVAL)
         overslept = (time.monotonic() - started) - _CONNECTION_SWEEP_INTERVAL
+        lag.record(overslept)
         if overslept > HEARTBEAT_TTL_SECONDS / 2:
             logger.warning(
                 "Connection sweep skipped: the event loop was blocked for %.1fs, "
@@ -511,26 +523,61 @@ async def run(config: SwitchConfig) -> None:
         "telegram", TelegramAdapter, TelegramConnectionConfig
     )
 
-    # Health check mounted on the agent bridge app
+    # Liveness. Deliberately unconditional and deliberately cheap: besides the
+    # kubelet's liveness probe, the gateway Deployment and the setup Job both
+    # wait on this before they start, so anything it checked would become a
+    # boot-ordering dependency for them. Readiness is /health/ready below.
     @agent_bridge_app.get("/health")
     async def health_check() -> JSONResponse:
         return JSONResponse({"status": "ok"})
+
+    # Set by the lifespan. Readiness is answerable only once the monitor that
+    # answers it is running, and before that the honest answer is "no".
+    observability: Observability | None = None
+
+    @agent_bridge_app.get("/health/ready")
+    async def readiness_check() -> JSONResponse:
+        if observability is None:
+            return JSONResponse(
+                {"status": "not ready", "checks": {"startup": {"healthy": False}}},
+                status_code=503,
+            )
+        report = observability.monitor.current()
+        return JSONResponse(
+            report.as_response(), status_code=200 if report.ready else 503
+        )
 
     agent_bridge_app.mount("/gateway", gateway_app)
 
     # ── Ensure system clients exist ─────────────────────────────────────────
     await client_lifecycle.ensure_system_client("admin")
 
+    probes = RuntimeProbes(
+        listener_connected=message_listener.connected.is_set,
+        bridges_running=collab_lifecycle.running_count,
+        bridges_configured=collab_lifecycle.expected_count,
+        clients_running=client_lifecycle.running_count,
+        agents_connected=lambda: len(connections.live_agent_ids()),
+        pool_stats=lambda: pool_stats(engine),
+    )
+
     # ── Lifespan: start server-side connectors once HTTP is serving ────────
     original_lifespan = agent_bridge_app.router.lifespan_context
 
     @asynccontextmanager
     async def lifespan(app: object) -> AsyncIterator[None]:
+        nonlocal observability
         async with original_lifespan(app):  # type: ignore[arg-type]
+            observability = start_observability(
+                config=config,
+                version=switch_core_version(),
+                session_factory=session_factory,
+                probes=probes,
+            )
             asyncio.create_task(connector_lifecycle.start_all())
             sweep_task = asyncio.create_task(_runtime_state_sweep_loop(protocol))
             connection_sweep_task = asyncio.create_task(
-                _connection_sweep_loop(protocol)
+                _connection_sweep_loop(protocol, observability.lag)
             )
             await message_listener.start()
             try:
@@ -539,6 +586,7 @@ async def run(config: SwitchConfig) -> None:
                 sweep_task.cancel()
                 connection_sweep_task.cancel()
                 await message_listener.stop()
+                await observability.aclose()
 
     agent_bridge_app.router.lifespan_context = lifespan  # type: ignore[assignment]
 

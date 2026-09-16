@@ -90,6 +90,12 @@ class CollaborationBridgeLifecycleService:
         # (see CollaborationAdapter.exclusive_resource). Lets a second
         # claimant be refused by name instead of failing on the resource.
         self._held_resources: dict[str, str] = {}
+        # Bridges that were started and have not been stopped on purpose. A
+        # crash removes a bridge from `_bridges` and leaves it here, which is
+        # what makes "configured but no longer running" answerable at all —
+        # otherwise a crashed bridge is indistinguishable from one that was
+        # never set up, and the only evidence is a log line nobody reads.
+        self._started: set[str] = set()
         # Serialises registration. The exclusivity check reads the stored
         # bridges and the winner is not written until several awaits later,
         # so two concurrent registrations would both see a free resource and
@@ -533,6 +539,7 @@ class CollaborationBridgeLifecycleService:
         )
         self._bridges[bridge_id] = bridge_core
         self._tasks[bridge_id] = task
+        self._started.add(bridge_id)
         if wanted is not None:
             self._held_resources[bridge_id] = wanted
 
@@ -636,6 +643,7 @@ class CollaborationBridgeLifecycleService:
 
         self._bridges.pop(bridge_id, None)
         self._held_resources.pop(bridge_id, None)
+        self._started.discard(bridge_id)
         logger.info("Stopped collaboration bridge %s", bridge_id)
 
     async def restart(self, bridge_id: str) -> None:
@@ -706,6 +714,24 @@ class CollaborationBridgeLifecycleService:
 
     def get(self, bridge_id: str) -> BridgeCore | None:
         return self._bridges.get(bridge_id)
+
+    def expected_count(self) -> int:
+        """Bridges that were started and have not been stopped deliberately."""
+        return len(self._started)
+
+    def running_count(self) -> int:
+        """Of those, how many still have a task that has not finished.
+
+        A bridge's task runs until shutdown, so a task that is *done* has
+        stopped serving whether it raised or returned — both are equally
+        invisible to anything that only checks membership of `_bridges`.
+        """
+        running = 0
+        for bridge_id in self._started:
+            task = self._tasks.get(bridge_id)
+            if bridge_id in self._bridges and task is not None and not task.done():
+                running += 1
+        return running
 
     def bridges_for_tenant(self, tenant_id: str) -> list[BridgeCore]:
         """Running bridges belonging to `tenant_id`, and none other.
