@@ -24,6 +24,7 @@ from switch_core.bridges.collaboration.session.renderers import (
 )
 from switch_core.bridges.collaboration.session.renderers.slack import (
     render_activity,
+    render_activity_plan,
     render_activity_text,
     render_request,
     render_turn_with_request,
@@ -730,4 +731,30 @@ async def test_a_turn_activity_card_is_unaffected_by_the_request_card_change() -
 
     rendered = _slack_adapter()._render_rich(TurnActivity(items, turn))
 
-    assert rendered == render_activity(items, turn)
+    assert rendered == render_activity_plan(items, turn)
+
+
+async def test_the_one_message_leads_with_the_state_and_the_step_it_is_on() -> None:
+    """It stands in for the pair it replaced, so its header has to do both
+    jobs: where the turn got to, and what it is doing right now."""
+    items = await _items()
+    running = _item(itemId="live", status="in-progress", title="Read")
+
+    drawn = render_activity_plan([*items, running], _turn(), elapsed_seconds=40)
+
+    plan = drawn.blocks[0]
+    assert plan["type"] == "plan"
+    assert plan["title"].endswith("· Running: Read")
+    assert "40s" in plan["title"]
+    assert plan["tasks"][-1]["title"] == "Read"
+
+
+async def test_a_turn_with_nothing_to_plan_yet_still_shows_it_is_working() -> None:
+    """A plan block with no tasks says nothing, and the message this replaced
+    spun a card from the moment the turn opened."""
+    running = render_activity_plan([], _turn(), elapsed_seconds=3)
+    ended = render_activity_plan([], _turn("completed"))
+
+    assert running.blocks[0]["type"] == "task_card"
+    assert running.blocks[0]["status"] == "in_progress"
+    assert ended.blocks[0]["type"] == "context"

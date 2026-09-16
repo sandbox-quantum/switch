@@ -308,15 +308,19 @@ class SessionTurnActivity:
         """What the status message is already showing.
 
         Two publishes with the same answer would draw the same message, and
-        the second is an edit nobody would see. The clock counts only where
-        the platform redraws for it; elsewhere what the status shows is the
-        turn's state and its tools, and the elapsed time goes out with the
-        next change to either.
+        the second is an edit nobody would see. The turn's state and its tools
+        always count, because the status line names the tool it is running
+        even where the log is a message of its own. The clock counts only
+        where the platform redraws for it; elsewhere the elapsed time goes out
+        with the next change to either.
         """
-        drawn = (
+        clock = (
             f"{int(elapsed_seconds) if elapsed_seconds is not None else ''}"
             if self._timer_redraws
-            else ",".join(f"{item.item_id}:{item.revision}" for item in items)
+            else ""
+        )
+        drawn = f"{clock}/" + ",".join(
+            f"{item.item_id}:{item.revision}" for item in items
         )
         return (turn.turn_id, f"{turn.status}:{drawn}", session_url)
 

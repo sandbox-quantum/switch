@@ -24,6 +24,15 @@ class FakeWebClient:
         # its replies in order.
         self.thread: list[dict[str, Any]] = []
         self.replies_error: str | None = None
+        # Streamed activity: the openings, every append's chunks in order, and
+        # the closes. Kept apart from `posted`/`updated` because a stream is a
+        # different call shape, and a test that expects one should not pass on
+        # the other.
+        self.started: list[dict[str, Any]] = []
+        self.appended: list[dict[str, Any]] = []
+        self.stopped: list[dict[str, Any]] = []
+        self.start_error: str | None = None
+        self.append_error: str | None = None
         self._ts = 0
 
     async def api_call(self, method: str, **kwargs: Any) -> FakeResponse:
@@ -55,6 +64,23 @@ class FakeWebClient:
         if self.update_error:
             raise SlackApiError("failed", FakeResponse({"error": self.update_error}))
         self.updated.append(kwargs)
+        return FakeResponse({"ok": True})
+
+    async def chat_startStream(self, **kwargs: Any) -> FakeResponse:
+        if self.start_error:
+            raise SlackApiError("no", FakeResponse({"error": self.start_error}))
+        self._ts += 1
+        self.started.append(kwargs)
+        return FakeResponse({"ts": f"{self._ts}.0"})
+
+    async def chat_appendStream(self, **kwargs: Any) -> FakeResponse:
+        if self.append_error:
+            raise SlackApiError("no", FakeResponse({"error": self.append_error}))
+        self.appended.append(kwargs)
+        return FakeResponse({"ok": True})
+
+    async def chat_stopStream(self, **kwargs: Any) -> FakeResponse:
+        self.stopped.append(kwargs)
         return FakeResponse({"ok": True})
 
     async def conversations_replies(self, **kwargs: Any) -> FakeResponse:

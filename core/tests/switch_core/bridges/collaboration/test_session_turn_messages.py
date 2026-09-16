@@ -132,9 +132,9 @@ async def test_a_turn_is_posted_once_and_edited_every_time_after() -> None:
     await _publish(activity, items.turn_activity(TURN), _turn("running"))
     await _publish(activity, items.turn_activity(TURN), _turn("completed"))
 
-    assert len(client.posted) == 2  # status and tool log
-    assert len(client.updated) == 2  # final status and final tool log
-    assert [call["ts"] for call in client.updated] == ["1.0", "2.0"]
+    assert len(client.posted) == 1
+    assert len(client.updated) == 1  # the turn's final state
+    assert [call["ts"] for call in client.updated] == ["1.0"]
 
 
 async def test_the_last_edit_is_the_state_the_turn_ended_in() -> None:
@@ -168,7 +168,7 @@ async def test_a_second_turn_gets_its_own_message() -> None:
     await _publish(activity, [_item()], _turn("completed"))
     await _publish(activity, [_item("turn-two")], _turn("running", "turn-two"))
 
-    assert len(client.posted) == 4
+    assert len(client.posted) == 2
     assert client.updated == []
 
 
@@ -180,7 +180,7 @@ async def test_two_sessions_with_the_same_turn_id_do_not_share_a_message() -> No
     await _publish(activity, [_item()], _turn("running"))
     await _publish(activity, [_item()], _turn("running"), session_id="session-other")
 
-    assert len(client.posted) == 4
+    assert len(client.posted) == 2
     assert client.updated == []
 
 
@@ -202,7 +202,7 @@ async def test_a_turn_slack_refused_is_posted_afresh_rather_than_edited() -> Non
     adapter._web_client = client  # type: ignore[assignment]
     await _publish(activity, [_item()], _turn("running"))
 
-    assert len(client.posted) == 2
+    assert len(client.posted) == 1
     assert client.updated == []
 
 
@@ -225,8 +225,10 @@ async def test_an_edit_slack_refused_keeps_the_message_for_the_next_change(
     await _publish(activity, [_item()], _turn("completed"))
 
     assert "Could not update the activity for turn" in caplog.text
-    assert len(client.posted) == 2
-    assert [call["ts"] for call in client.updated] == ["1.0", "2.0"]
+    assert len(client.posted) == 1
+    # The fake records only the edits it accepted, so this one entry is the
+    # edit after the refusal — on the message the refused one was for.
+    assert [call["ts"] for call in client.updated] == ["1.0"]
 
 
 async def test_a_failed_last_edit_says_the_channel_is_left_looking_live(
@@ -263,7 +265,7 @@ async def test_more_live_turns_than_are_held_forgets_the_oldest_and_says_so(
         await _publish(activity, [_item("turn-one")], _turn("running", "turn-one"))
 
     assert "turn turn-one" in caplog.text
-    assert len(client.posted) == 8
+    assert len(client.posted) == 4
     assert client.updated == []
 
 
@@ -342,7 +344,7 @@ async def test_a_reaction_failure_does_not_fail_the_turns_own_draw(
         )
 
     assert drawn is True
-    assert len(client.posted) == 2
+    assert len(client.posted) == 1
     assert "Could not add the working reaction on parent-1 in C1" in caplog.text
 
 
@@ -481,28 +483,36 @@ async def test_internal_narration_is_not_published_in_activity_or_fallback() -> 
     await _publish(activity, [narration, tool], _turn("completed"), elapsed_seconds=25)
     for call in [*client.posted, *client.updated]:
         assert "Answered in the room" not in json.dumps(call)
-    assert "Read file" in _blocks(client.posted[1])
+    assert "Read file" in _blocks(client.posted[0])
     assert "Worked for 25s" in _blocks(client.updated[0])
 
 
-async def test_plan_log_is_not_redrawn_by_timer_and_preserves_tool_warnings() -> None:
+async def test_the_clock_and_the_tool_log_share_one_message_and_keep_warnings() -> None:
+    """Both halves of the old pair, in the message that replaced them.
+
+    The status used to be posted separately so the clock could advance without
+    rebuilding the plan. Streaming moves the header on its own, so there is one
+    message, and its plan block carries the turn's state as its title.
+    """
     client = FakeWebClient()
     activity = SessionTurnActivity(_adapter(client))
     tool = _item().model_copy(
         update={"kind": "tool-activity", "title": "Read", "status": "in-progress"}
     )
     await _publish(activity, [tool], _turn("running"), elapsed_seconds=0)
-    assert client.posted[1]["blocks"][0]["type"] == "plan"
-    assert client.posted[1]["blocks"][0]["title"] == "1 tool call · Running: Read"
+    assert len(client.posted) == 1
+    assert client.posted[0]["blocks"][0]["type"] == "plan"
+    assert client.posted[0]["blocks"][0]["title"] == "Working… 0s · Running: Read"
+
     await _publish(activity, [tool], _turn("running"), elapsed_seconds=5)
     assert [call["ts"] for call in client.updated] == ["1.0"]
+
     failed = tool.model_copy(update={"revision": 2, "status": "failed"})
     await _publish(activity, [failed], _turn("completed"), elapsed_seconds=10)
-    task = client.updated[-1]["blocks"][0]["tasks"][0]
-    assert client.updated[-1]["blocks"][0]["title"] == "1 tool call"
+    plan = client.updated[-1]["blocks"][0]
+    assert client.updated[-1]["ts"] == "1.0"
+    assert "Worked for 10s" in plan["title"]
+    task = plan["tasks"][0]
     assert task["status"] == "complete"
     assert "Read" in task["title"] and task["title"] != "Read"
-    assert "Worked for 10s" in _blocks(client.updated[-2])
-    assert client.updated[-2]["ts"] == "1.0"
-    assert client.updated[-1]["ts"] == "2.0"
     assert client.api_calls == []

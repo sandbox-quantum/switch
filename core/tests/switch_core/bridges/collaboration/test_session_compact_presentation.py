@@ -52,7 +52,12 @@ async def test_completed_log_keeps_tools_without_console_links():
     assert "Worked for" not in message.text
 
 
-async def test_live_clock_updates_visible_link_without_editing_the_tool_log():
+async def test_the_clock_and_the_tool_log_move_the_one_message_link_and_all():
+    """No thread requester here, so this is the unstreamed fallback path.
+
+    Both things that used to have a message each — the clock and the tool log
+    — now move the same one, and the Console link stays on it throughout.
+    """
     adapter, client = _adapter()
     activity = SessionTurnActivity(adapter)
     items = await _items()
@@ -65,19 +70,22 @@ async def test_live_clock_updates_visible_link_without_editing_the_tool_log():
         session_url=URL,
     )
     await activity.publish(items, _turn("running"), elapsed_seconds=1, **kwargs)
+    assert len(client.posted) == 1
     await activity.publish(items, _turn("running"), elapsed_seconds=30, **kwargs)
     assert len(client.updated) == 1
     assert client.updated[0]["ts"] == "1.0"
     assert "30s" in client.updated[0]["text"]
-    assert URL in client.updated[0]["blocks"][0]["elements"][0]["text"]
+    assert URL in json.dumps(client.updated[0]["blocks"])
+
+    # A tool moving without the clock moving is still a change to this message.
     tool_index = next(i for i, item in enumerate(items) if item.kind == "tool-activity")
     items[tool_index] = items[tool_index].model_copy(
         update={"revision": items[tool_index].revision + 1}
     )
     await activity.publish(items, _turn("running"), elapsed_seconds=30, **kwargs)
     assert len(client.updated) == 2
-    assert client.updated[1]["ts"] == "2.0"  # Only the tool log changed.
-    assert URL not in json.dumps(client.updated[1]["blocks"])
+    assert client.updated[1]["ts"] == "1.0"
+    assert URL in json.dumps(client.updated[1]["blocks"])
 
 
 def test_request_keeps_answer_buttons_and_recovery_marker_without_console_link():
@@ -141,10 +149,10 @@ async def test_attention_retries_do_not_create_extra_posts_and_recovery_clears_w
         await activity.publish(
             [], _turn("running"), error_summary="The host is offline.", **kwargs
         )
-    assert len(client.posted) == 3  # Status, reserved log, and one attention reply.
-    alert_ref = "3.0"
+    assert len(client.posted) == 2  # The turn, and one attention reply.
+    alert_ref = "2.0"
     await activity.publish([], _turn("running"), **kwargs)
-    assert len(client.posted) == 3
+    assert len(client.posted) == 2
     edits = [edit for edit in client.updated if edit["ts"] == alert_ref]
     assert edits[-1]["blocks"][0]["type"] == "task_card"
     assert "Working" in edits[-1]["text"]
@@ -158,7 +166,7 @@ def test_untrusted_url_scheme_is_not_rendered():
     assert "javascript" not in json.dumps(result.blocks)
 
 
-async def test_completion_keeps_status_first_and_tool_log_second():
+async def test_a_turn_running_to_completion_posts_once_and_deletes_nothing():
     adapter, client = _adapter()
     activity = SessionTurnActivity(adapter)
     kwargs = dict(
@@ -170,18 +178,15 @@ async def test_completion_keeps_status_first_and_tool_log_second():
         session_url=URL,
     )
     await activity.publish([], _turn("running"), elapsed_seconds=1, **kwargs)
-    assert len(client.posted) == 2
+    assert len(client.posted) == 1
     assert "Working" in client.posted[0]["text"]
-    assert "No tool calls yet" in client.posted[1]["text"]
     items = await _items()
     await activity.publish(items, _turn("running"), elapsed_seconds=30, **kwargs)
     await activity.publish(items, _turn("completed"), elapsed_seconds=100, **kwargs)
-    assert len(client.posted) == 2
+    assert len(client.posted) == 1
+    assert "Worked for 1m 40s" in client.updated[-1]["text"]
     assert not client.deleted
-    status = [edit for edit in client.updated if edit["ts"] == "1.0"][-1]
-    log = [edit for edit in client.updated if edit["ts"] == "2.0"][-1]
-    assert "Worked for 1m 40s" in status["text"]
-    assert status["text"].count(URL) == 1
-    assert log["blocks"][0]["type"] == "plan"
-    assert URL not in json.dumps(log)
-    assert "Worked for" not in log["text"]
+    settled = [edit for edit in client.updated if edit["ts"] == "1.0"][-1]
+    assert settled["blocks"][0]["type"] == "plan"
+    assert "Worked for 1m 40s" in settled["blocks"][0]["title"]
+    assert json.dumps(settled["blocks"]).count(URL) == 1

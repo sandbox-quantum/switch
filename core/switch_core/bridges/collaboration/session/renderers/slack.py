@@ -27,6 +27,7 @@ them can reach a limit.
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 from dataclasses import dataclass
 from html import unescape
@@ -137,6 +138,15 @@ _MAX_RESOLVED_DETAILS = 2800
 _MAX_TEXT = 39000
 
 _MAX_TASK_ID = 64
+
+# Slack measures a `task_update` or `plan_update` chunk serialised and rejects
+# the whole append over 256 characters, taking the other chunks in it with it.
+# The budget is spent title first: a card whose detail was cut still says what
+# it did, where one whose title was cut says nothing.
+_MAX_CHUNK = 256
+# Below this a trimmed detail is an ellipsis with a word in front of it, which
+# takes room from the title to say nothing. Drop it instead.
+_MIN_CHUNK_DETAILS = 12
 
 # Slack's three task states against the contract's four. `declined` is not an
 # error — the call did what it was told, and what it was told was no — but
@@ -968,23 +978,10 @@ def render_activity(
         hidden = max(0, count - _MAX_PLAN_TASKS)
         if hidden:
             title += f" · {hidden} earlier not shown"
-        if did and turn.status not in TURN_ENDED:
-            current = next(
-                (item for item in reversed(did) if item.status == "in-progress"), None
-            )
-            label = "Running" if current else "Last"
-            tool = current or did[-1]
-            title += f" · {label}: {plain_text(tool.title) if tool.title else 'Tool'}"
+        title += _running_step(did, turn)
         plan["title"] = _fit(title, _MAX_PLAN_TITLE)
         for task, item in zip(plan["tasks"], did[-_MAX_PLAN_TASKS:]):
-            # A historical call can finish unsuccessfully. Preserve its warning
-            # in the title without making the whole log look like a failed plan.
-            if item.status != "in-progress" or turn.status in TURN_ENDED:
-                task["status"] = "complete"
-            if item.status == "in-progress" and turn.status in TURN_ENDED:
-                task["title"] = _fit(
-                    "Unfinished: " + task["title"], _MAX_PLAN_TASK_TITLE
-                )
+            _settled(task, item, turn)
         return SlackMessage(
             text=plan["title"] + "\n" + "\n".join(_activity_lines(did)), blocks=[plan]
         )
@@ -1116,6 +1113,236 @@ def _activity_lines(items: list[Item]) -> list[str]:
         spent += len(line) + 1
     lines.reverse()
     return lines
+
+
+def render_activity_plan(
+    items: list[Item],
+    turn: TurnUpsert,
+    *,
+    elapsed_seconds: float | None = None,
+    session_url: str | None = None,
+) -> SlackMessage:
+    """A turn's activity as one plan block: the header, and the steps behind it.
+
+    What a stream draws, drawn as an ordinary message instead, for a thread a
+    stream could not be opened in. The two have to agree — a reader should not
+    be able to tell which transport carried their turn — so both take their
+    header from `_activity_title` and settle their cards the same way.
+
+    This is deliberately the plan alone. The agent's own words are posted to
+    the room as messages in their own right, and repeating them inside the
+    activity block would say everything twice.
+
+    A turn that has run no tools yet has no plan to show, so it falls back to
+    the spinning card the status line used to be — this one message stands in
+    for both of the two it replaced.
+    """
+    did = [item for item in items if item.kind == "tool-activity"]
+    kept = did[len(did) - _MAX_PLAN_TASKS :]
+    title = _activity_title(
+        items, turn, elapsed_seconds=elapsed_seconds, omitted=len(did) - len(kept)
+    )
+    blocks: list[dict[str, Any]] = []
+    if kept:
+        blocks.append(
+            {
+                "type": "plan",
+                "title": _fit(title, _MAX_PLAN_TITLE),
+                "tasks": [_settled(_plan_task(item), item, turn) for item in kept],
+            }
+        )
+    elif turn.status not in TURN_ENDED:
+        blocks.append(
+            {
+                "type": "task_card",
+                "task_id": _task_id(turn.turn_id),
+                "title": _fit(title, _MAX_PLAN_TASK_TITLE),
+                "status": "in_progress",
+            }
+        )
+    else:
+        blocks.append(_context(title))
+    if session_url and urlsplit(session_url).scheme in {"https", "http", "switchdash"}:
+        blocks.append(_context(f"<{session_url}|Open in Console app>"))
+    return SlackMessage(text=title, blocks=blocks)
+
+
+@dataclass
+class StreamedActivity:
+    """A turn's activity as the pieces a stream is built from.
+
+    The whole turn every time, not a delta: which of these Slack has already
+    been told is the streaming adapter's bookkeeping, because only it knows
+    what its own appends landed. Keeping that out of here leaves this a pure
+    function of the turn, testable without a stream.
+    """
+
+    title: str
+    tasks: list[dict[str, Any]]
+
+
+def render_activity_stream(
+    items: list[Item],
+    turn: TurnUpsert,
+    *,
+    elapsed_seconds: float | None = None,
+    omitted: int = 0,
+) -> StreamedActivity:
+    """The same turn as `render_activity`, shaped for `chat.appendStream`.
+
+    A streamed plan and a posted one draw the same thing and are built
+    differently. A posted plan is one block replaced whole, so it can show a
+    window onto the newest steps and drop the rest. A stream only ever adds:
+    a card that has been appended stays, and there is no call that removes it.
+    So the cap here is on cards ever *created*, `omitted` is what the caller
+    could not create once it hit that cap, and the header says so — the same
+    disclosure the block form makes about its window, for the opposite reason.
+
+    `details` is a plain string, where the `task_card` block wants a rich_text
+    entity. Measured against the live API, which rejects every rich_text shape
+    on a chunk; Slack stores what it is given here as rich_text anyway, so the
+    two paths render identically despite taking different input.
+    """
+    did = [item for item in items if item.kind == "tool-activity"]
+    return StreamedActivity(
+        title=_fit(
+            _activity_title(
+                items, turn, elapsed_seconds=elapsed_seconds, omitted=omitted
+            ),
+            _MAX_PLAN_TITLE,
+        ),
+        tasks=[_stream_task(item, turn) for item in did],
+    )
+
+
+def _stream_task(item: Item, turn: TurnUpsert) -> dict[str, Any]:
+    """One tool call as a streaming chunk.
+
+    The card the same item draws in a plan block, with the two differences the
+    chunk form insists on: `id` rather than `task_id`, and a plain-string
+    detail where the block wants a rich_text entity. Trimmed to what an append
+    will carry — see `_within_chunk`.
+    """
+    card = _settled(_plan_task(item), item, turn)
+    chunk: dict[str, Any] = {
+        "type": "task_update",
+        "id": card["task_id"],
+        "title": card["title"],
+        "status": card["status"],
+    }
+    details = plain_text(item.text) if item.text else ""
+    if details:
+        chunk["details"] = _fit(details, _MAX_PLAN_TASK_DETAILS)
+    return _within_chunk(chunk)
+
+
+def _settled(task: dict[str, Any], item: Item, turn: TurnUpsert) -> dict[str, Any]:
+    """A card's status as the log shows it, rather than as the item stands.
+
+    A historical call that finished unsuccessfully keeps its warning in the
+    title but not in its status, because one failed step does not make the
+    whole plan a failed plan. A call still open when the turn stopped will
+    never close, so the title says so rather than leaving a step spinning for
+    good.
+    """
+    if item.status != "in-progress" or turn.status in TURN_ENDED:
+        task["status"] = "complete"
+    if item.status == "in-progress" and turn.status in TURN_ENDED:
+        task["title"] = _fit("Unfinished: " + task["title"], _MAX_PLAN_TASK_TITLE)
+    return task
+
+
+def _within_chunk(chunk: dict[str, Any]) -> dict[str, Any]:
+    """Trim a chunk to the 256 characters an append will accept.
+
+    Detail goes before title, and a detail with nothing useful left goes
+    entirely rather than becoming a lone ellipsis. The title is cut last and
+    never dropped: a card has to say what it is.
+
+    Each cut is measured again rather than worked out from the overshoot,
+    because the budget is spent on the serialised form and a character does
+    not cost one there — the ellipsis a trim adds is six.
+    """
+    for field in ("details", "title"):
+        while (over := _chunk_length(chunk) - _MAX_CHUNK) > 0 and chunk.get(field):
+            keep = len(chunk[field]) - over
+            if field == "details" and keep < _MIN_CHUNK_DETAILS:
+                del chunk["details"]
+                break
+            if keep < 1:
+                break
+            chunk[field] = _shorten(chunk[field], keep)
+    return chunk
+
+
+def _shorten(text: str, limit: int) -> str:
+    """Cut text that has already been escaped, without splitting an entity.
+
+    `_fit` cuts the source and escapes the result, which is the right way round
+    and not available here: by this point the value has been escaped and the
+    budget being spent is on the escaped form. Slicing it blind can leave `&am`
+    in front of the reader, so a cut that landed inside an entity backs up to
+    where it started.
+    """
+    if len(text) <= limit:
+        return text
+    cut = _truncate(text, limit)[:-1]
+    opened = cut.rfind("&")
+    if opened != -1 and ";" not in cut[opened:]:
+        cut = cut[:opened]
+    return f"{cut}…"
+
+
+def _chunk_length(chunk: dict[str, Any]) -> int:
+    """How long Slack will consider this chunk: the serialised form.
+
+    Measured the way the SDK puts it on the wire, which escapes every
+    non-ASCII character to `\\uXXXX`. Whether Slack counts the wire form or the
+    decoded string is not documented, so this counts the longer of the two:
+    trimming a title further than it needed is a cosmetic loss, while
+    undershooting has Slack reject the append and every other card in it.
+    """
+    return len(json.dumps(chunk, separators=(",", ":")))
+
+
+def _activity_title(
+    items: list[Item],
+    turn: TurnUpsert,
+    *,
+    elapsed_seconds: float | None = None,
+    omitted: int = 0,
+) -> str:
+    """The one line a reader gets with the plan collapsed.
+
+    This message replaced a pair — a status line that ticked, and a tool log
+    that did not — so its header has to carry both jobs: where the turn got to
+    and how long it has been there, then the step it is on. A running turn
+    names that step, because "Working… 40s" alone does not say whether
+    anything is happening. An ended one does not: `turn_state` already counts
+    what it did, and the last step it ran is no longer news.
+
+    What is not being shown is said here for the same reason — the header is
+    the only part of a collapsed block, so a cut nobody is told about is a cut
+    nobody can see.
+    """
+    title = turn_state(items, turn, tool_detail=True, elapsed_seconds=elapsed_seconds)
+    title += _running_step([i for i in items if i.kind == "tool-activity"], turn)
+    if omitted:
+        step = "step" if omitted == 1 else "steps"
+        title += f" · {omitted} earlier {step} not shown"
+    return title
+
+
+def _running_step(did: list[Item], turn: TurnUpsert) -> str:
+    """The step a live turn is on, as a suffix, or nothing for an ended one."""
+    if not did or turn.status in TURN_ENDED:
+        return ""
+    current = next(
+        (item for item in reversed(did) if item.status == "in-progress"), None
+    )
+    tool = current or did[-1]
+    label = "Running" if current else "Last"
+    return f" · {label}: {plain_text(tool.title) if tool.title else 'Tool'}"
 
 
 def _plan(
