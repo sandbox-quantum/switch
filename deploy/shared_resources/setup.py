@@ -243,6 +243,25 @@ def register_bridge(client: httpx.Client) -> str:
                         f"/gateway/collaborations/{bridge_id}/default"
                     ).raise_for_status()
                     print(f"Set Mattermost bridge as default: {bridge_id}")
+                # Same reason: a bridge registered before callbacks existed
+                # would otherwise keep drawing cards with no buttons on them,
+                # and the only cure would be editing a connection field by
+                # hand. Sent every run rather than only when it is missing,
+                # because the config a bridge holds is not readable back — it
+                # carries the admin password, so no endpoint returns it.
+                if MATTERMOST_CALLBACK_BASE_URL:
+                    client.patch(
+                        f"/gateway/collaborations/{bridge_id}",
+                        json={
+                            "connection_config": {
+                                "callback_base_url": MATTERMOST_CALLBACK_BASE_URL
+                            }
+                        },
+                    ).raise_for_status()
+                    print(
+                        f"Set Mattermost callback address: "
+                        f"{MATTERMOST_CALLBACK_BASE_URL}"
+                    )
                 return bridge_id
 
     # Register new bridge

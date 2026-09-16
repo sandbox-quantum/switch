@@ -14,7 +14,7 @@ shared onboarding model, then the per-platform guide:
 | Platform | Guide | Identity model | Inbound transport | Public ingress |
 | --- | --- | --- | --- | --- |
 | Slack | [`SLACK_SETUP.md`](SLACK_SETUP.md) | single bot app | Socket Mode (outbound WS) | not required |
-| Mattermost | [`MATTERMOST_SETUP.md`](MATTERMOST_SETUP.md) | one bot account per agent | WebSocket (outbound) | not required |
+| Mattermost | [`MATTERMOST_SETUP.md`](MATTERMOST_SETUP.md) | one bot account per agent | WebSocket (outbound), plus HTTP push for button presses | not required, unless the Mattermost server is outside the network |
 | Microsoft Teams | [`TEAMS_SETUP.md`](TEAMS_SETUP.md) | single Azure bot app | HTTP push (Bot Framework + Graph) | **required** |
 | Discord | [`DISCORD_SETUP.md`](DISCORD_SETUP.md) | single bot app | Gateway WebSocket (outbound) | not required |
 | Telegram | [`TELEGRAM_SETUP.md`](TELEGRAM_SETUP.md) | single bot, agent named in the message body | long polling (outbound) | not required |

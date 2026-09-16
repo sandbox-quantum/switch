@@ -87,6 +87,23 @@ http://host.docker.internal:8081        # Mattermost in Docker, switch-core on t
 https://switch-callbacks.example.invalid # behind a reverse proxy
 ```
 
+**A bridge that already exists** cannot be given the field from the operator
+dashboard: the registration form is generated from the connection schema and so
+offers `callback_base_url`, but there is no form for editing a connection
+afterwards — only the greetings and channel-creation toggles. Use the API, as a
+gateway admin:
+
+```bash
+curl -X PATCH "$GATEWAY_URL/gateway/collaborations/$BRIDGE_ID" \
+  -H 'Content-Type: application/json' \
+  -H "Cookie: switch_auth=$TOKEN" \
+  -d '{"connection_config": {"callback_base_url": "http://switch:8081"}}'
+```
+
+The config is merged over what is stored, so the admin password does not have to
+be re-sent, and the bridge is restarted so the change takes effect rather than
+waiting for the next deploy.
+
 **Mattermost must be allowed to call it.** Mattermost refuses outbound
 integration requests to private addresses unless the host is listed in System
 Console → Environment → Developer → *Allow untrusted internal connections to*
@@ -111,6 +128,19 @@ Two consequences:
 - **Rotating `JWT_SECRET_KEY` invalidates the buttons on cards already posted.**
   Those presses are refused and logged; the requests behind them stay answerable
   by typing. New cards work immediately.
+
+**What a reader sees.** An open permission card gains one button per option,
+numbered the way the card's own text numbers them, so pressing and typing name
+the same choice. The buttons disappear when the request is answered, cancelled
+or expires. A press by somebody who may not answer, or on a card that has
+already settled, is explained to that person alone — nobody else in the channel
+sees it. A card that says it is too long to answer from Mattermost carries no
+buttons, because the reader has not been shown what they would be deciding.
+
+Buttons ride in the post's props, which an edit replaces wholesale, so a redraw
+reads the post back and merges rather than overwriting what the Mattermost
+server itself put there. It is one extra API call, made only for request cards
+on bridges that take callbacks.
 
 **Kubernetes.** The Helm chart does not publish the callback port yet, so a
 chart deployment needs the Service port and route added by hand for now; the
@@ -141,9 +171,18 @@ Both stacks also wire up button presses ([step 3](#3-optional-let-mattermost-del
 the compose file allows Mattermost to call the private address, and the seeder
 sets `callback_base_url` — `http://switch:8081` under `standalone-up`, where
 switch-core is a service, and `http://host.docker.internal:8081` under `just up`,
-where it runs on your host. The seeder skips a bridge that is **already**
-registered, so a stack created before this existed keeps working without buttons
-until you add `callback_base_url` to the bridge in the operator dashboard.
+where it runs on your host. A bridge that is **already** registered keeps its
+existing configuration, except for this one field: the seeder sets the callback
+address on every run, because the config a bridge holds carries the admin
+password and so is not readable back to compare against. A bridge registered
+before callbacks existed therefore gains its buttons on the next stack start,
+and the bridge restarts as part of that.
+
+A **Mattermost container** created before callbacks existed does not get the
+allowlist by being restarted — its environment was fixed when it was created.
+Recreate it (`docker compose up -d --force-recreate mattermost`; the volume and
+so the data survive), or set the value by hand in System Console → Environment →
+Developer.
 
 ## Notes
 
