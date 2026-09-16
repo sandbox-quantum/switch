@@ -194,11 +194,15 @@ const TemplateDetailPanel = observer(function TemplateDetailPanel() {
     );
   }
 
-  const { data } = loaded;
   const mine = loaded.server !== null && me !== null && loaded.server.ownerId === me.id;
   const canDelete = loaded.server !== null && (mine || me?.role === 'admin');
 
-  const use = () => showAddAgentModal({ entryPoint: 'server_page', template: data });
+  // An agent template's second step is the add-agent dialog; a room
+  // template's is the import view's inputs step, with the document loaded.
+  const use = () => {
+    if (loaded.agent) showAddAgentModal({ entryPoint: 'server_page', template: loaded.agent });
+    else navigate('templateImport', { serverId, templateId });
+  };
 
   const saveToServer = async () => {
     if (!loaded.bundled) return;
@@ -244,7 +248,9 @@ const TemplateDetailPanel = observer(function TemplateDetailPanel() {
   const exportYaml = async () => {
     setBusy('export');
     try {
-      const slug = (data.agentName ?? loaded.name).toLowerCase().replace(/[^a-z0-9]+/g, '-');
+      const slug = (loaded.agent?.agentName ?? loaded.name)
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '-');
       const path = await rpc.app.saveTextFile({
         title: 'Export template',
         defaultPath: `${slug}.template.yaml`,
@@ -265,7 +271,7 @@ const TemplateDetailPanel = observer(function TemplateDetailPanel() {
   return (
     <div className="relative z-10 flex min-h-0 flex-1 flex-col overflow-auto bg-background">
       <div className="space-y-8 px-8 pb-10">
-        <PageHeader sticky title={loaded.name} description={data.description} back={back}>
+        <PageHeader sticky title={loaded.name} description={loaded.description} back={back}>
           <div className="flex items-center gap-2">
             {loaded.bundled && !loaded.server && (
               <Button
@@ -314,53 +320,101 @@ const TemplateDetailPanel = observer(function TemplateDetailPanel() {
               {mine ? 'On this server · yours' : `On this server · by ${loaded.server.creator}`}
             </Badge>
           )}
-          <Badge variant="outline">agent template</Badge>
+          <Badge variant="outline">
+            {loaded.kind === 'agent' ? 'agent template' : 'room template'}
+          </Badge>
         </div>
 
-        <section className="flex flex-col gap-3">
-          <h2 className="text-sm font-semibold text-foreground">What it creates</h2>
-          <Row label="Agent">
-            {data.agentName ? (
-              <span className="font-mono">{data.agentName}</span>
-            ) : (
-              <span className="text-foreground-muted">Named when created</span>
-            )}
-          </Row>
-          {data.repoUrl && (
-            <Row label="Repository">
-              <Link url={data.repoUrl} />
-              <span className="text-foreground-muted">, cloned into its directory</span>
+        {loaded.agent && (
+          <section className="flex flex-col gap-3">
+            <h2 className="text-sm font-semibold text-foreground">What it creates</h2>
+            <Row label="Agent">
+              {loaded.agent.agentName ? (
+                <span className="font-mono">{loaded.agent.agentName}</span>
+              ) : (
+                <span className="text-foreground-muted">Named when created</span>
+              )}
             </Row>
-          )}
-          {data.sources.length > 0 && (
-            <Row label="Sources">
-              <span className="flex flex-wrap gap-x-1.5">
-                {data.sources.map((s, i) => (
-                  <span key={s.url}>
-                    {i > 0 && <span className="text-foreground-muted">· </span>}
-                    <Link url={s.url} label={s.label} />
+            {loaded.agent.repoUrl && (
+              <Row label="Repository">
+                <Link url={loaded.agent.repoUrl} />
+                <span className="text-foreground-muted">, cloned into its directory</span>
+              </Row>
+            )}
+            {loaded.agent.sources.length > 0 && (
+              <Row label="Sources">
+                <span className="flex flex-wrap gap-x-1.5">
+                  {loaded.agent.sources.map((src, i) => (
+                    <span key={src.url}>
+                      {i > 0 && <span className="text-foreground-muted">· </span>}
+                      <Link url={src.url} label={src.label} />
+                    </span>
+                  ))}
+                </span>
+              </Row>
+            )}
+            <Row label="Room">
+              {loaded.agent.roomName ? (
+                <>
+                  <span>
+                    &quot;{loaded.agent.roomName.replace('{agent}', loaded.agent.agentName ?? 'it')}
+                    &quot;
                   </span>
-                ))}
-              </span>
+                  <span className="text-foreground-muted">, with you, kickoff sent as you</span>
+                </>
+              ) : (
+                <span className="text-foreground-muted">None. Add it to a room to start it.</span>
+              )}
             </Row>
-          )}
-          <Row label="Room">
-            {data.roomName ? (
-              <>
-                <span>&quot;{data.roomName.replace('{agent}', data.agentName ?? 'it')}&quot;</span>
-                <span className="text-foreground-muted">, with you, kickoff sent as you</span>
-              </>
-            ) : (
-              <span className="text-foreground-muted">None. Add it to a room to start it.</span>
-            )}
-          </Row>
-          <Row label="Answers">{ADDRESSING_LABEL[data.addressing ?? 'owner']}</Row>
-        </section>
+            <Row label="Answers">{ADDRESSING_LABEL[loaded.agent.addressing ?? 'owner']}</Row>
+          </section>
+        )}
 
-        <section className="flex flex-col gap-3">
-          <h2 className="text-sm font-semibold text-foreground">Instructions</h2>
-          <TextBlock text={data.instructions} />
-        </section>
+        {loaded.room && (
+          <section className="flex flex-col gap-3">
+            <h2 className="text-sm font-semibold text-foreground">What it creates</h2>
+            <Row label="Room">
+              {loaded.room.roomName ?? (
+                <span className="text-foreground-muted">Named on create</span>
+              )}
+            </Row>
+            <Row label="Agents">
+              {loaded.room.agents.length > 0 ? (
+                <span className="font-mono">{loaded.room.agents.join(', ')}</span>
+              ) : (
+                <span className="text-foreground-muted">None</span>
+              )}
+            </Row>
+            <Row label="People">
+              {loaded.room.users.length > 0 ? (
+                loaded.room.users.join(', ')
+              ) : (
+                <span className="text-foreground-muted">None</span>
+              )}
+            </Row>
+            <Row label="Inputs">
+              {loaded.room.params.length > 0 ? (
+                loaded.room.params.map((p) => p.name).join(', ')
+              ) : (
+                <span className="text-foreground-muted">None</span>
+              )}
+            </Row>
+            <Row label="Kickoff">
+              {loaded.room.kickoff ? (
+                <span className="whitespace-pre-wrap">{loaded.room.kickoff.trim()}</span>
+              ) : (
+                <span className="text-foreground-muted">None</span>
+              )}
+            </Row>
+          </section>
+        )}
+
+        {loaded.agent && (
+          <section className="flex flex-col gap-3">
+            <h2 className="text-sm font-semibold text-foreground">Instructions</h2>
+            <TextBlock text={loaded.agent.instructions} />
+          </section>
+        )}
 
         <section className="flex flex-col gap-3">
           <div className="flex items-center justify-between gap-3">

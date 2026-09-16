@@ -1,19 +1,16 @@
 import Editor from '@monaco-editor/react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { ArrowRight, Check, Clock, FileText, Loader2, Save, Upload } from 'lucide-react';
+import { ArrowRight, Check, FileText, Loader2, Save, Upload } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { toast } from 'sonner';
-import type {
-  ParamSpec,
-  ParsedTemplate,
-  RecentTemplate,
-} from '@main/core/room-templates/controller';
+import type { ParamSpec, ParsedTemplate } from '@main/core/room-templates/controller';
 import type { GuardResult, ViewDefinition } from '@renderer/app/view-registry';
 import { refreshSidebarRoomState } from '@renderer/features/sidebar/sidebar-tree-data';
 import { ServerPage } from '@renderer/features/switch-servers/server-page';
 import { ServerSectionTitlebar } from '@renderer/features/switch-servers/server-section-titlebar';
 import { useMyIdentities } from '@renderer/features/switch-servers/use-my-identities';
+import { agentTemplateDataFromContent } from '@renderer/features/templates/agent-template-data';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
 import { useParams } from '@renderer/lib/layout/navigation-provider';
@@ -58,136 +55,22 @@ function readFileAsText(file: File, onText: (text: string) => void): void {
   reader.readAsText(file);
 }
 
-// ── Recents ────────────────────────────────────────────────────────────────
-
-function formatTimeAgo(ms: number): string {
-  const seconds = Math.floor((Date.now() - ms) / 1000);
-  if (seconds < 60) return 'just now';
-  const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return `${minutes}m ago`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours}h ago`;
-  return `${Math.floor(hours / 24)}d ago`;
-}
-
-/**
- * Templates used from this Console before, to use again or to save to the
- * server so everyone on it finds them; and, with none yet, the repository's
- * example, so the first run has something to start from.
- */
-function RecentsSection({
-  serverId,
-  onSelect,
-}: {
-  serverId: string;
-  onSelect: (yamlText: string, name: string) => void;
-}) {
-  const [recents, setRecents] = useState<RecentTemplate[] | null>(null);
-  const [saving, setSaving] = useState<string | null>(null);
-
-  useEffect(() => {
-    rpc.roomTemplates
-      .getRecents(serverId)
-      .then(setRecents)
-      .catch(() => setRecents([]));
-  }, [serverId]);
-
-  const loadExample = async () => {
-    onSelect(await rpc.roomTemplates.getExampleTemplate(), 'red-blue-workroom.template.yaml');
-  };
-
-  const saveToServer = async (recent: RecentTemplate) => {
-    setSaving(recent.yamlText);
-    try {
-      const name = recent.name.replace(/\.ya?ml$/i, '');
-      await rpc.switchServers.saveTemplate({
-        serverId,
-        name,
-        description: '',
-        kind: 'room',
-        content: recent.yamlText,
-      });
-      toast.success(`"${name}" is now on the server`);
-    } catch (error) {
-      toast.error(failureText(error, 'Could not save the template to the server.'));
-    } finally {
-      setSaving(null);
-    }
-  };
-
-  if (recents === null) return null;
-
-  return (
-    <div className="border-t border-border pt-4">
-      <h3 className="mb-3 flex items-center gap-1.5 text-sm font-medium">
-        <Clock className="size-3.5 text-foreground-muted" />
-        Recently used
-      </h3>
-      {recents.length === 0 ? (
-        <div className="rounded-lg border border-dashed border-border p-4 text-center">
-          <p className="text-sm text-foreground-muted">Nothing used from this Console yet.</p>
-          <p className="mt-1 text-sm text-foreground-muted">
-            Start from the{' '}
-            <button
-              type="button"
-              onClick={() => void loadExample()}
-              className="text-primary hover:text-primary/80 cursor-pointer underline underline-offset-2"
-            >
-              example template
-            </button>
-            .
-          </p>
-        </div>
-      ) : (
-        <div className="flex flex-col gap-1">
-          {recents.map((r) => (
-            <div key={r.yamlText} className="flex items-center gap-1">
-              <button
-                type="button"
-                onClick={() => onSelect(r.yamlText, r.name)}
-                className="flex flex-1 cursor-pointer items-center justify-between rounded-md border border-border px-3 py-2 text-left text-sm transition-colors hover:bg-[var(--sel-soft)]"
-              >
-                <span className="flex items-center gap-2 truncate">
-                  <FileText className="size-3.5 shrink-0 text-foreground-muted" />
-                  {r.name}
-                </span>
-                <span className="shrink-0 text-xs text-foreground-passive">
-                  {formatTimeAgo(r.usedAt)}
-                </span>
-              </button>
-              <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                title="Save to the server, so everyone on it can use it"
-                disabled={saving === r.yamlText}
-                onClick={() => void saveToServer(r)}
-              >
-                <Save className="size-3.5" />
-                Save to server
-              </Button>
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
 function SourceStep({
-  serverId,
   yamlText,
   onYamlChange,
   parseError,
   onNext,
   onFileSelect,
+  onSaveToServer,
+  saving,
 }: {
   yamlText: string;
-  serverId: string;
   onYamlChange: (text: string) => void;
   parseError: string | null;
   onNext: () => void;
   onFileSelect: (name: string) => void;
+  onSaveToServer: () => void;
+  saving: boolean;
 }) {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [dragging, setDragging] = useState(false);
@@ -223,7 +106,7 @@ function SourceStep({
     <div className="flex flex-col gap-4">
       <FieldGroup>
         <Field>
-          <FieldLabel>Paste a room template</FieldLabel>
+          <FieldLabel>Paste a template</FieldLabel>
           <div
             onDragOver={(e) => {
               e.preventDefault();
@@ -271,17 +154,21 @@ function SourceStep({
           Choose file
         </Button>
         <span className="text-xs text-foreground-passive">
-          or paste YAML above, or drag and drop
+          or paste YAML above, or drag and drop, or start from the{' '}
+          <button
+            type="button"
+            onClick={() => {
+              void rpc.roomTemplates.getExampleTemplate().then((yaml) => {
+                onFileSelect('red-blue-workroom.template.yaml');
+                onYamlChange(yaml);
+              });
+            }}
+            className="cursor-pointer underline underline-offset-2 hover:text-foreground"
+          >
+            example room template
+          </button>
         </span>
       </div>
-
-      <RecentsSection
-        serverId={serverId}
-        onSelect={(yaml, name) => {
-          onFileSelect(name);
-          onYamlChange(yaml);
-        }}
-      />
 
       {parseError && (
         <Alert variant="destructive">
@@ -289,8 +176,12 @@ function SourceStep({
         </Alert>
       )}
 
-      <div className="flex justify-end pt-2">
-        <Button disabled={!yamlText.trim()} onClick={onNext}>
+      <div className="flex items-center justify-end gap-2 pt-2">
+        <Button variant="outline" disabled={!yamlText.trim() || saving} onClick={onSaveToServer}>
+          <Save className="mr-1.5 size-3.5" />
+          {saving ? 'Saving…' : 'Save to server'}
+        </Button>
+        <Button disabled={!yamlText.trim() || saving} onClick={onNext}>
           Next
           <ArrowRight className="ml-1.5 size-3.5" />
         </Button>
@@ -765,12 +656,24 @@ function InputsStep({
 // ── Main view ──────────────────────────────────────────────────────────────
 
 function useServerId(): string {
-  return useParams('roomTemplateImport').params.serverId;
+  return useParams('templateImport').params.serverId;
+}
+
+/** Whether a document is an agent template: the top-level key says so. */
+function looksLikeAgentTemplate(yamlText: string): boolean {
+  return /^agent:\s*$/m.test(yamlText) || /^agent:\s+\S/m.test(yamlText);
 }
 
 const TemplateImportTitlebar = observer(function TemplateImportTitlebar() {
+  const serverId = useServerId();
   return (
-    <ServerSectionTitlebar serverId={useServerId()} icon={FileText} label="Create from Template" />
+    <ServerSectionTitlebar
+      serverId={serverId}
+      icon={FileText}
+      label="Templates"
+      item={{ label: 'Import' }}
+      onSectionClick={() => appState.navigation.navigate('templates', { serverId })}
+    />
   );
 });
 
@@ -800,14 +703,20 @@ const TemplateImportPanel = observer(function TemplateImportPanel() {
   const bridges = useMemo(() => bridgesQuery.data ?? [], [bridgesQuery.data]);
   const templateSchema = schemaQuery.data ?? null;
 
+  const {
+    yamlText: initialYaml,
+    sourceName: initialName,
+    templateId: initialTemplateId,
+  } = useParams('templateImport').params;
   const [step, setStep] = useState<Step>('source');
-  const [yamlText, setYamlText] = useState('');
+  const [yamlText, setYamlText] = useState(initialYaml ?? '');
+  const [saving, setSaving] = useState(false);
   const [parsed, setParsed] = useState<ParsedTemplate | null>(null);
   const [parseError, setParseError] = useState<string | null>(null);
   const [values, setValues] = useState<Record<string, string | number | boolean>>({});
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
   const [createError, setCreateError] = useState<string | null>(null);
-  const [sourceName, setSourceName] = useState<string | null>(null);
+  const [sourceName, setSourceName] = useState<string | null>(initialName ?? null);
   const [editedAgents, setEditedAgents] = useState<string[]>([]);
   const [editedUsers, setEditedUsers] = useState<string[]>([]);
 
@@ -1027,6 +936,29 @@ const TemplateImportPanel = observer(function TemplateImportPanel() {
 
   const handleParseAndAdvance = useCallback(async () => {
     setParseError(null);
+    // An agent document does not go through the room steps: the add-agent
+    // dialog is its second step, prefilled from it.
+    if (looksLikeAgentTemplate(yamlText)) {
+      try {
+        const template = await agentTemplateDataFromContent(
+          sourceName?.replace(/(\.template)?\.ya?ml$/i, '') ?? 'Pasted template',
+          yamlText,
+          null,
+          null
+        );
+        rpc.roomTemplates
+          .saveRecent({
+            serverId,
+            name: sourceName ?? template.agentName ?? 'Agent template',
+            yamlText,
+          })
+          .catch(() => {});
+        showModal('addAgentModal', { entryPoint: 'server_page', template });
+      } catch (e) {
+        setParseError(failureText(e, 'Could not parse this agent template.'));
+      }
+      return;
+    }
     try {
       const result = await rpc.roomTemplates.parse({
         yamlText,
@@ -1062,19 +994,86 @@ const TemplateImportPanel = observer(function TemplateImportPanel() {
     } catch (e) {
       setParseError(failureText(e, 'Could not parse this template.'));
     }
-  }, [yamlText, handleCreate, templateSchema]);
+  }, [yamlText, handleCreate, templateSchema, serverId, sourceName, showModal]);
+
+  // Either kind, straight from the first step: the server keeps it under the
+  // document's own name, and the listing shows it to everyone on the server.
+  const handleSaveToServer = useCallback(async () => {
+    setSaving(true);
+    setParseError(null);
+    try {
+      const isAgent = looksLikeAgentTemplate(yamlText);
+      let name = sourceName?.replace(/(\.template)?\.ya?ml$/i, '') ?? null;
+      let description = '';
+      if (isAgent) {
+        const t = await agentTemplateDataFromContent(
+          name ?? 'Agent template',
+          yamlText,
+          null,
+          null
+        );
+        name = t.agentName ?? name ?? 'Agent template';
+        description = t.description;
+      } else {
+        const t = await rpc.roomTemplates.parse({ yamlText, schema: templateSchema ?? undefined });
+        name = name ?? t.roomName ?? 'Room template';
+      }
+      await rpc.switchServers.saveTemplate({
+        serverId,
+        name,
+        description,
+        kind: isAgent ? 'agent' : 'room',
+        content: yamlText,
+      });
+      toast.success(`"${name}" is now on the server`);
+      appState.navigation.navigate('templates', { serverId });
+    } catch (e) {
+      setParseError(failureText(e, 'Could not save this template to the server.'));
+    } finally {
+      setSaving(false);
+    }
+  }, [yamlText, sourceName, serverId, templateSchema]);
+
+  // Opened with a document already chosen (a dropped file, a recent, a room
+  // card's Use): go straight past the first step.
+  const advancedOnce = useRef(false);
+  useEffect(() => {
+    if (advancedOnce.current) return;
+    if (initialTemplateId) {
+      advancedOnce.current = true;
+      rpc.switchServers
+        .getTemplateDetail({ serverId, templateId: initialTemplateId })
+        .then((detail) => {
+          setSourceName(detail.name);
+          setYamlText(detail.definition);
+        })
+        .catch((e: unknown) => setParseError(failureText(e, 'Could not load this template.')));
+      return;
+    }
+    if (initialYaml && initialYaml.trim().length > 0) {
+      advancedOnce.current = true;
+      void handleParseAndAdvance();
+    }
+  }, [initialTemplateId, initialYaml, serverId, handleParseAndAdvance]);
+  // A template fetched by id arrives a moment later; advance once it has.
+  const advancedFetched = useRef(false);
+  useEffect(() => {
+    if (!initialTemplateId || advancedFetched.current || yamlText.trim().length === 0) return;
+    advancedFetched.current = true;
+    void handleParseAndAdvance();
+  }, [initialTemplateId, yamlText, handleParseAndAdvance]);
 
   const stepNumber = step === 'source' ? 1 : 2;
   const totalSteps = 2;
 
   const subtitle =
     step === 'source'
-      ? 'Paste a room template or pick a YAML file.'
+      ? 'Paste an agent or room template, or pick a YAML file. The document says which it is.'
       : `${sourceName ?? 'template'}: ${parsed?.params.length ?? 0} input${(parsed?.params.length ?? 0) !== 1 ? 's' : ''}. The room is created only when you hit Create.`;
 
   return (
     <ServerPage
-      title="Create from template"
+      title={step === 'source' ? 'Import a template' : 'Create the room'}
       description={subtitle}
       action={
         <span className="text-xs text-foreground-muted">
@@ -1084,12 +1083,13 @@ const TemplateImportPanel = observer(function TemplateImportPanel() {
     >
       {step === 'source' && (
         <SourceStep
-          serverId={serverId}
           yamlText={yamlText}
           onYamlChange={setYamlText}
           parseError={parseError}
           onNext={handleParseAndAdvance}
           onFileSelect={setSourceName}
+          onSaveToServer={handleSaveToServer}
+          saving={saving}
         />
       )}
 
@@ -1135,8 +1135,18 @@ const TemplateImportPanel = observer(function TemplateImportPanel() {
   );
 });
 
-export const roomTemplateImportView = {
-  WrapView: ({ children }: { children: React.ReactNode; serverId: string }) => <>{children}</>,
+export const templateImportView = {
+  WrapView: ({
+    children,
+  }: {
+    children: React.ReactNode;
+    serverId: string;
+    /** A document to start from, when the person arrived with one. */
+    yamlText?: string;
+    sourceName?: string;
+    /** A registry row to load and go straight to its inputs. */
+    templateId?: string;
+  }) => <>{children}</>,
   TitlebarSlot: TemplateImportTitlebar,
   MainPanel: TemplateImportPanel,
   canActivate: (params: unknown): GuardResult => {
@@ -1147,4 +1157,9 @@ export const roomTemplateImportView = {
     if (typeof serverId !== 'string') return { ok: false, redirect: 'home' };
     return { ok: true };
   },
-} satisfies ViewDefinition<{ serverId: string }>;
+} satisfies ViewDefinition<{
+  serverId: string;
+  yamlText?: string;
+  sourceName?: string;
+  templateId?: string;
+}>;

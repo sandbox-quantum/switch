@@ -18,7 +18,7 @@ export const VIEW_IDS = [
   'serverRooms',
   'remoteHosts',
   'remoteHost',
-  'roomTemplateImport',
+  'templateImport',
   'templates',
   'templateDetail',
 ] as const;

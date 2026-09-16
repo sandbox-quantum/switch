@@ -1,5 +1,6 @@
 import type { ParsedAgentTemplate } from '@main/core/agent-templates/controller';
 import type { AgentTemplateOrigin } from '@main/core/agents/agent-config-file';
+import type { ParsedTemplate } from '@main/core/room-templates/controller';
 import type { StoredTemplateSummary } from '@main/core/switch-servers/gateway-client';
 import { rpc } from '@renderer/lib/ipc';
 import { type BundledTemplate, bundledTemplates, findBundledTemplate } from './bundled-templates';
@@ -95,17 +96,26 @@ export async function loadAgentTemplateData(
   });
 }
 
-/** A template as the detail page shows it: where it lives, its data, its document. */
+/** A template as the detail page shows it: where it lives, what it is, its document. */
 export type LoadedTemplate = {
   name: string;
+  description: string;
+  kind: 'agent' | 'room';
   /** The Console-bundled copy, when this is (or shadows) one. */
   bundled: BundledTemplate | null;
   /** The registry row, when the template is on the server. */
   server: StoredTemplateSummary | null;
-  data: AgentTemplateData;
+  /** Parsed, for an agent template. */
+  agent: AgentTemplateData | null;
+  /** Parsed, for a room template. */
+  room: ParsedTemplate | null;
   /** The full document, persona inlined, as it is or would be stored. */
   document: string;
 };
+
+function isAgentDocument(yamlText: string): boolean {
+  return /^agent:\s*$/m.test(yamlText) || /^agent:\s+\S/m.test(yamlText);
+}
 
 /**
  * Load one template by the id the listing gave it: a bundled id, or a registry
@@ -123,28 +133,53 @@ export async function loadTemplateById(
       yamlText: bundled.content,
       instructions: bundled.instructions ?? '',
     });
-    const data = await agentTemplateDataFromContent(bundled.name, document, null, {
+    const agent = await agentTemplateDataFromContent(bundled.name, document, null, {
       id: bundled.id,
       name: bundled.name,
       source: 'bundled',
     });
-    return { name: bundled.name, bundled, server: null, data, document };
+    return {
+      name: bundled.name,
+      description: bundled.description,
+      kind: 'agent',
+      bundled,
+      server: null,
+      agent,
+      room: null,
+      document,
+    };
   }
   const detail = await rpc.switchServers.getTemplateDetail({ serverId, templateId });
-  const data = await agentTemplateDataFromContent(detail.name, detail.definition, null, {
-    id: detail.id,
-    name: detail.name,
-    source: 'server',
-    serverId,
-  });
+  const { definition, ...summary } = detail;
   const shadowOf =
     bundledTemplates.find((b) => b.kind === 'agent' && b.name === detail.name) ?? null;
-  const { definition: _definition, ...summary } = detail;
+  if (detail.kind === 'agent' || (detail.kind !== 'room' && isAgentDocument(definition))) {
+    const agent = await agentTemplateDataFromContent(detail.name, definition, null, {
+      id: detail.id,
+      name: detail.name,
+      source: 'server',
+      serverId,
+    });
+    return {
+      name: detail.name,
+      description: detail.description,
+      kind: 'agent',
+      bundled: shadowOf,
+      server: summary,
+      agent,
+      room: null,
+      document: definition,
+    };
+  }
+  const room = await rpc.roomTemplates.parse({ yamlText: definition });
   return {
     name: detail.name,
-    bundled: shadowOf,
+    description: detail.description,
+    kind: 'room',
+    bundled: null,
     server: summary,
-    data,
-    document: detail.definition,
+    agent: null,
+    room,
+    document: definition,
   };
 }
