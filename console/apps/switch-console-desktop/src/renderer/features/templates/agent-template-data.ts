@@ -2,7 +2,7 @@ import type { ParsedAgentTemplate } from '@main/core/agent-templates/controller'
 import type { AgentTemplateOrigin } from '@main/core/agents/agent-config-file';
 import type { StoredTemplateSummary } from '@main/core/switch-servers/gateway-client';
 import { rpc } from '@renderer/lib/ipc';
-import { bundledTemplates, findBundledTemplate } from './bundled-templates';
+import { findBundledTemplate } from './bundled-templates';
 
 /**
  * What the add-agent modal needs from an agent template: the parsed document
@@ -90,30 +90,4 @@ export async function loadAgentTemplateData(
     detail.definition,
     null
   );
-}
-
-/**
- * The bundled template whose agent is called `agentName`, if there is one. The
- * room-template wizard uses it when a slot names an agent that does not exist
- * yet: creating "switch-expert" should offer the Switch expert, not a blank
- * form. Bundled only: server templates would need a round trip per candidate.
- */
-export async function bundledTemplateForAgent(
-  agentName: string
-): Promise<AgentTemplateData | null> {
-  for (const bundled of bundledTemplates) {
-    if (bundled.kind !== 'agent') continue;
-    try {
-      const data = await fromContent(
-        { id: bundled.id, name: bundled.name, source: 'bundled' },
-        bundled.content,
-        bundled.instructions
-      );
-      if (data.agentName === agentName) return data;
-    } catch {
-      // A bundled template that does not parse is a build problem, not the
-      // wizard's; the plain create path is still there.
-    }
-  }
-  return null;
 }

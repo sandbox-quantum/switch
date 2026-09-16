@@ -1,4 +1,4 @@
-import { FileText, Search, X } from 'lucide-react';
+import { FileText } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useCallback, useEffect, useState } from 'react';
 import type { StoredTemplateSummary } from '@main/core/switch-servers/gateway-client';
@@ -6,7 +6,6 @@ import { agentsStore } from '@renderer/features/locations/stores/agents-store';
 import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
 import { loadAgentTemplateData } from '@renderer/features/templates/agent-template-data';
 import { bundledTemplates } from '@renderer/features/templates/bundled-templates';
-import { AgentAvatar } from '@renderer/lib/components/agent-avatar';
 import { agentProviderLabel } from '@renderer/lib/components/agent-mark';
 import { AgentPickerRow, ChosenAgentTile } from '@renderer/lib/components/agent-picker';
 import { PickerCombobox } from '@renderer/lib/components/picker-combobox';

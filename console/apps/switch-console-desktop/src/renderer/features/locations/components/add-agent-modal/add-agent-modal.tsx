@@ -298,11 +298,12 @@ export const AddAgentModal = observer(function AddAgentModal({
     setAgentName(candidate);
   }, [template, prefillName, nameTaken, form.agentName, takenNames, setAgentName]);
 
-  // The room's first message is posted as the person, through their linked
-  // account on the room's bridge. Both halves are checked here, before the
-  // click, because after it the agent already exists and only the message is
-  // missing: a server with no messaging app has nowhere to talk to the agent,
-  // and a person the bridge cannot recognise cannot speak to it.
+  // The room puts the person in it as `{$creator}`, which the server fills
+  // only from a claimed identity on the room's bridge and refuses otherwise.
+  // Both halves are checked here, before the click, because after it the
+  // agent already exists and only the room is missing: a server with no
+  // messaging app has nowhere to talk to the agent, and a person the bridge
+  // cannot name cannot be put in the room.
   const { data: bridges } = useQuery({
     queryKey: ['remote-bridges', pickState.serverId],
     queryFn: () => rpc.switchServers.listRemoteBridges(pickState.serverId as string),
@@ -865,7 +866,8 @@ export const AddAgentModal = observer(function AddAgentModal({
               <p className="flex flex-wrap items-center gap-2 text-amber-500">
                 <TriangleAlert className="size-3.5 shrink-0" />
                 <span>
-                  The kickoff needs your {roomBridge.displayName} account linked on this server.
+                  Putting you in the room needs your {roomBridge.displayName} account linked on this
+                  server.
                 </span>
                 <Button type="button" size="xs" variant="outline" onClick={linkIdentity}>
                   Link account
