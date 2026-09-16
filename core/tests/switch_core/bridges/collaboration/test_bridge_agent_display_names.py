@@ -707,7 +707,9 @@ def _discord_adapter(
     adapter._connection._bot_user_id = BOT_USER_ID
     channel = _FakeChannel()
     dm = _FakeChannel(DM_CHANNEL_ID, dm=True)
-    adapter._connection._client = _FakeDiscordClient({CHANNEL_ID: channel, DM_CHANNEL_ID: dm})  # type: ignore[assignment]
+    adapter._connection._client = _FakeDiscordClient(
+        {CHANNEL_ID: channel, DM_CHANNEL_ID: dm}
+    )  # type: ignore[assignment]
     if bridge is not None:
         adapter.set_agent_presentation_resolver(bridge._agent_presentation)
     return adapter, channel, dm
