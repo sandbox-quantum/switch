@@ -140,7 +140,7 @@ headless stream-json protocol exposes no compaction operation. The installed Cur
 | Claude Code | Yes | Native catalog and effort | When `/compact` is advertised | Images as bytes; other files staged |
 | Codex | Yes | Native catalog and reasoning effort | App-server compaction | Local images and staged file mentions |
 | OpenCode | Yes | Connected models and native variants | Native session compaction | Staged file URLs |
-| Antigravity CLI | Yes | Native model list | Unavailable | Images/resources as bytes |
+| Antigravity CLI | Yes | Native model list | Unavailable | File paths in the prompt text only; the headless input rejects image blocks |
 | Cursor | Yes | ACP model catalog | Unavailable | Images as bytes; staged file references |
 
 Controls depend on the connected provider's reported support. OpenCode models
