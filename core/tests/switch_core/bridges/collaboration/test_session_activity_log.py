@@ -15,6 +15,8 @@ rather than about how much room there was.
 
 from __future__ import annotations
 
+import pytest
+
 from switch_core.bridges.collaboration.session.renderers import MARKDOWN
 from switch_core.bridges.collaboration.session.renderers.neutral import activity_log
 from switch_core.sessions.contract import Item
@@ -37,6 +39,7 @@ def _log(
     turn_state: str = "completed",
     *,
     limit: int = 10_000,
+    heading: bool = True,
 ) -> list[str]:
     return activity_log(
         items,
@@ -46,6 +49,7 @@ def _log(
         markup=MARKDOWN,
         elapsed_seconds=None,
         session_url=None,
+        heading=heading,
     ).splitlines()
 
 
@@ -156,6 +160,61 @@ def test_one_long_call_is_shortened_rather_than_dropped() -> None:
     assert "Grepped for" in lines[-1]
 
 
+# ── Where something above it already names the turn ──────────────────────────
+
+
+def test_a_log_that_declines_the_heading_starts_at_the_first_call() -> None:
+    """Teams folds the log away directly under the status line, which already
+    carries the state and the Console link. Printing them again as the log's
+    first line is the card showing one sentence twice."""
+    items = [_call(title="First"), _call(title="Second")]
+
+    assert _log(items, heading=False) == ["✓ First", "✓ Second"]
+
+
+def test_declining_the_heading_gives_its_room_back_to_the_calls() -> None:
+    """The budget is the whole of what may be spent, so a log with no state
+    line to pay for fits more of the turn into the same space."""
+    items = [_call(title=f"Call {index}") for index in range(20)]
+
+    with_head = [line for line in _log(items, limit=120)[1:] if line.startswith("✓")]
+    without = [
+        line for line in _log(items, limit=120, heading=False) if line.startswith("✓")
+    ]
+
+    assert len(without) > len(with_head)
+
+
+def test_a_headless_log_with_no_calls_is_still_the_sentence_saying_so() -> None:
+    """An empty log is not an empty string. A fold opening onto nothing reads
+    as a card that failed to draw."""
+    assert _log([], "completed", heading=False) == ["No tool calls."]
+
+
+def test_a_link_handed_to_a_headless_log_is_refused_rather_than_dropped() -> None:
+    """There is nowhere to put it once the state line is gone, and a caller who
+    thinks they published a Console link and did not is worse off than one told
+    they asked for something impossible."""
+    with pytest.raises(ValueError, match="nowhere to put the Console link"):
+        activity_log(
+            [_call()],
+            _turn("completed"),
+            escape=_identity,
+            limit=10_000,
+            markup=MARKDOWN,
+            elapsed_seconds=None,
+            session_url="https://console.example.test/s/1",
+            heading=False,
+        )
+
+
+def test_a_headless_log_stays_inside_the_budget_it_was_given() -> None:
+    items = [_call(title=f"Call {index} " + "x" * 400) for index in range(40)]
+
+    for limit in (80, 200, 1000, 2000):
+        assert len("\n".join(_log(items, limit=limit, heading=False))) <= limit
+
+
 # ── What it is drawn with ────────────────────────────────────────────────────
 
 
@@ -175,6 +234,7 @@ def test_host_text_is_put_through_the_platforms_own_escape() -> None:
         markup=MARKDOWN,
         elapsed_seconds=None,
         session_url=None,
+        heading=True,
     )
 
     assert "*not bold*" in seen
@@ -190,6 +250,7 @@ def test_the_console_link_rides_on_the_state_line_when_there_is_room() -> None:
         markup=MARKDOWN,
         elapsed_seconds=None,
         session_url="https://console.example.test/s/1",
+        heading=True,
     )
 
     assert "https://console.example.test/s/1" in drawn.splitlines()[0]
@@ -205,6 +266,7 @@ def test_a_link_that_would_not_fit_is_left_off_rather_than_cut_in_half() -> None
         markup=MARKDOWN,
         elapsed_seconds=None,
         session_url="https://console.example.test/" + "s" * 200,
+        heading=True,
     )
 
     assert "console.example.test" not in drawn

@@ -337,6 +337,7 @@ def activity_log(
     markup: Markup,
     elapsed_seconds: float | None,
     session_url: str | None,
+    heading: bool,
 ) -> str:
     """The tool calls behind a turn, one to a line, oldest cut first.
 
@@ -349,21 +350,36 @@ def activity_log(
     The cut is at the front because the newest end is what a reader came for,
     and it says how many it took: a log that quietly showed its tail reads as
     a turn that only made those calls.
+
+    `heading` says whether the log has to name the turn it belongs to. It does
+    wherever it is read apart from that turn's own message. The Console link
+    rides on that heading, so a caller declining it is saying the status
+    directly above already carries both — and one that declines the heading and
+    hands over a link is asking for the link to be dropped without being told.
     """
-    head = markup.bold(
-        turn_state(items, turn, tool_detail=True, elapsed_seconds=elapsed_seconds)
-    )
-    link = _link(_CONSOLE, session_url, markup)
-    if link and len(head) + 3 + len(link) <= limit:
-        head = f"{head} · {link}"
+    if session_url is not None and not heading:
+        raise ValueError(
+            "An activity log with no heading has nowhere to put the Console "
+            "link, and the status it sits under is what carries it."
+        )
+    head = None
+    if heading:
+        head = markup.bold(
+            turn_state(items, turn, tool_detail=True, elapsed_seconds=elapsed_seconds)
+        )
+        link = _link(_CONSOLE, session_url, markup)
+        if link and len(head) + 3 + len(link) <= limit:
+            head = f"{head} · {link}"
 
     did = [item for item in items if item.kind == "tool-activity"]
     if not did:
         nothing = _LOG_EMPTY if turn.status in TURN_ENDED else _LOG_EMPTY_YET
-        return _truncate(f"{head}\n{nothing}", limit)
+        return _truncate(nothing if head is None else f"{head}\n{nothing}", limit)
 
-    head = _truncate(head, limit)
-    spent = len(head)
+    spent = 0
+    if head is not None:
+        head = _truncate(head, limit)
+        spent = len(head)
     lines: list[str] = []
     omitted = 0
     for position, item in enumerate(reversed(did), start=1):
@@ -390,7 +406,7 @@ def activity_log(
         if spent + len(note) + 1 <= limit:
             lines.append(note)
     lines.reverse()
-    return "\n".join([head, *lines])
+    return "\n".join(lines if head is None else [head, *lines])
 
 
 def request_summary(

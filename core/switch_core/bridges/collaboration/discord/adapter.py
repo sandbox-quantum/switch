@@ -2749,6 +2749,7 @@ class DiscordAdapter(CollaborationAdapter):
             markup=self.rich_markup(),
             elapsed_seconds=snapshot.elapsed_seconds,
             session_url=None,
+            heading=True,
         )
         return f"{body}\n{stamp}"
 
