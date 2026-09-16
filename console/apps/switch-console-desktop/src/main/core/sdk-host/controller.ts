@@ -19,12 +19,15 @@ import { getServer } from '../switch-servers/servers-store';
 import { sharedAgentDiagnostics, sharedAgentLogs } from './diagnostics';
 import { syncSdkSessionActivity } from './session-activity';
 import { manageAgentSidecar } from './sidecar-management';
+import { stopSharedSession } from './stop-shared-session';
 async function sharedServer(serverId: string) {
   const server = await getServer(serverId);
   if (!server) throw new Error('Switch server not found.');
   return server;
 }
 export const sdkHostController = createRPCController({
+  stop: async (serverId: string, sessionId: string) =>
+    stopSharedSession(await sharedServer(serverId), sessionId),
   startupStatus: (sessionId: string) =>
     sessionRuntimeManager.getAgent(sessionId)?.startupStatus?.() ?? null,
   discoveryErrors: () => remoteSessionReconciler.errors(),

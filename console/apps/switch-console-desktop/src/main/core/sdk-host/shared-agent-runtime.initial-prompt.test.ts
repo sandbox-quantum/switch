@@ -305,3 +305,46 @@ it('still rejects deployment failures before a host connects', async () => {
   expect(agent.startupStatus().message).toBe('Could not deploy host.');
   expect(mocks.submit).not.toHaveBeenCalled();
 });
+
+it('reports restart progress through host replacement and authentication until ready', async () => {
+  let release!: () => void;
+  mocks.runHost.mockImplementationOnce(
+    () =>
+      new Promise<void>((resolve) => {
+        release = resolve;
+      })
+  );
+  mocks.loadSession.mockResolvedValue({ serverId: 'server-1', row: { config: {} } });
+  mocks.snapshot
+    .mockResolvedValueOnce({
+      session: { epoch: 'old', connectivity: 'online', status: 'ready' },
+      turns: [],
+      items: [],
+    })
+    .mockResolvedValue({
+      session: { epoch: 'new', connectivity: 'online', status: 'starting' },
+      turns: [],
+      items: [],
+    });
+  const agent = runtime();
+  const pending = agent.restart(session);
+  await vi.waitFor(() => expect(mocks.runHost).toHaveBeenCalled());
+  expect(agent.startupStatus()).toEqual({
+    status: 'starting',
+    message: 'Stopping the previous process and starting its replacement…',
+  });
+  release();
+  await vi.waitFor(() =>
+    expect(agent.startupStatus().message).toBe(
+      'Initializing the provider and checking authentication…'
+    )
+  );
+  mocks.snapshot.mockResolvedValue({
+    session: { epoch: 'new', connectivity: 'online', status: 'ready' },
+    turns: [],
+    items: [],
+  });
+  await pending;
+  expect(agent.startupStatus()).toEqual({ status: 'ready', message: null });
+  expect(mocks.submit).not.toHaveBeenCalled();
+});

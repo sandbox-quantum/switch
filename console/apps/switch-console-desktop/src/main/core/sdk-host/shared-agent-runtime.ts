@@ -64,6 +64,7 @@ export class SharedAgentRuntime implements AgentRuntimeProvider {
   private starting: Promise<void> | null = null;
   private opened: Promise<void> | null = null;
   private startupError: string | null = null;
+  private startupStage = 'Preparing the session…';
 
   startupStatus() {
     return {
@@ -72,7 +73,7 @@ export class SharedAgentRuntime implements AgentRuntimeProvider {
         : this.starting
           ? ('starting' as const)
           : ('ready' as const),
-      message: this.startupError,
+      message: this.startupError ?? (this.starting ? this.startupStage : null),
     };
   }
   constructor(
@@ -117,6 +118,7 @@ export class SharedAgentRuntime implements AgentRuntimeProvider {
     restart: boolean,
     connected: () => void
   ): Promise<void> {
+    this.startupStage = 'Preparing the session on its host…';
     const agent = await getAgentById(session.agentId);
     if (!agent?.switchAgentId || !agent.serverId)
       throw new Error('Link this agent to a Switch server before starting a session.');
@@ -134,6 +136,9 @@ export class SharedAgentRuntime implements AgentRuntimeProvider {
       session.id,
       false
     );
+    this.startupStage = restart
+      ? 'Stopping the previous process and starting its replacement…'
+      : 'Starting the session process…';
     await runSharedHostCommand(
       this.transport,
       { ctx, root, entrypoint },
@@ -141,6 +146,7 @@ export class SharedAgentRuntime implements AgentRuntimeProvider {
       restart ? '--restart' : '--ensure',
       isResuming
     );
+    this.startupStage = 'Connecting to the session host…';
     let roomBound = false;
     const bindRoom = async () => {
       if (roomBound) return;
@@ -177,6 +183,7 @@ export class SharedAgentRuntime implements AgentRuntimeProvider {
           snapshot.session.connectivity === 'online' &&
           snapshot.session.status === 'starting'
         ) {
+          this.startupStage = 'Initializing the provider and checking authentication…';
           await bindRoom();
           connected();
         }

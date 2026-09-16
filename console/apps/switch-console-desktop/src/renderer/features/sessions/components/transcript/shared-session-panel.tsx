@@ -16,7 +16,10 @@ export function SharedSessionPanel({
 }) {
   const [client, setClient] = useState<SessionChatClient | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [startupError, setStartupError] = useState<string | null>(null);
+  const [startup, setStartup] = useState<{
+    status: 'starting' | 'ready' | 'error';
+    message: string | null;
+  } | null>(null);
   useEffect(() => {
     let cancelled = false;
     let pending = false;
@@ -25,15 +28,19 @@ export function SharedSessionPanel({
       pending = true;
       try {
         const status = await rpc.sdkHost.startupStatus(sessionId);
-        if (!cancelled) setStartupError(status?.status === 'error' ? status.message : null);
+        if (!cancelled) setStartup(status);
       } catch (error) {
-        if (!cancelled) setStartupError(`Could not check session startup: ${String(error)}`);
+        if (!cancelled)
+          setStartup({
+            status: 'error',
+            message: `Could not check session startup: ${String(error)}`,
+          });
       } finally {
         pending = false;
       }
     };
     void check();
-    const timer = setInterval(() => void check(), 1000);
+    const timer = setInterval(() => void check(), 500);
     return () => {
       cancelled = true;
       clearInterval(timer);
@@ -64,13 +71,13 @@ export function SharedSessionPanel({
     );
   return client ? (
     <div className="flex h-full min-h-0 flex-col">
-      {startupError && (
-        <div role="alert" className="border-b border-border px-5 py-3 text-foreground-destructive">
-          Session startup failed: {startupError}
-        </div>
-      )}
       <SessionV1Chat
         client={client}
+        startup={startup}
+        stopHost={async () => {
+          const serverId = await rpc.sdkHost.serverForAgent(agentId);
+          await rpc.sdkHost.stop(serverId, sessionId);
+        }}
         initialPromptDelivery={initialPromptDelivery}
         restartHost={() => rpc.sessions.restartAgent(sessionId)}
         retireHost={async (epoch) => {
