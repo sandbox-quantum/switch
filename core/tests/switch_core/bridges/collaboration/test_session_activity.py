@@ -344,18 +344,31 @@ async def test_the_fallback_carries_the_turn_state_too() -> None:
 # ── What a host wrote, in somewhere Slack parses ─────────────────────────────
 
 
-async def test_agent_written_text_cannot_forge_markup() -> None:
-    """Every value in a turn is the host's, and both surfaces parse mrkdwn."""
+async def test_agent_written_text_cannot_forge_markup_where_slack_parses_it() -> None:
+    """Every value in a turn is the host's, and a section block parses mrkdwn."""
     items = [
         _item(itemId="i1", kind="assistant-message", title="", text="<!channel> now"),
-        _item(itemId="i2", title="Ran <!here> --force"),
     ]
 
     rendered = _blocks(items)
 
     assert "<!channel>" not in rendered
-    assert "<!here>" not in rendered
     assert "&lt;!channel&gt;" in rendered
+
+
+async def test_a_card_title_is_left_as_written_because_it_is_not_parsed() -> None:
+    """Measured, not read: a task card's title renders no mrkdwn at all.
+
+    It used to be escaped on the grounds that a tool call named `Ran <!here>`
+    would otherwise notify the channel. It does not — the live API stores that
+    as the text it is — and escaping a field nothing parses only put the
+    entities themselves in front of the reader, so a shell `&&` arrived as
+    `&amp;&amp;`.
+    """
+    written = "Ran <!here> --force && exit"
+    items = [_item(itemId="i1", title=written)]
+
+    assert list(_cards(items)) == [written]
 
 
 async def test_a_long_message_is_cut_rather_than_taking_the_post_with_it() -> None:

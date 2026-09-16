@@ -147,9 +147,11 @@ _MAX_TASK_ID = 64
 # that line when there is something to disclose.
 _STEP_BLOCKS = ("switch-steps-top", "switch-steps-middle", "switch-steps-bottom")
 
-# The single card in the stream's own plan. Sent once: `details` on a
-# `task_update` appends to what the card already has rather than replacing it,
-# so a card re-sent with the same link shows the link twice.
+# The single card in the stream's own plan. Its `details` is sent once and
+# never again: `details` on a `task_update` appends to what the card already
+# has rather than replacing it, so a card re-sent with the same link shows the
+# link twice. Title and status can be re-sent freely, and have to be together —
+# an update that leaves the title out stores an empty one.
 _SESSION_CARD = "switch-session"
 
 # Slack's three task states against the contract's four. `declined` is not an
@@ -895,7 +897,7 @@ def with_session_context(
 
 def render_attention(summary: str) -> SlackMessage:
     """One visible sentence for a turn or host error."""
-    title = _fit(plain_text(summary), _MAX_PLAN_TASK_TITLE)
+    title = _truncate(plain_text(summary), _MAX_PLAN_TASK_TITLE)
     return SlackMessage(
         text=escape_mrkdwn(title),
         blocks=[
@@ -963,7 +965,7 @@ def render_activity(
                     {
                         "type": "task_card",
                         "task_id": _task_id(turn.turn_id),
-                        "title": _fit(state, _MAX_PLAN_TASK_TITLE),
+                        "title": _truncate(state, _MAX_PLAN_TASK_TITLE),
                         "status": "in_progress",
                     }
                 ],
@@ -982,8 +984,10 @@ def render_activity(
         hidden = max(0, count - _MAX_PLAN_TASKS)
         if hidden:
             title += f" · {hidden} earlier not shown"
-        title += _running_step(did, turn)
-        plan["title"] = _fit(title, _MAX_PLAN_TITLE)
+        running = _running(did, turn)
+        if running:
+            title += f" · {running[1]}"
+        plan["title"] = _truncate(title, _MAX_PLAN_TITLE)
         for task, item in zip(plan["tasks"], did[-_MAX_PLAN_TASKS:]):
             _settled(task, item, turn)
         return SlackMessage(
@@ -1151,7 +1155,7 @@ def render_activity_plan(
         blocks.append(
             {
                 "type": "plan",
-                "title": _fit(title, _MAX_PLAN_TITLE),
+                "title": _truncate(title, _MAX_PLAN_TITLE),
                 "tasks": [_settled(_plan_task(item), item, turn) for item in kept],
             }
         )
@@ -1160,7 +1164,7 @@ def render_activity_plan(
             {
                 "type": "task_card",
                 "task_id": _task_id(turn.turn_id),
-                "title": _fit(title, _MAX_PLAN_TASK_TITLE),
+                "title": _truncate(title, _MAX_PLAN_TASK_TITLE),
                 "status": "in_progress",
             }
         )
@@ -1206,25 +1210,37 @@ def render_activity_stream(
     That is what lets a long turn stay one readable message. The stream's plan
     holds the status line and nothing that grows; the steps live in three
     blocks that rotate, so a turn of any length draws the same four blocks.
+
+    The header says where the turn is, and the section holding the live step
+    says what it is doing. Naming the step in both would say it twice, and the
+    section is the useful half: it is the one a reader wants to open, and the
+    glyph beside it is already the thing that says work is happening there.
     """
     did = [item for item in items if item.kind == "tool-activity"]
     return StreamedActivity(
-        title=_fit(
-            _activity_title(items, turn, elapsed_seconds=elapsed_seconds),
+        title=_truncate(
+            turn_state(items, turn, tool_detail=True, elapsed_seconds=elapsed_seconds),
             _MAX_PLAN_TITLE,
         ),
-        session=_session_card(session_url),
-        blocks=_step_blocks([_settled(_plan_task(item), item, turn) for item in did]),
+        session=_session_card(session_url, turn),
+        blocks=_step_blocks(
+            [_settled(_plan_task(item), item, turn) for item in did],
+            _running(did, turn),
+        ),
     )
 
 
-def _session_card(session_url: str | None) -> dict[str, Any]:
+def _session_card(session_url: str | None, turn: TurnUpsert) -> dict[str, Any]:
     """The one card in the stream's own plan, and where the link lives.
 
     A streamed plan with no cards in it does not draw at all, so without this
     the status line would have nowhere to appear. It doubles as the place the
     Console link is asked to be: first row of the first block, visible in the
     same expansion that opens the plan.
+
+    Its status is the turn's, so the block it sits in shows a spinner while the
+    turn runs rather than the check a settled card would give it. Slack draws
+    that glyph from the cards, and this is the only card in there.
 
     The whole url goes in or the card carries no link at all. A session url is
     built from a configured origin and three ids rather than written by an
@@ -1236,7 +1252,7 @@ def _session_card(session_url: str | None) -> dict[str, Any]:
         "type": "task_update",
         "id": _SESSION_CARD,
         "title": "Switch session",
-        "status": "complete",
+        "status": "complete" if turn.status in TURN_ENDED else "in_progress",
     }
     if not session_url or urlsplit(session_url).scheme not in {
         "https",
@@ -1247,7 +1263,9 @@ def _session_card(session_url: str | None) -> dict[str, Any]:
     return {**card, "details": f"<{session_url}|Open in Console app>"}
 
 
-def _step_blocks(steps: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _step_blocks(
+    steps: list[dict[str, Any]], running: tuple[int, str] | None
+) -> list[dict[str, Any]]:
     """The steps as the three blocks that hold them: what is gone, then two pages.
 
     Pages are cut on fixed boundaries — the first fifty, the next fifty — so a
@@ -1272,7 +1290,9 @@ def _step_blocks(steps: list[dict[str, Any]]) -> list[dict[str, Any]]:
     last = (len(steps) - 1) // _MAX_PLAN_TASKS
     if last < 2:
         pages = [top, middle]
-        return [_step_page(steps, page, pages[page]) for page in range(last + 1)]
+        return [
+            _step_page(steps, page, pages[page], running) for page in range(last + 1)
+        ]
     gone = (last - 1) * _MAX_PLAN_TASKS
     return [
         {
@@ -1282,19 +1302,32 @@ def _step_blocks(steps: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 {"type": "mrkdwn", "text": f"_Steps 1–{gone} no longer shown_"}
             ],
         },
-        _step_page(steps, last - 1, middle),
-        _step_page(steps, last, bottom),
+        _step_page(steps, last - 1, middle, running),
+        _step_page(steps, last, bottom, running),
     ]
 
 
-def _step_page(steps: list[dict[str, Any]], page: int, block_id: str) -> dict[str, Any]:
-    """One fifty-step page as the plan block that draws it."""
+def _step_page(
+    steps: list[dict[str, Any]],
+    page: int,
+    block_id: str,
+    running: tuple[int, str] | None,
+) -> dict[str, Any]:
+    """One fifty-step page as the plan block that draws it.
+
+    The page holding the live step names it, so the heading a reader is drawn
+    to is the one where something is happening. Only that page: the same
+    sentence on a settled page would be pointing somewhere the step is not.
+    """
     start = page * _MAX_PLAN_TASKS
     shown = steps[start : start + _MAX_PLAN_TASKS]
+    title = f"Steps {start + 1}–{start + len(shown)}"
+    if running and start <= running[0] < start + len(shown):
+        title += f" · {running[1]}"
     return {
         "type": "plan",
         "block_id": block_id,
-        "title": _truncate(f"Steps {start + 1}–{start + len(shown)}", _MAX_PLAN_TITLE),
+        "title": _truncate(title, _MAX_PLAN_TITLE),
         "tasks": shown,
     }
 
@@ -1311,7 +1344,7 @@ def _settled(task: dict[str, Any], item: Item, turn: TurnUpsert) -> dict[str, An
     if item.status != "in-progress" or turn.status in TURN_ENDED:
         task["status"] = "complete"
     if item.status == "in-progress" and turn.status in TURN_ENDED:
-        task["title"] = _fit("Unfinished: " + task["title"], _MAX_PLAN_TASK_TITLE)
+        task["title"] = _truncate("Unfinished: " + task["title"], _MAX_PLAN_TASK_TITLE)
     return task
 
 
@@ -1336,23 +1369,39 @@ def _activity_title(
     nobody can see.
     """
     title = turn_state(items, turn, tool_detail=True, elapsed_seconds=elapsed_seconds)
-    title += _running_step([i for i in items if i.kind == "tool-activity"], turn)
+    running = _running([i for i in items if i.kind == "tool-activity"], turn)
+    if running:
+        title += f" · {running[1]}"
     if omitted:
         step = "step" if omitted == 1 else "steps"
         title += f" · {omitted} earlier {step} not shown"
     return title
 
 
-def _running_step(did: list[Item], turn: TurnUpsert) -> str:
-    """The step a live turn is on, as a suffix, or nothing for an ended one."""
+def _running(did: list[Item], turn: TurnUpsert) -> tuple[int, str] | None:
+    """Where the live step is and what to call it, or nothing for an ended turn.
+
+    The index is what lets a streamed turn put the label on the page the step
+    is actually in, rather than on whichever page happens to be last.
+
+    A turn with nothing open still names the step it finished most recently:
+    between two calls there is nothing running, and a heading that went blank
+    for that moment would flicker on every step.
+    """
     if not did or turn.status in TURN_ENDED:
-        return ""
+        return None
     current = next(
-        (item for item in reversed(did) if item.status == "in-progress"), None
+        (
+            index
+            for index in reversed(range(len(did)))
+            if did[index].status == "in-progress"
+        ),
+        None,
     )
-    tool = current or did[-1]
-    label = "Running" if current else "Last"
-    return f" · {label}: {plain_text(tool.title) if tool.title else 'Tool'}"
+    index = len(did) - 1 if current is None else current
+    label = "Last" if current is None else "Running"
+    title = plain_text(did[index].title) if did[index].title else "Tool"
+    return index, f"{label}: {title}"
 
 
 def _plan(
@@ -1392,9 +1441,14 @@ def _plan_task(item: Item) -> dict[str, Any]:
 
     Plain text, not mrkdwn: a card's title renders none, so markup passed into
     it arrives as literal underscores and backticks in front of the reader.
-    Escaped all the same — Slack asks for `&`, `<` and `>` escaped in anything
-    sent to the API, and a tool call titled `Ran <!here>` is a host string that
-    would otherwise notify the channel.
+
+    Not escaped, for the same reason. This used to escape on the grounds that
+    Slack asks for `&`, `<` and `>` escaped and that a tool call titled
+    `Ran <!here>` would otherwise notify the channel. Measured, both are false
+    here: a title sent escaped is stored and shown escaped, so every `&&` in a
+    shell command reached the reader as `&amp;&amp;`, and `<!here>` is stored
+    as the text it is rather than as a broadcast. A field that parses nothing
+    needs nothing escaped for it.
 
     Slack has three states against the contract's four, and `declined` is not
     an error — the call did what it was told, and what it was told was no. The
@@ -1408,12 +1462,12 @@ def _plan_task(item: Item) -> dict[str, Any]:
         title = f"{_ACTIVITY[item.status]} {title}".strip()
     task: dict[str, Any] = {
         "task_id": _task_id(item.item_id),
-        "title": _fit(title, _MAX_PLAN_TASK_TITLE) or "(untitled)",
+        "title": _truncate(title, _MAX_PLAN_TASK_TITLE) or "(untitled)",
         "status": _TASK_STATUS[item.status],
     }
     details = plain_text(item.text) if item.text else ""
     if details:
-        task["details"] = _rich_text(_fit(details, _MAX_PLAN_TASK_DETAILS))
+        task["details"] = _rich_text(_truncate(details, _MAX_PLAN_TASK_DETAILS))
     return task
 
 

@@ -828,7 +828,7 @@ class SlackAdapter(CollaborationAdapter):
             chunks.append({"type": "plan_update", "title": drawn.title})
         owed = self._session_owed(stream.session, drawn.session)
         if owed:
-            chunks.append(drawn.session)
+            chunks.append(owed)
         moved = [
             block
             for block in drawn.blocks
@@ -848,25 +848,35 @@ class SlackAdapter(CollaborationAdapter):
                 self._stream_failed(error, message_ref, drawn.title)
             stream.title = drawn.title
             if owed:
-                stream.session = drawn.session
+                stream.session = {**(stream.session or {}), **owed}
             for block in moved:
                 stream.blocks[block["block_id"]] = block
         if content.turn.status in TURN_ENDED:
             await self._close_stream(client, stream, message_ref)
 
     @staticmethod
-    def _session_owed(sent: dict[str, Any] | None, drawn: dict[str, Any]) -> bool:
-        """Whether the session card still has something Slack has not been told.
+    def _session_owed(
+        sent: dict[str, Any] | None, drawn: dict[str, Any]
+    ) -> dict[str, Any] | None:
+        """The part of the session card Slack has not been told, or nothing.
 
-        Once, when the stream opens, and once more if the Console link only
-        turned up later — a card sent without a detail can still be given one,
-        because appending to nothing leaves just the link. It is never sent a
-        third time: `details` on a `task_update` appends, so a card that
-        already carries the link would come back carrying it twice.
+        The card is not written once and left. Its status follows the turn, so
+        it goes out spinning and comes back complete, and the link may only
+        turn up after the stream has opened.
+
+        What can only happen once is `details`. It *appends* to what the card
+        already holds rather than replacing it, so the link is dropped from
+        every chunk after the one that carried it — otherwise the card comes
+        back holding the link twice. Everything else is compared against what
+        Slack was actually sent, which is why a redraw that happens to arrive
+        without the url cannot make the stream forget it already sent one.
         """
         if sent is None:
-            return True
-        return "details" in drawn and "details" not in sent
+            return drawn
+        owed = {
+            k: v for k, v in drawn.items() if k != "details" or "details" not in sent
+        }
+        return owed if {**sent, **owed} != sent else None
 
     async def _close_stream(
         self, client: AsyncWebClient, stream: _ActivityStream, message_ref: str
