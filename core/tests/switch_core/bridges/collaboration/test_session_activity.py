@@ -25,6 +25,7 @@ from switch_core.bridges.collaboration.session.renderers import (
 from switch_core.bridges.collaboration.session.renderers.slack import (
     render_activity,
     render_activity_plan,
+    render_activity_stream,
     render_activity_text,
     render_request,
     render_turn_with_request,
@@ -790,3 +791,88 @@ async def test_a_turn_with_nothing_to_plan_yet_still_shows_it_is_working() -> No
     assert running.blocks[0]["type"] == "task_card"
     assert running.blocks[0]["status"] == "in_progress"
     assert ended.blocks[0]["type"] == "context"
+
+
+# ── What the agent said, in the one block a reader opens ─────────────────────
+
+
+def _said(text: str, *, item_id: str = "said", status: str = "completed") -> Item:
+    """A remark: no title, everything in the text, the way a host sends one."""
+    return _item(
+        itemId=item_id, kind="assistant-message", title="", text=text, status=status
+    )
+
+
+async def test_what_the_agent_said_is_a_card_in_the_plan_marked_as_speech() -> None:
+    """Slack's plan is the only part of the message a reader opens rather than
+    is shown, so it is the only place prose can go without putting it in the
+    channel. The marker is what keeps it from reading as another call."""
+    drawn = render_activity_plan(
+        [_item(itemId="call", title="Ran the tests"), _said("All green.")],
+        _turn("completed"),
+    )
+
+    titles = [task["title"] for task in drawn.blocks[0]["tasks"]]
+    assert titles == ["Ran the tests", "» All green."]
+
+
+async def test_a_sentence_is_never_marked_unfinished_when_the_turn_stops() -> None:
+    """A host fills a prose item token by token, so the last one is routinely
+    still open when the turn ends. "Unfinished" belongs to a call that never
+    came back, not to the sentence the agent had just finished saying."""
+    drawn = render_activity_plan(
+        [_said("Handing it over.", status="in-progress")], _turn("completed")
+    )
+
+    card = drawn.blocks[0]["tasks"][0]
+    assert card["title"] == "» Handing it over."
+    assert "Unfinished" not in card["title"]
+
+
+async def test_a_turn_that_only_talked_has_a_plan_rather_than_a_bare_line() -> None:
+    """It called nothing, so it used to have no disclosure at all — and the
+    thing it produced was exactly what a reader would have opened it for."""
+    drawn = render_activity_plan([_said("Fixed that yesterday.")], _turn("completed"))
+
+    assert drawn.blocks[0]["type"] == "plan"
+    assert drawn.blocks[0]["tasks"][0]["title"] == "» Fixed that yesterday."
+
+
+async def test_a_paragraph_is_folded_onto_the_one_line_its_card_gives_it() -> None:
+    """A card title is one line. Prose arrives with its own breaks in it, and
+    four lines of sentence in a list of calls reads as four things happening."""
+    drawn = render_activity_plan(
+        [_said("First thought.\n\nSecond thought.")], _turn("completed")
+    )
+
+    assert drawn.blocks[0]["tasks"][0]["title"] == "» First thought. Second thought."
+
+
+async def test_the_header_still_counts_calls_rather_than_everything_drawn() -> None:
+    """The collapsed header is the whole message for most readers. Counting
+    remarks in "N tool calls" would inflate every turn the agent talked in."""
+    drawn = render_activity_plan(
+        [_item(itemId="call", title="Ran the tests"), _said("All green.")],
+        _turn("completed"),
+        elapsed_seconds=5,
+    )
+
+    assert "1 tool call" in drawn.blocks[0]["title"]
+
+
+async def test_the_live_step_label_lands_on_the_page_the_call_is_actually_on() -> None:
+    """The label is placed by an index, and the pages are cut from the list as
+    drawn. Counting only calls gives the right step and the wrong index, which
+    puts "Running:" on a page the reader can see does not contain it."""
+    talked = [_said(f"Thinking {n}.", item_id=f"said-{n}") for n in range(10)]
+    calls = [
+        _item(itemId=f"call-{n}", title=f"Tool {n}", status="completed")
+        for n in range(44)
+    ]
+    live = _item(itemId="live", title="Grep", status="in-progress")
+
+    drawn = render_activity_stream([*talked, *calls, live], _turn("running"))
+
+    pages = [block for block in drawn.blocks if block["type"] == "plan"]
+    assert "Running: Grep" not in pages[0]["title"]
+    assert pages[1]["title"].endswith("· Running: Grep")

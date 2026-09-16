@@ -577,7 +577,12 @@ async def test_a_redraw_slack_refused_leaves_the_row_on_what_is_on_screen(
 async def test_the_trigger_posts_the_recorded_turn_and_then_its_card(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
-    """The work first, then the question, which is the order they happened in."""
+    """The work first, then the question, which is the order they happened in.
+
+    The agent's reasoning rides along inside the plan, which is where the demo
+    wants it: the point of the demo is a channel seeing a turn the way a reader
+    will, and a reader who opens the plan gets the thinking behind the calls.
+    """
     client = FakeWebClient()
     demo, room_id = await _demo(session_factory, client)
 
@@ -586,7 +591,7 @@ async def test_the_trigger_posts_the_recorded_turn_and_then_its_card(
     assert len(client.posted) == 2
     turn, card = (json.dumps(post["blocks"]) for post in client.posted)
     assert "Working" in turn
-    assert "same fixture user" not in turn
+    assert "same fixture user" in turn
     assert "Ran tests/auth/test_login.py" in turn
     assert "Edit tests/auth/conftest.py?" in card
     assert [post.get("thread_ts") for post in client.posted] == [None, None]

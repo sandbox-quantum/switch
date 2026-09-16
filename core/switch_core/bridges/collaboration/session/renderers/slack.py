@@ -59,6 +59,7 @@ from . import (
     turn_state,
     unanswerable,
 )
+from .neutral import SAID_MARKER, in_activity_log
 
 # Slack's own limits. Exceeding one is rejected at the API, so it is caught here
 # where the offending value can still be named.
@@ -1137,18 +1138,22 @@ def render_activity_plan(
     be able to tell which transport carried their turn — so both take their
     header from `_activity_title` and settle their cards the same way.
 
-    This is deliberately the plan alone. The agent's own words are posted to
-    the room as messages in their own right, and repeating them inside the
-    activity block would say everything twice.
+    What the agent said goes in here too, interleaved with the calls in the
+    order the session produced it. The plan is the only part of this message a
+    reader opens rather than is shown, so it is the only place prose can go
+    without putting it in the channel: nothing else here is collapsed. Prose
+    reaches a Slack channel no other way — an agent's console narration is not
+    posted to the room unless the agent posts it — so without this the turn's
+    reasoning is simply not available to a reader who wants it.
 
-    A turn that has run no tools yet has no plan to show, so it falls back to
-    the spinning card the status line used to be — this one message stands in
-    for both of the two it replaced.
+    A turn that has neither called nor said anything has no plan to show, so it
+    falls back to the spinning card the status line used to be — this one
+    message stands in for both of the two it replaced.
     """
-    did = [item for item in items if item.kind == "tool-activity"]
-    kept = did[len(did) - _MAX_PLAN_TASKS :]
+    shown = [item for item in items if in_activity_log(item)]
+    kept = shown[len(shown) - _MAX_PLAN_TASKS :]
     title = _activity_title(
-        items, turn, elapsed_seconds=elapsed_seconds, omitted=len(did) - len(kept)
+        items, turn, elapsed_seconds=elapsed_seconds, omitted=len(shown) - len(kept)
     )
     blocks: list[dict[str, Any]] = []
     if kept:
@@ -1216,7 +1221,7 @@ def render_activity_stream(
     section is the useful half: it is the one a reader wants to open, and the
     glyph beside it is already the thing that says work is happening there.
     """
-    did = [item for item in items if item.kind == "tool-activity"]
+    shown = [item for item in items if in_activity_log(item)]
     return StreamedActivity(
         title=_truncate(
             turn_state(items, turn, tool_detail=True, elapsed_seconds=elapsed_seconds),
@@ -1224,8 +1229,8 @@ def render_activity_stream(
         ),
         session=_session_card(session_url, turn),
         blocks=_step_blocks(
-            [_settled(_plan_task(item), item, turn) for item in did],
-            _running(did, turn),
+            [_settled(_plan_task(item), item, turn) for item in shown],
+            _running(shown, turn),
         ),
     )
 
@@ -1299,7 +1304,7 @@ def _step_blocks(
             "type": "context",
             "block_id": top,
             "elements": [
-                {"type": "mrkdwn", "text": f"_Steps 1–{gone} no longer shown_"}
+                {"type": "mrkdwn", "text": f"_Activity 1–{gone} no longer shown_"}
             ],
         },
         _step_page(steps, last - 1, middle, running),
@@ -1313,7 +1318,11 @@ def _step_page(
     block_id: str,
     running: tuple[int, str] | None,
 ) -> dict[str, Any]:
-    """One fifty-step page as the plan block that draws it.
+    """One fifty-card page as the plan block that draws it.
+
+    A page holds the turn as it happened, so a card in it is a call or a thing
+    the agent said. It is headed "Activity" rather than "Steps" because half of
+    what can be in there is not a step.
 
     The page holding the live step names it, so the heading a reader is drawn
     to is the one where something is happening. Only that page: the same
@@ -1321,7 +1330,7 @@ def _step_page(
     """
     start = page * _MAX_PLAN_TASKS
     shown = steps[start : start + _MAX_PLAN_TASKS]
-    title = f"Steps {start + 1}–{start + len(shown)}"
+    title = f"Activity {start + 1}–{start + len(shown)}"
     if running and start <= running[0] < start + len(shown):
         title += f" · {running[1]}"
     return {
@@ -1340,7 +1349,14 @@ def _settled(task: dict[str, Any], item: Item, turn: TurnUpsert) -> dict[str, An
     whole plan a failed plan. A call still open when the turn stopped will
     never close, so the title says so rather than leaving a step spinning for
     good.
+
+    None of that is about what the agent said. A host opens a prose item and
+    fills it token by token, so it is routinely still in progress when the turn
+    stops — marking that "Unfinished" would put the word on the one line of the
+    turn where nothing was left undone.
     """
+    if item.kind == "assistant-message":
+        return task
     if item.status != "in-progress" or turn.status in TURN_ENDED:
         task["status"] = "complete"
     if item.status == "in-progress" and turn.status in TURN_ENDED:
@@ -1369,38 +1385,43 @@ def _activity_title(
     nobody can see.
     """
     title = turn_state(items, turn, tool_detail=True, elapsed_seconds=elapsed_seconds)
-    running = _running([i for i in items if i.kind == "tool-activity"], turn)
+    running = _running(items, turn)
     if running:
         title += f" · {running[1]}"
     if omitted:
-        step = "step" if omitted == 1 else "steps"
-        title += f" · {omitted} earlier {step} not shown"
+        line = "line" if omitted == 1 else "lines"
+        title += f" · {omitted} earlier {line} not shown"
     return title
 
 
-def _running(did: list[Item], turn: TurnUpsert) -> tuple[int, str] | None:
+def _running(drawn: list[Item], turn: TurnUpsert) -> tuple[int, str] | None:
     """Where the live step is and what to call it, or nothing for an ended turn.
 
-    The index is what lets a streamed turn put the label on the page the step
-    is actually in, rather than on whichever page happens to be last.
+    The index is into the list as drawn, remarks and all, because it is what
+    puts the label on the page the step is actually in and a page holds
+    whatever was interleaved with it. Counting calls alone would name the right
+    step and point at the wrong page.
+
+    Only a call can be the live step. A sentence being written is not work in
+    progress, and a heading naming a half-finished one would report a turn busy
+    talking when it is busy working.
 
     A turn with nothing open still names the step it finished most recently:
     between two calls there is nothing running, and a heading that went blank
     for that moment would flicker on every step.
     """
-    if not did or turn.status in TURN_ENDED:
+    if turn.status in TURN_ENDED:
+        return None
+    calls = [index for index, item in enumerate(drawn) if item.kind == "tool-activity"]
+    if not calls:
         return None
     current = next(
-        (
-            index
-            for index in reversed(range(len(did)))
-            if did[index].status == "in-progress"
-        ),
+        (index for index in reversed(calls) if drawn[index].status == "in-progress"),
         None,
     )
-    index = len(did) - 1 if current is None else current
+    index = calls[-1] if current is None else current
     label = "Last" if current is None else "Running"
-    title = plain_text(did[index].title) if did[index].title else "Tool"
+    title = plain_text(drawn[index].title) if drawn[index].title else "Tool"
     return index, f"{label}: {title}"
 
 
@@ -1456,7 +1477,28 @@ def _plan_task(item: Item) -> dict[str, Any]:
     by the same glyph the text fallback uses. `failed` is marked too, because
     a collapsed plan shows its cards without a status anywhere a reader can see
     at a glance.
+
+    What the agent said is a card as well, because a card is the only thing
+    this block holds. It is marked `SAID_MARKER` for the same reason it is
+    everywhere else, and it is settled rather than running: a sentence has no
+    outcome to report and nothing about it is still being worked on once the
+    turn has moved past it.
+
+    Slack draws a settled card with a check, which beside a sentence is the one
+    thing the marker exists to deny. There is no fourth status to reach for —
+    Slack has three and the other two are a spinner and an error, both of which
+    say something worse — so the marker carries the distinction alone here,
+    where on every other platform the glyph column carries it.
     """
+    if item.kind == "assistant-message":
+        return {
+            "task_id": _task_id(item.item_id),
+            "title": _truncate(
+                f"{SAID_MARKER} {plain_text(' '.join(item.text.split()))}",
+                _MAX_PLAN_TASK_TITLE,
+            ),
+            "status": "complete",
+        }
     title = plain_text(item.title) if item.title else ""
     if item.status in ("failed", "declined"):
         title = f"{_ACTIVITY[item.status]} {title}".strip()

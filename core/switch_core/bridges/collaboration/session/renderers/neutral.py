@@ -116,7 +116,7 @@ _LOG_CUT = "…{left} earlier in this turn, not shown."
 # glyphs because a sentence has no outcome, and a tick beside one would read as
 # a call that succeeded. The ceiling is a call's two ceilings added, so neither
 # kind of line is the systematically longer one.
-_LOG_SAID = "»"
+SAID_MARKER = "»"
 _LOG_SAID_TEXT = _LOG_TITLE + _LOG_DETAIL
 
 # What a reader is told, privately and in place of the log, when the press
@@ -382,7 +382,7 @@ def _log_line(item: Item, *, escape: Callable[[str], str]) -> str:
     """
     if item.kind == "assistant-message":
         said = _fit(" ".join(item.text.split()), _LOG_SAID_TEXT, escape=escape)
-        return f"{_LOG_SAID} {said}"
+        return f"{SAID_MARKER} {said}"
     title = _fit(item.title, _LOG_TITLE, escape=escape) if item.title else _LOG_UNTITLED
     line = f"{_OUTCOME[item.status]} {title}"
     if item.text:
