@@ -1,5 +1,7 @@
 import { AgentIcon } from '@renderer/lib/components/agent-icon';
+import { ProviderConnectionStatus } from '@renderer/lib/components/provider-connection-status';
 import type { AgentPayload } from '@shared/core/providers/agent-payload';
+import { asAgentProviderId } from '@shared/core/providers/agent-provider-registry';
 import { AgentRowStatus } from './AgentRowStatus';
 
 export const AgentRow = ({ agent, onClick }: { agent: AgentPayload; onClick?: () => void }) => {
@@ -26,6 +28,12 @@ export const AgentRow = ({ agent, onClick }: { agent: AgentPayload; onClick?: ()
             />
           </div>
         </div>
+        <ProviderConnectionStatus
+          providerId={asAgentProviderId(agent.id)}
+          sshHost={null}
+          dir=""
+          compact
+        />
       </div>
     </Tag>
   );

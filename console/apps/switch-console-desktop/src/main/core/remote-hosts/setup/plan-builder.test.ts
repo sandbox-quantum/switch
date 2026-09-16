@@ -13,7 +13,7 @@ const CORE = [
   { id: 'node', name: 'Node.js' },
   { id: 'gh', name: 'GitHub CLI' },
 ];
-const AGENTS = [{ agentId: 'claude-code', name: 'Claude Code' }];
+const AGENTS = [{ agentId: 'claude-code', name: 'Claude Code', connectorRequired: true }];
 
 function build(existing: HostSetupPlan | null = null) {
   return buildSetupPlan({
@@ -239,7 +239,11 @@ describe('buildSetupPlan — against the real registry', () => {
   const switchSupported = () =>
     listPlugins()
       .filter((plugin) => plugin.capabilities.switchSetup.kind === 'cli')
-      .map((plugin) => ({ agentId: plugin.metadata.id, name: plugin.metadata.id }));
+      .map((plugin) => ({
+        agentId: plugin.metadata.id,
+        name: plugin.metadata.id,
+        connectorRequired: true,
+      }));
 
   const realPlan = () =>
     buildSetupPlan({
@@ -284,4 +288,26 @@ describe('buildSetupPlan — against the real registry', () => {
 
     expect(deriveHostStatus(reachable, plan).kind).toBe('setup-required');
   });
+});
+
+it('offers ACP providers without requiring a separate connector installation', () => {
+  const plan = buildSetupPlan({
+    sshHost: 'example-host',
+    coreDependencies: CORE,
+    agentTypes: [
+      { agentId: 'cursor', name: 'Cursor', connectorRequired: false },
+      { agentId: 'antigravity', name: 'Antigravity', connectorRequired: false },
+      { agentId: 'claude', name: 'Claude', connectorRequired: true },
+    ],
+    existing: null,
+    now: NOW,
+  });
+  expect(plan.steps.filter((step) => step.kind === 'agent-cli').map((step) => step.id)).toEqual([
+    'cursor',
+    'antigravity',
+    'claude',
+  ]);
+  expect(plan.steps.filter((step) => step.kind === 'agent-plugin').map((step) => step.id)).toEqual([
+    'claude:plugin',
+  ]);
 });

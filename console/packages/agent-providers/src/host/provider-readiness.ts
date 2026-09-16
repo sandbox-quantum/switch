@@ -6,7 +6,7 @@ import { startOpencodeServer, stopOpencodeServer } from '../opencode/server';
 import { JsonRpcError, noopLogger, StdioJsonRpcClient } from '../transport/stdio-json-rpc';
 
 export const providerReadinessSchema = z.object({
-  status: z.enum(['authenticated', 'unauthenticated', 'unknown']),
+  status: z.enum(['authenticated', 'unauthenticated', 'unconfigured', 'unknown']),
   message: z.string(),
   models: z.array(z.object({ id: z.string(), name: z.string() })),
 });
@@ -34,6 +34,12 @@ export function parseAuthentication(provider: string, output: string): ProviderR
       );
   }
   if (provider === 'cursor') {
+    if (
+      /not logged in|not authenticated|login required|authentication required|not signed in/i.test(
+        output
+      )
+    )
+      return result('unauthenticated', 'Sign in on the execution machine with agent login.');
     const email = output.match(/User Email(?:[ \t]*:[ \t]*|[ \t]+)(.+)/i)?.[1]?.trim();
     if (email)
       return result(
@@ -71,7 +77,7 @@ export async function checkProviderReadiness(input: {
         if (!response.ok) return result('unknown', 'Could not check OpenCode backend connections.');
         const inventory = z.object({ connected: z.array(z.string()) }).parse(await response.json());
         return result(
-          inventory.connected.length ? 'authenticated' : 'unknown',
+          inventory.connected.length ? 'authenticated' : 'unconfigured',
           inventory.connected.length
             ? 'OpenCode has connected backends. Model access depends on the selected backend.'
             : 'No connected OpenCode backends were reported. Configure a backend; local models may need no sign-in.'
