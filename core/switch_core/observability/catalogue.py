@@ -129,12 +129,14 @@ DELIVERY_FAILURES = _spec(
     "Delivery-loop iterations that raised. The loop survives these by design, "
     "so they are invisible without this counter.",
 )
-TRANSPORT_PENDING_ROOMS = _spec(
-    "switch.transport.pending_rooms",
-    "gauge",
-    "{room}",
-    "Rooms announced but not yet drained. Persistently non-zero means "
-    "delivery is falling behind writes.",
+DELIVERY_LAG = _spec(
+    "switch.messages.delivery_lag",
+    "histogram",
+    "ms",
+    "Age of a message when it reached a client's handler. The number that "
+    "says whether the room is keeping up, measured per delivery rather than "
+    "inferred from a queue depth.",
+    "kind",
 )
 
 # ── Collaboration bridges ────────────────────────────────────────────────────
@@ -248,7 +250,7 @@ CATALOGUE: dict[str, MetricSpec] = {
         MESSAGES_SENT,
         MESSAGES_DELIVERED,
         DELIVERY_FAILURES,
-        TRANSPORT_PENDING_ROOMS,
+        DELIVERY_LAG,
         BRIDGE_EVENTS_IN,
         BRIDGE_EVENTS_OUT,
         BRIDGE_ERRORS,
