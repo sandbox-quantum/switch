@@ -541,25 +541,23 @@ class DiscordAdapter(CollaborationAdapter):
         super().__init__()
         self._config = config
         self._guild_id = int(config.guild_id)
-        if config.bot_token is None:
-            # A shared-delivery bridge carries no token and does not open its
-            # own Gateway connection; it registers its guild with the one shared
-            # connection instead. That connection is not built yet — the inert
-            # bridge and the shared client land in later stages — so a shared
-            # bridge is not startable here, and this fails loud rather than
-            # constructing an adapter that would silently receive nothing.
-            raise NotImplementedError(
-                "a shared-delivery Discord bridge does not open its own Gateway "
-                "connection; the shared connection is not built yet"
-            )
         # The Gateway socket lives on the connection, not the adapter: the
         # socket is per bot token and the adapter is per guild. Intents are
         # built here and handed over, so the socket owner does not decide them.
-        self._connection = DiscordConnection(
-            bot_token=config.bot_token,
-            intents=self._build_intents(),
-            command_guild_id=self._guild_id,
-        )
+        #
+        # A self-registered bridge owns its connection, built now from its
+        # token. A distributed (shared-delivery) bridge owns none: it is inert
+        # until it is attached to the one deployment-level connection, which is
+        # not built yet — so `_connection` stays None and every outbound path
+        # fails loud through `_require_connection` rather than pretending.
+        self._connection: DiscordConnection | None = None
+        if config.event_delivery == "own_connection":
+            assert config.bot_token is not None  # guaranteed by the validator
+            self._connection = DiscordConnection(
+                bot_token=config.bot_token,
+                intents=self._build_intents(),
+                command_guild_id=self._guild_id,
+            )
         # (channel id, webhook name) -> webhook the bridge posts through there.
         self._webhooks: dict[tuple[int, str], discord.Webhook] = {}
         # Ids of webhooks the bridge has minted/adopted, for echo dropping.
@@ -607,18 +605,32 @@ class DiscordAdapter(CollaborationAdapter):
         self._on_user_joined = on_user_joined
         self._on_app_joined = on_app_joined
 
+        if self._config.event_delivery == "shared":
+            # Inert: a shared-delivery bridge opens no connection of its own and
+            # is not yet attached to the shared one. It exists as a bridge — its
+            # rooms, the operator's list, moderation — but neither sends nor
+            # receives until the shared Gateway connection is built and hands it
+            # its guild. The callbacks are kept for that moment.
+            logger.info(
+                "Discord bridge for guild %s registered inert (shared delivery); "
+                "awaiting the shared Gateway connection",
+                self._config.guild_id,
+            )
+            return
+
         # One guild, one handler; the DM handler is the same adapter so direct
         # messages still reach it. The connection routes each message by guild
         # id, which for a single-guild bridge is exactly the old filter.
-        self._connection.register_message_handler(self._guild_id, self._handle_message)
-        self._connection.set_dm_handler(self._handle_message)
-        self._connection.set_interaction_handler(self._handle_interaction)
-        await self._connection.connect(
+        conn = self._require_connection()
+        conn.register_message_handler(self._guild_id, self._handle_message)
+        conn.set_dm_handler(self._handle_message)
+        conn.set_interaction_handler(self._handle_interaction)
+        await conn.connect(
             commands=build_app_commands(self._handle_slash_command),
         )
         logger.info(
             "Discord adapter connected as %s (guild %s)",
-            self._connection.client.user,
+            conn.client.user,
             self._config.guild_id,
         )
 
@@ -633,13 +645,30 @@ class DiscordAdapter(CollaborationAdapter):
         return intents
 
     async def stop(self) -> None:
-        await self._connection.close()
+        # A shared-delivery bridge has no connection of its own to close;
+        # stopping it is just dropping its per-guild state.
+        if self._connection is not None:
+            await self._connection.close()
         self._webhooks.clear()
         self._owned_webhooks.clear()
         logger.info("Discord adapter stopped")
 
+    def _require_connection(self) -> DiscordConnection:
+        """The bridge's Gateway connection, or a loud error if it has none.
+
+        A shared-delivery bridge is inert until it is attached to the shared
+        connection; reaching an outbound path before that is a bug, and this
+        surfaces it rather than letting the call no-op or crash obscurely.
+        """
+        if self._connection is None:
+            raise RuntimeError(
+                "this Discord bridge uses shared delivery and is not attached to "
+                "the shared Gateway connection yet"
+            )
+        return self._connection
+
     def _require_client(self) -> discord.Client:
-        return self._connection.client
+        return self._require_connection().client
 
     # ── Messaging ────────────────────────────────────────────────────────────
 
@@ -1633,7 +1662,7 @@ class DiscordAdapter(CollaborationAdapter):
         finding the webhook that posted the card, are both steps before the
         deletion; a 404 from either is about the step, not about the card.
         """
-        if self._connection.client_or_none is None:
+        if self._require_connection().client_or_none is None:
             raise RemovalFailed("Discord client not connected.")
 
         location_id, message_id = self._parse_message_ref(message_ref)
@@ -1798,7 +1827,7 @@ class DiscordAdapter(CollaborationAdapter):
                 channel_id,
             )
             return None
-        client = self._connection.client_or_none
+        client = self._require_connection().client_or_none
         if client is None:
             logger.warning(
                 "Cannot look for card %s in Discord channel %s: not connected.",
@@ -1890,7 +1919,7 @@ class DiscordAdapter(CollaborationAdapter):
         """
         parent = getattr(place, "parent", None) or place
         if self._channel_type_of(parent) == "lobby":
-            return self._connection.bot_user_id or None
+            return self._require_connection().bot_user_id or None
         try:
             return (await self._publication_webhook(parent.id)).id
         except Exception as e:
@@ -1936,7 +1965,7 @@ class DiscordAdapter(CollaborationAdapter):
         message the room never sees.
         """
         thread_id = self._thread_channel_id(root_ref)
-        if thread_id is None or self._connection.client_or_none is None:
+        if thread_id is None or self._require_connection().client_or_none is None:
             logger.warning(
                 "Cannot read the Discord thread under %s in %s, so %s does not "
                 "answer the card there.",
@@ -2012,7 +2041,7 @@ class DiscordAdapter(CollaborationAdapter):
         target: Any = None
         if thread_root_id:
             thread_id = self._thread_channel_id(thread_root_id)
-            client = self._connection.client_or_none
+            client = self._require_connection().client_or_none
             if thread_id is not None and client is not None:
                 target = client.get_channel(thread_id)
         if target is None:
@@ -2403,7 +2432,7 @@ class DiscordAdapter(CollaborationAdapter):
         )
 
     def _guild_from_cache(self) -> Any:
-        client = self._connection.client_or_none
+        client = self._require_connection().client_or_none
         return client.get_guild(self._guild_id) if client else None
 
     def _role_name(self, role_id: int) -> str | None:
@@ -2493,7 +2522,7 @@ class DiscordAdapter(CollaborationAdapter):
             return f"@{name}" if name else match.group(0)
 
         def _replace_channel(match: re.Match[str]) -> str:
-            client = self._connection.client_or_none
+            client = self._require_connection().client_or_none
             channel = client.get_channel(int(match.group(1))) if client else None
             name = getattr(channel, "name", None)
             return f"#{name}" if name else match.group(0)
@@ -2515,7 +2544,7 @@ class DiscordAdapter(CollaborationAdapter):
         # this handler only ever sees its own guild's messages and DMs — the
         # guild filter that used to live here now lives in DiscordConnection.
         author = message.author
-        bot_user_id = self._connection.bot_user_id
+        bot_user_id = self._require_connection().bot_user_id
         # Drop only our own posts (loop prevention): the bot itself and the
         # bridge's webhooks. Third-party bots/webhooks are still bridged.
         if author.id == bot_user_id:
@@ -3354,7 +3383,7 @@ class DiscordAdapter(CollaborationAdapter):
         them; one fetched by its token says nothing about who made it.
         """
         creator = getattr(webhook, "user", None)
-        bot_user_id = self._connection.bot_user_id
+        bot_user_id = self._require_connection().bot_user_id
         return creator is not None and bool(
             bot_user_id and creator.id == bot_user_id
         )
