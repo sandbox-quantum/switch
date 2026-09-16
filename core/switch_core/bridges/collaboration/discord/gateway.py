@@ -94,6 +94,10 @@ class DiscordGatewayClient:
         # left unset (guard G4). No commands yet — global slash routing lands in
         # a later stage.
         self._connection.set_guild_message_handler(self._on_guild_message)
+        self._connection.set_guild_lifecycle_handlers(
+            on_remove=self._on_guild_remove,
+            on_join=self._on_guild_join,
+        )
         # Commands register globally, once for the application, and each
         # invocation is routed to a bridge by the guild it carries (decision #7).
         await self._connection.connect(commands=build_app_commands(self._on_slash))
@@ -203,3 +207,34 @@ class DiscordGatewayClient:
             await interaction.response.send_message(message, ephemeral=True)
         except discord.HTTPException:
             logger.exception("Failed to refuse a Discord slash interaction")
+
+    async def _on_guild_remove(self, guild: discord.Guild) -> None:
+        """The bot was removed from a guild: end that guild's install.
+
+        Routed through the platform-initiated end path — the same one a Slack
+        `app_uninstalled` takes — which marks the install inactive and detaches
+        its bridge but revokes nothing (decision #8; there is no per-install
+        token to revoke). A guild no tenant has installed resolves to nobody and
+        is a no-op there, so a removal we were never serving is harmless.
+        """
+        await self._install_service.revoked(
+            platform=_PLATFORM,
+            workspace_id=str(guild.id),
+            reason="the bot was removed from the Discord server",
+        )
+
+    async def _on_guild_join(self, guild: discord.Guild) -> None:
+        """The bot was added to a guild.
+
+        Nothing is provisioned here: only a recorded install (via the OAuth
+        flow) makes a guild's events route anywhere, and a guild with none is
+        ignored — its messages resolve to nobody and are dropped (G3). A guild
+        added outside the install flow therefore does nothing but this line,
+        which is what makes an out-of-band join visible rather than silent.
+        """
+        logger.info(
+            "The Discord bot was added to guild %s (%s); it serves Switch only "
+            "once an install has been recorded for it",
+            guild.id,
+            getattr(guild, "name", "?"),
+        )
