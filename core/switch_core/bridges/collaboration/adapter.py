@@ -161,6 +161,23 @@ class RichContentFailed(Exception):
         self.text = text
 
 
+class RemovalFailed(Exception):
+    """A published message could not be taken back, or not provably.
+
+    Deliberately not `delete_message`, which every adapter but Teams' answers
+    by logging: that one is best-effort housekeeping for things like the
+    typing indicator, where a leftover is untidy and nothing more. Taking back
+    an answered permission card is the opposite — the caller has to write down
+    that the card is gone, and writing that down on a refusal it never heard
+    about is how a restart comes to skip a card still sitting in the channel.
+
+    So this seam raises, the way `post_rich` and `update_rich` do, and a
+    platform's own error is chained as `__cause__`. A refusal and a request
+    that never came back are one exception because the caller does the same
+    thing with both: keep the settled card, and do not record a removal.
+    """
+
+
 class RichContentThrottled(RichContentFailed):
     """The platform asked us to wait before attempting another update."""
 
@@ -834,6 +851,23 @@ class CollaborationAdapter(ABC):
 
     @abstractmethod
     async def delete_message(self, channel_id: str, message_ref: str) -> None: ...
+
+    async def remove_publication(self, channel_id: str, message_ref: str) -> None:
+        """Take back a card this bridge published, or say why it is still there.
+
+        Returning is the claim that nothing of the card remains at that
+        address — including the case where it had already gone, which is the
+        same fact arrived at differently and is logged rather than raised.
+        Anything else is `RemovalFailed`.
+
+        Not reached unless the adapter also sets `removes_approved_cards`,
+        which is why this refuses rather than quietly doing nothing: a
+        platform brought into the removal flow without an implementation
+        should stop, not report success for a card still on the screen.
+        """
+        raise RemovalFailed(
+            f"{type(self).__name__} cannot prove a published message was removed."
+        )
 
     @abstractmethod
     async def send_typing(

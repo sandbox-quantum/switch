@@ -32,6 +32,7 @@ from switch_core.sessions.contract import (
     Command,
     Snapshot,
     TurnUpsert,
+    granted,
 )
 from switch_core.sessions.presentation import (
     activity_error_summary,
@@ -317,6 +318,12 @@ async def refresh_cards(
                     continue
                 post_succeeded(attempt)
                 refreshed(new_post.token, state)
+            elif post.removed_at is not None:
+                # The card was taken back when its approval was granted. The
+                # row stays so a typed answer still resolves, but there is no
+                # longer a message at that address: redrawing it would fail,
+                # and recovering it would find whatever now sits where it was.
+                continue
             elif post.external_post_id == post.token:
                 if post.unconfirmed_notice_at is not None:
                     # Already disclosed as undeliverable. There is no message
@@ -364,6 +371,13 @@ async def refresh_cards(
                     ),
                 )
                 refreshed(post.token, state)
+                if cards.removes_approved_cards and granted(request):
+                    # After the redraw, not instead of it. A refused removal
+                    # has to leave a card showing what was decided, and this
+                    # is the pass that makes it show it — so the settled
+                    # drawing is put up first and taken away second, and every
+                    # point this can stop at leaves the reader something true.
+                    await cards.remove(post)
         except RichContentThrottled:
             backed_off += 1
         except Exception as error:

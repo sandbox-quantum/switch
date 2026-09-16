@@ -464,3 +464,41 @@ def parse_snapshot(payload: Any) -> Snapshot:
 
 def parse_command(payload: Any) -> Command:
     return Command.model_validate(payload)
+
+
+# The two decisions that grant what was asked for. `cancel` is not a refusal
+# and `decline` is the refusal, but neither is a grant, and the pair is named
+# once so that a third grant added to `ApprovalOption.decision` is added here.
+GRANTS = frozenset({"accept", "acceptForSession"})
+
+
+def granted(request: SnapshotRequest) -> bool:
+    """Whether the host confirmed that this approval was given.
+
+    Not "has it finished": `answered` is equally the outcome of a refusal, and
+    `resolved` equally its state, so neither says which way it went. The one
+    record of that is the decision carried by the option the result names, and
+    reaching it means matching the result back to the options the request was
+    asked with.
+
+    Everything short of that match is read as not granted, because the caller
+    is a caller that acts on a yes. An answer naming an option the request
+    never offered, an approval settled with no result at all, a questions
+    result on an approval: each is a host saying something this cannot
+    interpret, and none of them is evidence of consent.
+    """
+    if request.state != "resolved":
+        return False
+    settled = request.result
+    if settled is None or settled.outcome != "answered":
+        return False
+    answer = settled.result
+    content = request.content
+    if not isinstance(answer, ApprovalResult) or not isinstance(
+        content, ApprovalContent
+    ):
+        return False
+    return any(
+        option.option_id == answer.option_id and option.decision in GRANTS
+        for option in content.options
+    )

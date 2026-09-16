@@ -23,6 +23,7 @@ from slack_sdk.web.async_client import AsyncWebClient
 from switch_core.bridges.collaboration.adapter import (
     ActivityMark,
     CollaborationAdapter,
+    RemovalFailed,
     RequestCard,
     RichContent,
     RichContentFailed,
@@ -172,6 +173,12 @@ class SlackAdapter(CollaborationAdapter):
     supports_activity_reactions: ClassVar[bool] = True
     supports_queue_reaction: ClassVar[bool] = True
     recovers_uncertain_posts: ClassVar[bool] = True
+
+    #: `chat.delete` takes back a card posted under an agent's own name and
+    #: icon. Slack restricts deleting an *impersonated* message, which is a
+    #: message sent as a real member; `chat:write.customize` is not that, and
+    #: the typing indicator has always been posted and deleted this way.
+    removes_approved_cards: ClassVar[bool] = True
 
     #: Every publication carries its token in `block_id` and in the message's
     #: metadata, so a status is as findable as a card despite printing no
@@ -978,6 +985,32 @@ class SlackAdapter(CollaborationAdapter):
             await self._web_client.chat_delete(channel=channel_id, ts=ts)
         except SlackApiError as e:
             logger.error("Failed to delete Slack message %s: %s", message_ref, e)
+
+    async def remove_publication(self, channel_id: str, message_ref: str) -> None:
+        if not self._web_client:
+            raise RemovalFailed("Slack client not connected.")
+
+        _, ts = self._parse_message_ref(message_ref)
+        if not ts:
+            raise RemovalFailed(f"Not a Slack message reference: {message_ref}.")
+
+        try:
+            await self._web_client.chat_delete(channel=channel_id, ts=ts)
+        except SlackApiError as error:
+            if error.response.get("error") != "message_not_found":
+                raise RemovalFailed(
+                    f"Slack would not delete {message_ref}: "
+                    f"{error.response.get('error')}."
+                ) from error
+            # Slack says the same thing about a message already deleted and
+            # about an address it has never seen. The address here is the one
+            # Slack gave us when it accepted the card, so the first reading is
+            # the one that fits — but it is worth a line, because the second
+            # reading is what a deletion by hand or a channel-wide purge would
+            # also look like.
+            logger.warning(
+                "Slack card %s was already gone when it was taken back.", message_ref
+            )
 
     # ── Typing ───────────────────────────────────────────────────────────────
 

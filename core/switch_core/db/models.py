@@ -1476,6 +1476,16 @@ class SessionRequestPost(TenantScoped, Base):
     unconfirmed_notice_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    # When the card was taken off the platform after the approval it asked for
+    # was granted. The row outlives the card on purpose: it is what an answer
+    # typed against the handle still resolves to, and it is what stops a
+    # restart from treating a deleted card as one that merely needs redrawing
+    # and posting the approved question a second time. Set before the platform
+    # is asked and cleared if it refuses, so the state that survives a crash
+    # mid-removal is the one that leaves the settled card alone.
+    removed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
