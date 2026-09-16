@@ -291,6 +291,14 @@ class SwitchConfig(BaseSettings):
     discord_app_bot_token: str | None = None
     discord_app_application_id: str | None = None
 
+    # Whether the shared Gateway connection requests the privileged message-
+    # content intent. Off by default (mention-only): the connection opens
+    # unapproved and agents still see mentions of the bot and its own messages.
+    # Requesting it while unapproved closes the connection past Discord's
+    # ~100-guild verification threshold, so it is a deliberate flag flipped once
+    # the app is verified — not something inferred (decision #5).
+    discord_app_message_content: bool = False
+
     # Public origin (scheme + host, no path) that a messaging platform reaches
     # Switch on: the base of the OAuth redirect and of the three event URLs
     # under `/messaging`, and the one registered with the app.
