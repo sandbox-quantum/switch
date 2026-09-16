@@ -146,14 +146,14 @@ def test_the_card_carries_mentions_where_teams_looks_for_them() -> None:
     adapter = _adapter(alice="aad-alice")
     body = adapter.translate_outbound("hi @alice")
 
-    activity = _run(adapter._message_activity("james", body))
+    activity = _run(adapter._message_activity("james", body, []))
     card = activity["attachments"][0]["content"]
 
     assert card["msteams"]["entities"][0]["mentioned"]["id"] == "aad-alice"
 
 
 def test_a_card_with_no_mentions_carries_no_msteams_block() -> None:
-    assert "msteams" not in agent_message_card(_RENDERING, "hello", [])
+    assert "msteams" not in agent_message_card(_RENDERING, "hello", [], [])
 
 
 # ── the app's own handle ─────────────────────────────────────────────────────
@@ -176,7 +176,7 @@ def test_the_app_is_named_in_words_not_in_slack_syntax() -> None:
 
 def _lines(body: str) -> list[tuple[str, str]]:
     """Every body block of the card, as (spacing, text)."""
-    card = agent_message_card(_RENDERING, body, [])
+    card = agent_message_card(_RENDERING, body, [], [])
     return [(str(block["spacing"]), str(block["text"])) for block in card["body"][1:]]
 
 
@@ -221,7 +221,7 @@ def test_a_body_of_many_short_lines_is_not_refused_for_its_punctuation() -> None
     still here and still on a line of its own; the gaps between them widen.
     """
     body = "\n".join(f"line {n}" for n in range(500))
-    card = agent_message_card(_RENDERING, body, [])
+    card = agent_message_card(_RENDERING, body, [], [])
 
     assert len(card["body"][1:]) == 1
     text = str(card["body"][1]["text"])
@@ -245,7 +245,7 @@ def test_the_text_itself_is_left_alone() -> None:
     body = "**Heading:**\nbody"
 
     assert adapter.translate_outbound(body) == body
-    assert agent_message_card(_RENDERING, body, [])["fallbackText"].endswith(body)
+    assert agent_message_card(_RENDERING, body, [], [])["fallbackText"].endswith(body)
 
 
 def test_the_plain_text_seam_still_doubles_because_it_has_no_blocks() -> None:
@@ -268,7 +268,7 @@ def test_send_message_does_not_translate_again() -> None:
     adapter = _adapter(alice="aad-alice")
     already = adapter.translate_outbound("hi @alice\nthere")
 
-    activity = _run(adapter._message_activity("james", already))
+    activity = _run(adapter._message_activity("james", already, []))
     blocks = activity["attachments"][0]["content"]["body"][1:]
 
     assert [block["text"] for block in blocks] == ["hi <at>alice</at>", "there"]

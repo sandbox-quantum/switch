@@ -4,8 +4,32 @@ import re
 from typing import Any
 
 from switch_core.bridges.collaboration.adapter import AgentRendering
+from switch_core.bridges.collaboration.session.renderers import Control
 
 ADAPTIVE_CARD_CONTENT_TYPE = "application/vnd.microsoft.card.adaptive"
+
+# What a press on a Switch control calls itself. Teams hands the verb back
+# untouched, so it is the first thing a press is checked against: an action
+# from some other app's card is not one this bridge has any business reading.
+ANSWER_VERB = "switch/answerRequest"
+
+# Where the press carries what it is answering. Nested under one key because
+# Teams merges a card's input values into the same object, and a flat name is a
+# collision waiting for the first card here to grow an input.
+_ANSWER_DATA = "switchAnswer"
+
+# The schema version that introduced Action.Execute, which is the only card
+# action that reaches a bot with a reply the presser alone sees. A card with
+# nothing to press stays at 1.4: a client too old for the newer schema falls
+# back to `fallbackText` for the whole card, which is a cost worth paying only
+# where there is something to gain.
+_ACTION_VERSION = "1.5"
+_BASE_VERSION = "1.4"
+
+# How much of an option's label a button shows. Not a documented Teams limit —
+# it is where a row of buttons stops being readable. Safe to impose because the
+# body above lists every option in full, so the button only has to say which.
+_MAX_ACTION_TITLE = 60
 
 # A line markdown would set as a list item: a bullet or a number, indented by
 # less than the four spaces that would make it a code block instead.
@@ -83,10 +107,86 @@ def body_blocks(body: str) -> list[dict[str, Any]]:
     ]
 
 
+def answer_actions(token: str, controls: list[Control]) -> list[dict[str, Any]]:
+    """A card's options as `Action.Execute` buttons, in the order they are drawn.
+
+    What travels in the press is the card's opaque token and the number beside
+    the option in the body — never the option's own id, its label, or anything
+    about who may press it. The number is what a typed answer names too, so the
+    two ways of answering mean the same thing by the same word, and both are
+    resolved against the record rather than trusted.
+
+    Wrapped in an `ActionSet` because Teams clients that predate the universal
+    action model only honour an action's fallback inside one. `drop` is that
+    fallback: the body lists every option and says how to type an answer, so a
+    client with no button still has a card it can act on.
+    """
+    return [
+        {
+            "type": "ActionSet",
+            "spacing": "Medium",
+            "actions": [
+                {
+                    "type": "Action.Execute",
+                    "title": _action_title(control),
+                    "verb": ANSWER_VERB,
+                    "data": {
+                        _ANSWER_DATA: {
+                            "token": token,
+                            "position": control.position,
+                        }
+                    },
+                    "fallback": "drop",
+                }
+                for control in controls
+            ],
+        }
+    ]
+
+
+def _action_title(control: Control) -> str:
+    """What the button says: the option's number, and as much of it as fits.
+
+    Numbered because the body numbers it, and a reader looking at "2." in the
+    text and "Decline" on a button should not have to work out that they are
+    the same choice.
+    """
+    label = control.label.strip() or f"Option {control.position}"
+    room = _MAX_ACTION_TITLE - len(f"{control.position}. ")
+    if len(label) > room:
+        label = label[: room - 1].rstrip() + "…"
+    return f"{control.position}. {label}"
+
+
+def read_answer_action(value: dict[str, Any]) -> tuple[str, int] | None:
+    """The card and the option a press names, or None if it is not ours.
+
+    Read as strictly as it is written. Teams hands back whatever was put in the
+    button, plus whatever the client chose to add, so neither half is trusted
+    past its shape: the token is resolved against the stored card and the
+    position against the form that card was posted with.
+    """
+    action = value.get("action")
+    if not isinstance(action, dict) or action.get("verb") != ANSWER_VERB:
+        return None
+    data = action.get("data")
+    carried = data.get(_ANSWER_DATA) if isinstance(data, dict) else None
+    if not isinstance(carried, dict):
+        return None
+    token = carried.get("token")
+    position = carried.get("position")
+    if not isinstance(token, str) or not token:
+        return None
+    if isinstance(position, bool) or not isinstance(position, int) or position < 1:
+        return None
+    return token, position
+
+
 def agent_message_card(
     agent: AgentRendering,
     body: str,
     mentions: list[dict[str, Any]],
+    actions: list[dict[str, Any]],
 ) -> dict[str, Any]:
     """An Adaptive Card that labels a message with the sending agent's identity.
 
@@ -109,11 +209,15 @@ def agent_message_card(
     ``mentions`` are Bot Framework mention entities matching ``<at>`` markup in
     ``body``. A card carries them under ``msteams`` rather than on the activity,
     and without them the markup renders as inert text and the person is never
-    notified."""
+    notified.
+
+    ``actions`` are card elements appended under the body — an empty list for
+    everything but an open request card. They set the schema version, because
+    the action model they use is the reason to ask for the newer one."""
     card: dict[str, Any] = {
         "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
         "type": "AdaptiveCard",
-        "version": "1.4",
+        "version": _ACTION_VERSION if actions else _BASE_VERSION,
         # Plain-text representation for surfaces that can't render the card
         # inline (mobile, notification toasts, copy-link/search previews); its
         # absence is what makes Teams show the "cards.unsupported" placeholder.
@@ -152,6 +256,7 @@ def agent_message_card(
                 ],
             },
             *body_blocks(body),
+            *actions,
         ],
     }
     if mentions:

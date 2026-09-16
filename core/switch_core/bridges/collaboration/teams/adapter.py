@@ -11,6 +11,7 @@ import time
 from collections import OrderedDict
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from typing import Any, ClassVar
@@ -39,12 +40,18 @@ from switch_core.bridges.collaboration.models import (
     InboundAgentJoin,
     InboundAppJoin,
     InboundCommand,
+    InboundInteraction,
     InboundMessage,
     InboundUserJoin,
 )
-from switch_core.bridges.collaboration.session.renderers import Markup
+from switch_core.bridges.collaboration.session.renderers import (
+    Drawn,
+    Markup,
+    offered_controls,
+    position_action,
+)
 from switch_core.bridges.collaboration.session.renderers.neutral import (
-    request_summary,
+    render_request,
     turn_status,
 )
 from switch_core.bridges.collaboration.teams.auth import (
@@ -53,7 +60,9 @@ from switch_core.bridges.collaboration.teams.auth import (
 )
 from switch_core.bridges.collaboration.teams.cards import (
     agent_message_card,
+    answer_actions,
     card_attachment,
+    read_answer_action,
 )
 from switch_core.bridges.collaboration.teams.connector import (
     BotConnectorClient,
@@ -122,6 +131,41 @@ _PUBLICATION_MARK = "teams1"
 Versioned, because the parts are what an edit is addressed with and a later
 shape has to be told from this one rather than guessed at.
 """
+
+_INVOKE_CARD_ACTION = "adaptiveCard/action"
+"""The invoke a press on an `Action.Execute` arrives as."""
+
+_MESSAGE_RESPONSE = "application/vnd.microsoft.activity.message"
+"""The invoke response that shows a line of text to whoever pressed, alone."""
+
+_ERROR_RESPONSE = "application/vnd.microsoft.error"
+"""The invoke response for a press this bridge could not finish reading."""
+
+_PRESS_NOTICE: ContextVar[list[str] | None] = ContextVar(
+    "switch_teams_press_notice", default=None
+)
+"""Where a refusal waits while a press is being handled.
+
+`tell_actor` has no press to answer and the press has nothing to say until the
+handler returns, so the two meet here. A list rather than one string, and a
+context rather than a field: two people pressing at once are two tasks with a
+context each, and the same person pressing twice is two presses rather than one
+notice overwriting another.
+"""
+
+
+def _invoke_error(status: int, code: str, message: str) -> dict[str, Any]:
+    """An invoke answered with a failure the presser alone is shown.
+
+    The alternative is an empty success, which takes the button out of its
+    loading state and says the answer landed. Nothing that reaches here got as
+    far as an answer, so the press is closed by saying so.
+    """
+    return {
+        "statusCode": status,
+        "type": _ERROR_RESPONSE,
+        "value": {"code": code, "message": message},
+    }
 
 
 def _publication_ref(service_url: str, conversation_id: str, activity_id: str) -> str:
@@ -1110,7 +1154,9 @@ class TeamsAdapter(CollaborationAdapter):
             return None
         return self._last_post.get(channel_id)
 
-    async def _message_activity(self, sender_name: str, body: str) -> dict[str, Any]:
+    async def _message_activity(
+        self, sender_name: str, body: str, actions: list[dict[str, Any]]
+    ) -> dict[str, Any]:
         agent = await self.agent_rendering(sender_name)
         mentions = self._mention_entities(body)
         return {
@@ -1119,7 +1165,9 @@ class TeamsAdapter(CollaborationAdapter):
             # "cards.unsupported" placeholder in toasts, mobile, and link previews.
             # Plain text, rendered by no markup engine, so the label goes in raw.
             "summary": f"{agent.field_label}: {body}",
-            "attachments": [card_attachment(agent_message_card(agent, body, mentions))],
+            "attachments": [
+                card_attachment(agent_message_card(agent, body, mentions, actions))
+            ],
         }
 
     # ── Messaging ────────────────────────────────────────────────────────────
@@ -1137,7 +1185,7 @@ class TeamsAdapter(CollaborationAdapter):
         # `content` arrives rendered: every caller of `send_message` runs
         # `translate_outbound` first, and rendering again here put the body
         # through the conversion twice.
-        activity = await self._message_activity(sender_name, content)
+        activity = await self._message_activity(sender_name, content, [])
         thread_root_id = await self._post_to_answer_in(channel_id, thread_root_id)
         return await self._relay(self._connector, channel_id, thread_root_id, activity)
 
@@ -1302,7 +1350,7 @@ class TeamsAdapter(CollaborationAdapter):
             mention=None,
             responder=None,
             notice=self.unnotified_notice() if content.notify_unreachable else None,
-        )
+        ).text
 
     def _draw(
         self,
@@ -1311,13 +1359,20 @@ class TeamsAdapter(CollaborationAdapter):
         mention: str | None,
         responder: str | None,
         notice: str | None,
-    ) -> str:
+    ) -> Drawn:
         """The body of a publication, as a card will render it.
 
         Line breaks are the card's problem rather than this text's: the body is
         written with one newline to a line and `cards.body_blocks` turns those
         into blocks. So the budget here is measured on what a reader actually
         reads, with no display syntax counted against it.
+
+        The body prints every option in full even where a button carries one.
+        A control here is an `Action.Execute`, which a client too old for it
+        drops — and a card whose options only ever existed on the buttons would
+        drop the question with them. What that costs is a line of repetition on
+        a current client; what it buys is a card that can still be answered by
+        typing on any of them.
         """
         escape = self._rich_escape
         limit = self.rich_fallback_limit()
@@ -1327,7 +1382,7 @@ class TeamsAdapter(CollaborationAdapter):
             # just fits, plus a line saying it reached nobody, is a body over
             # the budget.
             tail = f"\n{notice}" if notice else ""
-            drawn = (
+            text = (
                 turn_status(
                     content.items,
                     content.turn,
@@ -1342,23 +1397,23 @@ class TeamsAdapter(CollaborationAdapter):
                 )
                 + tail
             )
-        else:
-            # The mention goes on a line of its own rather than in front of the
-            # heading: the card is a block, and a name wedged before "Permission
-            # needed" reads as part of it.
-            lead = f"{mention}\n" if mention else ""
-            tail = f"\n{notice}" if notice else ""
-            body = request_summary(
-                content.request,
-                content.reference,
-                escape=escape,
-                limit=max(1, limit - len(lead) - len(tail)),
-                markup=markup,
-                responder=responder,
-                unavailable_reason=content.unavailable_reason,
-            )
-            drawn = f"{lead}{body}{tail}"
-        return drawn
+            return Drawn(text=text, answerable=False)
+        # The mention goes on a line of its own rather than in front of the
+        # heading: the card is a block, and a name wedged before "Permission
+        # needed" reads as part of it.
+        lead = f"{mention}\n" if mention else ""
+        tail = f"\n{notice}" if notice else ""
+        drawn = render_request(
+            content.request,
+            content.reference,
+            escape=escape,
+            limit=max(1, limit - len(lead) - len(tail)),
+            markup=markup,
+            responder=responder,
+            unavailable_reason=content.unavailable_reason,
+            control_label_limit=None,
+        )
+        return replace(drawn, text=f"{lead}{drawn.text}{tail}")
 
     def _mention(self, external_id: str | None) -> str | None:
         """`<at>` markup naming whoever holds this AAD id, or None.
@@ -1398,7 +1453,37 @@ class TeamsAdapter(CollaborationAdapter):
             f"this {self.platform_name} team is what failed."
         )
 
-    def _render_rich(self, content: RichContent) -> str:
+    def _controls(self, content: RichContent, drawn: Drawn) -> list[dict[str, Any]]:
+        """The card's options as buttons, or nothing where a press cannot land.
+
+        Nothing at all is the ordinary answer: a status has no options, a
+        settled card has none left, and a card that cannot be answered where it
+        is showing says so — a live control under that sentence invites the
+        refusal the sentence just explained. Because every redraw rebuilds the
+        card, the buttons come off at the moment a card stops being pressable
+        without anything having to remember that it once had them.
+
+        Whether the drawing earned them comes from `drawn` rather than from
+        reading the request again. A body cut short of the difference between
+        two options is one the reader cannot decide from, and only the renderer
+        that cut it knows. A press would still resolve and settle the request,
+        so the whole of the protection is not offering the button.
+
+        A card with no interaction handler gets no buttons either. Every press
+        on this platform arrives as an invoke that has to be answered, and one
+        answered with nothing to route it to is a control that spins and then
+        reports a failure of its own.
+        """
+        if not isinstance(content, RequestCard) or not drawn.answerable:
+            return []
+        if self._on_interaction is None:
+            return []
+        controls = offered_controls(content.request)
+        if not controls:
+            return []
+        return answer_actions(content.reference.token, controls)
+
+    def _render_rich(self, content: RichContent) -> Drawn:
         """Draw a publication, saying so when the mention could not be made.
 
         Two different failures reach the same reader. The publisher sets
@@ -1568,14 +1653,17 @@ class TeamsAdapter(CollaborationAdapter):
         that makes a redraw after a restart address the conversation the post
         actually went to.
         """
-        text = self._render_rich(content)
+        drawn = self._render_rich(content)
+        text = drawn.text
         if self._connector is None:
             raise RichContentFailed(
                 "Teams is not connected, so the publication was not sent.", text=text
             )
         carried = _read_publication_ref(thread_root_id) if thread_root_id else None
         service_url = carried[0] if carried else self._service_url_for(channel_id)
-        activity = await self._message_activity(agent_name, text)
+        activity = await self._message_activity(
+            agent_name, text, self._controls(content, drawn)
+        )
         opening = self._is_channel(channel_id) and thread_root_id is None
         # A new post has no conversation to queue behind yet, so its writes are
         # ordered against the channel instead.
@@ -1642,7 +1730,8 @@ class TeamsAdapter(CollaborationAdapter):
         posts for every agent here, so the name is part of what was drawn, and
         an edit that did not know it would republish the turn as somebody else.
         """
-        text = self._render_rich(replace(content, notify_external_id=None))
+        drawn = self._render_rich(replace(content, notify_external_id=None))
+        text = drawn.text
         connector = self._connector
         if connector is None:
             raise RichContentFailed(
@@ -1650,7 +1739,9 @@ class TeamsAdapter(CollaborationAdapter):
                 text=text,
             )
         address = self._publication_address(channel_id, message_ref, thread_root_id)
-        await self._edit_rich(connector, agent_name, address, text)
+        await self._edit_rich(
+            connector, agent_name, address, text, self._controls(content, drawn)
+        )
 
     async def _edit_rich(
         self,
@@ -1658,6 +1749,7 @@ class TeamsAdapter(CollaborationAdapter):
         agent_name: str,
         address: _Publication,
         text: str,
+        actions: list[dict[str, Any]],
     ) -> None:
         try:
             async with self._writes_to(address.conversation_id):
@@ -1665,7 +1757,7 @@ class TeamsAdapter(CollaborationAdapter):
                     service_url=address.service_url,
                     conversation_id=address.conversation_id,
                     activity_id=address.activity_id,
-                    activity=await self._message_activity(agent_name, text),
+                    activity=await self._message_activity(agent_name, text, actions),
                 )
         except BotConnectorThrottled as error:
             raise self._throttled(error, text) from error
@@ -2131,13 +2223,18 @@ class TeamsAdapter(CollaborationAdapter):
             return web.Response(status=400, text="invalid json")
 
         try:
-            await self._dispatch_activity(activity)
+            answer = await self._dispatch_activity(activity)
         except Exception:
             logger.exception("Failed to handle inbound Teams activity")
+            return web.Response(status=200)
 
-        return web.Response(status=200)
+        if answer is None:
+            return web.Response(status=200)
+        return web.json_response(answer)
 
-    async def _dispatch_activity(self, activity: dict[str, Any]) -> None:
+    async def _dispatch_activity(
+        self, activity: dict[str, Any]
+    ) -> dict[str, Any] | None:
         service_url = str(activity.get("serviceUrl", "")).strip()
         activity_type = activity.get("type")
 
@@ -2160,6 +2257,9 @@ class TeamsAdapter(CollaborationAdapter):
             await self._dispatch_message(activity, channel_id, channel_type)
         elif activity_type == "conversationUpdate":
             await self._dispatch_conversation_update(activity, channel_id, channel_type)
+        elif activity_type == "invoke" and activity.get("name") == _INVOKE_CARD_ACTION:
+            return await self._dispatch_card_action(activity, channel_id)
+        return None
 
     @staticmethod
     def _channel_from_activity(
@@ -2238,6 +2338,147 @@ class TeamsAdapter(CollaborationAdapter):
             command_text=command_text,
             is_targeted=bool((activity.get("recipient") or {}).get("isTargeted")),
         )
+
+    async def _dispatch_card_action(
+        self, activity: dict[str, Any], channel_id: str
+    ) -> dict[str, Any] | None:
+        """Someone pressed a button on a card this bridge posted.
+
+        Who pressed comes from `from`, which the Bot Connector fills in and the
+        button's data cannot: what travels in the button is which card and which
+        option, never who. So a press replayed from another client is still
+        attributed to whoever actually sent it, and the identity check
+        downstream is against a real account rather than a claim.
+
+        Which card comes from the activity too, and for the same reason. Teams
+        names the message the press was on in `replyToId`, and the conversation
+        and the region around it, which is the whole of a publication's address
+        — so the card is found the way an edit finds it rather than by trusting
+        a reference the presser's client could have carried anything in. The
+        token in the button still has to resolve to that same address
+        downstream, so a token lifted from one card cannot be pressed against
+        another.
+
+        Every path out of here answers the press. Until it is answered the
+        button spins on the presser's client and then reports a failure of its
+        own, which is a worse account of what happened than any of these. A
+        press that landed is answered with nothing at all: the card's own redraw
+        is what says the answer was taken, and saying so here would be saying it
+        before the redraw that proves it. A refusal reaches the presser through
+        `tell_actor`, which leaves it in `_PRESS_NOTICE` for the answer below —
+        seen by them alone, which is the one thing this platform can do that
+        Telegram's alert and Slack's ephemeral also do.
+
+        Nothing here dedupes. Teams retries an invoke it got no answer for, and
+        the same press twice is the same option, by the same person, against the
+        same revision — which the shared layer derives one command id from, so
+        the second is the first rather than a second answer.
+        """
+        press = read_answer_action(activity.get("value") or {})
+        if press is None:
+            logger.warning(
+                "Ignoring a card action in channel %s: it is not a Switch answer.",
+                channel_id,
+            )
+            return _invoke_error(400, "BadRequest", "This is not a Switch card action.")
+        if self._on_interaction is None:
+            logger.warning(
+                "A press on a Switch card in channel %s has nowhere to go: this "
+                "bridge handles no interactions, so the card should not have "
+                "been drawn with buttons.",
+                channel_id,
+            )
+            return _invoke_error(
+                500,
+                "InternalServerError",
+                "This card is not connected to anything that can take an answer.",
+            )
+
+        token, position = press
+        card = self._pressed_card(activity)
+        if card is None:
+            logger.warning(
+                "Ignoring a press in channel %s: Teams named no message for it, "
+                "so there is no card to match it against.",
+                channel_id,
+            )
+            return _invoke_error(
+                400, "BadRequest", "This press does not say which card it is on."
+            )
+
+        sender = activity.get("from") or {}
+        sender_id = str(sender.get("aadObjectId") or sender.get("id") or "")
+        sender_name = await self._sender_handle(
+            sender_id, str(sender.get("name") or "")
+        )
+
+        notices: list[str] = []
+        held = _PRESS_NOTICE.set(notices)
+        try:
+            await self._on_interaction(
+                InboundInteraction(
+                    channel_id=channel_id,
+                    sender_id=sender_id,
+                    sender_name=sender_name,
+                    action_id=position_action(position),
+                    value=token,
+                    message_ref=card,
+                )
+            )
+        except Exception:
+            logger.exception("Failed to handle a press on a Teams card")
+            return _invoke_error(
+                500, "InternalServerError", "Something went wrong taking that answer."
+            )
+        finally:
+            _PRESS_NOTICE.reset(held)
+        if notices:
+            return {"statusCode": 200, "type": _MESSAGE_RESPONSE, "value": notices[0]}
+        return None
+
+    def _pressed_card(self, activity: dict[str, Any]) -> str | None:
+        """The publication reference of the card a press was on.
+
+        Built from the invoke the same way `post_rich` built the one it handed
+        back: the region, the conversation, and the activity the press names.
+        Same three parts, so the string is the one the request was stored
+        under and the cross-check downstream is an equality rather than a
+        reconstruction that has to be forgiven its differences.
+        """
+        service_url = str(activity.get("serviceUrl", "")).strip()
+        conversation_id = str((activity.get("conversation") or {}).get("id", ""))
+        activity_id = str(activity.get("replyToId") or "")
+        if not (service_url and conversation_id and activity_id):
+            return None
+        return _publication_ref(service_url, conversation_id, activity_id)
+
+    async def tell_actor(
+        self,
+        channel_id: str,
+        actor_ref: str,
+        actor_name: str,
+        thread_ref: str | None,
+        text: str,
+    ) -> None:
+        """Tell one person their answer did not land, where they can see it.
+
+        A press is told in the answer to the press itself, which Teams shows to
+        whoever pressed and to nobody else — it costs the conversation nothing
+        and reaches them whether or not the bot has ever been able to message
+        them. It is left here for the press to carry rather than sent from here,
+        because the invoke it answers is not something this method can see.
+
+        A typed answer has no press to answer, so it falls back to the base:
+        said in the card's own post, where everyone reading it sees a notice
+        addressed to someone else. That is the platform's limit rather than a
+        choice — a Teams bot cannot say something to one member of a channel
+        unprompted.
+        """
+        notices = _PRESS_NOTICE.get()
+        if notices is not None:
+            notices.append(text)
+            return
+        await super().tell_actor(channel_id, actor_ref, actor_name, thread_ref, text)
 
     def _command_in(self, probe: str, *, is_targeted: bool) -> str | None:
         """The command this message runs, or None if it is ordinary text.

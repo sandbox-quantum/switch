@@ -838,7 +838,7 @@ def _rendering(label: str, icon_url: str) -> AgentRendering:
 
 def test_agent_card_carries_name_and_body() -> None:
     card = agent_message_card(
-        _rendering("worker", "https://example.com/i.png"), "the message body", []
+        _rendering("worker", "https://example.com/i.png"), "the message body", [], []
     )
     # Name appears in the header column; body appears as its own TextBlock.
     header = card["body"][0]["columns"][1]["items"][0]
@@ -848,7 +848,7 @@ def test_agent_card_carries_name_and_body() -> None:
 
 def test_agent_card_renders_the_supplied_icon() -> None:
     card = agent_message_card(
-        _rendering("worker", "https://example.com/custom.png"), "body", []
+        _rendering("worker", "https://example.com/custom.png"), "body", [], []
     )
     image = card["body"][0]["columns"][0]["items"][0]
     assert image["url"] == "https://example.com/custom.png"
@@ -859,7 +859,7 @@ async def test_message_activity_carries_notification_summary_and_fallback() -> N
     # Teams renders a "cards.unsupported" placeholder in notifications, mobile, and
     # link/search previews.
     adapter = _adapter()
-    activity = await adapter._message_activity("worker", "hello world")
+    activity = await adapter._message_activity("worker", "hello world", [])
     assert activity["summary"] == "worker: hello world"
     assert (
         activity["attachments"][0]["content"]["fallbackText"] == "worker: hello world"
@@ -874,7 +874,7 @@ async def test_message_activity_uses_the_agents_own_icon_when_it_has_one() -> No
         return AgentPresentation(display_name=None, icon_url=icon)
 
     adapter.set_agent_presentation_resolver(_resolver)
-    activity = await adapter._message_activity("worker", "hello")
+    activity = await adapter._message_activity("worker", "hello", [])
 
     image = activity["attachments"][0]["content"]["body"][0]["columns"][0]["items"][0]
     assert image["url"] == "https://example.com/worker.png"
@@ -887,7 +887,7 @@ async def test_message_activity_falls_back_to_the_default_icon() -> None:
         return AgentPresentation(display_name=None, icon_url=None)
 
     adapter.set_agent_presentation_resolver(_resolver)
-    activity = await adapter._message_activity("worker", "hello")
+    activity = await adapter._message_activity("worker", "hello", [])
 
     image = activity["attachments"][0]["content"]["body"][0]["columns"][0]["items"][0]
     assert image["url"] == default_icon_url("worker")
