@@ -157,6 +157,21 @@ async def _post_one(
     )
 
 
+def _steps(message: dict[str, Any]) -> list[str]:
+    """The tool calls drawn on an activity message, in the order they are in.
+
+    The recording has nine of them, and the count is the claim: one message now
+    carries both the turn's state and its tool calls, so a title matching says
+    a step is drawn and nothing about the eight that should be beside it.
+    """
+    return [
+        task["title"]
+        for block in message["blocks"]
+        if block.get("type") == "plan"
+        for task in block["tasks"]
+    ]
+
+
 def _interactions(
     session_factory: async_sessionmaker[AsyncSession], bridge_id: str
 ) -> SessionInteractions:
@@ -584,10 +599,12 @@ async def test_the_trigger_posts_the_recorded_turn_and_then_its_card(
     assert await demo.handle(TRIGGER, CHANNEL, room_id) is True
 
     assert len(client.posted) == 2
+    steps = _steps(client.posted[0])
     turn, card = (json.dumps(post["blocks"]) for post in client.posted)
     assert "Working" in turn
     assert "same fixture user" not in turn
-    assert "Ran tests/auth/test_login.py" in turn
+    assert len(steps) == 9
+    assert "Ran tests/auth/test_login.py" in "\n".join(steps)
     assert "Edit tests/auth/conftest.py?" in card
     assert [post.get("thread_ts") for post in client.posted] == [None, None]
 
@@ -607,10 +624,10 @@ async def test_running_the_recording_to_the_end_edits_what_is_already_there(
     assert await demo.handle(f"{TRIGGER} end", CHANNEL, room_id) is True
 
     assert len(client.posted) == 2
+    assert len(_steps(client.updated[0])) == 9
     turn, card = (
         json.dumps(call["blocks"], ensure_ascii=False) for call in client.updated
     )
-    assert "Ran tests/auth/test_login.py" in turn
     assert not client.deleted
     assert "Turn interrupted. 1 step left unfinished." in turn
     assert "Permission request closed" in card
@@ -635,10 +652,10 @@ async def test_ending_carries_on_the_demo_already_in_the_channel(
     assert await demo.handle(f"{TRIGGER} end", CHANNEL, room_id) is True
 
     assert len(client.posted) == posted
+    assert len(_steps(client.updated[0])) == 9
     turn, card = (
         json.dumps(call["blocks"], ensure_ascii=False) for call in client.updated
     )
-    assert "Ran tests/auth/test_login.py" in turn
     assert not client.deleted
     assert "Turn interrupted. 1 step left unfinished." in turn
     assert "Permission request closed" in card
