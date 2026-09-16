@@ -174,7 +174,10 @@ class RemovalFailed(Exception):
     So this seam raises, the way `post_rich` and `update_rich` do, and a
     platform's own error is chained as `__cause__`. A refusal and a request
     that never came back are one exception because the caller does the same
-    thing with both: keep the settled card, and do not record a removal.
+    thing with both: keep the settled card, record no removal, and try again
+    on a widening interval. What is *not* folded in here is a wait the
+    platform asked for — that is `RichContentThrottled`, and it carries the
+    delay, so being busy cannot be read as being unable.
     """
 
 
@@ -858,7 +861,9 @@ class CollaborationAdapter(ABC):
         Returning is the claim that nothing of the card remains at that
         address — including the case where it had already gone, which is the
         same fact arrived at differently and is logged rather than raised.
-        Anything else is `RemovalFailed`.
+        That second case is what lets a deletion whose response was lost be
+        settled by simply asking again. `RichContentThrottled` where the
+        platform named a wait, `RemovalFailed` for anything else.
 
         Not reached unless the adapter also sets `removes_approved_cards`,
         which is why this refuses rather than quietly doing nothing: a

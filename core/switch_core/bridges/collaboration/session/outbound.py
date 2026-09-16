@@ -48,7 +48,6 @@ from switch_core.bridges.collaboration.adapter import (
     ActivityMark,
     ActivityMarkRefused,
     CollaborationAdapter,
-    RemovalFailed,
     RequestCard,
     RichContentFailed,
     RichContentThrottled,
@@ -1749,21 +1748,29 @@ class SessionRequestCards:
     async def remove(self, post: SessionRequestPost) -> None:
         """Take a card off the platform now that its approval has been given.
 
-        The mark goes down before the platform is asked, for the reason
-        `disclose_unconfirmed`'s does: this is reached from a publication
-        cycle, and a process that dies between the two has to leave behind the
-        state that is safe to act on. Here that is the mark, because the card
-        it describes has already been redrawn as settled — so the worst a
-        premature mark costs is an answered card left on the screen, while a
-        premature deletion would leave a row the publisher still reads as a
-        card to keep up to date, and every later cycle would try to edit a
-        message that is no longer there.
+        Nothing is written until the platform has said the card is gone.
+        `removed_at` is the publisher's evidence that there is no message left
+        to redraw, so it cannot be laid down in advance of the fact the way
+        `disclose_unconfirmed`'s mark is: that one bounds a notice to one
+        attempt and loses only the notice, whereas a mark that outlived a
+        cancellation here would hide a card still showing its decision, for
+        good, and no later cycle would look at it again.
 
-        A refusal puts the mark back. The card stays, settled and answering
-        nothing, which is the outcome asked for when a platform will not take
-        a card back — and leaving `removed_at` set would say in the record
-        that a card a reader can still see is gone.
+        Which leaves the opposite gap — a deletion that succeeded and was
+        never recorded — and it closes itself. The next cycle asks again, the
+        platform reports nothing at the address, and that is a removal
+        confirmed rather than an error, so the record catches up.
+
+        A failure is raised, not absorbed. The card it leaves behind is
+        settled and readable, which is the intended fallback, but the cleanup
+        is still owed: only the caller knows how long to wait before asking
+        again, and swallowing the exception here would make a rate limit
+        indistinguishable from a refusal and close a removal that never
+        happened.
         """
+        await self._adapter.remove_publication(
+            post.external_channel_id, post.external_post_id
+        )
         async with self._session_factory() as session:
             stored = await session.get(
                 SessionRequestPost, post.id, with_for_update=True
@@ -1772,28 +1779,6 @@ class SessionRequestCards:
                 return
             stored.removed_at = datetime.now(UTC)
             await session.commit()
-        try:
-            await self._adapter.remove_publication(
-                post.external_channel_id, post.external_post_id
-            )
-        except RemovalFailed as refusal:
-            async with self._session_factory() as session:
-                stored = await session.get(
-                    SessionRequestPost, post.id, with_for_update=True
-                )
-                if stored is not None:
-                    stored.removed_at = None
-                    await session.commit()
-            logger.warning(
-                "Card %s for request %s was granted but %s would not take it "
-                "back: %s. It stays in channel %s showing the decision, and "
-                "removal is not attempted again.",
-                post.handle,
-                post.request_id,
-                self._surface,
-                refusal,
-                post.external_channel_id,
-            )
 
     async def _reserve(
         self,

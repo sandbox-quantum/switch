@@ -997,10 +997,18 @@ class SlackAdapter(CollaborationAdapter):
         try:
             await self._web_client.chat_delete(channel=channel_id, ts=ts)
         except SlackApiError as error:
-            if error.response.get("error") != "message_not_found":
+            refusal = error.response.get("error")
+            if refusal == "ratelimited":
+                # Separated from every other error because it is the one that
+                # says nothing about the card: the deletion is still owed, and
+                # Slack has named how long to wait before owing it again.
+                raise RichContentThrottled(
+                    retry_after=_retry_after_seconds(error),
+                    text=f"Waiting for Slack to allow {message_ref} to be deleted.",
+                ) from error
+            if refusal != "message_not_found":
                 raise RemovalFailed(
-                    f"Slack would not delete {message_ref}: "
-                    f"{error.response.get('error')}."
+                    f"Slack would not delete {message_ref}: {refusal}."
                 ) from error
             # Slack says the same thing about a message already deleted and
             # about an address it has never seen. The address here is the one

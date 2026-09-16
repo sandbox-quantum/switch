@@ -22,6 +22,7 @@ from slack_sdk.errors import SlackApiError
 from switch_core.bridges.collaboration.adapter import (
     CollaborationAdapter,
     RemovalFailed,
+    RichContentThrottled,
 )
 from switch_core.bridges.collaboration.slack.adapter import SlackAdapter
 
@@ -32,13 +33,16 @@ CARD = "C123:999.9"
 
 
 class _RefusingWebClient(_FakeWebClient):
-    def __init__(self, error: str) -> None:
+    def __init__(self, error: str, headers: dict[str, str] | None = None) -> None:
         super().__init__()
         self._error = error
+        self._headers = headers
 
     async def chat_delete(self, **kwargs: Any) -> dict[str, bool]:
         self.deletes.append(kwargs)
-        raise SlackApiError("no", FakeResponse({"error": self._error}))
+        raise SlackApiError(
+            "no", FakeResponse({"error": self._error}, headers=self._headers)
+        )
 
 
 def _connected(client: Any) -> SlackAdapter:
@@ -84,6 +88,31 @@ def test_a_card_already_gone_is_reported_as_gone_but_said_out_loud(
         _run(_connected(client).remove_publication("C123", CARD))
 
     assert "already gone" in caplog.text
+
+
+def test_being_asked_to_wait_is_kept_apart_from_being_refused() -> None:
+    """A rate limit says nothing about the card, so it must not arrive as
+    `RemovalFailed`: the caller's backoff would then double its own interval
+    against a delay Slack had already named, and a channel busy enough for
+    long enough would look like one that will not delete."""
+    client = _RefusingWebClient("ratelimited", {"Retry-After": "31"})
+
+    with pytest.raises(RichContentThrottled) as raised:
+        _run(_connected(client).remove_publication("C123", CARD))
+
+    assert raised.value.retry_after == 31
+    assert isinstance(raised.value.__cause__, SlackApiError)
+
+
+def test_a_rate_limit_with_no_header_still_waits_rather_than_refusing() -> None:
+    """Slack does not always send the header. The wait is a guess then, but
+    the classification is not: the deletion is still owed."""
+    client = _RefusingWebClient("ratelimited")
+
+    with pytest.raises(RichContentThrottled) as raised:
+        _run(_connected(client).remove_publication("C123", CARD))
+
+    assert raised.value.retry_after > 0
 
 
 def test_an_unparseable_reference_never_reaches_slack() -> None:

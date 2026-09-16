@@ -9,7 +9,10 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from switch_core.bridges.collaboration.adapter import RichContentThrottled
+from switch_core.bridges.collaboration.adapter import (
+    RemovalFailed,
+    RichContentThrottled,
+)
 from switch_core.bridges.collaboration.session.outbound import (
     CardRefused,
     SessionRequestCards,
@@ -107,6 +110,9 @@ async def refresh_cards(
     post_delayed: Callable[[str, float], None] = _ignore_delay,
     refresh_needed: Callable[[str, tuple[int, str]], bool] = _always_refresh,
     refreshed: Callable[[str, tuple[int, str]], None] = _ignore_refresh,
+    removal_allowed: Callable[[str], bool] = _always_recover,
+    removal_succeeded: Callable[[str], None] = _ignore_recovery,
+    removal_delayed: Callable[[str, float], None] = _ignore_delay,
 ) -> None:
     """Bring a session's cards up to date with its persisted requests.
 
@@ -155,6 +161,18 @@ async def refresh_cards(
     process, which has no memory to trust yet) get the defaults for both,
     which always act and track nothing: every confirmed card is compared
     against what is actually recorded for it, every time.
+
+    `removal_allowed` / `removal_succeeded` / `removal_delayed` are the same
+    three-part gate as the post's, for taking a granted card back, and they
+    are kept apart from `refresh_needed` on purpose: whether a card still owes
+    a deletion is a fact about the record, not about whether anything has
+    changed since it was last drawn. Sharing the redraw's gate meant one
+    refused deletion was never attempted again by that process, because every
+    later cycle saw an unchanged card and skipped the branch. There is no
+    `removal_spent`: a card that cannot be taken back is left settled and
+    readable, which is a tolerable end state, but it is not one to write down
+    as done — so the attempt keeps stretching rather than stopping, exactly as
+    a recovery search does.
 
     `gateway_public_url` is here for one message: the notice sent when a card's
     delivery can never be confirmed, which is only useful if it can say where
@@ -371,13 +389,46 @@ async def refresh_cards(
                     ),
                 )
                 refreshed(post.token, state)
-                if cards.removes_approved_cards and granted(request):
-                    # After the redraw, not instead of it. A refused removal
-                    # has to leave a card showing what was decided, and this
-                    # is the pass that makes it show it — so the settled
-                    # drawing is put up first and taken away second, and every
-                    # point this can stop at leaves the reader something true.
-                    await cards.remove(post)
+            if post is not None and cards.removes_approved_cards and granted(request):
+                # A stage of its own, deliberately not a step of the redraw
+                # above. A granted card with no removal recorded is one still
+                # owed, and that stays true on a cycle where nothing about the
+                # card changed — which is every cycle after the one that drew
+                # it settled. Hanging the removal off `refresh_needed` meant a
+                # single rate limit lost the cleanup for the life of the
+                # process, and left the card recovered a cycle late never
+                # reached at all.
+                #
+                # A card already taken back never arrives here: the branch
+                # above skips its row outright, which is also what stops the
+                # address being deleted once a cycle forever.
+                #
+                # It runs after the redraw rather than instead of it for the
+                # same reason it retries: the card that a failure leaves
+                # behind has to be one showing what was decided.
+                if not removal_allowed(post.token):
+                    backed_off += 1
+                else:
+                    try:
+                        await cards.remove(post)
+                    except RichContentThrottled as throttled:
+                        removal_delayed(post.token, throttled.retry_after)
+                        backed_off += 1
+                    except RemovalFailed as refusal:
+                        backed_off += 1
+                        logger.warning(
+                            "Card %s for request %s was granted but %s would "
+                            "not take it back: %s. It stays in channel %s "
+                            "showing the decision until a later attempt gets "
+                            "through.",
+                            post.handle,
+                            post.request_id,
+                            cards.surface,
+                            refusal,
+                            post.external_channel_id,
+                        )
+                    else:
+                        removal_succeeded(post.token)
         except RichContentThrottled:
             backed_off += 1
         except Exception as error:
@@ -996,6 +1047,7 @@ class SessionPublisher:
         self._published: dict[str, tuple[int, bool]] = {}
         self._recovery = _RecoveryBackoff()
         self._card_post = _RecoveryBackoff()
+        self._card_removal = _RecoveryBackoff()
         self._redraw = _RedrawGuard()
         self._turn_redraw = _TurnRedrawGuard()
         self._activity_retry = _RecoveryBackoff(max_interval=30.0)
@@ -1119,6 +1171,9 @@ class SessionPublisher:
                         post_delayed=self._card_post.delay,
                         refresh_needed=self._redraw.needed,
                         refreshed=self._redraw.drawn,
+                        removal_allowed=self._card_removal.allowed,
+                        removal_succeeded=self._card_removal.succeeded,
+                        removal_delayed=self._card_removal.delay,
                     )
             except PublicationIncomplete as incomplete:
                 ok = False
