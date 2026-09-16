@@ -1692,9 +1692,14 @@ class TeamsAdapter(CollaborationAdapter):
         outcome that cannot be told apart from a bad address is not one to
         record: that is a failure, and the card is asked about again.
 
-        A 412 is a wait for the same reason it is on a redraw — the activity is
-        there and something else wrote to it first — so it comes back as a
-        backoff rather than as a card that could not be removed.
+        Only a wait Teams put a number on arrives as one. A 412, and a 429 with
+        no `Retry-After`, are owed instead. The caller treats a named wait as
+        authoritative and replaces its own growing interval with it, so an
+        invented second — or the five seconds the edit path substitutes — comes
+        back as a *shorter* delay than the cleanup had already worked up to,
+        and resets the growth every sweep. A redraw invents one anyway because
+        it holds a reservation and content that goes stale; a deletion has
+        neither, and is content to be asked about later rather than sooner.
 
         In a posts-layout channel Teams substitutes *"This message has been
         deleted."* where the card was. A chat and a threads-layout channel take
@@ -1713,9 +1718,19 @@ class TeamsAdapter(CollaborationAdapter):
                     activity_id=address.activity_id,
                 )
         except BotConnectorThrottled as error:
-            raise self._throttled(error, "") from error
-        except BotConnectorConflict as error:
-            raise self._conflicted(error, "") from error
+            if error.retry_after is None:
+                # A rate limit Teams put no number on. Inventing one would
+                # overwrite the cleanup's own interval with something shorter
+                # and stop it growing, so this is owed like any other failure
+                # and the caller keeps widening the gap between attempts.
+                raise RemovalFailed(
+                    f"Teams rate-limited the deletion of {address.activity_id} "
+                    f"in conversation {address.conversation_id} and named no "
+                    f"wait: {error}"
+                ) from error
+            raise RichContentThrottled(
+                retry_after=error.retry_after, text=""
+            ) from error
         except BotConnectorGone as error:
             if not address.trusted:
                 raise RemovalFailed(

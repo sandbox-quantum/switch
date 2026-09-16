@@ -38,6 +38,7 @@ from .test_discord_sdk_only import (
     _DMChannel,
     _guild_setup,
     _http_error,
+    _Message,
     _Response,
     _Webhook,
 )
@@ -47,8 +48,18 @@ CARD = f"{CHANNEL_ID}:{CARD_ID}"
 THREADED_CARD = f"{ROOT_MESSAGE_ID}:{CARD_ID}"
 
 
-def _not_found() -> discord.NotFound:
-    return discord.NotFound(_Response(), "unknown message")  # type: ignore[arg-type]
+def _unknown_message() -> discord.NotFound:
+    """The 404 that is about the message — the only one that can mean absence."""
+    return discord.NotFound(  # type: ignore[arg-type]
+        _Response(), {"code": 10008, "message": "Unknown Message"}
+    )
+
+
+def _unknown_webhook() -> discord.NotFound:
+    """The 404 that is about the webhook, and carries the same HTTP status."""
+    return discord.NotFound(  # type: ignore[arg-type]
+        _Response(), {"code": 10015, "message": "Unknown Webhook"}
+    )
 
 
 def _recording(lookup: Any, seen: list[int]) -> Any:
@@ -119,7 +130,7 @@ async def test_a_card_already_gone_is_reported_as_gone_but_said_out_loud(
     this is not a failure. It is still worth a line: it is also what a deletion
     by hand looks like."""
     adapter, _channel, _thread, publication = _guild_setup()
-    publication.delete_error = _not_found()
+    publication.delete_error = _unknown_message()
 
     with caplog.at_level(logging.WARNING):
         await adapter.remove_publication(str(CHANNEL_ID), CARD)
@@ -133,7 +144,7 @@ async def test_a_dm_card_already_gone_is_treated_the_same_way(
     """The DM path deletes through a different call, so it needs its own
     evidence that a missing message is not an error."""
     adapter, channel = _dm_setup()
-    channel.delete_error = _not_found()
+    channel.delete_error = _unknown_message()
 
     with caplog.at_level(logging.WARNING):
         await adapter.remove_publication(
@@ -141,6 +152,57 @@ async def test_a_dm_card_already_gone_is_treated_the_same_way(
         )
 
     assert "already gone" in caplog.text
+
+
+async def test_a_webhook_that_is_not_there_is_not_a_card_that_is_gone() -> None:
+    """Discord answers "Unknown Webhook" with the same 404 as "Unknown
+    Message". Reading the first as the second retires a card that is still on
+    the screen, and nothing later looks at the row again."""
+    adapter, _channel, _thread, publication = _guild_setup()
+    publication.delete_error = _unknown_webhook()
+
+    with pytest.raises(RemovalFailed) as raised:
+        await adapter.remove_publication(str(CHANNEL_ID), CARD)
+
+    assert isinstance(raised.value.__cause__, discord.NotFound)
+
+
+async def test_failing_to_find_the_webhook_is_owed_and_deletes_nothing() -> None:
+    """Resolving the webhook is a step before the deletion. Whatever it
+    answers is about the webhook, and the card was never asked about."""
+    adapter, channel, _thread, publication = _guild_setup()
+    channel.webhook_error = _unknown_webhook()
+
+    with pytest.raises(RemovalFailed):
+        await adapter.remove_publication(str(CHANNEL_ID), CARD)
+
+    assert publication.deletes == []
+
+
+async def test_a_card_the_webhook_did_not_send_is_still_in_the_channel() -> None:
+    """The publication webhook is looked up by name and created when none is
+    found, so one deleted in the channel's settings is replaced by a webhook
+    that sent none of the cards already posted. It answers "Unknown Message"
+    for every one of them while they sit there, so the channel is asked."""
+    adapter, channel, _thread, publication = _guild_setup()
+    publication.delete_error = _unknown_message()
+    channel.messages[CARD_ID] = _Message(channel, CARD_ID)
+
+    with pytest.raises(RemovalFailed) as raised:
+        await adapter.remove_publication(str(CHANNEL_ID), CARD)
+
+    assert "still in the channel" in str(raised.value)
+
+
+async def test_a_card_that_cannot_be_read_back_is_owed_rather_than_gone() -> None:
+    """The confirming read is the whole of the evidence. Without it there is
+    nothing to record, so a read that fails leaves the removal owed."""
+    adapter, channel, _thread, publication = _guild_setup()
+    publication.delete_error = _unknown_message()
+    channel.fetch_error = _http_error(503)
+
+    with pytest.raises(RemovalFailed):
+        await adapter.remove_publication(str(CHANNEL_ID), CARD)
 
 
 async def test_being_asked_to_wait_is_kept_apart_from_being_refused() -> None:
@@ -185,7 +247,7 @@ async def test_a_channel_that_cannot_be_resolved_is_not_a_card_that_is_gone() ->
     nothing about the card. Reading it as success would retire a card still on
     the screen."""
     adapter, _channel, _thread, _publication = _guild_setup()
-    adapter._client.fetch_errors[CHANNEL_ID] = _not_found()  # type: ignore[union-attr]
+    adapter._client.fetch_errors[CHANNEL_ID] = _unknown_message()  # type: ignore[union-attr]
     adapter._client._channels.pop(CHANNEL_ID)  # type: ignore[union-attr]
 
     with pytest.raises(RemovalFailed):

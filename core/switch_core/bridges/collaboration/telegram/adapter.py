@@ -1533,8 +1533,8 @@ class TelegramAdapter(CollaborationAdapter):
         message for 48 hours and not after, and it reports the refusal as a
         `BadRequest` saying the message cannot be deleted. That is a real
         failure and is raised as one — the card stays, settled and readable,
-        which is the intended fallback. A card answered inside two days, which
-        is every card anybody is waiting on, is deleted.
+        which is the intended fallback. Nothing here shortens the wait, so a
+        card left open long enough is one Telegram will not take back.
 
         Told the message is not there, this returns: the address came from
         Telegram when it accepted the card, so nothing remains at it, which is

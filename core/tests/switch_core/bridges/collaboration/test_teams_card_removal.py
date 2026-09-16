@@ -115,29 +115,30 @@ async def test_being_asked_to_wait_is_kept_apart_from_being_refused() -> None:
     assert raised.value.retry_after == 12.0
 
 
-async def test_a_wait_teams_did_not_put_a_number_on_is_still_a_wait() -> None:
+async def test_a_wait_teams_put_no_number_on_is_owed_rather_than_invented() -> None:
+    """The caller takes a named wait as authoritative and drops its own
+    interval for it, so a number this side made up is not a smaller lie than a
+    wrong one: five seconds substituted every sweep holds the cleanup at its
+    floor while Teams is refusing everything."""
     adapter, connector = _teams()
     connector.fail_delete = BotConnectorThrottled(
         "slow down", status=429, retry_after=None
     )
 
-    with pytest.raises(RichContentThrottled) as raised:
+    with pytest.raises(RemovalFailed):
         await adapter.remove_publication(CHANNEL, CARRIED)
 
-    assert raised.value.retry_after > 0
 
-
-async def test_something_else_writing_first_is_a_wait_not_a_failure() -> None:
-    """A 412 says the activity is there and one revision ahead. Coming round
-    again removes it; calling it a failure buys a notice about a card that is
-    about to go anyway."""
+async def test_something_else_writing_first_is_owed_rather_than_waited_out() -> None:
+    """A 412 is contention over a dependency, and Teams names no interval with
+    it. A second of invented backoff would come back shorter than the interval
+    the cleanup had already grown to, and reset the growth each time round, so
+    a channel conflicting persistently would be retried hardest."""
     adapter, connector = _teams()
     connector.fail_delete = BotConnectorConflict("busy", status=412, retry_after=None)
 
-    with pytest.raises(RichContentThrottled) as raised:
+    with pytest.raises(RemovalFailed):
         await adapter.remove_publication(CHANNEL, CARRIED)
-
-    assert raised.value.retry_after > 0
 
 
 async def test_a_request_that_never_came_back_is_owed_rather_than_settled() -> None:

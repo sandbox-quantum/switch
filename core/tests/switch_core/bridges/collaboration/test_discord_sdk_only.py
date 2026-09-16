@@ -154,6 +154,7 @@ class _Channel:
         self.history_error: Exception | None = None
         self.send_error: Exception | None = None
         self.delete_error: Exception | None = None
+        self.fetch_error: Exception | None = None
         self.existing_webhooks: list[Any] = []
         self.webhook_error: Exception | None = None
         self.thread_error: Exception | None = None
@@ -189,6 +190,8 @@ class _Channel:
         self.typing_count += 1
 
     async def fetch_message(self, message_id: int) -> _Message:
+        if self.fetch_error is not None:
+            raise self.fetch_error
         message = self.messages.get(message_id)
         if message is None:
             raise discord.NotFound(_Response(), "message not found")  # type: ignore[arg-type]

@@ -3,8 +3,7 @@
 A bot deletes its own messages in a group as an ordinary member, which is all
 the install asks for, and in a broadcast channel under the Delete Messages
 right it does ask for. The limit worth knowing is time: after 48 hours Telegram
-refuses, and says so. A card answered inside two days — which is every card
-anybody is waiting on — comes back.
+refuses, and says so, and a card open that long stays where it is.
 
 The other half is that a caller acting on the result — writing down that a card
 is gone — must not be told success where none was established. That is why this

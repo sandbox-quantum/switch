@@ -74,6 +74,12 @@ _REACTION: dict[ActivityMark, str] = {"working": "👀", "queued": "⏳"}
 # Discord's error code for "Maximum number of guild roles reached" (250).
 _MAX_GUILD_ROLES_CODE = 30005
 
+# "Unknown Message". The only 404 that is about the message rather than about
+# what was asked to act on it — a webhook route answers 10015 "Unknown Webhook"
+# with the same status, and reading that as a card that is gone retires a card
+# still on the screen.
+_UNKNOWN_MESSAGE_CODE = 10008
+
 # Applied to the bot posts that inline an agent's name into the body — the DM
 # path, which has no webhook identity to carry it. Escaping the text is not
 # enough on its own: Discord decides who a message pings from the raw content
@@ -1197,6 +1203,13 @@ class DiscordAdapter(CollaborationAdapter):
         return RemovalFailed(f"{description}: {error}")
 
     async def remove_publication(self, channel_id: str, message_ref: str) -> None:
+        """Take an answered card out of the channel, or say why it is still there.
+
+        Only the message being absent is success, and only the routes that
+        answer about the message may establish it. Finding the channel, and
+        finding the webhook that posted the card, are both steps before the
+        deletion; a 404 from either is about the step, not about the card.
+        """
         if self._client is None:
             raise RemovalFailed("Discord client not connected.")
 
@@ -1209,34 +1222,105 @@ class DiscordAdapter(CollaborationAdapter):
         description = f"Discord would not delete {message_ref} in channel {channel_id}"
         try:
             target = await self._get_channel(int(channel_id))
+            lobby = self._channel_type_of(target) == "lobby"
         except Exception as error:
             raise self._removal_failure(error, description) from error
 
+        if lobby:
+            await self._remove_own_message(
+                int(location_id), int(message_id), message_ref, description
+            )
+            return
+
         try:
-            if self._channel_type_of(target) == "lobby":
-                # No webhook posted it and none could delete it; in a DM the
-                # card is the bot's own message.
-                location = await self._get_channel(int(location_id))
-                await location.get_partial_message(int(message_id)).delete()
-                return
-            kwargs: dict[str, Any] = {}
-            if location_id != channel_id:
-                kwargs["thread"] = discord.Object(id=int(location_id))
             # The publication webhook, not the agents' one: a webhook may
-            # delete only what it sent, and this is what sent the card.
+            # delete only what it sent, and this is what sent the card. A
+            # webhook that cannot be resolved is not a card that is gone, so
+            # this is outside the deletion's own error handling.
             webhook = await self._publication_webhook(int(channel_id))
+        except Exception as error:
+            raise self._removal_failure(error, description) from error
+
+        kwargs: dict[str, Any] = {}
+        if location_id != channel_id:
+            kwargs["thread"] = discord.Object(id=int(location_id))
+        try:
             await webhook.delete_message(int(message_id), **kwargs)
         except discord.NotFound as error:
-            # Nothing at the address, which is what was asked for. Worth a line
-            # because the innocent reading — someone deleted the card by hand,
-            # or an acknowledgement we never saw was real — is not the only one.
-            logger.warning(
-                "Discord card %s was already gone when it was taken back: %s",
-                message_ref,
-                error,
+            if error.code != _UNKNOWN_MESSAGE_CODE:
+                # "Unknown Webhook", most often: this webhook is not there any
+                # more, which is a fact about the webhook and none about the
+                # card.
+                raise self._removal_failure(error, description) from error
+            await self._confirm_card_gone(
+                int(location_id), int(message_id), message_ref, error
             )
         except Exception as error:
             raise self._removal_failure(error, description) from error
+
+    async def _remove_own_message(
+        self, location_id: int, message_id: int, message_ref: str, description: str
+    ) -> None:
+        """Delete a DM card, which the bot posted as itself.
+
+        No webhook is involved, so the deletion goes through the channel — the
+        route that answers about the message — and a 404 from it is the card's
+        absence and nothing else.
+        """
+        try:
+            location = await self._get_channel(location_id)
+        except Exception as error:
+            raise self._removal_failure(error, description) from error
+        try:
+            await location.get_partial_message(message_id).delete()
+        except discord.NotFound as error:
+            self._say_already_gone(message_ref, error)
+        except Exception as error:
+            raise self._removal_failure(error, description) from error
+
+    async def _confirm_card_gone(
+        self, location_id: int, message_id: int, message_ref: str, error: Exception
+    ) -> None:
+        """Ask the channel whether the card is really gone.
+
+        A webhook answers "Unknown Message" for a message that is not there
+        *and* for one it did not send, and it cannot tell them apart. That
+        second reading is not hypothetical: the publication webhook is looked
+        up by name and created when no match is found, so a webhook deleted in
+        the channel's settings is replaced by one that never sent any of the
+        cards already posted. Taking its 404 at face value would retire every
+        one of them while they stayed on the screen.
+
+        The channel route answers about the message, so it is the one that can
+        settle it.
+        """
+        try:
+            location = await self._get_channel(location_id)
+            await location.fetch_message(message_id)
+        except discord.NotFound:
+            self._say_already_gone(message_ref, error)
+            return
+        except Exception as failure:
+            raise RemovalFailed(
+                f"Discord said the webhook does not know message {message_ref}, "
+                f"and reading the channel to find out whether the card is still "
+                f"there did not work either: {failure}"
+            ) from failure
+        raise RemovalFailed(
+            f"Discord card {message_ref} is still in the channel: the "
+            f"publication webhook did not send it and so cannot delete it."
+        )
+
+    @staticmethod
+    def _say_already_gone(message_ref: str, error: Exception) -> None:
+        # Nothing at the address, which is what was asked for. Worth a line
+        # because the innocent reading — someone deleted the card by hand, or
+        # an acknowledgement we never saw was real — is not the only one.
+        logger.warning(
+            "Discord card %s was already gone when it was taken back: %s",
+            message_ref,
+            error,
+        )
 
     async def find_request_card(
         self,
