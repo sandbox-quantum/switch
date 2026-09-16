@@ -1044,6 +1044,36 @@ export async function deleteAgent(server: SwitchServer, agentId: string): Promis
   });
 }
 
+/**
+ * Export a room's configuration as YAML (`GET /rooms/{roomId}/yaml`). Returns
+ * the raw YAML text — the same surface `POST /rooms/from-yaml` accepts, so
+ * the exported file round-trips through import unchanged.
+ *
+ * Each section can be dropped via its boolean toggles (default: all included).
+ */
+export async function exportRoomYaml(
+  server: SwitchServer,
+  roomId: string,
+  sections?: {
+    agents?: boolean;
+    users?: boolean;
+    references?: boolean;
+    docs?: boolean;
+    roles?: boolean;
+  }
+): Promise<string> {
+  const params = new URLSearchParams();
+  if (sections?.agents === false) params.set('agents', 'false');
+  if (sections?.users === false) params.set('users', 'false');
+  if (sections?.references === false) params.set('references', 'false');
+  if (sections?.docs === false) params.set('docs', 'false');
+  if (sections?.roles === false) params.set('roles', 'false');
+  const query = params.toString();
+  const path = `/rooms/${encodeURIComponent(roomId)}/yaml${query ? `?${query}` : ''}`;
+  const res = await gatewayFetch(server, path, { authenticated: true });
+  return res.text();
+}
+
 /** The result of provisioning a room from a YAML template. */
 export type TemplateProvisionResult = {
   roomId: string;
