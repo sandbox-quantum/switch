@@ -28,16 +28,16 @@ async def test_restart_reuses_attention_and_updates_it_when_host_returns(
     await setup(session_factory)
     platform = ActivitySlack()
     await publish(activity(session_factory, platform))
-    assert platform.post_count == 3
+    assert platform.post_count == 2
     await publish(activity(session_factory, platform))
-    assert platform.post_count == 3
+    assert platform.post_count == 2
     await publish(activity(session_factory, platform), error=None)
-    assert platform.post_count == 3
-    assert "offline" not in platform.messages["channel-demo:3"].text
+    assert platform.post_count == 2
+    assert "offline" not in platform.messages["channel-demo:2"].text
     await publish(activity(session_factory, platform), status="completed", error=None)
     await publish(activity(session_factory, platform), status="completed", error=None)
-    assert platform.post_count == 3
-    assert "complete" in platform.messages["channel-demo:3"].text.lower()
+    assert platform.post_count == 2
+    assert "complete" in platform.messages["channel-demo:2"].text.lower()
 
 
 class LostAttentionResponse(ActivitySlack):
@@ -56,13 +56,13 @@ async def test_lost_attention_response_is_recovered_without_reposting(
     platform = LostAttentionResponse()
     with pytest.raises(TimeoutError):
         await publish(activity(session_factory, platform))
-    assert platform.post_count == 3
+    assert platform.post_count == 2
     await publish(
         activity(session_factory, platform),
         error=None if recovered else "The host is offline.",
     )
-    assert platform.post_count == 3
-    assert ("offline" in platform.messages["channel-demo:3"].text) is not recovered
+    assert platform.post_count == 2
+    assert ("offline" in platform.messages["channel-demo:2"].text) is not recovered
 
 
 async def test_terminal_error_receipt_prevents_attention_replay(session_factory):
@@ -74,4 +74,4 @@ async def test_terminal_error_receipt_prevents_attention_replay(session_factory)
     await publish(
         activity(session_factory, platform), status="error", error="The request failed."
     )
-    assert platform.post_count == 3
+    assert platform.post_count == 2

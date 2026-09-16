@@ -789,7 +789,9 @@ class SessionTurnActivity:
 
         if self._separate_activity_log:
             drawn = await self._draw_log(anchor, items, turn) and drawn
-            await self._save_anchor(anchor)
+        # What the messages are now showing, so the next process to pick this
+        # turn up can tell a redraw it owes from one nobody would see.
+        await self._save_anchor(anchor)
         if ended:
             record = self._record.get()
             if record and drawn:

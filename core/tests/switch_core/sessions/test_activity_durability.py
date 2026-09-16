@@ -175,34 +175,32 @@ async def publish(
     )
 
 
-async def test_restart_reuses_status_and_log_and_does_not_repost_completion(
+async def test_restart_reuses_the_activity_post_and_does_not_repost_completion(
     session_factory,
 ):
     await setup(session_factory)
     platform = ActivitySlack()
     await publish(activity(session_factory, platform))
-    assert platform.post_count == 2
+    assert platform.post_count == 1
     before = len(platform.edit_refs)
     await publish(activity(session_factory, platform))
-    assert platform.post_count == 2
-    # Restart/timer-only refresh must not collapse either unchanged disclosure.
+    assert platform.post_count == 1
+    # Restart/timer-only refresh must not collapse the unchanged disclosure.
     assert platform.edit_refs[before:] == []
     await publish(activity(session_factory, platform), "completed")
-    assert set(platform.messages) == {"channel-demo:1", "channel-demo:2"}
+    assert set(platform.messages) == {"channel-demo:1"}
     assert not platform.reactions
     await publish(activity(session_factory, platform), "completed")
-    assert platform.post_count == 2
+    assert platform.post_count == 1
 
 
-@pytest.mark.parametrize("slot", ["status", "log"])
-async def test_lost_post_response_is_recovered_without_duplicate(session_factory, slot):
+async def test_lost_post_response_is_recovered_without_duplicate(session_factory):
     await setup(session_factory)
     platform = ActivitySlack()
     original_post = platform.post_rich
 
     async def lose_response(channel, agent, content, thread):
-        if content.tool_log == (slot == "log"):
-            platform.fail_after_post = True
+        platform.fail_after_post = True
         return await original_post(channel, agent, content, thread)
 
     platform.post_rich = lose_response
@@ -210,11 +208,11 @@ async def test_lost_post_response_is_recovered_without_duplicate(session_factory
         await publish(activity(session_factory, platform))
     platform.post_rich = original_post
     await publish(activity(session_factory, platform))
-    assert platform.post_count == 2
-    assert len(platform.messages) == 2
+    assert platform.post_count == 1
+    assert len(platform.messages) == 1
 
 
-async def test_final_log_edit_failure_is_retried_after_restart(
+async def test_a_final_edit_failure_is_retried_after_restart(
     session_factory, monkeypatch
 ):
     await setup(session_factory)
@@ -222,18 +220,18 @@ async def test_final_log_edit_failure_is_retried_after_restart(
     await publish(activity(session_factory, platform))
     original = platform.update_rich
 
-    async def fail_log(channel, agent, ref, content, thread):
-        if content.tool_log:
-            raise TimeoutError("Final log edit failed")
+    async def fail_ending(channel, agent, ref, content, thread):
+        if content.turn.status == "completed":
+            raise TimeoutError("Final edit failed")
         return await original(channel, agent, ref, content, thread)
 
     with monkeypatch.context() as patch:
-        patch.setattr(platform, "update_rich", fail_log)
+        patch.setattr(platform, "update_rich", fail_ending)
         with pytest.raises(TimeoutError):
             await publish(activity(session_factory, platform), "completed")
     await publish(activity(session_factory, platform), "completed")
-    assert set(platform.messages) == {"channel-demo:1", "channel-demo:2"}
-    assert platform.post_count == 2
+    assert set(platform.messages) == {"channel-demo:1"}
+    assert platform.post_count == 1
     assert not platform.reactions
 
 
@@ -263,7 +261,7 @@ async def test_competing_publishers_share_one_durable_anchor(session_factory):
         publish(activity(session_factory, platform)),
         publish(activity(session_factory, platform)),
     )
-    assert platform.post_count == 2
+    assert platform.post_count == 1
 
 
 async def test_lease_expiry_hides_buttons_without_new_events_and_reconnect_restores_them(
@@ -362,7 +360,9 @@ async def test_existing_older_turn_is_finished_after_restart_without_replaying_h
     await publisher.publish_pending()
     assert "channel-demo:1" in platform.messages
     assert "channel-demo:2" in platform.messages
-    assert platform.post_count == 4  # New turn creates a status and reserved tool log.
+    assert (
+        platform.post_count == 2
+    )  # The new turn posts an activity message of its own.
     publisher = SessionPublisher(
         session_factory,
         "bridge",
@@ -370,7 +370,7 @@ async def test_existing_older_turn_is_finished_after_restart_without_replaying_h
         activity(session_factory, platform),
     )
     await publisher.publish_pending()
-    assert platform.post_count == 4
+    assert platform.post_count == 2
 
 
 async def test_unknown_delivery_without_a_match_never_blindly_reposts(session_factory):
@@ -757,7 +757,7 @@ async def test_definite_post_rejection_can_be_retried(session_factory, monkeypat
         )
         assert not await publish(activity(session_factory, platform))
     assert await publish(activity(session_factory, platform))
-    assert platform.post_count == 2
+    assert platform.post_count == 1
 
 
 @pytest.mark.parametrize("restart", [False, True])
@@ -784,8 +784,8 @@ async def test_provisional_error_receipt_becomes_real_turn_in_place(
     if restart:
         renderer = activity(session_factory, platform)
     await publish(renderer, real_status, tools=False)
-    assert platform.post_count == 2
-    assert set(platform.messages) == {"channel-demo:1", "channel-demo:2"}
+    assert platform.post_count == 1
+    assert set(platform.messages) == {"channel-demo:1"}
     assert "errored" not in platform.messages["channel-demo:1"].text.lower()
     assert "channel-demo:1" in platform.edit_refs
 
@@ -850,13 +850,15 @@ async def test_pending_command_cannot_hide_recorded_completion_or_replay_stale_e
         )
         await publisher.publish_pending()
     if durable:
+        # One activity message per turn, and an accepted command is a turn of
+        # its own on top of the recorded completion.
         assert "channel-demo:1" in platform.messages
-        assert "channel-demo:2" in platform.messages
-        assert platform.post_count == (4 if pending_status == "accepted" else 2)
+        assert platform.post_count == (2 if pending_status == "accepted" else 1)
+        assert ("channel-demo:2" in platform.messages) == (pending_status == "accepted")
     else:
         # Each fresh demo publisher redraws the latest real completion. Pending
         # errors are not replayed, and a queued receipt cannot hide that completion.
-        assert platform.post_count == (10 if pending_status == "accepted" else 6)
+        assert platform.post_count == (5 if pending_status == "accepted" else 3)
 
 
 @pytest.mark.parametrize(
@@ -922,7 +924,7 @@ async def test_an_unacknowledged_command_is_not_reported_as_one_the_agent_failed
     assert not_says not in said
 
 
-async def test_reaction_failure_retries_without_blocking_log(session_factory):
+async def test_reaction_failure_retries_without_blocking_the_activity(session_factory):
     from unittest.mock import AsyncMock
 
     await setup(session_factory)
@@ -931,7 +933,7 @@ async def test_reaction_failure_retries_without_blocking_log(session_factory):
     platform.mark_activity = AsyncMock(side_effect=TimeoutError("reaction failed"))
     renderer = activity(session_factory, platform)
     assert await publish(renderer)
-    assert platform.post_count == 2
+    assert platform.post_count == 1
     platform.mark_activity = original
     assert await publish(renderer)
     assert platform.reactions == {"channel-demo:question"}
@@ -1348,7 +1350,7 @@ async def test_throttled_initial_post_retries_without_uncertain_reservation(
         await publish(renderer)
     platform.post_rich = original
     assert await publish(renderer)
-    assert platform.post_count == 2
+    assert platform.post_count == 1
 
 
 async def test_completed_journal_discards_anchors_but_keeps_replay_receipt(
@@ -1371,7 +1373,7 @@ async def test_completed_journal_discards_anchors_but_keeps_replay_receipt(
             "shown": {"channel_id": "channel-demo", "ref": "channel-demo:1"},
         }
     await publish(activity(session_factory, platform), "completed")
-    assert platform.post_count == 2
+    assert platform.post_count == 1
 
 
 async def test_publisher_reserves_activity_before_an_early_request(session_factory):
@@ -1386,10 +1388,9 @@ async def test_publisher_reserves_activity_before_an_early_request(session_facto
     )
     await publisher.publish_pending()
     messages = list(platform.messages.values())
-    assert len(messages) == 3
+    assert len(messages) == 2
     assert "Working" in messages[0].text
-    assert "No tool calls yet" in messages[1].text
-    assert any(block["type"] == "actions" for block in messages[2].blocks)
+    assert any(block["type"] == "actions" for block in messages[1].blocks)
 
 
 # ── The real Mattermost adapter, not a stand-in ──────────────────────────────
