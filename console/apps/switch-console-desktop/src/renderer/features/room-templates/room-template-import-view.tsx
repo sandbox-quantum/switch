@@ -1017,6 +1017,7 @@ const TemplateImportPanel = observer(function TemplateImportPanel() {
       } else {
         const t = await rpc.roomTemplates.parse({ yamlText, schema: templateSchema ?? undefined });
         name = name ?? t.roomName ?? 'Room template';
+        description = t.roomDescription ?? '';
       }
       await rpc.switchServers.saveTemplate({
         serverId,

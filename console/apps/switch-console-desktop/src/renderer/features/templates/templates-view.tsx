@@ -131,11 +131,13 @@ function ImportTile({ onClick, onFile }: { onClick: () => void; onFile: (file: F
         const file = e.dataTransfer.files[0];
         if (file) onFile(file);
       }}
-      className={`flex min-h-[184px] cursor-pointer flex-col items-center justify-center gap-2 rounded-[11px] border border-dashed p-4 text-foreground-muted transition-colors hover:border-border-1 hover:bg-[var(--sel-soft)] hover:text-foreground ${dragging ? 'border-primary bg-[var(--sel-soft)] text-foreground' : 'border-border'}`}
+      className={`flex w-full cursor-pointer items-center justify-center gap-3 rounded-[11px] border border-dashed px-4 py-5 text-foreground-muted transition-colors hover:border-border-1 hover:bg-[var(--sel-soft)] hover:text-foreground ${dragging ? 'border-primary bg-[var(--sel-soft)] text-foreground' : 'border-border'}`}
     >
-      <Upload className="size-5" />
+      <Upload className="size-5 shrink-0" />
       <span className="text-sm">Import from YAML</span>
-      <span className="text-xs text-foreground-passive">agent or room · drop a file here</span>
+      <span className="text-xs text-foreground-passive">
+        an agent or room template · click to paste, or drop a file here
+      </span>
     </button>
   );
 }
@@ -409,14 +411,10 @@ const TemplatesPanel = observer(function TemplatesPanel() {
           )}
 
           {!searching && (
-            <section>
-              <div className={grid}>
-                <ImportTile
-                  onClick={() => navigate('templateImport', { serverId })}
-                  onFile={(file) => void importFile(file)}
-                />
-              </div>
-            </section>
+            <ImportTile
+              onClick={() => navigate('templateImport', { serverId })}
+              onFile={(file) => void importFile(file)}
+            />
           )}
 
           <section>

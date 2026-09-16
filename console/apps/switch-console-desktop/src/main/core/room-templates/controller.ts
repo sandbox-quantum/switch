@@ -19,6 +19,8 @@ export type ParamSpec = {
 export type ParsedTemplate = {
   params: ParamSpec[];
   roomName: string | null;
+  /** The room's description as the template spells it, for a listing. */
+  roomDescription: string | null;
   /** All agents from the template (both interpolated and hardcoded). */
   agents: string[];
   /** Hardcoded agents (no `{param}` interpolation), editable in the form. */
@@ -164,6 +166,8 @@ export const roomTemplatesController = createRPCController({
 
     const room = doc.room as Record<string, unknown> | undefined;
     const roomName = room && typeof room.name === 'string' ? room.name : null;
+    const roomDescription =
+      room && typeof room.description === 'string' ? room.description.trim() : null;
     const allAgents = extractStringList(room?.agents);
     const allUsers = extractStringList(room?.users);
     const paramSpecs = extractParams(doc.params);
@@ -185,6 +189,7 @@ export const roomTemplatesController = createRPCController({
     return {
       params: paramSpecs,
       roomName,
+      roomDescription,
       agents: allAgents,
       hardcodedAgents: allAgents.filter((a) => !hasInterpolation(a)),
       hardcodedUsers: allUsers.filter((u) => !hasInterpolation(u)),
