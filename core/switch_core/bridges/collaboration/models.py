@@ -1,6 +1,17 @@
-from typing import Literal
+from typing import Annotated, Literal
 
-from pydantic import BaseModel
+from pydantic import AfterValidator, BaseModel
+
+from switch_core.sessions.attachments import normalise_mime_type
+
+MimeType = Annotated[str, AfterValidator(normalise_mime_type)]
+"""A media type with its parameters stripped.
+
+Platforms report the type of a text file with a charset attached — Mattermost
+and Discord both return ``text/plain; charset=utf-8`` — and every consumer of
+an attachment compares against bare types, so the parameter comes off here,
+once, rather than in each adapter.
+"""
 
 ChannelType = Literal["lobby", "channel_public", "channel_private", "group", "direct"]
 
@@ -25,7 +36,7 @@ class Attachment(BaseModel):
     """
 
     filename: str
-    mimetype: str
+    mimetype: MimeType
     data: bytes
 
 
@@ -33,7 +44,7 @@ class OutboundAttachment(BaseModel):
     """A file on its way out to an external platform, with its raw bytes."""
 
     filename: str
-    mimetype: str
+    mimetype: MimeType
     data: bytes
 
 
