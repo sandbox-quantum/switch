@@ -4,7 +4,10 @@ Connects a Mattermost server to Switch. Unlike the single-bot platforms,
 Mattermost uses **one bot account per Switch agent**, created and driven through
 an **admin account** you supply. Inbound messages arrive over Mattermost's
 WebSocket (an outbound connection from Switch), so **no public ingress is
-required**.
+required**. One thing does travel the other way — a press on a button Switch
+posted, which the Mattermost server delivers over HTTP. That needs the
+Mattermost server to reach switch-core, not the internet; see
+[step 3](#3-optional-let-mattermost-deliver-button-presses).
 
 ## Prerequisites
 
@@ -46,9 +49,102 @@ Fields (`MattermostConnectionConfig`):
 | `admin_password` | yes | Admin password. |
 | `team_name` | yes | Team slug that bridged channels are created under. |
 | `public_url` | no | User-facing base URL when it differs from `url`; used for channel deeplinks so they open in the user's client. Falls back to `url`. |
+| `callback_base_url` | no | Base URL (scheme + host + port, no path) the **Mattermost server** reaches switch-core's callback listener on. Unset means cards carry no buttons. See [step 3](#3-optional-let-mattermost-deliver-button-presses). |
 
 On success the bridge logs in as the admin, resolves the team, and starts its
 WebSocket. Per-agent bot accounts are created as agents are used.
+
+## 3. (Optional) Let Mattermost deliver button presses
+
+Everything else Switch hears from Mattermost comes down the WebSocket the bridge
+dialled out on. A **button press does not**: the Mattermost server POSTs it to a
+URL, so switch-core has to be reachable *from the Mattermost server*. Skip this
+section and nothing breaks — cards arrive without buttons and stay answerable by
+typing a reply, and the bridge logs one warning saying so at startup.
+
+**The listener.** switch-core takes callbacks on a socket of its own, separate
+from the agent API on `SERVER_PORT` (8000), which also carries the MCP server and
+the operator dashboard. What you expose for a button should be callbacks and
+nothing else.
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `COLLABORATION_CALLBACK_HOST` | `0.0.0.0` | Bind address. |
+| `COLLABORATION_CALLBACK_PORT` | `8081` | Bind port. |
+
+Nothing binds until a bridge asks to be served, so a deployment with no
+`callback_base_url` anywhere opens no port at all. The listener is shared: every
+bridge that needs callbacks is routed by type and id below one port, so a second
+Mattermost server is not a second port and not a second firewall rule.
+
+**Reachability.** Set `callback_base_url` on the bridge to whatever address the
+Mattermost server itself can use. This is frequently nothing like the URL a
+browser uses — a service name on a container network, or an internal hostname:
+
+```
+http://switch:8081                      # container network, service name
+http://host.docker.internal:8081        # Mattermost in Docker, switch-core on the host
+https://switch-callbacks.example.invalid # behind a reverse proxy
+```
+
+**A bridge that already exists** cannot be given the field from the operator
+dashboard: the registration form is generated from the connection schema and so
+offers `callback_base_url`, but there is no form for editing a connection
+afterwards — only the greetings and channel-creation toggles. Use the API, as a
+gateway admin:
+
+```bash
+curl -X PATCH "$GATEWAY_URL/gateway/collaborations/$BRIDGE_ID" \
+  -H 'Content-Type: application/json' \
+  -H "Cookie: switch_auth=$TOKEN" \
+  -d '{"connection_config": {"callback_base_url": "http://switch:8081"}}'
+```
+
+The config is merged over what is stored, so the admin password does not have to
+be re-sent, and the bridge is restarted so the change takes effect rather than
+waiting for the next deploy.
+
+**Mattermost must be allowed to call it.** Mattermost refuses outbound
+integration requests to private addresses unless the host is listed in System
+Console → Environment → Developer → *Allow untrusted internal connections to*
+(`ServiceSettings.AllowedUntrustedInternalConnections`, space-separated hosts).
+Add the host from `callback_base_url`. Switch's own compose stacks set it
+already; a server you bring yourself does not, and the symptom is a press that
+silently does nothing with an error only in the Mattermost server log.
+
+**TLS** is a proxy's job, as it is for Teams: the listener speaks plain HTTP. If
+the hop between the two servers leaves a network you trust, terminate TLS in
+front of it and point `callback_base_url` at the proxy.
+
+**The credential.** Each button carries a signature inside the action's
+`context`, which Mattermost keeps server-side and never sends to the browser. The
+signing key is **derived** from `JWT_SECRET_KEY` and the bridge's own identity —
+it is not stored anywhere, so there is nothing extra to configure, back up, or
+keep in step, and a bridge registered before any of this existed needs no edit.
+Two consequences:
+
+- A signature minted for one bridge is not valid for another, so a leaked
+  `context` is worth one button on one card.
+- **Rotating `JWT_SECRET_KEY` invalidates the buttons on cards already posted.**
+  Those presses are refused and logged; the requests behind them stay answerable
+  by typing. New cards work immediately.
+
+**What a reader sees.** An open permission card gains one button per option,
+numbered the way the card's own text numbers them, so pressing and typing name
+the same choice. The buttons disappear when the request is answered, cancelled
+or expires. A press by somebody who may not answer, or on a card that has
+already settled, is explained to that person alone — nobody else in the channel
+sees it. A card that says it is too long to answer from Mattermost carries no
+buttons, because the reader has not been shown what they would be deciding.
+
+Buttons ride in the post's props, which an edit replaces wholesale, so a redraw
+reads the post back and merges rather than overwriting what the Mattermost
+server itself put there. It is one extra API call, made only for request cards
+on bridges that take callbacks.
+
+**Kubernetes.** The Helm chart does not publish the callback port yet, so a
+chart deployment needs the Service port and route added by hand for now; the
+`switchCore.teamsBridge` block in `values.yaml` is the shape it will take.
 
 ## Local development
 
@@ -70,6 +166,23 @@ The seeder creates the admin user + team, then registers the bridge with
 `public_url` only if a public URL is configured). So for local dev you normally
 don't onboard Mattermost by hand — it's already there after setup. Log in at
 `http://localhost:8065` with the `MATTERMOST_USER` credentials to try it.
+
+Both stacks also wire up button presses ([step 3](#3-optional-let-mattermost-deliver-button-presses)):
+the compose file allows Mattermost to call the private address, and the seeder
+sets `callback_base_url` — `http://switch:8081` under `standalone-up`, where
+switch-core is a service, and `http://host.docker.internal:8081` under `just up`,
+where it runs on your host. A bridge that is **already** registered keeps its
+existing configuration, except for this one field: the seeder sets the callback
+address on every run, because the config a bridge holds carries the admin
+password and so is not readable back to compare against. A bridge registered
+before callbacks existed therefore gains its buttons on the next stack start,
+and the bridge restarts as part of that.
+
+A **Mattermost container** created before callbacks existed does not get the
+allowlist by being restarted — its environment was fixed when it was created.
+Recreate it (`docker compose up -d --force-recreate mattermost`; the volume and
+so the data survive), or set the value by hand in System Console → Environment →
+Developer.
 
 ## Notes
 

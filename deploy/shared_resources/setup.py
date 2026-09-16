@@ -25,6 +25,11 @@ MATTERMOST_URL_FOR_SWITCH = os.environ.get(
 # channel deeplinks. Differs from MATTERMOST_URL_FOR_SWITCH, which is the
 # internal address Switch connects to. Optional — falls back to the internal URL.
 MATTERMOST_PUBLIC_URL = os.environ.get("MATTERMOST_PUBLIC_URL")
+# Where the Mattermost *server* reaches switch-core's callback listener, for the
+# button presses it delivers by HTTP. A third address, unrelated to the two
+# above: those are routes to Mattermost, this is the route back. Optional —
+# without it cards carry no buttons and stay answerable by typing.
+MATTERMOST_CALLBACK_BASE_URL = os.environ.get("MATTERMOST_CALLBACK_BASE_URL")
 MATTERMOST_ADMIN_USER = os.environ["MATTERMOST_ADMIN_USER"]
 MATTERMOST_ADMIN_PASSWORD = os.environ["MATTERMOST_ADMIN_PASSWORD"]
 MATTERMOST_ADMIN_EMAIL = os.environ.get(
@@ -238,6 +243,25 @@ def register_bridge(client: httpx.Client) -> str:
                         f"/gateway/collaborations/{bridge_id}/default"
                     ).raise_for_status()
                     print(f"Set Mattermost bridge as default: {bridge_id}")
+                # Same reason: a bridge registered before callbacks existed
+                # would otherwise keep drawing cards with no buttons on them,
+                # and the only cure would be editing a connection field by
+                # hand. Sent every run rather than only when it is missing,
+                # because the config a bridge holds is not readable back — it
+                # carries the admin password, so no endpoint returns it.
+                if MATTERMOST_CALLBACK_BASE_URL:
+                    client.patch(
+                        f"/gateway/collaborations/{bridge_id}",
+                        json={
+                            "connection_config": {
+                                "callback_base_url": MATTERMOST_CALLBACK_BASE_URL
+                            }
+                        },
+                    ).raise_for_status()
+                    print(
+                        f"Set Mattermost callback address: "
+                        f"{MATTERMOST_CALLBACK_BASE_URL}"
+                    )
                 return bridge_id
 
     # Register new bridge
@@ -254,6 +278,8 @@ def register_bridge(client: httpx.Client) -> str:
     }
     if MATTERMOST_PUBLIC_URL:
         connection_config["public_url"] = MATTERMOST_PUBLIC_URL
+    if MATTERMOST_CALLBACK_BASE_URL:
+        connection_config["callback_base_url"] = MATTERMOST_CALLBACK_BASE_URL
     resp = client.post(
         "/gateway/collaborations",
         json={

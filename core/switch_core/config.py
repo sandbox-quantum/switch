@@ -153,6 +153,19 @@ class SwitchConfig(BaseSettings):
     server_host: str = "0.0.0.0"
     server_port: int = 8000
 
+    # Where collaboration bridges take platform callbacks. Only a Mattermost
+    # button press needs one today: the press is delivered by the Mattermost
+    # server to a URL, where every other platform Switch bridges to sends it
+    # down a connection Switch already holds open.
+    #
+    # A socket of its own, not a route on the port above, which carries the
+    # agent API, the MCP server and the operator dashboard. What an operator
+    # has to expose for a button to work should be callbacks and nothing else,
+    # so that one over-broad proxy rule cannot publish the other three. It
+    # stays unbound in a deployment where no bridge asks to be called back.
+    collaboration_callback_host: str = "0.0.0.0"
+    collaboration_callback_port: int = 8081
+
     frontend_base_url: str | None = None
 
     # Public origin (scheme + host, no path) of the Switch API — the same host

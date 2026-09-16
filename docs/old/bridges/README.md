@@ -14,7 +14,7 @@ shared onboarding model, then the per-platform guide:
 | Platform | Guide | Identity model | Inbound transport | Public ingress |
 | --- | --- | --- | --- | --- |
 | Slack | [`SLACK_SETUP.md`](SLACK_SETUP.md) | single bot app | Socket Mode (outbound WS) | not required |
-| Mattermost | [`MATTERMOST_SETUP.md`](MATTERMOST_SETUP.md) | one bot account per agent | WebSocket (outbound) | not required |
+| Mattermost | [`MATTERMOST_SETUP.md`](MATTERMOST_SETUP.md) | one bot account per agent | WebSocket (outbound), plus HTTP push for button presses | not required, unless the Mattermost server is outside the network |
 | Microsoft Teams | [`TEAMS_SETUP.md`](TEAMS_SETUP.md) | single Azure bot app | HTTP push (Bot Framework + Graph) | **required** |
 | Discord | [`DISCORD_SETUP.md`](DISCORD_SETUP.md) | single bot app | Gateway WebSocket (outbound) | not required |
 | Telegram | [`TELEGRAM_SETUP.md`](TELEGRAM_SETUP.md) | single bot, agent named in the message body | long polling (outbound) | not required |
@@ -135,6 +135,16 @@ are deployment-level environment config on switch-core:
   where people *read* the message, not from the Switch host — a loopback origin
   builds links that work only on the machine running Switch, so each bridge warns
   at startup when it finds one.
+- **`COLLABORATION_CALLBACK_HOST` / `COLLABORATION_CALLBACK_PORT`**
+  (`0.0.0.0:8081`) — where collaboration bridges take platform callbacks, on a
+  socket of its own rather than a route on the API port. Only **Mattermost**
+  uses it today, and only for button presses: the Mattermost server delivers
+  those by HTTP where every other platform Switch bridges to carries them down a
+  connection Switch already holds open. It is not public ingress — it has to be
+  reachable from the Mattermost server, which is usually an address on an
+  internal network. Nothing binds until a bridge asks, so a deployment with no
+  `callback_base_url` on any bridge opens no port. See
+  [`MATTERMOST_SETUP.md`](MATTERMOST_SETUP.md#3-optional-let-mattermost-deliver-button-presses).
 - **Teams** additionally needs public HTTPS ingress to the bridge's listener, on
   its own port — it is the only bridge Switch does not reach outbound. See
   [`TEAMS_SETUP.md`](TEAMS_SETUP.md) for the bridge side, and the Helm chart's

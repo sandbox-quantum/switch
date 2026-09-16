@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from unittest.mock import MagicMock
+
 import pytest
 from pydantic import ValidationError as PydanticValidationError
 
@@ -33,8 +35,13 @@ def _service() -> CollaborationBridgeLifecycleService:
 
     get_registered_types / get_config_schema touch just the in-memory
     registries populated by register_adapter, so the heavy collaborators are
-    irrelevant here and passed as None.
+    irrelevant here and passed as None. The config is not one of them: the
+    shared callback listener is constructed up front, from it.
     """
+    config = MagicMock()
+    config.collaboration_callback_host = "127.0.0.1"
+    config.collaboration_callback_port = 0
+    config.jwt_secret_key = "server-secret-for-tests"
     return CollaborationBridgeLifecycleService(
         bridge_store=None,  # type: ignore[arg-type]
         external_user_store=None,  # type: ignore[arg-type]
@@ -47,7 +54,7 @@ def _service() -> CollaborationBridgeLifecycleService:
         room_service=None,  # type: ignore[arg-type]
         matrix_admin=None,  # type: ignore[arg-type]
         session_factory=None,  # type: ignore[arg-type]
-        config=None,  # type: ignore[arg-type]
+        config=config,
         client_factory=None,  # type: ignore[arg-type]
     )
 

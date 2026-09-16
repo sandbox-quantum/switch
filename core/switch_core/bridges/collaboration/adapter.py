@@ -9,6 +9,7 @@ from typing import ClassVar, Literal
 
 from switch_core.agent_display_name import defuse_label_markup
 from switch_core.agent_icon import default_icon_url
+from switch_core.bridges.collaboration.ingress import CallbackEndpoint
 from switch_core.bridges.collaboration.models import (
     BridgeInstallLink,
     ChannelCreationUnsupported,
@@ -1130,6 +1131,20 @@ class CollaborationAdapter(ABC):
         subscription is created against `teams/{team}/channels/{channel}`, and
         the team arrives only on an inbound activity. Losing it on restart
         silently kills capture in every channel outside the configured team."""
+        return None
+
+    def set_callback_endpoint(self, endpoint: CallbackEndpoint) -> None:
+        """Hand the adapter its own place on the shared callback listener.
+
+        Default is a no-op, and the right answer for every adapter that only
+        dials out: nothing has to reach Switch for it to work, so it never asks
+        to be served and the listener never binds. Mattermost overrides it,
+        because a button press there is delivered to a URL.
+
+        The endpoint arrives already bound to this bridge. An adapter is built
+        from its connection config alone and is never told which bridge it is,
+        which is what stops it addressing another bridge's callbacks even by
+        mistake."""
         return None
 
     def set_channel_migration_handler(

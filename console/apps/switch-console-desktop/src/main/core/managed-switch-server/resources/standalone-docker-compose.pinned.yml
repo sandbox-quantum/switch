@@ -184,6 +184,12 @@ services:
       MM_DISPLAYSETTINGS_CUSTOMURLSCHEMES: switchdash
       MM_SERVICESETTINGS_ENABLEBOTACCOUNTCREATION: "true"
       MM_SERVICESETTINGS_ENABLEUSERACCESSTOKENS: "true"
+      # Mattermost refuses to call a private address from an integration unless
+      # the host is named here, and a button on a Switch card is delivered by
+      # exactly that path — a POST from this container to switch-core's callback
+      # port on the compose network. Without it a press fails inside Mattermost
+      # and the person sees nothing.
+      MM_SERVICESETTINGS_ALLOWEDUNTRUSTEDINTERNALCONNECTIONS: switch
       MM_TEAMSETTINGS_ENABLEOPENSERVER: "true"
       MM_TEAMSETTINGS_TEAMMATENAMEDISPLAY: "full_name"
       # Neither plugin is usable in a bundled Switch deployment: Copilot has no
@@ -244,6 +250,9 @@ services:
       SWITCH_URL: http://switch:8000
       MATTERMOST_URL: http://mattermost:8065
       MATTERMOST_URL_FOR_SWITCH: http://mattermost:8065
+      # The route back: where the Mattermost container reaches switch-core's
+      # callback port, for the button presses Mattermost delivers by HTTP.
+      MATTERMOST_CALLBACK_BASE_URL: http://switch:8081
       MATTERMOST_ADMIN_USER: ${MATTERMOST_ADMIN_USER}
       MATTERMOST_ADMIN_PASSWORD: ${MATTERMOST_ADMIN_PASSWORD}
       MATTERMOST_TEAM_NAME: ${MATTERMOST_TEAM_NAME}

@@ -66,21 +66,42 @@ class _FakePosts:
         self.delete_error: Exception | None = None
         self.thread_calls: list[str] = []
         self.channel_calls: list[tuple[str, dict[str, Any] | None]] = []
+        # Posts as the server holds them, so a caller that reads one back sees
+        # what its own writes left there.
+        self.stored: dict[str, dict[str, Any]] = {}
         self._next = iter(f"post-{n}" for n in range(1, 50))
 
     def create_post(self, post: dict[str, Any]) -> dict[str, str]:
         if self.create_error:
             raise self.create_error
         self.created.append(post)
-        if self.created_id is not None:
-            return {"id": self.created_id}
-        return {"id": next(self._next)}
+        post_id = self.created_id if self.created_id is not None else next(self._next)
+        self.stored[post_id] = {
+            "id": post_id,
+            "message": post.get("message", ""),
+            # The server marks a post made by a bot as one, and nothing Switch
+            # sends says so. A caller rewriting props has to keep it.
+            "props": {"from_bot": "true"} | dict(post.get("props") or {}),
+        }
+        return {"id": post_id}
 
     def patch_post(self, post_id: str, body: dict[str, Any]) -> dict[str, str]:
         if self.patch_error:
             raise self.patch_error
         self.patched.append((post_id, body))
+        held = self.stored.setdefault(post_id, {"id": post_id, "props": {}})
+        if "message" in body:
+            held["message"] = body["message"]
+        if "props" in body:
+            held["props"] = dict(body["props"])
         return {"id": post_id}
+
+    def get_post(self, post_id: str) -> dict[str, Any]:
+        if self.read_error:
+            raise self.read_error
+        if post_id not in self.stored:
+            raise ResourceNotFound(f"no post {post_id}")
+        return self.stored[post_id]
 
     def delete_post(self, post_id: str) -> dict[str, str]:
         if self.delete_error:
