@@ -20,6 +20,7 @@ import httpx
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from switch_core.config import SwitchConfig
+from switch_core.logging_context import LogContextFilter
 from switch_core.observability.catalogue import (
     AGENTS_CONNECTED,
     BRIDGES_RUNNING,
@@ -34,6 +35,12 @@ from switch_core.observability.health import (
     bridges_check,
     database_check,
     message_listener_check,
+)
+from switch_core.observability.logs import (
+    DEFAULT_BATCH_SIZE,
+    DEFAULT_QUEUE_CAPACITY,
+    LogExporter,
+    OtlpLogHandler,
 )
 from switch_core.observability.metrics import (
     GaugeReading,
@@ -55,6 +62,11 @@ logger = logging.getLogger(__name__)
 # period: a readiness answer older than the interval the kubelet asks on would
 # report a fault one probe later than it could have.
 HEALTH_REFRESH_INTERVAL_SECONDS = 10.0
+
+# Logs ship far more often than metrics. A metric interval is a bucket and
+# nothing is lost by making it a minute; a log is read by someone looking at an
+# incident right now, and a minute behind is a minute of guessing.
+LOG_EXPORT_INTERVAL_SECONDS = 5.0
 
 
 @dataclass(frozen=True)
@@ -84,8 +96,13 @@ class Observability:
     lag: EventLoopLag
     _tasks: list[asyncio.Task[None]]
     _http_client: httpx.AsyncClient | None
+    _log_handler: OtlpLogHandler | None
 
     async def aclose(self) -> None:
+        # Detached first, so nothing logged during shutdown is queued for an
+        # exporter that is about to stop draining it.
+        if self._log_handler is not None:
+            logging.getLogger().removeHandler(self._log_handler)
         for task in self._tasks:
             task.cancel()
         for task in self._tasks:
@@ -143,7 +160,13 @@ def start_observability(
             "No OTLP_ENDPOINT is configured, so nothing is reported off this "
             "server. Health checks still run and /health/ready still answers."
         )
-        return Observability(monitor=monitor, lag=lag, _tasks=tasks, _http_client=None)
+        return Observability(
+            monitor=monitor,
+            lag=lag,
+            _tasks=tasks,
+            _http_client=None,
+            _log_handler=None,
+        )
 
     registry = MetricsRegistry()
     install(registry)
@@ -191,6 +214,36 @@ def start_observability(
             "metrics are being reported."
         )
 
+    log_handler: OtlpLogHandler | None = None
+    if config.otlp_logs_enabled:
+        log_handler = OtlpLogHandler(capacity=DEFAULT_QUEUE_CAPACITY)
+        # The same filter the stderr handler carries. Without it a record
+        # reaching this handler has no tenant, request or agent on it — which
+        # is the entire reason for shipping logs rather than counting them.
+        log_handler.addFilter(LogContextFilter(config.tenant_id))
+        logging.getLogger().addHandler(log_handler)
+        tasks.append(
+            asyncio.create_task(
+                LogExporter(
+                    handler=log_handler,
+                    client=client,
+                    resource=resource,
+                    interval_seconds=LOG_EXPORT_INTERVAL_SECONDS,
+                    batch_size=DEFAULT_BATCH_SIZE,
+                ).run_forever(),
+                name="log-exporter",
+            )
+        )
+        logger.info(
+            "Also shipping logs to %s. They continue to be written to this "
+            "container's output, which remains the primary copy.",
+            client.url_for("logs"),
+        )
+
     return Observability(
-        monitor=monitor, lag=lag, _tasks=tasks, _http_client=http_client
+        monitor=monitor,
+        lag=lag,
+        _tasks=tasks,
+        _http_client=http_client,
+        _log_handler=log_handler,
     )
