@@ -22,7 +22,7 @@ export type AgentSlot = {
   existingName: string;
   /** The working directory for a new agent: a local path, or a path on the host. */
   dir: string;
-  /** Whether the person chose the directory themselves (a suggestion no longer follows the name). */
+  /** Whether the person chose the directory themselves; a chosen path stays put when the name changes. */
   dirPicked: boolean;
   cloneRepo: boolean;
   status: SlotStatus;

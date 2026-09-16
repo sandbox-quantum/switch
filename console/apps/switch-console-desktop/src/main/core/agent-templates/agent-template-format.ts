@@ -134,14 +134,13 @@ export function parseAgentTemplate(
 
 /**
  * The room half of an agent template as a room template of its own, ready for
- * `POST /rooms/from-yaml`. See `coreDocumentFor`; kept under its old name for
- * the single-agent callers.
+ * `POST /rooms/from-yaml`. The single-agent spelling of `coreDocumentFor`.
  */
 export function agentTemplateRoomDocument(yamlText: string): string | null {
   return coreDocumentFor(yamlText);
 }
 
-/** See `composeTemplateDocument`; kept under its old name for the single-agent callers. */
+/** The single-agent spelling of `composeTemplateDocument`. */
 export function composeAgentTemplateDocument(yamlText: string, instructions: string): string {
   return composeTemplateDocument(yamlText, instructions);
 }

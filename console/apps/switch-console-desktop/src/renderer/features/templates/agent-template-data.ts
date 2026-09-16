@@ -11,12 +11,12 @@ import { rpc } from '@renderer/lib/ipc';
 import { type BundledTemplate, bundledTemplates, findBundledTemplate } from './bundled-templates';
 
 /**
- * What the add-agent modal needs from an agent template: the parsed document
- * plus the room half re-cut as a room template, so the modal can provision the
- * room the moment the agent exists without parsing YAML itself.
+ * One agent as a template describes it: the parsed document plus the room
+ * half re-cut as a room template, so a caller can provision the room the
+ * moment the agent exists without parsing YAML itself.
  */
 export type AgentTemplateData = {
-  /** The template's own name, for the dialog title. */
+  /** The template's own name, for a heading. */
   name: string;
   /** Where the template came from, kept on the agent so its settings page
    * can offer the template's current instructions later. Null for a pasted
@@ -35,7 +35,7 @@ export type AgentTemplateData = {
   warnings: string[];
 };
 
-/** Parse a document into what the dialog needs. Exported for the import modal. */
+/** Parse a document into the agent it describes. */
 export async function agentTemplateDataFromContent(
   templateName: string,
   content: string,
@@ -79,7 +79,7 @@ export async function loadAgentTemplateByOrigin(
   return agentTemplateDataFromContent(origin.name, detail.definition, null, origin);
 }
 
-/** Resolve a listing entry (bundled or from the server's registry) into modal data. */
+/** Resolve a listing entry (bundled or from the server's registry) into the agent it describes. */
 export async function loadAgentTemplateData(
   serverId: string,
   template: StoredTemplateSummary
