@@ -5,11 +5,22 @@ An edit replaces a message's whole blocks array, and the client redraws the
 That is why the clock used to live in a message of its own: at one redraw every
 five seconds, anything open collapsed before it could be read.
 
-`chat.appendStream` does not replace anything. A `task_update` carrying an id
-Slack already holds merges into that card, and a `plan_update` moves the header
-without touching the cards at all. So the two messages become one, the clock
-ticks in its header, and an expanded step stays expanded. Measured against the
-live API before it was built, not assumed.
+`chat.appendStream` does not replace the message. A `plan_update` moves the
+header without touching anything under it, and a `blocks` chunk replaces the one
+block it names and leaves the rest of the message — and whatever the reader has
+open — alone. So the two messages become one, the clock ticks in its header, and
+an expanded step stays expanded. Measured against the live API before it was
+built, not assumed.
+
+A streamed message is drawn in two ways at once, and the difference is the whole
+shape of this. The stream's own plan is addressed with chunks and can only ever
+be added to — a card cannot be taken back, and `details` on a `task_update`
+*appends* to what the card already holds rather than replacing it. So that plan
+carries the status line and one card that is sent once, and nothing that grows.
+The steps live in ordinary `plan` blocks carried inside the stream, addressed by
+`block_id` and replaced whole, so they can hold a different fifty than they held
+a minute ago. Two of those blocks rotate, and a turn of any length draws the same
+handful of blocks.
 
 What these cover is the adapter's half: that it opens a stream where it can,
 sends only what moved, discloses what it had to leave out, stops at the end of
@@ -89,11 +100,47 @@ def _chunks(client: FakeWebClient) -> list[list[dict[str, Any]]]:
 
 
 def _cards(client: FakeWebClient) -> list[dict[str, Any]]:
+    """Every `task_update` sent: the stream's own plan, which is the status."""
     return [
         chunk
         for call in client.appended
         for chunk in call["chunks"]
         if chunk["type"] == "task_update"
+    ]
+
+
+def _pages(client: FakeWebClient) -> dict[str, dict[str, Any]]:
+    """The last plan written to each step block, in the order the blocks appeared.
+
+    Slack keeps a block where it was first written, so insertion order here is
+    the order a reader sees them down the message.
+    """
+    pages: dict[str, dict[str, Any]] = {}
+    for call in client.appended:
+        for chunk in call["chunks"]:
+            if chunk["type"] == "blocks":
+                for block in chunk["blocks"]:
+                    pages[block["block_id"]] = block
+    return pages
+
+
+def _steps(client: FakeWebClient) -> list[dict[str, Any]]:
+    """Every step card the message is currently showing, oldest first."""
+    return [task for page in _pages(client).values() for task in page["tasks"]]
+
+
+def _sized(client: FakeWebClient) -> list[dict[str, Any]]:
+    """The chunks Slack would refuse: over 256 characters serialised.
+
+    `blocks` chunks are not on this budget — a fifty-card page is kilobytes and
+    the live API takes it — so only the header and the session card are measured.
+    """
+    return [
+        chunk
+        for call in client.appended
+        for chunk in call["chunks"]
+        if chunk["type"] in {"plan_update", "task_update"}
+        and len(json.dumps(chunk, separators=(",", ":"))) > 256
     ]
 
 
@@ -142,12 +189,12 @@ async def test_the_asker_is_whoever_last_spoke_in_the_thread_and_not_a_bot() -> 
 # ── Sending only what moved ──────────────────────────────────────────────────
 
 
-async def test_only_the_header_and_the_cards_that_changed_are_appended() -> None:
+async def test_only_the_header_and_the_pages_that_moved_are_appended() -> None:
     """The whole point of a stream over an edit.
 
-    A redraw that re-sent every card would cost what an edit costs and lose the
-    property it was chosen for, so a card Slack already holds unchanged is not
-    sent again.
+    An edit replaces the message's whole blocks array; an append replaces the
+    one block it names. The header moves on its own, the page of steps is
+    rewritten whole, and the session card goes out once and never again.
     """
     client = FakeWebClient()
     adapter = _adapter(client)
@@ -161,12 +208,50 @@ async def test_only_the_header_and_the_cards_that_changed_are_appended() -> None
         CHANNEL, "Agent", ref, TurnActivity([done, second], _turn(), 9.0), THREAD
     )
 
-    assert [c["type"] for c in _chunks(client)[0]] == ["plan_update", "task_update"]
+    opened = _chunks(client)[0]
+    assert [c["type"] for c in opened] == ["plan_update", "task_update", "blocks"]
     later = _chunks(client)[1]
-    assert [c["type"] for c in later] == ["plan_update", "task_update", "task_update"]
+    assert [c["type"] for c in later] == ["plan_update", "blocks"]
     assert later[0]["title"] == "Working… 9s · Running: Grep"
-    assert (later[1]["title"], later[1]["status"]) == ("Read", "complete")
-    assert (later[2]["title"], later[2]["status"]) == ("Grep", "in_progress")
+    assert [(t["title"], t["status"]) for t in later[1]["blocks"][0]["tasks"]] == [
+        ("Read", "complete"),
+        ("Grep", "in_progress"),
+    ]
+
+
+async def test_a_blocks_chunk_never_carries_more_than_one_plan() -> None:
+    """Measured, not read: Slack refuses a `blocks` chunk holding two plan
+    blocks and takes the whole append with it. Several such chunks in one
+    append are fine, which is how both pages move together."""
+    client = FakeWebClient()
+    adapter = _adapter(client)
+    many = [_tool(f"t{n}", f"Tool {n}", status="completed") for n in range(51)]
+
+    await adapter.post_rich(CHANNEL, "Agent", TurnActivity(many, _turn()), THREAD)
+
+    sent = [c for c in _chunks(client)[0] if c["type"] == "blocks"]
+    assert len(sent) == 2
+    assert all(len(chunk["blocks"]) == 1 for chunk in sent)
+
+
+async def test_a_page_that_did_not_move_is_not_sent_again() -> None:
+    """A full page is fifty cards and several kilobytes. Once a step lands in
+    one it never moves to another, so a settled page is left where it is."""
+    client = FakeWebClient()
+    adapter = _adapter(client)
+    many = [_tool(f"t{n}", f"Tool {n}", status="completed") for n in range(50)]
+
+    ref = await adapter.post_rich(
+        CHANNEL, "Agent", TurnActivity(many, _turn(), 1.0), THREAD
+    )
+    over = [*many, _tool("t50", "Tool 50", status="completed")]
+    await adapter.update_rich(
+        CHANNEL, "Agent", ref, TurnActivity(over, _turn(), 9.0), THREAD
+    )
+
+    later = [c for c in _chunks(client)[1] if c["type"] == "blocks"]
+    assert len(later) == 1
+    assert later[0]["blocks"][0]["title"] == "Steps 51–51"
 
 
 async def test_a_publish_that_changed_nothing_appends_nothing() -> None:
@@ -199,9 +284,15 @@ async def test_the_clock_moves_the_header_without_resending_a_card() -> None:
     ]
 
 
-async def test_a_card_carries_its_detail_as_a_plain_string() -> None:
-    """Measured, not read: the live API rejects every rich_text shape here,
-    though the `task_card` block of the same name requires one."""
+async def test_a_detail_takes_the_shape_of_the_place_it_is_sent_to() -> None:
+    """One field name, two shapes, and Slack rejects the wrong one.
+
+    Measured, not read: `details` on a `task_update` chunk is a plain string and
+    the live API refuses every rich_text form of it, while `details` on a
+    `task_card` inside a `plan` block requires rich_text and refuses the string.
+    The step cards moved from the first to the second, so the shape moved with
+    them — and getting it wrong takes down the whole append.
+    """
     client = FakeWebClient()
     adapter = _adapter(client)
 
@@ -209,49 +300,83 @@ async def test_a_card_carries_its_detail_as_a_plain_string() -> None:
         CHANNEL,
         "Agent",
         TurnActivity(
-            [_tool("t1", "Read", status="completed", text="312 lines")], _turn()
+            [_tool("t1", "Read", status="completed", text="312 lines")],
+            _turn(),
+            session_url="https://switch.example/session",
         ),
         THREAD,
     )
 
-    assert _cards(client)[0]["details"] == "312 lines"
+    assert _cards(client)[0]["details"] == (
+        "<https://switch.example/session|Open in Console app>"
+    )
+    assert _steps(client)[0]["details"]["type"] == "rich_text"
+    assert _steps(client)[0]["details"]["elements"][0]["elements"][0] == {
+        "type": "text",
+        "text": "312 lines",
+    }
 
 
 async def test_no_chunk_exceeds_what_an_append_will_carry() -> None:
     """Slack measures a chunk serialised and rejects the append over 256
-    characters, taking every other chunk in it down with it. The title is what
-    survives: a card whose detail was cut still says what it did."""
+    characters, taking every other chunk in it down with it.
+
+    Only the header and the session card are chunks. A step is a card inside a
+    block, which is not on this budget — which is why its detail survives here
+    where a chunk's would have been spent to keep the title."""
     client = FakeWebClient()
     adapter = _adapter(client)
     tool = _tool("t1", "R" * 400, status="completed", text="D" * 400)
 
     await adapter.post_rich(CHANNEL, "Agent", TurnActivity([tool], _turn()), THREAD)
 
-    card = _cards(client)[0]
-    assert len(json.dumps(card, separators=(",", ":"))) <= 256
-    assert card["title"].startswith("RRR")
-    assert "details" not in card
+    assert _sized(client) == []
+    step = _steps(client)[0]
+    assert step["title"].startswith("RRR")
+    assert step["details"]["elements"][0]["elements"][0]["text"].startswith("DDD")
+
+
+async def test_the_budget_holds_for_text_that_is_not_one_byte_a_character() -> None:
+    """The budget is spent on the serialised form, where an emoji costs twelve
+    characters and not one. Counting characters asks for a cut longer than the
+    text, gives up, and hands Slack a chunk it refuses — with the whole append."""
+    client = FakeWebClient()
+    adapter = _adapter(client)
+    tool = _tool("t1", "\U0001f680" * 200, status="completed", text="✓" * 200)
+
+    await adapter.post_rich(CHANNEL, "Agent", TurnActivity([tool], _turn()), THREAD)
+
+    assert _sized(client) == []
+    header = _chunks(client)[0][0]
+    assert header["type"] == "plan_update"
+    assert "\U0001f680" in header["title"]
 
 
 async def test_a_trim_never_leaves_half_an_escaped_character_on_screen() -> None:
     """The value being cut has already been escaped, so a blind slice can leave
-    `&am` in front of the reader instead of an `&`."""
+    `&am` in front of the reader instead of an `&`.
+
+    The header is the one place this can still happen. It is cut twice — once
+    to its own character budget, then again to fit the chunk — and the second
+    cut is made on text that has already been escaped, because by then the
+    escaping is part of what is being measured.
+    """
     client = FakeWebClient()
     adapter = _adapter(client)
+    tool = _tool("t1", "&✓" * 200, status="completed")
 
-    await adapter.post_rich(
-        CHANNEL,
-        "Agent",
-        TurnActivity([_tool("t1", "&" * 200, status="completed")], _turn()),
-        THREAD,
-    )
+    await adapter.post_rich(CHANNEL, "Agent", TurnActivity([tool], _turn()), THREAD)
 
-    title = _cards(client)[0]["title"]
+    title = _chunks(client)[0][0]["title"]
     assert title.endswith("…")
-    assert re.fullmatch(r"(&amp;)+", title[:-1])
+    assert "&amp;" in title
+    assert not re.search(r"&(?!amp;|lt;|gt;)", title)
 
 
-async def test_the_console_link_goes_out_once(caplog: Any) -> None:
+async def test_the_console_link_goes_out_once() -> None:
+    """`details` on a `task_update` appends to what the card already holds
+    rather than replacing it, so a card re-sent with the same link shows the
+    link twice — and again on every redraw after that."""
     client = FakeWebClient()
     adapter = _adapter(client)
     tool = _tool("t1", "Read")
@@ -260,42 +385,100 @@ async def test_the_console_link_goes_out_once(caplog: Any) -> None:
     ref = await adapter.post_rich(
         CHANNEL, "Agent", TurnActivity([tool], _turn(), 1.0, session_url=url), THREAD
     )
+    for elapsed in (10.0, 20.0, 30.0):
+        await adapter.update_rich(
+            CHANNEL,
+            "Agent",
+            ref,
+            TurnActivity([tool], _turn(), elapsed, session_url=url),
+            THREAD,
+        )
+
+    assert [card["details"] for card in _cards(client)] == [
+        f"<{url}|Open in Console app>"
+    ]
+
+
+async def test_a_link_that_only_turns_up_later_is_still_sent() -> None:
+    """Appending to a card that has no detail yet leaves just the link, so the
+    one card the stream owns is not spent before the session url arrives."""
+    client = FakeWebClient()
+    adapter = _adapter(client)
+    tool = _tool("t1", "Read")
+    url = "https://switch.example/session"
+
+    ref = await adapter.post_rich(
+        CHANNEL, "Agent", TurnActivity([tool], _turn(), 1.0), THREAD
+    )
     await adapter.update_rich(
         CHANNEL,
         "Agent",
         ref,
-        TurnActivity([tool], _turn(), 20.0, session_url=url),
+        TurnActivity([tool], _turn(), 9.0, session_url=url),
         THREAD,
     )
 
-    links = [
-        chunk
-        for call in client.appended
-        for chunk in call["chunks"]
-        if chunk["type"] == "markdown_text"
+    assert [card.get("details") for card in _cards(client)] == [
+        None,
+        f"<{url}|Open in Console app>",
     ]
-    assert len(links) == 1
-    assert url in links[0]["text"]
 
 
-# ── The cap ──────────────────────────────────────────────────────────────────
+# ── Paging ───────────────────────────────────────────────────────────────────
 
 
-async def test_cards_past_the_cap_are_left_out_and_the_header_says_so() -> None:
-    """A stream cannot take a card back, so the cap is on cards ever created.
-
-    The posted plan drops its oldest and keeps a window on the newest; this
-    cannot, so it keeps the oldest and says how many it could not open. Either
-    way the reader is told the log is not complete.
+async def test_a_turn_of_any_length_draws_the_same_two_step_blocks() -> None:
+    """Slack keeps a block where it was first written and has no call that
+    removes one, so a block per fifty steps would grow the message without
+    bound. Rotating the newest two pages through a fixed pair of ids keeps both
+    the length and the order of the message fixed however long the turn runs.
     """
     client = FakeWebClient()
     adapter = _adapter(client)
-    many = [_tool(f"t{n}", f"Tool {n}", status="completed") for n in range(53)]
+    many = [_tool(f"t{n}", f"Tool {n}", status="completed") for n in range(240)]
 
-    await adapter.post_rich(CHANNEL, "Agent", TurnActivity(many, _turn()), THREAD)
+    ref = await adapter.post_rich(
+        CHANNEL, "Agent", TurnActivity(many[:1], _turn(), 1.0), THREAD
+    )
+    for size in range(2, len(many) + 1, 7):
+        await adapter.update_rich(
+            CHANNEL,
+            "Agent",
+            ref,
+            TurnActivity(many[:size], _turn(), float(size)),
+            THREAD,
+        )
 
-    assert len(_cards(client)) == 50
-    assert "3 earlier steps not shown" in _chunks(client)[0][0]["title"]
+    pages = _pages(client)
+    assert len(pages) == 2
+    older, newer = pages.values()
+    assert older["title"] == "Steps 151–200 · 150 earlier not shown"
+    assert [task["title"] for task in older["tasks"]][:1] == ["Tool 150"]
+    assert newer["title"] == "Steps 201–240"
+    assert [task["title"] for task in newer["tasks"]][-1:] == ["Tool 239"]
+
+
+async def test_a_step_never_moves_between_pages_once_it_has_landed() -> None:
+    """Pages are cut on fixed boundaries — the first fifty, the next fifty —
+    rather than as a window on the newest hundred. A window would shuffle every
+    card down one on every step, which is a redraw of both blocks each time and
+    a card that is not the one the reader opened."""
+    client = FakeWebClient()
+    adapter = _adapter(client)
+    many = [_tool(f"t{n}", f"Tool {n}", status="completed") for n in range(120)]
+
+    ref = await adapter.post_rich(
+        CHANNEL, "Agent", TurnActivity(many[:51], _turn(), 1.0), THREAD
+    )
+    await adapter.update_rich(
+        CHANNEL, "Agent", ref, TurnActivity(many[:52], _turn(), 9.0), THREAD
+    )
+
+    moved = [c for c in _chunks(client)[1] if c["type"] == "blocks"]
+    assert [chunk["blocks"][0]["title"] for chunk in moved] == ["Steps 51–52"]
+    older, newer = _pages(client).values()
+    assert [task["title"] for task in older["tasks"]][:1] == ["Tool 0"]
+    assert [task["title"] for task in newer["tasks"]] == ["Tool 50", "Tool 51"]
 
 
 # ── Ending ───────────────────────────────────────────────────────────────────
@@ -334,7 +517,7 @@ async def test_an_unfinished_step_is_named_rather_than_left_spinning() -> None:
         CHANNEL, "Agent", ref, TurnActivity([tool], _turn("interrupted"), 4.0), THREAD
     )
 
-    last = _cards(client)[-1]
+    last = _steps(client)[-1]
     assert last["status"] == "complete"
     assert last["title"] == "Unfinished: Read"
 
@@ -546,7 +729,7 @@ async def test_a_turn_published_from_start_to_finish_is_one_streamed_message() -
     assert [
         [chunk["type"] for chunk in call["chunks"]] for call in client.appended
     ] == [
-        ["plan_update", "task_update"],
+        ["plan_update", "task_update", "blocks"],
         ["plan_update"],
-        ["plan_update", "task_update"],
+        ["plan_update", "blocks"],
     ]

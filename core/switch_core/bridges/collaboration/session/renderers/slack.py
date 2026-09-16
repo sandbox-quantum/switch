@@ -141,12 +141,20 @@ _MAX_TASK_ID = 64
 
 # Slack measures a `task_update` or `plan_update` chunk serialised and rejects
 # the whole append over 256 characters, taking the other chunks in it with it.
-# The budget is spent title first: a card whose detail was cut still says what
-# it did, where one whose title was cut says nothing.
+# The steps are not chunks and are not bound by this — they ride in `blocks`
+# chunks, which take kilobytes — so what it bounds is the header and the one
+# card the stream's own plan holds.
 _MAX_CHUNK = 256
-# Below this a trimmed detail is an ellipsis with a word in front of it, which
-# takes room from the title to say nothing. Drop it instead.
-_MIN_CHUNK_DETAILS = 12
+
+# The two blocks a stream draws its steps in, oldest first. Slack keeps a block
+# at the position it was first written, so which of these holds the older page
+# is fixed by the order they are created in and never changes after that.
+_STEP_PAGES = ("switch-steps-older", "switch-steps-newer")
+
+# The single card in the stream's own plan. Sent once: `details` on a
+# `task_update` appends to what the card already has rather than replacing it,
+# so a card re-sent with the same link shows the link twice.
+_SESSION_CARD = "switch-session"
 
 # Slack's three task states against the contract's four. `declined` is not an
 # error — the call did what it was told, and what it was told was no — but
@@ -1178,7 +1186,8 @@ class StreamedActivity:
     """
 
     title: str
-    tasks: list[dict[str, Any]]
+    session: dict[str, Any]
+    pages: list[dict[str, Any]]
 
 
 def render_activity_stream(
@@ -1186,54 +1195,100 @@ def render_activity_stream(
     turn: TurnUpsert,
     *,
     elapsed_seconds: float | None = None,
-    omitted: int = 0,
+    session_url: str | None = None,
 ) -> StreamedActivity:
     """The same turn as `render_activity`, shaped for `chat.appendStream`.
 
-    A streamed plan and a posted one draw the same thing and are built
-    differently. A posted plan is one block replaced whole, so it can show a
-    window onto the newest steps and drop the rest. A stream only ever adds:
-    a card that has been appended stays, and there is no call that removes it.
-    So the cap here is on cards ever *created*, `omitted` is what the caller
-    could not create once it hit that cap, and the header says so — the same
-    disclosure the block form makes about its window, for the opposite reason.
+    Three pieces, because a streamed message is drawn in two different ways at
+    once. The header and the card under it belong to the stream's own plan,
+    which is addressed with chunks and can only ever be added to. The steps
+    belong to ordinary `plan` blocks carried inside the stream, which are
+    addressed by `block_id` and are replaced whole — so unlike the stream's
+    plan they can drop a step, reorder one, or hold a different fifty than
+    they held a minute ago.
 
-    `details` is a plain string, where the `task_card` block wants a rich_text
-    entity. Measured against the live API, which rejects every rich_text shape
-    on a chunk; Slack stores what it is given here as rich_text anyway, so the
-    two paths render identically despite taking different input.
+    That is what lets a long turn stay one readable message. The stream's plan
+    holds the status line and nothing that grows; the steps live in two blocks
+    that rotate, so a turn of any length draws the same handful of blocks.
     """
     did = [item for item in items if item.kind == "tool-activity"]
-    return StreamedActivity(
-        title=_fit(
-            _activity_title(
-                items, turn, elapsed_seconds=elapsed_seconds, omitted=omitted
-            ),
+    header = {
+        "type": "plan_update",
+        "title": _fit(
+            _activity_title(items, turn, elapsed_seconds=elapsed_seconds),
             _MAX_PLAN_TITLE,
         ),
-        tasks=[_stream_task(item, turn) for item in did],
+    }
+    return StreamedActivity(
+        title=_within_chunk(header)["title"],
+        session=_session_card(session_url),
+        pages=_step_pages([_settled(_plan_task(item), item, turn) for item in did]),
     )
 
 
-def _stream_task(item: Item, turn: TurnUpsert) -> dict[str, Any]:
-    """One tool call as a streaming chunk.
+def _session_card(session_url: str | None) -> dict[str, Any]:
+    """The one card in the stream's own plan, and where the link lives.
 
-    The card the same item draws in a plan block, with the two differences the
-    chunk form insists on: `id` rather than `task_id`, and a plain-string
-    detail where the block wants a rich_text entity. Trimmed to what an append
-    will carry — see `_within_chunk`.
+    A streamed plan with no cards in it does not draw at all, so without this
+    the status line would have nowhere to appear. It doubles as the place the
+    Console link is asked to be: first row of the first block, visible in the
+    same expansion that opens the plan.
+
+    The link is dropped rather than trimmed when it will not fit. `_within_chunk`
+    cuts a detail to make a chunk fit, and half a URL is not a link — it is a
+    line of text that looks like one and goes nowhere.
     """
-    card = _settled(_plan_task(item), item, turn)
-    chunk: dict[str, Any] = {
+    card: dict[str, Any] = {
         "type": "task_update",
-        "id": card["task_id"],
-        "title": card["title"],
-        "status": card["status"],
+        "id": _SESSION_CARD,
+        "title": "Switch session",
+        "status": "complete",
     }
-    details = plain_text(item.text) if item.text else ""
-    if details:
-        chunk["details"] = _fit(details, _MAX_PLAN_TASK_DETAILS)
-    return _within_chunk(chunk)
+    if not session_url or urlsplit(session_url).scheme not in {
+        "https",
+        "http",
+        "switchdash",
+    }:
+        return card
+    linked = {**card, "details": f"<{session_url}|Open in Console app>"}
+    return linked if _chunk_length(linked) <= _MAX_CHUNK else card
+
+
+def _step_pages(steps: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The steps as the last two plan blocks that will hold them.
+
+    Pages are cut on fixed boundaries — the first fifty, the next fifty — so a
+    step never moves between pages once it has landed in one, and only the two
+    newest pages are drawn. Everything before them is gone from the message,
+    which the older page says in its own title: that is the line a reader sees
+    with the block collapsed, so a cut nobody is told about is one nobody can
+    see.
+
+    The pages are written to a fixed pair of block ids rather than one per
+    fifty. Slack keeps a block where it was first written and has no call that
+    removes one, so a new id per page would grow the message without bound and
+    in the wrong order. Rotating the contents through two ids keeps both the
+    length and the order fixed however long the turn runs.
+    """
+    if not steps:
+        return []
+    last = (len(steps) - 1) // _MAX_PLAN_TASKS
+    pages: list[dict[str, Any]] = []
+    for slot, page in enumerate(range(max(0, last - 1), last + 1)):
+        start = page * _MAX_PLAN_TASKS
+        shown = steps[start : start + _MAX_PLAN_TASKS]
+        title = f"Steps {start + 1}–{start + len(shown)}"
+        if start and not slot:
+            title += f" · {start} earlier not shown"
+        pages.append(
+            {
+                "type": "plan",
+                "block_id": _STEP_PAGES[slot],
+                "title": _truncate(title, _MAX_PLAN_TITLE),
+                "tasks": shown,
+            }
+        )
+    return pages
 
 
 def _settled(task: dict[str, Any], item: Item, turn: TurnUpsert) -> dict[str, Any]:
@@ -1253,25 +1308,24 @@ def _settled(task: dict[str, Any], item: Item, turn: TurnUpsert) -> dict[str, An
 
 
 def _within_chunk(chunk: dict[str, Any]) -> dict[str, Any]:
-    """Trim a chunk to the 256 characters an append will accept.
+    """Trim a chunk's title to the 256 characters an append will accept.
 
-    Detail goes before title, and a detail with nothing useful left goes
-    entirely rather than becoming a lone ellipsis. The title is cut last and
-    never dropped: a card has to say what it is.
+    Cut rather than dropped: the header is the whole of a collapsed block, and
+    one that says nothing is worse than one that says half.
 
-    Each cut is measured again rather than worked out from the overshoot,
-    because the budget is spent on the serialised form and a character does
-    not cost one there — the ellipsis a trim adds is six.
+    Each cut is measured again, and taken as a proportion of the overshoot
+    rather than a count of characters off it, because the budget is spent on
+    the serialised form where a character does not cost one: an emoji costs
+    twelve. Counting characters can ask for a cut longer than the text, which
+    is how this used to give up and hand Slack a chunk it would reject —
+    taking every other chunk in the same append down with it.
     """
-    for field in ("details", "title"):
-        while (over := _chunk_length(chunk) - _MAX_CHUNK) > 0 and chunk.get(field):
-            keep = len(chunk[field]) - over
-            if field == "details" and keep < _MIN_CHUNK_DETAILS:
-                del chunk["details"]
-                break
-            if keep < 1:
-                break
-            chunk[field] = _shorten(chunk[field], keep)
+    while _chunk_length(chunk) > _MAX_CHUNK and chunk.get("title"):
+        keep = len(chunk["title"]) * _MAX_CHUNK // _chunk_length(chunk)
+        cut = _shorten(chunk["title"], max(keep, 1))
+        if cut == chunk["title"]:
+            break
+        chunk["title"] = cut
     return chunk
 
 

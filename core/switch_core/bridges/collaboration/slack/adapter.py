@@ -46,7 +46,6 @@ from switch_core.bridges.collaboration.models import (
 )
 from switch_core.bridges.collaboration.session.renderers.slack import (
     SlackMessage,
-    StreamedActivity,
     render_activity,
     render_activity_plan,
     render_activity_stream,
@@ -169,10 +168,6 @@ class SlackConnectionConfig(BridgeConnectionConfig):
     )
 
 
-# A stream cannot take a card back, so this caps cards ever created rather
-# than cards shown. Slack draws at most 50 tasks in a plan and drops the rest.
-_MAX_STREAM_TASKS = 50
-
 # A turn whose end never arrives — the agent died, the session was dropped —
 # leaves its stream open with nothing to close it. Far more than this many at
 # once is a bridge holding turns nobody is waiting on, so the oldest goes.
@@ -197,24 +192,19 @@ class _ActivityStream:
 
     A stream is a conversation, not a document: Slack keeps the message and
     each append moves part of it. So the adapter has to remember what it last
-    said to work out what is worth saying next — sending a card that has not
-    changed costs an append and risks nothing useful.
+    said to work out what is worth saying next — resending a page of fifty
+    cards that has not changed costs an append and risks nothing useful.
 
-    `created` counts cards ever opened rather than cards currently interesting,
-    because a stream cannot take one back. Once it reaches the cap, later tool
-    calls are counted into `omitted` and disclosed in the header instead.
+    `session` is the card the status line is drawn around, held here because it
+    can only be sent once. `pages` is the last thing written to each step block,
+    by `block_id`, so a redraw sends only the page that actually moved.
     """
 
     channel_id: str
     ts: str
     title: str = ""
-    cards: dict[str, dict[str, Any]] = field(default_factory=dict)
-    omitted: int = 0
-    linked: bool = False
-
-    @property
-    def created(self) -> int:
-        return len(self.cards)
+    session: dict[str, Any] | None = None
+    pages: dict[str, dict[str, Any]] = field(default_factory=dict)
 
 
 class SlackAdapter(CollaborationAdapter):
@@ -810,10 +800,14 @@ class SlackAdapter(CollaborationAdapter):
     ) -> None:
         """Send what changed since the last append, and close a finished turn.
 
-        Only the header and the cards that actually moved. Re-sending a card
-        Slack already has is what makes the difference between this and an
-        edit: the same id merges into the card that is there, so the message
-        around it — and whatever the reader has open — is left alone.
+        Only the header, the session card while it is still owed, and the step
+        pages that actually moved. A page is one `blocks` chunk carrying one
+        `plan`: Slack replaces the block it names and leaves the rest of the
+        message — and whatever the reader has open — alone.
+
+        One chunk per plan. Slack refuses a `blocks` chunk holding more than a
+        single plan block, though any number of such chunks ride in one append
+        alongside the header and the card.
         """
         client = self._web_client
         if client is None:
@@ -821,43 +815,21 @@ class SlackAdapter(CollaborationAdapter):
         if message_ref in self._streams:
             self._streams.move_to_end(message_ref)
 
-        def draw(omitted: int) -> StreamedActivity:
-            return render_activity_stream(
-                content.items,
-                content.turn,
-                elapsed_seconds=content.elapsed_seconds,
-                omitted=omitted,
-            )
-
-        moved: list[dict[str, Any]] = []
-        omitted = stream.omitted
-        room = _MAX_STREAM_TASKS - stream.created
-        for task in draw(omitted).tasks:
-            known = stream.cards.get(task["id"])
-            if known == task:
-                continue
-            if known is None:
-                if room <= 0:
-                    omitted += 1
-                    continue
-                room -= 1
-            moved.append(task)
-        # Counted here rather than before the loop because a card cut just now
-        # has to be disclosed by the header that goes out beside it.
-        title = draw(omitted).title
-
+        drawn = render_activity_stream(
+            content.items,
+            content.turn,
+            elapsed_seconds=content.elapsed_seconds,
+            session_url=content.session_url,
+        )
         chunks: list[dict[str, Any]] = []
-        if title != stream.title:
-            chunks.append({"type": "plan_update", "title": title})
-        chunks.extend(moved)
-        link = bool(content.session_url) and not stream.linked
-        if link:
-            chunks.append(
-                {
-                    "type": "markdown_text",
-                    "text": f"<{content.session_url}|Open in Console app>",
-                }
-            )
+        if drawn.title != stream.title:
+            chunks.append({"type": "plan_update", "title": drawn.title})
+        if self._session_owed(stream.session, drawn.session):
+            chunks.append(drawn.session)
+        moved = [
+            page for page in drawn.pages if stream.pages.get(page["block_id"]) != page
+        ]
+        chunks.extend({"type": "blocks", "blocks": [page]} for page in moved)
 
         if chunks:
             try:
@@ -868,14 +840,27 @@ class SlackAdapter(CollaborationAdapter):
                 # Nothing below runs: every path out of here raises. The
                 # stream's record of what Slack holds stays as it was, so a
                 # retry sends the same chunks rather than assuming they landed.
-                self._stream_failed(error, message_ref, title)
-            stream.title = title
-            stream.omitted = omitted
-            stream.linked = stream.linked or link
-            for task in moved:
-                stream.cards[task["id"]] = task
+                self._stream_failed(error, message_ref, drawn.title)
+            stream.title = drawn.title
+            stream.session = drawn.session
+            for page in moved:
+                stream.pages[page["block_id"]] = page
         if content.turn.status in TURN_ENDED:
             await self._close_stream(client, stream, message_ref)
+
+    @staticmethod
+    def _session_owed(sent: dict[str, Any] | None, drawn: dict[str, Any]) -> bool:
+        """Whether the session card still has something Slack has not been told.
+
+        Once, when the stream opens, and once more if the Console link only
+        turned up later — a card sent without a detail can still be given one,
+        because appending to nothing leaves just the link. It is never sent a
+        third time: `details` on a `task_update` appends, so a card that
+        already carries the link would come back carrying it twice.
+        """
+        if sent is None:
+            return True
+        return "details" in drawn and "details" not in sent
 
     async def _close_stream(
         self, client: AsyncWebClient, stream: _ActivityStream, message_ref: str
