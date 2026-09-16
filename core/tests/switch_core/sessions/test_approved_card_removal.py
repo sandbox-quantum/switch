@@ -23,6 +23,7 @@ from sqlalchemy import select
 
 from switch_core.bridges.collaboration.adapter import (
     RemovalFailed,
+    RichContentFailed,
     RichContentThrottled,
 )
 from switch_core.bridges.collaboration.models import InboundInteraction
@@ -45,6 +46,10 @@ class Removing(Platform):
     normally, which is what the Slack adapter does when it asks about an
     address the platform no longer knows — the deletion is confirmed by its
     own absence rather than by the reply that went missing.
+
+    Once the message is gone, editing it is refused. A fake that kept
+    accepting edits let the deleted card be drawn as though it were still
+    there, which is the one thing no real platform does.
     """
 
     removes_approved_cards = True
@@ -55,6 +60,7 @@ class Removing(Platform):
         self.refuse: str | None = None
         self.throttle: float | None = None
         self.lose_response = False
+        self.gone = False
 
     async def remove_publication(self, channel: str, message_ref: str) -> None:
         self.removed.append((channel, message_ref))
@@ -64,9 +70,17 @@ class Removing(Platform):
             )
         if self.refuse is not None:
             raise RemovalFailed(self.refuse)
+        self.gone = True
         if self.lose_response:
             self.lose_response = False
             raise TimeoutError("the delete was accepted; the reply never came")
+
+    async def update_rich(self, channel, agent, post, content, thread):
+        if self.gone:
+            raise RichContentFailed(
+                f"No message at {post}.", text="Permission granted."
+            )
+        await super().update_rich(channel, agent, post, content, thread)
 
 
 def _guards() -> dict[str, object]:
@@ -149,21 +163,25 @@ async def _removed_at(session_factory):
         return (await db.scalar(select(SessionRequestPost))).removed_at
 
 
-async def test_a_granted_card_is_drawn_settled_and_then_taken_away(session_factory):
-    """Settled first, removed second, and not the other way round.
+async def test_a_granted_card_is_taken_away_rather_than_drawn_settled(session_factory):
+    """Asked for first, drawn only if the platform still has it.
 
-    The redraw is what a refused removal falls back to, so the card has to be
-    made to say what was decided before anything tries to delete it — and if
-    the process stops in between, what is left behind is an honest card.
+    The settled draw is the fallback for a removal that did not happen, not a
+    step on the way to one: editing a card into its final state and deleting
+    it in the same breath shows a reader nothing, and on the cycle after a
+    deletion whose reply was lost it is an edit to a message that is not
+    there — which fails, says so in the channel, and stops the deletion ever
+    being confirmed.
     """
     platform = Removing()
     service, epoch, posts, cards, post = await _card(session_factory, platform)
 
     await _answer(service, epoch, posts, post, session_factory, "allow-once")
+    drawn = len(platform.edits)
     await refresh_cards(session_factory, "bridge", "session-demo", cards)
 
-    assert "Allow once" in platform.edits[-1][2]
     assert platform.removed == [("channel-demo", post.external_post_id)]
+    assert len(platform.edits) == drawn
     assert await _removed_at(session_factory) is not None
 
 
@@ -297,6 +315,62 @@ async def test_a_deletion_whose_reply_was_lost_is_settled_by_asking_again(
     assert await _removed_at(session_factory) is not None
 
 
+async def test_a_restart_confirms_a_deletion_the_process_never_wrote_down(
+    session_factory,
+):
+    """The same gap, across the restart that makes it permanent.
+
+    A new process has no memory of what it drew, so every card reads as one
+    due a redraw. The card here is not there to redraw: the edit fails, the
+    "could not be updated" notice goes into the channel the card was taken out
+    of, and the failure is raised before anything asks the platform whether the
+    message is still at that address. Every later restart repeats the notice,
+    and the row goes on owing a deletion that already happened. Asking first
+    ends it instead: the platform reports nothing there, which is the removal
+    confirmed, and the channel is told nothing it would have to unlearn.
+    """
+
+    class Talking(Removing):
+        """Says out loud when a failed redraw falls back to a reply."""
+
+        def __init__(self) -> None:
+            super().__init__()
+            self.notices: list[str] = []
+
+        def notice_address(self, message_ref: str, thread: str | None) -> str:
+            return thread or message_ref
+
+        async def admin_message(self, channel, text, address, *, drawn):
+            self.notices.append(text)
+            return f"{channel}:notice"
+
+    platform = Talking()
+    service, epoch, posts, cards, post = await _card(session_factory, platform)
+    await _answer(service, epoch, posts, post, session_factory, "allow-once")
+    platform.lose_response = True
+    with pytest.raises(TimeoutError):
+        await refresh_cards(
+            session_factory, "bridge", "session-demo", cards, **_guards()
+        )
+    assert await _removed_at(session_factory) is None
+
+    restarted = SessionRequestCards(
+        platform,
+        bridge_id="bridge",
+        surface="slack",
+        posts=posts,
+        session_factory=session_factory,
+    )
+    await refresh_cards(
+        session_factory, "bridge", "session-demo", restarted, **_guards()
+    )
+
+    assert len(platform.removed) == 2
+    assert platform.notices == []
+    assert len(platform.posts) == 1
+    assert await _removed_at(session_factory) is not None
+
+
 async def test_a_rate_limited_removal_carries_the_wait_the_platform_asked_for(
     session_factory,
 ):
@@ -385,6 +459,45 @@ async def test_a_card_recovered_after_it_was_granted_is_taken_back(session_facto
 
     assert platform.removed == [("channel-demo", post.external_post_id)]
     assert await _removed_at(session_factory) is not None
+
+
+async def test_a_card_found_again_is_drawn_whatever_the_gate_remembers(
+    session_factory,
+):
+    """Recovery ends in a draw, and the redraw gate cannot say otherwise.
+
+    The gate was told about the post whose delivery then went unconfirmed, so
+    at the same revision and state it reads the found message as a card
+    already drawn. It is not: it is a message matched by its handle, and
+    drawing it once is what makes what the channel shows and what the record
+    says agree. Sharing the settled card's gate would skip that on exactly the
+    cycle nothing else had changed.
+    """
+
+    class Recovering(Removing):
+        recovers_uncertain_posts = True
+
+        def __init__(self) -> None:
+            super().__init__()
+            self.found = ""
+
+        async def find_request_card(self, channel, thread, token, since, handle):
+            return self.found
+
+    platform = Recovering()
+    service, epoch, posts, cards, post = await _card(session_factory, platform)
+    platform.found = post.external_post_id
+    guards = _guards()
+    await refresh_cards(session_factory, "bridge", "session-demo", cards, **guards)
+    drawn = len(platform.edits)
+    async with session_factory() as db:
+        stored = await db.get(SessionRequestPost, post.id)
+        stored.external_post_id = stored.token
+        await db.commit()
+
+    await refresh_cards(session_factory, "bridge", "session-demo", cards, **guards)
+
+    assert len(platform.edits) == drawn + 1
 
 
 async def test_a_removed_card_still_answers_to_its_handle(session_factory):

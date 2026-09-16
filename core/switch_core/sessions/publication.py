@@ -295,6 +295,10 @@ async def refresh_cards(
                 else ""
             ),
         )
+        # A card found again after an uncertain post is drawn whatever the
+        # redraw gate says: the gate was told about the post that went missing,
+        # so at this revision and state it reads as a card already drawn.
+        recovered = False
         try:
             if post is None:
                 if request.state != "open":
@@ -366,46 +370,29 @@ async def refresh_cards(
                     continue
                 post = await cards.recover(post)
                 recovery_succeeded(post.token)
-                await cards.refresh(
-                    post,
-                    request,
-                    agent_name=agent_name,
-                    **(
-                        {"unavailable_reason": unavailable_reason}
-                        if unavailable_reason
-                        else {}
-                    ),
-                )
-                refreshed(post.token, state)
-            elif refresh_needed(post.token, state):
-                await cards.refresh(
-                    post,
-                    request,
-                    agent_name=agent_name,
-                    **(
-                        {"unavailable_reason": unavailable_reason}
-                        if unavailable_reason
-                        else {}
-                    ),
-                )
-                refreshed(post.token, state)
+                recovered = True
             if post is not None and cards.removes_approved_cards and granted(request):
-                # A stage of its own, deliberately not a step of the redraw
-                # above. A granted card with no removal recorded is one still
-                # owed, and that stays true on a cycle where nothing about the
-                # card changed — which is every cycle after the one that drew
-                # it settled. Hanging the removal off `refresh_needed` meant a
+                # A stage of its own, deliberately not a step of the redraw. A
+                # granted card with no removal recorded is one still owed, and
+                # that stays true on a cycle where nothing about the card
+                # changed — which is every cycle after the one that drew it
+                # settled. Hanging the removal off `refresh_needed` meant a
                 # single rate limit lost the cleanup for the life of the
                 # process, and left the card recovered a cycle late never
                 # reached at all.
                 #
+                # It is asked before the card is drawn because the two
+                # questions are not independent: a card that is already gone
+                # cannot be edited, so drawing first turns a deletion whose
+                # acknowledgement was lost into a failed edit — and the notice
+                # that failure posts is a claim about a card nobody can see,
+                # made on every restart, while the deletion that would settle
+                # the address is never reached. Asking first settles it either
+                # way, and a card the platform still holds is drawn below.
+                #
                 # A card already taken back never arrives here: the branch
                 # above skips its row outright, which is also what stops the
                 # address being deleted once a cycle forever.
-                #
-                # It runs after the redraw rather than instead of it for the
-                # same reason it retries: the card that a failure leaves
-                # behind has to be one showing what was decided.
                 if not removal_allowed(post.token):
                     backed_off += 1
                 else:
@@ -429,6 +416,19 @@ async def refresh_cards(
                         )
                     else:
                         removal_succeeded(post.token)
+                        continue
+            if post is not None and (recovered or refresh_needed(post.token, state)):
+                await cards.refresh(
+                    post,
+                    request,
+                    agent_name=agent_name,
+                    **(
+                        {"unavailable_reason": unavailable_reason}
+                        if unavailable_reason
+                        else {}
+                    ),
+                )
+                refreshed(post.token, state)
         except RichContentThrottled:
             backed_off += 1
         except Exception as error:
