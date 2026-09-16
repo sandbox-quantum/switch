@@ -203,7 +203,7 @@ async def test_only_the_header_and_the_pages_that_moved_are_appended() -> None:
     later = _chunks(client)[1]
     assert [c["type"] for c in later] == ["plan_update", "blocks"]
     assert later[0]["title"] == "Working… 9s"
-    assert later[1]["blocks"][0]["title"] == "Steps 1–2 · Running: Grep"
+    assert later[1]["blocks"][0]["title"] == "Activity 1–2 · Running: Grep"
     assert [(t["title"], t["status"]) for t in later[1]["blocks"][0]["tasks"]] == [
         ("Read", "complete"),
         ("Grep", "in_progress"),
@@ -242,7 +242,7 @@ async def test_a_page_that_did_not_move_is_not_sent_again() -> None:
 
     later = [c for c in _chunks(client)[1] if c["type"] == "blocks"]
     assert len(later) == 1
-    assert later[0]["blocks"][0]["title"] == "Steps 51–52 · Last: Tool 51"
+    assert later[0]["blocks"][0]["title"] == "Activity 51–52 · Last: Tool 51"
 
 
 async def test_a_publish_that_changed_nothing_appends_nothing() -> None:
@@ -488,10 +488,10 @@ async def test_a_turn_of_any_length_draws_the_same_three_step_blocks() -> None:
         )
 
     gone, older, newer = _drawn(client).values()
-    assert gone["elements"][0]["text"] == "_Steps 1–150 no longer shown_"
-    assert older["title"] == "Steps 151–200"
+    assert gone["elements"][0]["text"] == "_Activity 1–150 no longer shown_"
+    assert older["title"] == "Activity 151–200"
     assert [task["title"] for task in older["tasks"]][:1] == ["Tool 150"]
-    assert newer["title"] == "Steps 201–240 · Last: Tool 239"
+    assert newer["title"] == "Activity 201–240 · Last: Tool 239"
     assert [task["title"] for task in newer["tasks"]][-1:] == ["Tool 239"]
 
 
@@ -518,16 +518,16 @@ async def test_what_is_no_longer_shown_is_one_line_above_the_steps() -> None:
     )
 
     assert [block["title"] for block in before] == [
-        "Steps 1–50",
-        "Steps 51–100 · Last: Tool 99",
+        "Activity 1–50",
+        "Activity 51–100 · Last: Tool 99",
     ]
     after = list(_drawn(client).values())
     assert [block["type"] for block in after] == ["context", "plan", "plan"]
     assert after[0]["block_id"] == before[0]["block_id"]
-    assert after[0]["elements"][0]["text"] == "_Steps 1–50 no longer shown_"
+    assert after[0]["elements"][0]["text"] == "_Activity 1–50 no longer shown_"
     assert [block["title"] for block in after[1:]] == [
-        "Steps 51–100",
-        "Steps 101–101 · Last: Tool 100",
+        "Activity 51–100",
+        "Activity 101–101 · Last: Tool 100",
     ]
 
 
@@ -549,7 +549,7 @@ async def test_a_step_never_moves_between_pages_once_it_has_landed() -> None:
 
     moved = [c for c in _chunks(client)[1] if c["type"] == "blocks"]
     assert [chunk["blocks"][0]["title"] for chunk in moved] == [
-        "Steps 51–52 · Last: Tool 51"
+        "Activity 51–52 · Last: Tool 51"
     ]
     older, newer = _pages(client)
     assert [task["title"] for task in older["tasks"]][:1] == ["Tool 0"]
@@ -578,8 +578,8 @@ async def test_the_live_step_is_named_on_its_own_section_and_not_in_the_header()
 
     assert _chunks(client)[0][0] == {"type": "plan_update", "title": "Working… 40s"}
     assert [page["title"] for page in _pages(client)] == [
-        "Steps 1–50 · Running: Grep",
-        "Steps 51–60",
+        "Activity 1–50 · Running: Grep",
+        "Activity 51–60",
     ]
 
 
@@ -606,12 +606,12 @@ async def test_the_label_leaves_a_settled_section_when_the_live_step_moves_past_
 
     first = [c for c in _chunks(client)[0] if c["type"] == "blocks"]
     assert [chunk["blocks"][0]["title"] for chunk in first] == [
-        "Steps 1–50 · Last: Tool 49"
+        "Activity 1–50 · Last: Tool 49"
     ]
     later = [c for c in _chunks(client)[1] if c["type"] == "blocks"]
     assert [chunk["blocks"][0]["title"] for chunk in later] == [
-        "Steps 1–50",
-        "Steps 51–51 · Last: Tool 50",
+        "Activity 1–50",
+        "Activity 51–51 · Last: Tool 50",
     ]
 
 
@@ -628,7 +628,7 @@ async def test_a_step_title_is_not_escaped_because_nothing_in_it_is_parsed() -> 
     )
 
     assert _steps(client)[0]["title"] == shell
-    assert _pages(client)[0]["title"] == f"Steps 1–1 · Running: {shell}"
+    assert _pages(client)[0]["title"] == f"Activity 1–1 · Running: {shell}"
 
 
 # ── Ending ───────────────────────────────────────────────────────────────────

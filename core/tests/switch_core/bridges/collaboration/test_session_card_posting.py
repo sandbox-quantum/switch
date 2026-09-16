@@ -158,11 +158,12 @@ async def _post_one(
 
 
 def _steps(message: dict[str, Any]) -> list[str]:
-    """The tool calls drawn on an activity message, in the order they are in.
+    """The cards drawn on an activity message, in the order they are in.
 
-    The recording has nine of them, and the count is the claim: one message now
-    carries both the turn's state and its tool calls, so a title matching says
-    a step is drawn and nothing about the eight that should be beside it.
+    The recording has nine calls and one remark, and the count is the claim:
+    one message now carries the turn's state, its tool calls and what the agent
+    said, so a title matching says a card is drawn and nothing about the nine
+    that should be beside it.
     """
     return [
         task["title"]
@@ -592,7 +593,12 @@ async def test_a_redraw_slack_refused_leaves_the_row_on_what_is_on_screen(
 async def test_the_trigger_posts_the_recorded_turn_and_then_its_card(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
-    """The work first, then the question, which is the order they happened in."""
+    """The work first, then the question, which is the order they happened in.
+
+    The agent's reasoning rides along inside the plan, which is where the demo
+    wants it: the point of the demo is a channel seeing a turn the way a reader
+    will, and a reader who opens the plan gets the thinking behind the calls.
+    """
     client = FakeWebClient()
     demo, room_id = await _demo(session_factory, client)
 
@@ -602,8 +608,8 @@ async def test_the_trigger_posts_the_recorded_turn_and_then_its_card(
     steps = _steps(client.posted[0])
     turn, card = (json.dumps(post["blocks"]) for post in client.posted)
     assert "Working" in turn
-    assert "same fixture user" not in turn
-    assert len(steps) == 9
+    assert "same fixture user" in turn
+    assert len(steps) == 10
     assert "Ran tests/auth/test_login.py" in "\n".join(steps)
     assert "Edit tests/auth/conftest.py?" in card
     assert [post.get("thread_ts") for post in client.posted] == [None, None]
@@ -624,7 +630,7 @@ async def test_running_the_recording_to_the_end_edits_what_is_already_there(
     assert await demo.handle(f"{TRIGGER} end", CHANNEL, room_id) is True
 
     assert len(client.posted) == 2
-    assert len(_steps(client.updated[0])) == 9
+    assert len(_steps(client.updated[0])) == 10
     turn, card = (
         json.dumps(call["blocks"], ensure_ascii=False) for call in client.updated
     )
@@ -652,7 +658,7 @@ async def test_ending_carries_on_the_demo_already_in_the_channel(
     assert await demo.handle(f"{TRIGGER} end", CHANNEL, room_id) is True
 
     assert len(client.posted) == posted
-    assert len(_steps(client.updated[0])) == 9
+    assert len(_steps(client.updated[0])) == 10
     turn, card = (
         json.dumps(call["blocks"], ensure_ascii=False) for call in client.updated
     )

@@ -486,7 +486,16 @@ async def test_releasing_a_claim_this_turn_never_made_still_clears_a_live_reacti
     assert client.reactions == [("remove", "parent-1", "eyes")]
 
 
-async def test_internal_narration_is_not_published_in_activity_or_fallback() -> None:
+async def test_what_the_agent_said_is_behind_the_plan_and_not_in_the_notification() -> (
+    None
+):
+    """Slack gets the agent's words, but only inside the block a reader opens.
+
+    The message's `text` is what a notification, a preview and a screen reader
+    are given, and it is the one part of this that arrives without being asked
+    for. An agent narrating itself — "Answered in the room." — pushed to
+    somebody's phone is the opposite of the discretion the disclosure is for.
+    """
     client = FakeWebClient()
     activity = SessionTurnActivity(_adapter(client))
     narration = _item().model_copy(update={"text": "Answered in the room."})
@@ -501,7 +510,8 @@ async def test_internal_narration_is_not_published_in_activity_or_fallback() -> 
     await _publish(activity, [narration, tool], _turn("running"))
     await _publish(activity, [narration, tool], _turn("completed"), elapsed_seconds=25)
     for call in [*client.posted, *client.updated]:
-        assert "Answered in the room" not in json.dumps(call)
+        assert "Answered in the room" not in call.get("text", "")
+    assert "» Answered in the room." in _blocks(client.posted[0])
     assert "Read file" in _blocks(client.posted[0])
     assert "Worked for 25s" in _blocks(client.updated[0])
 
