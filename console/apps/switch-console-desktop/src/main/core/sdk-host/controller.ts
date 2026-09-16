@@ -16,8 +16,9 @@ import {
   retireSdkSession,
 } from '../switch-servers/gateway-client';
 import { getServer } from '../switch-servers/servers-store';
-import { sharedAgentDiagnostics } from './diagnostics';
+import { sharedAgentDiagnostics, sharedAgentLogs } from './diagnostics';
 import { syncSdkSessionActivity } from './session-activity';
+import { manageAgentSidecar } from './sidecar-management';
 async function sharedServer(serverId: string) {
   const server = await getServer(serverId);
   if (!server) throw new Error('Switch server not found.');
@@ -33,6 +34,9 @@ export const sdkHostController = createRPCController({
   uploadAttachment: async (serverId: string, sessionId: string, file: AttachmentUpload) =>
     uploadSdkAttachment(await sharedServer(serverId), sessionId, file),
   agentDiagnostics: sharedAgentDiagnostics,
+  agentLogs: sharedAgentLogs,
+  manageSidecar: async (agentId: string, action: 'update' | 'restart' | 'stop' | 'start') =>
+    manageAgentSidecar(agentId, z.enum(['update', 'restart', 'stop', 'start']).parse(action)),
   serverForAgent: async (agentId: string) => {
     const agent = await getAgentById(agentId);
     if (!agent?.serverId) throw new Error('This agent has no Switch server.');

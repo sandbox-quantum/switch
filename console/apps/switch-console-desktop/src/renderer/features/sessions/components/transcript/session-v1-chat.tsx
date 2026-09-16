@@ -391,8 +391,25 @@ export function SessionV1Chat({
             .filter((command) => command.status !== 'applied')
             .map((command) => (
               <p key={command.commandId} className="text-xs text-foreground-muted">
-                Command {command.status}
-                {command.message ? `: ${command.message}` : ''}
+                {command.status === 'unknown' ? (
+                  <>
+                    {command.code === 'HOST_RESTARTED'
+                      ? "Switch couldn't confirm an earlier action before the session restarted."
+                      : command.code === 'SESSION_RETIRED'
+                        ? "Switch couldn't confirm an earlier action before the session was retired."
+                        : "Switch couldn't confirm whether an earlier action finished."}{' '}
+                    It won't run that action again automatically.
+                    {command.message &&
+                      !['HOST_RESTARTED', 'SESSION_RETIRED'].includes(command.code ?? '') && (
+                        <span className="block">{command.message}</span>
+                      )}
+                  </>
+                ) : (
+                  <>
+                    Command {command.status}
+                    {command.message ? `: ${command.message}` : ''}
+                  </>
+                )}
               </p>
             ))}
           {(waitingTurn || (sending && pendingId)) && (

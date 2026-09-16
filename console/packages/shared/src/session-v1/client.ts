@@ -166,8 +166,7 @@ export class SessionChatClient {
     this.pending = command;
     // Keep this command on uncertain transport failure; retry uses the same ID and body.
     const status = commandStatusSchema.parse(await this.transport.submit(command));
-    this.acceptReceipt(status, commandId);
-    return status;
+    return this.acceptReceipt(status, commandId);
   }
 
   async execute(body: Command['body'], commandId: string): Promise<CommandStatus> {
@@ -195,8 +194,7 @@ export class SessionChatClient {
       );
     this.pending = command;
     const status = commandStatusSchema.parse(await this.transport.submit(command));
-    this.acceptReceipt(status, commandId);
-    return status;
+    return this.acceptReceipt(status, commandId);
   }
 
   hasPendingCommand(): boolean {
@@ -211,8 +209,7 @@ export class SessionChatClient {
         ? await this.transport.reconcile(this.pending)
         : await this.transport.commandStatus(this.sessionId, id)
     );
-    this.acceptReceipt(status, id);
-    return status;
+    return this.acceptReceipt(status, id);
   }
 
   hasUnknownCommand(): boolean {
@@ -246,22 +243,18 @@ export class SessionChatClient {
     this.publish(false, null);
   }
 
-  private acceptReceipt(status: CommandStatus, commandId: string): void {
+  private acceptReceipt(status: CommandStatus, commandId: string): CommandStatus {
     if (status.commandId !== commandId) throw new Error('Command receipt identity mismatch.');
-    if (status.status === 'unknown') {
-      this.replica?.recordReceipt(status);
+    const current = this.replica?.recordReceipt(status) ?? status;
+    if (current.status === 'unknown') {
       this.publish(this.view.connected, null);
       throw new Error('Command outcome is unknown. It will not be resent automatically.');
     }
-    if (status.status === 'rejected') {
-      this.pending = null;
-      this.replica?.recordReceipt(status);
-      this.publish(this.view.connected, null);
-      throw new Error(status.message ?? status.code ?? 'Message rejected.');
-    }
     this.pending = null;
-    this.replica?.recordReceipt(status);
     this.publish(this.view.connected, null);
+    if (current.status === 'rejected')
+      throw new Error(current.message ?? current.code ?? 'Message rejected.');
+    return current;
   }
 
   private disconnect(generation: number, error: string): void {

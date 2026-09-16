@@ -86,7 +86,7 @@ export class SessionReplica {
         break;
       }
       case 'command.status':
-        this.upsert(this.value.commandStatuses, body, (x) => x.commandId);
+        this.recordReceipt(body);
         break;
       case 'command.result':
         break; // Only the server confirms shared command status.
@@ -107,7 +107,7 @@ export class SessionReplica {
     this.value.throughSequence = sequence;
   }
 
-  recordReceipt(input: unknown): void {
+  recordReceipt(input: unknown): Snapshot['commandStatuses'][number] {
     const status = commandStatusSchema.parse(input);
     const current = this.value.commandStatuses.find((x) => x.commandId === status.commandId);
     if (
@@ -116,8 +116,9 @@ export class SessionReplica {
         current.status === 'rejected' ||
         (current.status === 'dispatched' && status.status === 'accepted'))
     )
-      return;
+      return current;
     this.upsert(this.value.commandStatuses, status, (x) => x.commandId);
+    return status;
   }
 
   private upsert<T>(values: T[], value: T, key: (value: T) => string): void {
