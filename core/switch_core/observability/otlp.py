@@ -20,7 +20,9 @@ from __future__ import annotations
 
 import logging
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urljoin
@@ -28,6 +30,32 @@ from urllib.parse import urljoin
 import httpx
 
 logger = logging.getLogger(__name__)
+
+# True while this task is inside an export request.
+#
+# Sending anything costs an HTTP call, and an HTTP client logs — `httpcore`
+# emits a line per connection at DEBUG, which is a supported log level here.
+# Shipping those lines would mean each export generating the records the next
+# export has to send, for ever. The log handler reads this and declines to
+# queue anything emitted inside the window.
+#
+# A context variable rather than a flag because it has to be exactly this
+# task's window: another request logging at the same moment is in its own
+# context and must still be shipped.
+_exporting: ContextVar[bool] = ContextVar("switch_otlp_exporting", default=False)
+
+
+def exporting_now() -> bool:
+    return _exporting.get()
+
+
+@contextmanager
+def _exporting_window() -> Iterator[None]:
+    token = _exporting.set(True)
+    try:
+        yield
+    finally:
+        _exporting.reset(token)
 
 # OTLP's own enum, sent as an integer. Delta rather than cumulative: Datadog
 # reads delta sums and histograms directly, whereas a cumulative series has to
@@ -349,22 +377,23 @@ class OtlpClient:
     async def post(self, signal: str, payload: Mapping[str, Any]) -> None:
         """Send one payload. Raises :class:`OtlpSendError` on any failure."""
         url = self.url_for(signal)
-        try:
-            response = await self._client.post(
-                url,
-                json=payload,
-                headers=self._headers,
-                timeout=self._timeout_seconds,
-            )
-        except httpx.HTTPError as error:
-            raise OtlpSendError(f"POST {url} failed: {error}") from error
+        with _exporting_window():
+            try:
+                response = await self._client.post(
+                    url,
+                    json=payload,
+                    headers=self._headers,
+                    timeout=self._timeout_seconds,
+                )
+            except httpx.HTTPError as error:
+                raise OtlpSendError(f"POST {url} failed: {error}") from error
 
-        if response.status_code >= 400:
-            raise OtlpSendError(
-                f"POST {url} answered {response.status_code}: {response.text[:200]}"
-            )
+            if response.status_code >= 400:
+                raise OtlpSendError(
+                    f"POST {url} answered {response.status_code}: {response.text[:200]}"
+                )
 
-        _raise_on_partial_rejection(url, response)
+            _raise_on_partial_rejection(url, response)
 
 
 def _raise_on_partial_rejection(url: str, response: httpx.Response) -> None:

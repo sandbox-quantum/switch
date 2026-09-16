@@ -40,18 +40,23 @@ def route_label(scope: Scope) -> str:
     entered a mounted sub-app (the gateway is mounted under ``/gateway``) the
     inner router overwrites it with its own route — whose ``path`` is relative
     to the mount. The mount's own prefix is in ``root_path``, so the two are
-    put back together here; without that, the gateway's ``/rooms`` and the
-    agent bridge's ``/rooms`` would be counted as one route.
+    concatenated here; without that, the gateway's ``/rooms`` and the agent
+    bridge's ``/rooms`` would be counted as one route.
+
+    Concatenated unconditionally rather than after checking whether the path
+    already carries the prefix. That check reads as a safe guard and is not
+    one: a route's path is always relative to its mount, so the prefix is never
+    already there — but an inner route whose name merely *starts with* the
+    mount's own string ("/gatewayish" under "/gateway") satisfies a
+    ``startswith`` test and loses its prefix, which is precisely the collision
+    this function exists to prevent.
     """
     route = scope.get("route")
     path = getattr(route, "path", None)
     if not isinstance(path, str) or not path:
         return UNMATCHED_ROUTE
 
-    prefix = scope.get("root_path") or ""
-    if prefix and not path.startswith(prefix):
-        return f"{prefix}{path}"
-    return path
+    return f"{scope.get('root_path') or ''}{path}"
 
 
 def status_class(status_code: int) -> str:

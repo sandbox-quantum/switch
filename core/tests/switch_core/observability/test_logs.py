@@ -194,3 +194,35 @@ async def test_dropped_records_are_reported_at_error(caplog):
         await exporter.flush_once()
 
     assert "Dropped 1 log record" in caplog.text
+
+
+def test_records_logged_during_an_export_are_not_queued():
+    """The feedback loop: the exporter's own HTTP client logs.
+
+    `httpcore` emits a line per connection at DEBUG, and DEBUG is a level a
+    deployment may be running at — so without this each export manufactures
+    the records the next export has to send, for ever.
+    """
+    from switch_core.observability.otlp import _exporting_window
+
+    handler = OtlpLogHandler(capacity=10)
+
+    with _exporting_window():
+        handler.emit(_record(name="httpcore.connection", message="connect_tcp"))
+    handler.emit(_record(name="httpcore.connection", message="a real request"))
+
+    batch, _ = handler.take(10)
+    # Outside the window the same logger is shipped normally: this suppresses
+    # the exporter's own traffic, not a whole library.
+    assert [entry.body for entry in batch] == ["a real request"]
+
+
+def test_the_self_exclusion_is_anchored_on_a_name_boundary():
+    handler = OtlpLogHandler(capacity=10)
+    handler.emit(_record(name="switch_core.observability", message="dropped"))
+    handler.emit(_record(name="switch_core.observability.logs", message="dropped"))
+    # A bare prefix test would swallow this one too, and it is not ours.
+    handler.emit(_record(name="switch_core.observability_extras", message="kept"))
+
+    batch, _ = handler.take(10)
+    assert [entry.body for entry in batch] == ["kept"]

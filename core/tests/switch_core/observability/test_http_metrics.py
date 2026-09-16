@@ -112,3 +112,33 @@ def test_nothing_is_recorded_when_no_registry_is_installed():
     # The middleware must be transparent when observability is off, which is
     # every test and every unconfigured deployment.
     assert response.status_code == 200
+
+
+def test_an_inner_route_sharing_the_mounts_name_keeps_its_prefix(registry):
+    """The collision a `startswith` check silently allowed.
+
+    `/gatewayish` under a `/gateway` mount starts with the mount's own string,
+    so a prefix test that asked "is it already prefixed?" answered yes and
+    dropped it — losing exactly the distinction this label exists to keep.
+    """
+    app = FastAPI()
+    inner = FastAPI()
+
+    @inner.get("/gatewayish")
+    async def inner_route() -> dict[str, str]:
+        return {}
+
+    app.mount("/gateway", inner)
+    app.add_middleware(MetricsMiddleware)
+
+    with TestClient(app) as client:
+        client.get("/gateway/gatewayish")
+
+    assert {dict(key)["route"] for key in _counts(registry)} == {"/gateway/gatewayish"}
+
+
+def test_an_unmounted_route_is_not_given_a_prefix(registry):
+    with TestClient(_app()) as client:
+        client.get("/rooms/a")
+
+    assert {dict(key)["route"] for key in _counts(registry)} == {"/rooms/{room_id}"}

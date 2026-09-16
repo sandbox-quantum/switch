@@ -22,8 +22,11 @@ dropped — a gap that announces itself, rather than one nobody can see.
 
 **It must not feed itself.** Export failures are logged, and if those lines
 were themselves queued for export a failing collector would generate exactly
-the traffic that is failing. Records from this package are written to stderr
-and never shipped.
+the traffic that is failing. Two things are therefore written to stderr and
+never shipped: records from this package, and anything logged while an export
+is in flight — which is how the HTTP client underneath the exporter is kept
+out, since it logs a line per connection at a level a deployment may well be
+running at.
 """
 
 from __future__ import annotations
@@ -41,6 +44,7 @@ from switch_core.observability.otlp import (
     OtlpResource,
     OtlpSendError,
     build_logs_payload,
+    exporting_now,
 )
 
 logger = logging.getLogger(__name__)
@@ -75,6 +79,26 @@ def severity_of(level: int) -> tuple[int, str]:
     return 1, "TRACE"
 
 
+def _is_own_traffic(record: logging.LogRecord) -> bool:
+    """Whether shipping this record would help generate the next one.
+
+    Two sources, and the second is the one that bites. This package's own
+    loggers are the obvious case — an "export failed" line must not be queued
+    for the export that is failing. Matched on a dotted-name boundary rather
+    than a bare prefix, so a future ``switch_core.observability_extras`` is not
+    silently swallowed along with it.
+
+    The other source is the HTTP client underneath the exporter. `httpcore`
+    logs a line per connection at DEBUG, and DEBUG is a level a deployment may
+    legitimately be running at, so every export would manufacture the records
+    the next export has to send. Anything logged inside an export's own window
+    is dropped; see :func:`switch_core.observability.otlp.exporting_now`.
+    """
+    if record.name == _SELF or record.name.startswith(f"{_SELF}."):
+        return True
+    return exporting_now()
+
+
 class OtlpLogHandler(logging.Handler):
     """Enqueues records. Sends nothing itself.
 
@@ -90,7 +114,7 @@ class OtlpLogHandler(logging.Handler):
         self._dropped = 0
 
     def emit(self, record: logging.LogRecord) -> None:
-        if record.name.startswith(_SELF):
+        if _is_own_traffic(record):
             return
         try:
             entry = self._convert(record)
