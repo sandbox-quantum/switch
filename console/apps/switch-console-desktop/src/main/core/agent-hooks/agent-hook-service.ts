@@ -1,8 +1,6 @@
 import type { IDisposable, IInitializable } from '@switch-console/shared';
 import { eq } from 'drizzle-orm';
-import { sessionStartupWatch } from '@main/core/agent-runtime/desktop-session-startup-watch';
 import { getPlugin } from '@main/core/providers/plugin-registry';
-import { saveProviderSessionId } from '@main/core/sessions/operations/save-provider-session-id';
 import { setProviderSessionId } from '@main/core/sessions/operations/set-provider-session-id';
 import { touchSession } from '@main/core/sessions/operations/touchSession';
 import { sessionHooks } from '@main/core/sessions/session-hooks';
@@ -43,11 +41,6 @@ async function handleSessionEvent(
 ): Promise<void> {
   if (!isValidProviderSessionId(ctx.providerId, providerSessionId)) return;
 
-  if (ctx.providerId === 'droid') {
-    await saveProviderSessionId(ctx.sessionId, providerSessionId);
-    return;
-  }
-
   const updated = await setProviderSessionId(ctx.sessionId, providerSessionId);
   if (!updated) return;
 
@@ -87,7 +80,6 @@ class AgentHookService implements IInitializable, IDisposable, Hookable<AgentHoo
     // Any hook at all proves the CLI is past its startup prompts and running,
     // so this is deliberately not narrowed to the session-start event: a
     // provider that varies its startup payload should not read as stalled.
-    sessionStartupWatch.markStarted(raw.ptyId);
 
     if (parsed.kind === 'ignore') return;
 
@@ -116,28 +108,6 @@ class AgentHookService implements IInitializable, IDisposable, Hookable<AgentHoo
 
   async initialize(): Promise<void> {
     await this.server.start(async (raw) => this.handleRawHook(raw));
-
-    // A session that never reported itself up is stopped on something only a
-    // human can answer. Raise it as attention-needed rather than leaving a
-    // pane that looks like every healthy session and does nothing.
-    sessionStartupWatch.onStall(({ sessionId, providerId }) => {
-      const event: AgentEvent = {
-        type: 'notification',
-        source: 'hook',
-        providerId,
-        sessionId,
-        timestamp: Date.now(),
-        payload: {
-          notificationType: 'startup_prompt',
-          title: 'Session did not start',
-          message:
-            'It never reported that it started, so it is most likely waiting on a prompt from the CLI — a workspace-trust or permissions confirmation. Open its terminal to answer it.',
-        },
-      };
-      const appFocused = isAppFocused();
-      void maybeShowNotification(event, appFocused);
-      this.emitAgentEvent(event, appFocused);
-    });
 
     sessionHooks.on('session:input-submitted', ({ sessionId, providerId }) => {
       // Only synthesise a 'start' event when the plugin does not supply its own

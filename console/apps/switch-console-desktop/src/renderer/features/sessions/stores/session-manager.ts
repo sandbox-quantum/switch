@@ -215,7 +215,7 @@ export class SessionManagerStore {
         agentId: params.agentId,
         providerId: providerId as AgentProviderId,
         title: params.title,
-        shellId: params.shellId ?? 'system',
+
         status: 'in_progress',
         statusChangedAt: now,
         isInitialSession: true,

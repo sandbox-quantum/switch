@@ -16,7 +16,6 @@ import {
   terminalShellFamily,
   type ExplicitTerminalShellId,
   type RuntimeTerminalShellId,
-  type TerminalShellAvailability,
   type TerminalShellId,
 } from '@shared/core/terminals/terminal-settings';
 import type { ResolvedShellProfile } from './types';
@@ -214,11 +213,6 @@ function shellIdFromExecutable(
   return isRuntimeTerminalShellId(base) ? base : fallback;
 }
 
-function shellLabelFromExecutable(executable: string, fallback: RuntimeTerminalShellId): string {
-  const base = terminalShellBasename(executable).replace(/\.exe$/, '');
-  return base || fallback;
-}
-
 function localDefaultShell(platform: NodeJS.Platform, env: NodeJS.ProcessEnv): string {
   if (platform === 'win32') return env.ComSpec || 'C:\\Windows\\System32\\cmd.exe';
   return env.SHELL ?? (platform === 'darwin' ? '/bin/zsh' : '/bin/bash');
@@ -244,22 +238,6 @@ function resolveLocalExplicitShell(
     return undefined;
   }
   return findOnPath(shell, env, platform, fileExists);
-}
-
-function explicitShellLabel(shell: TerminalShellId, platform: NodeJS.Platform): string {
-  if (platform !== 'win32') return shell;
-  switch (shell) {
-    case 'bash':
-      return 'Git Bash';
-    case 'powershell':
-      return 'PowerShell';
-    case 'pwsh':
-      return 'PowerShell 7';
-    case 'wsl':
-      return 'WSL';
-    default:
-      return shell;
-  }
 }
 
 function buildProfile({
@@ -461,77 +439,6 @@ export async function resolveLocalAutomationShellWithSystemFallback({
   });
 }
 
-export async function getLocalTerminalShellAvailability({
-  platform = process.platform,
-  env = process.env,
-  fileExists,
-  readDirNames: readDirs,
-}: {
-  platform?: NodeJS.Platform;
-  env?: NodeJS.ProcessEnv;
-  fileExists?: FileExists;
-  readDirNames?: ReadDirNames;
-} = {}): Promise<TerminalShellAvailability[]> {
-  const targetDefaultShell = localDefaultShell(platform, env);
-  const targetDefaultId = shellIdFromExecutable(
-    targetDefaultShell,
-    platform === 'win32' ? 'cmd' : 'sh'
-  );
-  return sortShellAvailability(
-    shellIdsForLocalPlatform(platform)
-      .filter((shell) => shell === 'system' || shell !== targetDefaultId)
-      .map((shell) => {
-        if (shell === 'system') {
-          return {
-            id: shell,
-            label: shellLabelFromExecutable(targetDefaultShell, targetDefaultId),
-            isSystemDefault: true,
-            available: true,
-          };
-        }
-        const executable = resolveLocalExplicitShell(shell, platform, env, fileExists, readDirs);
-        return {
-          id: shell,
-          label: explicitShellLabel(shell, platform),
-          isSystemDefault: false,
-          available: executable !== undefined,
-          reason: executable === undefined ? 'Not found on this machine' : undefined,
-        };
-      })
-  );
-}
-
-export async function getRemoteTerminalShellAvailability(
-  proxy: SshClientProxy,
-  profile: RemoteShellProfile
-): Promise<TerminalShellAvailability[]> {
-  const targetDefaultShell = normalizeRemoteShell(profile.shell);
-  const targetDefaultId = shellIdFromExecutable(targetDefaultShell, 'sh');
-  const availability = await Promise.all(
-    remoteShellIds()
-      .filter((shell) => shell === 'system' || shell !== targetDefaultId)
-      .map(async (shell) => {
-        if (shell === 'system') {
-          return {
-            id: shell,
-            label: shellLabelFromExecutable(targetDefaultShell, targetDefaultId),
-            isSystemDefault: true,
-            available: true,
-          };
-        }
-        const available = await isRemoteShellAvailable(proxy, shell, profile.env);
-        return {
-          id: shell,
-          label: shell,
-          isSystemDefault: false,
-          available,
-          reason: available ? undefined : 'Not found on this SSH target',
-        };
-      })
-  );
-  return sortShellAvailability(availability);
-}
-
 async function isRemoteShellAvailable(
   proxy: SshClientProxy,
   shell: ExplicitTerminalShellId,
@@ -548,10 +455,6 @@ async function isRemoteShellAvailable(
   } catch {
     return false;
   }
-}
-
-function remoteShellIds(): TerminalShellId[] {
-  return ['system', 'zsh', 'bash', 'fish'];
 }
 
 function execRemote(
@@ -577,19 +480,5 @@ function execRemote(
       });
       channel.on('error', reject);
     });
-  });
-}
-
-function shellIdsForLocalPlatform(platform: NodeJS.Platform): TerminalShellId[] {
-  if (platform === 'win32') return ['system', 'powershell', 'cmd', 'wsl', 'bash'];
-  return ['system', 'zsh', 'bash', 'fish'];
-}
-
-function sortShellAvailability(entries: TerminalShellAvailability[]): TerminalShellAvailability[] {
-  return [...entries].sort((a, b) => {
-    if (a.id === 'system') return -1;
-    if (b.id === 'system') return 1;
-    if (a.available !== b.available) return a.available ? -1 : 1;
-    return 0;
   });
 }

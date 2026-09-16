@@ -72,12 +72,7 @@ export class SharedAgentRuntime implements AgentRuntimeProvider {
     }
   ) {}
 
-  async start(
-    session: Session,
-    _size?: { cols: number; rows: number },
-    isResuming?: boolean,
-    initialPrompt?: string
-  ): Promise<void> {
+  async start(session: Session, isResuming?: boolean, initialPrompt?: string): Promise<void> {
     if (this.starting) return this.starting;
     this.starting = this.open(session, initialPrompt, isResuming ?? false, false);
     try {

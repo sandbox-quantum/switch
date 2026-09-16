@@ -79,7 +79,7 @@ describe('SessionAgentStore hydration', () => {
     agentId: 'agent-1',
     providerId: 'codex' as const,
     title: 'Session 1',
-    shellId: 'system' as const,
+
     status: 'in_progress' as const,
     statusChangedAt: now,
 

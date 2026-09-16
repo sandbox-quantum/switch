@@ -4,15 +4,9 @@ import type { Session } from '@shared/core/sessions/sessions';
 import { sessionAgentRegistry } from './session-agent-registry';
 import type { SessionStore } from './session-store';
 
-/**
- * A Switch Console session is a single `claude` terminal. The Switch Console multi-pane
- * workspace (tabs, splits, diff/editor/browser, terminal drawer) has been
- * removed — this view model only keeps the session's agent hydrated while the
- * session is provisioned, which is what connects its PTY. The terminal itself
- * is rendered by `SessionTerminal`.
- */
+/** Keeps the SDK session attached while its transcript is provisioned. */
 export class SessionViewModel implements ILifecycle {
-  /** Which region of the session view has focus. Kept for the terminal pane. */
+  /** Which region of the session view has focus.  */
   focusedRegion: 'main' | 'bottom' = 'main';
 
   readonly sessionId: string;

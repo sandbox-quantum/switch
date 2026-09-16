@@ -1,10 +1,4 @@
-export const AGENT_PROVIDER_IDS = [
-  'codex',
-  'claude',
-  'antigravity',
-  'cursor',
-  'opencode',
-] as const;
+export const AGENT_PROVIDER_IDS = ['codex', 'claude', 'antigravity', 'cursor', 'opencode'] as const;
 
 export type AgentProviderId = (typeof AGENT_PROVIDER_IDS)[number];
 
@@ -37,23 +31,6 @@ export type AgentProviderDefinition = {
   /** Auto-approval is provided by provider-specific environment variables instead of CLI args. */
   autoApproveViaEnv?: boolean;
   initialPromptFlag?: string;
-  /**
-   * When true, the initial prompt is delivered via keystroke injection
-   * (typing into the TUI after startup) instead of as a CLI argument.
-   * Use for agents whose CLI has no flag for interactive-mode prompt delivery.
-   */
-  useKeystrokeInjection?: boolean;
-  /** Input sequence sent after keystroke-injected prompt text. Defaults to Enter. */
-  keystrokeSubmitSequence?: string;
-  /** Delay between injected prompt text and submit, for TUIs that need paste settling time. */
-  keystrokeSubmitDelayMs?: number;
-  /**
-   * When true, the initial prompt is piped to the agent via stdin and the
-   * spawn becomes `bash -c 'printf ... | <agent...>'`.
-   * Use for agents that read an initial message from stdin then continue
-   * interactively (e.g. amp's `echo "msg" | amp`).
-   */
-  initialPromptViaStdinPipe?: boolean;
   resumeFlag?: string;
   /**
    * CLI flag to assign a unique session ID per chat instance.
@@ -76,7 +53,6 @@ export type AgentProviderDefinition = {
   alt?: string;
   /** When true, the logo should be colour-inverted in dark mode. */
   invertInDark?: boolean;
-  terminalOnly?: boolean;
   supportsHooks?: boolean;
 };
 
@@ -111,7 +87,6 @@ export const AGENT_PROVIDERS: AgentProviderDefinition[] = [
     resumeWithoutSessionFlag: 'resume --last',
     icon: 'openai.svg',
     alt: 'Codex',
-    terminalOnly: true,
     supportsHooks: true,
   },
   {
@@ -131,7 +106,6 @@ export const AGENT_PROVIDERS: AgentProviderDefinition[] = [
     planActivateCommand: '/plan',
     icon: 'claude.svg',
     alt: 'Claude Code',
-    terminalOnly: true,
     supportsHooks: true,
   },
   {
@@ -150,7 +124,6 @@ export const AGENT_PROVIDERS: AgentProviderDefinition[] = [
     icon: 'cursor.svg',
     alt: 'Cursor CLI',
     invertInDark: true,
-    terminalOnly: true,
   },
   {
     id: 'antigravity',
@@ -168,7 +141,6 @@ export const AGENT_PROVIDERS: AgentProviderDefinition[] = [
     planActivateCommand: '/plan',
     icon: 'antigravity.svg',
     alt: 'Antigravity CLI',
-    terminalOnly: true,
   },
   {
     id: 'opencode',
@@ -189,7 +161,6 @@ export const AGENT_PROVIDERS: AgentProviderDefinition[] = [
     icon: 'opencode.svg',
     iconDark: 'opencode-dark.svg',
     alt: 'OpenCode CLI',
-    terminalOnly: true,
     supportsHooks: true,
   },
 ];

@@ -131,7 +131,7 @@ beforeEach(() => {
 });
 
 it('delivers the initial prompt on a relaunch that did not create the host', async () => {
-  await runtime().start(session, undefined, false, 'Say hello');
+  await runtime().start(session, false, 'Say hello');
 
   expect(mocks.submit).toHaveBeenCalledTimes(1);
   expect(mocks.submit.mock.calls[0][1]).toMatchObject({
@@ -155,7 +155,7 @@ it('accepts a host that awaits an explicit reset decision and holds the initial 
     items: [],
   });
 
-  await runtime().start(session, undefined, false, 'Say hello');
+  await runtime().start(session, false, 'Say hello');
 
   expect(mocks.submit).not.toHaveBeenCalled();
   expect(mocks.persist).not.toHaveBeenCalled();
@@ -180,7 +180,7 @@ it('does not resend a prompt the server already holds', async () => {
     message: null,
   });
 
-  await runtime().start(session, undefined, false, 'Say hello');
+  await runtime().start(session, false, 'Say hello');
 
   expect(mocks.submit).not.toHaveBeenCalled();
   expect(mocks.persist).toHaveBeenCalledWith('session-1', {
@@ -198,7 +198,7 @@ it('treats a 404 that names another code as an uncertain lookup', async () => {
     )
   );
 
-  await runtime().start(session, undefined, false, 'Say hello');
+  await runtime().start(session, false, 'Say hello');
 
   expect(mocks.submit).not.toHaveBeenCalled();
   expect(mocks.persist).toHaveBeenCalledTimes(1);

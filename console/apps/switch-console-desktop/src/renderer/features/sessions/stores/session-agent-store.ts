@@ -19,12 +19,7 @@ export const DEHYDRATE_RETRY_DELAY_MS = 500;
 
 type HydrationState = 'stopped' | 'starting' | 'running' | 'stopping';
 
-/**
- * Renderer-side handle for a session's single agent: its status store, its PTY
- * session, and the hydrate/dehydrate lifecycle that connects the agent PTY
- * while the session view is provisioned. One instance per session, held in the
- * session-agent registry.
- */
+/** Renderer-side session status and SDK host attachment lifecycle. */
 export class SessionAgentStore implements IDisposable {
   private offAgentStatusChanged: (() => void) | null = null;
   private offSessionExited: (() => void) | null = null;
@@ -35,8 +30,7 @@ export class SessionAgentStore implements IDisposable {
   readonly list: Resource<Session[]>;
   /** The session's single agent-status store — null until the session record loads. */
   agent: AgentStatusStore | null = null;
-  /** The agent's PTY session — created alongside the record, connected lazily. */
-  // Hydration lifecycle: desired-vs-actual for the agent PTY, with the same
+  // Hydration lifecycle: desired-vs-actual for the SDK session, with the same
   // stale-flip handling and dehydrate retry the old reconciler had.
   private hydrationDesired = false;
   private hydrationState: HydrationState = 'stopped';

@@ -50,7 +50,7 @@ export async function createSession(
       id: params.id,
       agentId: params.agentId,
       title: params.title,
-      shellId: params.shellId ?? 'system',
+      shellId: 'system',
       config,
       isInitialSession: false,
       status: 'in_progress',
@@ -74,12 +74,7 @@ export async function createSession(
     const built = await provisionSessionRuntime(session, location);
     await sessionRuntimeManager.registerSession(session.id, built, location.ctx);
 
-    await built.agent.start(
-      session,
-      params.initialSize,
-      params.attach === false,
-      params.initialPrompt
-    );
+    await built.agent.start(session, params.attach === false, params.initialPrompt);
   } catch (e) {
     await db.update(sessions).set({ status: 'review' }).where(eq(sessions.id, session.id));
     return err({ type: 'spawn-failed', message: e instanceof Error ? e.message : String(e) });

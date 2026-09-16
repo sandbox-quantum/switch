@@ -5,12 +5,7 @@ import type { AgentEvent } from '@shared/core/providers/agentEvents';
  * Map a provider event onto the hook-shaped `AgentEvent` the rest of the app
  * already reacts to, or null when it carries no status signal.
  *
- * A PTY session reports its status by calling Switch Console's hook server; a
- * provider session has no hooks and no TUI, but the same four moments exist in
- * its event stream. Translating here rather than deriving a second status
- * vocabulary is what keeps the sidebar badge, the attention sound, the DB
- * column and the room's "working on it…" working with no changes of their own:
- * every one of them is downstream of `agentHookService.emitAgentEvent`.
+ * SDK status events feed the same sidebar, sound and persisted status handlers.
  *
  * Pure, for the same reason `deriveAgentStatus` is — it is the half of this
  * that can be asserted without an Electron app around it.
