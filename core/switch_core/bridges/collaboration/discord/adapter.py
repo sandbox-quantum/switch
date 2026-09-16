@@ -1640,6 +1640,12 @@ class DiscordAdapter(CollaborationAdapter):
 
         The channel route answers about the message, so it is the one that can
         settle it.
+
+        Classified like any other failed removal, so a channel read that is
+        throttled still arrives as a wait. Discord rate-limits per route, and
+        this route is reached only after the webhook route has already
+        answered: a 429 here is the likeliest one on the whole path, and the
+        delay it carries is the only thing that makes the retry useful.
         """
         try:
             location = await self._get_channel(location_id)
@@ -1648,10 +1654,11 @@ class DiscordAdapter(CollaborationAdapter):
             self._say_already_gone(message_ref, error)
             return
         except Exception as failure:
-            raise RemovalFailed(
+            raise self._removal_failure(
+                failure,
                 f"Discord said the webhook does not know message {message_ref}, "
                 f"and reading the channel to find out whether the card is still "
-                f"there did not work either: {failure}"
+                f"there did not work either",
             ) from failure
         raise RemovalFailed(
             f"Discord card {message_ref} is still in the channel: the "

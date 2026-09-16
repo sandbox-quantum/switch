@@ -205,6 +205,21 @@ async def test_a_card_that_cannot_be_read_back_is_owed_rather_than_gone() -> Non
         await adapter.remove_publication(str(CHANNEL_ID), CARD)
 
 
+async def test_a_throttled_read_back_is_a_wait_like_any_other() -> None:
+    """The likeliest 429 on the whole path, because this route is only reached
+    after the webhook route has already answered — and the one where losing the
+    delay costs most, since the caller then backs off against a number Discord
+    had already named."""
+    adapter, channel, _thread, publication = _guild_setup()
+    publication.delete_error = _unknown_message()
+    channel.fetch_error = _http_error(429, headers={"Retry-After": "17"})
+
+    with pytest.raises(RichContentThrottled) as raised:
+        await adapter.remove_publication(str(CHANNEL_ID), CARD)
+
+    assert raised.value.retry_after == 17
+
+
 async def test_being_asked_to_wait_is_kept_apart_from_being_refused() -> None:
     """A rate limit says nothing about the card, so it must not arrive as
     `RemovalFailed`: the caller's backoff would then double its own interval
