@@ -15,6 +15,9 @@ params:
   provider:
     type: provider
     description: Which coding agent backs both
+  bridge:
+    type: bridge
+    description: Where the room is mirrored
 
 agents:
   - name: "{team}-triager"
@@ -46,13 +49,15 @@ agents:
       Say what you are about to try before a slow step, so the room is not
       left wondering. Never guess a result you did not run.
 
-# No `bridge:` here, so the room lands on the server's default messaging app,
-# or stays Switch-only when there is none. Add `bridge: Slack` (or a
-# `type: bridge` param) to pin one.
+# The room lands on the messaging app the `bridge` input picks, or the
+# server's default one when it is left empty. You are in it as `{$creator}`,
+# so the agents' answers reach you where you already are.
 room:
   name: "{team}-triage"
-  description: Both agents joined, the triager routing to the reproducer
+  description: Both agents and you, the triager routing to the reproducer
+  bridge: "{bridge}"
   agents: ["{team}-triager", "{team}-repro"]
+  users: ["{$creator}"]
 
 kickoff: |
   @{team}-triager and @{team}-repro: this is your triage room. Triager, say
