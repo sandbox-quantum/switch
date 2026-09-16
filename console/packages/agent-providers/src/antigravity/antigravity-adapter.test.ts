@@ -276,6 +276,62 @@ it('reports delegation from its own step type, not from a tool call', async () =
   });
 });
 
+it('respawns with the attachment directory readable when it cannot ask to read it', async () => {
+  const staging = join(await realpath(tmpdir()), 'switch-staging');
+  const { adapter, events } = await setup({ runtimeMode: 'auto-accept-edits' });
+  await adapter.sendTurn({
+    sessionId: 's',
+    turnId: 'one',
+    text: 'summarise',
+    attachments: [{ path: join(staging, 'report.txt'), mimeType: 'text/plain' }],
+  });
+  // The grant is read at launch, so the running process cannot be told about it.
+  while (processes.length < 2) await flush();
+  processes[1]!.init('native-1');
+  await flush();
+  const args = spawns[1]!.args;
+  expect(args.join(' ')).toContain('--conversation native-1');
+  expect(args.filter((argument) => argument === '--add-dir')).toHaveLength(2);
+  expect(args).toContain(staging);
+  expect(JSON.stringify(processes[1]!.received[0])).toContain('report.txt');
+
+  // A second turn from the same directory reuses the process.
+  processes[1]!.result({ status: 'SUCCESS', response: 'ok' });
+  await flush();
+  await adapter.sendTurn({
+    sessionId: 's',
+    turnId: 'two',
+    text: 'again',
+    attachments: [{ path: join(staging, 'other.txt'), mimeType: 'text/plain' }],
+  });
+  await flush();
+  expect(processes).toHaveLength(2);
+
+  processes[1]!.result({
+    status: 'SUCCESS',
+    response: '',
+    denied_actions: [{ action: 'read_file', display_name: 'ViewFile' }],
+  });
+  await flush();
+  expect(
+    events.some((event) => event.type === 'runtime.warning' && event.message.includes('other.txt'))
+  ).toBe(true);
+});
+
+it('does not widen access for attachments when the session already has full access', async () => {
+  const { adapter, agy } = await setup();
+  await adapter.sendTurn({
+    sessionId: 's',
+    turnId: 'one',
+    text: 'summarise',
+    attachments: [{ path: join(tmpdir(), 'switch-staging/report.txt'), mimeType: 'text/plain' }],
+  });
+  await flush();
+  expect(processes).toHaveLength(1);
+  expect(spawns[0]!.args.filter((argument) => argument === '--add-dir')).toHaveLength(1);
+  expect(JSON.stringify(agy().received[0])).toContain('report.txt');
+});
+
 it('interrupts by killing the process and resumes the conversation for the next turn', async () => {
   const { adapter, events, agy } = await setup();
   await adapter.sendTurn({ sessionId: 's', turnId: 'one', text: 'count' });

@@ -1,6 +1,7 @@
 import { type ChildProcess, execFile, spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { realpath } from 'node:fs/promises';
+import { dirname } from 'node:path';
 import { createInterface } from 'node:readline';
 import { promisify } from 'node:util';
 import type { ModelChoice } from '@switch-console/shared/session-v1';
@@ -11,6 +12,7 @@ import type {
   ProviderSendTurnInput,
   ProviderSessionStartInput,
   RuntimeMode,
+  TurnAttachment,
 } from '../adapter';
 import { ProviderSessionError } from '../adapter';
 import type {
@@ -50,6 +52,8 @@ interface State {
   id: string;
   nativeId: string;
   cwd: string;
+  /** Directories outside `cwd` the CLI was given access to, beyond `cwd` itself. */
+  readable: Set<string>;
   env: Record<string, string>;
   runtimeMode: RuntimeMode;
   model?: ModelSelection;
@@ -64,6 +68,8 @@ interface State {
   stopping: boolean;
   /** The process was killed on purpose; its exit ends the turn, not the session. */
   interrupting: boolean;
+  /** Attachment paths handed to the running turn, to explain a read that was denied. */
+  attachments: string[];
   models?: ModelChoice[];
   mcpServers: Record<string, McpServerSpec>;
   mcpConfigOriginal: string | null;
@@ -129,6 +135,7 @@ export class AntigravityAdapter implements ProviderAdapter {
       id: input.sessionId,
       nativeId: input.resume?.nativeSessionId ?? '',
       cwd,
+      readable: new Set(),
       env: input.env,
       runtimeMode: input.runtimeMode,
       ...(input.model ? { model: input.model } : {}),
@@ -141,6 +148,7 @@ export class AntigravityAdapter implements ProviderAdapter {
       steps: new Map(),
       stopping: false,
       interrupting: false,
+      attachments: [],
       mcpServers: input.mcpServers,
       mcpConfigOriginal: null,
       mcpConfigPath: workspaceMcpConfigPath(cwd),
@@ -185,6 +193,7 @@ export class AntigravityAdapter implements ProviderAdapter {
       '--add-dir',
       state.cwd,
     ];
+    for (const directory of state.readable) args.push('--add-dir', directory);
     if (state.runtimeMode === 'full-access') args.push('--dangerously-skip-permissions');
     else if (state.runtimeMode === 'auto-accept-edits') args.push('--mode', 'accept-edits');
     if (state.model) {
@@ -281,6 +290,8 @@ export class AntigravityAdapter implements ProviderAdapter {
     try {
       if (input.model && input.model.id !== state.model?.id)
         await this.setModel(state.id, input.model);
+      state.attachments = (input.attachments ?? []).map((attachment) => attachment.path);
+      await this.makeAttachmentsReadable(state, input.attachments ?? []);
       if (!state.child) await this.spawnProcess(state);
       const blocks: Array<{ type: string; text: string }> = [];
       const prefix = state.context ? `${state.context}\n\n` : '';
@@ -299,6 +310,37 @@ export class AntigravityAdapter implements ProviderAdapter {
     }
   }
 
+  /**
+   * Attachments are staged outside the working directory, and outside
+   * `full-access` the CLI denies reading a path it was not given. The grant is
+   * read at launch only — adding it to a live process changes nothing — so a
+   * turn that brings a new directory respawns onto the same conversation first.
+   */
+  private async makeAttachmentsReadable(
+    state: State,
+    attachments: readonly TurnAttachment[]
+  ): Promise<void> {
+    if (state.runtimeMode === 'full-access' || attachments.length === 0) return;
+    let added = false;
+    for (const attachment of attachments) {
+      let directory = dirname(attachment.path);
+      try {
+        directory = await realpath(directory);
+      } catch {
+        // A path the host staged but that is already gone stays as written; the
+        // read will fail loudly rather than silently widening access.
+      }
+      if (directory === state.cwd || state.readable.has(directory)) continue;
+      state.readable.add(directory);
+      added = true;
+    }
+    if (!added) return;
+    const child = state.child;
+    if (!child) return;
+    state.child = null;
+    child.kill('SIGKILL');
+  }
+
   private handle(state: State, event: AntigravityEvent): void {
     // An interrupted turn is settled by the exit, so that the next turn is not
     // written to the stdin of a process that is already going away.
@@ -310,6 +352,11 @@ export class AntigravityAdapter implements ProviderAdapter {
         this.emit(state, {
           type: 'runtime.warning',
           message: `Antigravity denied ${denied.map((action) => action.display_name ?? action.action ?? 'a tool').join(', ')} because headless mode cannot ask for permission.`,
+        });
+      if (state.attachments.length > 0 && denied.some((action) => action.action === 'read_file'))
+        this.emit(state, {
+          type: 'runtime.warning',
+          message: `Antigravity was refused a file read this turn, so it may not have opened ${state.attachments.join(', ')}.`,
         });
       const failed = event.result.status === 'ERROR';
       this.complete(

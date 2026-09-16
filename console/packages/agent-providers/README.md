@@ -57,7 +57,7 @@ does not filter; use `pnpm exec vitest run <file>` for one provider.
 | opencode | 1.18.27 | 10/10 | Auto-answers doom-loop and subagent asks in `full-access` with `once`, never `always` (OpenCode remembers `always` per directory). Config isolation only via `XDG_CONFIG_HOME`. |
 | claude | 2.1.260 | 10/10 | `AskUserQuestion` is offered to a session **only while a `canUseTool` callback is registered** — in `default` and `bypassPermissions` alike — so the adapter registers one in every mode and filters the SDK's `CLAUDE_SDK_CAN_USE_TOOL_SHADOWED` warning rather than obeying it. A mid-turn message is queued after the running turn, not folded into it; the adapter keeps the turn open until every queued send is answered. |
 | codex | 0.153.2 | 9/10 | `request_user_input` only works in Plan mode, so `user-input` is skipped. Subagents need `--enable multi_agent_v2`. `turn/steer` joins the running turn. |
-| antigravity | 1.2.4 | 7/10 | Headless `agy` has no prompt channel at all: a tool that needs permission is auto-denied, so `approval-required` and `approval-declined` are skipped and the mode emits a `runtime.warning` at session start. `ask_question` is skipped by the CLI, so `user-input` is skipped. No steering — a mid-turn message queues as its own turn. No in-process cancel: an interrupt kills the process and the next turn respawns on `--conversation`. File tools run in the CLI's own scratch workspace unless `--add-dir <cwd>` is passed. Attachments are passed as file paths in the prompt text: the stream-json input accepts `text` blocks only and rejects `image`. |
+| antigravity | 1.2.4 | 7/10 | Headless `agy` has no prompt channel at all: a tool that needs permission is auto-denied, so `approval-required` and `approval-declined` are skipped and the mode emits a `runtime.warning` at session start. `ask_question` is skipped by the CLI, so `user-input` is skipped. No steering — a mid-turn message queues as its own turn. No in-process cancel: an interrupt kills the process and the next turn respawns on `--conversation`. File tools run in the CLI's own scratch workspace unless `--add-dir <cwd>` is passed. Attachments are passed as file paths in the prompt text: the stream-json input accepts `text` blocks only and rejects `image`. Outside `full-access` a staged attachment is unreadable until its directory is passed as another `--add-dir`, which only takes effect at launch, so such a turn respawns first. |
 
 ## Cursor CLI
 
@@ -100,4 +100,11 @@ room protocol it was started for, and nothing else is. The rules are refcounted
 across the adapter's live sessions and removed when the last one stops.
 
 **Attachments** are named by path in the turn text; the CLI reads them with its
-own file tools rather than receiving bytes.
+own file tools rather than receiving bytes. The host stages them outside the
+session's working directory, and outside `full-access` the CLI denies reading a
+path it was not given, so the adapter passes their directory as another
+`--add-dir`. That grant is read at launch only — writing it to a live process
+changes nothing — so the first turn to bring a new directory respawns on
+`--conversation` before it is sent, and later turns from the same directory reuse
+the process. A `read_file` entry in the CLI's `denied_actions` still raises a
+`runtime.warning` naming the attachments that may not have been opened.
