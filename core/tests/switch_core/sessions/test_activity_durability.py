@@ -1368,6 +1368,9 @@ async def test_completed_journal_discards_anchors_but_keeps_replay_receipt(
             "turn_id": _turn("completed").turn_id,
             "ended": True,
             "completed": True,
+            # Not a reservation: the message is still in the channel, and this
+            # is the only thing left saying which turn it is showing.
+            "shown": {"channel_id": "channel-demo", "ref": "channel-demo:1"},
         }
     await publish(activity(session_factory, platform), "completed")
     assert platform.post_count == 1

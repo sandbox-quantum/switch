@@ -224,6 +224,34 @@ class ActivityJournal:
                 )
             )
 
+    async def shown_at(self, channel_id: str, ref: str) -> tuple[str, str] | None:
+        """The session and command whose turn is being shown in this message.
+
+        The address outlives everything else the row holds: a completed turn
+        keeps only a receipt, and that receipt is written while its message is
+        still on the screen and can still be asked what the turn did.
+
+        Scoped to this bridge and this tenant, and matched on the pair rather
+        than on the reference alone — a platform numbering its messages per
+        channel would otherwise answer for a message in a different one.
+        """
+        async with self.sessions() as db:
+            found = (
+                await db.execute(
+                    select(
+                        SessionActivityPost.session_id,
+                        SessionActivityPost.command_id,
+                    ).where(
+                        SessionActivityPost.tenant_id == require_tenant_id(),
+                        SessionActivityPost.bridge_id == self.bridge_id,
+                        SessionActivityPost.data.contains(
+                            {"shown": {"channel_id": channel_id, "ref": ref}}
+                        ),
+                    )
+                )
+            ).one_or_none()
+            return (found.session_id, found.command_id) if found else None
+
     async def reaction_held(
         self,
         key: tuple[str, str],

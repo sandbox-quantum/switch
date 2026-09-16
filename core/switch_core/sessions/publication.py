@@ -10,6 +10,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.bridges.collaboration.adapter import (
+    ActivitySnapshot,
     RemovalFailed,
     RichContentThrottled,
 )
@@ -871,6 +872,85 @@ async def refresh_activity(
     return any(turn.status == "running" for turn in turns)
 
 
+async def activity_shown_at(
+    session_factory: async_sessionmaker[AsyncSession],
+    bridge_id: str,
+    activity: SessionTurnActivity,
+    channel_id: str,
+    ref: str,
+    *,
+    gateway_public_url: str | None,
+) -> ActivitySnapshot | None:
+    """The turn a message in this channel is showing, read on demand.
+
+    `refresh_activity` pushes a turn out because it changed. This pulls one
+    back because a reader operated a control on the message it is being shown
+    in, and everything about the two is different: nobody is publishing, one
+    turn is wanted rather than all of them, and somebody is waiting.
+
+    Every check the publisher makes before it may draw a turn in a channel is
+    made again here, against the same sources, because the answer can have
+    changed since the drawing: a command reattributed, a room moved to another
+    bridge, an agent removed from it. Each of them is None, and so is a message
+    showing nothing — this is a read on a reference a caller got off a
+    platform, so "no such thing" is an ordinary answer rather than a fault.
+
+    The surface a command arrived on is deliberately not among them. A turn is
+    published to the room whatever asked for it, so a session driven from the
+    console shows in the channel exactly as one driven from the channel does,
+    and refusing to read back what was published would refuse the common case.
+
+    What it does not decide at all is whether this particular reader may see
+    it. The platform holds that: only it knows who pressed, and whether they
+    can still see the conversation the turn was published into.
+    """
+    found = await activity.shown_at(channel_id, ref)
+    if found is None:
+        return None
+    session_id, command_id = found
+    async with session_factory() as db:
+        row = await db.get(SdkSession, (require_tenant_id(), session_id))
+        if row is None:
+            return None
+        stored = await db.get(
+            SdkSessionCommand, (require_tenant_id(), session_id, command_id)
+        )
+        if stored is None:
+            return None
+        origin = Command.model_validate(stored.command).origin
+        if origin.room_id is None:
+            return None
+        room = await db.get(Room, origin.room_id)
+        if room is None or room.bridge_id != bridge_id:
+            return None
+        if room.external_channel_id != channel_id:
+            return None
+        agent = await db.get(Agent, row.agent_id)
+        if agent is None:
+            return None
+        if await db.get(ClientRoom, (agent.client_id, room.id)) is None:
+            return None
+        snapshot = Snapshot.model_validate(row.snapshot)
+        turn = next(
+            (turn for turn in snapshot.turns if turn.command_id == command_id), None
+        )
+        if turn is None:
+            return None
+        return ActivitySnapshot(
+            items=[item for item in snapshot.items if item.turn_id == turn.turn_id],
+            turn=turn,
+            elapsed_seconds=await _turn_elapsed_seconds(
+                db, session_id, turn.turn_id, running=turn.status == "running"
+            ),
+            session_url=deeplink_for_platform(
+                session_console_url(gateway_public_url, agent.id, room.id, row.id),
+                gateway_public_url,
+                activity.renders_custom_url_schemes,
+            ),
+            read_at=(await db.execute(select(func.now()))).scalar_one(),
+        )
+
+
 class _RecoveryBackoff:
     """Bounds how often one card's platform call is attempted again.
 
@@ -1058,6 +1138,21 @@ class SessionPublisher:
 
     def wake(self) -> None:
         self._wake.set()
+
+    async def activity_shown_at(
+        self, channel_id: str, ref: str
+    ) -> ActivitySnapshot | None:
+        """The turn behind a status message, for an adapter that offers it."""
+        if self._activity is None:
+            return None
+        return await activity_shown_at(
+            self._sessions,
+            self._bridge_id,
+            self._activity,
+            channel_id,
+            ref,
+            gateway_public_url=self._gateway_public_url,
+        )
 
     async def publish_pending(self) -> None:
         async with self._sessions() as db:

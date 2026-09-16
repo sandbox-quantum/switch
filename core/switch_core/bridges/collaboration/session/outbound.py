@@ -267,6 +267,19 @@ class SessionTurnActivity:
     def durable(self) -> bool:
         return self._journal is not None
 
+    async def shown_at(self, channel_id: str, ref: str) -> tuple[str, str] | None:
+        """The session and command whose turn this message is showing.
+
+        Answered from the journal rather than from the anchors held here: the
+        message outlives both the turn and the process, and a reader operating
+        a control on one long afterwards is the ordinary case rather than the
+        exceptional one. A publisher with no journal has nothing to answer
+        from and says so.
+        """
+        if self._journal is None:
+            return None
+        return await self._journal.shown_at(channel_id, ref)
+
     @property
     def notifies_only_by_mention(self) -> bool:
         """Whether naming someone is the only way this platform reaches them.
@@ -451,13 +464,16 @@ class SessionTurnActivity:
                         # and it needs to know the mark is there. The row keeps
                         # it either way — a save cannot write the claim — so
                         # this carries it across to keep the copy here honest
-                        # about what the row still says.
+                        # about what the row still says. `shown` survives for a
+                        # different reason: the message is still in the channel
+                        # after the turn it is showing has ended, and it is the
+                        # only thing left that says which turn that was.
                         record.data = {
                             "turn_id": turn.turn_id,
                             "ended": True,
                             **{
                                 field: record.data[field]
-                                for field in ("mark", "mark_attempt")
+                                for field in ("mark", "mark_attempt", "shown")
                                 if field in record.data
                             },
                         }
@@ -566,6 +582,15 @@ class SessionTurnActivity:
         record = self._record.get()
         if record:
             record.data["anchor"] = asdict(anchor)
+            # Written beside the anchor rather than read out of it, because
+            # the two do not live the same length of time: the anchor is a
+            # delivery reservation and is discarded when the turn ends, while
+            # the message it named stays in the channel and can still be asked
+            # what the turn did.
+            record.data["shown"] = {
+                "channel_id": anchor.channel_id,
+                "ref": anchor.message_ref,
+            }
             await record.save()
 
     async def _post_activity(

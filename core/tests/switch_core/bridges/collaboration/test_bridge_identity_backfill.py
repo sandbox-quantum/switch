@@ -27,6 +27,9 @@ class _FakeAdapter:
     def set_agent_presentation_resolver(self, resolver: Any) -> None:
         pass
 
+    def set_activity_resolver(self, resolver: Any) -> None:
+        pass
+
     async def start(self, **kwargs: Any) -> None:
         self.started = True
 
