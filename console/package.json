@@ -23,7 +23,6 @@
       "core-js",
       "electron",
       "esbuild",
-      "node-pty",
       "protobufjs",
       "sqlite3"
     ],

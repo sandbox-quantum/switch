@@ -1,6 +1,5 @@
 @import 'tailwindcss';
 @import 'tw-animate-css';
-@import '@xterm/xterm/css/xterm.css';
 @import 'allotment/dist/style.css';
 
 @custom-variant dark (&:is(.dark *));

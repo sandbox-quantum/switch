@@ -42,12 +42,7 @@ const config: Configuration = {
   ],
   generateUpdatesFilesForAllChannels: false,
   files: ['out/**/*', 'node_modules/**/*', 'drizzle/**/*'],
-  asarUnpack: [
-    'node_modules/better-sqlite3/**',
-    'node_modules/node-pty/**',
-    'node_modules/@parcel/watcher/**',
-    '**/*.node',
-  ],
+  asarUnpack: ['node_modules/better-sqlite3/**', 'node_modules/@parcel/watcher/**', '**/*.node'],
   mac: {
     category: 'public.app-category.developer-tools',
     hardenedRuntime: true,

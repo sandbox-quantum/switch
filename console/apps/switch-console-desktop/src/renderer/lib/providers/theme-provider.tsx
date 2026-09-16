@@ -7,7 +7,6 @@ import {
 } from 'react';
 import { useAppSettingsKey } from '@renderer/features/settings/use-app-settings-key';
 import { useLocalStorage } from '@renderer/lib/hooks/useLocalStorage';
-import { applyThemeToAll } from '@renderer/lib/pty/pty';
 import { getNextTheme } from '@renderer/lib/theme/theme-toggle-model';
 import type { Theme } from '@shared/core/app-settings';
 
@@ -65,7 +64,6 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   // the load, so this would otherwise never run against the applied classes.
   useEffect(() => {
     if (isLoading) return;
-    applyThemeToAll();
   }, [effectiveTheme, isLoading]);
 
   const setTheme = (newTheme: Theme) => {

@@ -89,20 +89,6 @@ describe('SessionAgentStore hydration', () => {
     updatedAt: now,
   };
 
-  it('does not hydrate the session from the PTY session connect path', async () => {
-    const store = new SessionAgentStore('location-1', 'session-1', [sessionRecord]);
-
-    const session = store.pty;
-    expect(session).toBeDefined();
-
-    await session?.connect();
-
-    expect(hydrateSession).not.toHaveBeenCalled();
-    expect(frontendConnect).toHaveBeenCalledTimes(1);
-
-    store.dispose();
-  });
-
   it('hydrates when desired and dehydrates when released', async () => {
     const store = new SessionAgentStore('location-1', 'session-1', [sessionRecord]);
 

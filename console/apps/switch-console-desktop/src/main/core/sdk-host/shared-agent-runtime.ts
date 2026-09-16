@@ -25,7 +25,7 @@ import { agentSettingsRelativePath } from '@main/core/agents/switch-settings-pat
 import { hostDependencyStore } from '@main/core/dependencies/host-dependency-store';
 import type { LocationTransport } from '@main/core/locations/location-transport';
 import { getPlugin } from '@main/core/providers/plugin-registry';
-import { AGENT_ENV_VARS } from '@main/core/pty/pty-env';
+import { AGENT_ENV_VARS } from '@main/core/sdk-host/agent-env';
 import { setInitialPromptDelivery } from '@main/core/sessions/operations/set-initial-prompt-delivery';
 import { loadSessionWithAgent } from '@main/core/sessions/session-join';
 import { switchNotificationPoller } from '@main/core/switch-rooms/switch-notification-poller';
@@ -38,7 +38,7 @@ import {
 } from '@main/core/switch-servers/gateway-client';
 import { getServer } from '@main/core/switch-servers/servers-store';
 import { log } from '@main/lib/logger';
-import { makePtyId } from '@shared/core/pty/ptyId';
+import { makeHookSessionId } from '@shared/core/providers/hook-session-id';
 import type { Session } from '@shared/core/sessions/sessions';
 import type { SwitchServer } from '@shared/core/switch-servers/switch-servers';
 
@@ -157,7 +157,7 @@ export class SharedAgentRuntime implements AgentRuntimeProvider {
     const roomContext = {
       sessionId: session.id,
       providerId: session.providerId,
-      ptyId: makePtyId(session.providerId, session.id),
+      ptyId: makeHookSessionId(session.providerId, session.id),
     };
     if (intended.rooms[0])
       switchRoomService.setSessionRoom(roomContext, intended.rooms[0], agent.switchAgentId, null);

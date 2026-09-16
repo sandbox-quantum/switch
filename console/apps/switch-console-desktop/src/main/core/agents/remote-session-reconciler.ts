@@ -9,7 +9,7 @@ import { db } from '@main/db/client';
 import { sessions } from '@main/db/schema';
 import { events } from '@main/lib/events';
 import { log } from '@main/lib/logger';
-import { makePtyId } from '@shared/core/pty/ptyId';
+import { makeHookSessionId } from '@shared/core/providers/hook-session-id';
 import { sessionStatusUpdatedChannel } from '@shared/core/sessions/sessionEvents';
 import { getAgentById } from './getAgentById';
 
@@ -114,7 +114,7 @@ class RemoteSessionReconciler {
               {
                 sessionId: session.sessionId,
                 providerId: agent.providerId,
-                ptyId: makePtyId(agent.providerId, session.sessionId),
+                ptyId: makeHookSessionId(agent.providerId, session.sessionId),
               },
               roomId,
               agent.switchAgentId
@@ -139,7 +139,7 @@ class RemoteSessionReconciler {
               {
                 sessionId: session.sessionId,
                 providerId: agent.providerId,
-                ptyId: makePtyId(agent.providerId, session.sessionId),
+                ptyId: makeHookSessionId(agent.providerId, session.sessionId),
               },
               roomId,
               agent.switchAgentId

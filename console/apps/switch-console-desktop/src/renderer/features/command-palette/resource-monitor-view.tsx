@@ -1,24 +1,11 @@
-import { Activity, ArrowLeft, Check, Copy, Folder, GitBranch, Terminal, X } from 'lucide-react';
+import { Activity, ArrowLeft, Check, Copy } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { AgentIcon } from '@renderer/lib/components/agent-icon';
-import { rpc } from '@renderer/lib/ipc';
 import { appState } from '@renderer/lib/stores/app-state';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@renderer/lib/ui/tooltip';
 import { formatBytes } from '@renderer/utils/formatBytes';
-import { cn } from '@renderer/utils/utils';
 import type { ResourceAppProcess, ResourceSnapshot } from '@shared/resource-monitor';
-import {
-  appProcessLabel,
-  buildGroups,
-  entryLabel,
-  formatReport,
-  isLifecycleScriptEntry,
-  sortAppProcesses,
-  type Entry,
-  type Group,
-  type SessionBucket,
-} from './resource-monitor-utils';
+import { appProcessLabel, formatReport, sortAppProcesses } from './resource-monitor-utils';
 
 export const ResourceMonitorView = observer(function ResourceMonitorView({
   onBack,
@@ -30,10 +17,8 @@ export const ResourceMonitorView = observer(function ResourceMonitorView({
   const memLabel = formatBytes(store.totalMemoryBytes);
   const cpuLabel = `${store.totalCpuPercent.toFixed(1)}%`;
 
-  const groups = useMemo(() => buildGroups(snapshot?.entries ?? []), [snapshot]);
   const processes = useMemo(() => sortAppProcesses(snapshot?.appProcesses ?? []), [snapshot]);
 
-  const hasLocations = groups.length > 0;
   const hasProcesses = processes.length > 0;
 
   return (
@@ -51,7 +36,7 @@ export const ResourceMonitorView = observer(function ResourceMonitorView({
         <div className="ml-auto flex items-center gap-3 text-xs tabular-nums">
           <Stat label="CPU" value={cpuLabel} />
           <Stat label="Mem" value={memLabel} />
-          <CopyReportButton snapshot={snapshot} groups={groups} />
+          <CopyReportButton snapshot={snapshot} />
         </div>
       </div>
 
@@ -66,19 +51,9 @@ export const ResourceMonitorView = observer(function ResourceMonitorView({
           </Section>
         )}
 
-        <Section heading="Active sessions">
-          {hasLocations ? (
-            <div className="flex flex-col gap-1">
-              {groups.map((g) => (
-                <LocationRow key={g.locationId} group={g} />
-              ))}
-            </div>
-          ) : (
-            <div className="rounded-md py-6 text-center text-xs text-foreground/40">
-              No active sessions
-            </div>
-          )}
-        </Section>
+        <p className="px-2 py-3 text-xs text-foreground/50">
+          SDK host resources are managed on the execution machine.
+        </p>
       </div>
     </>
   );
@@ -121,189 +96,7 @@ function ProcessRow({ process, cpuCount }: { process: ResourceAppProcess; cpuCou
   );
 }
 
-const LocationRow = observer(function LocationRow({ group }: { group: Group }) {
-  return (
-    <div className="flex flex-col">
-      <div className="flex items-center gap-2 rounded-md px-2 py-1">
-        <Folder size={12} className="shrink-0 text-foreground/40" />
-        <span className="flex-1 truncate text-xs font-medium text-foreground">
-          {group.locationName}
-        </span>
-        <span className="text-[10px] text-foreground/40 tabular-nums">{group.entryCount}</span>
-      </div>
-      <div className="ml-[14px] flex flex-col border-l border-foreground/10 pl-1.5">
-        {group.sessions.map((session) => (
-          <SessionRow key={session.scopeId} session={session} />
-        ))}
-      </div>
-    </div>
-  );
-});
-
-function SessionRow({ session }: { session: SessionBucket }) {
-  return (
-    <div className="flex flex-col">
-      <div className="flex items-center gap-1.5 px-2 py-0.5">
-        <GitBranch size={10} className="shrink-0 text-foreground/40" />
-        <span className="flex-1 truncate text-[11px] text-foreground/60">
-          {session.sessionName}
-        </span>
-        <span className="text-[10px] text-foreground/40 tabular-nums">
-          {session.entries.length}
-        </span>
-      </div>
-      <div className="ml-[10px] flex flex-col border-l border-foreground/10 pl-1.5">
-        {session.entries.map((entry) => (
-          <AgentRow key={entry.sessionId} entry={entry} />
-        ))}
-      </div>
-    </div>
-  );
-}
-
-function AgentRow({ entry }: { entry: Entry }) {
-  const norm = appState.resourceMonitor.normalizedCpu(entry);
-  const label = entryLabel(entry);
-  const [armed, setArmed] = useState(false);
-
-  return (
-    <div
-      className="group/agent flex items-center gap-2 rounded-md px-2 py-1 hover:bg-background-2"
-      title={entry.sessionId}
-    >
-      {entry.providerId ? (
-        <AgentIcon id={entry.providerId} size={14} className="size-4" />
-      ) : isLifecycleScriptEntry(entry) ? (
-        <span className="flex size-4 shrink-0 items-center justify-center">
-          <Terminal size={12} className="text-foreground/40" />
-        </span>
-      ) : (
-        <span className="size-4 shrink-0" />
-      )}
-      <div className="flex min-w-0 flex-1 items-center gap-1.5">
-        <span className="truncate text-xs text-foreground-muted">{label}</span>
-        {entry.pid === undefined ? <Badge>SSH</Badge> : null}
-      </div>
-      <div className="relative flex shrink-0 items-center">
-        <span
-          className={cn(
-            'text-xs text-foreground/50 tabular-nums transition-opacity group-hover/agent:opacity-0',
-            armed && 'opacity-0'
-          )}
-        >
-          {norm.toFixed(0)}% · {formatBytes(entry.memory)}
-        </span>
-        <StopButton entry={entry} label={label} armed={armed} onArmedChange={setArmed} />
-      </div>
-    </div>
-  );
-}
-
-function StopButton({
-  entry,
-  label,
-  armed,
-  onArmedChange,
-}: {
-  entry: Entry;
-  label: string;
-  armed: boolean;
-  onArmedChange: (armed: boolean) => void;
-}) {
-  const [stopping, setStopping] = useState(false);
-  const resetRef = useRef<number | null>(null);
-
-  const clearReset = useCallback(() => {
-    if (resetRef.current !== null) {
-      window.clearTimeout(resetRef.current);
-      resetRef.current = null;
-    }
-  }, []);
-
-  useEffect(() => clearReset, [clearReset]);
-
-  const handleClick = useCallback(
-    async (e: React.MouseEvent) => {
-      e.stopPropagation();
-      if (stopping) return;
-      if (!armed) {
-        // First click arms; auto-disarm if the second click doesn't follow.
-        onArmedChange(true);
-        clearReset();
-        resetRef.current = window.setTimeout(() => {
-          onArmedChange(false);
-          resetRef.current = null;
-        }, 3000);
-        return;
-      }
-      clearReset();
-      setStopping(true);
-      try {
-        // Agent PTYs are session lifecycle (routed through the agent runtime so
-        // they stay stopped); terminals and lifecycle scripts are raw PTY stops.
-        if (entry.providerId) {
-          await rpc.sessions.stopAgent(entry.scopeId);
-        } else {
-          await rpc.pty.stopSession(entry.sessionId);
-        }
-        await appState.resourceMonitor.refresh();
-        setStopping(false);
-        onArmedChange(false);
-      } catch {
-        setStopping(false);
-        onArmedChange(false);
-      }
-    },
-    [armed, stopping, entry, clearReset, onArmedChange]
-  );
-
-  if (armed) {
-    return (
-      <button
-        type="button"
-        disabled={stopping}
-        onClick={handleClick}
-        className="absolute top-1/2 right-0 flex h-5 -translate-y-1/2 items-center rounded-md bg-red-500/10 px-1.5 text-[11px] font-medium text-red-500 transition-colors hover:bg-red-500/20 disabled:cursor-not-allowed disabled:opacity-50"
-        aria-label={`Confirm stop ${label}`}
-      >
-        Stop?
-      </button>
-    );
-  }
-
-  return (
-    <Tooltip>
-      <TooltipTrigger>
-        <button
-          type="button"
-          disabled={stopping}
-          onClick={handleClick}
-          className="absolute top-1/2 right-0 flex size-5 -translate-y-1/2 items-center justify-center rounded-md text-foreground/50 opacity-0 transition-opacity group-hover/agent:opacity-100 hover:bg-red-500/10 hover:text-red-500 disabled:cursor-not-allowed disabled:opacity-50"
-          aria-label={`Stop ${label}`}
-        >
-          <X size={13} />
-        </button>
-      </TooltipTrigger>
-      <TooltipContent>Stop session</TooltipContent>
-    </Tooltip>
-  );
-}
-
-function Badge({ children }: { children: ReactNode }) {
-  return (
-    <span className="shrink-0 rounded bg-background-2 px-1.5 py-px font-mono text-[9px] tracking-wider text-foreground/50 uppercase">
-      {children}
-    </span>
-  );
-}
-
-function CopyReportButton({
-  snapshot,
-  groups,
-}: {
-  snapshot: ResourceSnapshot | null;
-  groups: Group[];
-}) {
+function CopyReportButton({ snapshot }: { snapshot: ResourceSnapshot | null }) {
   const [copied, setCopied] = useState(false);
   const resetRef = useRef<number | null>(null);
 
@@ -316,7 +109,7 @@ function CopyReportButton({
   const handleCopy = useCallback(async () => {
     if (!snapshot || typeof navigator === 'undefined' || !navigator.clipboard?.writeText) return;
     try {
-      await navigator.clipboard.writeText(formatReport(snapshot, groups));
+      await navigator.clipboard.writeText(formatReport(snapshot));
       setCopied(true);
       if (resetRef.current !== null) window.clearTimeout(resetRef.current);
       resetRef.current = window.setTimeout(() => {
@@ -326,7 +119,7 @@ function CopyReportButton({
     } catch {
       setCopied(false);
     }
-  }, [snapshot, groups]);
+  }, [snapshot]);
 
   return (
     <Tooltip>

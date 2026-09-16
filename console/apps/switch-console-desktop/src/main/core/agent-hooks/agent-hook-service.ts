@@ -6,7 +6,6 @@ import { saveProviderSessionId } from '@main/core/sessions/operations/save-provi
 import { setProviderSessionId } from '@main/core/sessions/operations/set-provider-session-id';
 import { touchSession } from '@main/core/sessions/operations/touchSession';
 import { sessionHooks } from '@main/core/sessions/session-hooks';
-import { loadSessionWithAgent } from '@main/core/sessions/session-join';
 import { switchRoomService } from '@main/core/switch-rooms/switch-room-service';
 import { db } from '@main/db/client';
 import { sessions } from '@main/db/schema';
@@ -200,38 +199,6 @@ class AgentHookService implements IInitializable, IDisposable, Hookable<AgentHoo
         soundEvent: determineSoundEvent(event, status),
         notificationType,
       });
-    });
-
-    // Reset a stuck 'working' status to 'idle' when the agent PTY exits
-    // unexpectedly (the user interrupts/kills the agent before a 'stop' or
-    // 'error' hook fires). Subscribed in-process: the `events` bus only delivers
-    // main→renderer, so this handler must use sessionHooks. Poller/room
-    // teardown is NOT done here — this also fires on respawn, where the poller
-    // should survive; that teardown lives at the stop/delete lifecycle points.
-    sessionHooks.on('session:agent-exited', ({ sessionId }) => {
-      void (async () => {
-        try {
-          const loaded = await loadSessionWithAgent(sessionId);
-          if (!loaded || loaded.row.agentStatus !== 'working') return;
-
-          await db
-            .update(sessions)
-            .set({ agentStatus: 'idle', agentStatusSeen: 1 })
-            .where(eq(sessions.id, sessionId));
-
-          events.emit(sessionAgentStatusChangedChannel, {
-            sessionId,
-            status: 'idle',
-            seen: true,
-            soundEvent: undefined,
-          });
-        } catch (error) {
-          log.warn('AgentHookService: failed to reset stuck working status on exit', {
-            sessionId,
-            error: String(error),
-          });
-        }
-      })();
     });
   }
 

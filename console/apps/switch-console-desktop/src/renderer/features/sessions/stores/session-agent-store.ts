@@ -1,8 +1,6 @@
 import type { IDisposable } from '@switch-console/shared';
 import { action, computed, makeObservable, observable, reaction, runInAction } from 'mobx';
-import { makeFileLinkHandlers } from '@renderer/features/sessions/stores/file-link-handlers';
 import { events, rpc } from '@renderer/lib/ipc';
-import { PtySession } from '@renderer/lib/pty/pty-session';
 import { Resource } from '@renderer/lib/stores/resource';
 import { log } from '@renderer/utils/logger';
 import { soundPlayer } from '@renderer/utils/soundPlayer';
@@ -11,7 +9,6 @@ import {
   type AgentStatus,
   type NotificationType,
 } from '@shared/core/providers/agentEvents';
-import { makeAgentPtySessionId } from '@shared/core/pty/ptySessionId';
 import {
   sessionAgentStatusChangedChannel,
   sessionChangedChannel,
@@ -39,7 +36,6 @@ export class SessionAgentStore implements IDisposable {
   /** The session's single agent-status store — null until the session record loads. */
   agent: AgentStatusStore | null = null;
   /** The agent's PTY session — created alongside the record, connected lazily. */
-  pty: PtySession | null = null;
   // Hydration lifecycle: desired-vs-actual for the agent PTY, with the same
   // stale-flip handling and dehydrate retry the old reconciler had.
   private hydrationDesired = false;
@@ -54,7 +50,6 @@ export class SessionAgentStore implements IDisposable {
   ) {
     makeObservable(this, {
       agent: observable,
-      pty: observable,
       sessionStatus: computed,
     });
 
@@ -94,16 +89,6 @@ export class SessionAgentStore implements IDisposable {
     if (!session) return;
     if (!this.agent) {
       this.agent = new AgentStatusStore(session);
-    }
-    if (!this.pty) {
-      const handlers = makeFileLinkHandlers(this.locationId, this.sessionId);
-      this.pty = new PtySession(
-        makeAgentPtySessionId(this.locationId, this.sessionId),
-        undefined,
-        handlers.onOpenFile,
-        handlers.onOpenExternal,
-        { clearOnBackendStart: true }
-      );
     }
   }
 
@@ -206,7 +191,6 @@ export class SessionAgentStore implements IDisposable {
 
   private async dehydrate(reason: 'sync' | 'stale-hydrate' = 'sync'): Promise<void> {
     this.hydrationState = 'stopping';
-    this.pty?.dispose();
     try {
       await rpc.sessions.dehydrateSession(this.sessionId);
     } catch (error) {
@@ -254,7 +238,6 @@ export class SessionAgentStore implements IDisposable {
     this.offSessionExited = null;
     this.offSessionChanges?.();
     this.offSessionChanges = null;
-    this.pty?.destroy();
   }
 }
 
