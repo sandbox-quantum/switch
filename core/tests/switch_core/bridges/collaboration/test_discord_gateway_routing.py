@@ -35,6 +35,7 @@ class _FakeInstallService:
         self._target = target
         self._error = error
         self.calls: list[tuple[str, str]] = []
+        self.revoked_calls: list[tuple[str, str, str]] = []
 
     async def resolve_by_workspace(
         self, *, platform: str, workspace_id: str
@@ -44,6 +45,9 @@ class _FakeInstallService:
             raise self._error
         assert self._target is not None
         return self._target
+
+    async def revoked(self, *, platform: str, workspace_id: str, reason: str) -> None:
+        self.revoked_calls.append((platform, workspace_id, reason))
 
 
 def _gateway(install_service: Any) -> DiscordGatewayClient:
@@ -220,3 +224,31 @@ async def test_a_slash_with_no_guild_is_refused() -> None:
     await gateway._on_slash(interaction, _command(), {})
 
     assert len(interaction.response.refusals) == 1
+
+
+def _guild(guild_id: int) -> Any:
+    return type("_G", (), {"id": guild_id, "name": "Acme"})()
+
+
+async def test_being_removed_from_a_guild_ends_its_install() -> None:
+    """Decision #8: the platform-initiated end path, which revokes no token."""
+    service = _FakeInstallService()
+    gateway = _gateway(service)
+
+    await gateway._on_guild_remove(_guild(GUILD_ID))
+
+    assert service.revoked_calls == [
+        ("discord", str(GUILD_ID), "the bot was removed from the Discord server")
+    ]
+
+
+async def test_joining_a_guild_provisions_nothing() -> None:
+    """An out-of-band join is logged and ignored — nothing is resolved or ended;
+    only a recorded install makes a guild route anywhere (G3)."""
+    service = _FakeInstallService()
+    gateway = _gateway(service)
+
+    await gateway._on_guild_join(_guild(GUILD_ID))
+
+    assert service.calls == []
+    assert service.revoked_calls == []

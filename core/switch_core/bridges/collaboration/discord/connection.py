@@ -68,6 +68,15 @@ class DiscordConnection:
             Callable[[discord.Message], Awaitable[None]] | None
         ) = None
         self._dm_handler: Callable[[discord.Message], Awaitable[None]] | None = None
+        # The bot being removed from / added to a guild. Only the shared
+        # connection wires these; the self-registered adapter serves the one
+        # guild it was configured with.
+        self._guild_remove_handler: (
+            Callable[[discord.Guild], Awaitable[None]] | None
+        ) = None
+        self._guild_join_handler: Callable[[discord.Guild], Awaitable[None]] | None = (
+            None
+        )
 
     def register_message_handler(
         self, guild_id: int, handler: Callable[[discord.Message], Awaitable[None]]
@@ -81,6 +90,22 @@ class DiscordConnection:
         self, handler: Callable[[discord.Message], Awaitable[None]] | None
     ) -> None:
         self._guild_message_handler = handler
+
+    def set_guild_lifecycle_handlers(
+        self,
+        *,
+        on_remove: Callable[[discord.Guild], Awaitable[None]],
+        on_join: Callable[[discord.Guild], Awaitable[None]],
+    ) -> None:
+        """Handlers for the bot being removed from / added to a guild.
+
+        Used by the shared connection to end an install when its guild removes
+        the bot, and to note an out-of-band join. Set before `connect`; the
+        self-registered adapter, which serves one guild it was configured with,
+        leaves them unset.
+        """
+        self._guild_remove_handler = on_remove
+        self._guild_join_handler = on_join
 
     def set_dm_handler(
         self, handler: Callable[[discord.Message], Awaitable[None]] | None
@@ -119,6 +144,10 @@ class DiscordConnection:
         """
         client = discord.Client(intents=self._intents)
         client.event(self._make_on_message())
+        if self._guild_remove_handler is not None:
+            client.event(self._make_on_guild_remove())
+        if self._guild_join_handler is not None:
+            client.event(self._make_on_guild_join())
         self._tree = app_commands.CommandTree(client)
         guild = (
             discord.Object(id=self._command_guild_id)
@@ -228,6 +257,34 @@ class DiscordConnection:
                 logger.exception("Failed to handle inbound Discord message")
 
         return on_message
+
+    def _make_on_guild_remove(
+        self,
+    ) -> Callable[[discord.Guild], Coroutine[Any, Any, None]]:
+        async def on_guild_remove(guild: discord.Guild) -> None:
+            handler = self._guild_remove_handler
+            if handler is None:
+                return
+            try:
+                await handler(guild)
+            except Exception:
+                logger.exception("Failed to handle Discord guild removal")
+
+        return on_guild_remove
+
+    def _make_on_guild_join(
+        self,
+    ) -> Callable[[discord.Guild], Coroutine[Any, Any, None]]:
+        async def on_guild_join(guild: discord.Guild) -> None:
+            handler = self._guild_join_handler
+            if handler is None:
+                return
+            try:
+                await handler(guild)
+            except Exception:
+                logger.exception("Failed to handle Discord guild join")
+
+        return on_guild_join
 
     async def close(self) -> None:
         if self._client:
