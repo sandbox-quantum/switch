@@ -3,7 +3,11 @@ import { eq } from 'drizzle-orm';
 import { syncSdkSessionActivity } from '@main/core/sdk-host/session-activity';
 import { sessionService } from '@main/core/sessions/session-service';
 import { switchRoomService } from '@main/core/switch-rooms/switch-room-service';
-import { fetchSdkSessions, fetchSdkSnapshot } from '@main/core/switch-servers/gateway-client';
+import {
+  fetchRoomDetail,
+  fetchSdkSessions,
+  fetchSdkSnapshot,
+} from '@main/core/switch-servers/gateway-client';
 import { getServer } from '@main/core/switch-servers/servers-store';
 import { db } from '@main/db/client';
 import { sessions } from '@main/db/schema';
@@ -125,7 +129,9 @@ class RemoteSessionReconciler {
           const result = await sessionService.createSession({
             id: session.sessionId,
             agentId,
-            title: roomId ? 'Room session' : 'Shared session',
+            title: roomId
+              ? `Session for ${(await fetchRoomDetail(server, roomId)).name}`
+              : 'Shared session',
             attach: false,
             startSource: 'adopted',
           });

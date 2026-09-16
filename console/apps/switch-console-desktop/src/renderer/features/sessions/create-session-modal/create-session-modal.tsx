@@ -299,7 +299,7 @@ export const CreateSessionModal = observer(function CreateSessionModal({
       const created = sessionManager.createSession({
         id,
         agentId: resolvedAgent.id,
-        title: trimmedName || 'Session',
+        title: trimmedName || (activeRoom ? `Session for ${activeRoom.roomName}` : 'Session'),
         initialPrompt,
         agentName: effectiveAgentName || undefined,
         entryPoint,
