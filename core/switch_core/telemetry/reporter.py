@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import select
@@ -25,9 +26,10 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.db.models import TelemetrySnapshotWatermark
-from switch_core.telemetry.deployment import claim_milestone, seconds_since_install
+from switch_core.telemetry.deployment import claim_milestone
 from switch_core.telemetry.service import TelemetryService
 from switch_core.telemetry.snapshot import (
+    as_utc,
     collect_usage,
     newly_active_rooms,
     summarise,
@@ -56,7 +58,7 @@ class SnapshotReporter:
         session_factory: async_sessionmaker[AsyncSession],
         interval_hours: float,
         installed_at: datetime | None,
-        live_session_count: object,
+        live_session_count: Callable[[], int],
     ) -> None:
         self._telemetry = telemetry
         self._session_factory = session_factory
@@ -107,7 +109,7 @@ class SnapshotReporter:
         self._telemetry.emit(
             "usage_snapshot",
             **counts.as_event_properties(
-                session_live_count=int(self._live_session_count())  # type: ignore[operator]
+                session_live_count=int(self._live_session_count())
             ),
         )
 
@@ -121,26 +123,49 @@ class SnapshotReporter:
                 created_by_kind=room.created_by_kind,
             )
 
-        await self._report_first_room_active(active, now=now)
+        await self._report_first_room_active(active)
 
-    async def _report_first_room_active(self, active: list, *, now: datetime) -> None:
-        """The activation milestone, from the earliest room in this window.
+    async def _report_first_room_active(self, active: list) -> None:
+        """The activation milestone: the first room a person actually used.
 
-        Measured from the room's own first interaction rather than from the
-        moment this pass happened to run, so a snapshot that is late does not
-        report an activation that was slower than it was.
+        Three things here are easy to get wrong and all three matter, because
+        the milestone fires once and whatever it reports is permanent.
+
+        **Measured from the interaction, not from this pass.** A snapshot runs
+        on an interval, so it learns about an activation up to a whole interval
+        after it happened — and always late, never early. Reporting
+        `now - installed_at` would add that lag to every deployment's headline
+        activation time in the same direction.
+
+        **The earliest room, not the quickest.** A batch can contain several
+        newly-active rooms; the one that activated *first* is the deployment's
+        activation. The one that went from creation to use fastest is a
+        different and much smaller number.
+
+        **User-created rooms only**, matching `first_room_created` and the
+        design note. A room an agent provisioned for its own orchestration is
+        not a customer getting started, and it must not be allowed to consume
+        the claim.
         """
-        if not active or self._installed_at is None:
+        by_a_person = [room for room in active if room.created_by_kind == "user"]
+        if not by_a_person or self._installed_at is None:
             return
-        elapsed = seconds_since_install(self._installed_at)
-        if elapsed is None:
+        # Not `emit_milestone`, because the elapsed time is computed from the
+        # room rather than from now — so the enabled gate it would have applied
+        # is applied here instead. Without it a deployment with telemetry off
+        # would spend the claim and never be able to report this again.
+        if not self._telemetry.enabled:
             return
-        earliest = min(active, key=lambda room: room.seconds_since_room_created)
+
+        earliest = min(by_a_person, key=lambda room: room.first_active_at)
+        elapsed = (
+            earliest.first_active_at - as_utc(self._installed_at)
+        ).total_seconds()
         if not await claim_milestone(self._session_factory, "first_room_active"):
             return
         self._telemetry.emit(
             "first_room_active",
-            seconds_since_install=elapsed,
+            seconds_since_install=max(elapsed, 0.0),
             bridge_platform=earliest.bridge_platform,
             seconds_since_room_created=earliest.seconds_since_room_created,
         )

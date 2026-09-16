@@ -647,12 +647,19 @@ class RoomService:
             len(system_clients),
         )
 
+        # Resolved once, before the reporting block, and never inside an
+        # argument list: an `await` in the dict passed to `emit_safely` is
+        # evaluated *before* that function is entered, so a database hiccup in
+        # a telemetry lookup would escape the guard meant to contain it and
+        # fail a room creation that has already committed.
+        platform = await self._bridge_platform(bridge_id)
+
         emit_safely(
             self._telemetry,
             "room_created",
             {
                 "channel_type": normalise_channel_type(channel_type),
-                "bridge_platform": await self._bridge_platform(bridge_id),
+                "bridge_platform": platform,
                 "agent_count": len(agent_ids),
                 "human_count": len(config.user_names or []),
                 "has_instructions": config.instructions is not None,
@@ -669,7 +676,7 @@ class RoomService:
             await self._telemetry.emit_milestone(
                 "first_room_created",
                 channel_type=normalise_channel_type(channel_type),
-                bridge_platform=await self._bridge_platform(bridge_id),
+                bridge_platform=platform,
             )
 
         failed_attachments = unreachable_users + await self._attach_after_creation(
@@ -970,7 +977,7 @@ class RoomService:
             await self._room_store.set_archived(session, room_id, archived)
             await session.commit()
 
-        if not archived:
+        if not archived or self._telemetry is None:
             return
         emit_safely(
             self._telemetry,
@@ -985,14 +992,28 @@ class RoomService:
     async def _bridge_platform(self, bridge_id: str | None) -> str:
         """The platform a bridge id names, as the telemetry catalogue spells it.
 
-        `none` for an internal-only room, and also for a bridge id that no
-        longer resolves — a deleted bridge is not a platform, and guessing one
-        would be worse than reporting the absence.
+        `none` for an internal-only room, for a bridge id that no longer
+        resolves, and for a lookup that failed — a deleted bridge is not a
+        platform, and guessing one would be worse than reporting the absence.
+
+        Never raises. This is read only to label an analytics event, and the
+        operations it labels — creating a room, archiving one — must not fail
+        because a telemetry lookup did. Skipped entirely when nothing is
+        listening, so an opted-out deployment pays no query for it.
         """
-        if bridge_id is None:
+        if bridge_id is None or self._telemetry is None:
             return "none"
-        async with self._session_factory() as session:
-            bridge = await self._collab_bridge_store.get(session, bridge_id)
+        try:
+            async with self._session_factory() as session:
+                bridge = await self._collab_bridge_store.get(session, bridge_id)
+        except Exception:
+            logger.warning(
+                "Could not resolve the platform of bridge %s for telemetry; "
+                "reporting it as unknown.",
+                bridge_id,
+                exc_info=True,
+            )
+            return "none"
         return normalise_platform(bridge.type if bridge else None)
 
     async def _was_ever_active(self, tenant_id: str, room_id: str) -> bool:
@@ -1005,7 +1026,7 @@ class RoomService:
         """
         try:
             async with tenant_session(self._session_factory, tenant_id) as session:
-                return await room_had_human_activity(session, room_id)
+                return await room_had_human_activity(session, tenant_id, room_id)
         except Exception:
             logger.warning(
                 "Could not determine whether room %s was ever active; "

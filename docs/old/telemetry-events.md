@@ -8,9 +8,12 @@ structured logging, the export path itself, server health, tracing and
 alerting — is `CHOO-2807` and lands first. The two meet at one seam, described
 under [What this needs from the export path](#what-this-needs-from-the-export-path).
 
-Nothing here is built yet. This note fixes the taxonomy so that the events can
-be added to the export path without reworking it, and so that the question
-"what does Switch phone home?" has one answer that can be read in a minute.
+This is the reference for what the server reports: the events, their exact
+properties, and the rule that keeps identifiers out of them. It is enforced
+rather than merely documented — `core/switch_core/telemetry/catalogue.py` is the
+same catalogue in executable form, and an event that does not match it raises
+where it is built. Read them together; the code is authoritative on the shape
+and this is authoritative on why.
 
 ## What we are trying to learn
 
@@ -194,7 +197,10 @@ Counted distinctly per window, so one person in six rooms is one active user.
 
 **Active room** — a room with at least one interaction in the window. Reported
 over both one day and seven, because a weekly figure flatters a product used
-intensely on Mondays and a daily one punishes it.
+intensely on Mondays and a daily one punishes it. Counted over rooms of every
+origin, unlike the headline `room_count` — a bridge-adopted channel people
+actually use is real usage even though it is not a room anybody created in
+Switch.
 
 **Room created by a user** — a room a human made, through the gateway or the
 Console. This is the headline "Rooms" figure. Rooms an agent provisioned for
@@ -216,6 +222,11 @@ Agent runtimes (Claude Code, Codex, OpenCode) are counted too, under
 `agent_*_count`, but they are not what "connector" means in the time-to-value
 metrics below.
 
+**Room created by the system** — a channel Switch adopted because it was invited
+to it on a platform, rather than one anybody asked for. Counted separately from
+both of the above, because folding these into the headline would make "rooms a
+person created" read as "channels this workspace happens to have".
+
 ## The catalogue
 
 Event names are `snake_case`, past tense, prefixed `switch_core.` on the wire.
@@ -234,8 +245,9 @@ never invisible.
 | `user_count` | number | user accounts that exist |
 | `user_active_1d` | number | distinct humans who interacted in 24h |
 | `user_active_7d` | number | same over 7 days |
-| `room_count` | number | **the headline figure** — unarchived rooms created by a user |
-| `room_agent_created_count` | number | unarchived rooms an agent created |
+| `room_count` | number | **the headline figure** — unarchived rooms a *person* created |
+| `room_agent_created_count` | number | unarchived rooms an agent created for itself |
+| `room_system_created_count` | number | unarchived channels Switch adopted after being invited to them on a platform |
 | `room_active_1d` | number | user-created rooms with an interaction in 24h |
 | `room_active_7d` | number | same over 7 days |
 | `room_archived_count` | number | archived rooms, both kinds |
@@ -250,7 +262,6 @@ never invisible.
 | `agent_opencode_count` | number | |
 | `agent_other_count` | number | including agents with no known runtime |
 | `session_live_count` | number | sessions live at snapshot time |
-| `session_started_1d` | number | sessions opened in 24h |
 | `connector_slack_count` | number | connected bridges by platform |
 | `connector_mattermost_count` | number | |
 | `connector_discord_count` | number | |
@@ -260,11 +271,29 @@ never invisible.
 | `message_count_1d` | number | messages in 24h |
 | `message_from_human_1d` | number | of those, sent by humans |
 | `message_from_agent_1d` | number | of those, sent by agents |
+| `turn_human_to_agent_1d` | number | agent messages answering a person |
+| `turn_agent_to_human_1d` | number | person messages answering an agent |
+| `turn_agent_to_agent_1d` | number | agent messages answering another agent |
 | `attachment_count_1d` | number | attachments in 24h |
 
 Per-platform counts are separate properties rather than one map because the
 platform set is closed and small, and because Amplitude charts a property far
-more easily than it charts a nested object.
+more easily than it charts a nested object. They count **configured** bridges,
+whether or not each is currently connected — which is up is process state, and
+`bridge_connected` / `bridge_disconnected` are how that is reported.
+
+**Turns rather than senders.** A turn is one message classified by who sent the
+message *before* it in the same room. That is the only way to tell an agent
+answering a person from two agents talking among themselves: a sender-only count
+reports both as "from an agent" and hides the difference that matters. The
+pairing reads off `seq`, which is a total order within a room with no ties;
+human-to-human is not counted, and neither is a turn whose predecessor was a
+bridge relay or the admin client.
+
+**No count of sessions started.** Nothing durable records a session opening, so
+the snapshot could only report an in-process tally that a restart silently
+resets — a number that looks like a count and is not one.
+`agent_session_started` is emitted per occurrence instead.
 
 The three `message_*_1d` figures come from the message table, which is
 deliberately a *parallel* record of the bus rather than the authoritative one: a
@@ -393,10 +422,12 @@ the snapshot says two bridges are down right now, the events say one platform
 has flapped forty times today. That is the difference between noticing and
 diagnosing.
 
-**`deployment_started`** — `migrated` (boolean, whether the boot applied
-migrations), `tenant_count`. The version is already a resource attribute, so
-this gives an upgrade curve across installations: which versions are actually
-running.
+**`deployment_started`** — `tenant_count`. The version is already a resource
+attribute, so this gives an upgrade curve across installations: which versions
+are actually running. Deliberately no "did this boot apply migrations" flag:
+migrations run in a different event loop from the server, so the answer would
+have to be carried across on a module global, and it is operational trivia
+rather than something the product wants to know.
 
 ### Closed value sets
 
@@ -405,6 +436,16 @@ running.
 
 `outcome`: `success` | `failure`. `failure_reason` is an enumerated code per
 event, `none` on success — never an exception message.
+
+`bridge_connected.failure_reason` and `bridge_disconnected.reason` share one
+set, because one classifier feeds both. A value that classifier can produce and
+only one of the two declares is an event that fails validation at the moment a
+bridge drops — which is precisely the event worth not losing.
+
+Where a duration cannot be known — a deployment with no install clock, a bridge
+whose configuration timestamp is unreadable — the property carries `-1` rather
+than `0`, so "we could not tell" is distinguishable from "it happened
+instantly".
 
 Any property whose value is not in its set is a bug. It should raise where the
 event is built rather than be coerced, dropped, or sent as `unknown` — a
@@ -454,10 +495,11 @@ operational ones, which is why it belongs to the shared path rather than here.
 
 ## Open questions
 
-- **Snapshot scheduling.** A daily snapshot from a singleton server is a
-  background task, but a deployment that restarts frequently could emit several
-  in a day or none. It needs a "last sent" watermark in the database rather than
-  a timer from boot.
+- **Query cost at scale.** The snapshot is roughly fifteen queries per tenant,
+  including two seven-day `DISTINCT` scans over `messages` and a window function
+  over the message table. Nobody has run it against a production-sized dataset.
+  That is the open question most worth answering before this is switched on for
+  a large deployment.
 - **Cost of the snapshot.** Several of its counts are distinct-count queries
   over the message table across a seven-day window. On a large deployment that
   is not free, and it should be measured before it runs daily on a live

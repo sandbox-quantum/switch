@@ -3501,8 +3501,11 @@ class ProtocolService:
         await self.require_room_member(agent_id, room_id)
         async with self.session_factory() as session:
             await self._require_room_action(session, agent_id, room_id, "write")
-            await self.room_store.set_archived(session, room_id, archived)
-            await session.commit()
+        # Through RoomService rather than straight at the store: archiving is
+        # reported, and writing the row here instead would make an agent's
+        # archive the one kind nothing observes while the snapshot's archived
+        # count rose anyway.
+        await self.room_service.set_room_archived(room_id, archived)
         return await self.get_room_detail(agent_id, room_id)
 
     async def list_all_agents(self, agent_id: str) -> list[Agent]:

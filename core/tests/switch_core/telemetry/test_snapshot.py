@@ -31,6 +31,7 @@ from switch_core.telemetry.snapshot import (
     collect_tenant_counts,
     collect_usage,
     newly_active_rooms,
+    normalise_actor_kind,
     normalise_channel_type,
     normalise_known_agent_type,
     normalise_platform,
@@ -140,9 +141,12 @@ async def _say(
     return message
 
 
-async def _counts(session: AsyncSession) -> UsageCounts:
+TENANT_ZERO = "00000000-0000-0000-0000-000000000000"
+
+
+async def _counts(session: AsyncSession, tenant_id: str = TENANT_ZERO) -> UsageCounts:
     counts = UsageCounts()
-    await collect_tenant_counts(session, counts, NOW)
+    await collect_tenant_counts(session, tenant_id, counts, NOW)
     return counts
 
 
@@ -495,8 +499,10 @@ class TestRoomHadHumanActivity:
             human = await _client(session, "user")
             await _say(session, busy, human, seq=1)
 
-            assert await room_had_human_activity(session, busy.id) is True
-            assert await room_had_human_activity(session, quiet.id) is False
+            assert await room_had_human_activity(session, TENANT_ZERO, busy.id) is True
+            assert (
+                await room_had_human_activity(session, TENANT_ZERO, quiet.id) is False
+            )
 
 
 class TestTheDeploymentTotal:
@@ -555,3 +561,62 @@ class TestNormalising:
         assert normalise_known_agent_type({"known_agent_type": "zed"}) == "other"
         assert normalise_known_agent_type({}) == "none"
         assert normalise_known_agent_type(None) == "none"
+
+
+class TestTheThreeRoomOrigins:
+    """A bridge-adopted channel is not a room a person made.
+
+    The headline figure was written as "not agent-created", which quietly
+    folded in the third kind this change introduces — every channel Switch was
+    invited to on a platform. On a busy Slack that is most of them.
+    """
+
+    async def test_each_origin_is_counted_separately(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        async with session_factory() as session:
+            await _room(session, created_by_kind="user")
+            await _room(session, created_by_kind="agent")
+            await _room(session, created_by_kind="system")
+            await _room(session, created_by_kind="system")
+
+            counts = await _counts(session)
+
+        assert counts.room_count == 1
+        assert counts.room_agent_created_count == 1
+        assert counts.room_system_created_count == 2
+
+    async def test_the_mean_cannot_exceed_the_maximum(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """Numerator and denominator must count the same rooms. Over different
+        populations the pair can report a mean above the maximum, which is
+        impossible for any one set and reads as a broken metric."""
+        async with session_factory() as session:
+            mine = await _room(session, created_by_kind="user")
+            theirs = await _room(session, created_by_kind="agent")
+            await _join(session, await _client(session, "user"), mine)
+            # An agent-created room legitimately holds people.
+            for _ in range(5):
+                await _join(session, await _client(session, "user"), theirs)
+
+            counts = await _counts(session)
+
+        properties = counts.as_event_properties(session_live_count=0)
+        assert properties["room_users_mean"] <= properties["room_users_max"]
+        assert counts.room_membership_total == 1
+
+
+class TestNormaliseActorKind:
+    def test_an_unstamped_room_reads_as_user(self) -> None:
+        assert normalise_actor_kind(None) == "user"
+
+    def test_the_three_kinds_pass_through(self) -> None:
+        assert normalise_actor_kind("user") == "user"
+        assert normalise_actor_kind("agent") == "agent"
+        assert normalise_actor_kind("system") == "system"
+
+    def test_an_unknown_kind_reads_as_system_rather_than_raising(self) -> None:
+        """A later kind added without touching this file must not be able to
+        fail a room creation at the point of emission."""
+        assert normalise_actor_kind("imported") == "system"

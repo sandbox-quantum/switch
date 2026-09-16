@@ -111,6 +111,14 @@ ACTOR_KIND = one_of("user", "agent", "system")
 
 OUTCOME = one_of("success", "failure")
 
+# Why a bridge failed, shared by the connect and disconnect events because one
+# classifier (`bridges/collaboration/lifecycle_service._failure_reason`) feeds
+# both. `none` belongs only to the success case and is stripped where the event
+# has no success case.
+BRIDGE_FAILURE_REASON = one_of(
+    "none", "auth_failed", "network", "platform_error", "config_invalid", "unknown"
+)
+
 
 # ── The catalogue ────────────────────────────────────────────────────────────
 
@@ -119,8 +127,13 @@ _SNAPSHOT_COUNTS = (
     "user_count",
     "user_active_1d",
     "user_active_7d",
+    # Rooms, split three ways rather than two. `room_count` is the headline —
+    # rooms a person made — and the other two exist so that folding a channel
+    # Switch was merely invited to, or one an agent made for its own
+    # orchestration, into that figure is not possible by accident.
     "room_count",
     "room_agent_created_count",
+    "room_system_created_count",
     "room_active_1d",
     "room_active_7d",
     "room_archived_count",
@@ -256,24 +269,19 @@ CATALOGUE: Mapping[str, Mapping[str, PropertyType]] = {
         "bridge_platform": BRIDGE_PLATFORM,
         "outcome": OUTCOME,
         # `none` on success, so the property set stays exact either way.
-        "failure_reason": one_of(
-            "none",
-            "auth_failed",
-            "network",
-            "platform_error",
-            "config_invalid",
-            "unknown",
-        ),
+        "failure_reason": BRIDGE_FAILURE_REASON,
     },
     "bridge_disconnected": {
         "bridge_platform": BRIDGE_PLATFORM,
+        # The deliberate-shutdown reasons, plus every failure reason
+        # `bridge_connected` can carry. One classifier feeds both events, so a
+        # value it can produce and only one of them declares is an event that
+        # fails validation at the moment a bridge drops — which is precisely
+        # the event worth not losing.
         "reason": one_of(
             "shutdown",
             "restart",
-            "auth_failed",
-            "network",
-            "platform_error",
-            "unknown",
+            *sorted(BRIDGE_FAILURE_REASON.values - {"none"}),
         ),
     },
 }

@@ -338,6 +338,17 @@ class SwitchConfig(BaseSettings):
                 )
         if not self.tenant_id.strip():
             raise ValueError("TENANT_ID must not be empty.")
+        # Checked whether or not telemetry is on, unlike the endpoint and the
+        # timeout below: 0 is a plausible reading of "disable the snapshot" and
+        # would instead mean "never not due", running the whole fan-out every
+        # poll. A setting whose wrong value is a busy loop is worth refusing
+        # even on a deployment that is not using it yet.
+        if self.telemetry_snapshot_interval_hours <= 0:
+            raise ValueError(
+                "TELEMETRY_SNAPSHOT_INTERVAL_HOURS must be positive, got "
+                f"{self.telemetry_snapshot_interval_hours!r}. Set "
+                "TELEMETRY_ENABLED=false to switch reporting off."
+            )
         if self.telemetry_enabled:
             # Checked only when telemetry is on: a deployment that never
             # reports should not be refused boot over the shape of a setting
@@ -353,11 +364,7 @@ class SwitchConfig(BaseSettings):
                     "TELEMETRY_TIMEOUT_SECONDS must be positive, got "
                     f"{self.telemetry_timeout_seconds!r}."
                 )
-            if self.telemetry_snapshot_interval_hours <= 0:
-                raise ValueError(
-                    "TELEMETRY_SNAPSHOT_INTERVAL_HOURS must be positive, got "
-                    f"{self.telemetry_snapshot_interval_hours!r}."
-                )
+
         if self.template_max_bytes < 1:
             raise ValueError(
                 f"TEMPLATE_MAX_BYTES must be at least 1, got {self.template_max_bytes}."

@@ -560,17 +560,24 @@ async def run(config: SwitchConfig) -> None:
             connection_sweep_task = asyncio.create_task(
                 _connection_sweep_loop(protocol)
             )
-            # Runs whether or not telemetry is enabled: the counts are logged
-            # either way, so an operator can see what would be reported before
-            # deciding to report it.
-            snapshot_task = asyncio.create_task(_snapshot_loop(snapshot_reporter))
+            # Only when telemetry is on. "Off" is documented — in the Helm
+            # chart a customer reads — as nothing being collected, and running
+            # the per-tenant fan-out anyway would make that false: it is a
+            # seven-day scan over `messages` per tenant, per interval, for an
+            # analytics payload the deployment has declined.
+            snapshot_task = (
+                asyncio.create_task(_snapshot_loop(snapshot_reporter))
+                if telemetry.enabled
+                else None
+            )
             await message_listener.start()
             try:
                 yield
             finally:
                 sweep_task.cancel()
                 connection_sweep_task.cancel()
-                snapshot_task.cancel()
+                if snapshot_task is not None:
+                    snapshot_task.cancel()
                 await message_listener.stop()
                 await telemetry.aclose()
 

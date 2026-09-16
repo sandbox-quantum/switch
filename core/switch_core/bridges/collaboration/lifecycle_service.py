@@ -93,6 +93,7 @@ class CollaborationBridgeLifecycleService:
     _telemetry: TelemetryService | None = None
     _connect_failures: dict[str, int] = {}
     _bridge_facts: dict[str, tuple[str, object]] = {}
+    _connected: set[str] = set()
 
     def __init__(
         self,
@@ -137,6 +138,10 @@ class CollaborationBridgeLifecycleService:
         # reporting never depends on what that object exposes — a stand-in
         # supplied by a test is still a legitimate bridge to run.
         self._bridge_facts: dict[str, tuple[str, object]] = {}
+        # Bridges that reached the platform, as opposed to merely having
+        # been started. `_bridges` is populated before the connection is
+        # attempted, so it cannot answer this.
+        self._connected: set[str] = set()
         # bridge_id -> the host resource it holds exclusively while running
         # (see CollaborationAdapter.exclusive_resource). Lets a second
         # claimant be refused by name instead of failing on the resource.
@@ -681,6 +686,7 @@ class CollaborationBridgeLifecycleService:
                 # until shutdown, so this is the one point that means
                 # "connected".
                 connected = True
+                self._connected.add(bridge_id)
                 await self._report_connector_up(bridge_id, platform, configured_at)
                 await bridge_client.start()
             except Exception as exc:
@@ -691,6 +697,7 @@ class CollaborationBridgeLifecycleService:
                 # Told apart by whether the adapter ever came up: a failure
                 # before that never connected at all, and reporting it as a
                 # disconnection would invent an uptime the bridge never had.
+                self._connected.discard(bridge_id)
                 if connected:
                     emit_safely(
                         self._telemetry,
@@ -781,8 +788,10 @@ class CollaborationBridgeLifecycleService:
         """Whether another bridge was already connected when this one came up."""
         return any(other != bridge_id for other in self._bridges)
 
-    async def stop(self, bridge_id: str) -> None:
+    async def stop(self, bridge_id: str, *, reason: str = "shutdown") -> None:
         bridge_core = self._bridges.get(bridge_id)
+        was_connected = bridge_id in self._connected
+        self._connected.discard(bridge_id)
         if bridge_core:
             await bridge_core.stop()
 
@@ -794,14 +803,19 @@ class CollaborationBridgeLifecycleService:
         self._held_resources.pop(bridge_id, None)
         logger.info("Stopped collaboration bridge %s", bridge_id)
 
-        if bridge_core is not None:
+        # Only for a bridge that actually reached the platform. `_bridges`
+        # membership is set by `start()` before the connection is attempted, so
+        # on its own it would report a disconnection for a bridge that never
+        # connected — the same distinction `_run_bridge` keeps with its
+        # `connected` flag.
+        if bridge_core is not None and was_connected:
             platform, _ = self._bridge_facts.get(bridge_id, ("none", None))
             emit_safely(
                 self._telemetry,
                 "bridge_disconnected",
                 {
                     "bridge_platform": normalise_platform(platform),
-                    "reason": "shutdown",
+                    "reason": reason,
                 },
             )
 
@@ -810,7 +824,7 @@ class CollaborationBridgeLifecycleService:
 
         An adapter is built from the config it was given at start, so an edit
         is inert until the bridge is rebuilt."""
-        await self.stop(bridge_id)
+        await self.stop(bridge_id, reason="restart")
         await self.start(bridge_id)
         logger.info("Restarted collaboration bridge %s", bridge_id)
 
