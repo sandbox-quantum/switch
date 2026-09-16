@@ -23,6 +23,7 @@ const schema = z.discriminatedUnion('type', [
   }),
   z.strictObject({ type: z.literal('running') }),
   z.strictObject({ type: z.literal('quiesced') }),
+  z.strictObject({ type: z.literal('faulted'), reason: z.string() }),
   z.strictObject({
     type: z.literal('recover'),
     operationId: z.string(),

@@ -778,3 +778,47 @@ it('resumes a stopped native conversation only once per explicit operation witho
   expect(stopped.snapshot().session.status).toBe('stopped');
   expect(again.adapter.startSession).not.toHaveBeenCalled();
 });
+
+it('records an exit nobody asked for as a fault, not an orderly stop', async () => {
+  const { host, emit } = await start('codex');
+  expect(host.unexpectedExit).toBeNull();
+
+  emit({
+    type: 'session.exited',
+    reason: 'provider process exited (code null, signal SIGKILL)',
+  });
+
+  await vi.waitFor(() =>
+    expect(host.unexpectedExit).toBe('provider process exited (code null, signal SIGKILL)')
+  );
+  // The reason reaches the transcript with the signal that ended it.
+  const notice = host
+    .replay(0)
+    .events.map((event) => event.body)
+    .find((body) => body.type === 'notice' && body.code === 'PROVIDER_EXITED');
+  expect(notice).toMatchObject({
+    level: 'error',
+    message: expect.stringContaining('SIGKILL'),
+  });
+});
+
+it('treats an exit it asked for as an orderly stop', async () => {
+  const { host, adapter } = await start('codex');
+  await host.command({
+    contractVersion: 1,
+    sessionId: 'session',
+    epoch: 'epoch',
+    commandId: 'stop',
+    body: { type: 'session.stop' },
+    origin: {
+      actorId: 'owner',
+      surface: 'console',
+      roomId: null,
+      threadId: null,
+      messageId: null,
+    },
+  });
+  expect(adapter.stopSession).toHaveBeenCalled();
+  await vi.waitFor(() => expect(host.snapshot().session.status).toBe('stopped'));
+  expect(host.unexpectedExit).toBeNull();
+});

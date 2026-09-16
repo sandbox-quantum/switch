@@ -66,6 +66,7 @@ export class HostedSession {
   private shuttingDown = false;
   private stopped = false;
   private resetting = false;
+  private providerExit: string | null = null;
   private resetPending = false;
   private decisionPending = false;
   private decisionCode = 'RESET_OUTCOME_UNKNOWN';
@@ -681,6 +682,18 @@ export class HostedSession {
   private async providerEvent(event: ProviderRuntimeEvent): Promise<void> {
     if (this.resetting && event.type === 'session.exited') return;
     if (event.type === 'session.exited') {
+      // Nobody asked for this one. An exit we did not request is a crash, and
+      // recording it as an orderly stop is how a killed provider comes to look
+      // like a session someone closed.
+      if (!this.shuttingDown && !this.stopped) {
+        this.providerExit = event.reason;
+        await this.publish({
+          type: 'notice',
+          level: 'error',
+          code: 'PROVIDER_EXITED',
+          message: `The provider exited without being asked to: ${event.reason}`,
+        });
+      }
       for (const request of this.snapshot().requests)
         if (request.state === 'open' || request.state === 'submitting')
           await this.publish({
@@ -907,6 +920,11 @@ export class HostedSession {
     } catch (persistenceError) {
       console.error('SDK host could not persist its failure:', String(persistenceError));
     }
+  }
+
+  /** Why the provider went away when nothing asked it to, or null. */
+  get unexpectedExit(): string | null {
+    return this.providerExit;
   }
 
   async shutdown(): Promise<void> {

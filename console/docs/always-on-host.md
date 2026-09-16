@@ -105,6 +105,12 @@ a single-room connection — and makes a per-room failure harder to contain.
 - The desktop pins the published runtime, which does not yet carry the
   `connect_to_room` guard. A runtime release and a pin bump are needed before
   the fixed-room rule is enforced in shipped Consoles.
+- `/gateway/sessions*` is owner-only, so a register-known agent owned by the
+  bootstrap service user cannot be stopped through the sessions API at all —
+  Console's stop button hits this.
+- Spawn-path rooms, which is every Claude room through the fallback, are outside
+  the bounded stop: disabling the watcher leaves their process trees running.
+  Only sessions inside the resident host are drained and fenced.
 - `STOP_GRACE_MS` (30s) is untuned; it only has to sit above the session drain.
 - Stopping the watcher stops the agent's room sessions — same process. Each
   quiesces its lease, so Console can reopen them.

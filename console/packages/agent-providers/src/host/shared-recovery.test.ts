@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { mkdtemp, rm, writeFile, unlink } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, unlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parseHostEvent } from '@switch-console/shared/session-v1';
@@ -573,4 +573,30 @@ it('reconciles a journal whose saved state belongs to an earlier generation', as
     stop.abort();
     await running;
   }
+});
+
+it('journals a crashed provider as faulted rather than quiesced', async () => {
+  const f = await fixture();
+  const stop = new AbortController();
+  const running = runSharedHost(f.options, f.adapter, stop.signal).catch((error: Error) => error);
+  await vi.waitFor(() => expect(f.adapter.startSession).toHaveBeenCalled(), { timeout: 10_000 });
+
+  // Nothing asked for this: the provider's leader was killed out from under us.
+  f.emit({ type: 'session.exited', reason: 'provider process exited (code null, signal SIGKILL)' });
+
+  const outcome = await running;
+  expect(String(outcome)).toContain('PROVIDER_EXITED');
+  expect(String(outcome)).toContain('SIGKILL');
+
+  // `quiesced` is a claim that this host stopped on purpose. It did not.
+  const journal = (await readFile(join(f.root, 'shared-state.jsonl'), 'utf8'))
+    .split('\n')
+    .filter(Boolean)
+    .map((line) => JSON.parse(line));
+  expect(journal.at(-1)).toEqual({
+    type: 'faulted',
+    reason: 'provider process exited (code null, signal SIGKILL)',
+  });
+  expect(journal.some((record) => record.type === 'quiesced')).toBe(false);
+  stop.abort();
 });

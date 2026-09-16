@@ -229,7 +229,12 @@ export async function runSharedHost(
     await stopExecution();
     if (host && delivery)
       for (const event of host.replay(delivery.cursor).events) await delivery.capture(event);
-    await state.journal.append({ type: 'quiesced' });
+    // A session whose provider died says so in its own journal. `quiesced` is a
+    // claim that this host stopped on purpose.
+    const crashed = host?.unexpectedExit ?? null;
+    await state.journal.append(
+      crashed ? { type: 'faulted', reason: crashed } : { type: 'quiesced' }
+    );
     if (lease) {
       try {
         await requestOnce(
@@ -465,6 +470,10 @@ export async function runSharedHost(
           roomBinding = current;
         }
       }
+      if (host.unexpectedExit)
+        throw new Error(
+          `PROVIDER_EXITED: ${host.unexpectedExit}. Nothing asked it to stop; inspect the transcript before the room starts another session.`
+        );
       if (host.snapshot().session.status === 'stopped') break;
       if (host.snapshot().session.status === 'error' && !host.resetDecisionPending)
         throw new Error(

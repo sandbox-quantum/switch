@@ -3,6 +3,7 @@ import { readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, expect, it, vi } from 'vitest';
+import { processGroupsFor } from '../process-tree';
 import { StdioJsonRpcClient, noopLogger } from './stdio-json-rpc';
 let client: StdioJsonRpcClient | null = null;
 afterEach(async () => {
@@ -61,14 +62,15 @@ it('bounds an unterminated native protocol line and interrupts the process', asy
   expect(await exited).toContain('exceeds 16 MiB');
 });
 
-it('reaps a grandchild the provider left behind after the provider itself exited', async () => {
+it('reaps a grandchild the provider left behind, and stops recording the group', async () => {
   const marker = join(tmpdir(), `sdk-grandchild-${randomUUID()}`);
+  const sessionId = `session-${randomUUID()}`;
   let exited: () => void = () => {};
   const gone = new Promise<void>((resolve) => {
     exited = resolve;
   });
   client = new StdioJsonRpcClient({
-    sessionId: null,
+    sessionId,
     command: process.execPath,
     // The provider starts a tool and dies. Its own pid is no handle on the
     // grandchild; only the process group is.
@@ -84,14 +86,21 @@ it('reaps a grandchild the provider left behind after the provider itself exited
     logger: noopLogger,
     onExit: () => exited(),
   });
+  // The group is recorded from the moment it is spawned, so a host that dies
+  // before teardown still leaves something to sweep by.
+  expect(processGroupsFor(sessionId)).toHaveLength(1);
   await gone;
 
   const grandchild = Number(await readFile(marker, 'utf8'));
   expect(grandchild).toBeGreaterThan(1);
-  expect(() => process.kill(grandchild, 0)).not.toThrow();
+
+  // An adapter drops a session whose provider died, so nothing would call
+  // `dispose` for it: the group is reaped on the leader's exit or never.
+  await vi.waitFor(() => expect(() => process.kill(grandchild, 0)).toThrow());
+  // And only then does the record stop naming it, so a later claim does not
+  // sweep an id that has since been handed to someone else.
+  await vi.waitFor(() => expect(processGroupsFor(sessionId)).toEqual([]));
 
   await client.dispose();
-
-  await vi.waitFor(() => expect(() => process.kill(grandchild, 0)).toThrow());
   await rm(marker, { force: true });
 });

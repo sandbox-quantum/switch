@@ -82,6 +82,21 @@ export async function startOpencodeServer(input: StartServerInput): Promise<Open
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   registerProcessGroup(input.sessionId, child.pid);
+  // A server that dies on its own still leaves its group; reap it here, and
+  // only then stop recording it.
+  child.once('exit', () => {
+    void stopProcessTree(child, {
+      grouped: GROUPED_CHILDREN,
+      escalateAfterMs: 0,
+      deadlineMs: 5000,
+      description: 'OpenCode server process group',
+      leaderExited: true,
+    })
+      .then(() => forgetProcessGroup(input.sessionId, child.pid))
+      .catch((error: unknown) => {
+        console.error('OpenCode server process group could not be swept:', String(error));
+      });
+  });
 
   try {
     const url = await new Promise<string>((resolve, reject) => {
@@ -148,17 +163,15 @@ export async function stopOpencodeServer(
   server: Pick<OpencodeServerHandle, 'process' | 'configHome'> & { sessionId?: string | null }
 ): Promise<void> {
   const child = server.process;
-  try {
-    if (child.pid)
-      // A server that already exited still leaves its group behind.
-      await stopProcessTree(child, {
-        grouped: GROUPED_CHILDREN,
-        escalateAfterMs: 2000,
-        deadlineMs: 5000,
-        description: 'OpenCode server process group',
-        leaderExited: child.exitCode !== null || child.signalCode !== null,
-      });
-  } finally {
+  if (child.pid) {
+    // A server that already exited still leaves its group behind.
+    await stopProcessTree(child, {
+      grouped: GROUPED_CHILDREN,
+      escalateAfterMs: 2000,
+      deadlineMs: 5000,
+      description: 'OpenCode server process group',
+      leaderExited: child.exitCode !== null || child.signalCode !== null,
+    });
     forgetProcessGroup(server.sessionId ?? null, child.pid);
   }
   await rm(server.configHome, { recursive: true, force: true });

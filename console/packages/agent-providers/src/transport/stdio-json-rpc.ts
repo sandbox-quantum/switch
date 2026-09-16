@@ -82,6 +82,7 @@ export class StdioJsonRpcClient {
   private readonly logger: ProviderLogger;
   private readonly onExit: (reason: string) => void;
   private readonly sessionId: string | null;
+  private reaped: Promise<void> | null = null;
   private stderrTail = '';
   private nextId = 0;
   private exited = false;
@@ -196,19 +197,34 @@ export class StdioJsonRpcClient {
 
   /** Stops the provider and every process it spawned; see `stopProcessTree`. */
   async dispose(): Promise<void> {
+    this.reaped ??= this.reapGroup();
+    await this.reaped;
+  }
+
+  /**
+   * Terminate this provider's process group and stop recording it.
+   *
+   * The record is what a later host sweeps by, so it is dropped only once the
+   * group is proven gone. A sweep that fails keeps it: better a stale id the
+   * next host re-sweeps than a live provider nothing remembers.
+   */
+  private async reapGroup(): Promise<void> {
+    const leaderExited = this.exited;
     try {
-      // Even a provider that already exited is swept: its own children outlive
-      // it, and its group is the only handle left on them.
       await stopProcessTree(this.child, {
         grouped: GROUPED_CHILDREN,
         escalateAfterMs: 2000,
         deadlineMs: 5000,
         description: 'Provider process group',
-        leaderExited: this.exited,
+        leaderExited,
       });
-    } finally {
-      forgetProcessGroup(this.sessionId, this.child.pid);
+    } catch (error) {
+      this.logger.error('Provider process group could not be proven stopped.', {
+        error: String(error),
+      });
+      throw error;
     }
+    forgetProcessGroup(this.sessionId, this.child.pid);
   }
 
   private write(message: Record<string, unknown>): void {
@@ -297,6 +313,11 @@ export class StdioJsonRpcClient {
   private handleExit(reason: string): void {
     if (this.exited) return;
     this.exited = true;
+    // A provider that dies on its own is removed from its adapter's session
+    // map, so nothing will call `dispose` for it: the group it leaves is reaped
+    // here or never. The record only stops naming the group once that succeeds
+    // — a leader's death is not proof its children went with it.
+    this.reaped ??= this.reapGroup();
     for (const [id, pending] of this.pending) {
       this.pending.delete(id);
       clearTimeout(pending.timer);
