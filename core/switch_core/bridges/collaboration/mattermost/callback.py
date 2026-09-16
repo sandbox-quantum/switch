@@ -6,6 +6,8 @@ import logging
 from dataclasses import dataclass
 from typing import Any
 
+from switch_core.bridges.collaboration.session.renderers import Control
+
 logger = logging.getLogger(__name__)
 
 # Where a press carries what it is answering. Nested under one key because
@@ -56,6 +58,47 @@ def action_context(secret: str, token: str, position: int) -> dict[str, Any]:
             "signature": _sign(secret, token, position),
         }
     }
+
+
+def answer_actions(
+    secret: str, url: str, token: str, controls: list[Control]
+) -> list[dict[str, Any]]:
+    """The buttons a card offers, in the shape a Mattermost post carries them.
+
+    One action per control, each addressed to this bridge's own callback URL
+    and carrying its own signed context — the option is in the credential, so
+    a press cannot be retargeted at another option by editing anything a
+    client can see.
+
+    The id is written rather than left to the server, which mints one per
+    action that arrives without it. A card is redrawn many times over its
+    life, and an id regenerated on every redraw is a control the client
+    remounts underneath a reader who may be mid-press. Letters and digits
+    only: that is what Mattermost documents an action id may contain.
+    """
+    return [
+        {
+            "id": f"switch{control.position}",
+            "name": _button_name(control),
+            "integration": {
+                "url": url,
+                "context": action_context(secret, token, control.position),
+            },
+        }
+        for control in controls
+    ]
+
+
+def _button_name(control: Control) -> str:
+    """What the button says: the option's number, then the option.
+
+    Numbered because the body numbers it, and a reader looking at "2." in the
+    text and "Decline" on a button should not have to work out that they are
+    the same choice. Not cut to a width, because Mattermost documents no limit
+    on how long a name may be.
+    """
+    label = control.label.strip() or f"Option {control.position}"
+    return f"{control.position}. {label}"
 
 
 def read_press(secret: str, body: dict[str, Any]) -> Press | None:
