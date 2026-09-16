@@ -215,7 +215,7 @@ export class SharedRoomInbox {
           this.gap = detail;
         },
         onEvicted: (reason) => {
-          if (reason === 'heartbeat lapsed')
+          if (reason === 'heartbeat lapsed' || reason.startsWith('heartbeat lapsed;'))
             console.warn('Room heartbeat lapsed; reconnecting from the saved cursor.');
           else fail(new Error(`Room connection was evicted: ${reason}`));
         },

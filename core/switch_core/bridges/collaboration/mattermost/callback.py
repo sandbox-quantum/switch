@@ -15,9 +15,19 @@ logger = logging.getLogger(__name__)
 # collision waiting for the first card here to want a second kind of button.
 CONTEXT_KEY = "switch"
 
-# What the signature is computed over, so a value minted for one purpose can
-# never be replayed as another if a second kind of button is ever added.
-_PURPOSE = "answer"
+# What each signature is computed over, so a context minted for one purpose can
+# never be posted back as another. The two kinds of button here are told apart
+# by the shape of what they carry — the key sets are disjoint — and the purpose
+# is what stops a signature from surviving being relabelled.
+_ANSWER_PURPOSE = "answer"
+_ACTIVITY_PURPOSE = "activity"
+
+# The button that opens a turn's activity, and what it says. One per status
+# post, and the same on every status post in a channel: which turn is being
+# asked about is the post the press arrives on, which the Mattermost server
+# fills in and a client cannot write.
+ACTIVITY_ACTION_ID = "switchactivity"
+ACTIVITY_LABEL = "Show activity"
 
 # How much of an option a button shows. Not a server limit — Mattermost
 # documents none — but a width past which a control stops reading as a control
@@ -43,6 +53,21 @@ class Press:
     position: int
 
 
+@dataclass(frozen=True)
+class ActivityPress:
+    """A press asking to be shown the tool calls behind a turn's status post.
+
+    Carries no subject of its own, unlike `Press`. Which turn is being asked
+    about is the post the button sits on, and Mattermost names that post
+    itself — the button could not, because a post's id does not exist until
+    the post carrying the button has been made.
+    """
+
+    user_id: str
+    post_id: str
+    channel_id: str
+
+
 def action_context(secret: str, token: str, position: int) -> dict[str, Any]:
     """The hidden data a button carries, signed so a forgery cannot be built.
 
@@ -61,8 +86,35 @@ def action_context(secret: str, token: str, position: int) -> dict[str, Any]:
         CONTEXT_KEY: {
             "token": token,
             "position": position,
-            "signature": _sign(secret, token, position),
+            "signature": _sign(secret, _ANSWER_PURPOSE, f"{token}:{position}"),
         }
+    }
+
+
+def activity_action(secret: str, url: str, channel_id: str) -> dict[str, Any]:
+    """The button that opens a turn's tool calls for whoever presses it.
+
+    Signed over the channel rather than over the post, for a plain reason: at
+    the moment this is built the post does not exist, so it has no id to sign.
+    The channel is what the context is bound to, and a press is refused unless
+    the channel Mattermost says it came from is that one — so a context that
+    leaks is worth one conversation's logs rather than the server's.
+
+    Nothing about who may read them is in here. That is asked of Mattermost
+    when the press arrives, against the presser the server names.
+    """
+    return {
+        "id": ACTIVITY_ACTION_ID,
+        "name": ACTIVITY_LABEL,
+        "integration": {
+            "url": url,
+            "context": {
+                CONTEXT_KEY: {
+                    "channel": channel_id,
+                    "signature": _sign(secret, _ACTIVITY_PURPOSE, channel_id),
+                }
+            },
+        },
     }
 
 
@@ -113,7 +165,7 @@ def _button_name(control: Control) -> str:
     return f"{control.position}. {label}"
 
 
-def read_press(secret: str, body: dict[str, Any]) -> Press | None:
+def read_press(secret: str, body: dict[str, Any]) -> Press | ActivityPress | None:
     """What a callback is asking for, or None if it is not ours to act on.
 
     Read as strictly as it is written, and in two stages. A body that does not
@@ -123,9 +175,14 @@ def read_press(secret: str, body: dict[str, Any]) -> Press | None:
     been rotated out from under posts already on the channel, and says so in
     the log — those are worth telling apart, and neither is worth acting on.
 
+    Which of the two kinds of button this is comes from the shape of what it
+    carries. The key sets are disjoint and each is matched exactly, so the
+    discriminator is not a field a forger gets to choose between: a context
+    that is not precisely one shape or the other is not read as either.
+
     Only the shape is established here. That the post is the one the card was
-    published to, and that this person may answer it at all, are decided
-    against the record further in.
+    published to, that the turn is one this bridge published, and that this
+    person may act on it at all, are decided against the record further in.
     """
     carried = body.get("context")
     if not isinstance(carried, dict):
@@ -133,6 +190,8 @@ def read_press(secret: str, body: dict[str, Any]) -> Press | None:
     switch = carried.get(CONTEXT_KEY)
     if not isinstance(switch, dict):
         return None
+    if set(switch) == {"channel", "signature"}:
+        return _activity_press(secret, switch, body)
     # Nothing but what was signed. The signature covers the card and the
     # option, so a field beside them is one it does not vouch for — and a
     # reader added later would be reading an unsigned value out of a context
@@ -150,7 +209,9 @@ def read_press(secret: str, body: dict[str, Any]) -> Press | None:
         return None
     if not isinstance(signature, str) or not signature:
         return None
-    if not hmac.compare_digest(signature, _sign(secret, token, position)):
+    if not hmac.compare_digest(
+        signature, _sign(secret, _ANSWER_PURPOSE, f"{token}:{position}")
+    ):
         logger.warning(
             "Rejected a Mattermost action callback for request %s: the context "
             "signature does not verify. Either it was not signed with this "
@@ -160,15 +221,10 @@ def read_press(secret: str, body: dict[str, Any]) -> Press | None:
         )
         return None
 
-    user_id = body.get("user_id")
-    post_id = body.get("post_id")
-    channel_id = body.get("channel_id")
-    if not isinstance(user_id, str) or not user_id:
+    who = _presser(body)
+    if who is None:
         return None
-    if not isinstance(post_id, str) or not post_id:
-        return None
-    if not isinstance(channel_id, str) or not channel_id:
-        return None
+    user_id, post_id, channel_id = who
     return Press(
         user_id=user_id,
         post_id=post_id,
@@ -178,6 +234,66 @@ def read_press(secret: str, body: dict[str, Any]) -> Press | None:
     )
 
 
-def _sign(secret: str, token: str, position: int) -> str:
-    message = f"{_PURPOSE}:{token}:{position}".encode()
+def _activity_press(
+    secret: str, switch: dict[str, Any], body: dict[str, Any]
+) -> ActivityPress | None:
+    """A press on the button that opens a turn's tool calls, or None.
+
+    The signed channel is checked against the one Mattermost says the press
+    came from rather than used in its place. It is there to bind the context
+    to a conversation, not to name one: what the read is made against is the
+    server's word, and a context lifted onto a post somewhere else is refused
+    here rather than resolved against either channel.
+    """
+    channel = switch.get("channel")
+    signature = switch.get("signature")
+    if not isinstance(channel, str) or not channel:
+        return None
+    if not isinstance(signature, str) or not signature:
+        return None
+    if not hmac.compare_digest(signature, _sign(secret, _ACTIVITY_PURPOSE, channel)):
+        logger.warning(
+            "Rejected a Mattermost activity callback for channel %s: the "
+            "context signature does not verify. Either it was not signed with "
+            "this bridge's credential, or the credential has been rotated "
+            "since the post was made.",
+            channel,
+        )
+        return None
+    who = _presser(body)
+    if who is None:
+        return None
+    user_id, post_id, channel_id = who
+    if channel_id != channel:
+        logger.warning(
+            "Rejected a Mattermost activity callback: the button was signed "
+            "for channel %s and the press arrived from channel %s.",
+            channel,
+            channel_id,
+        )
+        return None
+    return ActivityPress(user_id=user_id, post_id=post_id, channel_id=channel_id)
+
+
+def _presser(body: dict[str, Any]) -> tuple[str, str, str] | None:
+    """Who pressed, on what, and where — the three fields the server fills in.
+
+    None if any is missing or empty. A press this bridge cannot place is not
+    one it can check anything about, and every decision downstream is made
+    against one of the three.
+    """
+    user_id = body.get("user_id")
+    post_id = body.get("post_id")
+    channel_id = body.get("channel_id")
+    if not isinstance(user_id, str) or not user_id:
+        return None
+    if not isinstance(post_id, str) or not post_id:
+        return None
+    if not isinstance(channel_id, str) or not channel_id:
+        return None
+    return user_id, post_id, channel_id
+
+
+def _sign(secret: str, purpose: str, subject: str) -> str:
+    message = f"{purpose}:{subject}".encode()
     return hmac.new(secret.encode(), message, hashlib.sha256).hexdigest()

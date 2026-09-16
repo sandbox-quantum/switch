@@ -28,7 +28,7 @@ export async function createSession(
   if (!providerAdapterRegistry.supports(agent.providerId))
     return err({
       type: 'spawn-failed',
-      message: 'SDK sessions support Claude Code, Codex, OpenCode, Gemini CLI and Cursor.',
+      message: 'SDK sessions support Claude Code, Codex, OpenCode, Antigravity CLI and Cursor.',
     });
   if (!adopted && process.platform === 'win32' && location?.transport.kind !== 'ssh')
     return err({
@@ -37,7 +37,6 @@ export async function createSession(
     });
 
   const configObj: SessionConfig = {};
-  if (params.autoApprove !== undefined) configObj.autoApprove = params.autoApprove;
   if (params.initialPrompt?.trim()) configObj.initialPrompt = params.initialPrompt.trim();
   // The session's launch identity is not stored — it is read live from the
   // owning agent's `name` (see mapSessionRowToSession). How that name spawns is
@@ -50,7 +49,7 @@ export async function createSession(
       id: params.id,
       agentId: params.agentId,
       title: params.title,
-      shellId: params.shellId ?? 'system',
+      shellId: 'system',
       config,
       isInitialSession: false,
       status: 'in_progress',
@@ -74,12 +73,7 @@ export async function createSession(
     const built = await provisionSessionRuntime(session, location);
     await sessionRuntimeManager.registerSession(session.id, built, location.ctx);
 
-    await built.agent.start(
-      session,
-      params.initialSize,
-      params.attach === false,
-      params.initialPrompt
-    );
+    await built.agent.start(session, params.attach === false, params.initialPrompt);
   } catch (e) {
     await db.update(sessions).set({ status: 'review' }).where(eq(sessions.id, session.id));
     return err({ type: 'spawn-failed', message: e instanceof Error ? e.message : String(e) });

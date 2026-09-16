@@ -326,6 +326,25 @@ async def test_a_running_turn_is_not_told_off_for_work_still_in_flight() -> None
     assert _state(items, _turn("running")) == "Working…"
 
 
+async def test_a_sentence_still_being_written_is_not_an_unfinished_step() -> None:
+    """A host opens the item for what the agent is saying and revises it as the
+    tokens arrive, and the last of them is routinely still open when the turn
+    stops. Counting those would have a turn that finished cleanly report work
+    it never left undone — on every platform, since this line is shared."""
+    items = [
+        _item(itemId="i1", status="completed", title="Ran the tests"),
+        _item(
+            itemId="i2",
+            kind="assistant-message",
+            status="in-progress",
+            title="",
+            text="All green.",
+        ),
+    ]
+
+    assert _state(items, _turn("completed")) == "Turn complete."
+
+
 async def test_more_than_one_unfinished_step_is_counted_as_more_than_one() -> None:
     items = [
         _item(itemId=f"i{n}", status="in-progress", title=f"Step {n}") for n in range(3)

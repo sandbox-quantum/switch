@@ -35,9 +35,8 @@ export { createOpencodeAdapter, OpencodeAdapter } from './opencode/opencode-adap
 export type { OpencodeSkill } from './opencode/server';
 export type { CodexAdapterOptions } from './codex/codex-adapter';
 export { CodexAdapter, createCodexAdapter } from './codex/codex-adapter';
-export { GeminiAdapter, createGeminiAdapter } from './gemini/gemini-adapter';
-export type { GeminiAdapterOptions } from './gemini/gemini-adapter';
-export { prepareGeminiHome } from './gemini/home';
+export { AntigravityAdapter, createAntigravityAdapter } from './antigravity/antigravity-adapter';
+export type { AntigravityAdapterOptions } from './antigravity/antigravity-adapter';
 
 export { CursorAdapter, createCursorAdapter } from './cursor/cursor-adapter';
 export type { CursorAdapterOptions } from './cursor/cursor-adapter';

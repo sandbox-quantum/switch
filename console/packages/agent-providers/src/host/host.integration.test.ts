@@ -5,13 +5,12 @@ import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { snapshotSchema } from '@switch-console/shared/session-v1';
 import { expect, it } from 'vitest';
-import { prepareGeminiHome } from '../gemini/home';
 import { HostConnection } from './client';
 import { startHostServer } from './server';
 
 it
   .skipIf(process.env.SDK_HOST_LIVE !== '1')
-  .each(['claude', 'codex', 'opencode', 'gemini', 'cursor'] as const)(
+  .each(['claude', 'codex', 'opencode', 'antigravity', 'cursor'] as const)(
   'runs %s chat, tools, deduplication and persistent resume through HTTP',
   async (provider) => {
     const root = await mkdtemp(join(tmpdir(), `sdk-host-${provider}-`));
@@ -19,14 +18,6 @@ it
     const env: Record<string, string> = {};
     for (const key of ['PATH', 'HOME', 'USER', 'SHELL', 'TMPDIR', 'LANG', 'TERM'])
       if (process.env[key]) env[key] = process.env[key]!;
-    if (provider === 'gemini')
-      env.GEMINI_CLI_HOME = await prepareGeminiHome({
-        root,
-        sessionId: 'gemini-home',
-        sourceHome: join(homedir(), '.gemini'),
-        context: '',
-        mcpServerNames: [],
-      });
     if (provider === 'codex') {
       env.CODEX_HOME = await mkdtemp(join(tmpdir(), 'sdk-host-codex-auth-'));
       await copyFile(join(homedir(), '.codex/auth.json'), join(env.CODEX_HOME, 'auth.json'));

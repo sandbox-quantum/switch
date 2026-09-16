@@ -3,13 +3,17 @@ import { eq } from 'drizzle-orm';
 import { syncSdkSessionActivity } from '@main/core/sdk-host/session-activity';
 import { sessionService } from '@main/core/sessions/session-service';
 import { switchRoomService } from '@main/core/switch-rooms/switch-room-service';
-import { fetchSdkSessions, fetchSdkSnapshot } from '@main/core/switch-servers/gateway-client';
+import {
+  fetchRoomDetail,
+  fetchSdkSessions,
+  fetchSdkSnapshot,
+} from '@main/core/switch-servers/gateway-client';
 import { getServer } from '@main/core/switch-servers/servers-store';
 import { db } from '@main/db/client';
 import { sessions } from '@main/db/schema';
 import { events } from '@main/lib/events';
 import { log } from '@main/lib/logger';
-import { makePtyId } from '@shared/core/pty/ptyId';
+import { makeHookSessionId } from '@shared/core/providers/hook-session-id';
 import { sessionStatusUpdatedChannel } from '@shared/core/sessions/sessionEvents';
 import { getAgentById } from './getAgentById';
 
@@ -114,7 +118,7 @@ class RemoteSessionReconciler {
               {
                 sessionId: session.sessionId,
                 providerId: agent.providerId,
-                ptyId: makePtyId(agent.providerId, session.sessionId),
+                ptyId: makeHookSessionId(agent.providerId, session.sessionId),
               },
               roomId,
               agent.switchAgentId
@@ -125,8 +129,9 @@ class RemoteSessionReconciler {
           const result = await sessionService.createSession({
             id: session.sessionId,
             agentId,
-            title: roomId ? 'Room session' : 'Shared session',
-            autoApprove: agent.autoApprove,
+            title: roomId
+              ? `Session for ${(await fetchRoomDetail(server, roomId)).name}`
+              : 'Shared session',
             attach: false,
             startSource: 'adopted',
           });
@@ -139,7 +144,7 @@ class RemoteSessionReconciler {
               {
                 sessionId: session.sessionId,
                 providerId: agent.providerId,
-                ptyId: makePtyId(agent.providerId, session.sessionId),
+                ptyId: makeHookSessionId(agent.providerId, session.sessionId),
               },
               roomId,
               agent.switchAgentId

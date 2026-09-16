@@ -679,6 +679,10 @@ are moderation tools — use them when setting a room up, not in passing.
 
 ## Important rules
 
+In Switch Console SDK sessions, Switch tools are approved automatically even
+when the agent's Bypass permissions setting is off. Other tools keep the agent's
+permission policy. Switch server authorization still applies to every operation.
+
 - **No stray `@-mentions` in free-text fields.** Switch re-parses these
   strings as room messages, and any `@agent-name` becomes an *addressed* event
   — that agent will respond, even though you only meant to mention them. This

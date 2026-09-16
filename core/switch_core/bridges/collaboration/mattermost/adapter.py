@@ -12,7 +12,7 @@ from collections import OrderedDict
 from collections.abc import Awaitable, Callable
 from contextvars import ContextVar
 from dataclasses import dataclass, replace
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any, ClassVar
 
 import httpx
@@ -31,6 +31,7 @@ from mattermostdriver.exceptions import (
 from switch_core.agent_icon import default_icon_url
 from switch_core.bridges.collaboration.adapter import (
     ActivityMark,
+    ActivitySnapshot,
     CollaborationAdapter,
     RemovalFailed,
     RequestCard,
@@ -45,6 +46,8 @@ from switch_core.bridges.collaboration.ingress import (
 )
 from switch_core.bridges.collaboration.mattermost.callback import (
     MAX_BUTTON_LABEL,
+    ActivityPress,
+    activity_action,
     answer_actions,
     read_press,
 )
@@ -68,6 +71,10 @@ from switch_core.bridges.collaboration.session.renderers import (
     position_action,
 )
 from switch_core.bridges.collaboration.session.renderers.neutral import (
+    ACTIVITY_FAILED,
+    ACTIVITY_GONE,
+    ACTIVITY_UNREADABLE,
+    activity_log,
     render_request,
     turn_status,
 )
@@ -238,6 +245,19 @@ class MattermostConnectionConfig(BridgeConnectionConfig):
 _PRESS_NOTICE: ContextVar[list[str] | None] = ContextVar(
     "switch_mattermost_press_notice", default=None
 )
+
+
+def _ephemeral(text: str) -> dict[str, Any]:
+    """A callback reply Mattermost shows to the presser and to nobody else.
+
+    `skip_slack_parsing` because what is in here is already Mattermost
+    markdown, written by the neutral renderer. Without it the server runs the
+    text through its Slack-to-Mattermost conversion first, which is a second
+    pass of markup rules over something that has already been marked up — and
+    the one case where that is visibly wrong is a log line whose emphasis comes
+    back doubled.
+    """
+    return {"ephemeral_text": text, "skip_slack_parsing": True}
 
 
 class MattermostAdapter(CollaborationAdapter):
@@ -460,12 +480,19 @@ class MattermostAdapter(CollaborationAdapter):
         Mattermost shows `ephemeral_text` to them and nobody else. A refusal
         raised while the answer is being judged reaches `tell_actor`, which
         leaves it here rather than posting it where the channel would read it.
+
+        Two kinds of button arrive here. An answer to a request card goes
+        inwards as an interaction and is judged by the shared layer; a request
+        to see a turn's tool calls is a read, answered in the reply itself and
+        going no further than the person who asked.
         """
         if self._callback is None:
             raise CallbackRefused("This bridge takes no callbacks.", status=404)
         press = read_press(self._callback.key, body)
         if press is None:
             raise CallbackRefused("Not a press this bridge will act on.", status=401)
+        if isinstance(press, ActivityPress):
+            return await self._show_activity(press)
         if self._on_interaction is None:
             logger.warning(
                 "A press on a Switch card in Mattermost channel %s has nowhere "
@@ -506,8 +533,112 @@ class MattermostAdapter(CollaborationAdapter):
             _PRESS_NOTICE.reset(held)
 
         if notices:
-            return {"ephemeral_text": notices[0]}
+            return _ephemeral(notices[0])
         return {}
+
+    async def _show_activity(self, press: ActivityPress) -> dict[str, Any]:
+        """Put a turn's tool calls in front of the one person who asked.
+
+        The reply is the whole of the answer. Mattermost shows `ephemeral_text`
+        to the presser and nobody else, the channel's history gains nothing,
+        and a second reader pressing the same button gets a read of their own.
+        It is also why there is no Refresh here: the log is drawn when the
+        press arrives, so pressing again is the refresh, and nothing on the
+        screen can be older than the press that put it there.
+
+        Two separate questions, both asked. Whether this bridge published that
+        turn into that channel is `_resolve_activity`'s, answered against the
+        record. Whether this reader may see the channel is Mattermost's, asked
+        on every press — a press establishes that the server accepted it, which
+        is not a statement about what the presser may read now.
+
+        Every way it can fail says something. A button that answers with
+        nothing reads as the press having been dropped, and the reader would go
+        on pressing it.
+        """
+        resolve = self._resolve_activity
+        if resolve is None:
+            return _ephemeral(ACTIVITY_GONE)
+        if not await self._reads_channel(press.channel_id, press.user_id):
+            return _ephemeral(ACTIVITY_UNREADABLE)
+        try:
+            snapshot = await resolve(press.channel_id, press.post_id)
+        except Exception:
+            logger.exception(
+                "Reading the activity behind post %s in Mattermost channel %s "
+                "failed, so the reader is told rather than left waiting.",
+                press.post_id,
+                press.channel_id,
+            )
+            return _ephemeral(ACTIVITY_FAILED)
+        if snapshot is None:
+            return _ephemeral(ACTIVITY_GONE)
+        return _ephemeral(self._activity_text(snapshot))
+
+    async def _reads_channel(self, channel_id: str, user_id: str) -> bool:
+        """Whether this person is in the channel a turn was published into.
+
+        Membership, because that is the audience Mattermost actually holds, and
+        it holds it the same way for an open channel, a private one and a
+        direct message. It is narrower than readability on an open channel,
+        where any member of the team may read without having joined; a reader
+        in that position is refused and told so, which is the side to be wrong
+        on for a disclosure this message does not already make.
+
+        A lookup that cannot answer refuses too. "Mattermost did not say" is
+        not "yes", and an audience that cannot be established is one nothing
+        should be disclosed to.
+        """
+        driver = self._admin_driver
+        loop = self._main_loop
+        if driver is None or loop is None:
+            logger.warning(
+                "Cannot establish who is in Mattermost channel %s: the bridge "
+                "is not connected, so no activity is shown.",
+                channel_id,
+            )
+            return False
+        try:
+            member = await loop.run_in_executor(
+                None, driver.channels.get_channel_member, channel_id, user_id
+            )
+        except (ResourceNotFound, NotEnoughPermissions):
+            # Both are answers rather than failures: Mattermost says "not a
+            # member" with a 404, and a channel this bridge may not inspect is
+            # one whose audience it cannot vouch for either.
+            return False
+        except Exception as error:
+            logger.warning(
+                "Mattermost would not say whether user %s is in channel %s "
+                "(%s), so no activity is shown.",
+                user_id,
+                channel_id,
+                error,
+            )
+            return False
+        return bool(member) and member.get("user_id") == user_id
+
+    def _activity_text(self, snapshot: ActivitySnapshot) -> str:
+        """The tool calls, and the time the read behind them was taken.
+
+        Stamped because an ephemeral reply stays on the screen until the reader
+        dismisses it or reloads, and one left open for twenty minutes is not
+        wrong but is not current either. An absolute time rather than a
+        relative one: Mattermost renders no clock of its own in a message, so a
+        "moments ago" written here would still say that an hour later.
+        """
+        stamp = f"_Read at {snapshot.read_at.astimezone(UTC):%H:%M:%S} UTC_"
+        body = activity_log(
+            snapshot.items,
+            snapshot.turn,
+            escape=self._rich_escape,
+            limit=max(1, self.rich_fallback_limit() - len(stamp) - 1),
+            markup=self.rich_markup(),
+            elapsed_seconds=snapshot.elapsed_seconds,
+            session_url=snapshot.session_url,
+            heading=True,
+        )
+        return f"{body}\n{stamp}"
 
     async def tell_actor(
         self,
@@ -907,36 +1038,47 @@ class MattermostAdapter(CollaborationAdapter):
             return None
         return url, endpoint.key
 
-    def _controls(self, content: RichContent, drawn: Drawn) -> list[dict[str, Any]]:
-        """The card's options as buttons, or nothing where a press cannot land.
+    def _controls(
+        self, channel_id: str, content: RichContent, drawn: Drawn
+    ) -> list[dict[str, Any]]:
+        """A post's buttons: a card's options, or a turn's way into its log.
 
-        Nothing at all is the ordinary answer: a status has no options, a
-        settled card has none left, a bridge with no callback address has
-        nowhere for a press to go, and a card that cannot be answered where it
-        is showing says so — a live control under that sentence invites the
-        refusal the sentence just explained. Because every redraw builds this
-        again, the buttons come off a card at the moment it stops being
-        pressable, without anything having to remember that it once had them.
+        Nothing at all is an ordinary answer: a settled card has no options
+        left, a bridge with no callback address has nowhere for a press to go,
+        and a card that cannot be answered where it is showing says so — a live
+        control under that sentence invites the refusal the sentence just
+        explained. Because every redraw builds this again, the buttons come off
+        a card at the moment it stops being pressable, without anything having
+        to remember that it once had them.
 
-        Whether the drawing earned them comes from `drawn` rather than from
-        reading the request a second time. A body cut short of the difference
-        between two options is one a reader cannot decide from, and only the
-        renderer that cut it knows that. A press would still resolve against
-        the stored record and settle the request, so the whole of the
+        A turn's status earns one button whatever state it is in. The log it
+        opens is read when the press arrives rather than drawn into the post,
+        so a running turn's is as current as an ended turn's and neither goes
+        stale on the channel.
+
+        Whether the drawing earned the option buttons comes from `drawn` rather
+        than from reading the request a second time. A body cut short of the
+        difference between two options is one a reader cannot decide from, and
+        only the renderer that cut it knows that. A press would still resolve
+        against the stored record and settle the request, so the whole of the
         protection is not offering the button.
         """
         address = self._button_address()
         if address is None:
             return []
+        url, key = address
+        if isinstance(content, TurnActivity):
+            if self._resolve_activity is None or content.error_summary:
+                return []
+            return [activity_action(key, url, channel_id)]
         if not isinstance(content, RequestCard) or not drawn.answerable:
             return []
         controls = offered_controls(content.request)
         if not controls:
             return []
-        url, key = address
         return answer_actions(key, url, content.reference.token, controls)
 
-    async def _render_rich(self, content: RichContent) -> _Rendered:
+    async def _render_rich(self, channel_id: str, content: RichContent) -> _Rendered:
         mention = await self._mention(content.notify_external_id)
         responder = (
             await self._mention(content.responder_external_id)
@@ -949,7 +1091,7 @@ class MattermostAdapter(CollaborationAdapter):
         drawn = self._draw(
             content, mention=mention, responder=responder, controls=controls
         )
-        actions = self._controls(content, drawn)
+        actions = self._controls(channel_id, content, drawn)
         if not controls:
             return _Rendered(text=drawn.text, actions=actions, plain=drawn.text)
         # The body drops an option only where a button carries it, so wherever
@@ -986,7 +1128,7 @@ class MattermostAdapter(CollaborationAdapter):
         Mattermost actually gave. A send whose outcome nobody knows raises the
         transport's own error and keeps the reservation.
         """
-        rendered = await self._render_rich(content)
+        rendered = await self._render_rich(channel_id, content)
         driver = self._bot_drivers.get(agent_name)
         if driver is None:
             raise RichContentFailed(
@@ -1051,7 +1193,9 @@ class MattermostAdapter(CollaborationAdapter):
         # A post notifies; an edit does not. Repeating the mention on every
         # redraw would be a handle in the channel that never resolves to
         # anything new for the person it names.
-        rendered = await self._render_rich(replace(content, notify_external_id=None))
+        rendered = await self._render_rich(
+            channel_id, replace(content, notify_external_id=None)
+        )
         driver = self._bot_drivers.get(agent_name) or self._admin_driver
         loop = self._main_loop
         if driver is None or loop is None:

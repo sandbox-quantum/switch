@@ -30,7 +30,6 @@ function snapshot(timestamp: number): ResourceSnapshot {
     totalMemoryBytes: 0,
     app: { memoryBytes: 0, cpuPercent: 0 },
     appProcesses: [],
-    entries: [],
   };
 }
 

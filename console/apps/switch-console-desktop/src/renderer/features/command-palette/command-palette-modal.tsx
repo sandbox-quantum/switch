@@ -103,12 +103,7 @@ const GROUP_CLASS = cn(
 
 // Ordered allowlists for the "Suggested Actions" empty-state group. Defined at
 // module scope so the arrays keep stable references across renders.
-const SESSION_SUGGESTED = [
-  'session.sidebarChanges',
-  'session.sidebarFiles',
-  'session.toggleTerminalDrawer',
-  'resource-monitor',
-];
+const SESSION_SUGGESTED = ['session.sidebarChanges', 'session.sidebarFiles', 'resource-monitor'];
 const LOCATION_SUGGESTED = ['app.newSession', 'app.settings', 'resource-monitor'];
 const APP_SUGGESTED = ['app.newLocation', 'app.settings', 'resource-monitor'];
 

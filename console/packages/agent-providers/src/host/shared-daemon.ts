@@ -125,16 +125,17 @@ async function main(): Promise<void> {
     });
   } else {
     const { agentApiUrl, token, input } = await prepareSharedConfig(root, config);
-    const readiness = await checkProviderReadiness({
-      provider: config.start.provider,
-      binaryPath:
-        config.execution?.binaryPath ??
-        (config.start.provider === 'cursor' ? 'agent' : config.start.provider),
-      cwd: input.cwd,
-      env: input.env,
-    });
-    if (readiness.status === 'unauthenticated') throw new Error(readiness.message);
-    if (readiness.status === 'unknown') console.warn(readiness.message);
+    const authenticate = async () => {
+      if (config.start.provider !== 'claude') return;
+      const readiness = await checkProviderReadiness({
+        provider: config.start.provider,
+        binaryPath: config.execution?.binaryPath ?? 'claude',
+        cwd: input.cwd,
+        env: input.env,
+      });
+      if (readiness.status === 'unauthenticated') throw new Error(readiness.message);
+      if (readiness.status === 'unknown') console.warn(readiness.message);
+    };
     const stop = new AbortController();
     process.on('SIGTERM', () => stop.abort());
     process.on('SIGINT', () => stop.abort());
@@ -146,6 +147,7 @@ async function main(): Promise<void> {
           token,
           session: config.session,
           resumeOperationId: config.resumeOperationId,
+          authenticate,
           input,
           roomConnection: config.roomConnection,
         },

@@ -1,10 +1,17 @@
-"""The per-call log behind a turn's status, for a platform with room for one.
+"""The log behind a turn's status, for a platform with room for one.
 
 `test_session_turn_status.py` covers the line that sits beside a running turn
 and says what it is doing. This is the list behind that line and says what it
 did — the same calls Slack already posts into the channel as a message of its
 own, so a platform drawing it somewhere narrower is deciding where it is read,
 not what is in it.
+
+It also carries what the agent said while it worked, which no conversation ever
+sees: the reply reaches the room on its own, and this is the prose around it
+that used to exist only in the session. Interleaved with the calls in the order
+the turn produced them, because a sentence is usually about the call either
+side of it, and behind a disclosure because much of it is the agent narrating
+itself rather than telling anyone anything.
 
 Two things it has to get right. It has to fit: the caller gives it one budget
 for the whole message and it cannot spend more. And when it does not fit it has
@@ -14,6 +21,8 @@ rather than about how much room there was.
 """
 
 from __future__ import annotations
+
+import pytest
 
 from switch_core.bridges.collaboration.session.renderers import MARKDOWN
 from switch_core.bridges.collaboration.session.renderers.neutral import activity_log
@@ -32,11 +41,17 @@ def _call(
     return _item(kind="tool-activity", status=status, title=title, text=text)
 
 
+def _said(text: str, status: str = "completed") -> Item:
+    """Something the agent said: no title, and everything in the text."""
+    return _item(kind="assistant-message", status=status, title="", text=text)
+
+
 def _log(
     items: list[Item],
     turn_state: str = "completed",
     *,
     limit: int = 10_000,
+    heading: bool = True,
 ) -> list[str]:
     return activity_log(
         items,
@@ -46,6 +61,7 @@ def _log(
         markup=MARKDOWN,
         elapsed_seconds=None,
         session_url=None,
+        heading=heading,
     ).splitlines()
 
 
@@ -85,26 +101,107 @@ def test_a_call_with_no_name_is_shown_rather_than_dropped() -> None:
     assert lines[1] == "✓ (untitled)"
 
 
-def test_only_tool_calls_are_in_the_tool_log() -> None:
-    """What the agent said belongs to the conversation, not to this."""
+# ── What the agent said, beside what it did ──────────────────────────────────
+
+
+def test_what_the_agent_said_sits_where_it_was_said() -> None:
+    """The order is the meaning. A sentence collected at one end of the log is
+    a sentence a reader has to guess the subject of."""
     items = [
-        _item(kind="assistant-message", title="", text="Looking now."),
-        _call(title="Searched"),
+        _call(title="Read the adapter"),
+        _said("That test shares a fixture user with the session test."),
+        _call(title="Ran the tests"),
     ]
 
     lines = _log(items)
 
+    assert lines[1:] == [
+        "✓ Read the adapter",
+        "» That test shares a fixture user with the session test.",
+        "✓ Ran the tests",
+    ]
+
+
+def test_a_sentence_is_not_marked_as_a_call_that_succeeded() -> None:
+    """Prose has no outcome. Reusing the tick would have every remark read as
+    something the agent did and got right."""
+    lines = _log([_said("Looking now."), _call(title="Searched")])
+
+    assert lines[1].startswith("»")
+    assert "✓" not in lines[1]
+
+
+def test_a_paragraph_is_folded_onto_the_one_line_it_is_given() -> None:
+    """Every other entry here is one line. A remark spread over four of them is
+    indistinguishable from four things having happened."""
+    lines = _log([_said("First thought.\n\nSecond thought.\nThird.")])
+
+    assert lines[1:] == ["» First thought. Second thought. Third."]
+
+
+def test_an_item_the_host_has_opened_and_not_filled_is_not_a_line() -> None:
+    """A host creates the item before the first token arrives. A marker with
+    nothing after it says the agent said something and withholds it."""
+    lines = _log([_said(""), _call(title="Searched")])
+
     assert lines[1:] == ["✓ Searched"]
 
 
+def test_a_turn_that_only_talked_has_a_log_rather_than_nothing() -> None:
+    """A turn that answers from what it already knows calls nothing, and used
+    to leave a reader who asked what happened with "No activity."."""
+    lines = _log([_said("Yes — it was fixed in the merge yesterday.")])
+
+    assert lines[1:] == ["» Yes — it was fixed in the merge yesterday."]
+
+
+def test_a_long_remark_is_cut_like_a_call_is_rather_than_spending_the_log() -> None:
+    """One remark is allowed a call's two ceilings and no more. A turn that
+    thought aloud at length must not push its own calls out of the log."""
+    lines = _log([_said("word " * 400), _call(title="Searched")])
+
+    assert lines[1].endswith("…")
+    assert len(lines[1]) <= 2 + 200 + 120
+    assert lines[2] == "✓ Searched"
+
+
+def test_a_remark_is_escaped_the_way_a_call_name_is() -> None:
+    """It is host text like everything else in here — further from Switch than
+    a tool name, if anything, since a model wrote it."""
+    lines = activity_log(
+        [_said("<b>not bold</b>")],
+        _turn("completed"),
+        escape=lambda text: text.replace("<", "&lt;"),
+        limit=10_000,
+        markup=MARKDOWN,
+        elapsed_seconds=None,
+        session_url=None,
+        heading=False,
+    ).splitlines()
+
+    assert lines == ["» &lt;b>not bold&lt;/b>"]
+
+
+def test_the_cut_counts_what_was_said_as_well_as_what_was_done() -> None:
+    """The note is the reader's only measure of what they are not seeing, and
+    one that counted calls alone would understate it."""
+    items = [_said(f"Thought {index}.") for index in range(20)]
+
+    lines = _log(items, limit=120)
+
+    assert lines[1].startswith("…")
+    assert "not shown" in lines[1]
+    assert lines[-1] == "» Thought 19."
+
+
 def test_a_turn_that_has_ended_with_no_calls_says_it_made_none() -> None:
-    assert _log([], "completed")[1] == "No tool calls."
+    assert _log([], "completed")[1] == "No activity."
 
 
 def test_a_turn_still_running_says_it_has_made_none_yet() -> None:
     """The difference matters: one is a finding about the turn, the other is a
     report about right now."""
-    assert _log([], "running")[1] == "No tool calls yet."
+    assert _log([], "running")[1] == "No activity yet."
 
 
 # ── What it does when it will not fit ────────────────────────────────────────
@@ -156,6 +253,61 @@ def test_one_long_call_is_shortened_rather_than_dropped() -> None:
     assert "Grepped for" in lines[-1]
 
 
+# ── Where something above it already names the turn ──────────────────────────
+
+
+def test_a_log_that_declines_the_heading_starts_at_the_first_call() -> None:
+    """Teams folds the log away directly under the status line, which already
+    carries the state and the Console link. Printing them again as the log's
+    first line is the card showing one sentence twice."""
+    items = [_call(title="First"), _call(title="Second")]
+
+    assert _log(items, heading=False) == ["✓ First", "✓ Second"]
+
+
+def test_declining_the_heading_gives_its_room_back_to_the_calls() -> None:
+    """The budget is the whole of what may be spent, so a log with no state
+    line to pay for fits more of the turn into the same space."""
+    items = [_call(title=f"Call {index}") for index in range(20)]
+
+    with_head = [line for line in _log(items, limit=120)[1:] if line.startswith("✓")]
+    without = [
+        line for line in _log(items, limit=120, heading=False) if line.startswith("✓")
+    ]
+
+    assert len(without) > len(with_head)
+
+
+def test_a_headless_log_with_no_calls_is_still_the_sentence_saying_so() -> None:
+    """An empty log is not an empty string. A fold opening onto nothing reads
+    as a card that failed to draw."""
+    assert _log([], "completed", heading=False) == ["No activity."]
+
+
+def test_a_link_handed_to_a_headless_log_is_refused_rather_than_dropped() -> None:
+    """There is nowhere to put it once the state line is gone, and a caller who
+    thinks they published a Console link and did not is worse off than one told
+    they asked for something impossible."""
+    with pytest.raises(ValueError, match="nowhere to put the Console link"):
+        activity_log(
+            [_call()],
+            _turn("completed"),
+            escape=_identity,
+            limit=10_000,
+            markup=MARKDOWN,
+            elapsed_seconds=None,
+            session_url="https://console.example.test/s/1",
+            heading=False,
+        )
+
+
+def test_a_headless_log_stays_inside_the_budget_it_was_given() -> None:
+    items = [_call(title=f"Call {index} " + "x" * 400) for index in range(40)]
+
+    for limit in (80, 200, 1000, 2000):
+        assert len("\n".join(_log(items, limit=limit, heading=False))) <= limit
+
+
 # ── What it is drawn with ────────────────────────────────────────────────────
 
 
@@ -175,6 +327,7 @@ def test_host_text_is_put_through_the_platforms_own_escape() -> None:
         markup=MARKDOWN,
         elapsed_seconds=None,
         session_url=None,
+        heading=True,
     )
 
     assert "*not bold*" in seen
@@ -190,6 +343,7 @@ def test_the_console_link_rides_on_the_state_line_when_there_is_room() -> None:
         markup=MARKDOWN,
         elapsed_seconds=None,
         session_url="https://console.example.test/s/1",
+        heading=True,
     )
 
     assert "https://console.example.test/s/1" in drawn.splitlines()[0]
@@ -205,6 +359,7 @@ def test_a_link_that_would_not_fit_is_left_off_rather_than_cut_in_half() -> None
         markup=MARKDOWN,
         elapsed_seconds=None,
         session_url="https://console.example.test/" + "s" * 200,
+        heading=True,
     )
 
     assert "console.example.test" not in drawn

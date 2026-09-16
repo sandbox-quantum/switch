@@ -69,6 +69,8 @@ from switch_core.bridges.collaboration.session.renderers import (
     position_action,
 )
 from switch_core.bridges.collaboration.session.renderers.neutral import (
+    activity_log,
+    in_activity_log,
     render_request,
     turn_status,
 )
@@ -110,6 +112,11 @@ _MAX_BUTTON_LABEL = 48
 
 # Telegram's own limit on the text of a reply to a press.
 _MAX_ALERT = 200
+
+# The block a finished turn's tool calls travel in: Telegram's own expandable
+# quote, drawn and opened by the reader's client rather than by the bot.
+_FOLD_OPEN = "<blockquote expandable>"
+_FOLD_CLOSE = "</blockquote>"
 
 # The notice a press is owed, collected while the press is being handled.
 #
@@ -397,11 +404,11 @@ class TelegramAdapter(CollaborationAdapter):
 
     #: One message for the whole of a turn's progress.
     #:
-    #: Telegram has no collapsed disclosure inside an ordinary message that a
-    #: second post would buy, and it prices edits per chat rather than per
-    #: message: a separate log would double the edit rate of every turn and
-    #: spend the chat's budget on the half nobody is waiting for. The compact
-    #: status already carries the tool counts.
+    #: Telegram prices edits per chat rather than per message, so a log posted
+    #: separately would double the edit rate of every turn and spend the chat's
+    #: budget on the half nobody is waiting for. It costs the reader nothing:
+    #: the calls travel in the status message itself once the turn has ended,
+    #: collapsed into a block their own client draws.
     separate_activity_log: ClassVar[bool] = False
 
     #: A problem somebody has to act on gets its own message.
@@ -1225,7 +1232,8 @@ class TelegramAdapter(CollaborationAdapter):
                 error_summary=content.error_summary,
                 tool_detail=False,
             )
-            return Drawn(text=f"{prefix}{body}{tail}", answerable=False)
+            fold = self._activity_fold(content, limit - len(tail) - len(body))
+            return Drawn(text=f"{prefix}{body}{tail}{fold}", answerable=False)
         # The mention goes on its own line rather than in front of the heading:
         # a card is a block, and a handle wedged before "Permission needed"
         # reads as part of the heading.
@@ -1242,6 +1250,48 @@ class TelegramAdapter(CollaborationAdapter):
             control_label_limit=_MAX_BUTTON_LABEL if controls else None,
         )
         return replace(drawn, text=f"{prefix}{lead}{drawn.text}{tail}")
+
+    def _activity_fold(self, content: TurnActivity, budget: int) -> str:
+        """A finished turn's work and its own words, collapsed under its status.
+
+        Offered on an ended turn only, and that restriction is observed rather
+        than assumed: an edit closes a block a reader had opened, so a log
+        folded into a running turn would be shut in their face by the next tool
+        call. An ended turn is edited no further, so what a reader opens stays
+        open. Telegram draws the fold in the reader's client, which is what
+        makes it worth having at all — opening it is one reader's business and
+        costs the chat neither a message nor an edit.
+
+        Nothing is offered where there is nothing behind it. A turn that neither
+        called anything nor said anything would open onto "No activity." beneath
+        a status line already saying as much, and the separate message a
+        failure gets here is drawn with no items at all — so one check keeps the
+        same list from appearing in the chat twice as well.
+
+        Whatever the status left of the message is the whole of the budget. The
+        fold shares that message rather than taking one of its own, so
+        Telegram's limit is already the cap and a smaller number invented here
+        would drop calls there was room to print. What does not fit is reported
+        by the log itself, and the status above it links the Console, which has
+        all of them.
+        """
+        if content.turn.status not in TURN_ENDED:
+            return ""
+        if not any(in_activity_log(item) for item in content.items):
+            return ""
+        log = activity_log(
+            content.items,
+            content.turn,
+            escape=self._rich_escape,
+            limit=max(0, budget - len(_FOLD_OPEN) - len(_FOLD_CLOSE) - 1),
+            markup=self.rich_markup(),
+            elapsed_seconds=content.elapsed_seconds,
+            session_url=None,
+            heading=False,
+        )
+        if not log:
+            return ""
+        return f"\n{_FOLD_OPEN}{log}{_FOLD_CLOSE}"
 
     def _controls(
         self, content: RichContent, drawn: Drawn
@@ -1420,9 +1470,11 @@ class TelegramAdapter(CollaborationAdapter):
         took, and where to open it — which is what a reader scrolling back
         wants and what a deletion left them without. It is compact for the same
         reason it used to be deleted: a Telegram chat or topic is the
-        conversation itself, so the status is a line and its link rather than a
-        running commentary on tool calls. An answered request card does come
-        down, through `remove_publication` and never through a redraw.
+        conversation itself, so while the turn runs the status is a line and
+        its link rather than a running commentary on tool calls. The calls,
+        and what the agent said while making them, arrive with the last edit,
+        folded away. An answered request card does
+        come down, through `remove_publication` and never through a redraw.
 
         `agent_name` is what the redraw writes back into the body. The name is
         the message here — one bot posts for every agent — so an edit that did
@@ -2767,7 +2819,7 @@ class TelegramAdapter(CollaborationAdapter):
 
         Deliberately not a provider logo. The server only distinguishes
         `claude-code` from `codex`, and Switch Console registers every other
-        provider — Gemini, Cursor, the rest — as `claude-code`; a logo drawn
+        provider — Antigravity, Cursor, the rest — as `claude-code`; a logo drawn
         from that would confidently label most agents wrongly.
         """
         digest = hashlib.blake2b(sender_name.encode("utf-8"), digest_size=8).digest()

@@ -4,6 +4,7 @@ import { remoteSessionReconciler } from './remote-session-reconciler';
 const mocks = vi.hoisted(() => ({
   list: vi.fn(),
   snapshot: vi.fn(),
+  room: vi.fn(),
   create: vi.fn(async () => ({ success: true })),
   provision: vi.fn(async () => ({ success: true })),
   error: vi.fn(),
@@ -29,6 +30,10 @@ vi.mock('@main/core/switch-servers/servers-store', () => ({
 vi.mock('@main/core/switch-servers/gateway-client', () => ({
   fetchSdkSessions: mocks.list,
   fetchSdkSnapshot: mocks.snapshot,
+  fetchRoomDetail: mocks.room,
+}));
+vi.mock('@main/core/sdk-host/session-activity', () => ({
+  syncSdkSessionActivity: vi.fn(async () => {}),
 }));
 vi.mock('@main/core/sdk-host/session-activity', () => ({
   syncSdkSessionActivity: mocks.syncActivity,
@@ -176,4 +181,18 @@ it('marks a stopped host cancelled without claiming its work completed', async (
     status: 'cancelled',
   });
   expect(mocks.create).not.toHaveBeenCalled();
+});
+
+it('names a newly adopted room session after its room', async () => {
+  mocks.list.mockResolvedValue([{ ...session, roomIds: ['room'] }]);
+  mocks.room.mockResolvedValue({ id: 'room', name: 'Release planning' });
+  await tick();
+  expect(mocks.room).toHaveBeenCalledWith({ id: 'server' }, 'room');
+  expect(mocks.create).toHaveBeenCalledWith(
+    expect.objectContaining({ id: 'shared', title: 'Session for Release planning' })
+  );
+  mocks.rows = [{ id: 'shared' }];
+  await tick();
+  expect(mocks.room).toHaveBeenCalledTimes(1);
+  expect(mocks.create).toHaveBeenCalledTimes(1);
 });

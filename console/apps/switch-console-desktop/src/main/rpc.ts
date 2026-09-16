@@ -8,7 +8,6 @@ import { localSwitchServerController } from './core/managed-switch-server/contro
 import { remoteSwitchServerController } from './core/managed-switch-server/remote-controller';
 import { promptLibraryController } from './core/prompt-library/controller';
 import { providersController } from './core/providers/controller';
-import { ptyController } from './core/pty/controller';
 import { remoteHostsController } from './core/remote-hosts/controller';
 import { resourceMonitorController } from './core/resource-monitor/controller';
 import { sdkHostController } from './core/sdk-host/controller';
@@ -31,7 +30,6 @@ export const rpcRouter = createRPCRouter({
   appSettings: appSettingsController,
   providerSettings: providerSettingsController,
   update: updateController,
-  pty: ptyController,
   resourceMonitor: resourceMonitorController,
   promptLibrary: promptLibraryController,
   locations: locationsController,

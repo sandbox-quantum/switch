@@ -12,6 +12,7 @@ const mocks = vi.hoisted(() => ({
   loadSession: vi.fn(),
   runHost: vi.fn(),
   exec: vi.fn(),
+  specialization: vi.fn(),
 }));
 
 class FakeGatewayError extends Error {
@@ -66,7 +67,7 @@ vi.mock('@main/core/agent-runtime/impl/provider-adapter-registry', () => ({
   },
 }));
 vi.mock('@main/core/agents/agent-launch-config', () => ({
-  agentLaunchSpecialization: async () => ({}),
+  agentLaunchSpecialization: mocks.specialization,
 }));
 vi.mock('@main/core/dependencies/host-dependency-store', () => ({
   hostDependencyStore: { getSelection: async () => undefined },
@@ -74,7 +75,7 @@ vi.mock('@main/core/dependencies/host-dependency-store', () => ({
 vi.mock('@main/core/providers/plugin-registry', () => ({ getPlugin: () => ({ behavior: {} }) }));
 vi.mock('@main/lib/logger', () => ({ log: { warn: vi.fn(), error: vi.fn() } }));
 
-const { SharedAgentRuntime } = await import('./shared-agent-runtime');
+const { SharedAgentRuntime, buildSharedHostConfig } = await import('./shared-agent-runtime');
 
 const session = {
   id: 'session-1',
@@ -93,6 +94,7 @@ function runtime() {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mocks.specialization.mockResolvedValue({});
   mocks.agent.mockResolvedValue({
     id: 'agent-1',
     name: 'scout',
@@ -131,7 +133,7 @@ beforeEach(() => {
 });
 
 it('delivers the initial prompt on a relaunch that did not create the host', async () => {
-  await runtime().start(session, undefined, false, 'Say hello');
+  await runtime().start(session, false, 'Say hello');
 
   expect(mocks.submit).toHaveBeenCalledTimes(1);
   expect(mocks.submit.mock.calls[0][1]).toMatchObject({
@@ -155,7 +157,7 @@ it('accepts a host that awaits an explicit reset decision and holds the initial 
     items: [],
   });
 
-  await runtime().start(session, undefined, false, 'Say hello');
+  await runtime().start(session, false, 'Say hello');
 
   expect(mocks.submit).not.toHaveBeenCalled();
   expect(mocks.persist).not.toHaveBeenCalled();
@@ -180,7 +182,7 @@ it('does not resend a prompt the server already holds', async () => {
     message: null,
   });
 
-  await runtime().start(session, undefined, false, 'Say hello');
+  await runtime().start(session, false, 'Say hello');
 
   expect(mocks.submit).not.toHaveBeenCalled();
   expect(mocks.persist).toHaveBeenCalledWith('session-1', {
@@ -198,7 +200,7 @@ it('treats a 404 that names another code as an uncertain lookup', async () => {
     )
   );
 
-  await runtime().start(session, undefined, false, 'Say hello');
+  await runtime().start(session, false, 'Say hello');
 
   expect(mocks.submit).not.toHaveBeenCalled();
   expect(mocks.persist).toHaveBeenCalledTimes(1);
@@ -206,4 +208,143 @@ it('treats a 404 that names another code as an uncertain lookup', async () => {
     commandId: 'initial-session-1',
     state: 'unknown',
   });
+});
+
+it.each([false, true])(
+  'launches with current bypass settings despite a saved override (%s)',
+  async (enabled) => {
+    const savedSession = { ...session, autoApprove: !enabled };
+    mocks.agent.mockResolvedValue({
+      id: 'agent-1',
+      name: 'scout',
+      switchAgentId: 'remote-agent',
+      autoApprove: enabled,
+    });
+    const config = await buildSharedHostConfig(
+      savedSession,
+      { sessionPath: '/work', sessionEnvVars: {} },
+      { kind: 'local' } as LocationTransport,
+      { rooms: [] }
+    );
+    expect(config.start.input.runtimeMode).toBe(enabled ? 'full-access' : 'approval-required');
+  }
+);
+
+it('reads updated model, effort and instructions for each launch', async () => {
+  mocks.specialization
+    .mockResolvedValueOnce({
+      model: 'first-model',
+      effort: 'low',
+      instructions: 'First instructions',
+    })
+    .mockResolvedValueOnce({
+      model: 'second-model',
+      effort: 'high',
+      instructions: 'Updated instructions',
+    });
+  const launch = () =>
+    buildSharedHostConfig(
+      session,
+      { sessionPath: '/work', sessionEnvVars: {} },
+      { kind: 'local' } as LocationTransport,
+      { rooms: [] }
+    );
+  const first = await launch();
+  const second = await launch();
+  expect(first.start.input.model).toEqual({ id: 'first-model', options: { effort: 'low' } });
+  expect(second.start.input.model).toEqual({ id: 'second-model', options: { effort: 'high' } });
+  expect(second.execution?.context).toContain('Updated instructions');
+  expect(second.execution?.context).not.toContain('First instructions');
+});
+
+it('opens the session while auth is pending and submits the initial prompt only after readiness', async () => {
+  let ready = false;
+  mocks.snapshot.mockImplementation(async () => ({
+    session: { epoch: 'epoch-2', connectivity: 'online', status: ready ? 'ready' : 'starting' },
+    turns: [],
+    items: [],
+  }));
+  const agent = runtime();
+  await agent.start(session, false, 'Say hello');
+  expect(agent.startupStatus().status).toBe('starting');
+  expect(mocks.submit).not.toHaveBeenCalled();
+  await agent.start(session, false, 'Say hello');
+  expect(mocks.runHost).toHaveBeenCalledTimes(1);
+  ready = true;
+  await vi.waitFor(() => expect(agent.startupStatus().status).toBe('ready'));
+  expect(mocks.submit).toHaveBeenCalledTimes(1);
+});
+
+it('keeps a background authentication failure visible without sending the first prompt', async () => {
+  mocks.snapshot.mockResolvedValue({
+    session: { epoch: 'epoch-2', connectivity: 'online', status: 'starting' },
+    turns: [],
+    items: [],
+  });
+  mocks.exec
+    .mockResolvedValueOnce({ stdout: 'null' })
+    .mockResolvedValue({ stdout: JSON.stringify({ message: 'Sign in to the provider.' }) });
+  const agent = runtime();
+  await agent.start(session, false, 'Say hello');
+  await vi.waitFor(
+    () =>
+      expect(agent.startupStatus()).toEqual({
+        status: 'error',
+        message: 'Shared SDK host failed: Sign in to the provider.',
+      }),
+    { timeout: 3500 }
+  );
+  expect(mocks.submit).not.toHaveBeenCalled();
+  await expect(agent.stop()).resolves.toBeUndefined();
+});
+
+it('still rejects deployment failures before a host connects', async () => {
+  mocks.runHost.mockRejectedValueOnce(new Error('Could not deploy host.'));
+  const agent = runtime();
+  await expect(agent.start(session)).rejects.toThrow('Could not deploy host.');
+  expect(agent.startupStatus().message).toBe('Could not deploy host.');
+  expect(mocks.submit).not.toHaveBeenCalled();
+});
+
+it('reports restart progress through host replacement and authentication until ready', async () => {
+  let release!: () => void;
+  mocks.runHost.mockImplementationOnce(
+    () =>
+      new Promise<void>((resolve) => {
+        release = resolve;
+      })
+  );
+  mocks.loadSession.mockResolvedValue({ serverId: 'server-1', row: { config: {} } });
+  mocks.snapshot
+    .mockResolvedValueOnce({
+      session: { epoch: 'old', connectivity: 'online', status: 'ready' },
+      turns: [],
+      items: [],
+    })
+    .mockResolvedValue({
+      session: { epoch: 'new', connectivity: 'online', status: 'starting' },
+      turns: [],
+      items: [],
+    });
+  const agent = runtime();
+  const pending = agent.restart(session);
+  await vi.waitFor(() => expect(mocks.runHost).toHaveBeenCalled());
+  expect(agent.startupStatus()).toEqual({
+    status: 'starting',
+    message: 'Stopping the previous process and starting its replacement…',
+  });
+  release();
+  await vi.waitFor(() =>
+    expect(agent.startupStatus().message).toBe(
+      'Initializing the provider and checking authentication…'
+    )
+  );
+  mocks.snapshot.mockResolvedValue({
+    session: { epoch: 'new', connectivity: 'online', status: 'ready' },
+    turns: [],
+    items: [],
+  });
+  await pending;
+  expect(agent.startupStatus()).toEqual({ status: 'ready', message: null });
+  expect(mocks.submit).not.toHaveBeenCalled();
 });

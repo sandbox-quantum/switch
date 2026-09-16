@@ -12,14 +12,12 @@
  */
 export const APP_SETTINGS_KEYS = [
   'localLocation',
-  'location',
   'sessions',
   'defaultAgent',
   'notifications',
   'theme',
   'openIn',
   'interface',
-  'terminal',
   'browserPreview',
   'browser',
   'changesViewMode',

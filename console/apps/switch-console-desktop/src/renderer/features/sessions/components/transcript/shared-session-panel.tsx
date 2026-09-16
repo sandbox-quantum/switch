@@ -16,6 +16,36 @@ export function SharedSessionPanel({
 }) {
   const [client, setClient] = useState<SessionChatClient | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [startup, setStartup] = useState<{
+    status: 'starting' | 'ready' | 'error';
+    message: string | null;
+  } | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    let pending = false;
+    const check = async () => {
+      if (pending) return;
+      pending = true;
+      try {
+        const status = await rpc.sdkHost.startupStatus(sessionId);
+        if (!cancelled) setStartup(status);
+      } catch (error) {
+        if (!cancelled)
+          setStartup({
+            status: 'error',
+            message: `Could not check session startup: ${String(error)}`,
+          });
+      } finally {
+        pending = false;
+      }
+    };
+    void check();
+    const timer = setInterval(() => void check(), 500);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [sessionId]);
   useEffect(() => {
     let cancelled = false;
     setClient(null);
@@ -40,15 +70,22 @@ export function SharedSessionPanel({
       </div>
     );
   return client ? (
-    <SessionV1Chat
-      client={client}
-      initialPromptDelivery={initialPromptDelivery}
-      restartHost={() => rpc.sessions.restartAgent(sessionId)}
-      retireHost={async (epoch) => {
-        const serverId = await rpc.sdkHost.serverForAgent(agentId);
-        await rpc.sdkHost.retire(serverId, sessionId, epoch);
-      }}
-    />
+    <div className="flex h-full min-h-0 flex-col">
+      <SessionV1Chat
+        client={client}
+        startup={startup}
+        stopHost={async () => {
+          const serverId = await rpc.sdkHost.serverForAgent(agentId);
+          await rpc.sdkHost.stop(serverId, sessionId);
+        }}
+        initialPromptDelivery={initialPromptDelivery}
+        restartHost={() => rpc.sessions.restartAgent(sessionId)}
+        retireHost={async (epoch) => {
+          const serverId = await rpc.sdkHost.serverForAgent(agentId);
+          await rpc.sdkHost.retire(serverId, sessionId, epoch);
+        }}
+      />
+    </div>
   ) : (
     <div role="status" className="p-5">
       Connecting to session…

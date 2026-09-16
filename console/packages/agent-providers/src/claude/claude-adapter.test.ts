@@ -138,6 +138,31 @@ describe('ClaudeAdapter session lifecycle', () => {
     });
   });
 
+  it('resolves the variables a stdio server asks to forward into its env', async () => {
+    const sdk = createFakeSdk();
+    const adapter = new ClaudeAdapter({ query: sdk.query, claudeExecutablePath: '/bin/claude' });
+    await adapter.startSession(
+      startInput({
+        mcpServers: {
+          switch: {
+            transport: 'stdio',
+            command: 'npx',
+            args: ['-y', 'runtime'],
+            envVars: ['HOME', 'SWITCH_ABSENT'],
+          },
+        },
+      })
+    );
+    expect(sdk.options().mcpServers).toEqual({
+      switch: {
+        type: 'stdio',
+        command: 'npx',
+        args: ['-y', 'runtime'],
+        env: { HOME: '/home/agent' },
+      },
+    });
+  });
+
   it('disables only the duplicate Switch connector when the host supplies its server', async () => {
     const sdk = createFakeSdk();
     const adapter = new ClaudeAdapter({ query: sdk.query, claudeExecutablePath: '/bin/claude' });

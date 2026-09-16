@@ -11,7 +11,7 @@ import { parseSwitchAgentCredentials } from '@main/core/switch-rooms/switch-cred
  *
  * Checks:
  *  1. the remote working directory exists AND the base runtime is installed
- *     (`tmux`, `node`, `git`) at a usable version — one shell round-trip: the
+ *     (`node`, `git`) at a usable version — one shell round-trip: the
  *     exec context prepends `cd <workDir> &&`, so a missing dir rejects the whole
  *     command, while present-but-missing tools and node's version are reported on
  *     stdout. A too-old node is rejected here rather than surfacing later as an
@@ -30,7 +30,7 @@ import { parseSwitchAgentCredentials } from '@main/core/switch-rooms/switch-cred
  * fail with a misleading message.
  */
 
-const REQUIRED_BINARIES = ['tmux', 'node', 'git'] as const;
+const REQUIRED_BINARIES = ['node', 'git'] as const;
 const REACHABILITY_TIMEOUT_MS = 5000;
 // Global `fetch` and `AbortSignal.timeout` (used by the reachability probe below
 // and throughout the sidecar bundle) are only stable from Node 18.

@@ -26,6 +26,15 @@ _ANSWER_DATA = "switchAnswer"
 _ACTION_VERSION = "1.5"
 _BASE_VERSION = "1.4"
 
+# The elements a fold is made of. Named rather than generated because the
+# buttons and the container have to refer to each other by id, and all three
+# live in one card at a time: a Switch card carries at most one turn.
+_DETAIL_ID = "switchActivityDetail"
+_SHOW_ID = "switchActivityShow"
+_HIDE_ID = "switchActivityHide"
+_SHOW_TITLE = "Show activity"
+_HIDE_TITLE = "Hide activity"
+
 # How much of an option's label a button shows. Not a documented Teams limit —
 # it is where a row of buttons stops being readable. Safe to impose because the
 # body above lists every option in full, so the button only has to say which.
@@ -158,6 +167,71 @@ def _action_title(control: Control) -> str:
     return f"{control.position}. {label}"
 
 
+def activity_detail(log: str) -> list[dict[str, Any]]:
+    """A turn's activity, folded away under its status with a button to open.
+
+    `Action.ToggleVisibility` is drawn entirely by the reader's own client:
+    nothing reaches Switch when it is pressed, so opening the log is local to
+    whoever opened it and changes nothing for anyone else reading the same
+    message. That is the whole reason to prefer it here — the alternative, a
+    button that asks the bot for the log, either rewrites the card everyone can
+    see or needs a private reply channel this platform only offers off a
+    universal action.
+
+    It costs no schema version either. Hiding and showing elements predates the
+    base version by two releases, so a card that only folds still draws on a
+    client too old for `Action.Execute`.
+
+    Three elements, because an Adaptive Card action's title is fixed: the open
+    button hides itself and reveals the log and the close button, and the close
+    button puts all three back. A reader therefore always sees exactly one of
+    them, saying what pressing it will do.
+    """
+    return [
+        {
+            "type": "ActionSet",
+            "id": _SHOW_ID,
+            "spacing": "Small",
+            "actions": [
+                {
+                    "type": "Action.ToggleVisibility",
+                    "title": _SHOW_TITLE,
+                    "targetElements": [
+                        {"elementId": _SHOW_ID, "isVisible": False},
+                        {"elementId": _DETAIL_ID, "isVisible": True},
+                        {"elementId": _HIDE_ID, "isVisible": True},
+                    ],
+                }
+            ],
+        },
+        {
+            "type": "Container",
+            "id": _DETAIL_ID,
+            "isVisible": False,
+            "spacing": "Small",
+            "style": "emphasis",
+            "items": body_blocks(log),
+        },
+        {
+            "type": "ActionSet",
+            "id": _HIDE_ID,
+            "isVisible": False,
+            "spacing": "Small",
+            "actions": [
+                {
+                    "type": "Action.ToggleVisibility",
+                    "title": _HIDE_TITLE,
+                    "targetElements": [
+                        {"elementId": _SHOW_ID, "isVisible": True},
+                        {"elementId": _DETAIL_ID, "isVisible": False},
+                        {"elementId": _HIDE_ID, "isVisible": False},
+                    ],
+                }
+            ],
+        },
+    ]
+
+
 def read_answer_action(value: dict[str, Any]) -> tuple[str, int] | None:
     """The card and the option a press names, or None if it is not ours.
 
@@ -182,11 +256,27 @@ def read_answer_action(value: dict[str, Any]) -> tuple[str, int] | None:
     return token, position
 
 
+def _schema_version(below: list[dict[str, Any]]) -> str:
+    """The oldest schema that can draw this card.
+
+    Worth working out rather than assuming, because a client too old for the
+    version a card names drops the whole card and shows `fallbackText`.
+    `Action.Execute` is the only thing built here that needs the newer schema,
+    so a card that merely folds its log away asks for no more than a plain
+    message does.
+    """
+    for element in below:
+        for action in element.get("actions", ()):
+            if action.get("type") == "Action.Execute":
+                return _ACTION_VERSION
+    return _BASE_VERSION
+
+
 def agent_message_card(
     agent: AgentRendering,
     body: str,
     mentions: list[dict[str, Any]],
-    actions: list[dict[str, Any]],
+    below: list[dict[str, Any]],
 ) -> dict[str, Any]:
     """An Adaptive Card that labels a message with the sending agent's identity.
 
@@ -211,13 +301,14 @@ def agent_message_card(
     and without them the markup renders as inert text and the person is never
     notified.
 
-    ``actions`` are card elements appended under the body — an empty list for
-    everything but an open request card. They set the schema version, because
-    the action model they use is the reason to ask for the newer one."""
+    ``below`` are card elements appended under the body — an open request
+    card's option buttons, or an ended turn's folded-away log, and an empty list
+    for everything else. They set the schema version between them, because what
+    a card needs to be drawn is decided by what is in it."""
     card: dict[str, Any] = {
         "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
         "type": "AdaptiveCard",
-        "version": _ACTION_VERSION if actions else _BASE_VERSION,
+        "version": _schema_version(below),
         # Plain-text representation for surfaces that can't render the card
         # inline (mobile, notification toasts, copy-link/search previews); its
         # absence is what makes Teams show the "cards.unsupported" placeholder.
@@ -256,7 +347,7 @@ def agent_message_card(
                 ],
             },
             *body_blocks(body),
-            *actions,
+            *below,
         ],
     }
     if mentions:

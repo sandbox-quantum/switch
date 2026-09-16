@@ -2,7 +2,6 @@ import z from 'zod';
 import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
 import type { AgentStatus } from '@shared/core/providers/agentEvents';
 import type { SessionStartSource, UiEntryPoint } from '@shared/core/telemetry/reporting';
-import type { TerminalShellId } from '@shared/core/terminals/terminal-settings';
 import type { InitialPromptDelivery } from './session-config';
 
 export const MAX_SESSION_TITLE_LENGTH = 100;
@@ -22,16 +21,14 @@ export type SessionLifecycleStatus = z.infer<typeof sessionLifecycleStatuses>;
 
 /**
  * A session: one instantiation/run of an agent (was Switch Console's "conversation").
- * It belongs to an agent (which carries the location + provider), and is 1:1
- * with the terminal it runs in (`shellId`). `providerId` is denormalised from
- * the owning agent for rendering.
+ * It belongs to an agent (which carries the location + provider).
+ * `providerId` is denormalised from the owning agent for rendering.
  */
 export type Session = {
   id: string;
   agentId: string;
   providerId: AgentProviderId;
   title: string;
-  shellId: TerminalShellId;
   status: SessionLifecycleStatus;
   /** ISO timestamp: when lifecycle status last changed (current status entered). */
   statusChangedAt: string;
@@ -62,10 +59,7 @@ export type CreateSessionParams = {
   id: string;
   agentId: string;
   title: string;
-  shellId?: TerminalShellId;
-  autoApprove?: boolean;
   initialPrompt?: string;
-  initialSize?: { cols: number; rows: number };
   /**
    * Run this session as a Claude Code subagent of `agentId`: launches the CLI
    * with `--agent <agentName>` and the subagent's own Switch credentials, so
@@ -73,14 +67,7 @@ export type CreateSessionParams = {
    * the parent `agentId` (it runs in the parent's working directory).
    */
   agentName?: string;
-  /**
-   * Open a terminal for the new session. Defaults to true.
-   *
-   * Pass false when the agent is already running and the row is only catching
-   * up with it — the remote session reconciler adopting a session the VM
-   * started on its own. Such a session is made attachable (sidecar + hook-event
-   * relay) but gets no PTY until someone views it.
-   */
+  /** Attach to an existing SDK session without starting a fresh conversation. */
   attach?: boolean;
   /**
    * Which control the user started the session from, for reporting. Omitted by

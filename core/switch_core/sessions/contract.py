@@ -62,7 +62,7 @@ Surface = Literal[
     "teams",
     "telegram",
 ]
-Provider = Literal["claude", "codex", "opencode", "gemini", "cursor"]
+Provider = Literal["claude", "codex", "opencode", "antigravity", "cursor"]
 
 
 class _Model(BaseModel):

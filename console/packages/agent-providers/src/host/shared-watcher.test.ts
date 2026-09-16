@@ -16,7 +16,7 @@ afterEach(async () => {
   for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true });
 });
 
-it.each(['claude', 'codex', 'opencode', 'gemini', 'cursor'])(
+it.each(['claude', 'codex', 'opencode', 'antigravity', 'cursor'])(
   'keeps %s room assignments across a crash before launch and duplicate delivery',
   async (provider) => {
     const root = await mkdtemp(join(tmpdir(), 'shared-watch-test-'));

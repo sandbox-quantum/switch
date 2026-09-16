@@ -43,7 +43,7 @@ export type InstallCommandSpec = string | { command: string; args: string[] };
 export type InstallCommandError =
   | { type: 'permission-denied'; message: string; output: string; exitCode?: number }
   | { type: 'command-failed'; message: string; output: string; exitCode?: number }
-  | { type: 'pty-open-failed'; message: string };
+  | { type: 'process-open-failed'; message: string };
 
 export type DependencyInstallError =
   | { type: 'unknown-dependency'; id: string }

@@ -18,10 +18,8 @@ it.each([
     locationId: 'location',
     sessionId: 'session',
     sessionPath: '/workspace',
-    tmuxEnabled: true,
     sessionEnvVars: {},
     credsRelPaths: [],
-    runtime: 'pty' as const,
   };
   await buildAgentRuntime(transport, options);
   expect(construct).toHaveBeenCalledWith(transport, options);

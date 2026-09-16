@@ -32,7 +32,7 @@ export function isSshChannelOpenFailure(error: unknown): boolean {
 }
 
 /**
- * A channel open (exec / pty / direct-tcpip / sftp) that the server never
+ * A channel open (exec / direct-tcpip / sftp) that the server never
  * answered within the deadline. Distinct from a channel-open *refusal* (the
  * server answered "no"): a refusal usually means session exhaustion, while a
  * silent open is the signature of a wedged transport — TCP up, mux dead. Both

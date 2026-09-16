@@ -18,15 +18,15 @@ import {
  * Console-managed providers describe their bundled connection instead.
  */
 export function SwitchSetupCard({ agentId }: { agentId: string }) {
-  if (agentId === 'gemini' || agentId === 'cursor') {
-    const name = agentId === 'cursor' ? 'Cursor' : 'Gemini';
+  if (agentId === 'antigravity' || agentId === 'cursor') {
+    const name = agentId === 'cursor' ? 'Cursor' : 'Antigravity';
     return (
       <Field>
         <Label>Switch setup</Label>
         <div className="space-y-2 rounded-lg border p-3">
           <span className="text-sm text-foreground">Built into Switch Console</span>
           <p className="text-xs text-foreground-muted">
-            Switch Console connects local {name} ACP sessions to your rooms automatically. Sign in
+            Switch Console connects local {name} SDK sessions to your rooms automatically. Sign in
             with {name} CLI, then add a {name} agent to your Switch server.
           </p>
           <p className="text-xs text-foreground-muted">

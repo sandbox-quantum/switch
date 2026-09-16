@@ -51,6 +51,8 @@ from switch_core.bridges.collaboration.session.renderers import (
     position_action,
 )
 from switch_core.bridges.collaboration.session.renderers.neutral import (
+    activity_log,
+    in_activity_log,
     render_request,
     turn_status,
 )
@@ -59,6 +61,7 @@ from switch_core.bridges.collaboration.teams.auth import (
     TeamsTokenProvider,
 )
 from switch_core.bridges.collaboration.teams.cards import (
+    activity_detail,
     agent_message_card,
     answer_actions,
     card_attachment,
@@ -77,6 +80,7 @@ from switch_core.bridges.collaboration.teams.crypto import (
     load_certificate_der_b64,
 )
 from switch_core.bridges.collaboration.teams.graph import GraphClient
+from switch_core.sessions.contract import TURN_ENDED
 
 logger = logging.getLogger(__name__)
 
@@ -102,6 +106,18 @@ question of how much of a turn belongs in a message somebody has to scroll
 past to reach the next one. 2000 is the same figure the platforms without a
 renderer of their own inherit, kept because it reads well in a Teams post
 rather than because it was inherited.
+"""
+
+_DETAIL_LIMIT = 2000
+"""How many characters the folded-away tool log may spend.
+
+The same figure as the status it hides behind, for the same reason: this is
+about how much a reader wants in front of them, not about what Teams accepts.
+It is also what keeps the fold rendering as one block to a line — past roughly
+this much, split into lines this short, `cards.body_blocks` runs out of its
+structural budget and sets the whole log as one double-spaced block instead.
+The log says how many calls it left out, and the status above it links Console,
+which has all of them.
 """
 
 _THROTTLE_BACKOFF = 5.0
@@ -1155,7 +1171,7 @@ class TeamsAdapter(CollaborationAdapter):
         return self._last_post.get(channel_id)
 
     async def _message_activity(
-        self, sender_name: str, body: str, actions: list[dict[str, Any]]
+        self, sender_name: str, body: str, below: list[dict[str, Any]]
     ) -> dict[str, Any]:
         agent = await self.agent_rendering(sender_name)
         mentions = self._mention_entities(body)
@@ -1166,7 +1182,7 @@ class TeamsAdapter(CollaborationAdapter):
             # Plain text, rendered by no markup engine, so the label goes in raw.
             "summary": f"{agent.field_label}: {body}",
             "attachments": [
-                card_attachment(agent_message_card(agent, body, mentions, actions))
+                card_attachment(agent_message_card(agent, body, mentions, below))
             ],
         }
 
@@ -1453,6 +1469,54 @@ class TeamsAdapter(CollaborationAdapter):
             f"this {self.platform_name} team is what failed."
         )
 
+    def _below(self, content: RichContent, drawn: Drawn) -> list[dict[str, Any]]:
+        """What the card carries under its body.
+
+        Never both of them: a request card is asking the reader for an answer,
+        and a turn's log folded under the options competes for the press that
+        the card exists to collect. A publication is one or the other anyway —
+        only a `TurnActivity` has a log, and only a `RequestCard` has options.
+        """
+        if isinstance(content, TurnActivity):
+            return self._activity_detail(content)
+        return self._controls(content, drawn)
+
+    def _activity_detail(self, content: TurnActivity) -> list[dict[str, Any]]:
+        """An ended turn's work and its own words, folded away under its status.
+
+        Offered on an ended turn only, and that restriction is the design
+        rather than a simplification. Every change to a running turn rewrites
+        the card, and a rewritten card arrives folded shut: a reader who opened
+        the log while the agent worked would have it closed in their face by
+        the next tool call. An ended turn has no further changes to redraw for,
+        so what a reader opens stays open.
+
+        A turn that neither called anything nor said anything is offered
+        nothing. The fold is a promise that there is something behind it, and
+        "No activity." under a status line that already says the same is not
+        something anyone pressed for.
+
+        The status above carries the Console link, so the log does not repeat
+        it, and it does not repeat the state line either — it would sit
+        directly under the copy of itself the card already shows.
+        """
+        if content.turn.status not in TURN_ENDED:
+            return []
+        if not any(in_activity_log(item) for item in content.items):
+            return []
+        return activity_detail(
+            activity_log(
+                content.items,
+                content.turn,
+                escape=self._rich_escape,
+                limit=_DETAIL_LIMIT,
+                markup=self.rich_markup(),
+                elapsed_seconds=content.elapsed_seconds,
+                session_url=None,
+                heading=False,
+            )
+        )
+
     def _controls(self, content: RichContent, drawn: Drawn) -> list[dict[str, Any]]:
         """The card's options as buttons, or nothing where a press cannot land.
 
@@ -1662,7 +1726,7 @@ class TeamsAdapter(CollaborationAdapter):
         carried = _read_publication_ref(thread_root_id) if thread_root_id else None
         service_url = carried[0] if carried else self._service_url_for(channel_id)
         activity = await self._message_activity(
-            agent_name, text, self._controls(content, drawn)
+            agent_name, text, self._below(content, drawn)
         )
         opening = self._is_channel(channel_id) and thread_root_id is None
         # A new post has no conversation to queue behind yet, so its writes are
@@ -1740,7 +1804,7 @@ class TeamsAdapter(CollaborationAdapter):
             )
         address = self._publication_address(channel_id, message_ref, thread_root_id)
         await self._edit_rich(
-            connector, agent_name, address, text, self._controls(content, drawn)
+            connector, agent_name, address, text, self._below(content, drawn)
         )
 
     async def _edit_rich(
@@ -1749,7 +1813,7 @@ class TeamsAdapter(CollaborationAdapter):
         agent_name: str,
         address: _Publication,
         text: str,
-        actions: list[dict[str, Any]],
+        below: list[dict[str, Any]],
     ) -> None:
         try:
             async with self._writes_to(address.conversation_id):
@@ -1757,7 +1821,7 @@ class TeamsAdapter(CollaborationAdapter):
                     service_url=address.service_url,
                     conversation_id=address.conversation_id,
                     activity_id=address.activity_id,
-                    activity=await self._message_activity(agent_name, text, actions),
+                    activity=await self._message_activity(agent_name, text, below),
                 )
         except BotConnectorThrottled as error:
             raise self._throttled(error, text) from error

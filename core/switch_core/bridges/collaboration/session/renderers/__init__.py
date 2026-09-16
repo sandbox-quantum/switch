@@ -54,6 +54,10 @@ def turn_state(
     call actually ended — so the count is what tells the reader those lines
     are not still moving.
 
+    Calls only. What the agent said arrives as items too, and the last of them
+    is routinely still marked in progress when the turn stops, so counting
+    those would have a turn that finished cleanly report unfinished work.
+
     `elapsed_seconds` comes from outside: neither a turn nor an item carries
     a timestamp, so a caller that tracked one against the session's own event
     log supplies it. A running turn shows the live duration. A completed turn shows it in
@@ -77,7 +81,11 @@ def turn_state(
     if elapsed_seconds is not None:
         worked = _worked_for(elapsed_seconds, items, tool_detail=tool_detail)
         state = worked if turn.status == "completed" else f"{state} {worked}"
-    unfinished = sum(1 for item in items if item.status == "in-progress")
+    unfinished = sum(
+        1
+        for item in items
+        if item.kind == "tool-activity" and item.status == "in-progress"
+    )
     if not unfinished:
         return state
     step = "step" if unfinished == 1 else "steps"

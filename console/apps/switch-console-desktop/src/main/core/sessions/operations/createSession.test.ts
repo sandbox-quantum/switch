@@ -112,6 +112,18 @@ describe('createSession', () => {
     expect(mocks.startSession).toHaveBeenCalledTimes(1);
   });
 
+  it.each([false, true])('does not persist a stale bypass override (%s)', async (stale) => {
+    const result = await createSession({ ...baseParams, ...{ autoApprove: stale } });
+    expect(result.success).toBe(true);
+    if (!result.success) throw new Error('Expected session creation to succeed');
+    expect(result.data.session.autoApprove).toBeUndefined();
+    expect(mocks.startSession).toHaveBeenCalledWith(
+      expect.not.objectContaining({ autoApprove: stale }),
+      false,
+      undefined
+    );
+  });
+
   it('adopts a session at a closed location without provisioning or launching it', async () => {
     mocks.getLocation.mockReturnValue(undefined);
     const result = await createSession({ ...baseParams, startSource: 'adopted', attach: false });

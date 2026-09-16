@@ -186,7 +186,7 @@ describe('opencodeLaunchProfile', () => {
   });
 
   it('keeps a system prompt in a file, off the command line', () => {
-    // The argv and env are re-rendered as a shell string on the SSH and tmux
+    // The argv and env are re-rendered as a shell string on the SSH
     // paths, so a free-form body there would be mangled or executed.
     const instructions = 'be terse\n$(whoami) and "quotes"';
     const profile = opencodeLaunchProfile({

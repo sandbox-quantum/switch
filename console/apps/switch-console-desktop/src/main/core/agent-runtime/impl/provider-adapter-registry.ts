@@ -1,7 +1,7 @@
 import {
   createClaudeAdapter,
   createCodexAdapter,
-  createGeminiAdapter,
+  createAntigravityAdapter,
   createCursorAdapter,
   createOpencodeAdapter,
   type ProviderAdapter,
@@ -35,8 +35,7 @@ const SWITCH_SKILL: OpencodeSkill = { name: 'switch', content: OPENCODE_SKILL_CO
  *
  * That is the shape the adapters are written for — `ProviderAdapter` is keyed
  * by Switch's session id throughout — and it is what keeps one subscription per
- * provider rather than one per session. Created lazily so an install that never
- * opts a session in never constructs one.
+ * provider rather than one per session. Adapters are constructed only when used.
  */
 class ProviderAdapterRegistry {
   private readonly adapters = new Map<string, ProviderAdapter>();
@@ -75,10 +74,10 @@ class ProviderAdapterRegistry {
       return createClaudeAdapter({ logger });
     }
     if (providerId === 'cursor') return createCursorAdapter({ logger });
-    if (providerId === 'gemini') return createGeminiAdapter({ logger });
+    if (providerId === 'antigravity') return createAntigravityAdapter({ logger });
     if (providerId === 'codex') return createCodexAdapter({ logger });
     throw new Error(
-      `No provider adapter for '${providerId}'. Only OpenCode, Claude Code, Codex and Gemini CLI can run a provider-backed session today.`
+      `No provider adapter for '${providerId}'. Supported providers are OpenCode, Claude Code, Codex, Cursor CLI and Antigravity CLI.`
     );
   }
 }

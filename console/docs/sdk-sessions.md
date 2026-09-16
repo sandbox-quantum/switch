@@ -1,7 +1,7 @@
 # SDK sessions
 
 Console uses a persistent shared SDK host for Claude Code, Codex, OpenCode,
-Gemini CLI and Cursor. Local sessions and sessions reached through SSH use the
+Antigravity ACP and Cursor. Local sessions and sessions reached through SSH use the
 same host. SSH, ProxyCommand and ProxyJump carry deployment and management
 requests. They do not carry the lifetime of the provider process.
 
@@ -132,15 +132,14 @@ the native thread setting. Choose an explicit effort to replace it. Claude
 Compaction uses a native operation: Claude's `/compact` with a completed compaction
 boundary, Codex's `thread/compact/start` with turn completion, or OpenCode's
 `session.summarize` with native busy/idle completion. Console shows progress and the
-outcome. A timeout or interrupted completion remains unknown. Gemini CLI's current
-ACP command registry has no compaction operation. The installed Cursor ACP command catalog also advertises no compaction operation. Neither receives a substitute summarization prompt.
+outcome. A timeout or interrupted completion remains unknown. The Antigravity ACP adapter does not expose compaction. The installed Cursor ACP command catalog also advertises no compaction operation. Neither receives a substitute summarization prompt.
 
 | Provider | Reset | Model selection | Native compaction | Attachments |
 | --- | --- | --- | --- | --- |
 | Claude Code | Yes | Native catalog and effort | When `/compact` is advertised | Images as bytes; other files staged |
 | Codex | Yes | Native catalog and reasoning effort | App-server compaction | Local images and staged file mentions |
 | OpenCode | Yes | Connected models and native variants | Native session compaction | Staged file URLs |
-| Gemini CLI | Yes | ACP model catalog | Unavailable | Images/resources as bytes |
+| Antigravity ACP | Yes | Native ACP model catalog | Unavailable | Images as bytes; embedded file resources |
 | Cursor | Yes | ACP model catalog | Unavailable | Images as bytes; staged file references |
 
 Controls depend on the connected provider's reported support. OpenCode models
@@ -175,10 +174,15 @@ workspace permissions in Codex and restart the host before using file tools.
 
 ## Capability and deployment limits
 
-Gemini CLI does not support interactive questions through its current adapter;
-provide additional instructions in chat. Other capability limits remain explicit
-in the session contract. There is no tmux session fallback. Terminal support for
-lifecycle scripts is separate.
+Antigravity uses Google's standalone ACP runtime, installed as `antigravity-acp`.
+It requires a separate sign-in with `antigravity-acp --login` on the execution
+host; an existing `agy` login is not reused. The runtime supports Apple Silicon
+macOS and Linux x64/ARM64. Approvals, offered-answer questions and cancellation
+use ACP. Saved conversations from the older CLI runtime cannot be resumed by ACP;
+reset the conversation to start fresh while preserving its transcript.
+Other capability limits remain explicit
+in the session contract. Terminal sessions (tmux/PTY) were removed; SDK adapters
+are the only session runtime. Lifecycle scripts use noninteractive commands.
 
 Recovery requires the saved provider conversation and host state on the same
 execution host. Moving that state between machines is not an automatic recovery
@@ -230,8 +234,7 @@ Deleting the SDK session also removes its attachment blobs. Older uploads withou
 a stored digest receive transport checks but have no original-upload integrity proof.
 
 Local Windows execution is currently unavailable because process-group fencing
-requires a POSIX host. Use a POSIX SSH execution host. Tmux is optional and applies
-only to user terminals and lifecycle scripts; it does not execute SDK sessions.
+requires a POSIX host. Use a POSIX SSH execution host.
 Codex and Cursor do not advertise interactive questions until their native execution
 mode can support that interaction. Approvals remain separate capabilities.
 
@@ -255,15 +258,25 @@ that machine. An inconclusive check produces a warning; it is not treated as a
 missing login. Existing sessions are not stopped when a setup check fails.
 
 Claude uses its native auth status command. Codex uses app-server account status.
-Cursor uses its native account status output. Gemini initializes an empty ACP
+Cursor uses its native account status output. Antigravity initializes an empty
 session without sending a prompt, and returns its native model list. OpenCode checks connected backends; a local or free backend may need no
 login. These checks do not prove quota or access to every model, and credentials
 can expire after a check. All model fields use the same editable picker: select a model from the host
 catalogue or enter an ID. Blank uses the provider default. Loading and failed
 catalogue checks are visible and do not prevent text entry. Claude, Codex,
-Cursor and Gemini catalogues come from native SDK initialization without a
+Cursor and Antigravity catalogues come from native SDK initialization without a
 prompt; each metadata session is stopped after the probe. OpenCode uses its
 existing host catalogue.
 
 Complete sign-in in the provider CLI, then select
 Check again. Console does not capture passwords or OAuth tokens in this form.
+
+## Opening a session
+
+Console opens the conversation after the execution host has registered with Switch,
+while provider initialization and authentication continue in the background. The
+chat shows **Connecting** and accepts draft text; sending stays disabled until
+the provider is ready. The saved initial prompt is submitted only after readiness,
+using its durable command identity. Startup failures remain visible in the chat.
+This separates opening the conversation from provider readiness; it does not
+promise that a fresh provider process can authenticate in under 500 milliseconds.

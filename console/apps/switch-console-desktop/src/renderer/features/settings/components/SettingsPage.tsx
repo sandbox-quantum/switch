@@ -10,11 +10,9 @@ import { OnboardingChecklistRow } from './OnboardingSettingsRow';
 import {
   AutoGenerateSessionNamesRow,
   AutoTrustWorktreesRow,
-  EnableTmuxRow,
   PreserveSessionNameCapitalizationRow,
 } from './SessionSettingsRows';
 import TelemetrySettingsCard from './TelemetrySettingsCard';
-import TerminalSettingsCard from './TerminalSettingsCard';
 import ThemeCard from './ThemeCard';
 import { UpdateCard } from './UpdateCard';
 
@@ -44,7 +42,6 @@ function GeneralSettingsPage() {
       <AutoGenerateSessionNamesRow />
       <AutoTrustWorktreesRow />
       <PreserveSessionNameCapitalizationRow />
-      <EnableTmuxRow />
       <NotificationSettingsCard />
       <OnboardingChecklistRow />
       <TelemetrySettingsCard />
@@ -61,7 +58,6 @@ function InterfaceSettingsPage() {
         description="Customize the appearance and behavior of the app."
       />
       <ThemeCard />
-      <TerminalSettingsCard />
     </div>
   );
 }

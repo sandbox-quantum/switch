@@ -182,9 +182,7 @@ export const agents = sqliteTable(
 
 /**
  * A session: one instantiation/run of an agent. This is the unit shown under an
- * agent in the sidebar. A session is 1:1 with its terminal (the PTY the agent
- * CLI runs in), so the terminal's `shellId` lives here rather than in a separate
- * table.
+ * agent in the sidebar. Each session is driven by its SDK provider adapter.
  */
 /**
  * An onboarded remote SSH host. Switch Console stores no credentials — a host is

@@ -66,21 +66,19 @@ src/main/core/locations/
 └── location-manager.ts            # Orchestrates the provider
 ```
 
-Used in: locations, filesystem (`fs/impl/local-fs.ts`), terminals (`terminals/impl/local-terminal-provider.ts`).
+Used in: locations and filesystem (`fs/impl/local-fs.ts`, `fs/impl/ssh-fs.ts`).
 
 **Switch Console is not local-only, and this is the pattern that carries the difference.**
 An agent runs either locally or on an SSH host, so the backend behind an interface is a
 real choice rather than a placeholder for one:
 
 - `execution-context` has `local-execution-context.ts` **and** `ssh-execution-context.ts`
-- `agent-runtime/impl/` has `local-agent-runtime.ts` **and** `ssh-agent-runtime.ts`
+- `sdk-host/` connects to the persistent host locally or through SSH
 - `dependencies` has local detection **and** `remote-dependency-manager.ts` /
   `ssh-install-runner.ts`
 
-`fs` and `terminals` do currently have only a local implementation. When adding a backend,
-check whether the remote path needs one too — and see the sidecar section of `AGENTS.md`,
-because a remote session is served by `src/sidecar/`, which is a second implementation that
-will not follow your change automatically.
+When changing execution, validate both local and SSH paths. Both use the shared
+SDK host in `packages/agent-providers/src/host/`; see `remote-execution.md`.
 
 ## Result Type (`@switch-console/shared`)
 
@@ -108,10 +106,10 @@ Topic-based event emitter for main ↔ renderer communication:
 import { events } from '../lib/events';
 
 // Emit to a specific topic (e.g., session ID)
-events.emit(ptyDataChannel, buffer, sessionId);
+events.emit(sessionChangedChannel, { sessionId, changes }, sessionId);
 
 // Listen on a specific topic
-const unsub = events.on(ptyDataChannel, (data) => {...}, sessionId);
+const unsub = events.on(sessionChangedChannel, (data) => {...}, sessionId);
 ```
 
 Channel naming: without topic → `eventName`, with topic → `eventName.{topic}`
