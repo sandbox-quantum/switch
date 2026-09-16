@@ -183,3 +183,35 @@ export async function loadTemplateById(
     document: definition,
   };
 }
+
+/** A readable listing name from a file name: no extension, no `.template`, words not dashes. */
+export function templateNameFromFile(fileName: string): string {
+  const stem = fileName
+    .replace(/(\.template)?\.ya?ml$/i, '')
+    .replace(/[-_]+/g, ' ')
+    .trim();
+  return stem.length === 0 ? stem : stem[0].toUpperCase() + stem.slice(1);
+}
+
+/** What the save dialog should offer for a document: its kind, a name and a description. */
+export async function prefillForSave(
+  content: string,
+  sourceName: string | null
+): Promise<{ kind: 'agent' | 'room'; name: string; description: string }> {
+  const fromFile = sourceName ? templateNameFromFile(sourceName) : '';
+  if (/^agent:\s*$/m.test(content) || /^agent:\s+\S/m.test(content)) {
+    const t = await agentTemplateDataFromContent(fromFile || 'Agent template', content, null, null);
+    return {
+      kind: 'agent',
+      name: fromFile || t.agentName || 'Agent template',
+      description: t.description,
+    };
+  }
+  const t = await rpc.roomTemplates.parse({ yamlText: content });
+  const roomName = t.roomName && !/\{[^}]+\}/.test(t.roomName) ? t.roomName : null;
+  return {
+    kind: 'room',
+    name: fromFile || roomName || 'Room template',
+    description: t.roomDescription ?? '',
+  };
+}

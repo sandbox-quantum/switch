@@ -9,8 +9,12 @@ import type { GuardResult, ViewDefinition } from '@renderer/app/view-registry';
 import { refreshSidebarRoomState } from '@renderer/features/sidebar/sidebar-tree-data';
 import { ServerPage } from '@renderer/features/switch-servers/server-page';
 import { ServerSectionTitlebar } from '@renderer/features/switch-servers/server-section-titlebar';
+import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
 import { useMyIdentities } from '@renderer/features/switch-servers/use-my-identities';
-import { agentTemplateDataFromContent } from '@renderer/features/templates/agent-template-data';
+import {
+  agentTemplateDataFromContent,
+  prefillForSave,
+} from '@renderer/features/templates/agent-template-data';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
 import { useParams } from '@renderer/lib/layout/navigation-provider';
@@ -996,44 +1000,26 @@ const TemplateImportPanel = observer(function TemplateImportPanel() {
     }
   }, [yamlText, handleCreate, templateSchema, serverId, sourceName, showModal]);
 
-  // Either kind, straight from the first step: the server keeps it under the
-  // document's own name, and the listing shows it to everyone on the server.
+  // Either kind, straight from the first step: the dialog asks what to call
+  // it on the server, prefilled from the document.
   const handleSaveToServer = useCallback(async () => {
     setSaving(true);
     setParseError(null);
     try {
-      const isAgent = looksLikeAgentTemplate(yamlText);
-      let name = sourceName?.replace(/(\.template)?\.ya?ml$/i, '') ?? null;
-      let description = '';
-      if (isAgent) {
-        const t = await agentTemplateDataFromContent(
-          name ?? 'Agent template',
-          yamlText,
-          null,
-          null
-        );
-        name = t.agentName ?? name ?? 'Agent template';
-        description = t.description;
-      } else {
-        const t = await rpc.roomTemplates.parse({ yamlText, schema: templateSchema ?? undefined });
-        name = name ?? t.roomName ?? 'Room template';
-        description = t.roomDescription ?? '';
-      }
-      await rpc.switchServers.saveTemplate({
+      const prefill = await prefillForSave(yamlText, sourceName);
+      showModal('saveTemplateModal', {
         serverId,
-        name,
-        description,
-        kind: isAgent ? 'agent' : 'room',
+        serverName: switchServersStore.servers.find((sv) => sv.id === serverId)?.name ?? null,
         content: yamlText,
+        ...prefill,
+        onSuccess: () => appState.navigation.navigate('templates', { serverId }),
       });
-      toast.success(`"${name}" is now on the server`);
-      appState.navigation.navigate('templates', { serverId });
     } catch (e) {
-      setParseError(failureText(e, 'Could not save this template to the server.'));
+      setParseError(failureText(e, 'Could not read this template.'));
     } finally {
       setSaving(false);
     }
-  }, [yamlText, sourceName, serverId, templateSchema]);
+  }, [yamlText, sourceName, serverId, showModal]);
 
   // Opened with a document already chosen (a dropped file, a recent, a room
   // card's Use): go straight past the first step.

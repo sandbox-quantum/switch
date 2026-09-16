@@ -17,7 +17,7 @@ import { Alert, AlertAction, AlertDescription } from '@renderer/lib/ui/alert';
 import { Badge } from '@renderer/lib/ui/badge';
 import { Button } from '@renderer/lib/ui/button';
 import { Input } from '@renderer/lib/ui/input';
-import { loadAgentTemplateData } from './agent-template-data';
+import { loadAgentTemplateData, prefillForSave } from './agent-template-data';
 import { bundledTemplates } from './bundled-templates';
 
 function useServerId(): string {
@@ -156,8 +156,17 @@ function formatTimeAgo(ms: number): string {
  * Documents used from this Console before, kept locally per server: use one
  * again, or put it on the server so everyone there finds it.
  */
-function RecentsSection({ serverId, onSaved }: { serverId: string; onSaved: () => void }) {
+function RecentsSection({
+  serverId,
+  serverName,
+  onSaved,
+}: {
+  serverId: string;
+  serverName: string | null;
+  onSaved: () => void;
+}) {
   const { navigate } = useNavigate();
+  const showSaveModal = useShowModal('saveTemplateModal');
   const [recents, setRecents] = useState<RecentTemplate[] | null>(null);
   const [saving, setSaving] = useState<string | null>(null);
 
@@ -171,20 +180,18 @@ function RecentsSection({ serverId, onSaved }: { serverId: string; onSaved: () =
   const saveToServer = async (recent: RecentTemplate) => {
     setSaving(recent.yamlText);
     try {
-      const name = recent.name.replace(/(\.template)?\.ya?ml$/i, '');
-      await rpc.switchServers.saveTemplate({
+      const prefill = await prefillForSave(recent.yamlText, recent.name);
+      showSaveModal({
         serverId,
-        name,
-        description: '',
-        kind: isAgentDocument(recent.yamlText) ? 'agent' : 'room',
+        serverName,
         content: recent.yamlText,
+        ...prefill,
+        onSuccess: onSaved,
       });
-      toast({ title: `"${name}" is now on the server` });
-      onSaved();
     } catch (error) {
       toast({
-        title: `Could not save "${recent.name}" to the server`,
-        description: failureText(error, 'Check the server connection and try again.'),
+        title: `Could not read "${recent.name}"`,
+        description: failureText(error, 'The document did not parse.'),
         variant: 'destructive',
       });
     } finally {
@@ -196,10 +203,14 @@ function RecentsSection({ serverId, onSaved }: { serverId: string; onSaved: () =
 
   return (
     <section>
-      <h3 className="mb-3 flex items-center gap-1.5 text-sm font-medium text-foreground-muted">
+      <h3 className="mb-1 flex items-center gap-1.5 text-sm font-medium text-foreground-muted">
         <Clock className="size-3.5" />
         Recently used
       </h3>
+      <p className="mb-3 text-xs text-foreground-passive">
+        Documents you used from this Console. Kept here only; Save to server makes one a template
+        everyone on the server can find.
+      </p>
       <div className="flex flex-col gap-1">
         {recents.map((r) => (
           <div key={r.yamlText} className="flex items-center gap-1">
@@ -463,7 +474,13 @@ const TemplatesPanel = observer(function TemplatesPanel() {
             )}
           </section>
 
-          {!searching && <RecentsSection serverId={serverId} onSaved={reload} />}
+          {!searching && (
+            <RecentsSection
+              serverId={serverId}
+              serverName={server?.name ?? null}
+              onSaved={reload}
+            />
+          )}
         </div>
       )}
     </ServerPage>
