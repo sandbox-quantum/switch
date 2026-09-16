@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.bridges.collaboration.adapter import CollaborationAdapter
 from switch_core.bridges.collaboration.bridge_core import BridgeCore
+from switch_core.bridges.collaboration.ingress import CallbackEndpoint, CallbackIngress
 from switch_core.bridges.collaboration.models import BridgeConnectionConfig
 from switch_core.clients.bridge_client import BridgeClient, BridgeClientConfig
 from switch_core.clients.client_factory import ClientFactory
@@ -94,6 +95,18 @@ class CollaborationBridgeLifecycleService:
         # (see CollaborationAdapter.exclusive_resource). Lets a second
         # claimant be refused by name instead of failing on the resource.
         self._held_resources: dict[str, str] = {}
+        # The one listener every bridge that gets called back shares, and each
+        # running bridge's place on it. Owned here rather than by an adapter
+        # because the port is the process's, not a bridge's: two Mattermost
+        # bridges are ordinary, and a listener each would be a port and an
+        # ingress rule each. Constructed unconditionally and bound by nobody —
+        # it binds when a bridge first asks to be served.
+        self._callback_ingress = CallbackIngress(
+            host=config.collaboration_callback_host,
+            port=config.collaboration_callback_port,
+            secret=config.jwt_secret_key,
+        )
+        self._callback_endpoints: dict[str, CallbackEndpoint] = {}
         # Serialises registration. The exclusivity check reads the stored
         # bridges and the winner is not written until several awaits later,
         # so two concurrent registrations would both see a free resource and
@@ -483,6 +496,10 @@ class CollaborationBridgeLifecycleService:
         )
         adapter.set_max_attachment_bytes(self._config.agent_media_max_bytes)
 
+        callback_endpoint = self._callback_ingress.endpoint_for(bridge.type, bridge_id)
+        adapter.set_callback_endpoint(callback_endpoint)
+        self._callback_endpoints[bridge_id] = callback_endpoint
+
         gateway_warning = gateway_url_warning(
             self._config.gateway_public_url, adapter_cls.renders_custom_url_schemes
         )
@@ -631,6 +648,12 @@ class CollaborationBridgeLifecycleService:
                 self._held_resources.pop(bridge_id, None)
 
     async def stop(self, bridge_id: str) -> None:
+        # Before the adapter goes, so a press in flight is answered as gone
+        # rather than handled by a bridge that is halfway shut down.
+        endpoint = self._callback_endpoints.pop(bridge_id, None)
+        if endpoint is not None:
+            await endpoint.withdraw()
+
         bridge_core = self._bridges.get(bridge_id)
         if bridge_core:
             await bridge_core.stop()
@@ -656,6 +679,7 @@ class CollaborationBridgeLifecycleService:
         logger.info("Stopping all %d collaboration bridges", len(self._bridges))
         for bridge_id in list(self._bridges):
             await self.stop(bridge_id)
+        await self._callback_ingress.stop()
 
     async def remove(self, bridge_id: str) -> None:
         """Disconnect a messaging app and take its identities with it.

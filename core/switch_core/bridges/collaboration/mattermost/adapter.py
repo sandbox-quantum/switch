@@ -10,6 +10,7 @@ import time
 import uuid
 from collections import OrderedDict
 from collections.abc import Awaitable, Callable
+from contextvars import ContextVar
 from dataclasses import replace
 from datetime import datetime
 from typing import Any, ClassVar
@@ -38,6 +39,11 @@ from switch_core.bridges.collaboration.adapter import (
     RichContentThrottled,
     TurnActivity,
 )
+from switch_core.bridges.collaboration.ingress import (
+    CallbackEndpoint,
+    CallbackRefused,
+)
+from switch_core.bridges.collaboration.mattermost.callback import read_press
 from switch_core.bridges.collaboration.models import (
     Attachment,
     AttachmentFailure,
@@ -47,10 +53,12 @@ from switch_core.bridges.collaboration.models import (
     InboundAgentJoin,
     InboundAppJoin,
     InboundCommand,
+    InboundInteraction,
     InboundMessage,
     InboundUserJoin,
     OutboundAttachment,
 )
+from switch_core.bridges.collaboration.session.renderers import position_action
 from switch_core.bridges.collaboration.session.renderers.neutral import (
     request_summary,
     turn_status,
@@ -181,6 +189,25 @@ class MattermostConnectionConfig(BridgeConnectionConfig):
     # credentials and bot tokens are never sent over an unverified https
     # connection. Set False only for a self-signed internal CA you trust.
     verify_tls: bool = True
+    # Base URL (scheme + host, no path) the *Mattermost server* reaches
+    # Switch's callback listener on, for the button presses Mattermost delivers
+    # by HTTP. Not `url` reversed and not `gateway_public_url`: this is a
+    # separate port from the agent API, and the route between the two servers
+    # is frequently nothing like the route a browser takes — a container alias
+    # on a shared network, or an ingress hostname that only exists inside the
+    # cluster. Unset means Switch has no address to give Mattermost, so cards
+    # carry no buttons and stay answerable by typing.
+    callback_base_url: str | None = None
+
+
+# A refusal being collected for the person who pressed, if a press is what we
+# are in the middle of. Mattermost has one chance to say something privately —
+# the `ephemeral_text` on the response to the callback — so a notice raised
+# while the answer is being judged has to be caught here and carried back out
+# rather than posted where the channel would read it.
+_PRESS_NOTICE: ContextVar[list[str] | None] = ContextVar(
+    "switch_mattermost_press_notice", default=None
+)
 
 
 class MattermostAdapter(CollaborationAdapter):
@@ -279,6 +306,14 @@ class MattermostAdapter(CollaborationAdapter):
         self._name_display_read = False
         self._name_display_warned = False
 
+        # This bridge's place on the shared callback listener, installed by the
+        # lifecycle service before start. None when the adapter is running
+        # without one behind it, which is how most of the tests build it.
+        self._callback: CallbackEndpoint | None = None
+
+    def set_callback_endpoint(self, endpoint: CallbackEndpoint) -> None:
+        self._callback = endpoint
+
     # ── Lifecycle ────────────────────────────────────────────────────────────
 
     async def start(
@@ -316,6 +351,8 @@ class MattermostAdapter(CollaborationAdapter):
 
         await self._ensure_admin_bot()
 
+        await self._start_callbacks()
+
         logger.info(
             "Mattermost adapter connected to %s as %s",
             self._config.url,
@@ -326,6 +363,144 @@ class MattermostAdapter(CollaborationAdapter):
         self._admin_driver = None
         self._bot_drivers.clear()
         logger.info("Mattermost adapter stopped")
+
+    # ── Callbacks ────────────────────────────────────────────────────────────
+
+    @property
+    def callback_url(self) -> str | None:
+        """Where this bridge's presses should be delivered, or None if nowhere.
+
+        None when either half is missing: an operator who has not said how the
+        Mattermost server reaches Switch, or an adapter running without a
+        listener behind it. A caller building a button asks this first — there
+        is no button to draw without an address on it.
+        """
+        base = self._config.callback_base_url
+        if not base or self._callback is None:
+            return None
+        return f"{base.rstrip('/')}{self._callback.path}"
+
+    async def _start_callbacks(self) -> None:
+        """Take presses for this bridge, or say once why there will be none.
+
+        A request card is answerable by typing whether or not it carries a
+        button, so no callback address is a reduced service rather than a
+        failure to start. It is said out loud because it is otherwise
+        invisible: cards keep arriving and simply never have anything to press.
+        """
+        if self._callback is None:
+            return
+        url = self.callback_url
+        if url is None:
+            logger.warning(
+                "Mattermost cards on %s will carry no buttons: this bridge has "
+                "no callback_base_url, so there is no address to give the "
+                "Mattermost server for a press. Requests stay answerable by "
+                "typing.",
+                self._config.url,
+            )
+            return
+        await self._callback.serve(self._handle_callback)
+        logger.info(
+            "Mattermost presses for %s will be taken at %s", self._config.url, url
+        )
+
+    async def _handle_callback(self, body: dict[str, Any]) -> dict[str, Any]:
+        """Someone pressed a button on a card this bridge posted.
+
+        Who pressed comes from the body, which the Mattermost server fills in
+        and the button cannot. What the button carried is the card and the
+        option, signed with this bridge's key so that a body assembled by
+        anything but Mattermost — the route is reachable by whoever can reach
+        the port — does not read as a press at all.
+
+        Which card comes from the signed token rather than from the post the
+        press arrived on, and is resolved against the stored record. That is
+        what makes a press work after a restart: nothing about the card is held
+        in memory between posting it and answering it.
+
+        Nothing here dedupes. The same press twice is the same option, by the
+        same person, against the same revision, which the shared layer derives
+        one command id from — so the second is the first rather than a second
+        answer.
+
+        The reply is the one chance to say something to the presser alone:
+        Mattermost shows `ephemeral_text` to them and nobody else. A refusal
+        raised while the answer is being judged reaches `tell_actor`, which
+        leaves it here rather than posting it where the channel would read it.
+        """
+        if self._callback is None:
+            raise CallbackRefused("This bridge takes no callbacks.", status=404)
+        press = read_press(self._callback.key, body)
+        if press is None:
+            raise CallbackRefused("Not a press this bridge will act on.", status=401)
+        if self._on_interaction is None:
+            logger.warning(
+                "A press on a Switch card in Mattermost channel %s has nowhere "
+                "to go: this bridge handles no interactions, so the card should "
+                "not have been drawn with buttons.",
+                press.channel_id,
+            )
+            raise CallbackRefused("This bridge handles no presses.", status=404)
+
+        name = await self._username_for(press.user_id)
+        if name is None:
+            # Refused rather than attributed to the raw id: the id is what the
+            # answer is judged against, but the name is what a puppet is
+            # created under, and inventing one from an id makes a person who
+            # cannot be looked up into a permanent participant named after a
+            # lookup failure.
+            logger.error(
+                "A press in Mattermost channel %s is from a user this bridge "
+                "cannot resolve to a handle, so it is not acted on.",
+                press.channel_id,
+            )
+            raise CallbackRefused("Switch could not identify you.", status=500)
+
+        notices: list[str] = []
+        held = _PRESS_NOTICE.set(notices)
+        try:
+            await self._on_interaction(
+                InboundInteraction(
+                    channel_id=press.channel_id,
+                    sender_id=press.user_id,
+                    sender_name=name,
+                    action_id=position_action(press.position),
+                    value=press.token,
+                    message_ref=press.post_id,
+                )
+            )
+        finally:
+            _PRESS_NOTICE.reset(held)
+
+        if notices:
+            return {"ephemeral_text": notices[0]}
+        return {}
+
+    async def tell_actor(
+        self,
+        channel_id: str,
+        actor_ref: str,
+        actor_name: str,
+        thread_ref: str | None,
+        text: str,
+    ) -> None:
+        """Tell one person their answer did not land, where they can see it.
+
+        A press is answered in the reply to the press itself, which Mattermost
+        shows to that person alone: the channel is told nothing, and it reaches
+        them without the bot needing to be able to open a DM.
+
+        A typed answer has no press to reply to, so it falls back to the base:
+        said in the card's own thread, where everyone reading it sees a notice
+        addressed to someone else. That is the platform's limit rather than a
+        choice — nothing but a callback gives a bot a private reply here.
+        """
+        notices = _PRESS_NOTICE.get()
+        if notices is not None:
+            notices.append(text)
+            return
+        await super().tell_actor(channel_id, actor_ref, actor_name, thread_ref, text)
 
     # ── Messaging ────────────────────────────────────────────────────────────
 
@@ -944,30 +1119,41 @@ class MattermostAdapter(CollaborationAdapter):
         """
         if not external_user_id:
             return None
+        username = await self._username_for(external_user_id)
+        return f"@{username}" if username else None
+
+    async def _username_for(self, external_user_id: str) -> str | None:
+        """The handle behind a Mattermost user id, or None if it cannot be read.
+
+        Cached because a handle is stable for the life of an account, so a hit
+        saves a round trip on every redraw carrying a mention and on every
+        press.
+        """
         username = self._usernames.get(external_user_id)
-        if username is None:
-            driver = self._admin_driver
-            loop = self._main_loop
-            if driver is None or loop is None:
-                return None
-            try:
-                user = await loop.run_in_executor(
-                    None, driver.users.get_user, external_user_id
-                )
-            except Exception as e:
-                logger.warning(
-                    "Could not resolve Mattermost user %s to a handle: %s",
-                    external_user_id,
-                    e,
-                )
-                return None
-            username = str(user.get("username") or "")
-            if not username:
-                return None
-            self._usernames[external_user_id] = username
-            while len(self._usernames) > self._usernames_max:
-                self._usernames.popitem(last=False)
-        return f"@{username}"
+        if username is not None:
+            return username
+        driver = self._admin_driver
+        loop = self._main_loop
+        if driver is None or loop is None:
+            return None
+        try:
+            user = await loop.run_in_executor(
+                None, driver.users.get_user, external_user_id
+            )
+        except Exception as e:
+            logger.warning(
+                "Could not resolve Mattermost user %s to a handle: %s",
+                external_user_id,
+                e,
+            )
+            return None
+        username = str(user.get("username") or "")
+        if not username:
+            return None
+        self._usernames[external_user_id] = username
+        while len(self._usernames) > self._usernames_max:
+            self._usernames.popitem(last=False)
+        return username
 
     async def delete_message(self, channel_id: str, message_ref: str) -> None:
         if not self._admin_driver or not self._main_loop:

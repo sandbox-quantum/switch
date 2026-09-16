@@ -15,10 +15,10 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from switch_core.bridges.collaboration.ingress import CallbackIngress
 from switch_core.bridges.collaboration.mattermost.callback import (
     CONTEXT_KEY,
     action_context,
-    callback_key,
     read_press,
 )
 
@@ -33,8 +33,14 @@ POST_ID = "post-abc"
 CHANNEL_ID = "channel-abc"
 
 
+def _key_for(bridge_id: str, secret: str = SERVER_SECRET) -> str:
+    """The key a bridge would really be handed, derived the way production does."""
+    ingress = CallbackIngress(host="127.0.0.1", port=0, secret=secret)
+    return ingress.endpoint_for("mattermost", bridge_id).key
+
+
 def _key() -> str:
-    return callback_key(SERVER_SECRET, BRIDGE_ID)
+    return _key_for(BRIDGE_ID)
 
 
 def _body(context: dict[str, Any], **overrides: Any) -> dict[str, Any]:
@@ -115,14 +121,13 @@ def test_a_token_changed_after_signing_is_refused() -> None:
 
 
 def test_another_bridges_signature_is_refused() -> None:
-    other = callback_key(SERVER_SECRET, OTHER_BRIDGE_ID)
-    context = action_context(other, TOKEN, POSITION)
+    context = action_context(_key_for(OTHER_BRIDGE_ID), TOKEN, POSITION)
 
     assert read_press(_key(), _body(context)) is None
 
 
 def test_a_signature_from_a_rotated_secret_says_so(caplog: Any) -> None:
-    stale = callback_key("the-previous-server-secret", BRIDGE_ID)
+    stale = _key_for(BRIDGE_ID, secret="the-previous-server-secret")
     context = action_context(stale, TOKEN, POSITION)
 
     with caplog.at_level(logging.WARNING):
@@ -130,19 +135,6 @@ def test_a_signature_from_a_rotated_secret_says_so(caplog: Any) -> None:
 
     assert "rotated" in caplog.text
     assert TOKEN in caplog.text
-
-
-def test_each_bridge_signs_with_a_key_of_its_own() -> None:
-    assert callback_key(SERVER_SECRET, BRIDGE_ID) != callback_key(
-        SERVER_SECRET, OTHER_BRIDGE_ID
-    )
-
-
-def test_the_key_is_not_the_server_secret() -> None:
-    key = _key()
-
-    assert SERVER_SECRET not in key
-    assert key != SERVER_SECRET
 
 
 def test_a_press_naming_nobody_is_refused() -> None:

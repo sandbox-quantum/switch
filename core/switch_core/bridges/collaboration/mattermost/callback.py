@@ -17,33 +17,6 @@ CONTEXT_KEY = "switch"
 # never be replayed as another if a second kind of button is ever added.
 _PURPOSE = "answer"
 
-# What the bridge's own key is derived from, kept apart from anything else the
-# server secret is used for.
-_KEY_PURPOSE = "mattermost-callback"
-
-
-def callback_key(server_secret: str, bridge_id: str) -> str:
-    """The key this bridge signs its buttons with.
-
-    Derived rather than stored. A secret on the bridge's saved configuration
-    would have to be minted when the bridge is registered, which leaves every
-    Mattermost bridge registered before this existed unable to carry a button
-    until somebody edits its configuration by hand — and adds a second secret
-    to keep, back up and rotate. Deriving it costs none of that: the key exists
-    the moment the bridge starts, and rotating the server secret rotates it.
-
-    Separated by bridge, so one bridge's signature cannot be presented to
-    another, and by purpose, so it is not the same value as anything else
-    derived from the same secret. Rotating the server secret invalidates the
-    buttons on cards already posted; those cards stay answerable by typing, and
-    a press on one is refused in the log by name rather than silently.
-    """
-    return hmac.new(
-        server_secret.encode(),
-        f"{_KEY_PURPOSE}:{bridge_id}".encode(),
-        hashlib.sha256,
-    ).hexdigest()
-
 
 @dataclass(frozen=True)
 class Press:
