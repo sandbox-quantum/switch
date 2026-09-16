@@ -24,6 +24,7 @@ from pydantic.json_schema import SkipJsonSchema
 from switch_core.bridges.agent.commands import COMMANDS_BY_NAME
 from switch_core.bridges.collaboration.adapter import (
     CollaborationAdapter,
+    RemovalFailed,
     RequestCard,
     RichContent,
     RichContentFailed,
@@ -57,6 +58,7 @@ from switch_core.bridges.collaboration.teams.cards import (
 from switch_core.bridges.collaboration.teams.connector import (
     BotConnectorClient,
     BotConnectorConflict,
+    BotConnectorGone,
     BotConnectorRefused,
     BotConnectorThrottled,
 )
@@ -536,6 +538,12 @@ class TeamsAdapter(CollaborationAdapter):
     # uncertain card is disclosed rather than looked for.
     recovers_uncertain_posts: ClassVar[bool] = False
     carries_publication_marker: ClassVar[bool] = False
+
+    #: A bot deletes its own activities through the Bot Connector, which is how
+    #: every card was posted. What a posts-layout channel leaves behind is
+    #: *"This message has been deleted."*; a chat and a threads-layout channel
+    #: take the card away entirely. See `remove_publication`.
+    removes_answered_cards: ClassVar[bool] = True
 
     @classmethod
     async def prepare_config(
@@ -1664,6 +1672,64 @@ class TeamsAdapter(CollaborationAdapter):
                 f"Teams refused the edit to {address.activity_id} in "
                 f"conversation {address.conversation_id}: {error}",
                 text=text,
+            ) from error
+
+    async def remove_publication(self, channel_id: str, message_ref: str) -> None:
+        """Take an answered card out of the conversation, or say why it is still there.
+
+        Addressed through `_publication_address`, which reads back the service
+        URL and conversation Teams confirmed when it took the card, rather than
+        through `_locate`, whose map a restart empties.
+
+        A 404 is read against that address rather than on its own. Gone at an
+        address Teams issued means nothing remains there, which is what the
+        caller asked for. Gone at an address this process rebuilt from the
+        channel and a stored root may be the guess being wrong instead, and an
+        outcome that cannot be told apart from a bad address is not one to
+        record: that is a failure, and the card is asked about again.
+
+        A 412 is a wait for the same reason it is on a redraw — the activity is
+        there and something else wrote to it first — so it comes back as a
+        backoff rather than as a card that could not be removed.
+
+        In a posts-layout channel Teams substitutes *"This message has been
+        deleted."* where the card was. A chat and a threads-layout channel take
+        it away entirely.
+        """
+        connector = self._connector
+        if connector is None:
+            raise RemovalFailed("Teams is not connected.")
+
+        address = self._publication_address(channel_id, message_ref, None)
+        try:
+            async with self._writes_to(address.conversation_id):
+                await connector.delete_activity(
+                    service_url=address.service_url,
+                    conversation_id=address.conversation_id,
+                    activity_id=address.activity_id,
+                )
+        except BotConnectorThrottled as error:
+            raise self._throttled(error, "") from error
+        except BotConnectorConflict as error:
+            raise self._conflicted(error, "") from error
+        except BotConnectorGone as error:
+            if not address.trusted:
+                raise RemovalFailed(
+                    f"Teams found nothing at the address rebuilt for "
+                    f"{message_ref} in channel {channel_id}, which is as likely "
+                    f"to be the address as the card: {error}"
+                ) from error
+            # Worth a line because the innocent reading — a deletion whose
+            # acknowledgement we lost, or one done by hand — is not the only one.
+            logger.warning(
+                "Teams card %s was already gone when it was taken back: %s",
+                message_ref,
+                error,
+            )
+        except Exception as error:
+            raise RemovalFailed(
+                f"Teams would not delete {address.activity_id} in conversation "
+                f"{address.conversation_id}: {error}"
             ) from error
 
     # ── Channels ─────────────────────────────────────────────────────────────
