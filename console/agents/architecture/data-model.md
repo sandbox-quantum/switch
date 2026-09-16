@@ -19,7 +19,7 @@ The schema is defined in `apps/switch-console-desktop/src/main/db/schema.ts`.
 |---|---|---|
 | **location** | `project` + `workspace` | A working directory on a host — local, or on an SSH host. Replaces both the upstream project *and* the workspace abstraction; the table is `locations`. |
 | **agent** | *(none)* — new | A Switch agent identity bound to one provider. **Many agents per directory.** Carries the optional Switch identity (`switchAgentId`, `apiEndpoint`) detected from `.claude/settings.local.json`. |
-| **provider** | `agent` | The CLI agent kind (claude, codex, gemini, …). Upstream called this an "agent"; here it's a *provider*, referenced by an agent via `providerId`. It stays a static code registry, not a table. |
+| **provider** | `agent` | The CLI agent kind (claude, codex, antigravity, …). Upstream called this an "agent"; here it's a *provider*, referenced by an agent via `providerId`. It stays a static code registry, not a table. |
 | **session** | `conversation` | One instantiation/run of an agent. The unit shown under an agent in the sidebar. |
 | *(folded into session)* | `terminal` | A session is 1:1 with its terminal, so the terminal's `shellId` lives on the session; there is no `terminals` table. |
 | **message** | `message` | A message in a session (was keyed by `conversationId`, now `sessionId`). |

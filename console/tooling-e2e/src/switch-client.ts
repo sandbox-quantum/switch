@@ -348,7 +348,7 @@ export class SwitchClient {
    * be added to a channel.
    */
   async registerKnownAgent(params: {
-    agentType: 'opencode' | 'codex' | 'claude-code' | 'gemini' | 'cursor';
+    agentType: 'opencode' | 'codex' | 'claude-code' | 'antigravity' | 'cursor';
     name: string;
     description: string;
     options?: Record<string, unknown>;

@@ -1,6 +1,7 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { z } from 'zod';
+import { parseModels } from '../antigravity/protocol';
 import { startOpencodeServer, stopOpencodeServer } from '../opencode/server';
 import { JsonRpcError, noopLogger, StdioJsonRpcClient } from '../transport/stdio-json-rpc';
 
@@ -15,7 +16,7 @@ const login: Record<string, string> = {
   claude: 'claude auth login',
   codex: 'codex login',
   cursor: 'agent login',
-  gemini: 'gemini',
+  antigravity: 'agy',
   opencode: 'opencode auth login',
 };
 function result(status: ProviderReadiness['status'], message: string): ProviderReadiness {
@@ -46,6 +47,43 @@ export function parseAuthentication(provider: string, output: string): ProviderR
   }
   return result('unknown', 'Could not verify authentication. Check provider setup and try again.');
 }
+/**
+ * `agy models` is the cheapest signal the CLI gives: it needs the login but
+ * spends no tokens. Stdin is closed and the call is capped, so a CLI that would
+ * rather print a sign-in URL and wait fails the probe instead of hanging.
+ */
+async function checkAntigravity(input: {
+  binaryPath: string;
+  cwd: string;
+  env: Record<string, string>;
+}): Promise<ProviderReadiness> {
+  let output = '';
+  try {
+    const probe = await execute(input.binaryPath, ['models'], {
+      cwd: input.cwd,
+      env: input.env,
+      timeout: 15000,
+      killSignal: 'SIGKILL',
+      maxBuffer: 1024 * 1024,
+    });
+    output = probe.stdout;
+  } catch (error) {
+    const stdout = (error as { stdout?: unknown }).stdout;
+    const stderr = (error as { stderr?: unknown }).stderr;
+    output = `${typeof stdout === 'string' ? stdout : ''}\n${typeof stderr === 'string' ? stderr : ''}`;
+  }
+  const models = parseModels(output);
+  if (models.length > 0)
+    return {
+      status: 'authenticated',
+      message: 'Antigravity listed its models with the stored credentials.',
+      models: models.map((model) => ({ id: model.id, name: model.label })),
+    };
+  if (/authentication|sign.?in|log.?in|oauth|credential/i.test(output))
+    return result('unauthenticated', `Sign in on the execution machine with ${login.antigravity}.`);
+  return result('unknown', 'Could not verify authentication. Check provider setup and try again.');
+}
+
 export async function checkProviderReadiness(input: {
   provider: string;
   binaryPath: string;
@@ -98,13 +136,14 @@ export async function checkProviderReadiness(input: {
       }
       return parseAuthentication(input.provider, output);
     }
-    if (input.provider !== 'codex' && input.provider !== 'gemini')
+    if (input.provider === 'antigravity') return await checkAntigravity(input);
+    if (input.provider !== 'codex')
       return result('unknown', 'This provider has no authentication check.');
     client = new StdioJsonRpcClient({
       command: input.binaryPath,
-      args: input.provider === 'codex' ? ['app-server'] : ['--acp'],
+      args: ['app-server'],
       cwd: input.cwd,
-      env: { ...input.env, GEMINI_CLI_NO_RELAUNCH: '1' },
+      env: input.env,
       logger: noopLogger,
       onExit: () => {},
     });
@@ -113,47 +152,19 @@ export async function checkProviderReadiness(input: {
         ?.dispose()
         .catch(() => console.warn('Provider readiness process cleanup failed.'));
     }, 20000);
-    await client.request(
-      'initialize',
-      input.provider === 'codex'
-        ? { clientInfo: { name: 'switch-console', version: '0.1.0' } }
-        : {
-            protocolVersion: 1,
-            clientCapabilities: {},
-            clientInfo: { name: 'switch-console', version: '0.1.0' },
-          }
+    await client.request('initialize', {
+      clientInfo: { name: 'switch-console', version: '0.1.0' },
+    });
+    client.notify('initialized', null);
+    const account = z
+      .object({ account: z.unknown().nullable(), requiresOpenaiAuth: z.boolean() })
+      .parse(await client.request('account/read', { refreshToken: false }));
+    if (!account.account && account.requiresOpenaiAuth)
+      return result('unauthenticated', 'Sign in on the execution machine with codex login.');
+    return result(
+      account.account ? 'authenticated' : 'unknown',
+      account.account ? 'Signed in.' : 'This Codex backend does not require OpenAI sign-in.'
     );
-    if (input.provider === 'codex') {
-      client.notify('initialized', null);
-      const account = z
-        .object({ account: z.unknown().nullable(), requiresOpenaiAuth: z.boolean() })
-        .parse(await client.request('account/read', { refreshToken: false }));
-      if (!account.account && account.requiresOpenaiAuth)
-        return result('unauthenticated', 'Sign in on the execution machine with codex login.');
-      return result(
-        account.account ? 'authenticated' : 'unknown',
-        account.account ? 'Signed in.' : 'This Codex backend does not require OpenAI sign-in.'
-      );
-    }
-    const session = z
-      .object({
-        models: z
-          .object({
-            availableModels: z.array(
-              z.object({
-                modelId: z.string(),
-                name: z.string(),
-              })
-            ),
-          })
-          .optional(),
-      })
-      .parse(await client.request('session/new', { cwd: input.cwd, mcpServers: [] }));
-    return {
-      status: 'authenticated',
-      message: 'Gemini accepted the session credentials.',
-      models: (session.models?.availableModels ?? []).map((m) => ({ id: m.modelId, name: m.name })),
-    };
   } catch (error) {
     if (
       error instanceof JsonRpcError &&

@@ -1,7 +1,7 @@
 import {
   createClaudeAdapter,
   createCodexAdapter,
-  createGeminiAdapter,
+  createAntigravityAdapter,
   createCursorAdapter,
   createOpencodeAdapter,
   type ProviderAdapter,
@@ -75,10 +75,10 @@ class ProviderAdapterRegistry {
       return createClaudeAdapter({ logger });
     }
     if (providerId === 'cursor') return createCursorAdapter({ logger });
-    if (providerId === 'gemini') return createGeminiAdapter({ logger });
+    if (providerId === 'antigravity') return createAntigravityAdapter({ logger });
     if (providerId === 'codex') return createCodexAdapter({ logger });
     throw new Error(
-      `No provider adapter for '${providerId}'. Only OpenCode, Claude Code, Codex and Gemini CLI can run a provider-backed session today.`
+      `No provider adapter for '${providerId}'. Only OpenCode, Claude Code, Codex, Cursor CLI and Antigravity CLI can run a provider-backed session today.`
     );
   }
 }

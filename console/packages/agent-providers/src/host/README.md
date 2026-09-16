@@ -1,6 +1,6 @@
 # Persistent local SDK host
 
-The host runs Claude, Codex, OpenCode, Gemini and Cursor outside Electron.
+The host runs Claude, Codex, OpenCode, Antigravity and Cursor outside Electron.
 It owns provider processes, a durable command inbox and a replayable chat journal.
 Closing a client leaves execution running. Restarting the host resumes the native
 provider conversation and retains the transcript. Interrupted work is reported;

@@ -45,7 +45,7 @@ export async function getAgentModelCatalogue(params: {
   sshHost: string | null;
   dir: string;
 }): Promise<AgentModelCatalogue> {
-  if (['claude', 'codex', 'cursor', 'gemini'].includes(params.providerId)) {
+  if (['claude', 'codex', 'cursor', 'antigravity'].includes(params.providerId)) {
     const readiness = await getProviderReadiness(params, true);
     return readiness.models.length
       ? { kind: 'available', models: readiness.models.map((model) => ({ ...model, variants: [] })) }

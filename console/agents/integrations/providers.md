@@ -9,9 +9,9 @@
 - `src/main/core/dependencies/registry.ts`
 - `src/main/core/pty/`
 
-## Current Providers (31)
+## Current Providers (30)
 
-codex, claude, grok, devin, cursor, gemini, antigravity, qwen, droid, amp, commandcode, opencode, hermes, copilot, charm, auggie, goose, kimi, kilocode, kiro, rovo, cline, continue, codebuff, freebuff, mistral, jules, junie, pi, letta, autohand
+codex, claude, grok, devin, cursor, antigravity, qwen, droid, amp, commandcode, opencode, hermes, copilot, charm, auggie, goose, kimi, kilocode, kiro, rovo, cline, continue, codebuff, freebuff, mistral, jules, junie, pi, letta, autohand
 
 ## Where Provider Metadata Lives
 
@@ -58,14 +58,18 @@ or notify an inferred status for that event.
 4. validate detection behavior in `src/main/core/dependencies/`
 5. add or update tests for any non-standard behavior
 
-## Gemini ACP
+## Antigravity
 
-Gemini's Switch integration is local and uses `@switch-console/agent-providers`.
-Enable its provider runtime to receive room messages, show the transcript and
-answer permissions in Console or the room. Its existing TUI descriptor supplies
-CLI detection; no standalone connector or remote sidecar integration is claimed.
-SSH hosts retain the existing PTY path; Gemini room integration requires a local ACP session. The Gemini room skill
-is sourced from `connectors/gemini-cli/skills/switch/SKILL.md` and embedded by the
+Antigravity's Switch integration is local and uses `@switch-console/agent-providers`.
+Enable its provider runtime to receive room messages and show the transcript. The
+adapter drives `agy --input-format stream-json --output-format stream-json`, so the
+session is headless: it cannot prompt, and an approval or clarifying question it
+would have raised is denied or skipped rather than surfaced in Console or the room.
+Interrupt restarts the provider process and resumes by conversation id. Its existing
+TUI descriptor supplies CLI detection; no standalone connector or remote sidecar
+integration is claimed. SSH hosts retain the existing PTY path; Antigravity room
+integration requires a local provider-runtime session. The Antigravity room skill is
+sourced from `connectors/antigravity-cli/skills/switch/SKILL.md` and embedded by the
 plugins package, with a parity test.
 
 ### Cursor ACP

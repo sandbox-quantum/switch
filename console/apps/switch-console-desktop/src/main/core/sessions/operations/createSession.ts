@@ -28,7 +28,7 @@ export async function createSession(
   if (!providerAdapterRegistry.supports(agent.providerId))
     return err({
       type: 'spawn-failed',
-      message: 'SDK sessions support Claude Code, Codex, OpenCode, Gemini CLI and Cursor.',
+      message: 'SDK sessions support Claude Code, Codex, OpenCode, Antigravity CLI and Cursor.',
     });
   if (!adopted && process.platform === 'win32' && location?.transport.kind !== 'ssh')
     return err({

@@ -44,8 +44,8 @@ describe('knownAgentTypeForProvider', () => {
   });
 });
 
-it('registers Gemini under its own gateway type', () => {
-  expect(knownAgentTypeForProvider('gemini')).toBe('gemini');
+it('registers Antigravity under its own gateway type', () => {
+  expect(knownAgentTypeForProvider('antigravity')).toBe('antigravity');
 });
 
 it('maps Cursor to its own backend profile', () => {

@@ -107,7 +107,7 @@ const PROVIDER_RUNTIME_PROVIDERS: readonly string[] = [
   'opencode',
   'claude',
   'codex',
-  'gemini',
+  'antigravity',
   'cursor',
 ];
 

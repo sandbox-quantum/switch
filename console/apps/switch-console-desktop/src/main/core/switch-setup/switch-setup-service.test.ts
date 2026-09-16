@@ -266,19 +266,19 @@ describe('switchSetupService.getStatus', () => {
 
 describe('switchSetupService.listAgentTypeAvailability', () => {
   it.each([true, false])(
-    'requires a local Gemini binary, not a separate connector: %s',
+    'requires a local Antigravity binary, not a separate connector: %s',
     async (installed) => {
       mocks.listPlugins.mockReturnValue([
-        { metadata: { id: 'gemini' }, capabilities: { switchSetup: { kind: 'none' } } },
+        { metadata: { id: 'antigravity' }, capabilities: { switchSetup: { kind: 'none' } } },
       ]);
-      mocks.resolveCommandPath.mockResolvedValue(installed ? '/usr/local/bin/gemini' : null);
+      mocks.resolveCommandPath.mockResolvedValue(installed ? '/usr/local/bin/agy' : null);
       expect(await switchSetupService.listAgentTypeAvailability()).toEqual([
         {
-          agentId: 'gemini',
+          agentId: 'antigravity',
           available: installed,
           blockedReason: installed
             ? null
-            : 'Install Gemini CLI on this computer to use ACP sessions.',
+            : 'Install Antigravity CLI on this computer to use SDK sessions.',
         },
       ]);
     }

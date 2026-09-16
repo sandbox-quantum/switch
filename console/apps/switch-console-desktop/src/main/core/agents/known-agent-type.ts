@@ -6,13 +6,13 @@ import type { AgentProviderId } from '@shared/core/providers/agent-provider-regi
  * in `switch_core/gateway/known_agents.py` — a value outside it is rejected at
  * registration, so it is worth catching at the call site instead.
  */
-export type KnownAgentType = 'claude-code' | 'codex' | 'opencode' | 'gemini' | 'cursor';
+export type KnownAgentType = 'claude-code' | 'codex' | 'opencode' | 'antigravity' | 'cursor';
 
 const KNOWN_AGENT_TYPE_BY_PROVIDER: Partial<Record<AgentProviderId, KnownAgentType>> = {
   claude: 'claude-code',
   codex: 'codex',
   opencode: 'opencode',
-  gemini: 'gemini',
+  antigravity: 'antigravity',
   cursor: 'cursor',
 };
 

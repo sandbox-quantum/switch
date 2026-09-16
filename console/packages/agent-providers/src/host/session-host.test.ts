@@ -114,7 +114,7 @@ async function start(provider: Session['provider']) {
   await vi.waitFor(() => expect(host.snapshot().session.status).toBe('ready'));
   return { ...fixture, root, host };
 }
-it.each(['claude', 'codex', 'opencode', 'gemini', 'cursor'] as const)(
+it.each(['claude', 'codex', 'opencode', 'antigravity', 'cursor'] as const)(
   'serializes and deduplicates %s commands across recovery',
   async (provider) => {
     const { root, host, adapter } = await start(provider);

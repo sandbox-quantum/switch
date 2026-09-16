@@ -7,10 +7,10 @@ import { randomUUID } from 'node:crypto';
 import { join, posix } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { sharedConfigSchema, type SharedHostConfig } from '@switch-console/agent-providers';
+import { ANTIGRAVITY_SKILL_CONTENT } from '@switch-console/plugins/agents/antigravity/skill';
 import { CLAUDE_SKILL_CONTENT } from '@switch-console/plugins/agents/claude/skill';
 import { CODEX_SKILL_CONTENT } from '@switch-console/plugins/agents/codex/skill';
 import { CURSOR_SKILL_CONTENT } from '@switch-console/plugins/agents/cursor/skill';
-import { GEMINI_SKILL_CONTENT } from '@switch-console/plugins/agents/gemini/skill';
 import { SWITCH_AGENT_RUNTIME_PIN } from '@switch-console/plugins/distribution';
 import {
   commandStatusSchema,
@@ -283,7 +283,7 @@ export async function buildSharedHostConfig(
   const specialization = (await agentLaunchSpecialization(session.agentId)) ?? {};
   if (!providerAdapterRegistry.supports(session.providerId))
     throw new Error(
-      'SDK sessions support Claude Code, Codex, OpenCode, Gemini and Cursor. Choose one of these providers.'
+      'SDK sessions support Claude Code, Codex, OpenCode, Antigravity and Cursor. Choose one of these providers.'
     );
   if (transport.kind !== 'ssh' && process.platform === 'win32')
     throw new Error(
@@ -377,7 +377,6 @@ export async function buildSharedHostConfig(
         'LANG',
         'TERM',
         'SSH_AUTH_SOCK',
-        'GEMINI_CLI_HOME',
       ],
       mcpRuntime: SWITCH_AGENT_RUNTIME_PIN,
       ...(binaryPath ? { binaryPath } : {}),
@@ -395,8 +394,8 @@ export async function buildSharedHostConfig(
       context: [
         provider === 'claude'
           ? CLAUDE_SKILL_CONTENT
-          : provider === 'gemini'
-            ? GEMINI_SKILL_CONTENT
+          : provider === 'antigravity'
+            ? ANTIGRAVITY_SKILL_CONTENT
             : provider === 'cursor'
               ? CURSOR_SKILL_CONTENT
               : '',

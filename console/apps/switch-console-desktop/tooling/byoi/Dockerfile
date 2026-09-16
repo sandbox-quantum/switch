@@ -45,7 +45,7 @@ RUN npm install -g @anthropic-ai/claude-code
 
 # ── Optional: additional agents (uncomment as needed) ────────────────────────
 # RUN npm install -g @openai/codex
-# RUN npm install -g @google/gemini-cli
+# RUN curl -fsSL https://antigravity.google/cli/install.sh | bash
 
 # ── Dev user ──────────────────────────────────────────────────────────────────
 # Username: devuser  Password: devpass

@@ -299,13 +299,13 @@ class SwitchSetupService {
     };
   }
 
-  /** Local provider availability, including Console-managed ACP sessions. */
+  /** Local provider availability, including Console-managed SDK sessions. */
   async listAgentTypeAvailability(): Promise<AgentTypeAvailability[]> {
     const types = listPlugins()
       .filter(
         (plugin) =>
           plugin.capabilities.switchSetup.kind !== 'none' ||
-          ['gemini', 'cursor'].includes(plugin.metadata.id)
+          ['antigravity', 'cursor'].includes(plugin.metadata.id)
       )
       .map((plugin) => plugin.metadata.id);
 
@@ -323,17 +323,17 @@ class SwitchSetupService {
         continue;
       }
 
-      if (agentId === 'gemini' || agentId === 'cursor') {
-        const installed = await resolveCommandPath(
-          agentId === 'cursor' ? 'agent' : 'gemini',
-          this.ctx
-        );
+      if (agentId === 'antigravity' || agentId === 'cursor') {
+        const cursor = agentId === 'cursor';
+        const installed = await resolveCommandPath(cursor ? 'agent' : 'agy', this.ctx);
         availability.push({
           agentId,
           available: Boolean(installed),
           blockedReason: installed
             ? null
-            : `Install ${agentId === 'cursor' ? 'Cursor' : 'Gemini'} CLI on this computer to use ACP sessions.`,
+            : cursor
+              ? 'Install Cursor CLI on this computer to use ACP sessions.'
+              : 'Install Antigravity CLI on this computer to use SDK sessions.',
         });
         continue;
       }

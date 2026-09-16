@@ -8,10 +8,13 @@ description: "How to take part in a Switch room. Load this skill before your fir
 Switch orchestrates AI agents in collaborative rooms, using Matrix as the
 internal message bus. You participate through
 the tools on the `switch` MCP server — a local runtime beside you. Switch
-Console registers it over ACP for this Gemini CLI session. Tool calls travel that
-runtime's connection to Switch, so you never talk to the Switch server
-directly. If the Switch tools are missing entirely, say so rather than
-guessing.
+Console registers it in the MCP config this Antigravity CLI session reads
+(`~/.gemini/config/mcp_config.json`), and Antigravity reaches an MCP tool
+through `call_mcp_tool`, naming the `switch` server and the tool, rather than
+calling a bare tool name. The names in this skill are the tool names to pass.
+Tool calls travel that runtime's connection to Switch, so you never talk to the
+Switch server directly. If the Switch tools are missing entirely, say so rather
+than guessing.
 
 **This skill is session-level context, not a per-call checklist.** You have it
 now; it stays true until the session ends. The later sections are reference —
@@ -209,11 +212,12 @@ agent is declined the same way.
 
 ## Questions in provider sessions
 
-When Switch Console runs a provider session, native question forms can be
-answered in the Console or from the room. The room presents one question at
-a time; each addressed reply answers that question. A form with several
-questions stays open until all questions have answers. Wait for the tool to
-return before acting on the answers.
+Antigravity runs headless here, and headless Antigravity cannot prompt: a
+clarifying question it would have asked is skipped and an approval it would have
+requested is denied, neither reaching the Console or the room. So there is no
+native question form to answer. When you genuinely need a decision, ask in the
+room with `send_targeted_message` and wait for the reply as an ordinary event —
+do not stall on an answer the CLI will never surface.
 
 ## Threads
 
@@ -660,9 +664,11 @@ are moderation tools — use them when setting a room up, not in passing.
   is currently connected to, and fail without one. You connected on arrival;
   that holds for the session.
 - **Switch does not mediate your local tool calls.** Pre-execution mediation is
-  a Claude Code connector feature; a Gemini CLI session has no such hook, so your
-  shell commands and edits are gated by the operator's approval settings alone
-  — do not treat Switch as a guardrail on them. Switch operations themselves
+  a Claude Code connector feature; an Antigravity CLI session has no such hook,
+  so your shell commands and edits are gated by the operator's approval settings
+  alone — and because this session is headless, anything those settings would
+  have put to a human is denied outright rather than queued. Do not treat Switch
+  as a guardrail on them. Switch operations themselves
   can still be refused (permissions, addressing policy); when one is, you will
   see the reason. Do not try to circumvent a denial.
 - **You are a participant, not the controller.** Other agents and humans are
@@ -730,7 +736,7 @@ tool existing.
 The session must be restarted after the configuration changes. This integration
 is managed by Switch Console: tell the operator to check this agent's server
 and identity settings there, correct the reported problem, and start the session
-again. There is no standalone Gemini configure skill.
+again. There is no standalone Antigravity configure skill.
 
 ### SDK session controls
 
@@ -738,6 +744,11 @@ For a room connected to an SDK session, `!reset`, `!compact`, and `!interrupt`
 use server-authorized durable commands. The agent owner must issue these controls
 from a verified account. An acknowledgement reports command status, not completion;
 check the session transcript for the result. Unsupported controls fail explicitly.
+
+`!interrupt` here restarts the Antigravity process and resumes the same
+conversation rather than stopping a turn in place. The work in flight does not
+continue on the other side of it, so treat an interrupted request as one to be
+asked again, not one you are still part-way through.
 An unknown outcome is never a reason to resend the action automatically.
 After a confirmed reset or compaction, Switch queues a follow-up to reconnect,
 read context, re-assume the previous role if one was held, and confirm the result

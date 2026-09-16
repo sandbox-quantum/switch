@@ -39,7 +39,7 @@ const context = {
 };
 
 describe('chat projection', () => {
-  it.each(['claude', 'codex', 'opencode', 'gemini', 'cursor'] as const)(
+  it.each(['claude', 'codex', 'opencode', 'antigravity', 'cursor'] as const)(
     'projects %s text with bounded full replacements and immediate final state',
     (provider) => {
       const projector = new ChatProjector(session(provider));
