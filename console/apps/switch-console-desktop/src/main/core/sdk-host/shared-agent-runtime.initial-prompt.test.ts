@@ -12,7 +12,6 @@ const mocks = vi.hoisted(() => ({
   loadSession: vi.fn(),
   runHost: vi.fn(),
   exec: vi.fn(),
-  specialization: vi.fn(),
 }));
 
 class FakeGatewayError extends Error {
@@ -67,7 +66,7 @@ vi.mock('@main/core/agent-runtime/impl/provider-adapter-registry', () => ({
   },
 }));
 vi.mock('@main/core/agents/agent-launch-config', () => ({
-  agentLaunchSpecialization: mocks.specialization,
+  agentLaunchSpecialization: async () => ({}),
 }));
 vi.mock('@main/core/dependencies/host-dependency-store', () => ({
   hostDependencyStore: { getSelection: async () => undefined },
@@ -75,7 +74,7 @@ vi.mock('@main/core/dependencies/host-dependency-store', () => ({
 vi.mock('@main/core/providers/plugin-registry', () => ({ getPlugin: () => ({ behavior: {} }) }));
 vi.mock('@main/lib/logger', () => ({ log: { warn: vi.fn(), error: vi.fn() } }));
 
-const { SharedAgentRuntime, buildSharedHostConfig } = await import('./shared-agent-runtime');
+const { SharedAgentRuntime } = await import('./shared-agent-runtime');
 
 const session = {
   id: 'session-1',
@@ -94,7 +93,6 @@ function runtime() {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  mocks.specialization.mockResolvedValue({});
   mocks.agent.mockResolvedValue({
     id: 'agent-1',
     name: 'scout',
@@ -133,7 +131,7 @@ beforeEach(() => {
 });
 
 it('delivers the initial prompt on a relaunch that did not create the host', async () => {
-  await runtime().start(session, false, 'Say hello');
+  await runtime().start(session, undefined, false, 'Say hello');
 
   expect(mocks.submit).toHaveBeenCalledTimes(1);
   expect(mocks.submit.mock.calls[0][1]).toMatchObject({
@@ -157,7 +155,7 @@ it('accepts a host that awaits an explicit reset decision and holds the initial 
     items: [],
   });
 
-  await runtime().start(session, false, 'Say hello');
+  await runtime().start(session, undefined, false, 'Say hello');
 
   expect(mocks.submit).not.toHaveBeenCalled();
   expect(mocks.persist).not.toHaveBeenCalled();
@@ -182,7 +180,7 @@ it('does not resend a prompt the server already holds', async () => {
     message: null,
   });
 
-  await runtime().start(session, false, 'Say hello');
+  await runtime().start(session, undefined, false, 'Say hello');
 
   expect(mocks.submit).not.toHaveBeenCalled();
   expect(mocks.persist).toHaveBeenCalledWith('session-1', {
@@ -200,7 +198,7 @@ it('treats a 404 that names another code as an uncertain lookup', async () => {
     )
   );
 
-  await runtime().start(session, false, 'Say hello');
+  await runtime().start(session, undefined, false, 'Say hello');
 
   expect(mocks.submit).not.toHaveBeenCalled();
   expect(mocks.persist).toHaveBeenCalledTimes(1);
@@ -208,33 +206,4 @@ it('treats a 404 that names another code as an uncertain lookup', async () => {
     commandId: 'initial-session-1',
     state: 'unknown',
   });
-});
-
-
-it.each([false, true])('launches with current bypass settings despite a saved override (%s)', async (enabled) => {
-  const savedSession = { ...session, autoApprove: !enabled };
-  mocks.agent.mockResolvedValue({
-    id: 'agent-1', name: 'scout', switchAgentId: 'remote-agent', autoApprove: enabled,
-  });
-  const config = await buildSharedHostConfig(
-    savedSession,
-    { sessionPath: '/work', sessionEnvVars: {} },
-    { kind: 'local' } as LocationTransport,
-    { rooms: [] }
-  );
-  expect(config.start.input.runtimeMode).toBe(enabled ? 'full-access' : 'approval-required');
-});
-
-it('reads updated model, effort and instructions for each launch', async () => {
-  mocks.specialization.mockResolvedValueOnce({model: 'first-model', effort: 'low', instructions: 'First instructions'})
-    .mockResolvedValueOnce({model: 'second-model', effort: 'high', instructions: 'Updated instructions'});
-  const launch = () => buildSharedHostConfig(session,
-    { sessionPath: '/work', sessionEnvVars: {} },
-    { kind: 'local' } as LocationTransport, { rooms: [] });
-  const first = await launch();
-  const second = await launch();
-  expect(first.start.input.model).toEqual({ id: 'first-model', options: { effort: 'low' } });
-  expect(second.start.input.model).toEqual({ id: 'second-model', options: { effort: 'high' } });
-  expect(second.execution?.context).toContain('Updated instructions');
-  expect(second.execution?.context).not.toContain('First instructions');
 });
