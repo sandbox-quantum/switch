@@ -89,6 +89,14 @@ Call `connect_to_room` again only when: you are **switching rooms**, you are
 not connected**. Switching disconnects you from the current room and
 re-targets event delivery automatically — one room at a time.
 
+**Unless your session is bound to one room.** A session started by an always-on
+agent host serves exactly that room, and `connect_to_room` for any other room is
+refused before the request reaches Switch — the error names the room you are
+bound to. That is the design, not a fault: do not retry it, and do not treat it
+as a broken connection. Say plainly which room you are bound to, and carry on
+there. Another room's work belongs to that room's own session, which the person
+who asked can address in that room directly.
+
 ## Receiving room events
 
 Events arrive on their own as `<channel>` notifications — no polling tool to
