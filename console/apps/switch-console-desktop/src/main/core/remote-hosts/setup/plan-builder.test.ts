@@ -11,7 +11,6 @@ const NOW = '2026-02-02T00:00:00.000Z';
 const CORE = [
   { id: 'git', name: 'Git' },
   { id: 'node', name: 'Node.js' },
-  { id: 'tmux', name: 'tmux' },
   { id: 'gh', name: 'GitHub CLI' },
 ];
 const AGENTS = [{ agentId: 'claude-code', name: 'Claude Code' }];
@@ -31,7 +30,6 @@ describe('buildSetupPlan', () => {
     expect(build().steps.map((s) => s.id)).toEqual([
       'git',
       'node',
-      'tmux',
       'gh',
       'claude-code',
       agentPluginStepId('claude-code'),
@@ -41,7 +39,7 @@ describe('buildSetupPlan', () => {
   it('leaves every core tool required, so none can strand a host silently', () => {
     const plan = build();
     const optional = plan.steps.filter((s) => s.optional).map((s) => s.id);
-    expect(optional).toEqual(['tmux']);
+    expect(optional).toEqual([]);
   });
 
   it('keeps the required core tools required', () => {
@@ -141,13 +139,8 @@ describe('buildSetupPlan — rebuilding onto an existing plan', () => {
   });
 
   it('re-imposes canonical order even if the stored order differed', () => {
-    const plan = build(
-      existingPlan([
-        { id: 'tmux', state: 'satisfied' },
-        { id: 'git', state: 'satisfied' },
-      ])
-    );
-    expect(plan.steps.map((s) => s.id).slice(0, 3)).toEqual(['git', 'node', 'tmux']);
+    const plan = build(existingPlan([{ id: 'git', state: 'satisfied' }]));
+    expect(plan.steps.map((s) => s.id).slice(0, 2)).toEqual(['git', 'node']);
   });
 });
 

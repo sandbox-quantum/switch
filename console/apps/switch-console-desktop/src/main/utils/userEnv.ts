@@ -34,8 +34,6 @@ const PRESERVE_KEYS = new Set([
 
 export const SHELL_ENV_CAPTURE_GUARD: Record<string, string> = {
   DISABLE_AUTO_UPDATE: 'true',
-  ZSH_TMUX_AUTOSTART: 'false',
-  ZSH_TMUX_AUTOSTARTED: 'true',
 };
 
 const USER_BIN_DIRS = [path.join(os.homedir(), '.local', 'bin')];

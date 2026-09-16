@@ -6,7 +6,7 @@
  * CLIs are installed with npm and therefore need Node first. Here the order is
  * declared once, in one place:
  *
- *   1. core host tools, in dependency order (git → node → tmux → …)
+ *   1. core host tools, in dependency order (git → node)
  *   2. per agent type: its CLI, then the Switch connector plugin
  *
  * Rebuilding is **merge, not replace**. A plan is rebuilt whenever the set of
@@ -77,9 +77,7 @@ export function buildSetupPlan(input: BuildPlanInput): HostSetupPlan {
   const steps: HostSetupStep[] = [];
 
   for (const dep of coreDependencies) {
-    steps.push(
-      blankStep(dep.id, 'core-dependency', dep.name, now, { optional: dep.id === 'tmux' })
-    );
+    steps.push(blankStep(dep.id, 'core-dependency', dep.name, now));
   }
 
   for (const agent of agentTypes) {

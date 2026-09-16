@@ -112,8 +112,8 @@ describe('preflightRemoteSession', () => {
   });
 
   it('fails loud listing every missing binary', async () => {
-    const deps = makeDeps({ missingBinaries: ['tmux', 'git'], credsFile: CREDS_FILE });
-    await expect(preflightRemoteSession(deps)).rejects.toThrow(/missing required tools: tmux, git/);
+    const deps = makeDeps({ missingBinaries: ['node', 'git'], credsFile: CREDS_FILE });
+    await expect(preflightRemoteSession(deps)).rejects.toThrow(/missing required tools: node, git/);
   });
 
   it('fails loud when node is present but too old', async () => {

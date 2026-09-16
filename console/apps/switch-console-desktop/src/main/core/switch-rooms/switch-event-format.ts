@@ -95,7 +95,7 @@ export function formatEventForInjection(
  * Annotation appended to an injected message that carried attachments.
  * Unlike the connector channel — which surfaces them as `image_path` /
  * `file_path` notification attributes plus a static instruction — the pollers
- * inject plain text into a PTY/tmux pane and have no separate metadata
+ * inject plain text into a terminal pane and have no separate metadata
  * channel, so the annotation itself must both signal the attachments and tell
  * the agent how to read them.
  *

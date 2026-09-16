@@ -10,7 +10,6 @@ import { OnboardingChecklistRow } from './OnboardingSettingsRow';
 import {
   AutoGenerateSessionNamesRow,
   AutoTrustWorktreesRow,
-  EnableTmuxRow,
   PreserveSessionNameCapitalizationRow,
 } from './SessionSettingsRows';
 import TelemetrySettingsCard from './TelemetrySettingsCard';
@@ -43,7 +42,6 @@ function GeneralSettingsPage() {
       <AutoGenerateSessionNamesRow />
       <AutoTrustWorktreesRow />
       <PreserveSessionNameCapitalizationRow />
-      <EnableTmuxRow />
       <NotificationSettingsCard />
       <OnboardingChecklistRow />
       <TelemetrySettingsCard />
