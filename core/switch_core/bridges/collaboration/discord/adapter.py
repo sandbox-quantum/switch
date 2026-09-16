@@ -60,6 +60,9 @@ from switch_core.bridges.collaboration.session.renderers import (
     position_action,
 )
 from switch_core.bridges.collaboration.session.renderers.neutral import (
+    ACTIVITY_FAILED,
+    ACTIVITY_GONE,
+    ACTIVITY_UNREADABLE,
     activity_log,
     render_request,
     turn_status,
@@ -151,22 +154,6 @@ _ACTIVITY_REFRESH_ID = f"{_ACTIVITY_PREFIX}:r"
 _ACTIVITY_LABEL = "View activity"
 _REFRESH_LABEL = "Refresh"
 _CONSOLE_LABEL = "Open in Switch Console"
-
-# What a reader is told when the press cannot be answered, privately and in
-# place of the log. Said rather than left silent: a button that does nothing
-# reads as Discord having dropped the press.
-_ACTIVITY_GONE = (
-    "There is no activity behind this message any more. It may belong to a "
-    "session that has since been removed."
-)
-_ACTIVITY_UNREADABLE = (
-    "You can no longer read the conversation this turn was published into, so "
-    "its activity is not shown."
-)
-_ACTIVITY_FAILED = (
-    "Switch could not read this turn's activity just now. Try again, or open "
-    "the session in Switch Console."
-)
 
 
 def _custom_id(token: str, position: int) -> str:
@@ -2693,7 +2680,7 @@ class DiscordAdapter(CollaborationAdapter):
         resolve = self._resolve_activity
         location_id = _conversation_in(ref)
         if resolve is None or location_id is None:
-            await self._privately(interaction, _ACTIVITY_GONE, ref)
+            await self._privately(interaction, ACTIVITY_GONE, ref)
             return
         try:
             location = await self._get_channel(location_id)
@@ -2704,10 +2691,10 @@ class DiscordAdapter(CollaborationAdapter):
                 location_id,
                 ref,
             )
-            await self._privately(interaction, _ACTIVITY_GONE, ref)
+            await self._privately(interaction, ACTIVITY_GONE, ref)
             return
         if not await self._still_reads(location, interaction.user):
-            await self._privately(interaction, _ACTIVITY_UNREADABLE, ref)
+            await self._privately(interaction, ACTIVITY_UNREADABLE, ref)
             return
         parent_id = getattr(location, "parent_id", None)
         channel_id = str(parent_id if parent_id is not None else location.id)
@@ -2720,10 +2707,10 @@ class DiscordAdapter(CollaborationAdapter):
                 ref,
                 channel_id,
             )
-            await self._privately(interaction, _ACTIVITY_FAILED, ref)
+            await self._privately(interaction, ACTIVITY_FAILED, ref)
             return
         if snapshot is None:
-            await self._privately(interaction, _ACTIVITY_GONE, ref)
+            await self._privately(interaction, ACTIVITY_GONE, ref)
             return
         await self._privately(
             interaction,

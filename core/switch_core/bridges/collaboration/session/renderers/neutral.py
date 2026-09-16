@@ -112,6 +112,32 @@ _LOG_EMPTY = "No tool calls."
 _LOG_EMPTY_YET = "No tool calls yet."
 _LOG_CUT = "…{left} earlier in this turn, not shown."
 
+# What a reader is told, privately and in place of the log, when the press
+# asking for it cannot be answered. Said rather than left silent: a button that
+# answers with nothing reads as the platform having dropped the press, and the
+# reader goes on pressing it.
+#
+# Here rather than in each adapter because a reader on two platforms is one
+# reader, and the same refusal worded two ways reads as two different problems.
+# Which of the three applies is the adapter's to decide — only it knows who
+# pressed and what the platform would say about them.
+ACTIVITY_GONE = (
+    "There is no activity behind this message any more. It may belong to a "
+    "session that has since been removed."
+)
+# Not "no longer": on one platform this is access that was taken away, on
+# another it is a reader who never had it — an open channel they can read
+# without having joined, which is not membership and is all Mattermost will
+# vouch for. The sentence has to be true of both.
+ACTIVITY_UNREADABLE = (
+    "You cannot read the conversation this turn was published into, so its "
+    "activity is not shown."
+)
+ACTIVITY_FAILED = (
+    "Switch could not read this turn's activity just now. Try again, or open "
+    "the session in Switch Console."
+)
+
 _OUTCOME_WORDS = {
     "in-progress": "running",
     "completed": "done",

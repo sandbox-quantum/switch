@@ -31,10 +31,7 @@ import pytest
 
 from switch_core.bridges.collaboration.adapter import ActivitySnapshot
 from switch_core.bridges.collaboration.discord.adapter import (
-    _ACTIVITY_FAILED,
-    _ACTIVITY_GONE,
     _ACTIVITY_LABEL,
-    _ACTIVITY_UNREADABLE,
     _ACTIVITY_VIEW_ID,
     _CONSOLE_LABEL,
     _MAX_BUTTON_LABEL,
@@ -42,6 +39,11 @@ from switch_core.bridges.collaboration.discord.adapter import (
     _REFRESH_LABEL,
     DiscordAdapter,
     _refresh_id,
+)
+from switch_core.bridges.collaboration.session.renderers.neutral import (
+    ACTIVITY_FAILED,
+    ACTIVITY_GONE,
+    ACTIVITY_UNREADABLE,
 )
 
 from .test_discord_sdk_only import (
@@ -492,7 +494,7 @@ async def test_a_reference_that_is_not_an_address_is_told_there_is_nothing() -> 
     await adapter._handle_interaction(press)  # type: ignore[arg-type]
 
     assert asked == []
-    assert _shown(press) == _ACTIVITY_GONE
+    assert _shown(press) == ACTIVITY_GONE
 
 
 # ── Who may read it ──────────────────────────────────────────────────────────
@@ -507,7 +509,7 @@ async def test_a_reader_who_has_lost_the_channel_is_told_rather_than_shown() -> 
     await adapter._handle_interaction(press)  # type: ignore[arg-type]
 
     assert asked == []
-    assert _shown(press) == _ACTIVITY_UNREADABLE
+    assert _shown(press) == ACTIVITY_UNREADABLE
 
 
 async def test_a_reader_who_cannot_read_the_history_is_refused_too() -> None:
@@ -519,7 +521,7 @@ async def test_a_reader_who_cannot_read_the_history_is_refused_too() -> None:
 
     await adapter._handle_interaction(press)  # type: ignore[arg-type]
 
-    assert _shown(press) == _ACTIVITY_UNREADABLE
+    assert _shown(press) == ACTIVITY_UNREADABLE
 
 
 async def test_someone_who_has_left_the_guild_is_refused() -> None:
@@ -529,7 +531,7 @@ async def test_someone_who_has_left_the_guild_is_refused() -> None:
 
     await adapter._handle_interaction(press)  # type: ignore[arg-type]
 
-    assert _shown(press) == _ACTIVITY_UNREADABLE
+    assert _shown(press) == ACTIVITY_UNREADABLE
 
 
 async def test_a_private_thread_asks_for_membership_not_visibility() -> None:
@@ -547,7 +549,7 @@ async def test_a_private_thread_asks_for_membership_not_visibility() -> None:
     await adapter._handle_interaction(press)  # type: ignore[arg-type]
 
     assert asked == []
-    assert _shown(press) == _ACTIVITY_UNREADABLE
+    assert _shown(press) == ACTIVITY_UNREADABLE
 
 
 async def test_a_member_of_that_thread_is_shown_it() -> None:
@@ -583,7 +585,7 @@ async def test_a_refresh_is_authorised_against_the_thread_its_reference_names() 
     await adapter._handle_interaction(press)  # type: ignore[arg-type]
 
     assert asked == []
-    assert _shown(press) == _ACTIVITY_UNREADABLE
+    assert _shown(press) == ACTIVITY_UNREADABLE
 
 
 async def test_a_destination_nobody_can_ask_about_is_refused_not_assumed(
@@ -599,7 +601,7 @@ async def test_a_destination_nobody_can_ask_about_is_refused_not_assumed(
     with caplog.at_level(logging.WARNING):
         await adapter._handle_interaction(press)  # type: ignore[arg-type]
 
-    assert _shown(press) == _ACTIVITY_UNREADABLE
+    assert _shown(press) == ACTIVITY_UNREADABLE
     assert any(
         "Cannot establish who may read" in r.getMessage() for r in caplog.records
     )
@@ -629,7 +631,7 @@ async def test_someone_not_in_that_channel_is_refused_it() -> None:
     await adapter._handle_interaction(press)  # type: ignore[arg-type]
 
     assert asked == []
-    assert _shown(press) == _ACTIVITY_UNREADABLE
+    assert _shown(press) == ACTIVITY_UNREADABLE
 
 
 async def test_a_channel_that_cannot_say_who_is_in_it_is_refused(
@@ -643,7 +645,7 @@ async def test_a_channel_that_cannot_say_who_is_in_it_is_refused(
     with caplog.at_level(logging.WARNING):
         await adapter._handle_interaction(press)  # type: ignore[arg-type]
 
-    assert _shown(press) == _ACTIVITY_UNREADABLE
+    assert _shown(press) == ACTIVITY_UNREADABLE
     assert any("Cannot establish who is in" in r.getMessage() for r in caplog.records)
 
 
@@ -659,7 +661,7 @@ async def test_a_message_showing_no_turn_says_so_rather_than_nothing() -> None:
 
     await adapter._handle_interaction(press)  # type: ignore[arg-type]
 
-    assert _shown(press) == _ACTIVITY_GONE
+    assert _shown(press) == ACTIVITY_GONE
 
 
 async def test_a_reference_to_a_channel_discord_will_not_name_says_so() -> None:
@@ -670,7 +672,7 @@ async def test_a_reference_to_a_channel_discord_will_not_name_says_so() -> None:
     await adapter._handle_interaction(press)  # type: ignore[arg-type]
 
     assert asked == []
-    assert _shown(press) == _ACTIVITY_GONE
+    assert _shown(press) == ACTIVITY_GONE
 
 
 async def test_a_read_that_fails_is_reported_to_the_reader_and_the_log(
@@ -683,7 +685,7 @@ async def test_a_read_that_fails_is_reported_to_the_reader_and_the_log(
     with caplog.at_level(logging.ERROR):
         await adapter._handle_interaction(press)  # type: ignore[arg-type]
 
-    assert _shown(press) == _ACTIVITY_FAILED
+    assert _shown(press) == ACTIVITY_FAILED
     assert any(
         "failed, so the reader is told" in r.getMessage() for r in caplog.records
     )
@@ -779,7 +781,7 @@ async def test_an_unpublished_bridge_answers_a_stale_button_rather_than_hanging(
 
     await adapter._handle_interaction(press)  # type: ignore[arg-type]
 
-    assert _shown(press) == _ACTIVITY_GONE
+    assert _shown(press) == ACTIVITY_GONE
 
 
 def test_the_activity_ids_fit_what_discord_carries() -> None:

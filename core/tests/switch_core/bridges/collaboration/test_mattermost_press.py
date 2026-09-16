@@ -223,7 +223,13 @@ async def test_a_refusal_comes_back_to_the_presser_and_not_to_the_channel() -> N
 
     answer = await adapter._handle_callback(_signed())
 
-    assert answer == {"ephemeral_text": "That request is already answered."}
+    # Sent as the Mattermost markdown it already is: the notice comes from the
+    # same renderer as everything else this bridge writes, and Mattermost's
+    # Slack conversion would be a second pass of markup rules over it.
+    assert answer == {
+        "ephemeral_text": "That request is already answered.",
+        "skip_slack_parsing": True,
+    }
     assert _posts(adapter).created == []
 
 

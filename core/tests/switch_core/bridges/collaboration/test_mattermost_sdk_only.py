@@ -160,6 +160,28 @@ class _FakeReactions:
         return {"status": "OK"}
 
 
+class _FakeChannels:
+    """Who is in a channel, as Mattermost answers it.
+
+    A channel the fake has never been told about is not an empty channel: it
+    answers 404 either way, which is what the server does for a member it
+    cannot find.
+    """
+
+    def __init__(self) -> None:
+        self.members: dict[str, set[str]] = {}
+        self.error: Exception | None = None
+        self.calls: list[tuple[str, str]] = []
+
+    def get_channel_member(self, channel_id: str, user_id: str) -> dict[str, str]:
+        self.calls.append((channel_id, user_id))
+        if self.error:
+            raise self.error
+        if user_id not in self.members.get(channel_id, set()):
+            raise ResourceNotFound(f"no member {user_id} in channel {channel_id}")
+        return {"channel_id": channel_id, "user_id": user_id}
+
+
 class _FakeClient:
     """The raw HTTP surface, which is how the typing nudge is sent."""
 
@@ -200,6 +222,7 @@ class _FakeDriver:
     def __init__(self, posts: _FakePosts, users: _FakeUsers, owner: str) -> None:
         self.posts = _DriverPosts(posts, owner)
         self.users = users
+        self.channels = _FakeChannels()
         self.reactions = _FakeReactions()
         self.client = _FakeClient()
 
