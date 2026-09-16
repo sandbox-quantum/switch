@@ -455,6 +455,29 @@ error rather than a crash loop.
 {{- end }}
 
 {{/*
+Refuse to render an observability config that would report nothing.
+
+The collector drops payloads that do not identify the deployment, silently and
+with a 200, so a chart that shipped without an id would produce a pod that
+looks configured and appears on no dashboard. switch-core refuses to start in
+that state too; failing here means the operator finds out at `helm upgrade`
+rather than from a CrashLoopBackOff.
+*/}}
+{{- define "switch.validateObservability" -}}
+{{- with .Values.switchCore.observability }}
+{{- if and .otlpEndpoint (not .deploymentId) -}}
+{{- fail "switchCore.observability.deploymentId must be set when otlpEndpoint is: the collector drops payloads it cannot attribute to a deployment, so this server would report nothing while looking correctly configured. Use a UUID, and keep it stable across upgrades." -}}
+{{- end -}}
+{{- if and .deploymentId (not .otlpEndpoint) -}}
+{{- fail "switchCore.observability.deploymentId is set but otlpEndpoint is not, so nothing is reported anywhere. Set the endpoint, or remove the id." -}}
+{{- end -}}
+{{- if and .logs (not .otlpEndpoint) -}}
+{{- fail "switchCore.observability.logs is on but no otlpEndpoint is set." -}}
+{{- end -}}
+{{- end -}}
+{{- end }}
+
+{{/*
 switch-core container env. Shared by the switch-core Deployment and the
 pre-upgrade migration Job so they always run against the same configuration
 (env.py builds a full SwitchConfig, so the migration Job needs every var too).
@@ -589,6 +612,26 @@ Include with `nindent 12`.
 {{- with .Values.switchCore.logging.environment }}
 - name: ENVIRONMENT
   value: {{ . | quote }}
+{{- end }}
+{{- with .Values.switchCore.observability }}
+{{- if .otlpEndpoint }}
+- name: OTLP_ENDPOINT
+  value: {{ .otlpEndpoint | quote }}
+- name: DEPLOYMENT_ID
+  value: {{ .deploymentId | quote }}
+- name: OTLP_METRICS_ENABLED
+  value: {{ .metrics | quote }}
+- name: OTLP_LOGS_ENABLED
+  value: {{ .logs | quote }}
+- name: OTLP_TRACES_ENABLED
+  value: {{ .traces | quote }}
+- name: OTLP_EXPORT_INTERVAL_SECONDS
+  value: {{ .exportIntervalSeconds | quote }}
+{{- with .headers }}
+- name: OTLP_HEADERS
+  value: {{ . | quote }}
+{{- end }}
+{{- end }}
 {{- end }}
 # switch-core sits behind the cluster/ALB and enforces its own
 # BearerAuthMiddleware, so fastmcp's browser-oriented DNS-rebinding
