@@ -348,15 +348,45 @@ def test_an_option_that_outlasts_the_turn_keeps_the_line_saying_so():
     lines = _pressable(
         _approval(
             _option("once", "Allow once"),
-            _option("always", "Allow for this session", decision="acceptForSession"),
+            _option("always", "Always allow", decision="acceptForSession"),
             _option("no", "Decline", decision="decline"),
         )
     )
 
     assert lines[-2:] == [
-        "2. Allow for this session (applies for the rest of this session)",
+        "2. Always allow (applies for the rest of this session)",
         "Reply with `R42` and your choice, e.g. `R42 1`.",
     ]
+
+
+def test_a_label_that_already_named_the_session_is_not_made_to_say_it_twice():
+    """The scope is printed because the label may not have said it. This one
+    did, so the line is the same fact twice — and with buttons carrying the
+    other two options, the only line left in the body."""
+    lines = _pressable(
+        _approval(
+            _option("once", "Allow once"),
+            _option("always", "Allow for this session", decision="acceptForSession"),
+            _option("no", "Decline", decision="decline"),
+        )
+    )
+
+    assert lines[-1] == "Reply with `R42` and your choice, e.g. `R42 1`."
+    assert not any("applies for the rest" in line for line in lines)
+
+
+def test_dropping_the_scope_does_not_drop_the_option_where_nothing_else_has_it():
+    """Without buttons the line is the only place the choice exists, so it
+    loses the parenthetical and keeps the option."""
+    text = _render(
+        _approval(
+            _option("once", "Allow once"),
+            _option("always", "Allow for this session", decision="acceptForSession"),
+        )
+    )
+
+    assert "2. Allow for this session" in text
+    assert "applies for the rest" not in text
 
 
 def test_a_kept_line_keeps_the_number_its_button_was_given():

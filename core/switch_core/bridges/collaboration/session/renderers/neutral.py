@@ -32,6 +32,7 @@ own than by a `Markup` that returns its argument.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
 from dataclasses import dataclass
 
@@ -116,6 +117,11 @@ _HEADINGS = {
 # open form and the answered one are describing the same thing and a reader
 # comparing them should not have to work out that they agree.
 _FOR_SESSION = " (applies for the rest of this session)"
+
+# A label that has already said it. Narrow on purpose: "this session" and "the
+# session" are a label describing its own reach, where a bare "session" is as
+# likely to be the subject of the permission being asked about.
+_SAYS_THE_SESSION = re.compile(r"\b(?:this|the)\s+session\b", re.IGNORECASE)
 
 _QUESTION_HEADINGS = {
     "open": "Questions",
@@ -917,13 +923,22 @@ class _Faithful:
 
 
 def _scope(option: ApprovalOption) -> str:
-    """How far an approval reaches, where the label may not have said.
+    """How far an approval reaches, where the label has not already said.
 
     The same wording the answered card uses, on the form itself: two options
     can be labelled the same and mean "this once" and "from now on", and a
     reader choosing between them by number needs the difference said.
+
+    A label that already says it is left to say it. "Allow for this session
+    (applies for the rest of this session)" is one fact twice, and the second
+    copy is the longest line on the card — on a phone, the thing that pushes
+    the question off the screen. A host whose labels are silent about reach,
+    or misleading about it ("Always allow", which does not outlive the
+    session), still gets the line.
     """
-    return _FOR_SESSION if option.decision == "acceptForSession" else ""
+    if option.decision != "acceptForSession":
+        return ""
+    return "" if _SAYS_THE_SESSION.search(option.label) else _FOR_SESSION
 
 
 def _carried(option: ApprovalOption, control_label_limit: int | None) -> bool:
@@ -934,8 +949,8 @@ def _carried(option: ApprovalOption, control_label_limit: int | None) -> bool:
     the card off the screen. It is only the same choice if the control shows
     all of it, which is two things: a label short enough that the button did
     not have to cut it, and nothing said beside the label that a button has no
-    room for. A scope is exactly that, so an option reaching past this turn
-    keeps its line while the ones a button says in full lose theirs.
+    room for. A scope is exactly that, so an option whose reach the label left
+    unsaid keeps its line while the ones a button says in full lose theirs.
 
     Every line is fitted before this is asked, kept or not. A label too long
     for the card is a form that cannot honestly ask for a number, and that is
