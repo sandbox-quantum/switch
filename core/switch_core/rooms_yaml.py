@@ -512,7 +512,11 @@ class RoomYamlService:
                     "beside 'room:'"
                 )
             kickoff_raw = body.get("kickoff")
-            kickoff = kickoff_raw if isinstance(kickoff_raw, str) else None
+            if kickoff_raw is not None and not isinstance(kickoff_raw, str):
+                raise ValueError(
+                    f"'kickoff' must be a string, got {type(kickoff_raw).__name__}"
+                )
+            kickoff = kickoff_raw
         return ParsedTemplate(
             spec=spec, kickoff=kickoff, params=declared, values=resolved
         )
@@ -767,14 +771,19 @@ class RoomYamlService:
         )
 
         if kickoff:
-            await self._send_kickoff(
-                result.room,
-                kickoff,
-                agent_names=spec.agents,
-                user_id=user_id,
-                user_name=creator_name,
-                failures=failures,
-            )
+            # The room exists by now; whatever goes wrong with the kickoff is
+            # a gap in it, not a reason to report the room as never made.
+            try:
+                await self._send_kickoff(
+                    result.room,
+                    kickoff,
+                    agent_names=spec.agents,
+                    user_id=user_id,
+                    user_name=creator_name,
+                    failures=failures,
+                )
+            except Exception as e:  # noqa: BLE001 - reported on the result
+                failures.append({"kind": "kickoff", "id": "kickoff", "error": str(e)})
 
         return ProvisionResult(
             room_id=room_id,

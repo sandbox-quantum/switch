@@ -214,7 +214,7 @@ function TemplateCard({
             </Badge>
           )}
         </div>
-        <p className="line-clamp-2 text-sm text-foreground-muted">
+        <p className="line-clamp-3 text-sm text-foreground-muted">
           {item.description || <span className="italic">No description.</span>}
         </p>
         <div className="mt-auto flex flex-col gap-1.5 pt-1 pr-16">
@@ -372,6 +372,7 @@ const TemplatesPanel = observer(function TemplatesPanel() {
 
   const [templates, setTemplates] = useState<StoredTemplateSummary[]>([]);
   const [loading, setLoading] = useState(true);
+  const [listError, setListError] = useState<string | null>(null);
   const [query, setQuery] = useState('');
   const [kind, setKind] = useState<KindFilter>('all');
   const [onlyMine, setOnlyMine] = useState(false);
@@ -388,14 +389,19 @@ const TemplatesPanel = observer(function TemplatesPanel() {
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
+    setListError(null);
     rpc.switchServers
       .listTemplates({ serverId })
       .then((result) => {
         if (!cancelled) setTemplates(result);
       })
-      .catch(() => {
-        // The bundled templates still render; the workspace's are an addition.
-        if (!cancelled) setTemplates([]);
+      .catch((e: unknown) => {
+        // The bundled templates still render; the workspace's are an addition,
+        // and their absence is said, not passed off as an empty workspace.
+        if (!cancelled) {
+          setTemplates([]);
+          setListError(failureText(e, 'Could not read this workspace’s templates.'));
+        }
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
@@ -441,10 +447,12 @@ const TemplatesPanel = observer(function TemplatesPanel() {
         t.name.toLowerCase().includes(needle) ||
         t.description.toLowerCase().includes(needle) ||
         (t.server?.creator ?? '').toLowerCase().includes(needle));
+    const mine = (t: Listed) => meId !== null && t.server?.ownerId === meId;
     return {
       builtIn: onlyMine ? [] : builtIn.filter(matches),
-      onWorkspace: onWorkspace.filter(
-        (t) => matches(t) && (!onlyMine || (meId !== null && t.server?.ownerId === meId))
+      // Under "Only mine", a built-in whose saved copy is yours lists as yours.
+      onWorkspace: [...(onlyMine ? builtIn.filter(mine) : []), ...onWorkspace].filter(
+        (t) => matches(t) && (!onlyMine || mine(t))
       ),
     };
   }, [templates, query, kind, onlyMine, meId]);
@@ -595,6 +603,13 @@ const TemplatesPanel = observer(function TemplatesPanel() {
             >
               {onWorkspace.length > 0 ? (
                 <div className={grid}>{onWorkspace.map(card)}</div>
+              ) : listError ? (
+                <div className="flex flex-col items-start gap-2 rounded-[11px] border border-border px-4 py-4">
+                  <p className="text-sm text-foreground-muted">{listError}</p>
+                  <Button size="sm" variant="outline" onClick={reload}>
+                    Try again
+                  </Button>
+                </div>
               ) : filtering ? (
                 <p className="text-sm text-foreground-muted">
                   {onlyMine

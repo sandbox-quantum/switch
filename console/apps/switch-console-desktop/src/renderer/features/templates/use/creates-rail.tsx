@@ -86,17 +86,21 @@ function Card({ children, className }: { children: React.ReactNode; className?: 
 export function RoomCard({
   room,
   values,
+  renames,
   bridgeName,
   creatorIdentity,
   status,
 }: {
   room: ParsedRoom;
   values: Values;
+  /** Agent slots as the template spells them → the name they will actually have. */
+  renames: Record<string, string>;
   bridgeName: string | null;
   creatorIdentity: string | null;
   status: SlotStatus;
 }) {
-  const fill = (s: string) => interpolate(s, { ...values, $creator: creatorIdentity ?? 'you' });
+  const fill = (s: string) =>
+    interpolate(renames[s] ?? s, { ...values, $creator: creatorIdentity ?? 'you' });
   const name = room.name ? fill(room.name) : 'Unnamed room';
   const members = [...room.agents, ...room.users].map(fill);
   const note =
@@ -140,6 +144,7 @@ export function AgentSlotCard({
   onChange,
   lists,
   sshHost,
+  locationLabel,
   busy,
 }: {
   slot: AgentSlot;
@@ -150,6 +155,8 @@ export function AgentSlotCard({
   onChange: (next: AgentSlot) => void;
   lists: EntityLists;
   sshHost: string | null;
+  /** Where the agents run, for the existing-agent picker's hint. */
+  locationLabel: string;
   busy: boolean;
 }) {
   const unresolved = hasPlaceholder(wantedName) || wantedName === '';
@@ -177,7 +184,7 @@ export function AgentSlotCard({
         <span className="shrink-0 text-[11px] text-foreground-passive">Agent</span>
       </div>
 
-      {slot.status === 'idle' && (
+      {(slot.status === 'idle' || slot.status === 'failed') && (
         <div className="mt-3 flex flex-col gap-2.5 border-t border-border pt-3">
           <SegmentedControl
             value={slot.mode}
@@ -190,11 +197,18 @@ export function AgentSlotCard({
             className="w-max"
           />
           {slot.mode === 'existing' ? (
-            <AgentField
-              value={slot.existingName}
-              onChange={(name) => onChange({ ...slot, existingName: name })}
-              lists={lists}
-            />
+            <div className="flex flex-col gap-1.5">
+              <AgentField
+                value={slot.existingName}
+                onChange={(name) => onChange({ ...slot, existingName: name })}
+                lists={lists}
+              />
+              <p className="text-[11px] text-foreground-passive">
+                {lists.agents.length === 0
+                  ? `No agent of yours runs on ${locationLabel} yet.`
+                  : `Agents of yours that run on ${locationLabel}.`}
+              </p>
+            </div>
           ) : (
             <>
               {finalName !== wantedName && finalName !== '' && (
@@ -247,9 +261,21 @@ export function AgentSlotCard({
 }
 
 /** The document with the inputs filled in, line by line, the filled lines marked. */
-export function ResolvedDocument({ yamlText, values }: { yamlText: string; values: Values }) {
+export function ResolvedDocument({
+  yamlText,
+  values,
+  renames,
+}: {
+  yamlText: string;
+  values: Values;
+  renames: Record<string, string>;
+}) {
   const [open, setOpen] = useState(false);
-  const lines = yamlText.replace(/\n$/, '').split('\n');
+  const renamed = Object.entries(renames).reduce(
+    (text, [from, to]) => text.split(from).join(to),
+    yamlText
+  );
+  const lines = renamed.replace(/\n$/, '').split('\n');
   return (
     <div className="flex flex-col gap-2.5">
       <button

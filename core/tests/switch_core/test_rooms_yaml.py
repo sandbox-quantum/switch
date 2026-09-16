@@ -2027,3 +2027,28 @@ rooms:
         await session.commit()
     exported = yaml.safe_load(await svc.export(room_id))
     assert exported["room"]["aliases"] == {"claude-code.alice": "greeter"}
+
+
+def test_parse_rejects_non_string_kickoff(env):
+    with pytest.raises(ValueError, match="'kickoff' must be a string"):
+        _svc(env).parse_template(
+            "room:\n  name: r\n  description: d\nkickoff: [hello]\n"
+        )
+
+
+@pytest.mark.asyncio
+async def test_provision_reports_a_kickoff_that_raises(env, monkeypatch):
+    svc = _svc(env)
+
+    async def boom(*args, **kwargs):
+        raise RuntimeError("admin client is gone")
+
+    monkeypatch.setattr(svc, "_send_kickoff", boom)
+    parsed = svc.parse_template("room:\n  name: r\n  description: d\nkickoff: hi\n")
+    result = await svc.provision(
+        parsed.spec, kickoff=parsed.kickoff, user_id=env["user_id"], is_admin=False
+    )
+    assert result.room_name == "r"
+    assert result.failed_attachments == [
+        {"kind": "kickoff", "id": "kickoff", "error": "admin client is gone"}
+    ]

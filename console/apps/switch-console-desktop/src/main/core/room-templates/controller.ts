@@ -52,7 +52,7 @@ export type ParsedTemplate = {
   warnings: string[];
 };
 
-function extractParams(raw: unknown): ParamSpec[] {
+export function extractParams(raw: unknown): ParamSpec[] {
   if (raw === null || raw === undefined || typeof raw !== 'object') return [];
   const params = raw as Record<string, unknown>;
   return Object.entries(params).map(([name, spec]) => {
@@ -178,6 +178,10 @@ export const roomTemplatesController = createRPCController({
 
   /** The repository's canonical example, for a first run with nothing to pick from. */
   getExampleTemplate: (): string => exampleTemplateYaml,
+
+  /** Just the `params:` of any document, for a form with no room half to parse. */
+  params: (params: { yamlText: string }): ParamSpec[] =>
+    extractParams(parseYaml(params.yamlText).params),
 
   parse: (params: { yamlText: string; schema?: Record<string, unknown> }): ParsedTemplate => {
     const warnings: string[] = [];

@@ -21,6 +21,7 @@ import {
 } from './agent-template-format';
 import {
   coreDocumentFor,
+  dropUnsetParams,
   parseTemplateAgents,
   substituteAgentSlots,
   type TemplateAgents,
@@ -136,7 +137,12 @@ export const agentTemplatesController = createRPCController({
     parseTemplateAgents(params.yamlText, params.instructions ?? null),
 
   /** The server's half of a document, or null when there is none. */
-  coreDocument: (params: { yamlText: string }): string | null => coreDocumentFor(params.yamlText),
+  coreDocument: (params: { yamlText: string; keepConsoleParams?: boolean }): string | null =>
+    coreDocumentFor(params.yamlText, { keepConsoleParams: params.keepConsoleParams }),
+
+  /** The server's half without params the person left unset (a bridge, for the default app). */
+  dropParams: (params: { coreYaml: string; names: string[] }): string =>
+    dropUnsetParams(params.coreYaml, params.names),
 
   /** The server's half with agent slots renamed (an existing agent, or a taken name). */
   substituteSlots: (params: { coreYaml: string; replacements: Record<string, string> }): string =>

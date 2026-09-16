@@ -31,6 +31,8 @@ export type ParsedAgentEntry = {
 
 export type TemplateAgents = {
   agents: ParsedAgentEntry[];
+  /** Written as a lone `agent:` block, whose room names it `{agent}`. */
+  singular: boolean;
   warnings: string[];
 };
 
@@ -129,7 +131,7 @@ export function parseTemplateAgents(
       provider: optionalString(agent.provider),
     };
   });
-  return { agents, warnings };
+  return { agents, singular: !Array.isArray(doc.agents) && agents.length === 1, warnings };
 }
 
 function isProviderParam(spec: unknown): boolean {
@@ -145,14 +147,21 @@ function isProviderParam(spec: unknown): boolean {
  * `agent:` gets `{agent}` declared as a param, so its room can name it the
  * way it names `{$creator}`. Null when there is nothing for the server.
  */
-export function coreDocumentFor(yamlText: string): string | null {
+export function coreDocumentFor(
+  yamlText: string,
+  options: { keepConsoleParams?: boolean } = {}
+): string | null {
   const doc = parseYaml(yamlText);
   const room = asRecord(doc.room);
   const isGroup = doc.group !== undefined || Array.isArray(doc.rooms);
   if (!room && !isGroup) return null;
 
+  // The form reads the params off this document too, and it has to see the
+  // Console's own ones; only what goes to the server leaves them out.
   const declared = Object.fromEntries(
-    Object.entries(asRecord(doc.params) ?? {}).filter(([, spec]) => !isProviderParam(spec))
+    Object.entries(asRecord(doc.params) ?? {}).filter(
+      ([, spec]) => options.keepConsoleParams || !isProviderParam(spec)
+    )
   );
   const params: Record<string, unknown> =
     asRecord(doc.agent) !== null && !Array.isArray(doc.agents)
@@ -168,16 +177,19 @@ export function coreDocumentFor(yamlText: string): string | null {
     if (doc.links !== undefined) out.links = doc.links;
   } else {
     out.room = room;
-    if (typeof doc.kickoff === 'string') out.kickoff = doc.kickoff;
   }
+  // Kept even on a group document, where the server refuses it with a
+  // message saying where it goes; dropping it here would hide that.
+  if (doc.kickoff !== undefined) out.kickoff = doc.kickoff;
   return dump(out, { lineWidth: -1 });
 }
 
 /**
  * Rename agents in the server half: every room's `agents:` entry and
- * `aliases:` key that reads exactly `from` becomes `to`. Used when a slot the
- * template meant to create is filled by an existing agent instead, or the
- * name it wanted was taken and the agent was made under another.
+ * `aliases:` key that reads exactly `from` becomes `to`, and a kickoff that
+ * mentions `from` mentions `to`. Used when a slot the template meant to
+ * create is filled by an existing agent instead, or the name it wanted was
+ * taken and the agent was made under another.
  */
 export function substituteAgentSlots(
   coreYaml: string,
@@ -185,7 +197,13 @@ export function substituteAgentSlots(
 ): string {
   const doc = parseYaml(coreYaml);
   const rename = (name: unknown) =>
-    typeof name === 'string' && name in replacements ? replacements[name] : name;
+    typeof name === 'string' && Object.hasOwn(replacements, name) ? replacements[name] : name;
+  const inText = (text: unknown) => {
+    if (typeof text !== 'string') return text;
+    let out = text;
+    for (const [from, to] of Object.entries(replacements)) out = out.split(from).join(to);
+    return out;
+  };
   const rooms = [asRecord(doc.room), ...(Array.isArray(doc.rooms) ? doc.rooms.map(asRecord) : [])];
   for (const room of rooms) {
     if (!room) continue;
@@ -195,6 +213,33 @@ export function substituteAgentSlots(
       room.aliases = Object.fromEntries(
         Object.entries(aliases).map(([name, alias]) => [String(rename(name)), alias])
       );
+    }
+    if (room.kickoff !== undefined) room.kickoff = inText(room.kickoff);
+  }
+  if (doc.kickoff !== undefined) doc.kickoff = inText(doc.kickoff);
+  return dump(doc, { lineWidth: -1 });
+}
+
+/**
+ * Take declared params the person left unset out of the server half: the
+ * declaration itself, and every room field that is exactly `{name}`. A
+ * `bridge` input with no default is the case: empty means the server's
+ * default messaging app, which is what a room with no `bridge:` gets.
+ */
+export function dropUnsetParams(coreYaml: string, names: string[]): string {
+  if (names.length === 0) return coreYaml;
+  const doc = parseYaml(coreYaml);
+  const params = asRecord(doc.params);
+  if (params) {
+    for (const name of names) delete params[name];
+    if (Object.keys(params).length === 0) delete doc.params;
+  }
+  const placeholders = new Set(names.map((n) => `{${n}}`));
+  const rooms = [asRecord(doc.room), ...(Array.isArray(doc.rooms) ? doc.rooms.map(asRecord) : [])];
+  for (const room of rooms) {
+    if (!room) continue;
+    for (const [key, value] of Object.entries(room)) {
+      if (typeof value === 'string' && placeholders.has(value)) delete room[key];
     }
   }
   return dump(doc, { lineWidth: -1 });

@@ -1,8 +1,8 @@
 # Switch expert, as an agent template.
 #
-# An agent template is the agent-shaped counterpart of a room template: pick
+# An agent template is the agent-shaped counterpart of a room template: open
 # it in Switch Console's Templates view, choose where it runs and on which
-# provider, click "Add agent", and you have a working agent. The document
+# provider, click "Create agent", and you have a working agent. The document
 # declares everything the agent depends on as data, so a second expert on a
 # different subject is a different document, not different code.
 #
@@ -17,8 +17,8 @@
 #                 `addressing` is who may talk to it: `owner` (the default, the
 #                 person who created it), `owner-agents` (them and their other
 #                 agents), or `anyone` (anyone in the rooms it is in). An expert
-#                 a team shares wants `anyone`; the person can still change it
-#                 when creating the agent.
+#                 a team shares wants `anyone`; it can be changed afterwards
+#                 under the agent's Settings.
 #
 #   room:         Optional. A room to put the agent in as soon as it exists,
 #                 in the same shape as a room template. `{agent}` is the name

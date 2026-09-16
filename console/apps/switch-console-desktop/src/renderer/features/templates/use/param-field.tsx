@@ -148,6 +148,11 @@ export function ParamField({
       {showDefault && (
         <p className="text-[11.5px] text-foreground-passive">Defaults to {String(param.default)}</p>
       )}
+      {param.type === 'bridge' && param.default === null && (
+        <p className="text-[11.5px] text-foreground-passive">
+          Leave it empty for the server's default messaging app.
+        </p>
+      )}
       {error && <p className="text-xs text-destructive">{error}</p>}
     </div>
   );

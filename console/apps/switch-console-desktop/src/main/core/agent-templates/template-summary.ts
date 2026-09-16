@@ -94,15 +94,14 @@ export function summarizeTemplate(yamlText: string): TemplateSummary {
       creates,
     };
   }
+  // A room document names agents the server already has; it creates none.
   if (isGroup) {
-    const names = new Set<string>();
-    for (const r of roomEntries) for (const a of agentsOf(r)) names.add(a);
-    return { kind: 'group', rooms: roomEntries.length, agents: names.size, inputs, creates };
+    return { kind: 'group', rooms: roomEntries.length, agents: 0, inputs, creates };
   }
   return {
     kind: 'room',
     rooms: 1,
-    agents: agentsOf(roomEntries[0] ?? null).length,
+    agents: 0,
     inputs,
     creates: roomEntries.length > 0 ? creates : [],
   };

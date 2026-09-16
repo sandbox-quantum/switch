@@ -187,6 +187,7 @@ const TemplateImportPanel = observer(function TemplateImportPanel() {
     yamlText: initialYaml,
     sourceName: initialName,
     templateId: initialTemplateId,
+    edit: editing,
   } = useParams('templateImport').params;
   const [yamlText, setYamlText] = useState(initialYaml ?? '');
   const [saving, setSaving] = useState(false);
@@ -245,11 +246,12 @@ const TemplateImportPanel = observer(function TemplateImportPanel() {
       appState.navigation.navigate('templateUse', { serverId, templateId: initialTemplateId });
       return;
     }
-    if (initialYaml && initialYaml.trim().length > 0) {
+    // Back from the Use page to fix the document: stay here.
+    if (initialYaml && initialYaml.trim().length > 0 && !editing) {
       advancedOnce.current = true;
       void handleParseAndAdvance();
     }
-  }, [initialTemplateId, initialYaml, serverId, handleParseAndAdvance]);
+  }, [initialTemplateId, initialYaml, editing, serverId, handleParseAndAdvance]);
 
   return (
     <ServerPage
@@ -280,6 +282,8 @@ export const templateImportView = {
     sourceName?: string;
     /** A registry row to load and go straight to its inputs. */
     templateId?: string;
+    /** Open the editor on `yamlText` rather than going straight on. */
+    edit?: boolean;
   }) => <>{children}</>,
   TitlebarSlot: TemplateImportTitlebar,
   MainPanel: TemplateImportPanel,
@@ -296,4 +300,5 @@ export const templateImportView = {
   yamlText?: string;
   sourceName?: string;
   templateId?: string;
+  edit?: boolean;
 }>;

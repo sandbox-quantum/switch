@@ -29,8 +29,7 @@ export const bundledTemplates: BundledTemplate[] = [
   {
     id: 'bundled:switch-expert',
     name: 'Switch expert',
-    description:
-      'An agent that knows Switch inside out: rooms, agents, bridges, templates. Ask it how to set things up or why something is not working.',
+    description: 'Knows Switch inside out. Ask it how to set things up or why something is off.',
     kind: 'agent',
     creator: 'Switch',
     content: switchExpertTemplate,
@@ -39,8 +38,7 @@ export const bundledTemplates: BundledTemplate[] = [
   {
     id: 'bundled:triage-pair',
     name: 'Triage pair',
-    description:
-      'Two agents and a room: one triages incoming reports, one reproduces them. A worked example of a group template.',
+    description: 'Two agents and their room: one triages reports, one reproduces them.',
     kind: 'group',
     creator: 'Switch',
     content: triagePairTemplate,

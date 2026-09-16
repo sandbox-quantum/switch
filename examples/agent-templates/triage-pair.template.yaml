@@ -11,7 +11,7 @@ version: 1
 params:
   team:
     type: string
-    description: Prefix for every name this creates
+    description: Prefix for every name this creates (lowercase, like "alpha")
   provider:
     type: provider
     description: Which coding agent backs both

@@ -28,7 +28,7 @@ room:
     });
   });
 
-  it('counts a room template by its agents and params', () => {
+  it('counts a room template by its rooms and params, not the agents it names', () => {
     const s = summarizeTemplate(`
 params:
   red: { type: agent }
@@ -38,12 +38,12 @@ room:
   name: "{topic}"
   agents: ["{red}", "{blue}", judge]
 `);
-    expect(counts(s)).toEqual({ kind: 'room', rooms: 1, agents: 3, inputs: 3 });
-    expect(describeSummary(s).creates).toBe('Creates 1 room and 3 agents');
+    expect(counts(s)).toEqual({ kind: 'room', rooms: 1, agents: 0, inputs: 3 });
+    expect(describeSummary(s).creates).toBe('Creates 1 room');
     expect(describeSummary(s).inputs).toBe('3 inputs');
   });
 
-  it('counts a group template across its rooms, agents once each', () => {
+  it('counts a rooms-only group by its rooms', () => {
     const s = summarizeTemplate(`
 params:
   lead: { type: agent }
@@ -53,7 +53,7 @@ rooms:
   - name: build
     agents: ["{lead}", coder]
 `);
-    expect(counts(s)).toEqual({ kind: 'group', rooms: 2, agents: 3, inputs: 1 });
+    expect(counts(s)).toEqual({ kind: 'group', rooms: 2, agents: 0, inputs: 1 });
   });
 
   it('does not throw on a document that is not YAML', () => {

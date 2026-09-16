@@ -30,9 +30,10 @@ export function typeLabel(type: ParamType): string {
   }
 }
 
-/** A param is required when the template gives it no default. */
+/** A param is required when the template gives it no default. A bridge is
+ * the exception: left empty, the room lands on the server's default app. */
 export function isRequired(param: ParamSpec): boolean {
-  return param.default === null;
+  return param.default === null && param.type !== 'bridge';
 }
 
 /** The values a form starts with: each default, or empty. */
@@ -50,6 +51,14 @@ export function isEmpty(value: string | number | boolean | undefined): boolean {
   return value === undefined || value === '';
 }
 
+/** Declared params the person left empty with nothing to fall back on; the
+ * server half is sent without them. */
+export function unsetParams(params: ParamSpec[], values: Values): string[] {
+  return params
+    .filter((p) => p.type === 'bridge' && p.default === null && isEmpty(values[p.name]))
+    .map((p) => p.name);
+}
+
 /** The required params still without a value. */
 export function missingParams(params: ParamSpec[], values: Values): ParamSpec[] {
   return params.filter((p) => isRequired(p) && isEmpty(values[p.name]));
@@ -60,6 +69,7 @@ export function serverInputs(params: ParamSpec[], values: Values): Values {
   const inputs: Values = {};
   for (const param of params) {
     if (param.type === 'provider') continue;
+    if (param.type === 'bridge' && isEmpty(values[param.name]) && param.default === null) continue;
     const val = values[param.name];
     if (isEmpty(val)) continue;
     inputs[param.name] = param.type === 'number' ? Number(val) : (val as string | boolean);

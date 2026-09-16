@@ -4,7 +4,7 @@ import { observer } from 'mobx-react-lite';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ParsedAgentEntry, TemplateKind } from '@main/core/agent-templates/controller';
 import type { AgentTemplateOrigin } from '@main/core/agents/agent-config-file';
-import type { ParsedTemplate } from '@main/core/room-templates/controller';
+import type { ParamSpec, ParsedTemplate } from '@main/core/room-templates/controller';
 import type { GuardResult, ViewDefinition } from '@renderer/app/view-registry';
 import { AgentTypePicker } from '@renderer/features/locations/components/add-agent-modal/agent-type-picker';
 import { agentsStore } from '@renderer/features/locations/stores/agents-store';
@@ -22,6 +22,7 @@ import {
 } from '@renderer/features/room-templates/entity-fields';
 import { refreshSidebarRoomState } from '@renderer/features/sidebar/sidebar-tree-data';
 import { ServerSectionTitlebar } from '@renderer/features/switch-servers/server-section-titlebar';
+import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
 import { useMyIdentities } from '@renderer/features/switch-servers/use-my-identities';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { toast } from '@renderer/lib/hooks/use-toast';
@@ -41,7 +42,6 @@ import {
 import { ownerAndMyAgentsPolicy, ownerOnlyPolicy } from '@shared/core/switch-servers/owner-policy';
 import { RpcError } from '@shared/lib/ipc/rpc-error';
 import { findBundledTemplate } from './bundled-templates';
-import { revealSessionWhenItStarts } from './reveal-session';
 import {
   type AgentSlot,
   AgentSlotCard,
@@ -64,6 +64,7 @@ import {
   interpolate,
   missingParams,
   serverInputs,
+  unsetParams,
   type Values,
 } from './use/use-template-model';
 
@@ -90,6 +91,10 @@ type Loaded = {
   origin: AgentTemplateOrigin | null;
   kind: TemplateKind;
   agents: ParsedAgentEntry[];
+  /** A lone `agent:` block: its room names it `{agent}` and the page fills that in. */
+  singular: boolean;
+  /** The declared inputs, Console-only ones included. */
+  params: ParamSpec[];
   parsed: ParsedTemplate | null;
   coreYaml: string | null;
   warnings: string[];
@@ -123,12 +128,20 @@ async function loadForUse(serverId: string, params: Params): Promise<Loaded> {
     throw new Error('Nothing to use: no template was given.');
   }
   const kind = await rpc.agentTemplates.kind({ yamlText });
-  const { agents, warnings } = await rpc.agentTemplates.parseAgents({ yamlText, instructions });
+  const { agents, singular, warnings } = await rpc.agentTemplates.parseAgents({
+    yamlText,
+    instructions,
+  });
+  // Two cuts of the server half: one with the Console's own params still in,
+  // which the form reads, and the one the server gets.
+  const forForm = await rpc.agentTemplates.coreDocument({ yamlText, keepConsoleParams: true });
   const coreYaml = await rpc.agentTemplates.coreDocument({ yamlText });
   const schema = await rpc.switchServers.fetchTemplateSchema(serverId).catch(() => null);
-  const parsed = coreYaml
-    ? await rpc.roomTemplates.parse({ yamlText: coreYaml, schema: schema ?? undefined })
+  const parsed = forForm
+    ? await rpc.roomTemplates.parse({ yamlText: forForm, schema: schema ?? undefined })
     : null;
+  // An agent-only document still declares inputs its names may use.
+  const declaredParams = parsed?.params ?? (await rpc.roomTemplates.params({ yamlText }));
   return {
     name,
     yamlText,
@@ -136,6 +149,8 @@ async function loadForUse(serverId: string, params: Params): Promise<Loaded> {
     origin,
     kind,
     agents,
+    singular,
+    params: declaredParams,
     parsed,
     coreYaml,
     warnings: [...warnings, ...(parsed?.warnings ?? [])],
@@ -196,14 +211,13 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
         if (cancelled) return;
         setLoaded(result);
         setValues(
-          defaultsFor(
-            (result.parsed?.params ?? []).filter(
-              (p) => !(result.kind === 'agent' && p.name === 'agent')
-            )
-          )
+          defaultsFor(result.params.filter((p) => !(result.singular && p.name === 'agent')))
         );
         setSlots(result.agents.map(newSlot));
-        setEditedAgents(result.parsed?.hardcodedAgents ?? []);
+        // The editable list is the room's fixed members that are not slots the
+        // template creates; those are named by their cards.
+        const slotNames = new Set(result.agents.map((a) => a.name ?? ''));
+        setEditedAgents((result.parsed?.hardcodedAgents ?? []).filter((a) => !slotNames.has(a)));
         setEditedUsers(result.parsed?.hardcodedUsers ?? []);
       })
       .catch((e: unknown) => {
@@ -217,8 +231,8 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
   const parsed = loaded?.parsed ?? null;
   // A lone `agent:` room names it `{agent}`; the page fills that in itself.
   const templateParams = useMemo(
-    () => (parsed?.params ?? []).filter((p) => !(loaded?.kind === 'agent' && p.name === 'agent')),
-    [parsed, loaded?.kind]
+    () => (loaded?.params ?? []).filter((p) => !(loaded?.singular && p.name === 'agent')),
+    [loaded]
   );
   const createsAgents = (loaded?.agents.length ?? 0) > 0;
   const isGroupDoc = (parsed?.rooms.length ?? 0) > 1 || parsed?.groupName !== null;
@@ -274,6 +288,23 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
         })
     : null;
   const noMessagingApp = parsed !== null && bridgesQuery.data !== undefined && bridges.length === 0;
+
+  // "Existing agent" on a slot means one that runs where the new ones will:
+  // this Console's records say which host each of its agents lives on.
+  const locationsQuery = useQuery({
+    queryKey: ['locations'],
+    queryFn: () => rpc.locations.getLocations(),
+  });
+  const agentsAtLocation = useMemo(() => {
+    const hostOf = new Map((locationsQuery.data ?? []).map((l) => [l.id, l.sshHost]));
+    const here = new Set(
+      agentsStore
+        .agentsOnServer(serverId)
+        .filter((a) => (hostOf.get(a.locationId) ?? null) === sshHost)
+        .map((a) => a.name)
+    );
+    return (agents.data ?? []).filter((a) => here.has(a.name));
+  }, [agents.data, locationsQuery.data, serverId, sshHost]);
 
   const lists = useMemo(
     (): EntityLists => ({
@@ -358,9 +389,11 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
         .suggestDirectory({ agentName: name, sshHost })
         .then((dir) => {
           if (seq !== suggestSeq.current) return;
-          setSlots((prev) =>
-            prev.map((s, j) => (j === i && !s.dirPicked && s.dir !== dir ? { ...s, dir } : s))
-          );
+          setSlots((prev) => {
+            const s = prev[i];
+            if (!s || s.dirPicked || s.dir === dir) return prev; // same array: no re-run
+            return prev.map((x, j) => (j === i ? { ...x, dir } : x));
+          });
         })
         .catch(() => {});
     });
@@ -484,65 +517,68 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
     for (let i = 0; i < slots.length; i++) {
       const slot = slots[i];
       if (slot.mode !== 'new' || slot.status === 'created') continue;
-      const name = finalNames[i];
+      const name = slot.createdName ?? finalNames[i];
       const providerId = providerFor(slot.entry);
       if (!providerId) continue;
       setSlot(i, { status: 'creating', error: null });
       try {
-        const prepared = await rpc.agentTemplates.prepareWorkspace({
-          dir: slot.dir.trim(),
-          repoUrl: slot.cloneRepo ? slot.entry.repoUrl : null,
-          sshHost,
-        });
-        if (prepared.repo?.outcome === 'failed') {
-          toast({
-            title: `Could not fetch the repository for ${name}`,
-            description: `${prepared.repo.error ?? 'git clone failed'}. The agent will try to clone it itself on its first run.`,
-            variant: 'destructive',
+        // An agent that exists from an earlier try only needs its policy set.
+        let switchAgentId = slot.createdSwitchAgentId;
+        if (!switchAgentId) {
+          const prepared = await rpc.agentTemplates.prepareWorkspace({
+            dir: slot.dir.trim(),
+            repoUrl: slot.cloneRepo ? slot.entry.repoUrl : null,
+            sshHost,
           });
+          if (prepared.repo?.outcome === 'failed') {
+            toast({
+              title: `Could not fetch the repository for ${name}`,
+              description: `${prepared.repo.error ?? 'git clone failed'}. The agent will try to clone it itself on its first run.`,
+              variant: 'destructive',
+            });
+          }
+          const result = await rpc.agents.addAgent({
+            sshHost,
+            dir: slot.dir.trim(),
+            name,
+            providerId,
+            serverId,
+            description: slot.entry.description,
+            displayName: null,
+            iconUrl: null,
+            autoSession: true,
+            autoApprove: isRemoteRun,
+            instructions: slot.entry.instructions,
+            definitionAttributes: {},
+            providerConfig: null,
+            entryPoint: 'server_page',
+            templateOrigin: loaded.origin,
+          });
+          if (result.kind !== 'created') {
+            setSlot(i, { status: 'failed', error: provisionErrorText(result) });
+            setPhase('form');
+            return;
+          }
+          switchAgentId = result.agent.switchAgentId ?? null;
+          // Checkpoint before the policy: a retry must not make a second agent.
+          setSlot(i, { createdName: result.agent.name, createdSwitchAgentId: switchAgentId });
         }
-        const result = await rpc.agents.addAgent({
-          sshHost,
-          dir: slot.dir.trim(),
-          name,
-          providerId,
-          serverId,
-          description: slot.entry.description,
-          displayName: null,
-          iconUrl: null,
-          autoSession: true,
-          autoApprove: isRemoteRun,
-          instructions: slot.entry.instructions,
-          definitionAttributes: {},
-          providerConfig: null,
-          entryPoint: 'server_page',
-          templateOrigin: loaded.origin,
-        });
-        if (result.kind !== 'created') {
-          setSlot(i, { status: 'failed', error: provisionErrorText(result) });
-          setPhase('form');
-          return;
-        }
-        const switchAgentId = result.agent.switchAgentId ?? null;
-        const policy =
-          slot.entry.addressing === 'owner-agents'
-            ? ownerAndMyAgentsPolicy()
-            : slot.entry.addressing === 'owner'
-              ? ownerOnlyPolicy()
-              : null;
-        if (policy && switchAgentId) {
+        // A new agent answers only its owner by default; the template's
+        // `anyone` has to be written as the open policy, not left alone.
+        if (switchAgentId && slot.entry.addressing) {
           await rpc.switchServers.updateAddressingPolicy({
             serverId,
             agentId: switchAgentId,
-            policy,
+            policy:
+              slot.entry.addressing === 'owner-agents'
+                ? ownerAndMyAgentsPolicy()
+                : slot.entry.addressing === 'owner'
+                  ? ownerOnlyPolicy()
+                  : null,
           });
         }
-        created.push({ slotIndex: i, name: result.agent.name, switchAgentId });
-        setSlot(i, {
-          status: 'created',
-          createdName: result.agent.name,
-          createdSwitchAgentId: switchAgentId,
-        });
+        created.push({ slotIndex: i, name, switchAgentId });
+        setSlot(i, { status: 'created' });
       } catch (e) {
         setSlot(i, { status: 'failed', error: failureText(e, 'Could not create the agent.') });
         setPhase('form');
@@ -559,8 +595,11 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
 
     // Into a room that already exists: nothing else to make.
     if (intoRoomId) {
+      const byName = new Map((agents.data ?? []).map((a) => [a.name, a.id]));
       const ids = slots
-        .map((s) => s.createdSwitchAgentId)
+        .map((s) =>
+          s.mode === 'existing' ? (byName.get(s.existingName) ?? null) : s.createdSwitchAgentId
+        )
         .concat(created.map((c) => c.switchAgentId))
         .filter((id): id is string => !!id);
       try {
@@ -611,21 +650,30 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
         coreYaml: loaded.coreYaml,
         replacements,
       });
+      coreYaml = await rpc.agentTemplates.dropParams({
+        coreYaml,
+        names: unsetParams(templateParams, values),
+      });
       if (!isGroupDoc) {
         // The lists are rebuilt from the parse, so the slots renamed above
         // have to be renamed here too or the rewrite would put them back.
+        const slotNamesSet = new Set(slots.map((s) => s.entry.name ?? ''));
         const keep = (list: string[]) =>
-          list.filter((a) => hasPlaceholder(a)).map((a) => replacements[a] ?? a);
+          list
+            .filter((a) => hasPlaceholder(a) || slotNamesSet.has(a))
+            .map((a) => replacements[a] ?? a);
         coreYaml = await rpc.roomTemplates.rewriteYaml({
           yamlText: coreYaml,
-          agents: [...keep(parsed.agents), ...editedAgents],
+          agents: [...new Set([...keep(parsed.agents), ...editedAgents])],
           users: [...keep(parsed.users), ...editedUsers],
         });
       }
       const inputs = serverInputs(templateParams, values);
-      if (loaded.kind === 'agent' && slots.length === 1) {
+      if (loaded.singular && slots.length === 1) {
         // A lone `agent:` room names it `{agent}`; the server fills that in.
-        inputs.agent = slots[0].mode === 'existing' ? slots[0].existingName : (finalNames[0] ?? '');
+        const slot = slots[0];
+        inputs.agent =
+          slot.mode === 'existing' ? slot.existingName : (slot.createdName ?? finalNames[0] ?? '');
       }
       const result = await rpc.switchServers.createRoomFromTemplate(serverId, coreYaml, inputs);
       setRoomStatus('created');
@@ -649,13 +697,20 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
             variant: 'destructive',
           });
         }
+        // The room is the thing to watch: the kickoff lands there and the
+        // agents answer there. Their sessions show up in the sidebar.
         navigate('room', { roomId: result.roomId });
-        if (parsed.kickoff) void revealSessionWhenItStarts(result.roomId);
       } else {
-        if (result.errors.length > 0) {
+        const gaps = [
+          ...result.errors.map((e) => e.error),
+          ...result.rooms.flatMap((r) =>
+            r.failedAttachments.map((f) => `${r.roomName}: ${f.id} (${f.error})`)
+          ),
+        ];
+        if (gaps.length > 0) {
           toast({
             title: `"${result.groupName}" was created with gaps`,
-            description: result.errors.map((e) => e.error).join('; '),
+            description: gaps.join('; '),
             variant: 'destructive',
           });
         } else {
@@ -688,23 +743,51 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
     }
   };
 
-  // What the rail shows: the inputs, plus the lone agent's name where the room says `{agent}`.
+  // What the rail shows: the inputs, plus the lone agent's name where the room
+  // says `{agent}`, and every slot as it will actually be named.
   const railValues: Values =
-    loaded?.kind === 'agent' && slotNames[0]
+    loaded?.singular && slotNames[0]
       ? { ...values, agent: slotNames[0].final || '{agent}' }
       : values;
+  const railRenames = useMemo(() => {
+    const out: Record<string, string> = {};
+    slots.forEach((slot, i) => {
+      const expression = slot.entry.name ?? '';
+      const actual =
+        slot.mode === 'existing' ? slot.existingName : (slot.createdName ?? slotNames[i]?.final);
+      if (expression && actual && expression !== actual) out[expression] = actual;
+    });
+    return out;
+  }, [slots, slotNames]);
 
   // ── Render ──────────────────────────────────────────────────────────────
-  const primaryLabel =
-    loaded?.kind === 'group'
-      ? 'Create all'
-      : loaded?.kind === 'agent'
-        ? 'Create agent'
-        : 'Create room';
+  const partlyDone =
+    slots.some((s) => s.status === 'created' || s.status === 'failed') || roomStatus === 'failed';
+  const primaryLabel = partlyDone
+    ? 'Retry remaining steps'
+    : intoRoomId
+      ? 'Create and add to room'
+      : loaded?.kind === 'group'
+        ? 'Create all'
+        : loaded?.kind === 'agent'
+          ? 'Create agent'
+          : 'Create room';
+  const intoRoomName = intoRoomId ? switchRoomsStore.roomNameById(intoRoomId) : null;
+  // Back to where the person came from: the room, the editor with their
+  // document still in it, the template's page, or the listing.
   const cancel = () =>
-    params.templateId
-      ? navigate('templateDetail', { serverId, templateId: params.templateId })
-      : navigate('templates', { serverId });
+    intoRoomId
+      ? navigate('room', { roomId: intoRoomId })
+      : params.templateId
+        ? navigate('templateDetail', { serverId, templateId: params.templateId })
+        : params.yamlText
+          ? navigate('templateImport', {
+              serverId,
+              yamlText: params.yamlText,
+              sourceName: params.sourceName,
+              edit: true,
+            })
+          : navigate('templates', { serverId });
   const showNameField = loaded?.kind === 'agent' && slots.length === 1 && slots[0].mode === 'new';
   const showAgentLists =
     parsed !== null &&
@@ -717,23 +800,38 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
     <div className="relative z-10 flex min-h-0 flex-1 flex-col overflow-hidden bg-background">
       <div className="flex shrink-0 items-start gap-4 border-b border-border px-8 pt-8 pb-5 [-webkit-app-region:drag]">
         <div className="flex min-w-0 flex-1 flex-col gap-1">
-          <span className="text-xs text-foreground-passive">Use template</span>
+          <span className="text-xs text-foreground-passive">
+            {intoRoomId ? `Add an agent to ${intoRoomName ?? 'the room'}` : 'Use template'}
+          </span>
           <h2 className="truncate text-xl font-semibold tracking-tight">
             {loaded?.name ?? params.sourceName ?? 'Template'}
           </h2>
+          {partlyDone && phase === 'form' && (
+            <span className="text-xs text-foreground-muted">
+              What was created stays created; the button carries on from the first step that did not
+              finish.
+            </span>
+          )}
         </div>
-        <div className="flex shrink-0 items-center gap-2 [-webkit-app-region:no-drag]">
-          <Button variant="outline" size="sm" onClick={cancel} disabled={phase === 'creating'}>
-            Cancel
-          </Button>
-          <Button
-            size="sm"
-            onClick={() => void createAll()}
-            disabled={blockedReason !== null || phase === 'creating'}
-            title={blockedReason ?? undefined}
-          >
-            {phase === 'creating' ? 'Creating…' : primaryLabel}
-          </Button>
+        <div className="flex shrink-0 flex-col items-end gap-1 [-webkit-app-region:no-drag]">
+          <div className="flex items-center gap-2">
+            <Button variant="outline" size="sm" onClick={cancel} disabled={phase === 'creating'}>
+              {params.yamlText && !intoRoomId ? 'Back to the document' : 'Cancel'}
+            </Button>
+            <Button
+              size="sm"
+              onClick={() => void createAll()}
+              disabled={blockedReason !== null || phase === 'creating'}
+              title={blockedReason ?? undefined}
+            >
+              {phase === 'creating' ? 'Creating…' : primaryLabel}
+            </Button>
+          </div>
+          {blockedReason && loaded && phase === 'form' && (
+            <span className="max-w-md text-right text-[11.5px] text-foreground-muted">
+              {blockedReason}
+            </span>
+          )}
         </div>
       </div>
 
@@ -944,6 +1042,7 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
                       key={i}
                       room={room}
                       values={railValues}
+                      renames={railRenames}
                       bridgeName={templateBridge?.displayName ?? parsed.bridge}
                       creatorIdentity={creatorIdentity}
                       status={roomStatus}
@@ -959,13 +1058,18 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
                     onChange={(next) =>
                       setSlots((prev) => prev.map((s, j) => (j === i ? next : s)))
                     }
-                    lists={lists}
+                    lists={{ ...lists, agents: agentsAtLocation }}
+                    locationLabel={runLocationLabel(runHost, allowedHosts)}
                     sshHost={sshHost}
                     busy={phase === 'creating'}
                   />
                 ))}
               </div>
-              <ResolvedDocument yamlText={loaded.yamlText} values={railValues} />
+              <ResolvedDocument
+                yamlText={loaded.yamlText}
+                values={railValues}
+                renames={railRenames}
+              />
             </div>
           </div>
         </div>

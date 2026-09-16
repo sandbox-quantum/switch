@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   composeTemplateDocument,
   coreDocumentFor,
+  dropUnsetParams,
   parseTemplateAgents,
   substituteAgentSlots,
   templateKind,
@@ -71,6 +72,11 @@ describe('parseTemplateAgents', () => {
     expect(agents[0].instructions).toBe('Persona.');
   });
 
+  it('tells a lone agent: from a one-entry list', () => {
+    expect(parseTemplateAgents('agent:\n  name: a\n  instructions: i\n').singular).toBe(true);
+    expect(parseTemplateAgents('agents:\n  - name: a\n    instructions: i\n').singular).toBe(false);
+  });
+
   it('gives a room template no agents', () => {
     expect(parseTemplateAgents('room:\n  name: r\n').agents).toEqual([]);
   });
@@ -90,6 +96,13 @@ describe('coreDocumentFor', () => {
     expect((doc.room as { agents: string[] }).agents).toEqual(['{team}-triager', '{team}-repro']);
   });
 
+  it('keeps provider params when asked, for the form', () => {
+    const doc = load(coreDocumentFor(TRIAGE_PAIR, { keepConsoleParams: true }) ?? '') as {
+      params: Record<string, unknown>;
+    };
+    expect(Object.keys(doc.params)).toEqual(['team', 'provider', 'bridge']);
+  });
+
   it('declares {agent} for a lone agent', () => {
     const doc = load(coreDocumentFor(SOLO) ?? '') as { params: Record<string, unknown> };
     expect(Object.keys(doc.params)).toEqual(['agent']);
@@ -100,6 +113,13 @@ describe('coreDocumentFor', () => {
       'group:\n  name: g\nrooms:\n  - name: a\n    kickoff: hi\nlinks: []\nagents:\n  - name: x\n    instructions: i\n';
     const doc = load(coreDocumentFor(text) ?? '') as Record<string, unknown>;
     expect(Object.keys(doc).sort()).toEqual(['group', 'links', 'rooms']);
+  });
+
+  it('keeps a misplaced group kickoff for the server to refuse', () => {
+    const doc = load(
+      coreDocumentFor('group:\n  name: g\nrooms:\n  - name: a\nkickoff: hi\n') ?? ''
+    ) as Record<string, unknown>;
+    expect(doc.kickoff).toBe('hi');
   });
 
   it('is null without a room half', () => {
@@ -115,6 +135,32 @@ describe('substituteAgentSlots', () => {
     };
     expect(out.room.agents).toEqual(['claude-code.alice', '{team}-repro']);
     expect(out.room.aliases).toEqual({ 'claude-code.alice': 'triager' });
+  });
+});
+
+describe('substituteAgentSlots kickoffs', () => {
+  it('renames the mentions in a kickoff too', () => {
+    const core =
+      'room:\n  name: r\n  agents: ["{team}-a"]\n  kickoff: "@{team}-a go"\nkickoff: "@{team}-a hi"\n';
+    const out = load(substituteAgentSlots(core, { '{team}-a': 'alpha-a-2' })) as {
+      room: { kickoff: string };
+      kickoff: string;
+    };
+    expect(out.kickoff).toBe('@alpha-a-2 hi');
+    expect(out.room.kickoff).toBe('@alpha-a-2 go');
+  });
+});
+
+describe('dropUnsetParams', () => {
+  it('removes the declaration and the room fields that read it', () => {
+    const out = load(
+      dropUnsetParams(
+        'params:\n  bridge:\n    type: bridge\n  team:\n    type: string\nroom:\n  name: "{team}"\n  bridge: "{bridge}"\n',
+        ['bridge']
+      )
+    ) as { params: Record<string, unknown>; room: Record<string, unknown> };
+    expect(Object.keys(out.params)).toEqual(['team']);
+    expect(out.room).toEqual({ name: '{team}' });
   });
 });
 
