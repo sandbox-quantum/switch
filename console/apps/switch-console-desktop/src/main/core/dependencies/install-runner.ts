@@ -1,6 +1,8 @@
 import { spawn } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import os from 'node:os';
 import type { InstallCommandError, InstallCommandSpec } from '@switch-console/core/deps/runtime';
+import { resolveExecFileSpawn } from '@switch-console/core/exec';
 import { err, ok, type Result } from '@switch-console/shared';
 import type { ResolvedShellProfile } from '@main/core/terminal-shell/types';
 import { ensureUserBinDirsInPath } from '@main/utils/userEnv';
@@ -43,18 +45,19 @@ export async function runLocalInstallCommand(
   shellProfile: ResolvedShellProfile
 ): Promise<Result<void, InstallCommandError>> {
   return new Promise((resolve) => {
-    const child =
-      typeof command === 'string'
-        ? spawn(shellProfile.executable, [...shellProfile.commandArgs, command], {
-            cwd: os.homedir(),
-            env: process.env,
-            stdio: ['ignore', 'pipe', 'pipe'],
-          })
-        : spawn(command.command, command.args, {
-            cwd: os.homedir(),
-            env: process.env,
-            stdio: ['ignore', 'pipe', 'pipe'],
-          });
+    const spec = resolveExecFileSpawn({
+      command: typeof command === 'string' ? shellProfile.executable : command.command,
+      args: typeof command === 'string' ? [...shellProfile.commandArgs, command] : command.args,
+      platform: process.platform,
+      env: process.env,
+      fileExists: existsSync,
+    });
+    const child = spawn(spec.command, spec.args, {
+      cwd: os.homedir(),
+      env: process.env,
+      windowsVerbatimArguments: spec.windowsVerbatimArguments,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
     let output = '';
     const collect = (chunk: Buffer) => {
       output += chunk.toString();

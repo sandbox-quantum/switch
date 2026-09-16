@@ -38,18 +38,12 @@ export class LifecycleScriptService implements IDisposable {
     const line = script.shellSetup ? `${script.shellSetup} && ${script.script}` : script.script;
     const { ctx, sessionEnvVars, windows } = this.options;
     try {
-      const result = windows
-        ? await ctx.exec('cmd.exe', ['/d', '/s', '/c', line], { signal: controller.signal })
-        : await ctx.exec(
-            'env',
-            [
-              ...Object.entries(sessionEnvVars).map(([key, value]) => `${key}=${value}`),
-              'sh',
-              '-c',
-              line,
-            ],
-            { signal: controller.signal, maxBuffer: 16 * 1024 * 1024 }
-          );
+      // Redirect the whole script so commands reading stdin receive EOF.
+      const result = await ctx.exec(
+        windows ? 'cmd.exe' : 'sh',
+        windows ? ['/d', '/s', '/c', `(${line}) < NUL`] : ['-c', `{\n${line}\n} < /dev/null`],
+        { signal: controller.signal, env: sessionEnvVars, maxBuffer: 16 * 1024 * 1024 }
+      );
       return {
         kind: 'exited',
         exitCode: 0,
