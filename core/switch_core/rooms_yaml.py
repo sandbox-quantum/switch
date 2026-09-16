@@ -644,7 +644,13 @@ class RoomYamlService:
                     )
 
     async def builtins_for(
-        self, *, user_id: str, name: str, email: str, text: str
+        self,
+        *,
+        user_id: str,
+        name: str,
+        email: str,
+        text: str,
+        inputs: dict[str, Any] | None = None,
     ) -> dict[str, str]:
         """The server-injected ``{$...}`` variables for one create call.
 
@@ -657,7 +663,7 @@ class RoomYamlService:
         in.
         """
         creator = name
-        bridge_id = await self._peek_bridge_id(text)
+        bridge_id = await self._peek_bridge_id(text, inputs)
         if bridge_id is not None:
             async with self._session_factory() as session:
                 claimed = await self._external_users.get_by_user(session, user_id)
@@ -681,13 +687,19 @@ class RoomYamlService:
             "$timestamp": str(int(time.time())),
         }
 
-    async def _peek_bridge_id(self, text: str) -> str | None:
+    async def _peek_bridge_id(
+        self, text: str, inputs: dict[str, Any] | None = None
+    ) -> str | None:
         """The bridge the template will land on, read before interpolation.
 
-        Best-effort: an unparseable template, an interpolated bridge name, or
-        an unknown bridge all answer None; parse/provision fails loudly later
-        when it matters. A template naming no bridge lands on the default one,
-        same as provisioning."""
+        A `bridge:` written as `{param}` is filled from `inputs` (or the
+        param's default) the way provisioning will fill it, so a template
+        that asks which app to use still finds the creator's account there.
+
+        Best-effort: an unparseable template, a bridge name that cannot be
+        resolved yet, or an unknown bridge all answer None; parse/provision
+        fails loudly later when it matters. A template naming no bridge lands
+        on the default one, same as provisioning."""
         try:
             data = yaml.safe_load(text)
         except yaml.YAMLError:
@@ -701,9 +713,21 @@ class RoomYamlService:
         if not isinstance(room, dict):
             return None
         bridge = room.get("bridge")
-        if bridge is not None and (
-            not isinstance(bridge, str) or PLACEHOLDER_RE.search(bridge)
-        ):
+        if isinstance(bridge, str) and PLACEHOLDER_RE.search(bridge):
+            raw_params = data.get("params")
+            try:
+                declared = {
+                    k: ParamSpec.model_validate(v)
+                    for k, v in (raw_params or {}).items()
+                }
+                values = resolve_params(declared, inputs)
+            except (ValueError, ValidationError, AttributeError):
+                return None
+            filled = interpolate(bridge, values)
+            if not isinstance(filled, str) or PLACEHOLDER_RE.search(filled):
+                return None
+            bridge = filled
+        if bridge is not None and not isinstance(bridge, str):
             return None
         try:
             return await self._resolve_bridge_id(bridge)

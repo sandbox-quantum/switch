@@ -1612,7 +1612,7 @@ async def create_room_from_yaml(
         room_group_store=protocol.room_group_store,
     )
     builtins = await rooms_yaml.builtins_for(
-        user_id=owner_id, name=owner_name, email=owner_email, text=yaml
+        user_id=owner_id, name=owner_name, email=owner_email, text=yaml, inputs=inputs
     )
     parsed = rooms_yaml.parse_template(yaml, inputs=inputs, builtins=builtins)
     await rooms_yaml.check_entity_params(parsed)

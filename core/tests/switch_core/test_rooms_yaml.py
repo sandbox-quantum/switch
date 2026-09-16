@@ -1521,6 +1521,46 @@ async def test_builtins_creator_resolves_named_bridge(env):
     assert builtins["$creator"] == "abel.slack"
 
 
+@pytest.mark.asyncio
+async def test_builtins_creator_resolves_a_bridge_param_from_inputs(env):
+    """A `bridge:` written as `{bridge}` is filled from the inputs before the
+    claim is looked up, so the creator is found on the app they picked."""
+    await _seed_bridge_with_claim(
+        env["session_factory"],
+        display_name="Mattermost",
+        is_default=True,
+        claimed_by=env["user_id"],
+        external_username="abel.mm",
+    )
+    await _seed_bridge_with_claim(
+        env["session_factory"],
+        display_name="Slack",
+        is_default=False,
+        claimed_by=env["user_id"],
+        external_username="abel.slack",
+    )
+    text = (
+        "params:\n  bridge:\n    type: bridge\n"
+        'room:\n  name: n\n  description: d\n  bridge: "{bridge}"\n'
+        '  users: ["{$creator}"]\n'
+    )
+    svc = _svc(env)
+    picked = await svc.builtins_for(
+        user_id=env["user_id"],
+        name="alice",
+        email="alice@example.com",
+        text=text,
+        inputs={"bridge": "Slack"},
+    )
+    assert picked["$creator"] == "abel.slack"
+    # No input for it and no default: the app is unknown, so the gateway
+    # name stands in rather than a guess at one bridge's claim.
+    unset = await svc.builtins_for(
+        user_id=env["user_id"], name="alice", email="alice@example.com", text=text
+    )
+    assert unset["$creator"] == "alice"
+
+
 def test_parse_multiline_param_option(env):
     """`multiline: true` is a valid param option and rides into the schema."""
     spec, _ = _svc(env).parse(

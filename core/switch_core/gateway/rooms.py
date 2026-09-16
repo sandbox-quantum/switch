@@ -417,7 +417,7 @@ async def create_room_from_yaml(
             text = (await request.body()).decode("utf-8")
             inputs = None
         builtins = await rooms_yaml.builtins_for(
-            user_id=user.id, name=user.name, email=user.email, text=text
+            user_id=user.id, name=user.name, email=user.email, text=text, inputs=inputs
         )
         parsed = rooms_yaml.parse_template(text, inputs=inputs, builtins=builtins)
         await rooms_yaml.check_entity_params(parsed)
