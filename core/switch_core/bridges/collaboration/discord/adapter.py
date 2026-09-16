@@ -2793,11 +2793,11 @@ class DiscordAdapter(CollaborationAdapter):
     async def _still_reads(self, channel: Any, user: Any) -> bool:
         """Whether this reader can still read the conversation a turn is in.
 
-        A direct message is the reader's own channel and there is nobody else
-        in it to ask about. A private thread is the case a channel's
-        permissions cannot answer on their own: everyone who can see the
-        parent passes that check, and only membership of the thread says who
-        is actually in it.
+        A channel outside any guild has no permissions to consult: who may
+        read it is exactly who is in it, so that is what is asked. A private
+        thread is the case a channel's permissions cannot answer on their own:
+        everyone who can see the parent passes that check, and only membership
+        of the thread says who is actually in it.
 
         Refused where the answer cannot be established. A destination this
         cannot ask about is one nothing here can say a reader may see, and the
@@ -2806,7 +2806,7 @@ class DiscordAdapter(CollaborationAdapter):
         """
         guild = getattr(channel, "guild", None)
         if guild is None:
-            return True
+            return self._is_recipient(channel, user)
         permissions_for = getattr(channel, "permissions_for", None)
         if permissions_for is None:
             logger.warning(
@@ -2834,6 +2834,28 @@ class DiscordAdapter(CollaborationAdapter):
         except discord.HTTPException:
             return False
         return True
+
+    def _is_recipient(self, channel: Any, user: Any) -> bool:
+        """Whether this reader is one of the people a guildless channel is between.
+
+        Asked rather than taken as read. The address that named this channel
+        came off a press, and the whole point of checking here is that an
+        address is not evidence of anything — a branch that answered "yes"
+        because there were no permissions to consult would be the one place
+        the check could be steered into.
+        """
+        recipients = getattr(channel, "recipients", None)
+        if recipients is None:
+            sole = getattr(channel, "recipient", None)
+            recipients = [sole] if sole is not None else None
+        if recipients is None:
+            logger.warning(
+                "Cannot establish who is in Discord channel %s, so an "
+                "activity view of it is refused.",
+                getattr(channel, "id", "?"),
+            )
+            return False
+        return any(getattr(person, "id", None) == user.id for person in recipients)
 
     async def _tell_presser(
         self, interaction: discord.Interaction, notice: str
