@@ -39,6 +39,7 @@ from switch_core.bridges.collaboration.adapter import (
     ActivityMark,
     ActivityMarkRefused,
     CollaborationAdapter,
+    RemovalFailed,
     RequestCard,
     RichContent,
     RichContentFailed,
@@ -431,6 +432,13 @@ class TelegramAdapter(CollaborationAdapter):
     # this platform on this platform's evidence. It does not travel to another
     # adapter that happens to share the inability to search.
     discloses_unconfirmed_posts: ClassVar[bool] = True
+
+    #: A bot deletes its own messages in a group as an ordinary member, and in
+    #: a broadcast channel with the Delete Messages right the install already
+    #: asks for. What it cannot do is delete one older than 48 hours, and
+    #: Telegram says so plainly enough to tell apart from being ignored — which
+    #: is the second half of what this claims. See `remove_publication`.
+    removes_answered_cards: ClassVar[bool] = True
 
     def __init__(self, *, config: TelegramConnectionConfig) -> None:
         super().__init__()
@@ -1516,6 +1524,87 @@ class TelegramAdapter(CollaborationAdapter):
         if isinstance(failure, RichContentThrottled):
             self._rich_update_after = time.monotonic() + failure.retry_after
         return failure or error
+
+    async def remove_publication(self, channel_id: str, message_ref: str) -> None:
+        """Take an answered card out of the chat, or say why it is still there.
+
+        Telegram's own limit is the interesting case: a bot may delete its own
+        message for 48 hours and not after, and it reports the refusal as a
+        `BadRequest` saying the message cannot be deleted. That is a real
+        failure and is raised as one — the card stays, settled and readable,
+        which is the intended fallback. A card answered inside two days, which
+        is every card anybody is waiting on, is deleted.
+
+        Told the message is not there, this returns: the address came from
+        Telegram when it accepted the card, so nothing remains at it, which is
+        what the caller asked for.
+
+        No thread or topic is named. Telegram's `deleteMessage` takes a chat
+        and a message id, and a forum topic is a property of the message
+        rather than an address to re-supply.
+        """
+        if self._bot is None:
+            raise RemovalFailed("Telegram bot not connected.")
+
+        chat_ref, message_id = self._parse_message_ref(message_ref)
+        if not chat_ref or not message_id.isdigit():
+            # The edit path falls back to the channel argument for a missing
+            # chat, and this does not. An edit that lands on the wrong message
+            # rewrites one of ours or is refused; a deletion is neither
+            # reversible nor confined to our own messages, so an address
+            # Telegram never issued is not one to complete from context.
+            raise RemovalFailed(
+                f"Not a Telegram chat:message reference: {message_ref}."
+            )
+
+        waiting = f"Waiting for Telegram to allow {message_ref} to be deleted."
+        # A 429 is charged to the bot, so a deletion sent into one is a second
+        # refusal and a longer wait. The caller is a publisher that can come
+        # back; it is told to.
+        self._refuse_while_throttled(waiting)
+
+        try:
+            await self._bot.delete_message(
+                chat_id=self._chat_id(chat_ref),
+                message_id=int(message_id),
+            )
+        except BadRequest as error:
+            if "message to delete not found" in str(error).lower():
+                # Worth a line: the innocent reading is a deletion whose
+                # acknowledgement we lost, or one done by hand, but this is
+                # also what Telegram says about an address it never issued.
+                logger.warning(
+                    "Telegram card %s was already gone when it was taken back.",
+                    message_ref,
+                )
+                return
+            raise self._removal_failure(error, message_ref, channel_id) from error
+        except Exception as error:
+            raise self._removal_failure(error, message_ref, channel_id) from error
+
+    def _removal_failure(
+        self, error: Exception, message_ref: str, channel_id: str
+    ) -> Exception:
+        """What a failed deletion should be reported as.
+
+        Only a wait survives as itself, and it goes through `_rich_failure` so
+        the chat's quiet period is recorded for every other publication in it.
+        Everything else — a refusal, the 48-hour limit, a request that never
+        came back — becomes `RemovalFailed`, because the caller does the same
+        thing with all three: keep the settled card, record nothing, and ask
+        again later. The uncertainty an uncertain *send* has to preserve does
+        not arise here, since asking again about a deletion that did land is
+        answered with "not found".
+        """
+        description = f"Telegram would not delete {message_ref} in chat {channel_id}"
+        classified = self._rich_failure(
+            error,
+            description,
+            f"Waiting for Telegram to allow {message_ref} to be deleted.",
+        )
+        if isinstance(classified, RichContentThrottled):
+            return classified
+        return RemovalFailed(f"{description}: {error}")
 
     def _refuse_while_throttled(self, text: str) -> None:
         """Wait out a 429 Telegram has already sent for this bot.
