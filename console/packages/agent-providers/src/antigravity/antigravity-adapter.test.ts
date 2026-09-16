@@ -291,7 +291,8 @@ it('respawns with the attachment directory readable when it cannot ask to read i
   await flush();
   const args = spawns[1]!.args;
   expect(args.join(' ')).toContain('--conversation native-1');
-  expect(args.filter((argument) => argument === '--add-dir')).toHaveLength(2);
+  // cwd, the Switch session downloads root, and now the staging directory.
+  expect(args.filter((argument) => argument === '--add-dir')).toHaveLength(3);
   expect(args).toContain(staging);
   expect(JSON.stringify(processes[1]!.received[0])).toContain('report.txt');
 
@@ -316,6 +317,21 @@ it('respawns with the attachment directory readable when it cannot ask to read i
   expect(
     events.some((event) => event.type === 'runtime.warning' && event.message.includes('other.txt'))
   ).toBe(true);
+});
+
+it('grants the Switch session downloads root unless the session has full access', async () => {
+  // `download_attachment` writes under ~/.switch/sessions/<runtime pid>/media,
+  // named after a process the adapter never sees, so the root is the grant.
+  const root = join(home, '.switch/sessions');
+  await setup({ runtimeMode: 'auto-accept-edits' });
+  expect(spawns[0]!.args).toContain(root);
+  expect(spawns[0]!.args.filter((argument) => argument === '--add-dir')).toHaveLength(2);
+
+  processes.length = 0;
+  spawns.length = 0;
+  await setup();
+  expect(spawns[0]!.args).not.toContain(root);
+  expect(spawns[0]!.args.filter((argument) => argument === '--add-dir')).toHaveLength(1);
 });
 
 it('does not widen access for attachments when the session already has full access', async () => {

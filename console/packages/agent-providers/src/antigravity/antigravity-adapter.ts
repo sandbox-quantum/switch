@@ -1,7 +1,8 @@
 import { type ChildProcess, execFile, spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { realpath } from 'node:fs/promises';
-import { dirname } from 'node:path';
+import { homedir } from 'node:os';
+import { dirname, join } from 'node:path';
 import { createInterface } from 'node:readline';
 import { promisify } from 'node:util';
 import type { ModelChoice } from '@switch-console/shared/session-v1';
@@ -41,6 +42,16 @@ import {
 const execute = promisify(execFile);
 const PROVIDER = 'antigravity';
 const STDERR_TAIL_LIMIT = 8_000;
+
+/**
+ * Where the Switch agent runtime writes a file fetched by the
+ * `download_attachment` tool: `<root>/<runtime pid>/media/`. The per-session
+ * directory is named after the runtime process, which the adapter never sees,
+ * so the root is what can be granted.
+ */
+function switchSessionsRoot(env: Record<string, string>): string {
+  return join(env.HOME || homedir(), '.switch', 'sessions');
+}
 
 /** A single `agent_response` or `tool` step of the running turn. */
 interface Step {
@@ -135,7 +146,12 @@ export class AntigravityAdapter implements ProviderAdapter {
       id: input.sessionId,
       nativeId: input.resume?.nativeSessionId ?? '',
       cwd,
-      readable: new Set(),
+      // Outside `full-access` the CLI reads only what it was given at launch,
+      // and a Switch tool can put a file under the runtime's session directory
+      // at any point in the turn that asked for it — too late to grant then.
+      readable: new Set(
+        input.runtimeMode === 'full-access' ? [] : [switchSessionsRoot(input.env)]
+      ),
       env: input.env,
       runtimeMode: input.runtimeMode,
       ...(input.model ? { model: input.model } : {}),
