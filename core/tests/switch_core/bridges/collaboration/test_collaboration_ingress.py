@@ -13,6 +13,7 @@ the endpoint, so that no adapter ever holds the server secret it came from.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import socket
 from typing import Any
@@ -117,6 +118,46 @@ async def test_two_bridges_share_the_one_port() -> None:
         assert (await _post(port, OTHER, {}))[1] == {"who": "second"}
     finally:
         await ingress.stop()
+
+
+async def test_two_bridges_starting_together_bind_the_port_once() -> None:
+    """Each bridge runs in a task of its own, so two configured for callbacks
+    reach the bind together on boot. Both must come up: a bridge that failed
+    because its neighbour won the race would be down for no reason it could
+    report."""
+    port = _free_port()
+    ingress = _ingress(port)
+
+    async def handle(body: dict[str, Any]) -> dict[str, Any]:
+        return {"who": "either"}
+
+    await asyncio.gather(
+        ingress.serve("mattermost", BRIDGE, handle),
+        ingress.serve("mattermost", OTHER, handle),
+    )
+    try:
+        assert (await _post(port, BRIDGE, {}))[0] == 200
+        assert (await _post(port, OTHER, {}))[0] == 200
+    finally:
+        await ingress.stop()
+
+
+async def test_a_bridge_that_cannot_bind_does_not_leave_itself_registered() -> None:
+    """Something else on the port is a startup failure, and it has to be a
+    clean one: a handler left behind would have the door claiming to serve a
+    bridge that never came up."""
+    with socket.socket() as taken:
+        taken.bind(("127.0.0.1", 0))
+        taken.listen()
+        ingress = _ingress(taken.getsockname()[1])
+
+        async def handle(body: dict[str, Any]) -> dict[str, Any]:
+            return {}
+
+        with pytest.raises(OSError):
+            await ingress.serve("mattermost", BRIDGE, handle)
+
+        assert ingress._handlers == {}
 
 
 async def test_the_port_closes_when_the_listener_stops() -> None:

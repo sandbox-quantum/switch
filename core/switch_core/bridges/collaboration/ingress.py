@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import hmac
 import logging
@@ -69,6 +70,10 @@ class CallbackIngress:
         self._secret = secret
         self._handlers: dict[tuple[str, str], Handler] = {}
         self._runner: web.AppRunner | None = None
+        # Each bridge runs in a task of its own, so two starting together reach
+        # the bind together. Without this both would find nothing bound and the
+        # loser would fail on a port its own neighbour had just taken.
+        self._bind_lock = asyncio.Lock()
 
     def endpoint_for(self, bridge_type: str, bridge_id: str) -> CallbackEndpoint:
         return CallbackEndpoint(
@@ -105,9 +110,14 @@ class CallbackIngress:
         ).hexdigest()
 
     async def serve(self, bridge_type: str, bridge_id: str, handle: Handler) -> None:
-        """Take callbacks for one bridge, binding the listener if it is the first."""
-        self._handlers[(bridge_type, bridge_id)] = handle
+        """Take callbacks for one bridge, binding the listener if it is the first.
+
+        Bound before registered, so a bind that fails leaves nothing behind
+        claiming to serve this bridge. A press arriving in the gap between the
+        two is answered as not running, which is what it is.
+        """
         await self._listen()
+        self._handlers[(bridge_type, bridge_id)] = handle
 
     async def withdraw(self, bridge_type: str, bridge_id: str) -> None:
         """Stop taking callbacks for one bridge.
@@ -128,16 +138,25 @@ class CallbackIngress:
         logger.info("Collaboration callback listener stopped")
 
     async def _listen(self) -> None:
-        if self._runner is not None:
-            return
-        app = web.Application()
-        app.router.add_post(_ROUTE, self._dispatch)
-        runner = web.AppRunner(app)
-        await runner.setup()
-        site = web.TCPSite(runner, self._host, self._port)
-        await site.start()
-        self._runner = runner
-        logger.info("Collaboration callback listener on %s:%s", self._host, self._port)
+        async with self._bind_lock:
+            if self._runner is not None:
+                return
+            app = web.Application()
+            app.router.add_post(_ROUTE, self._dispatch)
+            runner = web.AppRunner(app)
+            await runner.setup()
+            try:
+                site = web.TCPSite(runner, self._host, self._port)
+                await site.start()
+            except Exception:
+                # A runner that has been set up holds resources whether or not
+                # anything ever bound through it.
+                await runner.cleanup()
+                raise
+            self._runner = runner
+            logger.info(
+                "Collaboration callback listener on %s:%s", self._host, self._port
+            )
 
     async def _dispatch(self, request: web.Request) -> web.StreamResponse:
         bridge_type = request.match_info["bridge_type"]

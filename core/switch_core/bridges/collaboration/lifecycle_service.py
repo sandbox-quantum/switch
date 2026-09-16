@@ -646,6 +646,12 @@ class CollaborationBridgeLifecycleService:
                 self._bridges.pop(bridge_id, None)
                 self._tasks.pop(bridge_id, None)
                 self._held_resources.pop(bridge_id, None)
+                # The adapter may already have asked to be served before the
+                # failure, so a crash that leaves the endpoint registered
+                # leaves presses being handled by a bridge that is not running.
+                endpoint = self._callback_endpoints.pop(bridge_id, None)
+                if endpoint is not None:
+                    await endpoint.withdraw()
 
     async def stop(self, bridge_id: str) -> None:
         # Before the adapter goes, so a press in flight is answered as gone

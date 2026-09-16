@@ -48,9 +48,23 @@ class _CallbackAdapter(_StubAdapter):
         return {"heard": body}
 
 
+class _StubCore:
+    async def start(self) -> None:
+        return None
+
+
+class _FailingClient:
+    """A bridge client whose connection to the room server never comes up."""
+
+    client_id = "bridge-client"
+
+    async def start(self) -> None:
+        raise RuntimeError("the room client is down")
+
+
 async def _start_one(
     session_factory: async_sessionmaker[AsyncSession], port: int
-) -> tuple[Any, str, _CallbackAdapter]:
+) -> tuple[Any, str, str, _CallbackAdapter]:
     tenant = f"tenant-{uuid.uuid4().hex[:8]}"
     async with session_factory() as session:
         await _make_tenant(session, tenant)
@@ -76,7 +90,7 @@ async def _start_one(
     # What the bridge's own task would have done, awaited rather than raced:
     # the adapter asks for its place as it starts.
     await built[0].start()
-    return service, bridge_id, built[0]
+    return service, tenant, bridge_id, built[0]
 
 
 async def _post(port: int, bridge_id: str) -> int:
@@ -90,7 +104,7 @@ async def test_a_started_bridge_is_given_its_own_place_and_is_reachable_there(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
     port = _free_port()
-    service, bridge_id, adapter = await _start_one(session_factory, port)
+    service, _tenant, bridge_id, adapter = await _start_one(session_factory, port)
 
     try:
         assert adapter.endpoint is not None
@@ -108,10 +122,31 @@ async def test_stopping_a_bridge_takes_its_place_with_it(
     """A press posted a minute ago still arrives. It must not be handed to an
     adapter that is no longer running."""
     port = _free_port()
-    service, bridge_id, _ = await _start_one(session_factory, port)
+    service, _tenant, bridge_id, _ = await _start_one(session_factory, port)
 
     try:
         await service.stop(bridge_id)
+
+        assert await _post(port, bridge_id) == 404
+    finally:
+        await service.stop_all()
+
+
+async def test_a_bridge_that_crashes_takes_its_place_with_it(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """A bridge dies in its own task, so nothing calls `stop` for it. Left
+    registered, its place on the listener would go on answering presses that
+    reach an adapter which is no longer running."""
+    port = _free_port()
+    service, tenant, bridge_id, _ = await _start_one(session_factory, port)
+
+    try:
+        assert await _post(port, bridge_id) == 200
+
+        await type(service)._run_bridge(
+            service, bridge_id, tenant, _StubCore(), _FailingClient()
+        )
 
         assert await _post(port, bridge_id) == 404
     finally:
@@ -122,7 +157,7 @@ async def test_shutting_everything_down_closes_the_port(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
     port = _free_port()
-    service, bridge_id, _ = await _start_one(session_factory, port)
+    service, _tenant, bridge_id, _ = await _start_one(session_factory, port)
 
     await service.stop_all()
 
