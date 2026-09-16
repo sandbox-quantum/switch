@@ -31,6 +31,7 @@ from switch_core.agent_icon import default_icon_url
 from switch_core.bridges.collaboration.adapter import (
     ActivityMark,
     CollaborationAdapter,
+    RemovalFailed,
     RequestCard,
     RichContent,
     RichContentFailed,
@@ -224,6 +225,12 @@ class MattermostAdapter(CollaborationAdapter):
     #: invisible, so a status is as findable as a card despite printing no
     #: handle of its own.
     carries_publication_marker: ClassVar[bool] = True
+
+    #: The bridge connects as a system admin, which may delete any post in the
+    #: team, so an answered card comes back whichever bot posted it. Mattermost
+    #: leaves a "(message deleted)" placeholder for clients with the channel
+    #: already open; it goes on the next load.
+    removes_answered_cards: ClassVar[bool] = True
 
     def __init__(self, *, config: MattermostConnectionConfig) -> None:
         super().__init__()
@@ -973,6 +980,64 @@ class MattermostAdapter(CollaborationAdapter):
             )
         except Exception as e:
             logger.error("Failed to delete Mattermost post %s: %s", message_ref, e)
+
+    async def remove_publication(self, channel_id: str, message_ref: str) -> None:
+        """Take an answered card out of the channel, or say why it is still there.
+
+        Deleted as the admin, which is the account that may delete a post it
+        did not write — the card was posted by the agent's bot, and nothing in
+        the reference says which agent that was. `update_rich` can prefer the
+        narrower bot because it is handed the agent's name; this is not.
+
+        Told the post does not exist, this returns: the id came from Mattermost
+        when it accepted the card, so nothing remains at it, which is what the
+        caller asked for.
+
+        Not `delete_message`, which logs and returns either way. A caller
+        writing down that a card is gone must not be told success where none
+        was established.
+        """
+        driver = self._admin_driver
+        loop = self._main_loop
+        if driver is None or loop is None:
+            raise RemovalFailed("Mattermost is not connected.")
+        if not message_ref.strip():
+            # A blank id is a DELETE against the collection rather than a post.
+            raise RemovalFailed("No Mattermost post id to delete.")
+
+        try:
+            await loop.run_in_executor(None, driver.posts.delete_post, message_ref)
+        except ResourceNotFound as error:
+            # Worth a line because the innocent reading — a deletion whose
+            # acknowledgement we lost, or one done by hand — is not the only one.
+            logger.warning(
+                "Mattermost card %s was already gone when it was taken back: %s",
+                message_ref,
+                error,
+            )
+        except Exception as error:
+            raise self._removal_failure(error, message_ref, channel_id) from error
+
+    @staticmethod
+    def _removal_failure(
+        error: Exception, message_ref: str, channel_id: str
+    ) -> Exception:
+        """What a failed deletion should be reported as.
+
+        Only a wait survives as itself. Everything else — a refusal, a server
+        error, a request that never came back — becomes `RemovalFailed`,
+        because the caller does the same thing with all three: keep the settled
+        card, record nothing, and ask again later. The uncertainty an uncertain
+        *send* has to preserve does not arise here, since asking again about a
+        deletion that did land is answered with "not found".
+        """
+        retry_after = _throttle_delay(error)
+        if retry_after is not None:
+            return RichContentThrottled(retry_after=retry_after, text="")
+        return RemovalFailed(
+            f"Mattermost would not delete post {message_ref} in channel "
+            f"{channel_id}: {error}"
+        )
 
     # ── Typing ───────────────────────────────────────────────────────────────
 

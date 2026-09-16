@@ -55,12 +55,15 @@ class _FakePosts:
         # drivers, because which bot Mattermost saw is the thing under test.
         self.created_by: list[str] = []
         self.patched_by: list[str] = []
+        self.deleted_by: list[str] = []
         self.thread: dict[str, dict[str, Any]] = {}
         self.channel: dict[str, dict[str, Any]] = {}
         self.create_error: Exception | None = None
         self.created_id: str | None = None
         self.patch_error: Exception | None = None
         self.read_error: Exception | None = None
+        self.deleted: list[str] = []
+        self.delete_error: Exception | None = None
         self.thread_calls: list[str] = []
         self.channel_calls: list[tuple[str, dict[str, Any] | None]] = []
         self._next = iter(f"post-{n}" for n in range(1, 50))
@@ -78,6 +81,12 @@ class _FakePosts:
             raise self.patch_error
         self.patched.append((post_id, body))
         return {"id": post_id}
+
+    def delete_post(self, post_id: str) -> dict[str, str]:
+        if self.delete_error:
+            raise self.delete_error
+        self.deleted.append(post_id)
+        return {"status": "OK"}
 
     def get_thread(self, root_id: str) -> dict[str, Any]:
         self.thread_calls.append(root_id)
@@ -160,6 +169,10 @@ class _DriverPosts:
     def patch_post(self, post_id: str, body: dict[str, Any]) -> dict[str, str]:
         self._posts.patched_by.append(self._owner)
         return self._posts.patch_post(post_id, body)
+
+    def delete_post(self, post_id: str) -> dict[str, str]:
+        self._posts.deleted_by.append(self._owner)
+        return self._posts.delete_post(post_id)
 
 
 class _FakeDriver:
