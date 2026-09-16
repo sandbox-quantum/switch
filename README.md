@@ -279,6 +279,46 @@ dashboard covers the rest.
 one up for you, on this machine or on a host you own, without you writing any
 Compose or Helm configuration.
 
+## Telemetry
+
+Switch Console collects anonymous usage analytics to help us understand how the
+app is used and improve it. Telemetry is **opt-in** — you are asked during first
+run, and nothing is sent without your explicit agreement. Switch Core (the
+server) sends no telemetry at all.
+
+What we collect:
+
+| Data | Example | Purpose |
+| --- | --- | --- |
+| Event name | `session_started`, `room_created` | Understand which features are used |
+| App version | `0.9.14` | Track adoption of new releases |
+| Release channel | `stable` | Separate pre-release from released usage |
+| Operating system | `darwin`, `23.6.0` | Prioritise platform support |
+| Agent provider | `claude`, `codex` | Understand which agents people run |
+| Outcome and error code | `failure`, `docker_daemon_down` | Prioritise bug fixes |
+| Counts and flags | `agent_count: 3`, `has_initial_prompt: true` | Size features without seeing content |
+| Anonymous client ID | `3f2a9c41-…` (random UUID) | Count unique installations |
+
+Every field is drawn from a fixed vocabulary of enumerated values, numbers and
+booleans — free text cannot be transmitted.
+
+**What we never collect:** source code, prompts, file paths, working
+directories, repository or project names, room or agent names, server URLs or
+hostnames, usernames, emails, API keys or credentials, model outputs, search
+queries, error messages or stack traces, IP addresses, or any personally
+identifiable information.
+
+Events are sent to a relay we operate (`telemetry.flintai.dev`), which forwards
+them to our analytics providers; no vendor credentials ship in the app.
+
+**Opting out:** turn off *Send anonymous usage data* in Settings → Telemetry.
+Sending stops immediately — the setting is checked before every event — and you
+can change it back at any time. Declining at first run leaves telemetry off.
+
+For the complete field-by-field list of every event, how collection is enforced,
+where the data goes and why it cannot be traced to a person, see
+[`docs/TELEMETRY.md`](docs/TELEMETRY.md).
+
 ## Contributing
 
 Switch is being built in the open, with the people who use it. Nobody knows yet
