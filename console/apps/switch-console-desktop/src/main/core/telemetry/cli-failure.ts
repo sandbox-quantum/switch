@@ -22,7 +22,7 @@ const CLI_FAILURE_CODES: Record<string, TelemetryCliFailure> = {
   'no-uninstall-command': 'no_uninstall_command',
   'permission-denied': 'permission_denied',
   'command-failed': 'command_failed',
-  'pty-open-failed': 'pty_open_failed',
+  'process-open-failed': 'pty_open_failed',
   'not-detected-after-install': 'not_detected_after_install',
   'not-detected-after-update': 'not_detected_after_update',
   'still-present': 'still_present',
