@@ -23,6 +23,10 @@ from __future__ import annotations
 from dataclasses import replace
 from typing import Any
 
+import pytest
+from mattermostdriver.exceptions import NotEnoughPermissions
+
+from switch_core.bridges.collaboration.adapter import RichContentFailed
 from switch_core.bridges.collaboration.mattermost.adapter import MattermostAdapter
 from switch_core.bridges.collaboration.mattermost.callback import (
     MAX_BUTTON_LABEL,
@@ -224,6 +228,65 @@ async def test_the_failure_text_keeps_the_options_it_has_no_buttons_for() -> Non
 
     assert "1. Allow once" in text
     assert "2. Deny" in text
+
+
+async def test_a_refused_edit_reports_the_options_the_card_stopped_printing() -> None:
+    """The one that actually reaches a reader. A card whose redraw is refused
+    is reported with its own text, and the publisher sends that on as an
+    ordinary message — where there are no buttons to carry the options, so the
+    drawing that suppressed them is the wrong one to report with."""
+    adapter, _ = _handled()
+    card = await _card()
+    ref = await adapter.post_rich(CHANNEL, "worker", card, "root-1")
+    _posts(adapter).patch_error = NotEnoughPermissions("403")
+
+    with pytest.raises(RichContentFailed) as raised:
+        await adapter.update_rich(CHANNEL, "worker", ref, card, "root-1")
+
+    assert "1. Allow once" in raised.value.text
+    assert "2. Deny" in raised.value.text
+    assert "1. Allow once" not in _created(adapter)["message"]
+
+
+async def test_a_refused_post_reports_the_options_its_buttons_never_got() -> None:
+    """Nothing was posted, so the reported text is the only place the options
+    appear at all."""
+    adapter, _ = _handled()
+    _posts(adapter).create_error = NotEnoughPermissions("403")
+
+    with pytest.raises(RichContentFailed) as raised:
+        await adapter.post_rich(CHANNEL, "worker", await _card(), "root-1")
+
+    assert "1. Allow once" in raised.value.text
+    assert "2. Deny" in raised.value.text
+
+
+async def test_a_card_that_lost_its_connection_still_says_what_it_was_asking() -> None:
+    """A dropped connection takes the driver and the loop with it and leaves
+    the callback address configured, so the drawing that suppressed the options
+    is still the one this path would otherwise report."""
+    adapter, _ = _handled()
+    card = await _card()
+    ref = await adapter.post_rich(CHANNEL, "worker", card, "root-1")
+    adapter._main_loop = None
+
+    with pytest.raises(RichContentFailed) as raised:
+        await adapter.update_rich(CHANNEL, "worker", ref, card, "root-1")
+
+    assert "1. Allow once" in raised.value.text
+    assert "2. Deny" in raised.value.text
+
+
+async def test_a_card_with_no_bot_to_post_it_still_says_what_it_was_asking() -> None:
+    """Refused before Mattermost is reached, and the same reasoning applies:
+    the buttons that were to carry the options were never posted either."""
+    adapter, _ = _handled()
+
+    with pytest.raises(RichContentFailed) as raised:
+        await adapter.post_rich(CHANNEL, "stranger", await _card(), "root-1")
+
+    assert "1. Allow once" in raised.value.text
+    assert "2. Deny" in raised.value.text
 
 
 async def test_a_button_keeps_its_id_across_a_redraw() -> None:

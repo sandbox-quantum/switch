@@ -11,7 +11,7 @@ import uuid
 from collections import OrderedDict
 from collections.abc import Awaitable, Callable
 from contextvars import ContextVar
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import Any, ClassVar
 
@@ -181,6 +181,22 @@ def _as_rich_failure(
     if isinstance(error, _DEFINITE_REFUSALS):
         return RichContentFailed(f"{description}: {error}", text=text)
     return None
+
+
+@dataclass(frozen=True)
+class _Rendered:
+    """A card drawn for Mattermost, and the same card drawn for anywhere else.
+
+    `text` and `actions` go together on the post: where buttons carry the
+    options the body stops listing them, so neither half is complete alone.
+    `plain` is the drawing that needs no buttons, and it is what a failure is
+    reported with — a payload the caller forwards as an ordinary message,
+    which would otherwise ask for a choice it had stopped printing.
+    """
+
+    text: str
+    actions: list[dict[str, Any]]
+    plain: str
 
 
 class MattermostConnectionConfig(BridgeConnectionConfig):
@@ -920,9 +936,7 @@ class MattermostAdapter(CollaborationAdapter):
         url, key = address
         return answer_actions(key, url, content.reference.token, controls)
 
-    async def _render_rich(
-        self, content: RichContent
-    ) -> tuple[str, list[dict[str, Any]]]:
+    async def _render_rich(self, content: RichContent) -> _Rendered:
         mention = await self._mention(content.notify_external_id)
         responder = (
             await self._mention(content.responder_external_id)
@@ -936,15 +950,20 @@ class MattermostAdapter(CollaborationAdapter):
             content, mention=mention, responder=responder, controls=controls
         )
         actions = self._controls(content, drawn)
-        if controls and not actions:
-            # The body drops an option only where a button carries it, and
-            # whether one does is not known until the card has been drawn: a
-            # form too big to show faithfully earns no controls, and the
-            # drawing that discovered that had already left the options out.
-            drawn = self._draw(
-                content, mention=mention, responder=responder, controls=False
-            )
-        return drawn.text, actions
+        if not controls:
+            return _Rendered(text=drawn.text, actions=actions, plain=drawn.text)
+        # The body drops an option only where a button carries it, so wherever
+        # buttons were possible the card is also drawn as if none were. That
+        # second drawing is what a failure is reported with, and it is what
+        # goes on the post itself when the card turned out to earn no controls
+        # — which is not known until it has been drawn, because a form too big
+        # to show faithfully is discovered by drawing it.
+        plain = self._draw(
+            content, mention=mention, responder=responder, controls=False
+        ).text
+        return _Rendered(
+            text=drawn.text if actions else plain, actions=actions, plain=plain
+        )
 
     async def post_rich(
         self,
@@ -967,13 +986,13 @@ class MattermostAdapter(CollaborationAdapter):
         Mattermost actually gave. A send whose outcome nobody knows raises the
         transport's own error and keeps the reservation.
         """
-        text, actions = await self._render_rich(content)
+        rendered = await self._render_rich(content)
         driver = self._bot_drivers.get(agent_name)
         if driver is None:
             raise RichContentFailed(
                 f"No Mattermost bot for agent {agent_name!r}, so its activity "
                 f"cannot be posted in channel {channel_id}.",
-                text=text,
+                text=rendered.plain,
             )
         token = (
             content.publication_token
@@ -983,17 +1002,17 @@ class MattermostAdapter(CollaborationAdapter):
         props: dict[str, Any] = {}
         if token:
             props[_PUBLICATION_PROP] = token
-        if actions:
-            props[_ATTACHMENTS_PROP] = [{"actions": actions}]
+        if rendered.actions:
+            props[_ATTACHMENTS_PROP] = [{"actions": rendered.actions}]
         try:
             ref = await self._post_or_raise(
-                driver, channel_id, text, thread_root_id, props or None
+                driver, channel_id, rendered.text, thread_root_id, props or None
             )
         except Exception as error:
             failure = _as_rich_failure(
                 error,
                 description=f"Mattermost refused the post in channel {channel_id}",
-                text=text,
+                text=rendered.plain,
             )
             if failure is None:
                 raise
@@ -1032,21 +1051,19 @@ class MattermostAdapter(CollaborationAdapter):
         # A post notifies; an edit does not. Repeating the mention on every
         # redraw would be a handle in the channel that never resolves to
         # anything new for the person it names.
-        text, actions = await self._render_rich(
-            replace(content, notify_external_id=None)
-        )
+        rendered = await self._render_rich(replace(content, notify_external_id=None))
         driver = self._bot_drivers.get(agent_name) or self._admin_driver
         loop = self._main_loop
         if driver is None or loop is None:
             raise RichContentFailed(
                 "Mattermost is not connected, so the post could not be updated.",
-                text=text,
+                text=rendered.plain,
             )
         try:
-            patch: dict[str, Any] = {"message": text}
+            patch: dict[str, Any] = {"message": rendered.text}
             if isinstance(content, RequestCard) and self._button_address() is not None:
                 patch["props"] = await self._props_with_actions(
-                    driver, loop, message_ref, actions
+                    driver, loop, message_ref, rendered.actions
                 )
             await loop.run_in_executor(
                 None, driver.posts.patch_post, message_ref, patch
@@ -1058,7 +1075,7 @@ class MattermostAdapter(CollaborationAdapter):
                     f"Mattermost refused the edit to post {message_ref} in "
                     f"channel {channel_id}"
                 ),
-                text=text,
+                text=rendered.plain,
             )
             if failure is None:
                 raise
