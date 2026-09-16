@@ -282,8 +282,8 @@ Compose or Helm configuration.
 ## Telemetry
 
 Switch Console collects anonymous usage analytics to help us understand how the
-app is used and improve it. Telemetry is **opt-in** — you are asked during first
-run, and nothing is sent without your explicit agreement. Switch Core (the
+app is used and improve it. Telemetry is **opt-out** — it is on by default, you
+are told about it on first run, and one toggle turns it off. Switch Core (the
 server) sends no telemetry at all.
 
 What we collect:
@@ -311,9 +311,9 @@ identifiable information.
 Events are sent to a relay we operate (`telemetry.flintai.dev`), which forwards
 them to our analytics providers; no vendor credentials ship in the app.
 
-**Opting out:** turn off *Send anonymous usage data* in Settings → Telemetry.
-Sending stops immediately — the setting is checked before every event — and you
-can change it back at any time. Declining at first run leaves telemetry off.
+**Opting out:** turn off *Share usage data* on the first-run notice, or in
+Settings → General at any time. Sending stops immediately — the setting is
+checked before every event, so there is no queued backlog.
 
 For the complete field-by-field list of every event, how collection is enforced,
 where the data goes and why it cannot be traced to a person, see

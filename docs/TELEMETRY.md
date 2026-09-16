@@ -220,11 +220,13 @@ the instructions; `agent_count` not the agents; `result_count` not the query;
 `setting_key` not the value; `resolved`/`cold_start` not the link;
 `picked_from_ssh_config` not the host.
 
-**Consent.** Opt-in: telemetry is off by default. Nothing leaves the machine
-until the user explicitly enables it at first run or in Settings, and the setting
-is re-read before every single event, so turning it off stops transmission
-immediately with no further requests and no queued backlog. Dev builds never
-transmit regardless of the setting. Opting out is itself not reported.
+**Consent.** Opt-out: telemetry is on by default. A non-dismissible notice on
+first run states what is shared and what never is, and carries the off switch;
+the same toggle lives in Settings → General. The setting is re-read before every
+single event rather than cached, so turning it off stops transmission
+immediately, with no further requests and no queued backlog. Dev builds never
+transmit regardless of the setting. Opting out is itself not reported — the one
+thing we do not measure is someone asking not to be measured.
 
 ---
 
@@ -331,5 +333,8 @@ configuration before this document is treated as verified end to end.
   not distinctive.
 - **The IP is controlled at a single point** and is neither logged, forwarded,
   nor used for enrichment (§7).
-- **The user opts in**, and one toggle stops it — with effect on the very next
-  event, since consent is checked per event rather than cached.
+- **The user is told on first run, and one toggle stops it** — with effect on the
+  very next event, since consent is checked per event rather than cached.
+
+Because the payload identifies nobody, the opt-out default changes how many
+installations are counted, not what is knowable about any of them.

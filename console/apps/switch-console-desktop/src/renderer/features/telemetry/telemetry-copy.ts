@@ -8,7 +8,7 @@
  * a copy edit.
  */
 export const TELEMETRY_SUMMARY =
-  'Switch Console can share usage data to show which features get used and where the app runs into trouble.';
+  'Switch Console shares anonymous usage data to show which features get used and where the app runs into trouble. It is on by default, and you can turn it off here.';
 
 export const TELEMETRY_SHARED = [
   'Which features are used, and how often',

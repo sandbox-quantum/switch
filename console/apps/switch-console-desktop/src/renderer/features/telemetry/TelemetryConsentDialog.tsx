@@ -46,17 +46,18 @@ function DisclosureList({
 }
 
 /**
- * The first-run consent prompt.
+ * The first-run telemetry notice.
  *
- * Rendered only when the user has never answered it, and not dismissible: the
- * answer is recorded by `askedAt`, so closing it without choosing would leave
- * the app asking again on every launch. The toggle starts off, matching the
- * default: what is sent carries a random per-install id, so sharing has to be
- * something the user turns on rather than something they failed to turn off.
+ * Rendered only when the user has never acknowledged it, and not dismissible:
+ * acknowledgement is recorded by `askedAt`, so closing it without answering
+ * would leave the app showing it again on every launch. The toggle starts on,
+ * matching the default — sharing is opt-out — so the notice's job is to tell
+ * the user it is happening and put the off switch in front of them before they
+ * go any further.
  */
 export function TelemetryConsentDialog({ onAnswered }: { onAnswered: () => void }) {
   const { value, updateAsync } = useAppSettingsKey('telemetry');
-  const [enabled, setEnabled] = useState(value?.enabled ?? false);
+  const [enabled, setEnabled] = useState(value?.enabled ?? true);
   const [saving, setSaving] = useState(false);
   const popupRef = useRef<HTMLDivElement>(null);
 

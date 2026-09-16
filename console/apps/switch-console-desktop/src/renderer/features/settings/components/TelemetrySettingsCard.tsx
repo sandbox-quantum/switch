@@ -20,12 +20,12 @@ const TelemetrySettingsCard: React.FC = () => {
     isSaving: saving,
   } = useAppSettingsKey('telemetry');
 
-  const enabled = telemetry?.enabled ?? false;
+  const enabled = telemetry?.enabled ?? true;
 
   const toggle = useCallback(
     (next: boolean) => {
-      // Answering here counts as being asked, so a user who reaches Settings
-      // before the prompt appears is not asked again for a choice they made.
+      // Answering here counts as being told, so a user who reaches Settings
+      // before the notice appears is not shown it again afterwards.
       update({ enabled: next, askedAt: telemetry?.askedAt ?? Date.now() });
     },
     [telemetry?.askedAt, update]
