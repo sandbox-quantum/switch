@@ -1,6 +1,19 @@
-import { Bot, CircleAlert, Clock, DoorOpen, FileText, Loader2, Save, Upload } from 'lucide-react';
+import {
+  Bot,
+  Boxes,
+  CircleAlert,
+  Clock,
+  DoorOpen,
+  FileText,
+  Loader2,
+  Save,
+  Upload,
+  UserRound,
+  Users,
+} from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import type { TemplateSummary } from '@main/core/agent-templates/controller';
 import type { RecentTemplate } from '@main/core/room-templates/controller';
 import type { StoredTemplateSummary } from '@main/core/switch-servers/gateway-client';
 import type { GuardResult, ViewDefinition } from '@renderer/app/view-registry';
@@ -16,7 +29,9 @@ import { useAgentTypeAvailability } from '@renderer/lib/stores/use-switch-setup'
 import { Alert, AlertAction, AlertDescription } from '@renderer/lib/ui/alert';
 import { Badge } from '@renderer/lib/ui/badge';
 import { Button } from '@renderer/lib/ui/button';
-import { Input } from '@renderer/lib/ui/input';
+import { SearchInput } from '@renderer/lib/ui/search-input';
+import { SegmentedControl } from '@renderer/lib/ui/segmented-control';
+import { Toggle } from '@renderer/lib/ui/toggle';
 import { loadAgentTemplateData, prefillForSave } from './agent-template-data';
 import { bundledTemplates } from './bundled-templates';
 
@@ -28,21 +43,47 @@ const TemplatesTitlebar = observer(function TemplatesTitlebar() {
   return <ServerSectionTitlebar serverId={useServerId()} icon={FileText} label="Templates" />;
 });
 
+type Kind = 'agent' | 'room' | 'group';
+type KindFilter = 'all' | Kind;
+
+const KIND_OPTIONS = [
+  { value: 'all', label: 'All' },
+  { value: 'room', label: 'Rooms', icon: DoorOpen },
+  { value: 'agent', label: 'Agents', icon: Bot },
+  { value: 'group', label: 'Groups', icon: Boxes },
+] as const satisfies readonly {
+  value: KindFilter;
+  label: string;
+  icon?: typeof Bot;
+}[];
+
+const KIND_ICON: Record<Kind, typeof Bot> = {
+  agent: Bot,
+  room: DoorOpen,
+  group: Boxes,
+};
+
 /**
  * One card in the listing. A template can be in two places at once: built
- * into the Console, and saved to the server. Those are one template to the
- * person, so they get one card, and the server copy is the one it opens,
+ * into the Console, and saved to the workspace. Those are one template to the
+ * person, so they get one card, and the workspace copy is the one it opens,
  * since that is the copy an admin can maintain.
  */
 type Listed = {
-  /** The id the page opens: the server row when there is one. */
+  /** The id the page opens: the workspace row when there is one. */
   id: string;
-  kind: 'agent' | 'room';
+  kind: Kind;
   name: string;
   description: string;
   bundled: boolean;
   server: StoredTemplateSummary | null;
+  /** The document, when it is at hand without a fetch (a bundled template). */
+  content: string | null;
 };
+
+function kindOf(kind: string): Kind {
+  return kind === 'agent' || kind === 'group' ? kind : 'room';
+}
 
 function isAgentDocument(yamlText: string): boolean {
   return /^agent:\s*$/m.test(yamlText) || /^agent:\s+\S/m.test(yamlText);
@@ -57,50 +98,134 @@ function readFileAsText(file: File): Promise<string> {
   });
 }
 
-function Provenance({ item, meId }: { item: Listed; meId: string | null }) {
-  const mine = item.server !== null && meId !== null && item.server.ownerId === meId;
+function hasFiles(e: React.DragEvent): boolean {
+  return Array.from(e.dataTransfer.types).includes('Files');
+}
+
+function plural(n: number, noun: string): string {
+  return `${n} ${noun}${n === 1 ? '' : 's'}`;
+}
+
+/** "Creates 1 room and 2 agents · 4 inputs", the way the card reads it. */
+function summaryLine(s: TemplateSummary): string {
+  const parts: string[] = [];
+  if (s.rooms > 0) parts.push(plural(s.rooms, 'room'));
+  if (s.agents > 0) parts.push(plural(s.agents, 'agent'));
+  const creates = parts.length > 0 ? `Creates ${parts.join(' and ')}` : 'Creates nothing yet';
+  const inputs = s.inputs === 0 ? 'no inputs' : plural(s.inputs, 'input');
+  return `${creates} · ${inputs}`;
+}
+
+// The listing endpoint does not carry documents, and the summary line needs
+// one. Each card fetches its own once and keeps it for the session; a
+// listing rarely has more than a handful of rows.
+const summaryCache = new Map<string, Promise<TemplateSummary>>();
+
+function fetchSummary(serverId: string, item: Listed): Promise<TemplateSummary> {
+  const key = `${serverId}:${item.id}`;
+  let pending = summaryCache.get(key);
+  if (!pending) {
+    pending = (async () => {
+      const yamlText =
+        item.content ??
+        (
+          await rpc.switchServers.getTemplateDetail({
+            serverId,
+            templateId: item.id,
+          })
+        ).definition;
+      return rpc.agentTemplates.summarize({ yamlText });
+    })();
+    pending.catch(() => summaryCache.delete(key));
+    summaryCache.set(key, pending);
+  }
+  return pending;
+}
+
+function useTemplateSummary(serverId: string, item: Listed): TemplateSummary | null {
+  const [summary, setSummary] = useState<TemplateSummary | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    fetchSummary(serverId, item)
+      .then((s) => {
+        if (!cancelled) setSummary(s);
+      })
+      .catch(() => {
+        // The card still stands without its count line.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [serverId, item]);
+  return summary;
+}
+
+function OwnerRow({ name, mine }: { name: string; mine: boolean }) {
+  const initial = (name.trim()[0] ?? '?').toUpperCase();
   return (
-    <span className="flex flex-wrap items-center gap-1">
-      {item.bundled && <Badge variant="secondary">Built in</Badge>}
-      {item.server && (
-        <Badge variant="secondary">
-          {mine ? 'On this server · yours' : `On this server · by ${item.server.creator}`}
-        </Badge>
-      )}
+    <span className="flex items-center gap-1.5 text-xs text-foreground-muted">
+      <span
+        aria-hidden
+        className="flex size-4.5 items-center justify-center rounded-full bg-background-2 text-[10px] font-medium text-foreground"
+      >
+        {initial}
+      </span>
+      {mine ? 'You' : name}
     </span>
   );
 }
 
 function TemplateCard({
+  serverId,
   item,
   meId,
   busy,
   onOpen,
   onUse,
 }: {
+  serverId: string;
   item: Listed;
   meId: string | null;
   busy: boolean;
   onOpen: () => void;
   onUse: () => void;
 }) {
-  const Icon = item.kind === 'agent' ? Bot : DoorOpen;
+  const Icon = KIND_ICON[item.kind];
+  const summary = useTemplateSummary(serverId, item);
+  const mine = item.server !== null && meId !== null && item.server.ownerId === meId;
   return (
-    <div className="group relative flex min-h-[184px] flex-col rounded-[11px] border border-border bg-background transition-colors hover:border-border-1">
+    <div className="group relative flex min-h-[168px] flex-col rounded-[11px] border border-border bg-background transition-colors hover:border-border-1">
       <button
         type="button"
         aria-label={`Open ${item.name}`}
         className="focus-visible:ring-ring absolute inset-0 cursor-pointer rounded-[11px] focus-visible:ring-2 focus-visible:outline-none"
         onClick={onOpen}
       />
-      <div className="pointer-events-none flex flex-1 flex-col p-4">
-        <div className="mb-2 flex items-center gap-2">
-          <Icon className="size-5 shrink-0 text-foreground-muted" />
-          <h3 className="truncate font-medium text-foreground">{item.name}</h3>
+      <div className="pointer-events-none flex flex-1 flex-col gap-2 p-4">
+        <div className="flex items-center gap-2">
+          <Icon className="size-4.5 shrink-0 text-foreground-muted" />
+          <h3 className="min-w-0 truncate font-medium text-foreground">{item.name}</h3>
+          {item.bundled && (
+            <Badge variant="outline" title="Shipped with Switch">
+              Official
+            </Badge>
+          )}
+          {item.server && mine && !item.bundled && <Badge variant="secondary">Yours</Badge>}
+          {item.bundled && item.server && (
+            <Badge variant="secondary" title="A copy is saved on this workspace too">
+              <Users />
+              Workspace
+            </Badge>
+          )}
         </div>
-        <p className="mb-3 line-clamp-3 flex-1 text-sm text-foreground-muted">{item.description}</p>
-        <div className="flex items-end justify-between gap-2 pr-16">
-          <Provenance item={item} meId={meId} />
+        <p className="line-clamp-2 text-sm text-foreground-muted">
+          {item.description || <span className="italic">No description.</span>}
+        </p>
+        <div className="mt-auto flex flex-col gap-1.5 pt-1 pr-16">
+          <span className="text-xs text-foreground-passive">
+            {summary ? summaryLine(summary) : ' '}
+          </span>
+          {item.server && !item.bundled && <OwnerRow name={item.server.creator} mine={mine} />}
         </div>
       </div>
       {/* On top of the overlay: the one action that does not need the page. */}
@@ -113,32 +238,21 @@ function TemplateCard({
   );
 }
 
-/** The dashed tile: click to go and paste, or drop a file on it to skip that. */
-function ImportTile({ onClick, onFile }: { onClick: () => void; onFile: (file: File) => void }) {
-  const [dragging, setDragging] = useState(false);
+function Section({
+  title,
+  subtitle,
+  children,
+}: {
+  title: string;
+  subtitle: string;
+  children: React.ReactNode;
+}) {
   return (
-    <button
-      type="button"
-      onClick={onClick}
-      onDragOver={(e) => {
-        e.preventDefault();
-        setDragging(true);
-      }}
-      onDragLeave={() => setDragging(false)}
-      onDrop={(e) => {
-        e.preventDefault();
-        setDragging(false);
-        const file = e.dataTransfer.files[0];
-        if (file) onFile(file);
-      }}
-      className={`flex w-full cursor-pointer items-center justify-center gap-3 rounded-[11px] border border-dashed px-4 py-5 text-foreground-muted transition-colors hover:border-border-1 hover:bg-[var(--sel-soft)] hover:text-foreground ${dragging ? 'border-primary bg-[var(--sel-soft)] text-foreground' : 'border-border'}`}
-    >
-      <Upload className="size-5 shrink-0" />
-      <span className="text-sm">Import from YAML</span>
-      <span className="text-xs text-foreground-passive">
-        an agent or room template · click to paste, or drop a file here
-      </span>
-    </button>
+    <section>
+      <h3 className="text-sm font-semibold text-foreground">{title}</h3>
+      <p className="mt-0.5 mb-3 text-xs text-foreground-muted">{subtitle}</p>
+      {children}
+    </section>
   );
 }
 
@@ -153,8 +267,8 @@ function formatTimeAgo(ms: number): string {
 }
 
 /**
- * Documents used from this Console before, kept locally per server: use one
- * again, or put it on the server so everyone there finds it.
+ * Documents used from this Console before, kept locally per workspace: use
+ * one again, or put it on the workspace so everyone there finds it.
  */
 function RecentsSection({
   serverId,
@@ -177,7 +291,7 @@ function RecentsSection({
       .catch(() => setRecents([]));
   }, [serverId]);
 
-  const saveToServer = async (recent: RecentTemplate) => {
+  const saveToWorkspace = async (recent: RecentTemplate) => {
     setSaving(recent.yamlText);
     try {
       const prefill = await prefillForSave(recent.yamlText, recent.name);
@@ -203,13 +317,13 @@ function RecentsSection({
 
   return (
     <section>
-      <h3 className="mb-1 flex items-center gap-1.5 text-sm font-medium text-foreground-muted">
-        <Clock className="size-3.5" />
+      <h3 className="flex items-center gap-1.5 text-sm font-semibold text-foreground">
+        <Clock className="size-3.5 text-foreground-muted" />
         Recently used
       </h3>
-      <p className="mb-3 text-xs text-foreground-passive">
-        Documents you used from this Console. Kept here only; Save to server makes one a template
-        everyone on the server can find.
+      <p className="mt-0.5 mb-3 text-xs text-foreground-muted">
+        Documents you used from this Console. Kept here only; Save to workspace makes one a template
+        everyone on the workspace can find.
       </p>
       <div className="flex flex-col gap-1">
         {recents.map((r) => (
@@ -217,7 +331,11 @@ function RecentsSection({
             <button
               type="button"
               onClick={() =>
-                navigate('templateImport', { serverId, yamlText: r.yamlText, sourceName: r.name })
+                navigate('templateImport', {
+                  serverId,
+                  yamlText: r.yamlText,
+                  sourceName: r.name,
+                })
               }
               className="flex flex-1 cursor-pointer items-center justify-between rounded-md border border-border px-3 py-2 text-left text-sm transition-colors hover:bg-[var(--sel-soft)]"
             >
@@ -237,12 +355,12 @@ function RecentsSection({
               type="button"
               variant="ghost"
               size="sm"
-              title="Save to the server, so everyone on it can use it"
+              title="Save to the workspace, so everyone on it can use it"
               disabled={saving === r.yamlText}
-              onClick={() => void saveToServer(r)}
+              onClick={() => void saveToWorkspace(r)}
             >
               <Save className="size-3.5" />
-              Save to server
+              Save to workspace
             </Button>
           </div>
         ))}
@@ -262,6 +380,9 @@ const TemplatesPanel = observer(function TemplatesPanel() {
   const [loading, setLoading] = useState(true);
   const [opening, setOpening] = useState<string | null>(null);
   const [query, setQuery] = useState('');
+  const [kind, setKind] = useState<KindFilter>('all');
+  const [onlyMine, setOnlyMine] = useState(false);
+  const [dragging, setDragging] = useState(0);
   const [reloadKey, setReloadKey] = useState(0);
   const reload = useCallback(() => setReloadKey((k) => k + 1), []);
 
@@ -280,7 +401,7 @@ const TemplatesPanel = observer(function TemplatesPanel() {
         if (!cancelled) setTemplates(result);
       })
       .catch(() => {
-        // The bundled templates still render; the server's are an addition.
+        // The bundled templates still render; the workspace's are an addition.
         if (!cancelled) setTemplates([]);
       })
       .finally(() => {
@@ -291,55 +412,53 @@ const TemplatesPanel = observer(function TemplatesPanel() {
     };
   }, [serverId, reloadKey]);
 
-  const { agentItems, roomItems } = useMemo(() => {
-    const agents = templates.filter((t) => t.kind === 'agent');
-    const rooms = templates.filter((t) => t.kind === 'room');
-    const byName = new Map(agents.map((t) => [t.name, t]));
-    const agentItems: Listed[] = [];
+  const { builtIn, onWorkspace } = useMemo(() => {
+    const byName = new Map(templates.filter((t) => t.kind === 'agent').map((t) => [t.name, t]));
+    const builtIn: Listed[] = [];
     for (const b of bundledTemplates) {
-      if (b.kind !== 'agent') continue;
       const copy = byName.get(b.name) ?? null;
       if (copy) byName.delete(b.name);
-      agentItems.push({
+      builtIn.push({
         id: copy?.id ?? b.id,
-        kind: 'agent',
+        kind: kindOf(b.kind),
         name: b.name,
         description: b.description,
         bundled: true,
         server: copy,
+        content: b.content,
       });
     }
-    for (const t of byName.values()) {
-      agentItems.push({
+    const shadowed = new Set(builtIn.map((b) => b.server?.id).filter(Boolean));
+    const onWorkspace: Listed[] = templates
+      .filter((t) => !shadowed.has(t.id))
+      .map((t) => ({
         id: t.id,
-        kind: 'agent',
+        kind: kindOf(t.kind),
         name: t.name,
         description: t.description,
         bundled: false,
         server: t,
-      });
-    }
-    const roomItems: Listed[] = rooms.map((t) => ({
-      id: t.id,
-      kind: 'room',
-      name: t.name,
-      description: t.description,
-      bundled: false,
-      server: t,
-    }));
+        content: null,
+      }));
     const needle = query.trim().toLowerCase();
     const matches = (t: Listed) =>
-      needle.length === 0 ||
-      t.name.toLowerCase().includes(needle) ||
-      t.description.toLowerCase().includes(needle) ||
-      (t.server?.creator ?? '').toLowerCase().includes(needle);
-    return { agentItems: agentItems.filter(matches), roomItems: roomItems.filter(matches) };
-  }, [templates, query]);
+      (kind === 'all' || t.kind === kind) &&
+      (needle.length === 0 ||
+        t.name.toLowerCase().includes(needle) ||
+        t.description.toLowerCase().includes(needle) ||
+        (t.server?.creator ?? '').toLowerCase().includes(needle));
+    return {
+      builtIn: onlyMine ? [] : builtIn.filter(matches),
+      onWorkspace: onWorkspace.filter(
+        (t) => matches(t) && (!onlyMine || (meId !== null && t.server?.ownerId === meId))
+      ),
+    };
+  }, [templates, query, kind, onlyMine, meId]);
 
   // An agent template's second step is the add-agent dialog, prefilled; a
   // room template's is the import view's inputs step, with the document loaded.
   const handleUse = async (item: Listed) => {
-    if (item.kind === 'room') {
+    if (item.kind !== 'agent') {
       navigate('templateImport', { serverId, templateId: item.id });
       return;
     }
@@ -379,110 +498,169 @@ const TemplatesPanel = observer(function TemplatesPanel() {
     }
   };
 
-  const grid = 'grid grid-cols-[repeat(auto-fill,minmax(260px,1fr))] gap-[14px]';
-  const searching = query.trim().length > 0;
+  const grid = 'grid grid-cols-[repeat(auto-fill,minmax(280px,1fr))] gap-[14px]';
+  const filtering = query.trim().length > 0 || kind !== 'all' || onlyMine;
+  const open = (item: Listed) => navigate('templateDetail', { serverId, templateId: item.id });
+  const card = (item: Listed) => (
+    <TemplateCard
+      key={item.id}
+      serverId={serverId}
+      item={item}
+      meId={meId}
+      busy={opening === item.id}
+      onOpen={() => open(item)}
+      onUse={() => void handleUse(item)}
+    />
+  );
 
   return (
     <ServerPage
       title="Templates"
-      description={`Agents and rooms to create from a template on ${server?.name ?? 'this server'}.`}
+      description="A template is one YAML document that creates a room, an agent, or a group of them. Use one, fill in its inputs, and everything it describes appears on this workspace."
       action={
-        <Input
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          placeholder="Search templates"
-          className="h-8 w-[240px]"
-        />
+        <Button size="sm" onClick={() => navigate('templateImport', { serverId })}>
+          <Upload className="size-4" />
+          Import template
+        </Button>
       }
     >
-      {loading ? (
-        <div className="flex items-center justify-center py-12">
-          <Loader2 className="size-5 animate-spin text-foreground-muted" />
-        </div>
-      ) : (
-        <div className="space-y-8">
-          {noProvider && (
-            <Alert>
-              <CircleAlert />
-              <AlertDescription>
-                No agent provider is set up on this computer yet. A template creates an agent that
-                runs here, so it needs Claude Code, Codex or OpenCode installed with its Switch
-                connector first.
-              </AlertDescription>
-              <AlertAction>
-                <Button
-                  variant="outline"
-                  size="xs"
-                  onClick={() => navigate('settings', { tab: 'clis-models' })}
-                >
-                  Set up agent providers
-                </Button>
-              </AlertAction>
-            </Alert>
-          )}
-
-          {!searching && (
-            <ImportTile
-              onClick={() => navigate('templateImport', { serverId })}
-              onFile={(file) => void importFile(file)}
-            />
-          )}
-
-          <section>
-            <h3 className="mb-3 text-sm font-medium text-foreground-muted">Agent templates</h3>
-            {agentItems.length > 0 ? (
-              <div className={grid}>
-                {agentItems.map((item) => (
-                  <TemplateCard
-                    key={item.id}
-                    item={item}
-                    meId={meId}
-                    busy={opening === item.id}
-                    onOpen={() => navigate('templateDetail', { serverId, templateId: item.id })}
-                    onUse={() => void handleUse(item)}
-                  />
-                ))}
-              </div>
-            ) : (
-              <p className="text-sm text-foreground-muted">
-                {searching ? `No agent template matches “${query}”.` : 'None yet.'}
-              </p>
+      {/* The whole page takes a dropped file: the import view is one step
+        away, and a file in hand should not have to find a target first. */}
+      <div
+        className="relative"
+        onDragEnter={(e) => {
+          if (hasFiles(e)) setDragging((n) => n + 1);
+        }}
+        onDragLeave={(e) => {
+          if (hasFiles(e)) setDragging((n) => Math.max(0, n - 1));
+        }}
+        onDragOver={(e) => {
+          if (hasFiles(e)) e.preventDefault();
+        }}
+        onDrop={(e) => {
+          if (!hasFiles(e)) return;
+          e.preventDefault();
+          setDragging(0);
+          const file = e.dataTransfer.files[0];
+          if (file) void importFile(file);
+        }}
+      >
+        {dragging > 0 && (
+          <div className="border-primary pointer-events-none absolute inset-0 z-10 flex items-center justify-center rounded-[11px] border-2 border-dashed bg-[var(--sel-soft)]/90">
+            <span className="flex items-center gap-2 text-sm font-medium text-foreground">
+              <Upload className="size-4" />
+              Drop the template file to import it
+            </span>
+          </div>
+        )}
+        {loading ? (
+          <div className="flex items-center justify-center py-12">
+            <Loader2 className="size-5 animate-spin text-foreground-muted" />
+          </div>
+        ) : (
+          <div className="space-y-8">
+            {noProvider && (
+              <Alert>
+                <CircleAlert />
+                <AlertDescription>
+                  No agent provider is set up on this computer yet. A template creates an agent that
+                  runs here, so it needs Claude Code, Codex or OpenCode installed with its Switch
+                  connector first.
+                </AlertDescription>
+                <AlertAction>
+                  <Button
+                    variant="outline"
+                    size="xs"
+                    onClick={() => navigate('settings', { tab: 'clis-models' })}
+                  >
+                    Set up agent providers
+                  </Button>
+                </AlertAction>
+              </Alert>
             )}
-          </section>
 
-          <section>
-            <h3 className="mb-3 text-sm font-medium text-foreground-muted">Room templates</h3>
-            {roomItems.length > 0 ? (
-              <div className={grid}>
-                {roomItems.map((item) => (
-                  <TemplateCard
-                    key={item.id}
-                    item={item}
-                    meId={meId}
-                    busy={false}
-                    onOpen={() => navigate('templateDetail', { serverId, templateId: item.id })}
-                    onUse={() => void handleUse(item)}
-                  />
-                ))}
-              </div>
-            ) : (
-              <p className="text-sm text-foreground-muted">
-                {searching
-                  ? `No room template matches “${query}”.`
-                  : 'None on this server yet. Import one, or save one you have used.'}
-              </p>
+            <div className="flex flex-wrap items-center gap-2">
+              <SearchInput
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                placeholder="Search name and description…"
+                aria-label="Search templates by name and description"
+                containerClassName="min-w-[220px] flex-1"
+                className="h-8"
+              />
+              <SegmentedControl
+                value={kind}
+                onChange={setKind}
+                options={KIND_OPTIONS}
+                ariaLabel="Show templates of one kind"
+              />
+              <Toggle
+                variant="outline"
+                size="sm"
+                pressed={onlyMine}
+                onPressedChange={setOnlyMine}
+                aria-label="Only templates you own"
+                title={meId ? 'Only templates you saved' : 'Sign in to see which are yours'}
+                disabled={meId === null}
+              >
+                <UserRound />
+                Only mine
+              </Toggle>
+            </div>
+
+            {!onlyMine && (
+              <Section
+                title="Built in"
+                subtitle="Shipped with Switch. Use one to see how a template is put together."
+              >
+                {builtIn.length > 0 ? (
+                  <div className={grid}>{builtIn.map(card)}</div>
+                ) : (
+                  <p className="text-sm text-foreground-muted">No built-in template matches.</p>
+                )}
+              </Section>
             )}
-          </section>
 
-          {!searching && (
-            <RecentsSection
-              serverId={serverId}
-              serverName={server?.name ?? null}
-              onSaved={reload}
-            />
-          )}
-        </div>
-      )}
+            <Section
+              title="On this workspace"
+              subtitle="Saved here. Everyone on this workspace can see and use them; only the owner can change one."
+            >
+              {onWorkspace.length > 0 ? (
+                <div className={grid}>{onWorkspace.map(card)}</div>
+              ) : filtering ? (
+                <p className="text-sm text-foreground-muted">
+                  {onlyMine
+                    ? 'None of yours match. Save a template you used, or import one, and it shows up here as yours.'
+                    : 'No template on this workspace matches.'}
+                </p>
+              ) : (
+                <div className="flex flex-col items-start gap-3 rounded-[11px] border border-dashed border-border px-4 py-5">
+                  <p className="text-sm text-foreground-muted">
+                    Nothing saved here yet. Import a template, or save one you have used, and
+                    everyone on this workspace finds it here.
+                  </p>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => navigate('templateImport', { serverId })}
+                  >
+                    <Upload className="size-3.5" />
+                    Import a template
+                  </Button>
+                </div>
+              )}
+            </Section>
+
+            {!filtering && (
+              <RecentsSection
+                serverId={serverId}
+                serverName={server?.name ?? null}
+                onSaved={reload}
+              />
+            )}
+          </div>
+        )}
+      </div>
     </ServerPage>
   );
 });

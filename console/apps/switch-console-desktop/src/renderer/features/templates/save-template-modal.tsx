@@ -30,7 +30,7 @@ type Props = BaseModalProps<{ id: string }> & SaveTemplateArgs;
 
 /**
  * The one step between "this document" and "a template everyone on the
- * server sees": what it is called there, and the line under the name. A file
+ * workspace sees": what it is called there, and the line under the name. A file
  * name is a poor name for a listing, so this is asked rather than guessed.
  */
 export function SaveTemplateModal({
@@ -61,7 +61,9 @@ export function SaveTemplateModal({
         kind,
         content,
       });
-      toast({ title: `"${name.trim()}" is now on ${serverName ?? 'the server'}` });
+      toast({
+        title: `"${name.trim()}" is now on ${serverName ?? 'the server'}`,
+      });
       onSuccess({ id: saved.id });
     } catch (e) {
       setError(failureText(e, 'Could not save the template to the server.'));
@@ -93,7 +95,7 @@ export function SaveTemplateModal({
     >
       <DialogContentArea className="gap-4">
         <p className="text-sm text-foreground-muted">
-          Everyone on this server will find it under Templates.{' '}
+          Everyone on this workspace will find it under Templates.{' '}
           <Badge variant="outline">{kind} template</Badge>
         </p>
         <FieldGroup>

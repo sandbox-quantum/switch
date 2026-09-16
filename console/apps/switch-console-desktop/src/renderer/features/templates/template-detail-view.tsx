@@ -215,7 +215,9 @@ const TemplateDetailPanel = observer(function TemplateDetailPanel() {
         kind: loaded.bundled.kind,
         content: loaded.document,
       });
-      toast({ title: `"${loaded.name}" is now on ${server?.name ?? 'the server'}` });
+      toast({
+        title: `"${loaded.name}" is now on ${server?.name ?? 'the server'}`,
+      });
       navigate('templateDetail', { serverId, templateId: saved.id });
     } catch (e) {
       toast({
@@ -232,8 +234,13 @@ const TemplateDetailPanel = observer(function TemplateDetailPanel() {
     if (!loaded.server) return;
     setBusy('delete');
     try {
-      await rpc.switchServers.deleteTemplate({ serverId, templateId: loaded.server.id });
-      toast({ title: `"${loaded.name}" removed from ${server?.name ?? 'the server'}` });
+      await rpc.switchServers.deleteTemplate({
+        serverId,
+        templateId: loaded.server.id,
+      });
+      toast({
+        title: `"${loaded.name}" removed from ${server?.name ?? 'the server'}`,
+      });
       navigate('templates', { serverId });
     } catch (e) {
       toast({
@@ -281,7 +288,7 @@ const TemplateDetailPanel = observer(function TemplateDetailPanel() {
                 disabled={busy !== null}
                 onClick={() => void saveToServer()}
               >
-                {busy === 'save' ? 'Saving…' : 'Save to server'}
+                {busy === 'save' ? 'Saving…' : 'Save to workspace'}
               </Button>
             )}
             {canDelete && (
@@ -293,7 +300,7 @@ const TemplateDetailPanel = observer(function TemplateDetailPanel() {
                 onClick={() => {
                   // Second click removes; the first only asks. A page action
                   // has no dialog to hide behind, and the row is gone for
-                  // everyone on the server once it goes.
+                  // everyone on the workspace once it goes.
                   if (confirmRemove) void remove();
                   else setConfirmRemove(true);
                 }}
@@ -304,7 +311,7 @@ const TemplateDetailPanel = observer(function TemplateDetailPanel() {
                   ? 'Removing…'
                   : confirmRemove
                     ? 'Click again to remove'
-                    : 'Remove from server'}
+                    : 'Remove from workspace'}
               </Button>
             )}
             <Button type="button" size="sm" onClick={use} disabled={busy !== null}>
@@ -314,10 +321,16 @@ const TemplateDetailPanel = observer(function TemplateDetailPanel() {
         </PageHeader>
 
         <div className="flex flex-wrap items-center gap-2">
-          {loaded.bundled && <Badge variant="secondary">Built into the Console</Badge>}
+          {loaded.bundled && (
+            <Badge variant="outline" title="Shipped with Switch">
+              Official
+            </Badge>
+          )}
           {loaded.server && (
             <Badge variant="secondary">
-              {mine ? 'On this server · yours' : `On this server · by ${loaded.server.creator}`}
+              {mine
+                ? 'On this workspace · yours'
+                : `On this workspace · by ${loaded.server.creator}`}
             </Badge>
           )}
           <Badge variant="outline">
@@ -357,7 +370,8 @@ const TemplateDetailPanel = observer(function TemplateDetailPanel() {
               {loaded.agent.roomName ? (
                 <>
                   <span>
-                    &quot;{loaded.agent.roomName.replace('{agent}', loaded.agent.agentName ?? 'it')}
+                    &quot;
+                    {loaded.agent.roomName.replace('{agent}', loaded.agent.agentName ?? 'it')}
                     &quot;
                   </span>
                   <span className="text-foreground-muted">, with you, kickoff sent as you</span>

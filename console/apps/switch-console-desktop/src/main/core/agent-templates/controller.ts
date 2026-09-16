@@ -19,8 +19,10 @@ import {
   parseAgentTemplate,
   type ParsedAgentTemplate,
 } from './agent-template-format';
+import { summarizeTemplate, type TemplateSummary } from './template-summary';
 
 export type { AgentTemplateSource, ParsedAgentTemplate } from './agent-template-format';
+export type { TemplateSummary } from './template-summary';
 
 const execFileAsync = promisify(execFile);
 
@@ -31,7 +33,11 @@ const CLONEABLE_URL = /^(https?:\/\/|git@|ssh:\/\/)[^\s-]/;
 export type PrepareWorkspaceResult = {
   dir: string;
   /** What happened to the repository, when the template names one. */
-  repo: { target: string; outcome: 'cloned' | 'present' | 'failed'; error: string | null } | null;
+  repo: {
+    target: string;
+    outcome: 'cloned' | 'present' | 'failed';
+    error: string | null;
+  } | null;
 };
 
 async function isDirectory(path: string): Promise<boolean> {
@@ -85,7 +91,11 @@ async function prepareRemoteWorkspace(
     if (!CLONEABLE_URL.test(repoUrl)) {
       return {
         dir,
-        repo: { target, outcome: 'failed', error: `Not a URL git can clone: ${repoUrl}` },
+        repo: {
+          target,
+          outcome: 'failed',
+          error: `Not a URL git can clone: ${repoUrl}`,
+        },
       };
     }
     try {
@@ -105,6 +115,9 @@ export const agentTemplatesController = createRPCController({
 
   roomDocument: (params: { yamlText: string }): string | null =>
     agentTemplateRoomDocument(params.yamlText),
+
+  /** What a document of any known shape creates, for a listing card. */
+  summarize: (params: { yamlText: string }): TemplateSummary => summarizeTemplate(params.yamlText),
 
   /** The document with its persona inlined, ready to store on a server. */
   compose: (params: { yamlText: string; instructions: string }): string =>
@@ -161,12 +174,19 @@ export const agentTemplatesController = createRPCController({
     if (!params.repoUrl) return { dir: params.dir, repo: null };
     const target = cloneTargetFor(params.dir, params.repoUrl);
     if (await isDirectory(target)) {
-      return { dir: params.dir, repo: { target, outcome: 'present', error: null } };
+      return {
+        dir: params.dir,
+        repo: { target, outcome: 'present', error: null },
+      };
     }
     if (!CLONEABLE_URL.test(params.repoUrl)) {
       return {
         dir: params.dir,
-        repo: { target, outcome: 'failed', error: `Not a URL git can clone: ${params.repoUrl}` },
+        repo: {
+          target,
+          outcome: 'failed',
+          error: `Not a URL git can clone: ${params.repoUrl}`,
+        },
       };
     }
     try {
@@ -175,7 +195,10 @@ export const agentTemplatesController = createRPCController({
         ['clone', '--quiet', '--depth', '1', '--', params.repoUrl, target],
         { env: buildExternalToolEnv(), timeout: 5 * 60 * 1000 }
       );
-      return { dir: params.dir, repo: { target, outcome: 'cloned', error: null } };
+      return {
+        dir: params.dir,
+        repo: { target, outcome: 'cloned', error: null },
+      };
     } catch (e) {
       return failedRepo(params.dir, target, e);
     }

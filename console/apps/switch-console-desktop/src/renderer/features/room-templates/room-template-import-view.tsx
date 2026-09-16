@@ -183,7 +183,7 @@ function SourceStep({
       <div className="flex items-center justify-end gap-2 pt-2">
         <Button variant="outline" disabled={!yamlText.trim() || saving} onClick={onSaveToServer}>
           <Save className="mr-1.5 size-3.5" />
-          {saving ? 'Saving…' : 'Save to server'}
+          {saving ? 'Saving…' : 'Save to workspace'}
         </Button>
         <Button disabled={!yamlText.trim() || saving} onClick={onNext}>
           Next
