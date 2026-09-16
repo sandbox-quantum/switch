@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { mkdtemp, mkdir, writeFile, readdir, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, writeFile, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
@@ -49,4 +49,16 @@ createInterface({input:process.stdin}).on('line', line => {
   });
   expect(result.stdout).toContain('Signed in to Antigravity ACP.');
   expect(await readdir(profile)).toEqual(['settings.json']);
+});
+
+it('ships the tested launcher in the standalone shell installer', async () => {
+  const installer = new URL(
+    '../../../../../../../scripts/install-antigravity-acp.sh',
+    import.meta.url
+  );
+  const source = await readFile(installer, 'utf8');
+  const embedded =
+    source.split("<<'SWITCH_ACP_LAUNCHER'\n")[1].split('\nSWITCH_ACP_LAUNCHER')[0] + '\n';
+  expect(embedded).toBe(ANTIGRAVITY_LAUNCHER);
+  await exec('/bin/bash', ['-n', installer.pathname]);
 });
