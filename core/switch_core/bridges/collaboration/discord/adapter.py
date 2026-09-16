@@ -998,6 +998,13 @@ class DiscordAdapter(CollaborationAdapter):
         something looked up. This is the string that travels in a
         `RichContentFailed`, where the lookups would be decorating a message
         nobody is going to see.
+
+        It is also drawn as if no buttons were possible, and that half is not
+        cosmetic. A card whose options are carried by buttons stops listing
+        them in its body; the caller forwards a failure's text as an ordinary
+        message, which has no buttons under it. Reporting a refusal with the
+        drawing that went on the post would ask for a choice it had stopped
+        printing.
         """
         return self._draw(
             content, mention=None, responder=None, prefix="", controls=False
@@ -1155,7 +1162,7 @@ class DiscordAdapter(CollaborationAdapter):
                     f"Cannot put a button on request {content.request.request_id} "
                     f"in Discord: its press would carry {len(custom_id)} "
                     f"characters and Discord allows {_MAX_CUSTOM_ID}.",
-                    text=drawn.text,
+                    text=self.rich_fallback_text(content),
                 )
             view.add_item(
                 discord.ui.Button(
@@ -1276,7 +1283,7 @@ class DiscordAdapter(CollaborationAdapter):
                 )
             except Exception as error:
                 raise self._rich_failure(
-                    error, f"Discord refused the post in DM {channel_id}", text
+                    error, f"Discord refused the post in DM {channel_id}", fallback
                 ) from error
             return f"{sent.channel.id}:{sent.id}"
 
@@ -1296,7 +1303,7 @@ class DiscordAdapter(CollaborationAdapter):
         thread: Any = None
         if thread_root_id:
             thread = await self._publication_thread(
-                int(channel_id), thread_root_id, text
+                int(channel_id), thread_root_id, fallback
             )
 
         try:
@@ -1317,12 +1324,12 @@ class DiscordAdapter(CollaborationAdapter):
             )
         except Exception as error:
             raise self._rich_failure(
-                error, f"Discord refused the post in channel {channel_id}", text
+                error, f"Discord refused the post in channel {channel_id}", fallback
             ) from error
         return f"{sent.channel.id}:{sent.id}"
 
     async def _publication_thread(
-        self, channel_id: int, thread_root_id: str, text: str
+        self, channel_id: int, thread_root_id: str, fallback: str
     ) -> Any:
         """The thread this publication goes in. Never the channel instead.
 
@@ -1337,7 +1344,7 @@ class DiscordAdapter(CollaborationAdapter):
         the channel" is then the difference between a conversation and an
         audience.
         """
-        existing = await self._reachable_thread(channel_id, thread_root_id, text)
+        existing = await self._reachable_thread(channel_id, thread_root_id, fallback)
         if existing is not None:
             return existing
         try:
@@ -1346,17 +1353,17 @@ class DiscordAdapter(CollaborationAdapter):
             # The create may have been refused because the thread is already
             # there — the one failure that means the opposite of what it looks
             # like. Ask again before reporting that there is none.
-            settled = await self._reachable_thread(channel_id, thread_root_id, text)
+            settled = await self._reachable_thread(channel_id, thread_root_id, fallback)
             if settled is not None:
                 return settled
             raise ThreadUnavailable(
                 f"Discord has no thread under {thread_root_id} in channel "
                 f"{channel_id} and would not make one: {error}",
-                text=text,
+                text=fallback,
             ) from error
 
     async def _reachable_thread(
-        self, channel_id: int, thread_root_id: str, text: str
+        self, channel_id: int, thread_root_id: str, fallback: str
     ) -> Any:
         """The thread already hanging from this message, if there is one.
 
@@ -1389,7 +1396,7 @@ class DiscordAdapter(CollaborationAdapter):
                 f"{channel_id}, so this publication has nowhere it is known to "
                 f"belong. The channel is not a substitute: a thread this bridge "
                 f"cannot open may be one the channel cannot read either. {error}",
-                text=text,
+                text=fallback,
             ) from error
 
     async def update_rich(
@@ -1458,7 +1465,14 @@ class DiscordAdapter(CollaborationAdapter):
         text, view = self._render_rich(
             replace(content, notify_external_id=None), prefix=prefix, controls=controls
         )
-        await self._edit_rich(channel_id, message_ref, text, view, lobby=lobby)
+        await self._edit_rich(
+            channel_id,
+            message_ref,
+            text,
+            view,
+            lobby=lobby,
+            fallback=self.rich_fallback_text(content),
+        )
 
     async def _edit_rich(
         self,
@@ -1468,6 +1482,7 @@ class DiscordAdapter(CollaborationAdapter):
         view: discord.ui.View | None,
         *,
         lobby: bool,
+        fallback: str,
     ) -> None:
         """Redraw a publication, including the buttons it does or does not keep.
 
@@ -1475,6 +1490,10 @@ class DiscordAdapter(CollaborationAdapter):
         because leaving it out leaves the components alone: a settled card
         would keep the buttons it was posted with and go on inviting a press
         that can no longer land. `None` is what takes them off.
+
+        `fallback` is what a refused edit is reported with, in place of `text`:
+        the drawing that was going on the message assumes the buttons beside
+        it, and a failure notice carries none.
         """
         location_id, message_id = self._parse_message_ref(message_ref)
         try:
@@ -1500,7 +1519,7 @@ class DiscordAdapter(CollaborationAdapter):
             raise self._rich_failure(
                 error,
                 f"Discord refused the edit to {message_ref} in channel {channel_id}",
-                text,
+                fallback,
             ) from error
 
     def _rich_failure(self, error: Exception, description: str, text: str) -> Exception:
