@@ -22,15 +22,32 @@ import logging
 
 import discord
 
+from switch_core.bridges.collaboration.discord.adapter import DiscordAdapter
 from switch_core.bridges.collaboration.discord.connection import DiscordConnection
+from switch_core.bridges.collaboration.install_service import (
+    MessagingInstallService,
+    WebhookBridgeUnavailable,
+    WebhookWorkspaceUnknown,
+)
+from switch_core.tenant_context import no_tenant
 
 logger = logging.getLogger(__name__)
 
+_PLATFORM = "discord"
+
 
 class DiscordGatewayClient:
-    def __init__(self, *, bot_token: str, message_content: bool, members: bool) -> None:
+    def __init__(
+        self,
+        *,
+        bot_token: str,
+        message_content: bool,
+        members: bool,
+        install_service: MessagingInstallService,
+    ) -> None:
         self._message_content = message_content
         self._members = members
+        self._install_service = install_service
         # command_guild_id=None → commands register globally, once for the
         # application across every guild (decision #7); guild-scoped registration
         # is the self-registered adapter's, which serves one guild.
@@ -67,8 +84,12 @@ class DiscordGatewayClient:
         return self._connection
 
     async def start(self) -> None:
-        # No commands yet — global slash routing lands in a later stage. The DM
-        # handler is deliberately left unset (guard G4).
+        # One handler for every guild's messages: each event resolves its guild
+        # to a tenant fresh, so nothing about which tenant a guild belongs to is
+        # cached on the connection (guard G1). The DM handler is deliberately
+        # left unset (guard G4). No commands yet — global slash routing lands in
+        # a later stage.
+        self._connection.set_guild_message_handler(self._on_guild_message)
         await self._connection.connect(commands=[])
         logger.info(
             "Discord shared Gateway connection started (message_content=%s)",
@@ -77,3 +98,44 @@ class DiscordGatewayClient:
 
     async def stop(self) -> None:
         await self._connection.close()
+
+    async def _on_guild_message(self, message: discord.Message) -> None:
+        """Route one guild message to the bridge its guild resolves to.
+
+        Runs with **no tenant bound** and resolves the guild fresh on every
+        event (G1): the shared connection is multi-tenant and long-lived, so a
+        tenant is never cached on it and each event is scoped from scratch.
+        A guild with no active install resolves to nothing and is dropped, never
+        routed to a default or first tenant (G3) — the system fails closed.
+        Each handler below binds the tenant of the room it acts on, matching the
+        socket and webhook delivery paths.
+        """
+        guild = message.guild
+        if guild is None:
+            # The connection only routes guild messages here, so this is
+            # defensive; a DM would have gone to the (unset) DM handler.
+            return
+        with no_tenant():
+            try:
+                target = await self._install_service.resolve_by_workspace(
+                    platform=_PLATFORM, workspace_id=str(guild.id)
+                )
+            except (WebhookWorkspaceUnknown, WebhookBridgeUnavailable) as exc:
+                logger.info("Dropping Discord message for guild %s: %s", guild.id, exc)
+                return
+
+            adapter = target.adapter
+            if not isinstance(adapter, DiscordAdapter):
+                logger.error(
+                    "Bridge %s for Discord guild %s is not a Discord adapter (%s); "
+                    "dropping the message",
+                    target.bridge_id,
+                    guild.id,
+                    type(adapter).__name__,
+                )
+                return
+
+            # Inert until now: hand it the shared connection so its inbound
+            # handling and outbound posting run against the one socket.
+            adapter.ensure_shared_connection(self._connection)
+            await adapter.dispatch_inbound(message)

@@ -465,7 +465,17 @@ class MessagingInstallService:
         )
 
     async def resolve(self, *, platform: str, event: InboundWebhook) -> WebhookTarget:
-        """Turn a workspace id into the one bridge entitled to the event.
+        """Turn a webhook event's workspace into the bridge entitled to it."""
+        installer = self._installers.get(platform)
+        workspace_id = installer.workspace_of_event(event.payload)
+        return await self.resolve_by_workspace(
+            platform=platform, workspace_id=workspace_id
+        )
+
+    async def resolve_by_workspace(
+        self, *, platform: str, workspace_id: str
+    ) -> WebhookTarget:
+        """Turn a workspace id into the one bridge entitled to its events.
 
         The tenant comes from the exempt lookup (`db/tenant_lookup.py`), which
         is the only way to answer it: the caller authenticated to nothing, and
@@ -473,10 +483,13 @@ class MessagingInstallService:
         *again* under that tenant rather than returned by the lookup — a
         deliberate second check, so a wrong answer above is a miss here instead
         of a cross-tenant read.
-        """
-        installer = self._installers.get(platform)
-        workspace_id = installer.workspace_of_event(event.payload)
 
+        Split from `resolve` so a caller that already holds the workspace id
+        reaches it without a webhook: the Discord shared connection reads the
+        guild id straight off the Gateway event, and calling this keeps the
+        exempt-lookup caller inside this already-allowlisted module and inherits
+        the scoped re-read for free.
+        """
         tenant_id = await tenant_of_messaging_install(
             self._session_factory, platform, workspace_id
         )
