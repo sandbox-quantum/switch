@@ -1,0 +1,439 @@
+# Product telemetry: the event catalogue
+
+What the Switch core server reports about how it is used, where it goes, and
+what may never be in it. Design note for `CHOO-2806`.
+
+This is the **product/usage** half of telemetry. The operational half —
+structured logging, the export path itself, server health, tracing and
+alerting — is `CHOO-2807` and lands first. The two meet at one seam, described
+under [What this needs from the export path](#what-this-needs-from-the-export-path).
+
+Nothing here is built yet. This note fixes the taxonomy so that the events can
+be added to the export path without reworking it, and so that the question
+"what does Switch phone home?" has one answer that can be read in a minute.
+
+## What we are trying to learn
+
+Two questions, and they want different shapes of data.
+
+**How much is Switch used, and is it growing?** Counts of users, rooms, agents,
+sessions and connectors, over time. These are reported as a daily snapshot.
+
+**How quickly does a new deployment reach value, and where does it get stuck?**
+How long from install to a working connector, from install to a room that is
+actually being used, and whether one collaboration platform is markedly harder
+to set up than another. These are reported as one-time milestone events carrying
+elapsed time.
+
+The second question is the one that changes what gets built, so it is worth
+being explicit: it requires a per-deployment clock starting at install, and it
+requires each milestone to be emitted exactly once, ever.
+
+## Where it goes
+
+The Switch Console already reports to the company OTLP relay, which fans out to
+Amplitude (product analytics) and Datadog (operations). The relay holds the
+vendor keys; senders carry no credential and are admitted on a client id alone.
+The endpoint and the wire format are in
+`console/apps/switch-console-desktop/src/main/core/telemetry/` — `config.ts` for
+the endpoint, `relay-client.ts` for the payload.
+
+The server reports to the same relay, in the same shape. There is deliberately
+no second pipeline: a second one is a second thing to secure, a second consent
+story, and a second place for a customer's data to leak from.
+
+The Console's implementation is the reference for the wire format, and its
+choices are load-bearing rather than incidental:
+
+- **One OTLP log record per event**, not a metric and not a span. Amplitude
+  consumes events; the relay's filter keys on the `event.name` attribute.
+- **The event name is sent twice** — as the log record's own `eventName` field
+  and as an `event.name` attribute. The relay filters on the attribute and the
+  exporter reads the field. Sending only one is dropped silently, with a 200 at
+  every hop.
+- **A name prefix per product**, because one Amplitude project holds several.
+  The Console sends `switch_console.<event>`; the server sends
+  `switch_core.<event>`.
+
+## The rule: abstracted counts, never specifics
+
+**No identifier for anything inside a deployment is ever sent.** Not a room,
+tenant, agent, user, message or channel — not the name, not the id, and not a
+hash of either.
+
+This is the same rule the Console holds itself to (`console/AGENTS.md`), and
+the Console enforces it with a test that tries to smuggle a room name into
+every event and asserts it never reaches the wire. The server needs the
+equivalent.
+
+It costs less than it sounds, because every metric asked for is a count or a
+duration. The server counts locally, where it legitimately knows the ids, and
+reports only the total. What is given up is per-room and per-tenant breakdowns:
+we can say a deployment had 40 active rooms this week, never which.
+
+Specifically never sent, in addition to any identifier:
+
+- message bodies, prompts, code, or any room content
+- room, agent, group, reference or document **names**
+- file paths, working directories, repository names or URLs
+- user emails, sign-in identities or platform handles
+- hostnames, IP addresses, or the external channel a room is bridged to
+- error messages and stack traces — an enumerated reason code instead
+
+Free text never reaches the wire at all: every property is a number, a boolean,
+or a value from a closed set fixed in the catalogue. A property carrying an
+unexpected value is a bug to be raised, not a string to be passed through.
+
+## Deployment identity and the install clock
+
+The relay admits a sender on a client id and nothing else, so the server needs
+one. It does not have one today.
+
+**A per-deployment id**: a random UUID generated once on first use and stored in
+the database, sent as the `flint.client_id` resource attribute. It identifies
+the installation, and nothing else — it is not derived from a hostname, a
+licence, a tenant, an account or any customer value, and it survives restarts
+and redeploys so that a deployment is one Amplitude subject over its whole life
+rather than a new one each boot.
+
+The row that holds it also holds **`installed_at`**, and that timestamp is the
+clock every time-to-value metric is measured from. It is written once, when the
+id is generated, and never updated.
+
+In Amplitude, **a deployment is the user**. Every event from one installation
+collapses onto it, which is what makes a funnel across the milestone events
+below work natively: Amplitude computes time-to-convert between two events for
+the same subject.
+
+A deployment running several tenants reports as one subject, because the
+alternative is a per-tenant identifier, which is exactly what the rule above
+forbids. Tenant *count* is reported; tenant identity is not.
+
+**Deployments that already exist** have no install timestamp to recover. On
+first upgrade they get an id, and `installed_at` is approximated from the oldest
+row in the database. Every milestone event carries
+`install_time_exact: false` in that case, so a backfilled deployment can be
+excluded from time-to-value analysis rather than quietly skewing it.
+
+## Resource attributes
+
+On every event:
+
+| Attribute | Value |
+|---|---|
+| `service.name` | `switch-core` |
+| `service.version` | the running version, as `/version` reports it |
+| `flint.client_id` | the per-deployment id |
+| `deployment.environment` | from the existing `ENVIRONMENT` setting |
+
+`deployment.environment` is the OpenTelemetry-conventional name and is already a
+server setting. The Console instead sends a bespoke `build` attribute
+(`dev`/`canary`/`stable`), which is a desktop release-channel notion with no
+server equivalent. The two are deliberately different fields rather than one
+field meaning different things on each side.
+
+## Three kinds of event
+
+**A daily snapshot**, one per deployment, carrying the counts that describe the
+installation. This answers "how much".
+
+**Milestone events**, emitted at most once per deployment, each carrying the
+seconds elapsed since install. This answers "how fast to value".
+
+**Lifecycle events**, one per occurrence, low volume. These carry mix and
+failure: which platforms are in use, how often a bridge drops, whether one
+connector fails repeatedly before it works.
+
+The snapshot exists because of the identifier rule. Without room ids,
+per-occurrence events can tell you *how much* happened but never *across how
+many rooms* — counting distinct anything in Amplitude requires an identifier for
+the thing being counted. Counting locally and reporting the total sidesteps it.
+
+### Why there is no `message_sent` event
+
+Message volume is reported as a count in the daily snapshot, not as an event per
+message. Three reasons, in order of weight:
+
+1. **Volume.** The relay path has no batching, no retry and no queue — one HTTP
+   request per event, fire-and-forget, because a desktop app emits a handful an
+   hour. A busy server emits thousands of messages an hour. Per-message events
+   would be a different class of load on a component not built for it.
+2. **It answers nothing extra.** Without a room id, a per-message event supports
+   the same charts the snapshot count does.
+3. **Content risk.** An event shaped around a message is the one most likely to
+   grow a property that reveals something about the message. Not having it
+   removes the temptation.
+
+If per-message granularity is ever genuinely needed, it should arrive with
+batching on the export path first.
+
+## Definitions
+
+These are the definitions the counts below are computed against. They are
+written down because most of them have a plausible alternative reading, and a
+metric whose definition drifts is worse than no metric.
+
+**Interaction** — a human sent a message in a room that has at least one agent
+in it, or an agent replied to one. This is the unit "active" is built on
+throughout: mere membership is not activity, and two agents talking to each
+other is not a human using the product.
+
+**Active user** — a human user with at least one interaction in the window.
+Counted distinctly per window, so one person in six rooms is one active user.
+
+**Active room** — a room with at least one interaction in the window. Reported
+over both one day and seven, because a weekly figure flatters a product used
+intensely on Mondays and a daily one punishes it.
+
+**Session** — an agent session as the connection registry knows it: opened when
+an agent connects, closed when it disconnects or its heartbeat lapses.
+
+**Connector** — a collaboration platform bridge (Slack, Mattermost, Discord,
+Teams, Telegram). A connector is *added* when a bridge for that platform first
+reaches a connected state; configuring one that never connects is not an add,
+which is deliberate — the metric is about reaching value, not about saving a
+form.
+
+Agent runtimes (Claude Code, Codex, OpenCode) are counted too, under
+`agent_*_count`, but they are not what "connector" means in the time-to-value
+metrics below.
+
+## The catalogue
+
+Event names are `snake_case`, past tense, prefixed `switch_core.` on the wire.
+Every event of a given name always carries exactly the same property keys —
+where a property does not apply, it carries an explicit `none` rather than being
+omitted, so a missing key always means a bug rather than a case.
+
+Every event that can fail carries `outcome`, so that the failure population is
+never invisible.
+
+### `usage_snapshot` — once a day per deployment
+
+| Property | Type | Notes |
+|---|---|---|
+| `tenant_count` | number | tenants on the deployment |
+| `user_count` | number | user accounts that exist |
+| `user_active_1d` | number | distinct humans who interacted in 24h |
+| `user_active_7d` | number | same over 7 days |
+| `room_count` | number | rooms not archived |
+| `room_active_1d` | number | rooms with an interaction in 24h |
+| `room_active_7d` | number | same over 7 days |
+| `room_archived_count` | number | archived rooms |
+| `room_internal_only_count` | number | rooms with no external channel |
+| `room_membership_total` | number | user–room memberships summed over rooms |
+| `room_users_mean` | number | mean human members per room |
+| `room_users_max` | number | largest human membership of any one room |
+| `agent_count` | number | registered agents |
+| `agent_active_7d` | number | agents that interacted in 7 days |
+| `agent_claude_code_count` | number | agents by runtime |
+| `agent_codex_count` | number | |
+| `agent_opencode_count` | number | |
+| `agent_other_count` | number | including agents with no known runtime |
+| `session_live_count` | number | sessions live at snapshot time |
+| `session_started_1d` | number | sessions opened in 24h |
+| `connector_slack_count` | number | connected bridges by platform |
+| `connector_mattermost_count` | number | |
+| `connector_discord_count` | number | |
+| `connector_teams_count` | number | |
+| `connector_telegram_count` | number | |
+| `connector_configured_count` | number | configured, whether or not connected |
+| `message_count_1d` | number | messages in 24h |
+| `message_from_human_1d` | number | of those, sent by humans |
+| `message_from_agent_1d` | number | of those, sent by agents |
+| `attachment_count_1d` | number | attachments in 24h |
+
+Per-platform counts are separate properties rather than one map because the
+platform set is closed and small, and because Amplitude charts a property far
+more easily than it charts a nested object.
+
+The three `message_*_1d` figures come from the message table, which is
+deliberately a *parallel* record of the bus rather than the authoritative one: a
+write that fails after a successful send leaves a gap, so that a database
+problem can never make messaging less reliable. These counts are therefore
+near-complete, not exact. That is fine for "how much, and is it growing", and it
+should be said plainly wherever the number is presented rather than discovered
+later.
+
+### Milestone events — at most once per deployment
+
+Each carries `seconds_since_install` (number) and `install_time_exact`
+(boolean). Together with `deployment_installed` they form the activation funnel.
+
+| Event | Emitted when | Extra properties |
+|---|---|---|
+| `deployment_installed` | the deployment id is first generated | `install_time_exact` |
+| `first_connector_added` | any bridge first reaches connected | `bridge_platform` |
+| `first_room_created` | the first room is created | `channel_type`, `bridge_platform` |
+| `first_room_active` | the first room sees its first interaction | `bridge_platform`, `seconds_since_room_created` |
+| `first_agent_registered` | the first agent registers | `known_agent_type` |
+| `first_session_started` | the first agent session opens | `known_agent_type` |
+
+`first_room_active` is the one that matters most: it is "install to seeing
+value" end to end, and its `seconds_since_room_created` separates the two halves
+of that journey — whether the time went on getting a room set up, or on getting
+anyone to use it once it existed.
+
+Emitted once *ever*, not once per process. Each needs a persisted marker, so a
+restart cannot re-emit one and a deployment that passes a milestone while
+telemetry is switched off does not emit it later as though it had just happened.
+
+### Lifecycle events
+
+**`connector_added`** — every connector, not only the first.
+
+| Property | Type |
+|---|---|
+| `bridge_platform` | platform |
+| `seconds_since_install` | number |
+| `seconds_since_configured` | number — configuration saved to first connect |
+| `is_first_connector` | boolean |
+| `failed_attempts_before_success` | number |
+
+`seconds_since_configured` and `failed_attempts_before_success` are what answer
+"is one platform too hard". Elapsed time from install mostly measures when
+somebody got round to it; time from *configuring* a bridge to it actually
+working, and how many failures came first, measures the platform. Teams needing
+six attempts and Slack needing one is the finding worth having.
+
+The honest limitation: much of connector setup happens in the platform's own
+admin UI, which the server cannot see. These metrics cover the part that starts
+when Switch is first told about the bridge.
+
+**`room_created`**
+
+| Property | Type |
+|---|---|
+| `channel_type` | `channel_public` \| `channel_private` \| `direct` \| `none` |
+| `bridge_platform` | platform, or `none` for internal-only |
+| `agent_count` | number |
+| `human_count` | number |
+| `has_instructions` | boolean |
+| `created_by_kind` | `user` \| `agent` \| `system` |
+| `from_template` | boolean |
+
+**`room_became_active`** — the first interaction in a room, once per room.
+
+| Property | Type |
+|---|---|
+| `seconds_since_room_created` | number |
+| `bridge_platform` | platform |
+| `channel_type` | channel type |
+| `agent_count` | number |
+
+This is "time to create an active room" for every room, not only the first. The
+distribution is the interesting part: if rooms created in week one go active in
+minutes and rooms created in week six never do, that is a different problem from
+a slow average.
+
+**`room_archived`** — `bridge_platform`, `age_days` (number), `was_ever_active`
+(boolean).
+
+**`room_agents_added`** — `agent_count` (number), `added_by_kind`.
+
+**`agent_registered`**
+
+| Property | Type |
+|---|---|
+| `agent_type` | `always_on` \| `session_addressable` \| `session_passive` |
+| `known_agent_type` | `claude-code` \| `codex` \| `opencode` \| `other` \| `none` |
+| `registration_path` | `bootstrap` \| `personal_key` \| `console` \| `other` |
+| `has_parent` | boolean — a subagent rather than a top-level agent |
+
+**`agent_session_started`** — `known_agent_type`, `start_source`
+(`auto` \| `manual` \| `api`).
+
+**`agent_session_ended`** — `known_agent_type`, `duration_seconds` (number),
+`reason` (`normal` \| `heartbeat_lapsed` \| `replaced` \| `room_claimed` \|
+`error`).
+
+The connection registry already records a reason on every close, which is where
+these values come from; the set is closed here so a new reason string added in
+the code does not silently become a new Amplitude value.
+
+**`bridge_connected`** — `bridge_platform`, `outcome`, `failure_reason`.
+
+**`bridge_disconnected`** — `bridge_platform`, `reason`
+(`shutdown` \| `restart` \| `auth_failed` \| `network` \| `platform_error` \|
+`unknown`).
+
+Bridge drops are worth having as events rather than only as a snapshot count:
+the snapshot says two bridges are down right now, the events say one platform
+has flapped forty times today. That is the difference between noticing and
+diagnosing.
+
+**`deployment_started`** — `migrated` (boolean, whether the boot applied
+migrations), `tenant_count`. The version is already a resource attribute, so
+this gives an upgrade curve across installations: which versions are actually
+running.
+
+### Closed value sets
+
+`bridge_platform`: `slack` | `mattermost` | `discord` | `teams` | `telegram` |
+`none`.
+
+`outcome`: `success` | `failure`. `failure_reason` is an enumerated code per
+event, `none` on success — never an exception message.
+
+Any property whose value is not in its set is a bug. It should raise where the
+event is built rather than be coerced, dropped, or sent as `unknown` — a
+silently-widening value set is how an analytics catalogue stops being
+trustworthy.
+
+## Consent
+
+A Switch server reporting its usage to a vendor relay is a different question
+from a desktop app doing it, because the deployment may be a customer's and the
+usage may be theirs.
+
+The Console's answer is opt-in, defaulting to off, gated on an explicit choice
+having been made, and re-read on every event so revoking takes effect
+immediately. **The server takes the same position**: telemetry is off unless
+switched on, it is one setting, and when it is off no request is made at all.
+
+This interacts with the milestone events in a way worth stating: a deployment
+that enables telemetry three months in has already passed most of its
+activation funnel. Milestones are emitted only when they actually occur, never
+retroactively, so such a deployment simply contributes nothing to time-to-value
+— which is correct, and better than a backfilled figure that would read as an
+instant activation.
+
+This is a setting an operator controls, and it must be documented where they
+will see it before they deploy — not only in this note. What is sent, where it
+goes, and how to turn it off belongs in the deployment documentation.
+
+## What this needs from the export path
+
+The seam with `CHOO-2807`. The catalogue above needs the export path to provide:
+
+1. **A send taking an event name and a flat map of properties**, emitting one
+   OTLP log record with the resource attributes above, the `switch_core.` prefix,
+   and the name in both required places.
+2. **Non-blocking emission.** A slow or unreachable relay must never delay a
+   request, a message send, or a bridge event. A failed send is logged and
+   dropped; telemetry is never worth a user-visible stall.
+3. **The consent gate inside the send**, so that no call site can bypass it and
+   no new event can forget it.
+4. **The deployment id and `installed_at`**, generated and persisted once.
+5. **A closed catalogue with the property allow-list enforced at the boundary**,
+   so an event carrying an undeclared property fails rather than shipping it.
+
+Nothing on that list is specific to product events; each is equally needed for
+operational ones, which is why it belongs to the shared path rather than here.
+
+## Open questions
+
+- **Snapshot scheduling.** A daily snapshot from a singleton server is a
+  background task, but a deployment that restarts frequently could emit several
+  in a day or none. It needs a "last sent" watermark in the database rather than
+  a timer from boot.
+- **Cost of the snapshot.** Several of its counts are distinct-count queries
+  over the message table across a seven-day window. On a large deployment that
+  is not free, and it should be measured before it runs daily on a live
+  instance.
+- **Self-hosted versus hosted.** The consent default is right for both, but a
+  customer-operated deployment may warrant saying more in the docs than a
+  pilot instance does.
+- **Retention and deletion.** Owned by the relay rather than by Switch, but an
+  operator who turns telemetry off will reasonably ask what happens to what was
+  already sent. The answer should exist before someone asks.
