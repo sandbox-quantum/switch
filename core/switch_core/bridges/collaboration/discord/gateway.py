@@ -11,19 +11,23 @@ single deployment-level object, started at boot alongside the bridges and living
 in the one switch-core pod (a forced singleton), so there is never a second
 owner of the socket and no leader election to arrange.
 
-This module is the foundation: it opens the shared socket with the right intents
-and registers no commands yet. Attaching each guild's inert bridge to it, slash
-routing, removal handling and the isolation guards land in the stages after.
+It opens the shared socket with the right intents, routes each guild message
+and each global slash invocation to the bridge its guild resolves to (fresh per
+event, no tenant cached — guards G1/G3), and registers the command set globally
+once for the application. Removal / out-of-band-join handling lands after.
 """
 
 from __future__ import annotations
 
 import logging
+from typing import Any
 
 import discord
 
+from switch_core.bridges.agent.commands import Command as InRoomCommand
 from switch_core.bridges.collaboration.discord.adapter import DiscordAdapter
 from switch_core.bridges.collaboration.discord.connection import DiscordConnection
+from switch_core.bridges.collaboration.discord.slash import build_app_commands
 from switch_core.bridges.collaboration.install_service import (
     MessagingInstallService,
     WebhookBridgeUnavailable,
@@ -90,7 +94,9 @@ class DiscordGatewayClient:
         # left unset (guard G4). No commands yet — global slash routing lands in
         # a later stage.
         self._connection.set_guild_message_handler(self._on_guild_message)
-        await self._connection.connect(commands=[])
+        # Commands register globally, once for the application, and each
+        # invocation is routed to a bridge by the guild it carries (decision #7).
+        await self._connection.connect(commands=build_app_commands(self._on_slash))
         logger.info(
             "Discord shared Gateway connection started (message_content=%s)",
             self._message_content,
@@ -139,3 +145,61 @@ class DiscordGatewayClient:
             # handling and outbound posting run against the one socket.
             adapter.ensure_shared_connection(self._connection)
             await adapter.dispatch_inbound(message)
+
+    async def _on_slash(
+        self,
+        interaction: discord.Interaction,
+        command: InRoomCommand,
+        values: dict[str, Any],
+    ) -> None:
+        """Route one global slash invocation to the bridge its guild resolves to.
+
+        Global commands appear in every guild the bot is in, including ones with
+        no Switch install, so an invocation from an unmapped guild is answered
+        with an ephemeral refusal rather than dropped — Discord shows
+        "interaction failed" for one left unacknowledged. Resolved fresh per
+        event and dispatched with no tenant bound, like the message path (G1).
+        """
+        guild_id = interaction.guild_id
+        if guild_id is None:
+            await self._refuse_slash(
+                interaction, "This command only works inside a server."
+            )
+            return
+        with no_tenant():
+            try:
+                target = await self._install_service.resolve_by_workspace(
+                    platform=_PLATFORM, workspace_id=str(guild_id)
+                )
+            except (WebhookWorkspaceUnknown, WebhookBridgeUnavailable) as exc:
+                logger.info(
+                    "Refusing Discord slash command for guild %s: %s", guild_id, exc
+                )
+                await self._refuse_slash(
+                    interaction, "Switch is not connected to this server."
+                )
+                return
+
+            adapter = target.adapter
+            if not isinstance(adapter, DiscordAdapter):
+                logger.error(
+                    "Bridge %s for Discord guild %s is not a Discord adapter (%s); "
+                    "refusing the slash command",
+                    target.bridge_id,
+                    guild_id,
+                    type(adapter).__name__,
+                )
+                await self._refuse_slash(
+                    interaction, "Switch is not connected to this server."
+                )
+                return
+
+            adapter.ensure_shared_connection(self._connection)
+            await adapter.dispatch_slash(interaction, command, values)
+
+    @staticmethod
+    async def _refuse_slash(interaction: discord.Interaction, message: str) -> None:
+        try:
+            await interaction.response.send_message(message, ephemeral=True)
+        except discord.HTTPException:
+            logger.exception("Failed to refuse a Discord slash interaction")

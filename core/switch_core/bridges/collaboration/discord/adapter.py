@@ -674,6 +674,20 @@ class DiscordAdapter(CollaborationAdapter):
         """
         await self._handle_message(message)
 
+    async def dispatch_slash(
+        self,
+        interaction: discord.Interaction,
+        command: InRoomCommand,
+        values: dict[str, Any],
+    ) -> None:
+        """Handle one slash invocation the shared client routed here by guild.
+
+        The self-registered connection reaches the same handler through the
+        command tree it owns; the shared connection registers commands globally
+        and routes each invocation to the bridge its guild resolves to.
+        """
+        await self._handle_slash_command(interaction, command, values)
+
     def _require_connection(self) -> DiscordConnection:
         """The bridge's Gateway connection, or a loud error if it has none.
 
