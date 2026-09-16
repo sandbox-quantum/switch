@@ -159,3 +159,64 @@ async def test_a_non_discord_bridge_is_dropped_not_dispatched() -> None:
 
     gateway = _gateway(_FakeInstallService(target=_target(_NotDiscord())))
     await gateway._on_guild_message(_message(GUILD_ID))  # logs and returns
+
+
+class _FakeResponse:
+    def __init__(self) -> None:
+        self.refusals: list[tuple[str, bool]] = []
+
+    async def send_message(self, content: str, *, ephemeral: bool = False) -> None:
+        self.refusals.append((content, ephemeral))
+
+
+def _interaction(guild_id: int | None) -> Any:
+    return type("_I", (), {"guild_id": guild_id, "response": _FakeResponse()})()
+
+
+def _command() -> Any:
+    return type("_C", (), {"name": "help"})()
+
+
+async def test_a_slash_command_is_routed_to_its_guilds_bridge() -> None:
+    adapter = _shared_adapter()
+    seen: dict[str, Any] = {}
+
+    async def fake_slash(interaction: Any, command: Any, values: Any) -> None:
+        seen["tenant_during"] = current_tenant_id()
+        seen["command"] = command
+
+    adapter.dispatch_slash = fake_slash  # type: ignore[method-assign]
+    gateway = _gateway(_FakeInstallService(target=_target(adapter)))
+
+    interaction = _interaction(GUILD_ID)
+    command = _command()
+    with tenant_scope("tenant-somebody-else"):
+        await gateway._on_slash(interaction, command, {})
+
+    assert seen["command"] is command
+    assert seen["tenant_during"] is None  # G1
+    assert interaction.response.refusals == []
+    assert adapter._connection is gateway.connection
+
+
+async def test_a_slash_from_an_uninstalled_guild_is_refused_ephemerally() -> None:
+    """Global commands appear everywhere; an unmapped guild gets an ephemeral
+    refusal rather than an unacknowledged 'interaction failed' (and G3)."""
+    gateway = _gateway(
+        _FakeInstallService(error=WebhookWorkspaceUnknown("no tenant holds it"))
+    )
+    interaction = _interaction(GUILD_ID)
+
+    await gateway._on_slash(interaction, _command(), {})
+
+    assert len(interaction.response.refusals) == 1
+    assert interaction.response.refusals[0][1] is True  # ephemeral
+
+
+async def test_a_slash_with_no_guild_is_refused() -> None:
+    gateway = _gateway(_FakeInstallService())
+    interaction = _interaction(None)
+
+    await gateway._on_slash(interaction, _command(), {})
+
+    assert len(interaction.response.refusals) == 1
