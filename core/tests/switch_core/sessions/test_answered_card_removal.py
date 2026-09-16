@@ -224,9 +224,11 @@ async def test_a_card_nobody_has_answered_is_left_alone(session_factory):
 async def test_a_platform_that_cannot_prove_a_removal_is_not_asked_to_try(
     session_factory,
 ):
-    """Every bridge platform claims the capability now, so what this holds is
-    the seam itself: a platform that cannot prove a card was taken away has its
-    cards settled by an edit, exactly as they were before any of this.
+    """A platform that does not take answered cards away has them settled by an
+    edit instead, exactly as they were before any of this. Mattermost is the
+    live case — it declines the capability rather than leave a
+    "(message deleted)" line where the card was — and the seam holds for any
+    platform that cannot prove a removal at all.
     """
     platform = Platform()
     service, epoch, posts, cards, post = await _card(session_factory, platform)

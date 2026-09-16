@@ -11,9 +11,11 @@ option, and a signature over the two. Who pressed comes from the body
 Mattermost posts, and both halves are resolved against the stored record rather
 than trusted.
 
-The body still lists every option in full. A button's label has no documented
-budget here, so there is no width at which an option could be called fully
-shown by the control — and a numbered list is what a typed answer names.
+An option a button already shows in full loses its line in the body: the same
+choice printed twice is the second copy pushing the rest of the card off a
+phone. Mattermost documents no budget for a button's name, so the width is a
+legibility one, and an option too long for it keeps its line — as does every
+option on a card that earned no buttons at all.
 """
 
 from __future__ import annotations
@@ -21,8 +23,15 @@ from __future__ import annotations
 from dataclasses import replace
 from typing import Any
 
+import pytest
+from mattermostdriver.exceptions import NotEnoughPermissions
+
+from switch_core.bridges.collaboration.adapter import RichContentFailed
 from switch_core.bridges.collaboration.mattermost.adapter import MattermostAdapter
-from switch_core.bridges.collaboration.mattermost.callback import read_press
+from switch_core.bridges.collaboration.mattermost.callback import (
+    MAX_BUTTON_LABEL,
+    read_press,
+)
 from switch_core.bridges.collaboration.session.form import (
     posted_form,
     resolve_pressed_position,
@@ -134,18 +143,150 @@ async def test_a_context_signed_for_one_option_does_not_verify_for_another() -> 
     assert read_press(_key(), _body({"switch": forged})) is None
 
 
-async def test_the_body_still_lists_every_option_the_buttons_offer() -> None:
-    """A button's label has no documented limit here, so nothing is gained by
-    dropping the option from the body — and a card is answerable by typing
-    whether or not the reader's client drew the buttons."""
+async def test_the_body_drops_the_options_the_buttons_already_show() -> None:
+    """The same choice twice is the second copy pushing the rest of the card
+    off a phone screen. The buttons carry the numbers, so the instruction to
+    answer by number still names something the reader can see."""
     adapter, _ = _handled()
 
     await adapter.post_rich(CHANNEL, "worker", await _card(), "root-1")
 
     text = _created(adapter)["message"]
+    assert "1. Allow once" not in text
+    assert "2. Deny" not in text
+    assert "R7" in text
+    assert [button["name"] for button in _buttons(_created(adapter))] == [
+        "1. Allow once",
+        "2. Deny",
+    ]
+
+
+async def test_an_option_too_long_for_its_button_keeps_its_line_in_the_body() -> None:
+    """A button shows what it has room for. Where that is less than the whole
+    option, the body is the only place the rest of it is written, so the line
+    stays and the reader can still tell the two choices apart."""
+    adapter, _ = _handled()
+    card = await _card()
+    long_label = "Allow once, " + "but only for the staging volume " * 4
+    stretched = card.request.model_copy(
+        update={
+            "content": card.request.content.model_copy(
+                update={
+                    "options": [
+                        card.request.content.options[0].model_copy(
+                            update={"label": long_label}
+                        ),
+                        card.request.content.options[1],
+                    ]
+                }
+            )
+        }
+    )
+
+    await adapter.post_rich(
+        CHANNEL, "worker", replace(card, request=stretched), "root-1"
+    )
+
+    text = _created(adapter)["message"]
+    assert "1. Allow once, but only for the staging volume" in text
+    assert "2. Deny" not in text
+    first, second = _buttons(_created(adapter))
+    assert first["name"].endswith("…")
+    assert len(first["name"]) <= MAX_BUTTON_LABEL + len("1. ")
+    assert second["name"] == "2. Deny"
+
+
+async def test_a_card_that_earns_no_buttons_keeps_every_option_in_its_body() -> None:
+    """The suppression is a promise that a control is carrying the option. A
+    form too big to show faithfully earns no controls, and the drawing that
+    discovered that had already dropped the lines — so it is drawn again."""
+    adapter, _ = _handled()
+    card = await _card()
+    clipped = card.request.model_copy(
+        update={
+            "content": card.request.content.model_copy(
+                update={"detail": "Deletes the production volume. " * 2000}
+            )
+        }
+    )
+
+    await adapter.post_rich(CHANNEL, "worker", replace(card, request=clipped), "root-1")
+
+    text = _created(adapter)["message"]
+    assert _buttons(_created(adapter)) == []
     assert "1. Allow once" in text
     assert "2. Deny" in text
-    assert "R7" in text
+
+
+async def test_the_failure_text_keeps_the_options_it_has_no_buttons_for() -> None:
+    """What goes in a `RichContentFailed` is posted as plain text with nothing
+    to press. A body that dropped its options on the promise of a button would
+    ask for a choice it had stopped printing."""
+    adapter, _ = _handled()
+
+    text = adapter.rich_fallback_text(await _card())
+
+    assert "1. Allow once" in text
+    assert "2. Deny" in text
+
+
+async def test_a_refused_edit_reports_the_options_the_card_stopped_printing() -> None:
+    """The one that actually reaches a reader. A card whose redraw is refused
+    is reported with its own text, and the publisher sends that on as an
+    ordinary message — where there are no buttons to carry the options, so the
+    drawing that suppressed them is the wrong one to report with."""
+    adapter, _ = _handled()
+    card = await _card()
+    ref = await adapter.post_rich(CHANNEL, "worker", card, "root-1")
+    _posts(adapter).patch_error = NotEnoughPermissions("403")
+
+    with pytest.raises(RichContentFailed) as raised:
+        await adapter.update_rich(CHANNEL, "worker", ref, card, "root-1")
+
+    assert "1. Allow once" in raised.value.text
+    assert "2. Deny" in raised.value.text
+    assert "1. Allow once" not in _created(adapter)["message"]
+
+
+async def test_a_refused_post_reports_the_options_its_buttons_never_got() -> None:
+    """Nothing was posted, so the reported text is the only place the options
+    appear at all."""
+    adapter, _ = _handled()
+    _posts(adapter).create_error = NotEnoughPermissions("403")
+
+    with pytest.raises(RichContentFailed) as raised:
+        await adapter.post_rich(CHANNEL, "worker", await _card(), "root-1")
+
+    assert "1. Allow once" in raised.value.text
+    assert "2. Deny" in raised.value.text
+
+
+async def test_a_card_that_lost_its_connection_still_says_what_it_was_asking() -> None:
+    """A dropped connection takes the driver and the loop with it and leaves
+    the callback address configured, so the drawing that suppressed the options
+    is still the one this path would otherwise report."""
+    adapter, _ = _handled()
+    card = await _card()
+    ref = await adapter.post_rich(CHANNEL, "worker", card, "root-1")
+    adapter._main_loop = None
+
+    with pytest.raises(RichContentFailed) as raised:
+        await adapter.update_rich(CHANNEL, "worker", ref, card, "root-1")
+
+    assert "1. Allow once" in raised.value.text
+    assert "2. Deny" in raised.value.text
+
+
+async def test_a_card_with_no_bot_to_post_it_still_says_what_it_was_asking() -> None:
+    """Refused before Mattermost is reached, and the same reasoning applies:
+    the buttons that were to carry the options were never posted either."""
+    adapter, _ = _handled()
+
+    with pytest.raises(RichContentFailed) as raised:
+        await adapter.post_rich(CHANNEL, "stranger", await _card(), "root-1")
+
+    assert "1. Allow once" in raised.value.text
+    assert "2. Deny" in raised.value.text
 
 
 async def test_a_button_keeps_its_id_across_a_redraw() -> None:
