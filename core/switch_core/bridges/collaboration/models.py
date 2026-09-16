@@ -100,7 +100,8 @@ class InboundMessage(BaseModel):
     # person (a Slack workflow, a third-party integration). Such a post is
     # relayed like any other, but it cannot answer a request: a decision is
     # attributed to whoever made it, and an app made none. Only Slack reports
-    # it today, and Slack is the only platform posting request cards.
+    # it today; a platform that cannot tell an app from a person leaves this
+    # False and its cards accept the answer.
     sender_is_app: bool = False
 
 
