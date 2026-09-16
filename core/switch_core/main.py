@@ -50,6 +50,7 @@ from switch_core.bridges.collaboration.discord.adapter import (
     DiscordAdapter,
     DiscordConnectionConfig,
 )
+from switch_core.bridges.collaboration.discord.install import DiscordAppInstaller
 from switch_core.bridges.collaboration.install import MessagingInstallerRegistry
 from switch_core.bridges.collaboration.install_routes import (
     create_messaging_install_router,
@@ -577,6 +578,16 @@ async def run(config: SwitchConfig) -> None:
                 client_id=config.slack_app_client_id,
                 client_secret=config.slack_app_client_secret,
                 signing_secret=config.slack_app_signing_secret,
+            )
+        )
+    if config.discord_app_client_id:
+        assert config.discord_app_client_secret is not None
+        assert config.discord_app_application_id is not None
+        installers.register(
+            DiscordAppInstaller(
+                client_id=config.discord_app_client_id,
+                client_secret=config.discord_app_client_secret,
+                application_id=config.discord_app_application_id,
             )
         )
 

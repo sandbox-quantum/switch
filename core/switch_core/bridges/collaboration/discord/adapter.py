@@ -9,10 +9,11 @@ from collections.abc import Awaitable, Callable
 from contextvars import ContextVar
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Literal
 
 import discord
-from pydantic import Field
+from pydantic import Field, model_validator
+from pydantic.json_schema import SkipJsonSchema
 
 from switch_core.bridges.agent.commands import COMMANDS_BY_NAME
 from switch_core.bridges.agent.commands import Command as InRoomCommand
@@ -418,8 +419,26 @@ class _WebhookIdentity:
 
 
 class DiscordConnectionConfig(BridgeConnectionConfig):
-    bot_token: str
+    #: Optional because it depends on `event_delivery`, which the validator
+    #: below enforces: the self-registered bridge opens its own connection and
+    #: needs a token; the distributed bridge routes through the one shared
+    #: connection and carries none — its token is deployment config.
+    bot_token: str | None = None
     guild_id: str
+    #: How this bridge's events reach it, and which is decided by which Discord
+    #: app the install came from rather than by an operator's preference.
+    #:
+    #: `own_connection` is the self-registered app: Switch opens a Gateway
+    #: connection scoped to this guild with the token above. `shared` is the
+    #: distributed app: the bridge opens nothing and registers its guild with
+    #: the one deployment-level connection instead, so it holds no token.
+    #:
+    #: Hidden from the registration form because it is not a question the
+    #: operator filling that form can be asked: reaching the form means the
+    #: self-registered app, and the shared value is written by the install flow.
+    event_delivery: SkipJsonSchema[Literal["own_connection", "shared"]] = (
+        "own_connection"
+    )
     # Both registration forms build themselves from this schema, so what is
     # written here is the only explanation an operator gets next to the
     # checkbox.
@@ -431,6 +450,29 @@ class DiscordConnectionConfig(BridgeConnectionConfig):
             "when you type @. Needs Manage Roles."
         ),
     )
+
+    @model_validator(mode="after")
+    def _token_matches_delivery(self) -> DiscordConnectionConfig:
+        """Refuse the two half-states that look configured and cannot work.
+
+        An own-connection bridge with no bot token opens no Gateway connection,
+        so it would receive nothing — the silent failure the token is there to
+        prevent. A shared bridge carrying a token is the opposite mistake: a
+        credential for a connection this bridge does not own, read as evidence
+        that it does.
+        """
+        if self.event_delivery == "own_connection" and not self.bot_token:
+            raise ValueError(
+                "bot_token is required: without it Switch opens no Gateway "
+                "connection and this bridge would receive no Discord events."
+            )
+        if self.event_delivery == "shared" and self.bot_token:
+            raise ValueError(
+                "bot_token must be empty for a shared-connection bridge; the "
+                "distributed Discord app's token is deployment config, not "
+                "this install's."
+            )
+        return self
 
 
 class DiscordAdapter(CollaborationAdapter):
@@ -499,6 +541,17 @@ class DiscordAdapter(CollaborationAdapter):
         super().__init__()
         self._config = config
         self._guild_id = int(config.guild_id)
+        if config.bot_token is None:
+            # A shared-delivery bridge carries no token and does not open its
+            # own Gateway connection; it registers its guild with the one shared
+            # connection instead. That connection is not built yet — the inert
+            # bridge and the shared client land in later stages — so a shared
+            # bridge is not startable here, and this fails loud rather than
+            # constructing an adapter that would silently receive nothing.
+            raise NotImplementedError(
+                "a shared-delivery Discord bridge does not open its own Gateway "
+                "connection; the shared connection is not built yet"
+            )
         # The Gateway socket lives on the connection, not the adapter: the
         # socket is per bot token and the adapter is per guild. Intents are
         # built here and handed over, so the socket owner does not decide them.
