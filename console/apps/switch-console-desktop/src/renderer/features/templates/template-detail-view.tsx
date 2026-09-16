@@ -25,7 +25,7 @@ import { Button } from '@renderer/lib/ui/button';
 import { DisclosureRow } from '@renderer/lib/ui/disclosure-row';
 import { cn } from '@renderer/utils/utils';
 import { type LoadedTemplate, loadTemplateById } from './agent-template-data';
-import { typeLabel } from './use/use-template-model';
+import { isRequired, typeLabel } from './use/use-template-model';
 
 function useViewParams() {
   return useParams('templateDetail').params;
@@ -460,12 +460,12 @@ const TemplateDetailPanel = observer(function TemplateDetailPanel() {
                   <span
                     className={cn(
                       'shrink-0 text-[11.5px]',
-                      p.default === null
+                      isRequired(p)
                         ? 'text-amber-600 dark:text-amber-400'
                         : 'text-foreground-passive'
                     )}
                   >
-                    {p.default === null ? 'Required' : 'Optional'}
+                    {isRequired(p) ? 'Required' : 'Optional'}
                   </span>
                 </div>
               ))}
