@@ -95,7 +95,7 @@ const SESSION_1 = {
   agentId: 'agent-aaa',
   providerId: 'claude-code',
   title: 'Test session',
-  shellId: 'xterm',
+  shellId: 'system',
   status: 'in_progress',
   statusChangedAt: '2025-01-01T00:00:00Z',
 

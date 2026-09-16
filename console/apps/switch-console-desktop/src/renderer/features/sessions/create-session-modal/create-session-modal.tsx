@@ -274,8 +274,8 @@ export const CreateSessionModal = observer(function CreateSessionModal({
       // invisible/misidentified if it points at a different agent. Resolve the
       // row by name here; error out rather than silently fall back (CHOO-1440).
       const resolvedAgent = effectiveAgentName
-        ? (subagent ?? freshAgents.find((a) => a.name === effectiveAgentName) ?? null)
-        : (agent ?? freshAgents[0]);
+        ? (freshAgents.find((a) => a.name === effectiveAgentName) ?? null)
+        : freshAgents[0];
       if (!resolvedAgent) {
         log.error('spawn session failed: no agent for location/subagent', {
           locationId: selectedLocationId,
@@ -300,7 +300,6 @@ export const CreateSessionModal = observer(function CreateSessionModal({
         id,
         agentId: resolvedAgent.id,
         title: trimmedName || 'Session',
-        autoApprove: resolvedAgent.autoApprove,
         initialPrompt,
         agentName: effectiveAgentName || undefined,
         entryPoint,

@@ -126,7 +126,6 @@ class RemoteSessionReconciler {
             id: session.sessionId,
             agentId,
             title: roomId ? 'Room session' : 'Shared session',
-            autoApprove: agent.autoApprove,
             attach: false,
             startSource: 'adopted',
           });

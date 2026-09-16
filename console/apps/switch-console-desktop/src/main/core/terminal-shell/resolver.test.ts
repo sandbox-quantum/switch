@@ -41,7 +41,6 @@ describe('terminal shell resolver', () => {
       resolvedFromSystem: true,
       executable: '/opt/homebrew/bin/fish',
       family: 'posix',
-      interactiveArgs: ['-il'],
       commandArgs: ['-lc'],
     });
   });
@@ -152,7 +151,6 @@ describe('terminal shell resolver', () => {
       resolvedShellId: 'wsl',
       executable: 'C:\\Windows\\System32\\wsl.exe',
       family: 'wsl',
-      interactiveArgs: [],
       commandArgs: ['--exec', 'sh', '-lc'],
     });
   });
@@ -313,7 +311,6 @@ describe('terminal shell resolver', () => {
       resolvedShellId: 'fish',
       resolvedFromSystem: true,
       executable: '/usr/local/bin/fish',
-      interactiveArgs: ['-il'],
       commandArgs: ['-lc'],
     });
   });

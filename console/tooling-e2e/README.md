@@ -97,8 +97,7 @@ Switch Console by hand between setup and the first scenario.
 
 With `SWITCH_E2E_AGENT_TYPE=claude-code` the harness writes two more files into
 the same directory, because a Claude Code session runs **as a named definition**
-(`--agent <name>` for a PTY session, the SDK's `agent` option for a
-provider-backed one) and Claude Code fails a session that names an agent it
+(the SDK's `agent` option) and Claude Code fails a session that names an agent it
 cannot find:
 
 ```
@@ -126,7 +125,7 @@ which registration returns exactly once:
 SWITCH_E2E=1 SWITCH_E2E_MANIFEST=/tmp/e2e.json SWITCH_E2E_AGENT_DIR=/tmp/e2e-work \
   node --experimental-strip-types src/seed.ts
 # add the agent to the console's database, pointed at that working directory,
-# with provider_config {"version":"2","providerId":"opencode","values":{},"runtime":"provider"};
+# with provider_config {"version":"2","providerId":"opencode","values":{}};
 # start Switch Console
 SWITCH_E2E=1 SWITCH_E2E_MANIFEST=/tmp/e2e.json SWITCH_E2E_AGENT_DIR=/tmp/e2e-work \
   ../node_modules/.bin/vitest run src/run.integration.test.ts
@@ -134,7 +133,7 @@ SWITCH_E2E=1 SWITCH_E2E_MANIFEST=/tmp/e2e.json SWITCH_E2E_AGENT_DIR=/tmp/e2e-wor
 
 For Claude Code, add `SWITCH_E2E_AGENT_TYPE=claude-code` to both commands and
 give the database row `provider_id` `'claude'` with
-`{"version":"2","providerId":"claude","values":{},"runtime":"provider"}`. The
+`{"version":"2","providerId":"claude","values":{}}`. The
 row's `name` must be the Switch agent's name, because that name is also the
 definition the session is launched as.
 

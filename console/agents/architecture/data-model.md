@@ -21,7 +21,6 @@ The schema is defined in `apps/switch-console-desktop/src/main/db/schema.ts`.
 | **agent** | *(none)* — new | A Switch agent identity bound to one provider. **Many agents per directory.** Carries the optional Switch identity (`switchAgentId`, `apiEndpoint`) detected from `.claude/settings.local.json`. |
 | **provider** | `agent` | The CLI agent kind (claude, codex, antigravity, …). Upstream called this an "agent"; here it's a *provider*, referenced by an agent via `providerId`. It stays a static code registry, not a table. |
 | **session** | `conversation` | One instantiation/run of an agent. The unit shown under an agent in the sidebar. |
-| *(folded into session)* | `terminal` | A session is 1:1 with its terminal, so the terminal's `shellId` lives on the session; there is no `terminals` table. |
 | **message** | `message` | A message in a session (was keyed by `conversationId`, now `sessionId`). |
 | *(removed)* | `session` (worktree-era) | The upstream parallel-run grouping. Removed — Switch Console runs every session in the location's directory, so the grouping layer is gone. |
 | *(removed)* | `workspace` | The upstream execution-location abstraction (worktree / SSH / BYOI remote). Removed — see below. |
@@ -77,8 +76,9 @@ agents whose Switch server had been destroyed.
 - **The worktree-era `session` grouping.** With no worktrees, a session was a
   near-empty wrapper around a single conversation. We collapsed it: the upstream
   `conversation` becomes Switch Console's `session`.
-- **The `terminals` table.** A session is 1:1 with its terminal, so a separate
-  table was pure indirection; the `shellId` moved onto the session.
+- **The `terminals` table.** Sessions now represent SDK conversations. The legacy
+  `shellId` database column remains for storage compatibility and is not exposed
+  by session APIs.
 - **`provider` as a per-session column.** A provider is a property of the agent
   (an agent is from one provider), so it moved up from the session onto the
   agent.

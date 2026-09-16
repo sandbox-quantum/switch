@@ -19,7 +19,7 @@ stored there so the host can recover sessions independently of the desktop app.
 
 The production Console path uses the shared daemon and server authority described
 below. The private local daemon is retained for isolated provider testing and
-rejects Switch identity credentials. Neither path uses tmux.
+rejects Switch identity credentials. Both paths use native provider adapters.
 
 ## Current boundary
 

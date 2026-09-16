@@ -59,7 +59,6 @@ export type CreateSessionParams = {
   id: string;
   agentId: string;
   title: string;
-  autoApprove?: boolean;
   initialPrompt?: string;
   /**
    * Run this session as a Claude Code subagent of `agentId`: launches the CLI

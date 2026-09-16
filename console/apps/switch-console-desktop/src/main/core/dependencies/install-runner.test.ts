@@ -10,7 +10,6 @@ const profile: ResolvedShellProfile = {
   executable: '/bin/bash',
   available: true,
   family: 'posix',
-  interactiveArgs: [],
   commandArgs: ['-c'],
 };
 

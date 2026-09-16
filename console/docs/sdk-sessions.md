@@ -180,8 +180,8 @@ and clarifying questions are skipped, so neither reaches the room. Provide
 additional instructions in chat. Interrupting an Antigravity turn restarts the
 provider process and resumes by conversation id rather than stopping the turn in
 place. Other capability limits remain explicit
-in the session contract. There is no tmux session fallback. Terminal support for
-lifecycle scripts is separate.
+in the session contract. Terminal sessions (tmux/PTY) were removed; SDK adapters
+are the only session runtime. Lifecycle scripts use noninteractive commands.
 
 Recovery requires the saved provider conversation and host state on the same
 execution host. Moving that state between machines is not an automatic recovery
@@ -233,8 +233,7 @@ Deleting the SDK session also removes its attachment blobs. Older uploads withou
 a stored digest receive transport checks but have no original-upload integrity proof.
 
 Local Windows execution is currently unavailable because process-group fencing
-requires a POSIX host. Use a POSIX SSH execution host. Tmux is optional and applies
-only to user terminals and lifecycle scripts; it does not execute SDK sessions.
+requires a POSIX host. Use a POSIX SSH execution host.
 Codex and Cursor do not advertise interactive questions until their native execution
 mode can support that interaction. Approvals remain separate capabilities.
 

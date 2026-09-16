@@ -1,7 +1,7 @@
 # @switch-console/agent-providers
 
 Provider adapters that drive coding agents over their native SDKs and
-protocols instead of typing into a TUI in tmux.
+protocols. These five adapters are the only Console session runtime.
 
 ## Shape
 
@@ -22,6 +22,7 @@ protocols instead of typing into a TUI in tmux.
 | `claude` | `@anthropic-ai/claude-agent-sdk` `query()` in streaming-input mode, one long-lived query per session | Mid-turn messages queue into the live loop; `canUseTool` carries both approvals and `AskUserQuestion`; sessions share the CLI's transcript files so `--resume` interoperates. |
 | `codex` | `codex app-server` JSON-RPC over stdio | The Codex SDK wraps `codex exec`, which cannot answer approvals. app-server can, and supports `turn/steer`, `thread/resume` and `turn/interrupt`. |
 | `antigravity` | `agy --input-format stream-json --output-format stream-json` over stdio | The only non-interactive surface the CLI has. The process stays alive between turns, so one NDJSON line per turn keeps the conversation, and `--conversation <id>` resumes it after the process goes away. |
+| `cursor` | `agent acp` JSON-RPC over stdio | Native sessions, model catalogue, MCP registration and approvals. |
 
 ## Rules for an adapter
 
