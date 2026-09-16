@@ -21,6 +21,7 @@ from switch_core.bridges.collaboration.adapter import (
     ActivityMark,
     ActivityMarkRefused,
     CollaborationAdapter,
+    RemovalFailed,
     RequestCard,
     RichContent,
     RichContentFailed,
@@ -303,6 +304,12 @@ class DiscordAdapter(CollaborationAdapter):
     # handle, is not — see `find_request_card`. Not a property of Discord: a
     # marker carried some other way would make this True.
     carries_publication_marker: ClassVar[bool] = False
+
+    #: A webhook may delete the messages it sent, and the publication webhook
+    #: sent every card, so no Manage Messages permission is involved and none
+    #: is in the documented install. A DM card is the bot's own message, which
+    #: it may always delete.
+    removes_answered_cards: ClassVar[bool] = True
 
     def __init__(self, *, config: DiscordConnectionConfig) -> None:
         super().__init__()
@@ -1170,6 +1177,64 @@ class DiscordAdapter(CollaborationAdapter):
         `raise ... from error` and the chain stays intact either way.
         """
         return _as_rich_failure(error, description=description, text=text) or error
+
+    @staticmethod
+    def _removal_failure(error: Exception, description: str) -> Exception:
+        """What a failed deletion should be reported as.
+
+        Only a wait survives as itself. Everything else — a refusal, a server
+        error, a request that never came back — becomes `RemovalFailed`,
+        because the caller does the same thing with all three: keep the settled
+        card, record nothing, and ask again later. The uncertainty an
+        uncertain *send* has to preserve does not arise here, since asking
+        again about a deletion that did land is answered with "already gone".
+        """
+        classified = _as_rich_failure(error, description=description, text="")
+        if isinstance(classified, RichContentThrottled):
+            return classified
+        return RemovalFailed(f"{description}: {error}")
+
+    async def remove_publication(self, channel_id: str, message_ref: str) -> None:
+        if self._client is None:
+            raise RemovalFailed("Discord client not connected.")
+
+        location_id, message_id = self._parse_message_ref(message_ref)
+        if not location_id.isdigit() or not message_id.isdigit():
+            raise RemovalFailed(
+                f"Not a Discord location:message reference: {message_ref}."
+            )
+
+        description = f"Discord would not delete {message_ref} in channel {channel_id}"
+        try:
+            target = await self._get_channel(int(channel_id))
+        except Exception as error:
+            raise self._removal_failure(error, description) from error
+
+        try:
+            if self._channel_type_of(target) == "lobby":
+                # No webhook posted it and none could delete it; in a DM the
+                # card is the bot's own message.
+                location = await self._get_channel(int(location_id))
+                await location.get_partial_message(int(message_id)).delete()
+                return
+            kwargs: dict[str, Any] = {}
+            if location_id != channel_id:
+                kwargs["thread"] = discord.Object(id=int(location_id))
+            # The publication webhook, not the agents' one: a webhook may
+            # delete only what it sent, and this is what sent the card.
+            webhook = await self._publication_webhook(int(channel_id))
+            await webhook.delete_message(int(message_id), **kwargs)
+        except discord.NotFound as error:
+            # Nothing at the address, which is what was asked for. Worth a line
+            # because the innocent reading — someone deleted the card by hand,
+            # or an acknowledgement we never saw was real — is not the only one.
+            logger.warning(
+                "Discord card %s was already gone when it was taken back: %s",
+                message_ref,
+                error,
+            )
+        except Exception as error:
+            raise self._removal_failure(error, description) from error
 
     async def find_request_card(
         self,
