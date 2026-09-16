@@ -70,8 +70,9 @@ class _FakeInstaller(MessagingAppInstaller):
 
     platform: ClassVar[str] = "slack"
 
-    def __init__(self, workspace_id: str) -> None:
+    def __init__(self, workspace_id: str, *, tokenless: bool = False) -> None:
         self.workspace_id = workspace_id
+        self.tokenless = tokenless
         self.redeem_calls: list[str] = []
         self.revoked_tokens: list[str] = []
         self.revoke_error: Exception | None = None
@@ -84,7 +85,10 @@ class _FakeInstaller(MessagingAppInstaller):
         return InstallGrant(
             external_workspace_id=self.workspace_id,
             workspace_name="Acme",
-            bot_token="xoxb-granted",
+            # `None` stands in for a platform whose credential is
+            # deployment-level, not per-install (Discord). The service must
+            # store no token for it and revoke nothing on disconnect.
+            bot_token=None if self.tokenless else "xoxb-granted",
             scopes="chat:write",
         )
 
@@ -188,7 +192,7 @@ class _Fixture:
         self.service: MessagingInstallService
 
 
-async def _fixture(harness: RLSHarness) -> _Fixture:
+async def _fixture(harness: RLSHarness, *, tokenless: bool = False) -> _Fixture:
     fixture = _Fixture()
     suffix = uuid.uuid4().hex[:8]
     fixture.tenant_a = f"tenant-a-{suffix}"
@@ -204,7 +208,7 @@ async def _fixture(harness: RLSHarness) -> _Fixture:
         fixture.user_id = user.id
         await session.commit()
 
-    fixture.installer = _FakeInstaller(fixture.workspace)
+    fixture.installer = _FakeInstaller(fixture.workspace, tokenless=tokenless)
     fixture.lifecycle = _FakeLifecycle(harness.restricted, fixture.tenant_a, suffix)
     installers = MessagingInstallerRegistry()
     installers.register(fixture.installer)
@@ -629,3 +633,43 @@ class TestWhatTheOperatorSees:
             listed = await MessagingInstallStore().list_for_tenant(session)
 
         assert listed == []
+
+
+class TestATokenlessGrant:
+    """A platform whose credential is deployment-level, not per-install (Discord).
+
+    The grant carries no token, so there is nothing to encrypt at record time
+    and nothing to revoke at the platform on disconnect — the app-level bot
+    token is not this install's to end. The rest of the flow is unchanged.
+    """
+
+    async def test_complete_stores_no_token_and_still_builds_a_bridge(
+        self, rls_harness: RLSHarness
+    ) -> None:
+        fixture = await _fixture(rls_harness, tokenless=True)
+        state = await _begin(rls_harness.restricted, fixture, fixture.tenant_a)
+
+        install = await fixture.service.complete(
+            platform="slack", code="the-code", state_token=state
+        )
+
+        assert install.encrypted_bot_token is None
+        assert install.bridge_id is not None
+        assert len(fixture.lifecycle.registered) == 1
+
+    async def test_disconnect_revokes_nothing_and_ends_cleanly(
+        self, rls_harness: RLSHarness
+    ) -> None:
+        fixture = await _fixture(rls_harness, tokenless=True)
+        install = await _installed(rls_harness.restricted, fixture, fixture.tenant_a)
+        bridge_id = install.bridge_id
+
+        ended = await fixture.service.disconnect(
+            tenant_id=fixture.tenant_a, install_id=install.id
+        )
+
+        assert fixture.installer.revoked_tokens == []
+        assert ended.status == INSTALL_DISCONNECTED
+        assert ended.ended_at is not None
+        assert ended.bridge_id is None
+        assert fixture.lifecycle.removed == [bridge_id]

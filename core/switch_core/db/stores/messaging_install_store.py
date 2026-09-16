@@ -118,7 +118,7 @@ class MessagingInstallStore:
         *,
         platform: str,
         external_workspace_id: str,
-        encrypted_bot_token: str,
+        encrypted_bot_token: str | None,
         scopes: str,
         user_id: str,
     ) -> MessagingInstall:
@@ -133,6 +133,11 @@ class MessagingInstallStore:
         Installs that have ended are not in the index, so re-installing a
         workspace somebody released is an ordinary insert and needs no check of
         its own.
+
+        `encrypted_bot_token` is `None` for a platform whose credential is not
+        per-install (Discord's is deployment-level). The column is nullable for
+        exactly that; a token-based platform's requirement is enforced by its
+        connection-config validator, not here.
         """
         install = MessagingInstall(
             platform=platform,

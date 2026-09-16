@@ -269,3 +269,31 @@ class TestRecordingAnInstall:
                 session, platform="slack", external_workspace_id=fixture.workspace
             )
             assert theirs is None
+
+    async def test_a_tokenless_install_records_and_reads_back(
+        self, rls_harness: RLSHarness
+    ) -> None:
+        """A platform whose credential is deployment-level (Discord) stores no
+        token: the row goes in with `encrypted_bot_token = NULL` and reads back
+        through the scoped path unchanged."""
+        fixture = await _two_tenants(rls_harness.owner)
+        store = MessagingInstallStore()
+
+        async with tenant_session(rls_harness.restricted, fixture.tenant_a) as session:
+            recorded = await store.record_install(
+                session,
+                platform="discord",
+                external_workspace_id=fixture.workspace,
+                encrypted_bot_token=None,
+                scopes="bot applications.commands",
+                user_id=fixture.user_id,
+            )
+            assert recorded.encrypted_bot_token is None
+            await session.commit()
+
+        async with tenant_session(rls_harness.restricted, fixture.tenant_a) as session:
+            mine = await store.get_for_workspace(
+                session, platform="discord", external_workspace_id=fixture.workspace
+            )
+            assert mine is not None
+            assert mine.encrypted_bot_token is None
