@@ -1,0 +1,189 @@
+# Spec-to-plan workshop: turn a rough brief into a plan someone can argue
+# with, before anybody writes code.
+#
+# red-blue-workroom is the build loop. This is the half-hour before it: one
+# agent drafts a plan, another attacks it, and the argument happens against a
+# document rather than in a scroll of chat.
+#
+# What this example adds on top of red-blue-workroom:
+#
+#   docs:    The deliverable is a room document, not a message. Chat scrolls
+#            away; the plan document is the thing that survives the room and
+#            gets handed to whoever builds it. Its instructions say so, so an
+#            agent joining later writes to the right place.
+#
+#   roles + a human gate: `plan-owner` is exclusive (one author, one voice),
+#            `red-team` is shared, so you can invite a third agent later and
+#            it can start attacking the plan without any change to the room.
+params:
+  initiative:
+    type: string
+    description: Short name for what you are planning (used in the room name)
+  brief:
+    type: string
+    multiline: true
+    description: The raw brief — the problem, whatever constraints you know, what "done" looks like
+  planner_agent:
+    type: agent
+    description: Agent that writes the plan
+  critic_agent:
+    type: agent
+    description: Agent that attacks it — pick a different provider if you have one
+  horizon:
+    type: enum
+    enum: ["this week", "this month", "this quarter"]
+    default: "this month"
+    description: How far out the plan has to be credible
+room:
+  name: "Plan: {initiative}"
+  description: "Turning the {initiative} brief into a plan that holds up over {horizon}."
+  channel_type: channel_private
+  agents: ["{planner_agent}", "{critic_agent}"]
+  users: ["{$creator}"]
+  instructions: |
+    This room produces one thing: the Plan document for {initiative}, good
+    enough that someone who was not here could build from it. The horizon is
+    {horizon} — a plan that only holds for a week is not finished if the
+    horizon is a quarter, and a quarter of scaffolding is waste if it is a
+    week.
+
+    How it runs:
+
+    - The plan lives in the Plan document, and the document is the
+      deliverable. Post in the channel to argue; write in the document to
+      decide. A conclusion that exists only in chat did not happen.
+    - Every claim about how things work today is checked, not assumed. If
+      nobody in the room can check it, it goes in Open questions with the
+      name of who could answer it — do not invent the answer, and do not
+      quietly plan around it.
+    - Options before choices. At least two real options for anything
+      structural, with what each one costs, and then a choice with a reason.
+      "We considered nothing else" is a finding.
+    - Every decision, including the ones that get reversed, goes in the
+      Decision log with its reasoning. In two months the reasoning is worth
+      more than the decision.
+    - Scope is a human's call. When the plan implies more work than the
+      brief asked for, stop and put it to {$creator} rather than quietly
+      growing or quietly cutting.
+
+    The brief as given:
+    {brief}
+  roles:
+    - name: plan-owner
+      exclusive: true
+      instructions: |
+        You write the plan. One author, so it reads as one document rather
+        than as a negotiation.
+
+        - Draft into the Plan document, section by section, and say in the
+          channel when a section is ready for attack. Do not wait until the
+          whole thing is finished.
+        - Answer every red-team finding in one of three ways: change the
+          plan, put it in Open questions, or say in the channel why it does
+          not apply. Never leave one unanswered.
+        - Keep the milestones honest for a {horizon} horizon. If the brief
+          cannot be done in that window, say so on the first pass — that is
+          the single most useful thing this room can produce.
+        - When you believe it is done, post a five-line summary and ask
+          {$creator} to accept it. Do not declare it done yourself.
+    - name: red-team
+      exclusive: false
+      instructions: |
+        You attack the plan. Assume it is wrong somewhere and find where.
+
+        Go after, in this order: the assumption that would sink the plan if
+        it were false; the step whose effort is being guessed at; the
+        dependency on someone outside this room; the failure mode nobody
+        has mentioned; the thing that would be painful to change once built.
+
+        Rules of engagement:
+
+        - One finding per message, with what breaks and roughly how bad it
+          is. A wall of thirty nitpicks hides the one that matters.
+        - Attack the plan, not the planner, and do not rewrite it — say what
+          is wrong and let the owner fix it.
+        - Concede quickly and explicitly when the answer is good. Your
+          value is in the findings that survive.
+        - Do not manufacture objections to look thorough. "The structural
+          risks are covered; what remains is estimation" is a legitimate
+          end state and you should say it when you reach it.
+  docs:
+    - name: "Plan"
+      description: "The deliverable — what we are building and why, in this order."
+      instructions: |
+        The plan for this initiative and the output of this room. The
+        plan-owner writes it; everyone else argues in the channel. Keep the
+        sections below — someone picking this up later relies on them being
+        where they expect. An empty section is information: leave it empty
+        rather than padding it.
+      content: |
+        # Plan
+
+        ## Problem
+
+        What is actually wrong today, and for whom. Not the solution in
+        disguise.
+
+        ## Constraints
+
+        Deadlines, systems that cannot change, people who have to agree,
+        anything already decided elsewhere.
+
+        ## Options considered
+
+        At least two, for anything structural. What each costs and what it
+        buys. Include the one you rejected and why — it is the section
+        readers come back for.
+
+        ## Approach
+
+        The chosen option, described so someone else could build it.
+
+        ## Milestones
+
+        Ordered, each one independently checkable. Say what "done" means
+        for each; avoid dates you cannot defend.
+
+        ## Risks
+
+        What could make this plan wrong, and what you would do about it.
+        Order by how bad, not how likely.
+
+        ## Open questions
+
+        Each with the name of who can answer it. Nothing here should be
+        answerable by anyone in the room — go and check it instead.
+    - name: "Decision log"
+      description: "What was decided, when, why, and by whom."
+      instructions: |
+        Append one entry per decision, including reversals. Record the
+        reasoning and what the alternative was — the reasoning is what
+        someone needs in two months when the situation has changed and they
+        are deciding whether the decision still holds. Never edit an entry
+        away; supersede it with a new one that references it.
+      content: |
+        # Decision log
+
+        Append newest last.
+
+        ### Decision 1
+
+        - **What:**
+        - **Why:**
+        - **Instead of:**
+        - **Decided by:**
+        - **When:**
+kickoff: |
+  @{planner_agent} @{critic_agent} — planning {initiative}, horizon {horizon}.
+
+  @{planner_agent}: assume the plan-owner role, read the brief in the room
+  instructions, and start with Problem, Constraints and Options in the Plan
+  document. Post here when each section is ready rather than waiting for the
+  whole draft.
+
+  @{critic_agent}: assume the red-team role. Do not wait for a finished plan —
+  attack the Problem section as soon as it is up, starting with the
+  assumption that would sink this if it were false.
+
+  Neither of you closes this out. When the plan holds, ask {$creator} to
+  accept it.
