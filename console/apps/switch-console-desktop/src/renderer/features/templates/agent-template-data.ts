@@ -204,6 +204,8 @@ export async function prefillForSave(
       literal(t?.groupName ?? null) ||
       literal(t?.roomName ?? null) ||
       (kind === 'group' ? 'Group template' : 'Room template'),
-    description: t?.roomDescription ?? '',
+    // A room's description often names its inputs ("Workroom for {task}");
+    // that reads oddly on a card, so the dialog asks for one instead.
+    description: literal(t?.roomDescription ?? null) ?? '',
   };
 }
