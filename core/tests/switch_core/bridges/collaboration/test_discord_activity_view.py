@@ -119,6 +119,20 @@ class _HTTPResponse:
     headers: dict[str, str] = {}
 
 
+class _PeopledDM(_DMChannel):
+    """A channel outside any guild that can say who is in it.
+
+    The real thing carries `recipient` for a direct channel and `recipients`
+    for a group one; the bare `_DMChannel` the other Discord tests share
+    carries neither, which is the third case — a channel nothing can be
+    established about.
+    """
+
+    def __init__(self, *recipients: int) -> None:
+        super().__init__()
+        self.recipients = [_Member(user_id) for user_id in recipients]
+
+
 class _ReadableChannel(_Channel):
     """A guild channel that answers what a given member may do in it."""
 
@@ -591,8 +605,8 @@ async def test_a_destination_nobody_can_ask_about_is_refused_not_assumed(
     )
 
 
-async def test_a_direct_message_has_nobody_else_in_it_to_check() -> None:
-    dm = _DMChannel()
+async def test_a_channel_outside_a_guild_is_read_by_whoever_is_in_it() -> None:
+    dm = _PeopledDM(READER_ID)
     adapter = _adapter({DM_CHANNEL_ID: dm})
     asked = _resolving(adapter, _snapshot())
     press = _status_press(dm)
@@ -601,6 +615,36 @@ async def test_a_direct_message_has_nobody_else_in_it_to_check() -> None:
 
     assert asked == [(str(DM_CHANNEL_ID), f"{DM_CHANNEL_ID}:{STATUS_MESSAGE_ID}")]
     assert "Ran the tests" in _shown(press)
+
+
+async def test_someone_not_in_that_channel_is_refused_it() -> None:
+    """There are no permissions to consult outside a guild, so membership is
+    the whole of the check. A branch that answered yes for want of anything to
+    ask would be the one place an address could be steered into."""
+    dm = _PeopledDM(OTHER_READER_ID)
+    adapter = _adapter({DM_CHANNEL_ID: dm})
+    asked = _resolving(adapter, _snapshot())
+    press = _status_press(dm)
+
+    await adapter._handle_interaction(press)  # type: ignore[arg-type]
+
+    assert asked == []
+    assert _shown(press) == _ACTIVITY_UNREADABLE
+
+
+async def test_a_channel_that_cannot_say_who_is_in_it_is_refused(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    dm = _DMChannel()
+    adapter = _adapter({DM_CHANNEL_ID: dm})
+    _resolving(adapter, _snapshot())
+    press = _status_press(dm)
+
+    with caplog.at_level(logging.WARNING):
+        await adapter._handle_interaction(press)  # type: ignore[arg-type]
+
+    assert _shown(press) == _ACTIVITY_UNREADABLE
+    assert any("Cannot establish who is in" in r.getMessage() for r in caplog.records)
 
 
 # ── When there is nothing to show ────────────────────────────────────────────
