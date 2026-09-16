@@ -554,10 +554,14 @@ class DiscordAdapter(CollaborationAdapter):
         self._on_user_joined = on_user_joined
         self._on_app_joined = on_app_joined
 
+        # One guild, one handler; the DM handler is the same adapter so direct
+        # messages still reach it. The connection routes each message by guild
+        # id, which for a single-guild bridge is exactly the old filter.
+        self._connection.register_message_handler(self._guild_id, self._handle_message)
+        self._connection.set_dm_handler(self._handle_message)
+        self._connection.set_interaction_handler(self._handle_interaction)
         await self._connection.connect(
             commands=build_app_commands(self._handle_slash_command),
-            on_message=self._handle_message,
-            on_interaction=self._handle_interaction,
         )
         logger.info(
             "Discord adapter connected as %s (guild %s)",
@@ -2454,10 +2458,9 @@ class DiscordAdapter(CollaborationAdapter):
     )
 
     async def _handle_message(self, message: Any) -> None:
-        guild = getattr(message, "guild", None)
-        if guild is not None and guild.id != self._guild_id:
-            return
-
+        # The connection routes each message here by guild id (or as a DM), so
+        # this handler only ever sees its own guild's messages and DMs — the
+        # guild filter that used to live here now lives in DiscordConnection.
         author = message.author
         bot_user_id = self._connection.bot_user_id
         # Drop only our own posts (loop prevention): the bot itself and the
