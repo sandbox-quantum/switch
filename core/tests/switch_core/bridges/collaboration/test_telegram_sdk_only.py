@@ -785,9 +785,10 @@ async def test_a_finished_turn_that_still_has_a_problem_to_report_says_so() -> N
     assert "went away" in _edited(adapter)["text"]
 
 
-async def test_nothing_this_bridge_publishes_is_ever_taken_down() -> None:
+async def test_a_redraw_never_takes_a_publication_down() -> None:
     """A status and a card are both the record of something that happened, and
-    each says on its face what became of it."""
+    each says on its face what became of it. An answered card is taken back,
+    but through `remove_publication` and never as part of a redraw."""
     adapter = _adapter()
     status = await adapter.post_rich(CHANNEL, "my-agent", _running(), None)
     card = await adapter.post_rich(CHANNEL, "my-agent", await _card(), None)

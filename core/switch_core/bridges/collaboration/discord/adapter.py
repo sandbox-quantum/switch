@@ -1099,12 +1099,14 @@ class DiscordAdapter(CollaborationAdapter):
     ) -> None:
         """Redraw a publication in place, including the last time.
 
-        Nothing is taken down. A turn that has ended is edited to its final
-        state and stays where it was published — in a thread, at the channel
-        root or in a DM alike — as the record that the turn ran, how long it
-        took and where to open it. Deleting it at the channel root left a
-        reader scrolling back with none of that, and a request card was never
-        taken down anywhere for the same reason.
+        A status is never taken down. A turn that has ended is edited to its
+        final state and stays where it was published — in a thread, at the
+        channel root or in a DM alike — as the record that the turn ran, how
+        long it took and where to open it. Deleting it at the channel root left
+        a reader scrolling back with none of that. An answered request card is
+        the one thing that does come down, through `remove_publication`: it
+        offers buttons nobody may press again, and what it decided is in the
+        session rather than in the card.
 
         Not `update_message`, which logs and returns. That is right for a
         status line nobody is waiting on and wrong here: a card that failed to

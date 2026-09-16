@@ -1415,13 +1415,14 @@ class TelegramAdapter(CollaborationAdapter):
     ) -> None:
         """Redraw a publication in place, including the last time.
 
-        Nothing is taken down. A finished status is edited to its final state
+        A status is never taken down. It is edited to its final state
         and stays in the chat as the record that the turn ran, how long it
         took, and where to open it — which is what a reader scrolling back
         wants and what a deletion left them without. It is compact for the same
         reason it used to be deleted: a Telegram chat or topic is the
         conversation itself, so the status is a line and its link rather than a
-        running commentary on tool calls.
+        running commentary on tool calls. An answered request card does come
+        down, through `remove_publication` and never through a redraw.
 
         `agent_name` is what the redraw writes back into the body. The name is
         the message here — one bot posts for every agent — so an edit that did

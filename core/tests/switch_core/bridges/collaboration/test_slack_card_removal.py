@@ -133,9 +133,8 @@ def test_a_disconnected_adapter_does_not_claim_the_card_was_removed() -> None:
         _run(_adapter().remove_publication("C123", CARD))
 
 
-def test_slack_is_the_platform_that_says_it_can_do_this() -> None:
-    """The capability is what routes an answered card here at all, and the four
-    platforms still to come are the ones that have not claimed it."""
+def test_slack_is_a_platform_that_says_it_can_do_this() -> None:
+    """The capability is what routes an answered card here at all."""
     assert SlackAdapter.removes_answered_cards is True
 
 

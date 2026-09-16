@@ -224,8 +224,9 @@ async def test_a_card_nobody_has_answered_is_left_alone(session_factory):
 async def test_a_platform_that_cannot_prove_a_removal_is_not_asked_to_try(
     session_factory,
 ):
-    """The four platforms still to come. Their cards settle exactly as they
-    did before, which is the behaviour a checkpoint at a time has to preserve.
+    """Every bridge platform claims the capability now, so what this holds is
+    the seam itself: a platform that cannot prove a card was taken away has its
+    cards settled by an edit, exactly as they were before any of this.
     """
     platform = Platform()
     service, epoch, posts, cards, post = await _card(session_factory, platform)

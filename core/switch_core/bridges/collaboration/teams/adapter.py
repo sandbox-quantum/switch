@@ -1619,14 +1619,18 @@ class TeamsAdapter(CollaborationAdapter):
     ) -> None:
         """Redraw a publication in place, including the last time.
 
-        Nothing is taken down. A turn that has ended is edited to its final
-        state and stays in the conversation as the record that it ran, how long
-        it took and where to open it. A chat-layout channel used to delete it,
-        on the reasoning that a bot's own message goes there without trace and
-        a finished status is clutter; what went with it was the only account of
-        the turn anybody scrolling back could read. A posts channel already
-        kept it, because Teams leaves *"This message has been deleted."* behind
-        and that is worse than the line it replaces.
+        A status is never taken down. A turn that has ended is edited to its
+        final state and stays in the conversation as the record that it ran,
+        how long it took and where to open it. A chat-layout channel used to
+        delete it, on the reasoning that a bot's own message goes there without
+        trace and a finished status is clutter; what went with it was the only
+        account of the turn anybody scrolling back could read. A posts channel
+        already kept it, because Teams leaves *"This message has been
+        deleted."* behind and that is worse than the line it replaces.
+
+        An answered request card does come down, through `remove_publication`,
+        tombstone and all: a card offering buttons nobody may press again is
+        worse than a line saying a message was removed.
 
         Not `update_message`, for two reasons. That one replaces the whole
         activity with plain text, which would strip the agent's card off a
