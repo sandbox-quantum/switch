@@ -38,6 +38,7 @@ from switch_core.sessions.attachments import (
     MAX_ATTACHMENTS,
     attachment_metadata,
     attachment_uri,
+    normalise_mime_type,
     validate_attachment,
 )
 from switch_core.sessions.contract import (
@@ -712,7 +713,9 @@ class SessionAuthority:
                         raise ValueError(
                             "The room attachment bytes are unavailable; ask the sender to upload the file again."
                         )
-                    mime_type = source.content_type or reference.mimetype
+                    mime_type = normalise_mime_type(
+                        source.content_type or reference.mimetype
+                    )
                     validate_attachment(reference.filename, mime_type, source.data)
                     if mime_type not in capabilities.attachment_mime_types:
                         raise ValueError(
@@ -1360,6 +1363,7 @@ class SessionAuthority:
         ):
             row = await self._locked(db, session_id)
             await self._owner(db, row, user_id)
+            mime_type = normalise_mime_type(mime_type)
             try:
                 uri = attachment_uri(session_id, attachment_id)
                 validate_attachment(name, mime_type, data)
