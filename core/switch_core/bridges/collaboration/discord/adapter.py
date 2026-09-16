@@ -1,19 +1,17 @@
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import io
 import logging
 import re
 from collections import OrderedDict
-from collections.abc import Awaitable, Callable, Coroutine
+from collections.abc import Awaitable, Callable
 from contextvars import ContextVar
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from typing import Any, ClassVar
 
 import discord
-from discord import app_commands
 from pydantic import Field
 
 from switch_core.bridges.agent.commands import COMMANDS_BY_NAME
@@ -35,6 +33,7 @@ from switch_core.bridges.collaboration.discord.chunking import (
     MAX_MESSAGE,
     chunk_message,
 )
+from switch_core.bridges.collaboration.discord.connection import DiscordConnection
 from switch_core.bridges.collaboration.discord.slash import (
     SlashArgError,
     build_app_commands,
@@ -84,8 +83,6 @@ _WEBHOOK_NAME = "Switch Bridge"
 # nothing else, so that one of ours can be told apart from an agent's own words
 # when the only record left to read is the channel history.
 _PUBLICATION_WEBHOOK_NAME = "Switch Sessions"
-
-_READY_TIMEOUT = 30.0
 
 # Put on the message an agent is working on for as long as its turn lasts.
 _REACTION: dict[ActivityMark, str] = {"working": "👀", "queued": "⏳"}
@@ -502,10 +499,14 @@ class DiscordAdapter(CollaborationAdapter):
         super().__init__()
         self._config = config
         self._guild_id = int(config.guild_id)
-        self._client: discord.Client | None = None
-        self._tree: app_commands.CommandTree[Any] | None = None
-        self._connect_task: asyncio.Task[None] | None = None
-        self._bot_user_id: int = 0
+        # The Gateway socket lives on the connection, not the adapter: the
+        # socket is per bot token and the adapter is per guild. Intents are
+        # built here and handed over, so the socket owner does not decide them.
+        self._connection = DiscordConnection(
+            bot_token=config.bot_token,
+            intents=self._build_intents(),
+            command_guild_id=self._guild_id,
+        )
         # (channel id, webhook name) -> webhook the bridge posts through there.
         self._webhooks: dict[tuple[int, str], discord.Webhook] = {}
         # Ids of webhooks the bridge has minted/adopted, for echo dropping.
@@ -553,140 +554,35 @@ class DiscordAdapter(CollaborationAdapter):
         self._on_user_joined = on_user_joined
         self._on_app_joined = on_app_joined
 
+        await self._connection.connect(
+            commands=build_app_commands(self._handle_slash_command),
+            on_message=self._handle_message,
+            on_interaction=self._handle_interaction,
+        )
+        logger.info(
+            "Discord adapter connected as %s (guild %s)",
+            self._connection.client.user,
+            self._config.guild_id,
+        )
+
+    @staticmethod
+    def _build_intents() -> discord.Intents:
         intents = discord.Intents.none()
         intents.guilds = True
         intents.guild_messages = True
         intents.dm_messages = True
         intents.message_content = True
         intents.members = True
-
-        client = discord.Client(intents=intents)
-        client.event(self._make_on_message())
-        # Presses on a card's buttons. Registered alongside the command tree
-        # rather than through it: the tree is handed application-command
-        # interactions only, and a component interaction is dispatched as the
-        # plain `interaction` event whether or not anything is listening.
-        client.event(self._make_on_interaction())
-        self._tree = app_commands.CommandTree(client)
-        guild = discord.Object(id=self._guild_id)
-        for app_command in build_app_commands(self._handle_slash_command):
-            # Bound to the guild, not global — see _sync_slash_commands. Adding
-            # them globally here would leave the guild-scoped sync below with an
-            # empty payload, registering nothing at all.
-            self._tree.add_command(app_command, guild=guild)
-        self._client = client
-
-        await client.login(self._config.bot_token)
-        self._connect_task = asyncio.create_task(
-            client.connect(), name=f"discord-gateway-{self._config.guild_id}"
-        )
-        ready = asyncio.ensure_future(client.wait_until_ready())
-        done, _ = await asyncio.wait(
-            {ready, self._connect_task},
-            timeout=_READY_TIMEOUT,
-            return_when=asyncio.FIRST_COMPLETED,
-        )
-        if self._connect_task in done:
-            ready.cancel()
-            exc = self._connect_task.exception()
-            raise RuntimeError("Discord gateway connection failed") from exc
-        if ready not in done:
-            ready.cancel()
-            await self.stop()
-            raise RuntimeError(f"Discord gateway not ready after {_READY_TIMEOUT:.0f}s")
-
-        assert client.user is not None
-        self._bot_user_id = client.user.id
-        logger.info(
-            "Discord adapter connected as %s (guild %s)",
-            client.user,
-            self._config.guild_id,
-        )
-        await self._sync_slash_commands()
-
-    async def _sync_slash_commands(self) -> None:
-        """Publish the in-room command set as guild-scoped application commands.
-
-        Guild-scoped rather than global, because the adapter is single-guild by
-        construction (`DiscordConnectionConfig.guild_id` is required and every
-        lookup is scoped to it). Guild commands also apply immediately, where
-        global ones propagate for up to an hour, and global registration is
-        per-application — so on an instance running several Discord bridges it
-        would leak each bridge's commands into the others' guilds, where they
-        could only fail. Syncing is a bulk overwrite, so re-running it on every
-        start reconciles renames and removals rather than accumulating them.
-
-        Any sync failure is logged and left non-fatal — hence the broad catch:
-        the bridge still works over `!`-commands and messages, and dropping the
-        whole bridge over a missing `applications.commands` scope is a worse
-        outcome than running without the slash surface. The degradation is
-        visible in the logs rather than silent.
-        """
-        if self._tree is None:
-            return
-        try:
-            synced = await self._tree.sync(guild=discord.Object(id=self._guild_id))
-        except Exception:
-            logger.exception(
-                "Failed to sync Discord slash commands for guild %s — the bridge "
-                "will run without them (check the bot's applications.commands scope)",
-                self._config.guild_id,
-            )
-            return
-        logger.info(
-            "Synced %d Discord slash commands to guild %s",
-            len(synced),
-            self._config.guild_id,
-        )
-
-    def _make_on_message(
-        self,
-    ) -> Callable[[discord.Message], Coroutine[Any, Any, None]]:
-        # client.event registers by function __name__, so hand it a closure
-        # named exactly like the gateway event.
-        async def on_message(message: discord.Message) -> None:
-            try:
-                await self._handle_message(message)
-            except Exception:
-                logger.exception("Failed to handle inbound Discord message")
-
-        return on_message
-
-    def _make_on_interaction(
-        self,
-    ) -> Callable[[discord.Interaction], Coroutine[Any, Any, None]]:
-        async def on_interaction(interaction: discord.Interaction) -> None:
-            try:
-                await self._handle_interaction(interaction)
-            except Exception:
-                logger.exception("Failed to handle a press on a Discord card")
-
-        return on_interaction
+        return intents
 
     async def stop(self) -> None:
-        if self._client:
-            try:
-                await self._client.close()
-            except Exception:
-                pass
-        task = self._connect_task
-        self._connect_task = None
-        if task:
-            task.cancel()
-            try:
-                await task
-            except (asyncio.CancelledError, Exception):
-                pass
-        self._client = None
-        self._tree = None
+        await self._connection.close()
         self._webhooks.clear()
         self._owned_webhooks.clear()
         logger.info("Discord adapter stopped")
 
     def _require_client(self) -> discord.Client:
-        if self._client is None:
-            raise RuntimeError("Discord client not connected")
-        return self._client
+        return self._connection.client
 
     # ── Messaging ────────────────────────────────────────────────────────────
 
@@ -1680,7 +1576,7 @@ class DiscordAdapter(CollaborationAdapter):
         finding the webhook that posted the card, are both steps before the
         deletion; a 404 from either is about the step, not about the card.
         """
-        if self._client is None:
+        if self._connection.client_or_none is None:
             raise RemovalFailed("Discord client not connected.")
 
         location_id, message_id = self._parse_message_ref(message_ref)
@@ -1845,7 +1741,7 @@ class DiscordAdapter(CollaborationAdapter):
                 channel_id,
             )
             return None
-        client = self._client
+        client = self._connection.client_or_none
         if client is None:
             logger.warning(
                 "Cannot look for card %s in Discord channel %s: not connected.",
@@ -1937,7 +1833,7 @@ class DiscordAdapter(CollaborationAdapter):
         """
         parent = getattr(place, "parent", None) or place
         if self._channel_type_of(parent) == "lobby":
-            return self._bot_user_id or None
+            return self._connection.bot_user_id or None
         try:
             return (await self._publication_webhook(parent.id)).id
         except Exception as e:
@@ -1983,7 +1879,7 @@ class DiscordAdapter(CollaborationAdapter):
         message the room never sees.
         """
         thread_id = self._thread_channel_id(root_ref)
-        if thread_id is None or self._client is None:
+        if thread_id is None or self._connection.client_or_none is None:
             logger.warning(
                 "Cannot read the Discord thread under %s in %s, so %s does not "
                 "answer the card there.",
@@ -2059,8 +1955,9 @@ class DiscordAdapter(CollaborationAdapter):
         target: Any = None
         if thread_root_id:
             thread_id = self._thread_channel_id(thread_root_id)
-            if thread_id is not None and self._client is not None:
-                target = self._client.get_channel(thread_id)
+            client = self._connection.client_or_none
+            if thread_id is not None and client is not None:
+                target = client.get_channel(thread_id)
         if target is None:
             try:
                 target = await self._get_channel(int(channel_id))
@@ -2449,7 +2346,8 @@ class DiscordAdapter(CollaborationAdapter):
         )
 
     def _guild_from_cache(self) -> Any:
-        return self._client.get_guild(self._guild_id) if self._client else None
+        client = self._connection.client_or_none
+        return client.get_guild(self._guild_id) if client else None
 
     def _role_name(self, role_id: int) -> str | None:
         guild = self._guild_from_cache()
@@ -2538,9 +2436,8 @@ class DiscordAdapter(CollaborationAdapter):
             return f"@{name}" if name else match.group(0)
 
         def _replace_channel(match: re.Match[str]) -> str:
-            channel = (
-                self._client.get_channel(int(match.group(1))) if self._client else None
-            )
+            client = self._connection.client_or_none
+            channel = client.get_channel(int(match.group(1))) if client else None
             name = getattr(channel, "name", None)
             return f"#{name}" if name else match.group(0)
 
@@ -2562,9 +2459,10 @@ class DiscordAdapter(CollaborationAdapter):
             return
 
         author = message.author
+        bot_user_id = self._connection.bot_user_id
         # Drop only our own posts (loop prevention): the bot itself and the
         # bridge's webhooks. Third-party bots/webhooks are still bridged.
-        if author.id == self._bot_user_id:
+        if author.id == bot_user_id:
             return
         webhook_id = getattr(message, "webhook_id", None)
         if webhook_id and webhook_id in self._webhook_ids:
@@ -2630,8 +2528,7 @@ class DiscordAdapter(CollaborationAdapter):
             getattr(message, "attachments", []) or []
         )
         self_mention = (
-            bool(self._bot_user_id)
-            and re.search(rf"<@!?{self._bot_user_id}>", content) is not None
+            bool(bot_user_id) and re.search(rf"<@!?{bot_user_id}>", content) is not None
         )
         await self._on_message(
             InboundMessage(
@@ -2645,7 +2542,7 @@ class DiscordAdapter(CollaborationAdapter):
                 channel_name=channel_name,
                 attachments=attachments,
                 attachment_failures=attachment_failures,
-                self_mention_token=str(self._bot_user_id) if self_mention else None,
+                self_mention_token=str(bot_user_id) if self_mention else None,
             )
         )
 
@@ -3401,8 +3298,9 @@ class DiscordAdapter(CollaborationAdapter):
         them; one fetched by its token says nothing about who made it.
         """
         creator = getattr(webhook, "user", None)
+        bot_user_id = self._connection.bot_user_id
         return creator is not None and bool(
-            self._bot_user_id and creator.id == self._bot_user_id
+            bot_user_id and creator.id == bot_user_id
         )
 
     def _offers_buttons(self, channel_id: int) -> bool:

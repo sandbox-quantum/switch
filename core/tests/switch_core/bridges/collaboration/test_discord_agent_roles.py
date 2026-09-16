@@ -102,7 +102,7 @@ def _adapter(guild: _FakeGuild, *, agent_roles: bool = True) -> DiscordAdapter:
             bot_token="token", guild_id=str(GUILD_ID), agent_roles=agent_roles
         )
     )
-    made._client = _FakeClient(guild)  # type: ignore[assignment]
+    made._connection._client = _FakeClient(guild)  # type: ignore[assignment]
     return made
 
 
