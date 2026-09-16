@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 from uuid import uuid4
 
@@ -24,6 +25,9 @@ from switch_core.db.stores.external_user_store import ExternalUserStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.tenant_lookup import all_tenant_ids, tenant_of_collaboration_bridge
 from switch_core.provisioning import Provisioning
+from switch_core.telemetry import TelemetryService, emit_safely
+from switch_core.telemetry.deployment import claim_milestone, seconds_since_install
+from switch_core.telemetry.snapshot import normalise_platform
 from switch_core.tenant_context import current_tenant_id, no_tenant
 
 if TYPE_CHECKING:
@@ -31,6 +35,38 @@ if TYPE_CHECKING:
     from switch_core.room_service import RoomService
 
 logger = logging.getLogger(__name__)
+
+
+def _failure_reason(exc: BaseException) -> str:
+    """An enumerated reason for a bridge failure.
+
+    Enumerated rather than the exception's message, which is free text that
+    routinely carries a workspace name, a URL or a token fragment — none of
+    which may leave the deployment. Matched on the class name so no adapter
+    library has to be imported here just to name its errors.
+    """
+    name = type(exc).__name__.lower()
+    if any(word in name for word in ("auth", "unauthorized", "forbidden", "token")):
+        return "auth_failed"
+    if any(word in name for word in ("timeout", "connection", "socket", "dns")):
+        return "network"
+    if isinstance(exc, ValueError | KeyError):
+        return "config_invalid"
+    if any(word in name for word in ("api", "http", "server", "gateway")):
+        return "platform_error"
+    return "unknown"
+
+
+def _seconds_since(moment: object) -> float:
+    """Seconds since a timestamp column, or -1 when it is not a timestamp.
+
+    -1 rather than 0, so "we could not tell" is distinguishable from "it
+    happened just now" in a chart.
+    """
+    if not isinstance(moment, datetime):
+        return -1.0
+    anchored = moment if moment.tzinfo else moment.replace(tzinfo=UTC)
+    return max((datetime.now(UTC) - anchored).total_seconds(), 0.0)
 
 
 def _bridge_client_localpart(bridge_type: str, display_name: str) -> str:
@@ -53,6 +89,11 @@ def _bridge_client_localpart(bridge_type: str, display_name: str) -> str:
 
 
 class CollaborationBridgeLifecycleService:
+    # See RoomService: a test may assemble this without `__init__`.
+    _telemetry: TelemetryService | None = None
+    _connect_failures: dict[str, int] = {}
+    _bridge_facts: dict[str, tuple[str, object]] = {}
+
     def __init__(
         self,
         *,
@@ -68,6 +109,7 @@ class CollaborationBridgeLifecycleService:
         session_factory: async_sessionmaker[AsyncSession],
         config: SwitchConfig,
         client_factory: ClientFactory,
+        telemetry: TelemetryService | None = None,
     ) -> None:
         self._bridge_store = bridge_store
         self._external_user_store = external_user_store
@@ -76,6 +118,7 @@ class CollaborationBridgeLifecycleService:
         self._agent_store = agent_store
         self._client_store = client_store
         self._client_lifecycle = client_lifecycle
+        self._telemetry = telemetry
         self._room_service = room_service
         self._matrix_admin = matrix_admin
         self._session_factory = session_factory
@@ -86,6 +129,14 @@ class CollaborationBridgeLifecycleService:
         self._config_registry: dict[str, type[BridgeConnectionConfig]] = {}
         self._bridges: dict[str, BridgeCore] = {}
         self._tasks: dict[str, asyncio.Task[None]] = {}
+        # How many times each bridge has failed to come up since this
+        # process started. See `_note_connect_failure`.
+        self._connect_failures: dict[str, int] = {}
+        # Each bridge's platform and when its row was written, read off the
+        # row at start. Kept here rather than fetched from the BridgeCore so
+        # reporting never depends on what that object exposes — a stand-in
+        # supplied by a test is still a legitimate bridge to run.
+        self._bridge_facts: dict[str, tuple[str, object]] = {}
         # bridge_id -> the host resource it holds exclusively while running
         # (see CollaborationAdapter.exclusive_resource). Lets a second
         # claimant be refused by name instead of failing on the resource.
@@ -528,6 +579,10 @@ class CollaborationBridgeLifecycleService:
             transport_factory=self._client_factory.transport_for,
         )
 
+        # Stashed rather than passed: `_run_bridge`'s signature is what the
+        # tenant-binding tests patch, and widening it to carry two reporting
+        # details would make every fake of it wrong.
+        self._bridge_facts[bridge_id] = (bridge.type, bridge.created_at)
         task = asyncio.create_task(
             self._run_bridge(bridge_id, tenant_id, bridge_core, bridge_client)
         )
@@ -612,18 +667,119 @@ class CollaborationBridgeLifecycleService:
         which runs until shutdown — binds nothing at all, leaving each
         delivery to bind the tenant of the room it is for.
         """
+        platform, configured_at = self._bridge_facts.get(bridge_id, ("none", None))
         with no_tenant():
+            connected = False
             try:
                 await self._record_bridge_memberships(
                     bridge_id, tenant_id, bridge_client.client_id
                 )
                 await bridge_core.start()
+                # `bridge_core.start()` returning is the moment the adapter is
+                # actually talking to the platform — `start()` above only
+                # launched this task, and `bridge_client.start()` below runs
+                # until shutdown, so this is the one point that means
+                # "connected".
+                connected = True
+                await self._report_connector_up(bridge_id, platform, configured_at)
                 await bridge_client.start()
-            except Exception:
+            except Exception as exc:
                 logger.exception("Bridge %s crashed", bridge_id)
                 self._bridges.pop(bridge_id, None)
                 self._tasks.pop(bridge_id, None)
                 self._held_resources.pop(bridge_id, None)
+                # Told apart by whether the adapter ever came up: a failure
+                # before that never connected at all, and reporting it as a
+                # disconnection would invent an uptime the bridge never had.
+                if connected:
+                    emit_safely(
+                        self._telemetry,
+                        "bridge_disconnected",
+                        {
+                            "bridge_platform": normalise_platform(platform),
+                            "reason": _failure_reason(exc),
+                        },
+                    )
+                else:
+                    self._note_connect_failure(bridge_id)
+                    emit_safely(
+                        self._telemetry,
+                        "bridge_connected",
+                        {
+                            "bridge_platform": normalise_platform(platform),
+                            "outcome": "failure",
+                            "failure_reason": _failure_reason(exc),
+                        },
+                    )
+
+    def _note_connect_failure(self, bridge_id: str) -> None:
+        """Remember that this bridge failed to come up.
+
+        In memory rather than in a row, and that is a real limitation: a
+        restart forgets, so `failed_attempts_before_success` under-reports a
+        connector whose struggles spanned one. It is still the only signal
+        that separates "this platform is hard to set up" from "nobody tried it
+        until March", and a table for it would be a migration to hold a
+        number that is interesting for about a day per deployment.
+        """
+        self._connect_failures[bridge_id] = self._connect_failures.get(bridge_id, 0) + 1
+
+    async def _report_connector_up(
+        self, bridge_id: str, platform: str, configured_at: object
+    ) -> None:
+        """Report a bridge reaching the platform, and the effort it took.
+
+        Two events, because they answer different questions. `bridge_connected`
+        fires every time and is how a flapping bridge shows up at all.
+        `connector_added` fires only the first time this bridge ever connected
+        — the setup finally working — and carries the timings that say whether
+        one platform is harder than another.
+        """
+        emit_safely(
+            self._telemetry,
+            "bridge_connected",
+            {
+                "bridge_platform": normalise_platform(platform),
+                "outcome": "success",
+                "failure_reason": "none",
+            },
+        )
+
+        if self._telemetry is None:
+            return
+        # The first successful connect for this bridge, ever. Claimed against
+        # the bridge id so restarting a working bridge does not re-report a
+        # setup that happened months ago.
+        if not await claim_milestone(
+            self._session_factory, f"connector_added:{bridge_id}"
+        ):
+            return
+
+        elapsed_since_install = seconds_since_install(self._telemetry.installed_at)
+        emit_safely(
+            self._telemetry,
+            "connector_added",
+            {
+                "bridge_platform": normalise_platform(platform),
+                # -1 where the deployment has no install clock, which is
+                # distinguishable from "took no time" in a way that 0 is not.
+                "seconds_since_install": (
+                    elapsed_since_install if elapsed_since_install is not None else -1.0
+                ),
+                "seconds_since_configured": _seconds_since(configured_at),
+                "is_first_connector": not self._any_connector_before(bridge_id),
+                "failed_attempts_before_success": self._connect_failures.pop(
+                    bridge_id, 0
+                ),
+            },
+        )
+        await self._telemetry.emit_milestone(
+            "first_connector_added", bridge_platform=normalise_platform(platform)
+        )
+
+    def _any_connector_before(self, bridge_id: str) -> bool:
+        """Whether another bridge was already connected when this one came up."""
+        return any(other != bridge_id for other in self._bridges)
 
     async def stop(self, bridge_id: str) -> None:
         bridge_core = self._bridges.get(bridge_id)
@@ -637,6 +793,17 @@ class CollaborationBridgeLifecycleService:
         self._bridges.pop(bridge_id, None)
         self._held_resources.pop(bridge_id, None)
         logger.info("Stopped collaboration bridge %s", bridge_id)
+
+        if bridge_core is not None:
+            platform, _ = self._bridge_facts.get(bridge_id, ("none", None))
+            emit_safely(
+                self._telemetry,
+                "bridge_disconnected",
+                {
+                    "bridge_platform": normalise_platform(platform),
+                    "reason": "shutdown",
+                },
+            )
 
     async def restart(self, bridge_id: str) -> None:
         """Stop and start a bridge so it picks up its stored config.

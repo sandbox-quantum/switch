@@ -590,6 +590,14 @@ Include with `nindent 12`.
 - name: ENVIRONMENT
   value: {{ . | quote }}
 {{- end }}
+- name: TELEMETRY_ENABLED
+  value: {{ .Values.switchCore.telemetry.enabled | quote }}
+{{- if .Values.switchCore.telemetry.enabled }}
+- name: TELEMETRY_ENDPOINT
+  value: {{ .Values.switchCore.telemetry.endpoint | quote }}
+- name: TELEMETRY_SNAPSHOT_INTERVAL_HOURS
+  value: {{ .Values.switchCore.telemetry.snapshotIntervalHours | quote }}
+{{- end }}
 # switch-core sits behind the cluster/ALB and enforces its own
 # BearerAuthMiddleware, so fastmcp's browser-oriented DNS-rebinding
 # Host/Origin guard (default-on since mcp 1.28) only rejects the

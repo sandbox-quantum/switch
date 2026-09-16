@@ -164,6 +164,40 @@ class SwitchConfig(BaseSettings):
     # `tenant_id`.
     tenant_id: str = "default"
 
+    # ── Product telemetry ────────────────────────────────────────────────────
+    # Usage reporting to the company relay, which fans out to product
+    # analytics. Separate from the logging above, which stays inside the
+    # deployment's own pipeline and is not affected by any of this.
+    #
+    # **Off unless switched on, and that default is deliberate.** A Switch
+    # server may be a customer's, and the usage may be theirs, so reporting it
+    # is a decision an operator makes rather than one they discover. When this
+    # is false nothing is collected and no request is made — not a disabled
+    # exporter that still builds payloads, and not a queue that drains later.
+    #
+    # What is reported is fixed in `telemetry/catalogue.py` and explained in
+    # `docs/old/telemetry-events.md`: counts and durations only, never an
+    # identifier for a room, tenant, agent, user or message, and never free
+    # text. The catalogue is enforced at the boundary rather than trusted.
+    telemetry_enabled: bool = False
+
+    # Where events go. Defaults to the company relay — the same endpoint the
+    # Switch Console reports to, so one pipeline carries both. Override to
+    # point a development run at a local listener rather than at production
+    # analytics.
+    telemetry_endpoint: str = "https://telemetry.flintai.dev/v1/logs"
+
+    # How long to wait on the relay before giving up on a single event.
+    # Telemetry is never worth delaying real work for, and a send that is
+    # already this late is not worth finishing.
+    telemetry_timeout_seconds: float = 10.0
+
+    # How often the daily usage snapshot is collected and sent. Hours rather
+    # than a fixed clock time so a deployment does not have to care which
+    # timezone it is in; the schedule is anchored to what was last sent, not
+    # to how long this process has been up.
+    telemetry_snapshot_interval_hours: float = 24.0
+
     server_host: str = "0.0.0.0"
     server_port: int = 8000
 
@@ -304,6 +338,26 @@ class SwitchConfig(BaseSettings):
                 )
         if not self.tenant_id.strip():
             raise ValueError("TENANT_ID must not be empty.")
+        if self.telemetry_enabled:
+            # Checked only when telemetry is on: a deployment that never
+            # reports should not be refused boot over the shape of a setting
+            # it does not use.
+            endpoint = urlsplit(self.telemetry_endpoint)
+            if endpoint.scheme not in ("http", "https") or not endpoint.netloc:
+                raise ValueError(
+                    "TELEMETRY_ENDPOINT must be an absolute http(s) URL, got "
+                    f"{self.telemetry_endpoint!r}."
+                )
+            if self.telemetry_timeout_seconds <= 0:
+                raise ValueError(
+                    "TELEMETRY_TIMEOUT_SECONDS must be positive, got "
+                    f"{self.telemetry_timeout_seconds!r}."
+                )
+            if self.telemetry_snapshot_interval_hours <= 0:
+                raise ValueError(
+                    "TELEMETRY_SNAPSHOT_INTERVAL_HOURS must be positive, got "
+                    f"{self.telemetry_snapshot_interval_hours!r}."
+                )
         if self.template_max_bytes < 1:
             raise ValueError(
                 f"TEMPLATE_MAX_BYTES must be at least 1, got {self.template_max_bytes}."

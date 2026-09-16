@@ -117,6 +117,26 @@ switchCore:
     environment: ""
     serviceName: switch-core
 
+  # Anonymous product telemetry: usage counts and timings reported to the
+  # Flint relay, which is the same pipeline Switch Console reports to.
+  #
+  # Off by default, and that is deliberate — this deployment's usage may be
+  # yours rather than ours, so reporting it is a choice you make rather than
+  # one you discover. When it is off nothing is collected and no request is
+  # made.
+  #
+  # Nothing that identifies anything inside the deployment is ever sent: no
+  # room, tenant, agent, user or message id, no names, no message content, and
+  # no free text of any kind. What is sent is counts (how many rooms, how many
+  # active users, how much traffic) and durations (how long from install to a
+  # working connector). The full list is in docs/old/telemetry-events.md and
+  # is enforced in code, not just documented.
+  telemetry:
+    enabled: false
+    endpoint: https://telemetry.flintai.dev/v1/logs
+    # How often the usage snapshot is collected and sent.
+    snapshotIntervalHours: 24
+
   # Public base URL the gateway is served on (used for links / OIDC redirects).
   frontendBaseUrl: ""
   # Public origin (scheme + host, no path) of the gateway HTTP API itself, used

@@ -120,6 +120,8 @@ from switch_core.messages.notify import MessageListener
 from switch_core.provisioning import Provisioning
 from switch_core.provisioning.postgres import PostgresProvisioning
 from switch_core.room_service import RoomService
+from switch_core.telemetry.reporter import SnapshotReporter
+from switch_core.telemetry.setup import build_telemetry
 from switch_core.tenant_context import no_tenant
 from switch_core.transport.ephemeral import EphemeralBus
 from switch_core.transport.invites import InviteBus
@@ -186,6 +188,14 @@ async def _connection_sweep_loop(protocol: ProtocolService) -> None:
                 )
         except Exception:
             logger.exception("Connection sweep failed")
+
+
+async def _snapshot_loop(reporter: SnapshotReporter) -> None:
+    # `no_tenant` for the reason every other long-lived task does it: the
+    # snapshot binds each tenant in turn as it counts, and must not inherit
+    # whichever one happened to be bound when the task was created.
+    with no_tenant():
+        await reporter.run_forever()
 
 
 class _QuietPollFilter(logging.Filter):
@@ -315,6 +325,14 @@ async def run(config: SwitchConfig) -> None:
     event_buffer = EventBuffer()
     connector_store = ServerConnectorStore()
 
+    # ── Product telemetry ────────────────────────────────────────────────────
+    # Built before the services that report through it, and built whether or
+    # not it is switched on: disabled is a sink that discards, so nothing
+    # downstream has to ask.
+    telemetry, installed_at = await build_telemetry(
+        config, session_factory, switch_core_version()
+    )
+
     # ── Resource service ─────────────────────────────────────────────────────
     resource_service = ResourceService(
         reference_store=reference_store,
@@ -413,6 +431,7 @@ async def run(config: SwitchConfig) -> None:
         session_factory=session_factory,
         config=config,
         client_factory=client_factory,
+        telemetry=telemetry,
     )
 
     # ── Room service ─────────────────────────────────────────────────────────
@@ -425,6 +444,7 @@ async def run(config: SwitchConfig) -> None:
         collab_bridge_store=bridge_store,
         resource_service=resource_service,
         session_factory=session_factory,
+        telemetry=telemetry,
     )
     collab_lifecycle._room_service = room_service
 
@@ -524,6 +544,14 @@ async def run(config: SwitchConfig) -> None:
     # ── Lifespan: start server-side connectors once HTTP is serving ────────
     original_lifespan = agent_bridge_app.router.lifespan_context
 
+    snapshot_reporter = SnapshotReporter(
+        telemetry=telemetry,
+        session_factory=session_factory,
+        interval_hours=config.telemetry_snapshot_interval_hours,
+        installed_at=installed_at,
+        live_session_count=lambda: len(connections.live_agent_ids()),
+    )
+
     @asynccontextmanager
     async def lifespan(app: object) -> AsyncIterator[None]:
         async with original_lifespan(app):  # type: ignore[arg-type]
@@ -532,13 +560,19 @@ async def run(config: SwitchConfig) -> None:
             connection_sweep_task = asyncio.create_task(
                 _connection_sweep_loop(protocol)
             )
+            # Runs whether or not telemetry is enabled: the counts are logged
+            # either way, so an operator can see what would be reported before
+            # deciding to report it.
+            snapshot_task = asyncio.create_task(_snapshot_loop(snapshot_reporter))
             await message_listener.start()
             try:
                 yield
             finally:
                 sweep_task.cancel()
                 connection_sweep_task.cancel()
+                snapshot_task.cancel()
                 await message_listener.stop()
+                await telemetry.aclose()
 
     agent_bridge_app.router.lifespan_context = lifespan  # type: ignore[assignment]
 
@@ -554,6 +588,11 @@ async def run(config: SwitchConfig) -> None:
     logger.info(
         "Switch is running on http://%s:%d", config.server_host, config.server_port
     )
+
+    telemetry.emit("deployment_started", tenant_count=len(tenant_ids))
+    # The funnel's first step. Claimed once, and only by a deployment that
+    # knows when it was installed — see telemetry/deployment.py.
+    await telemetry.emit_milestone("deployment_installed")
 
     server_config = uvicorn.Config(
         agent_bridge_app,

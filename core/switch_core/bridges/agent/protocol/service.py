@@ -2363,6 +2363,7 @@ class ProtocolService:
             protection_config=security_config,
             instructions=instructions,
             created_by=agent.owner_id,
+            created_by_kind="agent",
             owner_id=agent.owner_id,
             group_id=group_id,
             read_visibility=read_visibility,
@@ -2458,7 +2459,10 @@ class ProtocolService:
                 include_for = [target.id]
         try:
             await self.room_service.add_agents_to_room(
-                room_id, agent_names=[agent_name], include_subagents_for=include_for
+                room_id,
+                agent_names=[agent_name],
+                include_subagents_for=include_for,
+                added_by_kind="agent",
             )
         except ValueError as e:
             raise ValueError(f"Failed to invite agent: {str(e)}") from e

@@ -228,6 +228,11 @@ class BridgeCore:
     def tenant_id(self) -> str:
         return self._bridge_tenant_id
 
+    @property
+    def bridge_type(self) -> str:
+        """The collaboration platform this bridge talks to."""
+        return self._bridge_type
+
     def _traced(
         self, handler: Callable[[_InboundEventT], Awaitable[None]]
     ) -> Callable[[_InboundEventT], Awaitable[None]]:
@@ -858,7 +863,7 @@ class BridgeCore:
             logger.debug("Room already exist, add %s to channel", join.agent_name)
             room_id, _ = existing
             await self._room_service.add_agents_to_room(
-                room_id, agent_names=[join.agent_name]
+                room_id, agent_names=[join.agent_name], added_by_kind="system"
             )
             return
 
@@ -1016,6 +1021,9 @@ class BridgeCore:
             channel_type=channel_type,
             bridge_id=self._bridge_id,
             external_channel_id=channel_id,
+            # Adopted from a channel that appeared on the platform, not asked
+            # for by anyone in Switch.
+            created_by_kind="system",
         )
 
         try:
