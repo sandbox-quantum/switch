@@ -27,7 +27,6 @@ them can reach a limit.
 from __future__ import annotations
 
 import hashlib
-import json
 import re
 from dataclasses import dataclass
 from html import unescape
@@ -139,17 +138,14 @@ _MAX_TEXT = 39000
 
 _MAX_TASK_ID = 64
 
-# Slack measures a `task_update` or `plan_update` chunk serialised and rejects
-# the whole append over 256 characters, taking the other chunks in it with it.
-# The steps are not chunks and are not bound by this — they ride in `blocks`
-# chunks, which take kilobytes — so what it bounds is the header and the one
-# card the stream's own plan holds.
-_MAX_CHUNK = 256
-
-# The two blocks a stream draws its steps in, oldest first. Slack keeps a block
-# at the position it was first written, so which of these holds the older page
-# is fixed by the order they are created in and never changes after that.
-_STEP_PAGES = ("switch-steps-older", "switch-steps-newer")
+# The three blocks a stream draws its steps in, top to bottom. Slack fixes a
+# block at the position it was first written and has no call that removes one,
+# so where each one sits is decided by the order they are created in and cannot
+# be changed afterwards. That is the whole reason there are three: the top block
+# has to exist before either of the others to be able to carry the line saying
+# what is no longer shown, so it starts as the first page of steps and becomes
+# that line when there is something to disclose.
+_STEP_BLOCKS = ("switch-steps-top", "switch-steps-middle", "switch-steps-bottom")
 
 # The single card in the stream's own plan. Sent once: `details` on a
 # `task_update` appends to what the card already has rather than replacing it,
@@ -1187,7 +1183,7 @@ class StreamedActivity:
 
     title: str
     session: dict[str, Any]
-    pages: list[dict[str, Any]]
+    blocks: list[dict[str, Any]]
 
 
 def render_activity_stream(
@@ -1208,21 +1204,17 @@ def render_activity_stream(
     they held a minute ago.
 
     That is what lets a long turn stay one readable message. The stream's plan
-    holds the status line and nothing that grows; the steps live in two blocks
-    that rotate, so a turn of any length draws the same handful of blocks.
+    holds the status line and nothing that grows; the steps live in three
+    blocks that rotate, so a turn of any length draws the same four blocks.
     """
     did = [item for item in items if item.kind == "tool-activity"]
-    header = {
-        "type": "plan_update",
-        "title": _fit(
+    return StreamedActivity(
+        title=_fit(
             _activity_title(items, turn, elapsed_seconds=elapsed_seconds),
             _MAX_PLAN_TITLE,
         ),
-    }
-    return StreamedActivity(
-        title=_within_chunk(header)["title"],
         session=_session_card(session_url),
-        pages=_step_pages([_settled(_plan_task(item), item, turn) for item in did]),
+        blocks=_step_blocks([_settled(_plan_task(item), item, turn) for item in did]),
     )
 
 
@@ -1234,9 +1226,11 @@ def _session_card(session_url: str | None) -> dict[str, Any]:
     Console link is asked to be: first row of the first block, visible in the
     same expansion that opens the plan.
 
-    The link is dropped rather than trimmed when it will not fit. `_within_chunk`
-    cuts a detail to make a chunk fit, and half a URL is not a link — it is a
-    line of text that looks like one and goes nowhere.
+    The whole url goes in or the card carries no link at all. A session url is
+    built from a configured origin and three ids rather than written by an
+    agent, so its length is the deployment's, not something to defend against —
+    and half a url is not a link, it is a line of text that looks like one and
+    goes nowhere.
     """
     card: dict[str, Any] = {
         "type": "task_update",
@@ -1250,45 +1244,59 @@ def _session_card(session_url: str | None) -> dict[str, Any]:
         "switchdash",
     }:
         return card
-    linked = {**card, "details": f"<{session_url}|Open in Console app>"}
-    return linked if _chunk_length(linked) <= _MAX_CHUNK else card
+    return {**card, "details": f"<{session_url}|Open in Console app>"}
 
 
-def _step_pages(steps: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """The steps as the last two plan blocks that will hold them.
+def _step_blocks(steps: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The steps as the three blocks that hold them: what is gone, then two pages.
 
     Pages are cut on fixed boundaries — the first fifty, the next fifty — so a
-    step never moves between pages once it has landed in one, and only the two
-    newest pages are drawn. Everything before them is gone from the message,
-    which the older page says in its own title: that is the line a reader sees
-    with the block collapsed, so a cut nobody is told about is one nobody can
-    see.
+    step never moves between pages once it has landed in one, which keeps a
+    settled page from being rewritten under a reader who has it open.
 
-    The pages are written to a fixed pair of block ids rather than one per
-    fifty. Slack keeps a block where it was first written and has no call that
-    removes one, so a new id per page would grow the message without bound and
-    in the wrong order. Rotating the contents through two ids keeps both the
-    length and the order fixed however long the turn runs.
+    Only the newest two pages are drawn, and everything before them is gone from
+    the message. That is said on one line of its own above them, naming the
+    whole range rather than only the most recent thing dropped, so the reader is
+    never left to add up several disclosures to find out what is missing.
+
+    The line has to be the first of the three blocks written, because Slack
+    fixes a block where it was created and one made later would render *below*
+    the pages it is describing. So the top block starts life as the first page
+    of steps and is replaced by the line when there is finally something to
+    disclose — a substitution in place, which keeps its position. There is no
+    call that removes a block, and this needs none.
     """
     if not steps:
         return []
+    top, middle, bottom = _STEP_BLOCKS
     last = (len(steps) - 1) // _MAX_PLAN_TASKS
-    pages: list[dict[str, Any]] = []
-    for slot, page in enumerate(range(max(0, last - 1), last + 1)):
-        start = page * _MAX_PLAN_TASKS
-        shown = steps[start : start + _MAX_PLAN_TASKS]
-        title = f"Steps {start + 1}–{start + len(shown)}"
-        if start and not slot:
-            title += f" · {start} earlier not shown"
-        pages.append(
-            {
-                "type": "plan",
-                "block_id": _STEP_PAGES[slot],
-                "title": _truncate(title, _MAX_PLAN_TITLE),
-                "tasks": shown,
-            }
-        )
-    return pages
+    if last < 2:
+        pages = [top, middle]
+        return [_step_page(steps, page, pages[page]) for page in range(last + 1)]
+    gone = (last - 1) * _MAX_PLAN_TASKS
+    return [
+        {
+            "type": "context",
+            "block_id": top,
+            "elements": [
+                {"type": "mrkdwn", "text": f"_Steps 1–{gone} no longer shown_"}
+            ],
+        },
+        _step_page(steps, last - 1, middle),
+        _step_page(steps, last, bottom),
+    ]
+
+
+def _step_page(steps: list[dict[str, Any]], page: int, block_id: str) -> dict[str, Any]:
+    """One fifty-step page as the plan block that draws it."""
+    start = page * _MAX_PLAN_TASKS
+    shown = steps[start : start + _MAX_PLAN_TASKS]
+    return {
+        "type": "plan",
+        "block_id": block_id,
+        "title": _truncate(f"Steps {start + 1}–{start + len(shown)}", _MAX_PLAN_TITLE),
+        "tasks": shown,
+    }
 
 
 def _settled(task: dict[str, Any], item: Item, turn: TurnUpsert) -> dict[str, Any]:
@@ -1305,58 +1313,6 @@ def _settled(task: dict[str, Any], item: Item, turn: TurnUpsert) -> dict[str, An
     if item.status == "in-progress" and turn.status in TURN_ENDED:
         task["title"] = _fit("Unfinished: " + task["title"], _MAX_PLAN_TASK_TITLE)
     return task
-
-
-def _within_chunk(chunk: dict[str, Any]) -> dict[str, Any]:
-    """Trim a chunk's title to the 256 characters an append will accept.
-
-    Cut rather than dropped: the header is the whole of a collapsed block, and
-    one that says nothing is worse than one that says half.
-
-    Each cut is measured again, and taken as a proportion of the overshoot
-    rather than a count of characters off it, because the budget is spent on
-    the serialised form where a character does not cost one: an emoji costs
-    twelve. Counting characters can ask for a cut longer than the text, which
-    is how this used to give up and hand Slack a chunk it would reject —
-    taking every other chunk in the same append down with it.
-    """
-    while _chunk_length(chunk) > _MAX_CHUNK and chunk.get("title"):
-        keep = len(chunk["title"]) * _MAX_CHUNK // _chunk_length(chunk)
-        cut = _shorten(chunk["title"], max(keep, 1))
-        if cut == chunk["title"]:
-            break
-        chunk["title"] = cut
-    return chunk
-
-
-def _shorten(text: str, limit: int) -> str:
-    """Cut text that has already been escaped, without splitting an entity.
-
-    `_fit` cuts the source and escapes the result, which is the right way round
-    and not available here: by this point the value has been escaped and the
-    budget being spent is on the escaped form. Slicing it blind can leave `&am`
-    in front of the reader, so a cut that landed inside an entity backs up to
-    where it started.
-    """
-    if len(text) <= limit:
-        return text
-    cut = _truncate(text, limit)[:-1]
-    opened = cut.rfind("&")
-    if opened != -1 and ";" not in cut[opened:]:
-        cut = cut[:opened]
-    return f"{cut}…"
-
-
-def _chunk_length(chunk: dict[str, Any]) -> int:
-    """How long Slack will consider this chunk: the serialised form.
-
-    Measured the way the SDK puts it on the wire, which escapes every
-    non-ASCII character to `\\uXXXX`. Whether Slack counts the wire form or the
-    decoded string is not documented, so this counts the longer of the two:
-    trimming a title further than it needed is a cosmetic loss, while
-    undershooting has Slack reject the append and every other card in it.
-    """
-    return len(json.dumps(chunk, separators=(",", ":")))
 
 
 def _activity_title(

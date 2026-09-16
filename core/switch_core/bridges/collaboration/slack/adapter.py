@@ -196,15 +196,17 @@ class _ActivityStream:
     cards that has not changed costs an append and risks nothing useful.
 
     `session` is the card the status line is drawn around, held here because it
-    can only be sent once. `pages` is the last thing written to each step block,
-    by `block_id`, so a redraw sends only the page that actually moved.
+    can only be sent once — and holding what was *sent* rather than what was
+    last drawn, so a redraw that happens to be missing the link cannot make the
+    stream forget the link it already sent. `blocks` is the last thing written
+    to each step block, by `block_id`, so a redraw sends only what moved.
     """
 
     channel_id: str
     ts: str
     title: str = ""
     session: dict[str, Any] | None = None
-    pages: dict[str, dict[str, Any]] = field(default_factory=dict)
+    blocks: dict[str, dict[str, Any]] = field(default_factory=dict)
 
 
 class SlackAdapter(CollaborationAdapter):
@@ -801,9 +803,9 @@ class SlackAdapter(CollaborationAdapter):
         """Send what changed since the last append, and close a finished turn.
 
         Only the header, the session card while it is still owed, and the step
-        pages that actually moved. A page is one `blocks` chunk carrying one
-        `plan`: Slack replaces the block it names and leaves the rest of the
-        message — and whatever the reader has open — alone.
+        blocks that actually moved. Each goes in its own `blocks` chunk: Slack
+        replaces the block it names and leaves the rest of the message — and
+        whatever the reader has open — alone.
 
         One chunk per plan. Slack refuses a `blocks` chunk holding more than a
         single plan block, though any number of such chunks ride in one append
@@ -824,12 +826,15 @@ class SlackAdapter(CollaborationAdapter):
         chunks: list[dict[str, Any]] = []
         if drawn.title != stream.title:
             chunks.append({"type": "plan_update", "title": drawn.title})
-        if self._session_owed(stream.session, drawn.session):
+        owed = self._session_owed(stream.session, drawn.session)
+        if owed:
             chunks.append(drawn.session)
         moved = [
-            page for page in drawn.pages if stream.pages.get(page["block_id"]) != page
+            block
+            for block in drawn.blocks
+            if stream.blocks.get(block["block_id"]) != block
         ]
-        chunks.extend({"type": "blocks", "blocks": [page]} for page in moved)
+        chunks.extend({"type": "blocks", "blocks": [block]} for block in moved)
 
         if chunks:
             try:
@@ -842,9 +847,10 @@ class SlackAdapter(CollaborationAdapter):
                 # retry sends the same chunks rather than assuming they landed.
                 self._stream_failed(error, message_ref, drawn.title)
             stream.title = drawn.title
-            stream.session = drawn.session
-            for page in moved:
-                stream.pages[page["block_id"]] = page
+            if owed:
+                stream.session = drawn.session
+            for block in moved:
+                stream.blocks[block["block_id"]] = block
         if content.turn.status in TURN_ENDED:
             await self._close_stream(client, stream, message_ref)
 

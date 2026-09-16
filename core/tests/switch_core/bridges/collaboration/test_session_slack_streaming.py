@@ -19,8 +19,8 @@ be added to — a card cannot be taken back, and `details` on a `task_update`
 carries the status line and one card that is sent once, and nothing that grows.
 The steps live in ordinary `plan` blocks carried inside the stream, addressed by
 `block_id` and replaced whole, so they can hold a different fifty than they held
-a minute ago. Two of those blocks rotate, and a turn of any length draws the same
-handful of blocks.
+a minute ago. Three of those blocks rotate — a line saying what is no longer
+shown, then the newest two pages — and a turn of any length draws the same four.
 
 What these cover is the adapter's half: that it opens a stream where it can,
 sends only what moved, discloses what it had to leave out, stops at the end of
@@ -29,9 +29,7 @@ the turn, and falls back visibly to an ordinary post everywhere else.
 
 from __future__ import annotations
 
-import json
 import logging
-import re
 from typing import Any
 
 import pytest
@@ -48,7 +46,9 @@ from switch_core.bridges.collaboration.slack.adapter import (
     SlackAdapter,
     SlackConnectionConfig,
 )
+from switch_core.deeplinks import deeplink_for_platform
 from switch_core.sessions.contract import Item, TurnUpsert
+from switch_core.sessions.presentation import session_console_url
 
 from .slack_fakes import FakeResponse, FakeWebClient
 
@@ -109,39 +109,29 @@ def _cards(client: FakeWebClient) -> list[dict[str, Any]]:
     ]
 
 
-def _pages(client: FakeWebClient) -> dict[str, dict[str, Any]]:
-    """The last plan written to each step block, in the order the blocks appeared.
+def _drawn(client: FakeWebClient) -> dict[str, dict[str, Any]]:
+    """The last block written to each block id, in the order the ids appeared.
 
     Slack keeps a block where it was first written, so insertion order here is
     the order a reader sees them down the message.
     """
-    pages: dict[str, dict[str, Any]] = {}
+    drawn: dict[str, dict[str, Any]] = {}
     for call in client.appended:
         for chunk in call["chunks"]:
             if chunk["type"] == "blocks":
                 for block in chunk["blocks"]:
-                    pages[block["block_id"]] = block
-    return pages
+                    drawn[block["block_id"]] = block
+    return drawn
+
+
+def _pages(client: FakeWebClient) -> list[dict[str, Any]]:
+    """The step pages the message is currently showing, oldest first."""
+    return [block for block in _drawn(client).values() if block["type"] == "plan"]
 
 
 def _steps(client: FakeWebClient) -> list[dict[str, Any]]:
     """Every step card the message is currently showing, oldest first."""
-    return [task for page in _pages(client).values() for task in page["tasks"]]
-
-
-def _sized(client: FakeWebClient) -> list[dict[str, Any]]:
-    """The chunks Slack would refuse: over 256 characters serialised.
-
-    `blocks` chunks are not on this budget — a fifty-card page is kilobytes and
-    the live API takes it — so only the header and the session card are measured.
-    """
-    return [
-        chunk
-        for call in client.appended
-        for chunk in call["chunks"]
-        if chunk["type"] in {"plan_update", "task_update"}
-        and len(json.dumps(chunk, separators=(",", ":"))) > 256
-    ]
+    return [task for page in _pages(client) for task in page["tasks"]]
 
 
 # ── Opening ──────────────────────────────────────────────────────────────────
@@ -317,60 +307,38 @@ async def test_a_detail_takes_the_shape_of_the_place_it_is_sent_to() -> None:
     }
 
 
-async def test_no_chunk_exceeds_what_an_append_will_carry() -> None:
-    """Slack measures a chunk serialised and rejects the append over 256
-    characters, taking every other chunk in it down with it.
+@pytest.mark.parametrize("renders_custom_schemes", [True, False])
+async def test_a_real_console_link_arrives_whole(renders_custom_schemes: bool) -> None:
+    """Built by the code that builds it in production, not by hand.
 
-    Only the header and the session card are chunks. A step is a card inside a
-    block, which is not on this budget — which is why its detail survives here
-    where a chunk's would have been spent to keep the title."""
-    client = FakeWebClient()
-    adapter = _adapter(client)
-    tool = _tool("t1", "R" * 400, status="completed", text="D" * 400)
-
-    await adapter.post_rich(CHANNEL, "Agent", TurnActivity([tool], _turn()), THREAD)
-
-    assert _sized(client) == []
-    step = _steps(client)[0]
-    assert step["title"].startswith("RRR")
-    assert step["details"]["elements"][0]["elements"][0]["text"].startswith("DDD")
-
-
-async def test_the_budget_holds_for_text_that_is_not_one_byte_a_character() -> None:
-    """The budget is spent on the serialised form, where an emoji costs twelve
-    characters and not one. Counting characters asks for a cut longer than the
-    text, gives up, and hands Slack a chunk it refuses — with the whole append."""
-    client = FakeWebClient()
-    adapter = _adapter(client)
-    tool = _tool("t1", "\U0001f680" * 200, status="completed", text="✓" * 200)
-
-    await adapter.post_rich(CHANNEL, "Agent", TurnActivity([tool], _turn()), THREAD)
-
-    assert _sized(client) == []
-    header = _chunks(client)[0][0]
-    assert header["type"] == "plan_update"
-    assert "\U0001f680" in header["title"]
-
-
-async def test_a_trim_never_leaves_half_an_escaped_character_on_screen() -> None:
-    """The value being cut has already been escaped, so a blind slice can leave
-    `&am` in front of the reader instead of an `&`.
-
-    The header is the one place this can still happen. It is cut twice — once
-    to its own character budget, then again to fit the chunk — and the second
-    cut is made on text that has already been escaped, because by then the
-    escaping is part of what is being measured.
+    Both forms of the link run past two hundred characters — the raw
+    `switchdash://` one and the gateway redirect Slack gets instead, because
+    Slack will not render a custom scheme. A hand-written short url in a test
+    proves nothing about either. The whole url has to be in the card: a link cut
+    to fit goes somewhere that is not the session, or nowhere at all.
     """
     client = FakeWebClient()
     adapter = _adapter(client)
-    tool = _tool("t1", "&✓" * 200, status="completed")
+    url = deeplink_for_platform(
+        session_console_url(
+            "https://switch.example",
+            "3f2b8c1e-5d47-4a19-9b6e-0c8a21d4f7b3",
+            "6e927fce-ef10-4248-afaa-34f660cd815d",
+            "a91c4d02-7e35-4f68-b2a1-8d5c93e07f4a",
+        ),
+        "https://switch.example/gateway",
+        renders_custom_schemes,
+    )
+    assert url is not None and len(url) > 150
 
-    await adapter.post_rich(CHANNEL, "Agent", TurnActivity([tool], _turn()), THREAD)
+    await adapter.post_rich(
+        CHANNEL,
+        "Agent",
+        TurnActivity([_tool("t1", "Read")], _turn(), session_url=url),
+        THREAD,
+    )
 
-    title = _chunks(client)[0][0]["title"]
-    assert title.endswith("…")
-    assert "&amp;" in title
-    assert not re.search(r"&(?!amp;|lt;|gt;)", title)
+    assert _cards(client)[0]["details"] == f"<{url}|Open in Console app>"
 
 
 async def test_the_console_link_goes_out_once() -> None:
@@ -424,14 +392,47 @@ async def test_a_link_that_only_turns_up_later_is_still_sent() -> None:
     ]
 
 
+async def test_a_redraw_without_the_link_does_not_make_the_stream_forget_it() -> None:
+    """What the stream remembers is what Slack was sent, not what was last drawn.
+
+    A publish can arrive without the session url — the clock ticks on whatever
+    the caller happens to hold. Remembering that empty card as though it had
+    been sent loses the fact that the link already went out, and the next
+    publish appends the same link to a card that is already carrying it.
+    """
+    client = FakeWebClient()
+    adapter = _adapter(client)
+    tool = _tool("t1", "Read")
+    url = "https://switch.example/session"
+
+    ref = await adapter.post_rich(
+        CHANNEL, "Agent", TurnActivity([tool], _turn(), 1.0, session_url=url), THREAD
+    )
+    await adapter.update_rich(
+        CHANNEL, "Agent", ref, TurnActivity([tool], _turn(), 9.0), THREAD
+    )
+    await adapter.update_rich(
+        CHANNEL,
+        "Agent",
+        ref,
+        TurnActivity([tool], _turn(), 14.0, session_url=url),
+        THREAD,
+    )
+
+    assert [card["details"] for card in _cards(client)] == [
+        f"<{url}|Open in Console app>"
+    ]
+
+
 # ── Paging ───────────────────────────────────────────────────────────────────
 
 
-async def test_a_turn_of_any_length_draws_the_same_two_step_blocks() -> None:
+async def test_a_turn_of_any_length_draws_the_same_three_step_blocks() -> None:
     """Slack keeps a block where it was first written and has no call that
     removes one, so a block per fifty steps would grow the message without
-    bound. Rotating the newest two pages through a fixed pair of ids keeps both
-    the length and the order of the message fixed however long the turn runs.
+    bound. Rotating a disclosure line and the newest two pages through a fixed
+    three ids keeps both the length and the order of the message fixed however
+    long the turn runs.
     """
     client = FakeWebClient()
     adapter = _adapter(client)
@@ -449,13 +450,42 @@ async def test_a_turn_of_any_length_draws_the_same_two_step_blocks() -> None:
             THREAD,
         )
 
-    pages = _pages(client)
-    assert len(pages) == 2
-    older, newer = pages.values()
-    assert older["title"] == "Steps 151–200 · 150 earlier not shown"
+    gone, older, newer = _drawn(client).values()
+    assert gone["elements"][0]["text"] == "_Steps 1–150 no longer shown_"
+    assert older["title"] == "Steps 151–200"
     assert [task["title"] for task in older["tasks"]][:1] == ["Tool 150"]
     assert newer["title"] == "Steps 201–240"
     assert [task["title"] for task in newer["tasks"]][-1:] == ["Tool 239"]
+
+
+async def test_what_is_no_longer_shown_is_one_line_above_the_steps() -> None:
+    """One cumulative line naming the whole missing range, not a count tucked
+    into the title of a section.
+
+    It is above the steps because it has to be created before them: Slack fixes
+    a block where it was first written, so a line added later would describe the
+    pages from underneath them. That is why the top block starts as the first
+    page of steps and is replaced in place — same id, same position — by the
+    line once there is something to disclose.
+    """
+    client = FakeWebClient()
+    adapter = _adapter(client)
+    many = [_tool(f"t{n}", f"Tool {n}", status="completed") for n in range(101)]
+
+    ref = await adapter.post_rich(
+        CHANNEL, "Agent", TurnActivity(many[:100], _turn(), 1.0), THREAD
+    )
+    before = list(_drawn(client).values())
+    await adapter.update_rich(
+        CHANNEL, "Agent", ref, TurnActivity(many, _turn(), 9.0), THREAD
+    )
+
+    assert [block["title"] for block in before] == ["Steps 1–50", "Steps 51–100"]
+    after = list(_drawn(client).values())
+    assert [block["type"] for block in after] == ["context", "plan", "plan"]
+    assert after[0]["block_id"] == before[0]["block_id"]
+    assert after[0]["elements"][0]["text"] == "_Steps 1–50 no longer shown_"
+    assert [block["title"] for block in after[1:]] == ["Steps 51–100", "Steps 101–101"]
 
 
 async def test_a_step_never_moves_between_pages_once_it_has_landed() -> None:
@@ -476,7 +506,7 @@ async def test_a_step_never_moves_between_pages_once_it_has_landed() -> None:
 
     moved = [c for c in _chunks(client)[1] if c["type"] == "blocks"]
     assert [chunk["blocks"][0]["title"] for chunk in moved] == ["Steps 51–52"]
-    older, newer = _pages(client).values()
+    older, newer = _pages(client)
     assert [task["title"] for task in older["tasks"]][:1] == ["Tool 0"]
     assert [task["title"] for task in newer["tasks"]] == ["Tool 50", "Tool 51"]
 
