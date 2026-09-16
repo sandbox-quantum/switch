@@ -2,8 +2,9 @@
 
 An answered card has nothing left to ask, whichever way it was answered, and
 on a platform that can prove it took the message back it is removed rather
-than left as a settled notice. What stays is a card nobody has decided:
-unanswered, still being submitted, or ended without an answer at all.
+than left as a settled notice. What stays is a card nobody has answered:
+unanswered, still being submitted, ended without an answer at all, or
+cancelled — which stops the operation rather than deciding it.
 
 The row outlives the card, because it is what a handle typed into the channel
 still resolves to, and because without it a restarted publisher would read the

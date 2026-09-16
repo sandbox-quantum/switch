@@ -466,15 +466,23 @@ def parse_command(payload: Any) -> Command:
     return Command.model_validate(payload)
 
 
+# The decisions that answer the question a permission card asks: yes for this
+# turn, yes for the session, and no. `cancel` is left out — it stops the
+# operation rather than deciding it, and its card is the channel's only record
+# that a run was halted where it was. Named once so that a fifth value added to
+# `ApprovalOption.decision` has to be considered here.
+DECISIONS = frozenset({"accept", "acceptForSession", "decline"})
+
+
 def decided(request: SnapshotRequest) -> bool:
-    """Whether the host confirmed which option a person chose on this card.
+    """Whether the host confirmed that a person answered this card.
 
     Not "has it finished". `answered` is equally the outcome of a request that
     ended without anyone reading it, and `resolved` equally its state; what
-    this asks is narrower, and deliberately says nothing about *which* way the
-    answer went. Both directions end the card's usefulness — the decision is
-    in the session, in Console and in the row, not in a message still offering
-    buttons that no longer do anything.
+    this asks is narrower. It deliberately does not ask which *way* the answer
+    went: a yes and a no both end the card's usefulness, because the decision
+    is in the session, in Console and in the row, not in a message still
+    offering buttons that no longer do anything.
 
     Reaching that fact means matching the result back to the options the
     request was asked with, and everything short of the match is read as
@@ -495,4 +503,7 @@ def decided(request: SnapshotRequest) -> bool:
         content, ApprovalContent
     ):
         return False
-    return any(option.option_id == answer.option_id for option in content.options)
+    return any(
+        option.option_id == answer.option_id and option.decision in DECISIONS
+        for option in content.options
+    )

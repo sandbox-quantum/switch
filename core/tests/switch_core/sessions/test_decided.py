@@ -8,7 +8,8 @@ ways a settled request can look answered without one having been given.
 
 Which way the answer went is deliberately not asked. A refusal ends the card's
 usefulness exactly as a grant does, and the decision itself lives in the
-session, in Console and in the row that outlives the card.
+session, in Console and in the row that outlives the card. Cancelling is the
+one option that is not an answer to the question, and it keeps its card.
 """
 
 from __future__ import annotations
@@ -71,12 +72,20 @@ def _answered(option_id: str) -> SnapshotRequest:
     )
 
 
-@pytest.mark.parametrize("option_id", ["once", "session", "no", "stop"])
-def test_every_option_a_person_can_press_is_a_decision(option_id: str) -> None:
-    """Yes for this turn, yes for the session, no, and stop. Each is somebody
+@pytest.mark.parametrize("option_id", ["once", "session", "no"])
+def test_a_yes_and_a_no_both_answer_the_card(option_id: str) -> None:
+    """Yes for this turn, yes for the session, and no. Each is somebody
     answering the question the card asked, and the card has no further use
-    after any of them."""
+    after any of them — the decision itself is kept elsewhere."""
     assert decided(_answered(option_id)) is True
+
+
+def test_cancelling_the_operation_is_not_answering_the_card() -> None:
+    """The fourth option is not a fourth answer. `cancel` stops what was being
+    asked about rather than permitting or refusing it, and its card is the
+    only thing in the channel that says where the run was halted. Widening the
+    rule to cover it is a product decision, not a reading of this one."""
+    assert decided(_answered("stop")) is False
 
 
 def test_an_option_the_request_never_offered_decides_nothing() -> None:
