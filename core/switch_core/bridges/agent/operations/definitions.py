@@ -30,7 +30,8 @@ from switch_core.bridges.agent.protocol.connections import (
 from switch_core.bridges.agent.protocol.instructions import build_room_instructions
 from switch_core.bridges.agent.protocol.service import ProtocolService
 from switch_core.bridges.agent.protocol.types import IntegrationProfile
-from switch_core.db.models import CollaborationBridge
+from switch_core.db.models import CollaborationBridge, User
+from switch_core.rooms_yaml import GroupSpec, RoomYamlService
 
 logger = logging.getLogger(__name__)
 
@@ -1550,6 +1551,87 @@ async def get_room_group_detail(group_id: str) -> dict[str, Any]:
     agent_id = get_agent_id()
     protocol = get_protocol()
     return await protocol.get_room_group_detail(agent_id, group_id)
+
+
+@operation
+async def create_room_from_yaml(
+    yaml: str,
+    inputs: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Provision a room, or a group of rooms, from a YAML template.
+
+    The agent-side mirror of the gateway's ``POST /rooms/from-yaml``: the
+    document is parsed, its ``params:`` resolved from ``inputs``, and the
+    result provisioned as the calling agent's owner (an ownerless agent
+    cannot provision rooms). Server-provided ``{$creator}`` names the owner.
+
+    Args:
+        yaml: The template text. A top-level ``room:`` makes one room; a
+            ``group:`` with a ``rooms:`` list (and optional ``links:``) makes
+            a room group. Either may declare ``params:`` with defaults and
+            descriptions; placeholders are filled in before provisioning.
+        inputs: Values for declared params. A required param with no default
+            must be supplied here, or provisioning fails naming it.
+
+    Returns:
+        For a room: ``{room_id, room_name, attached_reference_ids,
+        created_reference_ids, created_document_ids, role_names,
+        failed_attachments}``. For a group: ``{group_id, group_name,
+        rooms: [...], errors: [...]}``.
+    """
+    agent_id = get_agent_id()
+    protocol = get_protocol()
+
+    async with protocol.session_factory() as session:
+        agent = await protocol.agent_store.get(session, agent_id)
+        if agent is None:
+            raise ValueError(f"Unknown agent: {agent_id}")
+        if agent.owner_id is None:
+            raise ValueError(
+                f"Agent {agent_id} has no owner and cannot provision rooms"
+            )
+        owner = await session.get(User, agent.owner_id)
+        if owner is None:
+            raise ValueError(
+                f"Agent {agent_id} has no owner and cannot provision rooms"
+            )
+        owner_id = owner.id
+        owner_name = owner.name
+        owner_email = owner.email
+        owner_is_admin = owner.role == "admin"
+
+    rooms_yaml = RoomYamlService(
+        room_service=protocol.room_service,
+        resource_service=protocol.resource_service,
+        room_store=protocol.room_store,
+        agent_store=protocol.agent_store,
+        bridge_store=protocol.bridge_store,
+        external_user_store=protocol.external_user_store,
+        room_role_store=protocol.room_role_store,
+        session_factory=protocol.session_factory,
+        room_group_store=protocol.room_group_store,
+    )
+    builtins = await rooms_yaml.builtins_for(
+        user_id=owner_id, name=owner_name, email=owner_email, text=yaml
+    )
+    parsed = rooms_yaml.parse_template(yaml, inputs=inputs, builtins=builtins)
+    await rooms_yaml.check_entity_params(parsed)
+    if isinstance(parsed.spec, GroupSpec):
+        group_result = await rooms_yaml.provision_group(
+            parsed.spec,
+            user_id=owner_id,
+            is_admin=owner_is_admin,
+            creator_name=builtins["$creator"],
+        )
+        return group_result.model_dump()
+    result = await rooms_yaml.provision(
+        parsed.spec,
+        kickoff=parsed.kickoff,
+        user_id=owner_id,
+        is_admin=owner_is_admin,
+        creator_name=builtins["$creator"],
+    )
+    return result.model_dump()
 
 
 @operation

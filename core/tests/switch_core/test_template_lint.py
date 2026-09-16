@@ -450,3 +450,14 @@ class TestItNeverBlocksAnUpload:
         result = lint_template("a: [unclosed\n")
         assert not result.ok
         assert isinstance(result.errors, list)
+
+
+def test_group_and_agents_keys_are_known():
+    result = lint_template(
+        "params:\n  team:\n    type: string\n"
+        "agents:\n  - name: '{team}-triager'\n"
+        "group:\n  name: '{team}'\nrooms:\n  - name: '{team} lobby'\n"
+        "    description: d\nlinks: []\n"
+    )
+    assert result.errors == []
+    assert [f.code for f in result.warnings] == []

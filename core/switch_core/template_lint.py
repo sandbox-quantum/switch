@@ -33,7 +33,17 @@ from switch_core.rooms_yaml import PLACEHOLDER_RE, ParamSpec
 # Additive on purpose, and only ever a warning: an unrecognised key is as
 # likely to be a format this server predates as it is to be a typo.
 _KNOWN_TOP_LEVEL = frozenset(
-    {"room", "group", "rooms", "params", "version", "kickoff", "agent"}
+    {
+        "room",
+        "group",
+        "rooms",
+        "links",
+        "params",
+        "version",
+        "kickoff",
+        "agent",
+        "agents",
+    }
 )
 
 # `{$...}` placeholders the server fills in itself. A template does not declare
