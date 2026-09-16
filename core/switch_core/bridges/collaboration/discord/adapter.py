@@ -21,6 +21,7 @@ from switch_core.bridges.agent.commands import Command as InRoomCommand
 from switch_core.bridges.collaboration.adapter import (
     ActivityMark,
     ActivityMarkRefused,
+    ActivitySnapshot,
     CollaborationAdapter,
     RemovalFailed,
     RequestCard,
@@ -59,6 +60,7 @@ from switch_core.bridges.collaboration.session.renderers import (
     position_action,
 )
 from switch_core.bridges.collaboration.session.renderers.neutral import (
+    activity_log,
     render_request,
     turn_status,
 )
@@ -133,8 +135,78 @@ _PRESS_NOTICE: ContextVar[list[str] | None] = ContextVar(
 )
 
 
+# The two buttons that are about a turn rather than about a card, and the one
+# thing each of them has to say to be recognised on the way back.
+#
+# Neither carries an identifier that has to be known before the message exists.
+# `View activity` sits on the status message and says only what kind of press
+# it is: which turn it is about is the message it arrived on, which Discord
+# fills in and a client cannot write. `Refresh` sits on a private copy that no
+# journal has a row for, so it carries the address of the public message it was
+# opened from — a locator, resolved and re-authorised from scratch on every
+# press, never taken as evidence of anything.
+_ACTIVITY_PREFIX = "swact"
+_ACTIVITY_VIEW_ID = f"{_ACTIVITY_PREFIX}:v"
+_ACTIVITY_REFRESH_ID = f"{_ACTIVITY_PREFIX}:r"
+_ACTIVITY_LABEL = "View activity"
+_REFRESH_LABEL = "Refresh"
+_CONSOLE_LABEL = "Open in Switch Console"
+
+# What a reader is told when the press cannot be answered, privately and in
+# place of the log. Said rather than left silent: a button that does nothing
+# reads as Discord having dropped the press.
+_ACTIVITY_GONE = (
+    "There is no activity behind this message any more. It may belong to a "
+    "session that has since been removed."
+)
+_ACTIVITY_UNREADABLE = (
+    "You can no longer read the conversation this turn was published into, so "
+    "its activity is not shown."
+)
+_ACTIVITY_FAILED = (
+    "Switch could not read this turn's activity just now. Try again, or open "
+    "the session in Switch Console."
+)
+
+
 def _custom_id(token: str, position: int) -> str:
     return f"{_CUSTOM_ID_PREFIX}:{token}:{position}"
+
+
+def _refresh_id(ref: str) -> str:
+    return f"{_ACTIVITY_REFRESH_ID}:{ref}"
+
+
+def _parse_refresh_id(custom_id: str) -> str | None:
+    """The public status message a refresh is about, or None if it is not one.
+
+    Read as strictly as `_parse_custom_id`, and trusted no further: what comes
+    back is an address, and every check the first view passed is made again
+    against it. A reference to a message showing nothing, or to one this reader
+    may not read, answers exactly as it would have on the way in.
+    """
+    parts = custom_id.split(":", 2)
+    if len(parts) != 3:
+        return None
+    prefix, kind, ref = parts
+    if prefix != _ACTIVITY_PREFIX or kind != "r" or not ref:
+        return None
+    return ref
+
+
+def _conversation_in(ref: str) -> int | None:
+    """The channel or thread half of a `<location>:<message>` address.
+
+    Which conversation a reference names, rather than which message in it: the
+    message is the journal's business, and where it is showing is what decides
+    whether the reader in front of us is entitled to any of it. Refuses
+    anything that is not a pair of Discord ids, because this one is read off a
+    press rather than out of our own records.
+    """
+    location, _, message = ref.partition(":")
+    if not location.isdigit() or not message.isdigit():
+        return None
+    return int(location)
 
 
 def _parse_custom_id(custom_id: str) -> tuple[str, int] | None:
@@ -1023,7 +1095,7 @@ class DiscordAdapter(CollaborationAdapter):
             prefix=prefix,
             controls=bool(offered),
         )
-        return drawn.text, self._controls(content, drawn, offered)
+        return drawn.text, self._controls(content, drawn, offered, controls=controls)
 
     def _offered(self, content: RichContent) -> list[Control]:
         """The options this card would put on buttons, before it is drawn.
@@ -1050,7 +1122,12 @@ class DiscordAdapter(CollaborationAdapter):
         return offered
 
     def _controls(
-        self, content: RichContent, drawn: Drawn, offered: list[Control]
+        self,
+        content: RichContent,
+        drawn: Drawn,
+        offered: list[Control],
+        *,
+        controls: bool,
     ) -> discord.ui.View | None:
         """The card's options as buttons, or nothing where a press cannot land.
 
@@ -1079,6 +1156,8 @@ class DiscordAdapter(CollaborationAdapter):
         a restart — and an unstopped view is filed in the client's view store
         for the life of the process, one per card ever posted.
         """
+        if isinstance(content, TurnActivity):
+            return self._activity_control(content) if controls else None
         if not isinstance(content, RequestCard) or not offered or not drawn.answerable:
             return None
         view = discord.ui.View(timeout=None)
@@ -1098,6 +1177,38 @@ class DiscordAdapter(CollaborationAdapter):
                     style=discord.ButtonStyle.secondary,
                 )
             )
+        view.stop()
+        return view
+
+    def _activity_control(self, content: TurnActivity) -> discord.ui.View | None:
+        """The way into a turn's tool log, on the status message that hides it.
+
+        Discord's status is three lines: where the turn got to, what it is
+        doing, and how the calls went. Slack posts the calls themselves into
+        the channel beside it; here they are a press away and private to
+        whoever presses, which is a placement decision rather than an access
+        one — the same list, read by one person instead of by a channel.
+
+        Offered only where this bridge can actually answer it. A publisher is
+        what knows which turn a message is showing, and an adapter running
+        without one — a demo, a test, a bridge whose sessions are not
+        published — would be drawing a button onto a question nobody can
+        resolve.
+
+        Nothing is offered beside the attention slot: that message is one
+        sentence saying somebody has to act, and a control under it about tool
+        calls is an invitation away from the thing it is asking for.
+        """
+        if self._resolve_activity is None or content.error_summary:
+            return None
+        view = discord.ui.View(timeout=None)
+        view.add_item(
+            discord.ui.Button(
+                label=_ACTIVITY_LABEL,
+                custom_id=_ACTIVITY_VIEW_ID,
+                style=discord.ButtonStyle.secondary,
+            )
+        )
         view.stop()
         return view
 
@@ -2438,7 +2549,11 @@ class DiscordAdapter(CollaborationAdapter):
         if interaction.guild_id is not None and interaction.guild_id != self._guild_id:
             return
         data: dict[str, Any] = dict(interaction.data or {})
-        press = _parse_custom_id(str(data.get("custom_id") or ""))
+        custom_id = str(data.get("custom_id") or "")
+        if custom_id.split(":", 1)[0] == _ACTIVITY_PREFIX:
+            await self._handle_activity(interaction, custom_id)
+            return
+        press = _parse_custom_id(custom_id)
         if press is None:
             return
         channel = interaction.channel
@@ -2501,6 +2616,224 @@ class DiscordAdapter(CollaborationAdapter):
             _PRESS_NOTICE.reset(held)
         if notices:
             await self._tell_presser(interaction, notices[0])
+
+    async def _handle_activity(
+        self, interaction: discord.Interaction, custom_id: str
+    ) -> None:
+        """Show one reader the tool calls behind a turn's status message.
+
+        Two presses arrive here and they are answered differently. The one on
+        the public status opens a private message that did not exist a moment
+        ago, so it defers a new response; the one on that private message
+        rewrites it, so it defers the update to the message it is on. Both
+        acknowledge before any read, because Discord allows three seconds and
+        neither the journal nor the permission check is bounded by them.
+
+        A refresh is refused unless the message it arrived on is itself
+        private. That is the guard that matters here: an update answers
+        whatever message the component was attached to, so a press carrying
+        this id from anywhere else would rewrite a channel's status message
+        into its tool log. Read off the message Discord names rather than off
+        the id, which is the half a client could have chosen.
+        """
+        channel = interaction.channel
+        message = interaction.message
+        if channel is None or message is None:
+            return
+        refreshing = custom_id != _ACTIVITY_VIEW_ID
+        if refreshing:
+            ref = _parse_refresh_id(custom_id)
+            if ref is None:
+                return
+            if not message.flags.ephemeral:
+                logger.warning(
+                    "Refusing a refresh of a Switch activity view that arrived "
+                    "on public message %s in channel %s: an update would "
+                    "rewrite that message.",
+                    message.id,
+                    channel.id,
+                )
+                return
+        else:
+            ref = f"{channel.id}:{message.id}"
+
+        try:
+            if refreshing:
+                await interaction.response.defer()
+            else:
+                await interaction.response.defer(ephemeral=True, thinking=True)
+        except discord.HTTPException:
+            logger.exception(
+                "Discord would not accept the acknowledgement of a press for "
+                "activity in channel %s, so nothing is shown: a press that is "
+                "not acknowledged in time is one the presser is told failed.",
+                channel.id,
+            )
+            return
+        await self._show_activity(interaction, ref)
+
+    async def _show_activity(self, interaction: discord.Interaction, ref: str) -> None:
+        """Read the turn behind `ref` and put it in front of this reader alone.
+
+        The reader is authorised against the conversation `ref` names, never
+        against the one the press arrived from. Only the initial view has those
+        two the same; a refresh carries an address, and an address the presser
+        supplied is authorised as though it had been typed — otherwise a
+        reference to a private thread, pressed from a public one beside it,
+        would be read with the public thread's permissions.
+
+        Made again on every press, not once. A private message stays on the
+        screen after the reader has lost the conversation it came from, and a
+        refresh is a fresh read rather than the continuation of an older one.
+
+        Everything that can go wrong is said rather than left silent. A button
+        that answers with nothing reads as Discord having dropped the press,
+        and the reader would go on pressing it.
+        """
+        resolve = self._resolve_activity
+        location_id = _conversation_in(ref)
+        if resolve is None or location_id is None:
+            await self._privately(interaction, _ACTIVITY_GONE, ref)
+            return
+        try:
+            location = await self._get_channel(location_id)
+        except (discord.HTTPException, RuntimeError):
+            logger.warning(
+                "Discord would not say what channel %s is, so the activity "
+                "behind message %s is not shown.",
+                location_id,
+                ref,
+            )
+            await self._privately(interaction, _ACTIVITY_GONE, ref)
+            return
+        if not await self._still_reads(location, interaction.user):
+            await self._privately(interaction, _ACTIVITY_UNREADABLE, ref)
+            return
+        parent_id = getattr(location, "parent_id", None)
+        channel_id = str(parent_id if parent_id is not None else location.id)
+        try:
+            snapshot = await resolve(channel_id, ref)
+        except Exception:
+            logger.exception(
+                "Reading the activity behind message %s in Discord channel %s "
+                "failed, so the reader is told rather than left waiting.",
+                ref,
+                channel_id,
+            )
+            await self._privately(interaction, _ACTIVITY_FAILED, ref)
+            return
+        if snapshot is None:
+            await self._privately(interaction, _ACTIVITY_GONE, ref)
+            return
+        await self._privately(
+            interaction,
+            self._activity_text(snapshot),
+            ref,
+            session_url=snapshot.session_url,
+        )
+
+    def _activity_text(self, snapshot: ActivitySnapshot) -> str:
+        """The tool log, and when it was read.
+
+        The time is Discord's own relative stamp, which the client rewrites as
+        it ages: a view left open says "20 minutes ago" without anything here
+        having to refresh it, so a reader can tell a stale snapshot from a
+        current one before deciding whether to press.
+        """
+        stamp = f"Read <t:{int(snapshot.read_at.timestamp())}:R>"
+        body = activity_log(
+            snapshot.items,
+            snapshot.turn,
+            escape=self._rich_escape,
+            limit=max(1, MAX_MESSAGE - len(stamp) - 1),
+            markup=self.rich_markup(),
+            elapsed_seconds=snapshot.elapsed_seconds,
+            session_url=None,
+        )
+        return f"{body}\n{stamp}"
+
+    async def _privately(
+        self,
+        interaction: discord.Interaction,
+        text: str,
+        ref: str,
+        *,
+        session_url: str | None = None,
+    ) -> None:
+        """Answer the press in the private message it has already deferred.
+
+        `edit_original_response` rather than a follow-up, for both kinds of
+        press: after the initial view's deferral the original response is the
+        empty private message Discord is already showing, and after a
+        refresh's it is the private message the button sits on. A follow-up
+        would leave the first standing and stack a second copy under it.
+        """
+        view = discord.ui.View(timeout=None)
+        view.add_item(
+            discord.ui.Button(
+                label=_REFRESH_LABEL,
+                custom_id=_refresh_id(ref),
+                style=discord.ButtonStyle.secondary,
+            )
+        )
+        if session_url and session_url.startswith(("https://", "http://")):
+            view.add_item(
+                discord.ui.Button(label=_CONSOLE_LABEL, url=session_url),
+            )
+        view.stop()
+        try:
+            await interaction.edit_original_response(content=text, view=view)
+        except discord.HTTPException as error:
+            logger.warning(
+                "Discord would not carry the activity view for message %s (%s).",
+                ref,
+                error,
+            )
+
+    async def _still_reads(self, channel: Any, user: Any) -> bool:
+        """Whether this reader can still read the conversation a turn is in.
+
+        A direct message is the reader's own channel and there is nobody else
+        in it to ask about. A private thread is the case a channel's
+        permissions cannot answer on their own: everyone who can see the
+        parent passes that check, and only membership of the thread says who
+        is actually in it.
+
+        Refused where the answer cannot be established. A destination this
+        cannot ask about is one nothing here can say a reader may see, and the
+        reader is told that rather than shown the log on the strength of not
+        having been able to check.
+        """
+        guild = getattr(channel, "guild", None)
+        if guild is None:
+            return True
+        permissions_for = getattr(channel, "permissions_for", None)
+        if permissions_for is None:
+            logger.warning(
+                "Cannot establish who may read Discord channel %s, so an "
+                "activity view of it is refused.",
+                getattr(channel, "id", "?"),
+            )
+            return False
+        member = guild.get_member(user.id)
+        if member is None:
+            try:
+                member = await guild.fetch_member(user.id)
+            except discord.HTTPException:
+                return False
+        allowed = permissions_for(member)
+        if not (allowed.view_channel and allowed.read_message_history):
+            return False
+        is_private = getattr(channel, "is_private", None)
+        if is_private is None or not is_private():
+            return True
+        if allowed.manage_threads:
+            return True
+        try:
+            await channel.fetch_member(user.id)
+        except discord.HTTPException:
+            return False
+        return True
 
     async def _tell_presser(
         self, interaction: discord.Interaction, notice: str

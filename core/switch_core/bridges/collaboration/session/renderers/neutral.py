@@ -7,7 +7,7 @@ smaller version of those. This is what a platform gets when the message body
 looking at a paragraph rather than at a card, and for a writer who has one
 message to say everything in.
 
-Three renderings live here:
+Four renderings live here:
 
 - `turn_summary` — the oldest and the least: the last thing the agent said and
   whether the turn is still going. What a platform falls back to with no
@@ -16,6 +16,10 @@ Three renderings live here:
   where the turn got to, how long it has been going, what it is doing now, how
   the tool calls went, and one link to the Console. One message, edited, never
   a second one.
+- `activity_log` — the calls behind that status, one to a line. Not part of the
+  status and not posted beside it: what a platform draws where it has somewhere
+  to put a list, which on Discord is a message only the reader who asked for it
+  can see.
 - `request_summary` — the text form of a request, in every state it can be in,
   with the typed-answer grammar the card is asking for spelled out against
   this particular form.
@@ -94,6 +98,19 @@ _OUTCOME = {
     "failed": "✗",
     "declined": "⊘",
 }
+
+# How much of one call's name and result the log prints. The same two ceilings
+# `slack.py` uses, so the same call does not read as a different length
+# depending on which platform showed it. How many lines there is room for is
+# left to the message budget, which is the only real bound on a platform whose
+# log is body text.
+_LOG_TITLE = 200
+_LOG_DETAIL = 120
+
+_LOG_UNTITLED = "(untitled)"
+_LOG_EMPTY = "No tool calls."
+_LOG_EMPTY_YET = "No tool calls yet."
+_LOG_CUT = "…{left} earlier in this turn, not shown."
 
 _OUTCOME_WORDS = {
     "in-progress": "running",
@@ -309,6 +326,71 @@ def _doing(
     if tally:
         lines.append(tally)
     return lines
+
+
+def activity_log(
+    items: list[Item],
+    turn: TurnUpsert,
+    *,
+    escape: Callable[[str], str],
+    limit: int,
+    markup: Markup,
+    elapsed_seconds: float | None,
+    session_url: str | None,
+) -> str:
+    """The tool calls behind a turn, one to a line, oldest cut first.
+
+    `turn_status` is the line that sits beside a running turn and says what it
+    is doing. This is the list behind that line and says what it did. Slack
+    already posts the same list into the conversation as a message of its own,
+    so a platform drawing it somewhere narrower is deciding where it is read,
+    not what is in it.
+
+    The cut is at the front because the newest end is what a reader came for,
+    and it says how many it took: a log that quietly showed its tail reads as
+    a turn that only made those calls.
+    """
+    head = markup.bold(
+        turn_state(items, turn, tool_detail=True, elapsed_seconds=elapsed_seconds)
+    )
+    link = _link(_CONSOLE, session_url, markup)
+    if link and len(head) + 3 + len(link) <= limit:
+        head = f"{head} · {link}"
+
+    did = [item for item in items if item.kind == "tool-activity"]
+    if not did:
+        nothing = _LOG_EMPTY if turn.status in TURN_ENDED else _LOG_EMPTY_YET
+        return _truncate(f"{head}\n{nothing}", limit)
+
+    head = _truncate(head, limit)
+    spent = len(head)
+    lines: list[str] = []
+    omitted = 0
+    for position, item in enumerate(reversed(did), start=1):
+        title = (
+            _fit(item.title, _LOG_TITLE, escape=escape) if item.title else _LOG_UNTITLED
+        )
+        line = f"{_OUTCOME[item.status]} {title}"
+        if item.text:
+            line += f" — {_fit(item.text, _LOG_DETAIL, escape=escape)}"
+        if spent + len(line) + 1 > limit:
+            omitted = len(did) - position + 1
+            break
+        lines.append(line)
+        spent += len(line) + 1
+    if omitted:
+        # The note is paid for out of the calls, not out of what is left over:
+        # a log that ran out of room for the line saying so is a log claiming
+        # the turn made only the calls it had room to print.
+        note = _LOG_CUT.format(left=omitted)
+        while lines and spent + len(note) + 1 > limit:
+            spent -= len(lines.pop()) + 1
+            omitted += 1
+            note = _LOG_CUT.format(left=omitted)
+        if spent + len(note) + 1 <= limit:
+            lines.append(note)
+    lines.reverse()
+    return "\n".join([head, *lines])
 
 
 def request_summary(

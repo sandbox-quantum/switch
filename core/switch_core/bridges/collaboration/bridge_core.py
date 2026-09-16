@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from switch_core.aliases import AliasError, validate_alias_format
 from switch_core.attachments import parse_attachment_group
 from switch_core.bridges.collaboration.adapter import (
+    ActivitySnapshot,
     AgentPresentation,
     CollaborationAdapter,
 )
@@ -358,6 +359,8 @@ class BridgeCore:
             self._adapter.set_interaction_handler(
                 self._traced(self._handle_inbound_interaction)
             )
+        if self._session_publisher is not None:
+            self._adapter.set_activity_resolver(self._activity_shown_at)
         await self._adapter.start(
             on_message=self._traced(self._handle_inbound_message),
             on_command=self._traced(self._handle_inbound_command),
@@ -1306,6 +1309,30 @@ class BridgeCore:
         # were split once, and the half that went through the channel put one
         # person's rejected approval in front of everybody in it.
         await self._submit_session_command(outcome, interaction, thread_ref=None)
+
+    async def _activity_shown_at(
+        self, channel_id: str, ref: str
+    ) -> ActivitySnapshot | None:
+        """What turn a message of ours is showing, for an adapter that is asked.
+
+        Tenant-bound here for the same reason every inbound path is bound in
+        `_traced`: the platform calls this from wherever its own event loop
+        happens to be, and nothing about a Discord press says which tenant its
+        channel belongs to. A channel with no room is not one this bridge has
+        published a turn into, so the read is scoped to the bridge's own
+        tenant and finds nothing, rather than guessing at another's.
+        """
+        publisher = self._session_publisher
+        if publisher is None:
+            return None
+        room_ids = self._channel_to_room.get(channel_id)
+        tenant_id = (
+            self._bridge_tenant_id
+            if room_ids is None
+            else await self._room_tenant(room_ids[0])
+        )
+        with tenant_scope(tenant_id):
+            return await publisher.activity_shown_at(channel_id, ref)
 
     async def _handle_text_answer(self, msg: InboundMessage) -> None:
         """The same answer, typed rather than pressed.

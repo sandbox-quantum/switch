@@ -106,6 +106,25 @@ class TurnActivity:
 
 
 @dataclass(frozen=True)
+class ActivitySnapshot:
+    """The same turn as `TurnActivity`, read back because a reader asked.
+
+    `TurnActivity` is pushed at an adapter when a turn changes; this is pulled
+    by one because somebody operated a control on the message a turn is being
+    shown in, and wants what is behind it. What that reader is shown must
+    therefore say when it was read: a view opened ten minutes ago and never
+    refreshed is not wrong, but it is not current either, and it has no way of
+    knowing that unless it is told.
+    """
+
+    items: list[Item]
+    turn: TurnUpsert
+    elapsed_seconds: float | None
+    session_url: str | None
+    read_at: datetime
+
+
+@dataclass(frozen=True)
 class RequestCard:
     """A request and how a platform refers back to it, as `post_rich` /
     `update_rich` draw it. See `TurnActivity` for why the contract type
@@ -387,6 +406,14 @@ class CollaborationAdapter(ABC):
         self._on_interaction: Callable[[InboundInteraction], Awaitable[None]] | None = (
             None
         )
+        # Set by set_activity_resolver. Asked what turn is being shown in the
+        # message at (channel, reference), for a platform that offers a reader
+        # the activity behind a status rather than printing it. None is the
+        # answer for a message this bridge is not showing a turn in, which
+        # includes every message once the session or the bridge is gone.
+        self._resolve_activity: (
+            Callable[[str, str], Awaitable[ActivitySnapshot | None]] | None
+        ) = None
         # Set by set_channel_migration_handler. Called with (old_id, new_id)
         # when the platform reissues a channel's id.
         self._on_channel_migrated: Callable[[str, str], Awaitable[None]] | None = None
@@ -1168,6 +1195,18 @@ class CollaborationAdapter(ABC):
         platforms with interactive message controls ever call it, and an adapter
         that never does needs no change to go on working."""
         self._on_interaction = handler
+
+    def set_activity_resolver(
+        self, resolver: Callable[[str, str], Awaitable[ActivitySnapshot | None]]
+    ) -> None:
+        """Install the read-back for the turn behind a status message.
+
+        Separate from the interaction handler because the two answer different
+        questions. That one carries an answer inwards and is told nothing
+        back; this one is a read, made because somebody is waiting on the
+        platform for what it returns, and the platform is holding an
+        acknowledgement open until it does."""
+        self._resolve_activity = resolver
 
     async def is_first_reply(
         self, channel_id: str, root_ref: str, message_ref: str
