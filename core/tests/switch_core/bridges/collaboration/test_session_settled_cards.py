@@ -28,6 +28,10 @@ from .test_session_neutral_forms import REFERENCE, _identity, _option
 ALLOW = _option("opt-allow", "Allow once")
 ALWAYS = _option("opt-always", "Allow", decision="acceptForSession")
 DENY = _option("opt-deny", "Deny")
+# The two ways an `acceptForSession` label meets the footer's scope: one Switch
+# writes and recognises, and one whose mention of the session is its subject.
+SAID_SO = _option("opt-said-so", "Allow for this session", decision="acceptForSession")
+SUBJECT = _option("opt-subject", "Inspect this session", decision="acceptForSession")
 
 
 def _settled(
@@ -66,7 +70,7 @@ def _settled(
                 kind="approval",
                 title="Run project tests",
                 detail=detail,
-                options=[ALLOW, ALWAYS, DENY],
+                options=[ALLOW, ALWAYS, DENY, SAID_SO, SUBJECT],
             ).model_dump(by_alias=True),
         }
     )
@@ -127,6 +131,28 @@ def test_an_option_that_lasts_the_session_says_so_in_the_footer() -> None:
     lines = _lines(_settled(option_id="opt-always"))
 
     assert lines[0] == "**Allow** · request `R42`"
+    assert lines[-1] == (
+        "Chosen by actor-demo from Mattermost (applies for the rest of this session)."
+    )
+
+
+def test_a_recognised_label_does_not_repeat_its_scope_in_the_footer() -> None:
+    """The heading is the label here, so "Allow for this session" over "Chosen
+    … (applies for the rest of this session)" is the same duplicate the open
+    form had. Both drawings share `_scope`, so both are fixed by it."""
+    lines = _lines(_settled(option_id="opt-said-so"))
+
+    assert lines[0] == "**Allow for this session** · request `R42`"
+    assert lines[-1] == "Chosen by actor-demo from Mattermost."
+
+
+def test_a_settled_label_whose_subject_is_the_session_keeps_its_scope() -> None:
+    """The heading names the option that was chosen and nothing more. Where
+    the label only mentioned the session, the footer is the only place the
+    reader learns that what was granted outlives the turn."""
+    lines = _lines(_settled(option_id="opt-subject"))
+
+    assert lines[0] == "**Inspect this session** · request `R42`"
     assert lines[-1] == (
         "Chosen by actor-demo from Mattermost (applies for the rest of this session)."
     )

@@ -32,7 +32,6 @@ own than by a `Markup` that returns its argument.
 
 from __future__ import annotations
 
-import re
 from collections.abc import Callable
 from dataclasses import dataclass
 
@@ -118,10 +117,26 @@ _HEADINGS = {
 # comparing them should not have to work out that they agree.
 _FOR_SESSION = " (applies for the rest of this session)"
 
-# A label that has already said it. Narrow on purpose: "this session" and "the
-# session" are a label describing its own reach, where a bare "session" is as
-# likely to be the subject of the permission being asked about.
-_SAYS_THE_SESSION = re.compile(r"\b(?:this|the)\s+session\b", re.IGNORECASE)
+# The labels that have already said it: the whole label, matched whole, and
+# only ones Switch itself writes. `console/packages/agent-providers/src/`
+# mints these for the hosts that report a bare decision — Claude Code, Codex
+# and OpenCode respectively — and `test_session_provider_labels.py` fails if
+# that list grows a label this one does not have.
+#
+# Recognition rather than reading, because a label is host text and a mention
+# of the session is not a statement about how long an approval lasts. "Inspect
+# this session" is two options' subject, not their reach, and suppressing the
+# suffix there leaves the accept and the accept-for-session choices identical
+# on the screen — the exact confusion the suffix exists to prevent. Gemini and
+# Cursor pass their host's own wording straight through, so everything from
+# them lands in the fallback, which is to say it.
+_LABELS_STATING_THE_SESSION = frozenset(
+    {
+        "allow for this session",
+        "approve for this session",
+        "allow for the rest of this session",
+    }
+)
 
 _QUESTION_HEADINGS = {
     "open": "Questions",
@@ -932,13 +947,18 @@ def _scope(option: ApprovalOption) -> str:
     A label that already says it is left to say it. "Allow for this session
     (applies for the rest of this session)" is one fact twice, and the second
     copy is the longest line on the card — on a phone, the thing that pushes
-    the question off the screen. A host whose labels are silent about reach,
-    or misleading about it ("Always allow", which does not outlive the
-    session), still gets the line.
+    the question off the screen.
+
+    Only a label Switch recognises whole earns that, and anything else keeps
+    the suffix. Silence about reach ("Run the tests") and an overstatement of
+    it ("Always allow", which does not outlive the session) both need the line
+    for the same reason: a reader choosing by number is choosing on what is
+    printed beside the number.
     """
     if option.decision != "acceptForSession":
         return ""
-    return "" if _SAYS_THE_SESSION.search(option.label) else _FOR_SESSION
+    normalised = " ".join(option.label.split()).casefold().rstrip(".")
+    return "" if normalised in _LABELS_STATING_THE_SESSION else _FOR_SESSION
 
 
 def _carried(option: ApprovalOption, control_label_limit: int | None) -> bool:

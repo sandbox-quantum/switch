@@ -9,6 +9,8 @@ it, a scope the label never mentioned, an option that did not fit at all.
 
 from __future__ import annotations
 
+import pytest
+
 from switch_core.bridges.collaboration.session.renderers import (
     MARKDOWN,
     RequestReference,
@@ -303,6 +305,12 @@ def _pressable(request: SnapshotRequest, *, limit: int = 4000) -> list[str]:
     ).text.splitlines()
 
 
+def _joined_pressable(request: SnapshotRequest, *, limit: int = 4000) -> str:
+    """`_pressable` as one string, for a case asserted the same way with and
+    without controls."""
+    return "\n".join(_pressable(request, limit=limit))
+
+
 def test_an_option_its_button_says_in_full_is_not_printed_under_it():
     lines = _pressable(
         _approval(
@@ -387,6 +395,50 @@ def test_dropping_the_scope_does_not_drop_the_option_where_nothing_else_has_it()
 
     assert "2. Allow for this session" in text
     assert "applies for the rest" not in text
+
+
+# A label is host text, and a label mentioning the session is not a label
+# saying how long the approval lasts. These are the two ways that goes wrong if
+# the suffix is suppressed by reading the label rather than recognising it.
+
+
+SUBJECT_IS_THE_SESSION = _approval(
+    _option("once", "Inspect this session"),
+    _option("always", "Inspect this session", decision="acceptForSession"),
+)
+
+
+def test_a_label_whose_subject_is_the_session_still_says_its_scope():
+    """ "Inspect this session" names what is being approved, not for how long.
+    Suppress the suffix there and the two options are the same words under two
+    numbers — the state this suffix exists to prevent."""
+    text = _render(SUBJECT_IS_THE_SESSION)
+
+    assert "1. Inspect this session" in text
+    assert "2. Inspect this session (applies for the rest of this session)" in text
+
+
+def test_the_button_that_says_no_more_than_its_twin_keeps_the_line_that_does():
+    """Two buttons reading "Inspect this session" are one choice pressed two
+    ways. The kept line is the whole of how a reader tells them apart, so the
+    one carrying the scope survives even though the label fits a button."""
+    lines = _pressable(SUBJECT_IS_THE_SESSION)
+
+    assert "2. Inspect this session (applies for the rest of this session)" in lines
+
+
+@pytest.mark.parametrize("renders", (_render, _joined_pressable))
+def test_a_label_contradicting_its_own_decision_is_corrected_not_trusted(renders):
+    """ "Run once in this session" mentions the session and means the opposite
+    of what the decision does. The suffix is the only thing on the card that
+    tells the reader the truth about what they are about to grant."""
+    text = renders(
+        _approval(
+            _option("always", "Run once in this session", decision="acceptForSession")
+        )
+    )
+
+    assert "1. Run once in this session (applies for the rest of this session)" in text
 
 
 def test_a_kept_line_keeps_the_number_its_button_was_given():
