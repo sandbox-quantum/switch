@@ -109,11 +109,22 @@ A deployment running several tenants reports as one subject, because the
 alternative is a per-tenant identifier, which is exactly what the rule above
 forbids. Tenant *count* is reported; tenant identity is not.
 
-**Deployments that already exist** have no install timestamp to recover. On
-first upgrade they get an id, and `installed_at` is approximated from the oldest
-row in the database. Every milestone event carries
-`install_time_exact: false` in that case, so a backfilled deployment can be
-excluded from time-to-value analysis rather than quietly skewing it.
+**Time to value is measured for new deployments only.** When the id is
+generated, the server checks whether the database already holds rooms, agents or
+messages. On an empty database this is a genuinely new installation:
+`installed_at` is set to now and the milestone events below are armed. On a
+database that already has content, the deployment predates this telemetry,
+`installed_at` stays null, and **no milestone event is ever emitted for it**.
+
+No approximation, and no backfill. An install date guessed from the oldest row
+would be wrong by an unknown margin in an unknown direction, and a funnel built
+on it would read as confident when it is not. A deployment that cannot answer
+"how long did activation take" should say nothing rather than guess, so the
+time-to-value figures describe only installations actually watched from their
+first boot.
+
+The counts in the daily snapshot are unaffected — every deployment reports
+those, old or new.
 
 ## Resource attributes
 
@@ -185,6 +196,13 @@ Counted distinctly per window, so one person in six rooms is one active user.
 over both one day and seven, because a weekly figure flatters a product used
 intensely on Mondays and a daily one punishes it.
 
+**Room created by a user** — a room a human made, through the gateway or the
+Console. This is the headline "Rooms" figure. Rooms an agent provisioned for
+itself are counted separately and never stand in for it: an orchestration that
+spins up ten scratch rooms is not ten rooms of customer value, and letting the
+two share a number would make adoption look like whatever the agents happened to
+be doing that week.
+
 **Session** — an agent session as the connection registry knows it: opened when
 an agent connects, closed when it disconnects or its heartbeat lapses.
 
@@ -216,10 +234,11 @@ never invisible.
 | `user_count` | number | user accounts that exist |
 | `user_active_1d` | number | distinct humans who interacted in 24h |
 | `user_active_7d` | number | same over 7 days |
-| `room_count` | number | rooms not archived |
-| `room_active_1d` | number | rooms with an interaction in 24h |
+| `room_count` | number | **the headline figure** — unarchived rooms created by a user |
+| `room_agent_created_count` | number | unarchived rooms an agent created |
+| `room_active_1d` | number | user-created rooms with an interaction in 24h |
 | `room_active_7d` | number | same over 7 days |
-| `room_archived_count` | number | archived rooms |
+| `room_archived_count` | number | archived rooms, both kinds |
 | `room_internal_only_count` | number | rooms with no external channel |
 | `room_membership_total` | number | user–room memberships summed over rooms |
 | `room_users_mean` | number | mean human members per room |
@@ -257,17 +276,24 @@ later.
 
 ### Milestone events — at most once per deployment
 
-Each carries `seconds_since_install` (number) and `install_time_exact`
-(boolean). Together with `deployment_installed` they form the activation funnel.
+Each carries `seconds_since_install` (number). Together with
+`deployment_installed` they form the activation funnel. Emitted only by
+deployments installed after this ships — see
+[Deployment identity](#deployment-identity-and-the-install-clock).
 
 | Event | Emitted when | Extra properties |
 |---|---|---|
-| `deployment_installed` | the deployment id is first generated | `install_time_exact` |
+| `deployment_installed` | the deployment id is generated on an empty database | — |
 | `first_connector_added` | any bridge first reaches connected | `bridge_platform` |
-| `first_room_created` | the first room is created | `channel_type`, `bridge_platform` |
-| `first_room_active` | the first room sees its first interaction | `bridge_platform`, `seconds_since_room_created` |
+| `first_room_created` | the first **user-created** room is created | `channel_type`, `bridge_platform` |
+| `first_room_active` | that room sees its first interaction | `bridge_platform`, `seconds_since_room_created` |
 | `first_agent_registered` | the first agent registers | `known_agent_type` |
 | `first_session_started` | the first agent session opens | `known_agent_type` |
+
+The two room milestones track user-created rooms only, for the reason given
+under [Definitions](#definitions): a room an agent made for itself is not the
+moment a customer got started, and counting it would report activation that
+never happened.
 
 `first_room_active` is the one that matters most: it is "install to seeing
 value" end to end, and its `seconds_since_room_created` separates the two halves
@@ -320,6 +346,11 @@ when Switch is first told about the bridge.
 | `bridge_platform` | platform |
 | `channel_type` | channel type |
 | `agent_count` | number |
+| `created_by_kind` | `user` \| `agent` \| `system` |
+
+`created_by_kind` rides along rather than agent-created rooms being dropped, so
+the headline chart can filter to user-created rooms while the question "do
+agent-made rooms ever get used?" stays answerable from the same event.
 
 This is "time to create an active room" for every room, not only the first. The
 distribution is the interesting part: if rooms created in week one go active in
