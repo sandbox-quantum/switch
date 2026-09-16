@@ -239,7 +239,14 @@ class MessagingInstallService:
                     session,
                     platform=platform,
                     external_workspace_id=grant.external_workspace_id,
-                    encrypted_bot_token=encrypt_token(grant.bot_token, self._secret),
+                    # A grant with no token is a platform whose credential is
+                    # deployment-level (Discord), not per-install; there is
+                    # nothing to encrypt and the column is nullable for it.
+                    encrypted_bot_token=(
+                        encrypt_token(grant.bot_token, self._secret)
+                        if grant.bot_token is not None
+                        else None
+                    ),
                     scopes=grant.scopes,
                     user_id=burnt.created_by_user_id,
                 )
