@@ -77,8 +77,21 @@ PLACEHOLDER_RE = re.compile(r"\{(\$?[A-Za-z_][A-Za-z0-9_]*)\}")
 # bridge's display name, a room's name, a platform username.
 ENTITY_PARAM_TYPES = ("agent", "bridge", "room", "user")
 
+# A `provider` param names the coding agent that backs the agents a template
+# makes. The Console answers it and leaves it out of what it sends here, so
+# the server only ever meets it in a stored document; it is accepted so such
+# a document lints and stores, and treated as a plain string if it does reach
+# provisioning.
 ParamType = Literal[
-    "string", "number", "boolean", "enum", "agent", "bridge", "room", "user"
+    "string",
+    "number",
+    "boolean",
+    "enum",
+    "agent",
+    "bridge",
+    "room",
+    "user",
+    "provider",
 ]
 
 

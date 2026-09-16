@@ -461,3 +461,14 @@ def test_group_and_agents_keys_are_known():
     )
     assert result.errors == []
     assert [f.code for f in result.warnings] == []
+
+
+def test_provider_param_type_is_accepted():
+    """The Console answers `type: provider` itself; a stored document that
+    declares one must still lint, or it could never be saved to a server."""
+    result = lint_template(
+        "params:\n  provider:\n    type: provider\n"
+        "agents:\n  - name: helper\n    provider: '{provider}'\n"
+        "room:\n  name: r\n  description: d\n"
+    )
+    assert result.errors == []
