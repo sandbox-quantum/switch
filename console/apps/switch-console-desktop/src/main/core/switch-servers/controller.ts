@@ -111,6 +111,7 @@ import {
   ownsOwnerAddressedAgent,
   releaseBridgeIdentity,
   createRoomFromTemplate,
+  exportRoomYaml,
   fetchTemplateSchema,
   removeRoomAgent,
   type StoredTemplateDetail,
@@ -592,6 +593,9 @@ export const switchServersController = createRPCController({
 
   fetchTemplateSchema: async (serverId: string): Promise<Record<string, unknown> | null> =>
     fetchTemplateSchema(await requireServer(serverId)),
+
+  exportRoomYaml: async (params: { serverId: string; roomId: string }): Promise<string> =>
+    exportRoomYaml(await requireServer(params.serverId), params.roomId),
 
   listAgentRooms: async (params: {
     serverId: string;
