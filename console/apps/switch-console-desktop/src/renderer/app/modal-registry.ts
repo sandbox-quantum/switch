@@ -19,6 +19,7 @@ import { CreateRoomModal } from '@renderer/features/switch-servers/CreateRoomMod
 import { DeleteServerModal } from '@renderer/features/switch-servers/DeleteServerModal';
 import { DisconnectMessagingAppModal } from '@renderer/features/switch-servers/DisconnectMessagingAppModal';
 import { RenameServerModal } from '@renderer/features/switch-servers/RenameServerModal';
+import { ImportAgentTemplateModal } from '@renderer/features/templates/import-agent-template-modal';
 import { ConfirmActionDialog } from '@renderer/lib/components/confirm-action-dialog';
 import { ExternalLinkChoiceDialog } from '@renderer/lib/components/external-link-choice-dialog';
 import { UnsavedChangesDialog } from '@renderer/lib/components/unsaved-changes-dialog';
@@ -51,6 +52,10 @@ export const modalRegistry = {
   commandPaletteModal: createModal(CommandPaletteModal, { size: 'md' }),
   sessionModal: createModal(CreateSessionModal, { dismissOnOutsideClick: false }),
   addAgentModal: createModal(AddAgentModal, { size: 'lg', dismissOnOutsideClick: false }),
+  importAgentTemplateModal: createModal(ImportAgentTemplateModal, {
+    size: 'lg',
+    dismissOnOutsideClick: false,
+  }),
   confirmActionModal: createModal(ConfirmActionDialog, { size: 'xs' }),
   deleteAgentModal: createModal(DeleteAgentModal, { size: 'sm' }),
   removeAgentConfigModal: createModal(RemoveAgentConfigModal, { size: 'sm' }),

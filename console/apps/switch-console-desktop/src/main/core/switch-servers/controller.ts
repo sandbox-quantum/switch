@@ -104,6 +104,7 @@ import {
   fetchRoomRoles,
   fetchRooms,
   createTemplate,
+  deleteTemplate,
   fetchTemplateDetail,
   fetchTemplates,
   GatewayError,
@@ -574,6 +575,9 @@ export const switchServersController = createRPCController({
     templateId: string;
   }): Promise<StoredTemplateDetail> =>
     fetchTemplateDetail(await requireServer(params.serverId), params.templateId),
+
+  deleteTemplate: async (params: { serverId: string; templateId: string }): Promise<void> =>
+    deleteTemplate(await requireServer(params.serverId), params.templateId),
 
   saveTemplate: async (params: {
     serverId: string;

@@ -70,6 +70,7 @@ export const AddAgentsToRoomModal = observer(function AddAgentsToRoomModal({
         description,
         kind,
         creator,
+        ownerId: null,
       })),
     ...serverTemplates.filter((t) => t.kind === 'agent'),
   ];

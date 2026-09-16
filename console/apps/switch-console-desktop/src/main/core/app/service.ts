@@ -1,5 +1,5 @@
 import { exec } from 'node:child_process';
-import { readFile, realpath, stat } from 'node:fs/promises';
+import { readFile, realpath, stat, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { extname, isAbsolute, join, resolve, sep } from 'node:path';
 import type { IDisposable, IInitializable } from '@switch-console/shared';
@@ -307,6 +307,21 @@ class AppService implements IInitializable, IDisposable {
     });
     if (result.canceled) return undefined;
     return result.filePaths[0];
+  }
+
+  /** Write `content` where the person picks in the OS save dialog. Null when they cancel. */
+  async saveTextFile(args: {
+    title: string;
+    defaultPath?: string;
+    content: string;
+  }): Promise<string | null> {
+    const result = await dialog.showSaveDialog(getMainWindow()!, {
+      title: args.title,
+      defaultPath: args.defaultPath,
+    });
+    if (result.canceled || !result.filePath) return null;
+    await writeFile(result.filePath, args.content, 'utf8');
+    return result.filePath;
   }
 
   async openSelectAudioFileDialog(args: {

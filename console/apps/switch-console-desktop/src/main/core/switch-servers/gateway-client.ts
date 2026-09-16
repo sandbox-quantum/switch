@@ -1089,6 +1089,8 @@ export type StoredTemplateSummary = {
   description: string;
   kind: string;
   creator: string;
+  /** The registry row's owner, to tell the signed-in person's own templates apart. */
+  ownerId: string | null;
 };
 
 export type StoredTemplateDetail = StoredTemplateSummary & {
@@ -1111,6 +1113,7 @@ function toSummary(t: RegistryTemplateSummary): StoredTemplateSummary {
     description: t.description,
     kind: t.kind,
     creator: t.owner_name ?? t.owner_id,
+    ownerId: t.owner_id,
   };
 }
 
@@ -1138,6 +1141,14 @@ export async function createTemplate(
   });
   const t = (await res.json()) as RegistryTemplateSummary & { content: string };
   return { ...toSummary(t), definition: t.content };
+}
+
+/** Remove a template from the server's registry (`DELETE /templates/{id}`). */
+export async function deleteTemplate(server: SwitchServer, templateId: string): Promise<void> {
+  await gatewayFetch(server, `/templates/${encodeURIComponent(templateId)}`, {
+    authenticated: true,
+    method: 'DELETE',
+  });
 }
 
 export async function fetchTemplateDetail(
