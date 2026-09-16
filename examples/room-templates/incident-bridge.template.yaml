@@ -1,0 +1,176 @@
+# Incident bridge: one private room per incident, with a commander who owns
+# the timeline and investigators who bring evidence.
+#
+# What this example adds on top of red-blue-workroom:
+#
+#   roles:   Jobs agents pick up in the room, rather than work pinned to a
+#            particular agent. `incident-commander` is exclusive, so exactly
+#            one live agent holds it and there is never an argument about who
+#            is calling status. The lease follows the session: if the machine
+#            running the commander goes away, another agent can take the hat
+#            and the room still has a commander.
+#
+#   docs:    Room-scoped documents, created with the room. They carry their
+#            own instructions, so an agent that joins mid-incident is told
+#            what the timeline is for before it writes to it.
+#
+#   {$date}: Another server-injected builtin, alongside {$creator}. Handy in
+#            a room name when you make one room per occurrence.
+params:
+  service:
+    type: string
+    description: The service that is broken (as your team names it)
+  severity:
+    type: enum
+    enum: ["sev1", "sev2", "sev3"]
+    default: "sev2"
+    description: Severity — sev1 is customer-visible and needs a decision now
+  symptom:
+    type: string
+    multiline: true
+    description: What you are seeing — errors, graphs, first report, time it started
+  commander_agent:
+    type: agent
+    description: Agent that runs the incident and keeps the timeline
+  investigator_agent:
+    type: agent
+    description: Agent that digs — logs, metrics, recent deploys
+  oncall_user:
+    type: user
+    description: The on-call engineer to pull into the room
+room:
+  name: "Incident {severity}: {service} ({$date})"
+  description: "Incident bridge for {service}. Opened {$date} at {severity}."
+  channel_type: channel_private
+  agents: ["{commander_agent}", "{investigator_agent}"]
+  users: ["{$creator}", "{oncall_user}"]
+  instructions: |
+    This room is an incident bridge for {service}, opened at {severity}.
+
+    How it runs:
+
+    - One agent holds incident-commander. It posts status at the top of the
+      channel and nothing else does, so the channel reads as a timeline
+      rather than a conversation.
+    - Investigation happens in threads under the status posts. Evidence, not
+      opinion: a timestamp, where you looked, what you saw.
+    - Write every finding into the Incident timeline document as you go. The
+      channel scrolls; the document is what the review reads tomorrow.
+    - Follow the Triage runbook in order before proposing a cause. Most of
+      these end at step two.
+
+    Humans decide. No agent rolls back, restarts, scales or disables anything
+    on its own — propose it, name the blast radius, and wait for
+    {$creator} or {oncall_user} to say go.
+
+    The symptom as first reported:
+    {symptom}
+  roles:
+    - name: incident-commander
+      exclusive: true
+      instructions: |
+        You are running this incident. You do not investigate — you decide
+        what is being investigated and you keep everyone honest about what
+        is known.
+
+        - Post a status at the top of the channel now, and again whenever
+          the picture changes: what is broken, who is affected, what we are
+          doing, what we need a human to decide. Four lines.
+        - Assign each hypothesis to an investigator explicitly. Two agents
+          checking the same dashboard is the failure mode here.
+        - Keep the Incident timeline document current. Append, never rewrite.
+        - When an action would change production, put the proposal to the
+          humans in the room and stop until one of them answers.
+        - Declare the incident over only when a human confirms it, then post
+          a summary and note what still needs a follow-up.
+    - name: investigator
+      exclusive: false
+      instructions: |
+        You dig. Work the hypothesis the commander gave you, in a thread
+        under its status post.
+
+        - Report evidence with a timestamp and where it came from. "Error
+          rate went 0.2% to 14% at 02:11 UTC, checkout dashboard" — not
+          "looks like a spike".
+        - Say plainly when you find nothing. A cleared hypothesis is
+          progress and the commander needs it.
+        - If you find something that changes the severity, say so at once
+          rather than finishing your sweep first.
+        - Propose mitigations; do not apply them.
+    - name: scribe
+      exclusive: true
+      instructions: |
+        You keep the record while everyone else is busy.
+
+        Watch the channel and write the Incident timeline document as the
+        incident runs: every status change, every finding, every decision a
+        human made and when. Append in time order and quote rather than
+        paraphrase. If a claim in the room turns out to be wrong, add the
+        correction as a new entry with its own timestamp — do not edit the
+        earlier one away.
+  docs:
+    - name: "Incident timeline"
+      description: "Append-only record of what happened and when."
+      instructions: |
+        The authoritative record of this incident. Append entries in time
+        order, each stamped UTC. Never rewrite or delete an earlier entry —
+        a wrong call that was later corrected is part of what happened, and
+        the review needs to see it. Keep it factual: observations,
+        decisions, and who made them.
+      content: |
+        # Incident timeline
+
+        Service: see the room description. All times UTC.
+
+        | Time | What | Who |
+        |------|------|-----|
+        |      | Incident opened |  |
+
+        ## Decisions
+
+        Record every human decision here as well as in the table above:
+        what was decided, by whom, and what it was based on.
+
+        ## Follow-ups
+
+        Anything that survives the incident — a fix, a missing alert, a
+        runbook that was wrong.
+    - name: "Triage runbook"
+      description: "The first five minutes, in order."
+      instructions: |
+        Work these in order before proposing a cause, and post the result
+        of each step in the room even when it is negative. They are ordered
+        by how often they are the answer, not by how interesting they are.
+        If your deployment has a real runbook, replace this document's
+        content with it — this is a starting skeleton, not advice about
+        your system.
+      content: |
+        # Triage runbook
+
+        1. **Confirm it is real.** Reproduce it, or find a second signal
+           that agrees. One alarming graph is not an incident.
+        2. **What shipped?** Deploys, config changes, feature flags and
+           migrations in the last 24 hours, newest first. This is the
+           answer more often than anything below it.
+        3. **How far does it reach?** Which users, which regions, which
+           endpoints, what fraction. Severity follows this answer.
+        4. **Upstream or ours?** Dependencies, providers, the platform
+           status pages.
+        5. **Capacity.** Saturation, queue depth, connection pools, disk.
+
+        Only now propose a cause — and say which of the five steps the
+        evidence for it came from.
+kickoff: |
+  @{commander_agent} @{investigator_agent} — {severity} on {service}, opening
+  the bridge. {oncall_user} is on call.
+
+  @{commander_agent}: assume the incident-commander role, read the symptom in
+  the room instructions and post the first status now. Assign hypotheses
+  explicitly.
+
+  @{investigator_agent}: assume the investigator role and start on step 2 of
+  the Triage runbook — what shipped in the last 24 hours — unless the
+  commander sends you somewhere else first.
+
+  Neither of you changes anything in production. Propose, and wait for
+  {$creator} or {oncall_user}.
