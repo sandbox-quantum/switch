@@ -90,6 +90,7 @@ export function RoomCard({
   bridgeName,
   creatorIdentity,
   status,
+  toggle,
 }: {
   room: ParsedRoom;
   values: Values;
@@ -98,6 +99,8 @@ export function RoomCard({
   bridgeName: string | null;
   creatorIdentity: string | null;
   status: SlotStatus;
+  /** When the room is optional: whether to make it. Null when it is not a choice. */
+  toggle: { checked: boolean; onChange: (checked: boolean) => void } | null;
 }) {
   const fill = (s: string) =>
     interpolate(renames[s] ?? s, { ...values, $creator: creatorIdentity ?? 'you' });
@@ -128,6 +131,14 @@ export function RoomCard({
         </div>
         <span className="shrink-0 text-[11px] text-foreground-passive">Room</span>
       </div>
+      {toggle && (
+        <label className="mt-3 flex w-max cursor-pointer items-center gap-2 border-t border-border pt-3 text-xs text-foreground-muted">
+          <Switch size="sm" checked={toggle.checked} onCheckedChange={toggle.onChange} />
+          {toggle.checked
+            ? 'Create this room and start the agent in it'
+            : 'Agent only; add it to a room later'}
+        </label>
+      )}
       {status !== 'idle' && (
         <div className="mt-2">
           <StatusLine slot={{ status } as AgentSlot} />

@@ -198,6 +198,8 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
   const [pickedProvider, setPickedProvider] = useState<AgentProviderId | null>(null);
   const [phase, setPhase] = useState<'form' | 'creating'>('form');
   const [roomStatus, setRoomStatus] = useState<SlotStatus>('idle');
+  // An agent template's room is offered, not imposed: off, only the agent is made.
+  const [createRoom, setCreateRoom] = useState(true);
   const [createError, setCreateError] = useState<string | null>(null);
 
   // The params identify the document; only a different document resets the form.
@@ -626,7 +628,7 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
       return;
     }
 
-    if (!loaded.coreYaml || !parsed) {
+    if (!loaded.coreYaml || !parsed || (loaded.kind === 'agent' && !createRoom)) {
       const first = created[0];
       if (first) {
         const local = agentsStore.agentsOnServer(serverId).find((a) => a.name === first.name);
@@ -1046,6 +1048,11 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
                       bridgeName={templateBridge?.displayName ?? parsed.bridge}
                       creatorIdentity={creatorIdentity}
                       status={roomStatus}
+                      toggle={
+                        loaded?.kind === 'agent' && phase === 'form'
+                          ? { checked: createRoom, onChange: setCreateRoom }
+                          : null
+                      }
                     />
                   ))
                 )}

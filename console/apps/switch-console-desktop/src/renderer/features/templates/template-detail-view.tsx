@@ -283,14 +283,11 @@ const TemplateDetailPanel = observer(function TemplateDetailPanel() {
     }
   };
 
-  const ownerLine =
-    loaded.bundled && !loaded.server
-      ? 'Shipped with Switch'
-      : mine
-        ? 'Yours'
-        : loaded.server
-          ? `Uploaded by ${loaded.server.creator}`
-          : 'Shipped with Switch';
+  const ownerLine = loaded.bundled
+    ? 'Shipped with Switch'
+    : mine
+      ? 'Yours'
+      : `Uploaded by ${loaded.server?.creator ?? 'someone'}`;
   const visibilityLine = loaded.server ? 'Shared with the workspace' : 'Shared with everyone';
 
   return (
@@ -306,10 +303,24 @@ const TemplateDetailPanel = observer(function TemplateDetailPanel() {
                 <span>{ownerLine}</span>
                 <span>·</span>
                 <span>{visibilityLine}</span>
-                {loaded.bundled && loaded.server && (
+                {loaded.copyOf && (
                   <>
                     <span>·</span>
                     <span>A copy of the built-in one</span>
+                  </>
+                )}
+                {loaded.savedCopy && (
+                  <>
+                    <span>·</span>
+                    <button
+                      type="button"
+                      className="cursor-pointer underline underline-offset-2 hover:text-foreground"
+                      onClick={() =>
+                        navigate('templateDetail', { serverId, templateId: loaded.savedCopy!.id })
+                      }
+                    >
+                      A copy is saved on this workspace
+                    </button>
                   </>
                 )}
               </span>
@@ -325,7 +336,7 @@ const TemplateDetailPanel = observer(function TemplateDetailPanel() {
               </Badge>
             )}
             <span className="flex-1" />
-            {loaded.bundled && !loaded.server && (
+            {loaded.bundled && !loaded.savedCopy && (
               <Button
                 type="button"
                 variant="outline"

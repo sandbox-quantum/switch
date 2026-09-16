@@ -106,8 +106,12 @@ export type LoadedTemplate = {
   name: string;
   description: string;
   kind: TemplateKind;
-  /** The Console-bundled copy, when this is (or shadows) one. */
+  /** The Console-bundled template, when this is one. */
   bundled: BundledTemplate | null;
+  /** For a bundled one: the copy of it saved on the workspace, when there is one. */
+  savedCopy: StoredTemplateSummary | null;
+  /** For a workspace row: the built-in it is a copy of, when it shares the name. */
+  copyOf: BundledTemplate | null;
   /** The registry row, when the template is on the server. */
   server: StoredTemplateSummary | null;
   /** The agents the Console creates for it, in order; none for a room template. */
@@ -143,8 +147,13 @@ export async function loadTemplateById(
   let description: string;
   let document: string;
   let server: StoredTemplateSummary | null = null;
-  let shadowOf: BundledTemplate | null = bundled ?? null;
+  let copyOf: BundledTemplate | null = null;
+  let savedCopy: StoredTemplateSummary | null = null;
   if (bundled) {
+    savedCopy =
+      (await rpc.switchServers.listTemplates({ serverId }).catch(() => [])).find(
+        (t) => t.name === bundled.name
+      ) ?? null;
     name = bundled.name;
     description = bundled.description;
     document = bundled.instructions
@@ -160,14 +169,26 @@ export async function loadTemplateById(
     description = detail.description;
     document = definition;
     server = summary;
-    shadowOf = bundledTemplates.find((b) => b.name === detail.name) ?? null;
+    copyOf = bundledTemplates.find((b) => b.name === detail.name) ?? null;
   }
   const kind = await rpc.agentTemplates.kind({ yamlText: document });
   const { agents } = await rpc.agentTemplates.parseAgents({ yamlText: document });
   const coreYaml = await rpc.agentTemplates.coreDocument({ yamlText: document });
   const room = coreYaml ? await rpc.roomTemplates.parse({ yamlText: coreYaml }) : null;
   const summary = await rpc.agentTemplates.summarize({ yamlText: document });
-  return { name, description, kind, bundled: shadowOf, server, agents, room, summary, document };
+  return {
+    name,
+    description,
+    kind,
+    bundled: bundled ?? null,
+    savedCopy,
+    copyOf,
+    server,
+    agents,
+    room,
+    summary,
+    document,
+  };
 }
 
 /** A readable listing name from a file name: no extension, no `.template`, words not dashes. */

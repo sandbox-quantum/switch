@@ -1,3 +1,4 @@
+import supportDeskTemplate from '@root/../../../examples/agent-templates/support-desk.template.yaml?raw';
 import triagePairTemplate from '@root/../../../examples/agent-templates/triage-pair.template.yaml?raw';
 import switchExpertInstructions from '@root/../../../switch-expert/AGENT.md?raw';
 import switchExpertTemplate from '@root/../../../switch-expert/template.yaml?raw';
@@ -42,6 +43,15 @@ export const bundledTemplates: BundledTemplate[] = [
     kind: 'group',
     creator: 'Switch',
     content: triagePairTemplate,
+    instructions: null,
+  },
+  {
+    id: 'bundled:support-desk',
+    name: 'Support desk',
+    description: 'Two rooms and two agents: a greeter on intake, an engineer on escalations.',
+    kind: 'group',
+    creator: 'Switch',
+    content: supportDeskTemplate,
     instructions: null,
   },
 ];

@@ -208,9 +208,9 @@ function TemplateCard({
           )}
           {item.server && mine && !item.bundled && <Badge variant="secondary">Yours</Badge>}
           {item.bundled && item.server && (
-            <Badge variant="secondary" title="A copy is saved on this workspace too">
+            <Badge variant="secondary" title="A copy is saved on this workspace; it lists below">
               <Users />
-              Workspace
+              Saved
             </Badge>
           )}
         </div>
@@ -269,10 +269,13 @@ function formatTimeAgo(ms: number): string {
 function RecentsSection({
   serverId,
   serverName,
+  onWorkspace,
   onSaved,
 }: {
   serverId: string;
   serverName: string | null;
+  /** Names already saved on the workspace: those need no Save button. */
+  onWorkspace: ReadonlySet<string>;
   onSaved: () => void;
 }) {
   const { navigate } = useNavigate();
@@ -283,7 +286,11 @@ function RecentsSection({
   useEffect(() => {
     rpc.roomTemplates
       .getRecents(serverId)
-      .then(setRecents)
+      // One row per name: a document used before and after an edit is one
+      // template to the person, and the newest use is the one to offer.
+      .then((list) =>
+        setRecents(list.filter((r, i) => list.findIndex((o) => o.name === r.name) === i))
+      )
       .catch(() => setRecents([]));
   }, [serverId]);
 
@@ -346,17 +353,21 @@ function RecentsSection({
                 {formatTimeAgo(r.usedAt)}
               </span>
             </button>
-            <Button
-              type="button"
-              variant="ghost"
-              size="sm"
-              title="Save to the workspace, so everyone on it can use it"
-              disabled={saving === r.yamlText}
-              onClick={() => void saveToWorkspace(r)}
-            >
-              <Save className="size-3.5" />
-              Save to workspace
-            </Button>
+            {onWorkspace.has(r.name) ? (
+              <span className="px-3 text-xs text-foreground-passive">On the workspace</span>
+            ) : (
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                title="Save to the workspace, so everyone on it can use it"
+                disabled={saving === r.yamlText}
+                onClick={() => void saveToWorkspace(r)}
+              >
+                <Save className="size-3.5" />
+                Save to workspace
+              </Button>
+            )}
           </div>
         ))}
       </div>
@@ -412,34 +423,28 @@ const TemplatesPanel = observer(function TemplatesPanel() {
   }, [serverId, reloadKey]);
 
   const { builtIn, onWorkspace } = useMemo(() => {
-    // A workspace row with a built-in's name is its saved copy, whatever its kind.
+    // A built-in card is always the Console's copy. Saving it puts a row on
+    // the workspace, which lists there as yours; the built-in card only says
+    // that a copy exists.
     const byName = new Map(templates.map((t) => [t.name, t]));
-    const builtIn: Listed[] = [];
-    for (const b of bundledTemplates) {
-      const copy = byName.get(b.name) ?? null;
-      if (copy) byName.delete(b.name);
-      builtIn.push({
-        id: copy?.id ?? b.id,
-        kind: kindOf(b.kind),
-        name: b.name,
-        description: b.description,
-        bundled: true,
-        server: copy,
-        content: b.content,
-      });
-    }
-    const shadowed = new Set(builtIn.map((b) => b.server?.id).filter(Boolean));
-    const onWorkspace: Listed[] = templates
-      .filter((t) => !shadowed.has(t.id))
-      .map((t) => ({
-        id: t.id,
-        kind: kindOf(t.kind),
-        name: t.name,
-        description: t.description,
-        bundled: false,
-        server: t,
-        content: null,
-      }));
+    const builtIn: Listed[] = bundledTemplates.map((b) => ({
+      id: b.id,
+      kind: kindOf(b.kind),
+      name: b.name,
+      description: b.description,
+      bundled: true,
+      server: byName.get(b.name) ?? null,
+      content: b.content,
+    }));
+    const onWorkspace: Listed[] = templates.map((t) => ({
+      id: t.id,
+      kind: kindOf(t.kind),
+      name: t.name,
+      description: t.description,
+      bundled: false,
+      server: t,
+      content: null,
+    }));
     const needle = query.trim().toLowerCase();
     const matches = (t: Listed) =>
       (kind === 'all' || t.kind === kind) &&
@@ -450,10 +455,7 @@ const TemplatesPanel = observer(function TemplatesPanel() {
     const mine = (t: Listed) => meId !== null && t.server?.ownerId === meId;
     return {
       builtIn: onlyMine ? [] : builtIn.filter(matches),
-      // Under "Only mine", a built-in whose saved copy is yours lists as yours.
-      onWorkspace: [...(onlyMine ? builtIn.filter(mine) : []), ...onWorkspace].filter(
-        (t) => matches(t) && (!onlyMine || mine(t))
-      ),
+      onWorkspace: onWorkspace.filter((t) => matches(t) && (!onlyMine || mine(t))),
     };
   }, [templates, query, kind, onlyMine, meId]);
 
@@ -638,6 +640,7 @@ const TemplatesPanel = observer(function TemplatesPanel() {
               <RecentsSection
                 serverId={serverId}
                 serverName={server?.name ?? null}
+                onWorkspace={new Set(templates.map((t) => t.name))}
                 onSaved={reload}
               />
             )}
