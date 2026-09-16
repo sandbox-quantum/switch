@@ -1,433 +1,347 @@
-import type * as ChildProcess from 'node:child_process';
-import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import type * as fs from 'node:fs/promises';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import { FakeAppServer } from '../codex/fake-app-server';
 import type { ProviderRuntimeEvent } from '../events';
-import { FakeAgy } from './fake-agy';
 
-const processes: FakeAgy[] = [];
-const spawns: Array<{ args: string[]; env: Record<string, string>; cwd: string }> = [];
-vi.mock('node:child_process', async (original) => ({
-  ...(await original<typeof ChildProcess>()),
-  spawn: (
-    _command: string,
-    args: string[],
-    options: { env: Record<string, string>; cwd: string }
-  ) => {
-    spawns.push({ args, env: options.env, cwd: options.cwd });
-    const child = new FakeAgy(args);
-    processes.push(child);
-    return child;
+vi.mock('node:fs/promises', async (original) => ({
+  ...(await original<typeof fs>()),
+  mkdir: async () => undefined,
+  writeFile: async () => undefined,
+  realpath: async (path: string) => path,
+}));
+const servers: FakeAppServer[] = [];
+vi.mock('node:child_process', () => ({
+  spawn: () => {
+    const server = new FakeAppServer();
+    server.replyAlways('initialize', () => ({
+      agentCapabilities: { sessionCapabilities: { resume: {} } },
+    }));
+    server.replyAlways('authenticate', () => ({}));
+    server.replyAlways('session/new', () => ({
+      sessionId: 'native',
+      configOptions: [
+        { id: 'model', type: 'select', options: [{ value: 'model-a', name: 'Model A' }] },
+      ],
+    }));
+    server.replyAlways('session/resume', () => ({}));
+    server.replyAlways('session/set_mode', () => ({}));
+    server.replyAlways('session/set_config_option', () => ({}));
+    servers.push(server);
+    return server;
   },
 }));
 const { createAntigravityAdapter } = await import('./antigravity-adapter');
-
-const roots: string[] = [];
-let cwd = '';
-let home = '';
-beforeEach(async () => {
-  processes.length = 0;
-  spawns.length = 0;
-  const root = await mkdtemp(join(tmpdir(), 'antigravity-unit-'));
-  roots.push(root);
-  cwd = join(root, 'work');
-  home = join(root, 'home');
-  await mkdir(cwd);
-  await mkdir(home);
-  cwd = await realpath(cwd);
+beforeEach(() => {
+  servers.length = 0;
 });
-afterEach(async () => {
-  await Promise.allSettled(
-    roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))
-  );
-});
-
-const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
-
-async function setup(
-  overrides: Partial<
-    Parameters<ReturnType<typeof createAntigravityAdapter>['startSession']>[0]
-  > = {}
-) {
+async function setup(resume = false, switchRegistered = true) {
   const adapter = createAntigravityAdapter();
   const events: ProviderRuntimeEvent[] = [];
-  adapter.subscribe((event) => events.push(event));
-  const starting = adapter.startSession({
+  adapter.subscribe((e) => events.push(e));
+  const session = await adapter.startSession({
     sessionId: 's',
-    cwd,
-    runtimeMode: 'full-access',
-    env: { HOME: home, PATH: '/usr/bin' },
-    mcpServers: {},
-    ...overrides,
-  });
-  // Registering MCP servers touches disk before the process starts.
-  while (processes.length === 0) await flush();
-  processes.at(-1)!.init('native-1');
-  const session = await starting;
-  return { adapter, events, session, agy: () => processes.at(-1)! };
-}
-
-it('spawns with exactly the session environment and the caller working directory', async () => {
-  const { session } = await setup();
-  expect(session.nativeSessionId).toBe('native-1');
-  expect(spawns[0]!.env).toEqual({ HOME: home, PATH: '/usr/bin' });
-  expect(spawns[0]!.cwd).toBe(cwd);
-  // Without --add-dir the CLI runs file tools in its own scratch workspace.
-  expect(spawns[0]!.args).toContain('--add-dir');
-  expect(spawns[0]!.args[spawns[0]!.args.indexOf('--add-dir') + 1]).toBe(cwd);
-  expect(spawns[0]!.args).toContain('--dangerously-skip-permissions');
-});
-
-it('maps the runtime modes onto the flags the CLI offers and warns when it cannot ask', async () => {
-  const edits = await setup({ runtimeMode: 'auto-accept-edits' });
-  expect(spawns[0]!.args.join(' ')).toContain('--mode accept-edits');
-  expect(edits.events.some((event) => event.type === 'runtime.warning')).toBe(false);
-
-  processes.length = 0;
-  spawns.length = 0;
-  const gated = await setup({ runtimeMode: 'approval-required' });
-  expect(spawns[0]!.args).not.toContain('--dangerously-skip-permissions');
-  expect(spawns[0]!.args).not.toContain('--mode');
-  const warning = gated.events.find((event) => event.type === 'runtime.warning');
-  expect(warning?.type === 'runtime.warning' && warning.message).toContain('approval');
-});
-
-it('resumes the named conversation and passes the model and effort through', async () => {
-  await setup({
-    resume: { nativeSessionId: 'native-resumed' },
-    model: { id: 'gemini-3.1-pro-high', options: { effort: 'high' } },
-  });
-  expect(spawns[0]!.args.join(' ')).toContain('--conversation native-resumed');
-  expect(spawns[0]!.args.join(' ')).toContain('--model gemini-3.1-pro-high');
-  expect(spawns[0]!.args.join(' ')).toContain('--effort high');
-});
-
-it('merges session MCP servers into the workspace config and puts it back on stop', async () => {
-  const path = join(cwd, '.agents/mcp_config.json');
-  await mkdir(join(cwd, '.agents'));
-  await writeFile(path, '{"mcpServers":{"mine":{"command":"keep"}}}');
-  const { adapter } = await setup({
+    cwd: '/work',
     runtimeMode: 'approval-required',
-    mcpServers: {
-      switch: { transport: 'stdio', command: 'node', args: ['server.js'], envVars: ['PATH'] },
-      remote: { transport: 'http', url: 'https://example.invalid/mcp' },
-    },
+    env: {},
+    mcpServers: switchRegistered
+      ? {
+          switch: {
+            transport: 'stdio',
+            command: 'node',
+            args: ['server.js'],
+            env: { MODE: 'test' },
+          },
+        }
+      : {},
+    ...(resume ? { resume: { nativeSessionId: 'acp:native' } } : {}),
   });
-  const written = JSON.parse(await readFile(path, 'utf8'));
-  expect(written.mcpServers.mine).toEqual({ command: 'keep' });
-  expect(written.mcpServers.switch).toEqual({
-    command: 'node',
-    args: ['server.js'],
-    env: { PATH: '/usr/bin' },
-  });
-  expect(written.mcpServers.remote).toEqual({ serverUrl: 'https://example.invalid/mcp' });
-  const settings = JSON.parse(
-    await readFile(join(home, '.gemini/antigravity-cli/settings.json'), 'utf8')
-  );
-  expect(settings.permissions.allow).toEqual(['mcp(switch/*)', 'mcp(remote/*)']);
+  const server = servers.at(-1)!;
+  return { adapter, events, server, session };
+}
+afterEach(() => {
+  for (const server of servers) server.kill();
+});
+const flush = () => new Promise((resolve) => setImmediate(resolve));
 
-  await adapter.stopSession('s');
-  expect(JSON.parse(await readFile(path, 'utf8'))).toEqual({
-    mcpServers: { mine: { command: 'keep' } },
+it('registers session MCP servers and resumes the exact native session', async () => {
+  const { server, session } = await setup(true);
+  expect(session.nativeSessionId).toBe('acp:native');
+  expect(server.received.find((m) => m.method === 'session/resume')?.params).toMatchObject({
+    sessionId: 'native',
+    mcpServers: [
+      {
+        name: 'switch',
+        command: 'node',
+        args: ['server.js'],
+        env: [{ name: 'MODE', value: 'test' }],
+      },
+    ],
   });
-  expect(
-    JSON.parse(await readFile(join(home, '.gemini/antigravity-cli/settings.json'), 'utf8'))
-  ).toEqual({});
 });
 
-it('never allow-lists MCP servers in full access, where nothing asks in the first place', async () => {
-  await setup({ mcpServers: { switch: { transport: 'stdio', command: 'node', args: [] } } });
-  await expect(
-    readFile(join(home, '.gemini/antigravity-cli/settings.json'), 'utf8')
-  ).rejects.toThrow();
-});
-
-it('streams assistant text as deltas and closes the item when the step is done', async () => {
-  const { adapter, events, agy } = await setup();
+it('preserves tool metadata through sparse updates and ignores replay and other sessions', async () => {
+  const { adapter, events, server } = await setup();
+  const update = (sessionId: string, update: Record<string, unknown>) =>
+    server.notify('session/update', { sessionId, update });
+  update('native', {
+    sessionUpdate: 'agent_message_chunk',
+    content: { type: 'text', text: 'replay' },
+  });
   await adapter.sendTurn({ sessionId: 's', turnId: 't', text: 'hello' });
-  await flush();
-  expect(agy().received.at(-1)).toEqual({
-    event: 'user',
-    message: { content: [{ type: 'text', text: 'hello' }] },
+  update('other', {
+    sessionUpdate: 'agent_message_chunk',
+    content: { type: 'text', text: 'wrong' },
   });
-  agy().step({ step_index: 1, state: 'ACTIVE', step_type: 'agent_response', text_delta: 'He' });
-  agy().step({ step_index: 1, state: 'DONE', step_type: 'agent_response', text_delta: 'llo' });
-  agy().result({ status: 'SUCCESS', response: 'Hello' });
-  await flush();
-  const deltas = events.filter((event) => event.type === 'content.delta');
-  expect(deltas.map((event) => event.type === 'content.delta' && event.delta)).toEqual([
-    'He',
-    'llo',
-  ]);
-  const started = events.findIndex(
-    (event) => event.type === 'item.started' && event.item.type === 'assistant_message'
-  );
-  expect(started).toBeGreaterThanOrEqual(0);
-  expect(started).toBeLessThan(events.indexOf(deltas[0]!));
-  expect(events.find((event) => event.type === 'item.completed')).toMatchObject({
-    item: { type: 'assistant_message', status: 'completed', text: 'Hello' },
+  update('native', {
+    sessionUpdate: 'tool_call',
+    toolCallId: 'tool',
+    kind: 'execute',
+    title: 'Run build',
+    status: 'in_progress',
   });
-  expect(events.find((event) => event.type === 'turn.completed')).toMatchObject({
-    turnId: 't',
-    outcome: 'completed',
+  update('native', {
+    sessionUpdate: 'tool_call_update',
+    toolCallId: 'tool',
+    status: 'completed',
+    content: [{ type: 'content', content: { type: 'text', text: 'OK' } }],
   });
-});
-
-it('classifies tool steps and carries a denied tool through as a failed item', async () => {
-  const { adapter, events, agy } = await setup();
-  await adapter.sendTurn({ sessionId: 's', turnId: 't', text: 'work' });
-  await flush();
-  agy().step({
-    step_index: 2,
-    state: 'ACTIVE',
-    step_type: 'tool',
-    tool_name: 'run_command',
-    tool_info: { name: 'run_command', parameters: { CommandLine: 'touch marker.txt' } },
-  });
-  agy().step({
-    step_index: 2,
-    state: 'ERROR',
-    step_type: 'tool',
-    tool_name: 'run_command',
-    tool_info: {
-      name: 'run_command',
-      parameters: { CommandLine: 'touch marker.txt' },
-      error: { type: 'TOOL_ERROR', message: 'user denied permission to run commands' },
+  expect(events.filter((e) => e.type === 'content.delta')).toEqual([]);
+  expect(events.find((e) => e.type === 'item.completed')).toMatchObject({
+    item: {
+      id: 'tool',
+      type: 'command_execution',
+      title: 'Run build',
+      status: 'completed',
+      text: 'OK',
     },
   });
-  agy().step({
-    step_index: 3,
-    state: 'DONE',
-    step_type: 'tool',
-    tool_name: 'write_to_file',
-    tool_info: { name: 'write_to_file', parameters: { TargetFile: '/work/marker.txt' } },
-  });
-  agy().result({
-    status: 'SUCCESS',
-    response: '',
-    denied_actions: [{ action: 'command', display_name: 'RunCommand' }],
-  });
-  await flush();
-  const completed = events.filter((event) => event.type === 'item.completed');
-  expect(completed.map((event) => event.type === 'item.completed' && event.item.type)).toEqual([
-    'command_execution',
-    'file_change',
-  ]);
-  expect(completed[0]).toMatchObject({
-    item: { status: 'failed', title: 'run_command: touch marker.txt' },
-  });
-  // The caller must be told the agent was silently blocked, not just that the turn ended.
-  expect(
-    events.some((event) => event.type === 'runtime.warning' && event.message.includes('RunCommand'))
-  ).toBe(true);
-  expect(events.some((event) => event.type === 'request.opened')).toBe(false);
 });
 
-it('reports delegation from its own step type, not from a tool call', async () => {
-  const { adapter, events, agy } = await setup();
-  await adapter.sendTurn({ sessionId: 's', turnId: 't', text: 'delegate' });
-  await flush();
-  const subagents = [
-    { type_name: 'research', role: 'Readme Reader', initial_prompt: 'Read README.md' },
-    { type_name: 'research', role: 'Second Reader', initial_prompt: 'Read LICENSE' },
-  ];
-  agy().step({
-    step_index: 2,
-    state: 'ACTIVE',
-    step_type: 'subagent',
-    tool_name: 'invoke_subagent',
-    subagent_info: { subagents },
-  });
-  agy().step({
-    step_index: 2,
-    state: 'DONE',
-    step_type: 'subagent',
-    tool_name: 'invoke_subagent',
-    subagent_info: {
-      subagents: subagents.map((child, index) => ({
-        ...child,
-        conversation_id: `child-${index}`,
-      })),
+it('answers the offered permission ID and excludes persistent permissions', async () => {
+  const { adapter, events, server } = await setup();
+  await adapter.sendTurn({ sessionId: 's', turnId: 't', text: 'write' });
+  server.send({
+    id: 99,
+    method: 'session/request_permission',
+    params: {
+      sessionId: 'native',
+      toolCall: { kind: 'edit', title: 'Edit marker', toolCallId: 'edit' },
+      options: [
+        { optionId: 'once', name: 'Allow once', kind: 'allow_once' },
+        { optionId: 'save', name: 'Allow for future sessions', kind: 'allow_always' },
+        { optionId: 'session', name: 'Allow this session', kind: 'allow_always' },
+      ],
     },
   });
-  agy().step({ step_index: 3, state: 'DONE', step_type: 'system_message' });
-  agy().result({ status: 'SUCCESS', response: 'done' });
+  const request = events.find((e) => e.type === 'request.opened');
+  if (!request || request.type !== 'request.opened') throw new Error('missing approval');
+  expect(request.options.map((o) => o.label)).not.toContain('Allow for future sessions');
+  await adapter.respondToRequest('s', request.requestId, 'acceptForSession');
   await flush();
-  const started = events.filter(
-    (event) => event.type === 'item.started' && event.item.type === 'subagent'
-  );
-  expect(started.map((event) => event.type === 'item.started' && event.item.title)).toEqual([
-    'Readme Reader',
-    'Second Reader',
-  ]);
-  const completed = events.filter(
-    (event) => event.type === 'item.completed' && event.item.type === 'subagent'
-  );
-  expect(completed).toHaveLength(2);
-  expect(completed[0]).toMatchObject({
-    item: { status: 'completed', nativeChildId: 'child-0', toolName: 'research' },
-  });
-  expect(started[1]!.type === 'item.started' && started[1]!.item.id).not.toBe(
-    started[0]!.type === 'item.started' && started[0]!.item.id
-  );
-  expect(events.find((event) => event.type === 'turn.completed')).toMatchObject({
-    outcome: 'completed',
+  expect(server.received.find((m) => m.id === 99)?.result).toEqual({
+    outcome: { outcome: 'selected', optionId: 'session' },
   });
 });
 
-it('respawns with the attachment directory readable when it cannot ask to read it', async () => {
-  const staging = join(await realpath(tmpdir()), 'switch-staging');
-  const { adapter, events } = await setup({ runtimeMode: 'auto-accept-edits' });
-  await adapter.sendTurn({
-    sessionId: 's',
-    turnId: 'one',
-    text: 'summarise',
-    attachments: [{ path: join(staging, 'report.txt'), mimeType: 'text/plain' }],
+it('interrupts the native turn, cancels pending approvals and waits for cancellation before draining', async () => {
+  const { adapter, events, server } = await setup();
+  await adapter.sendTurn({ sessionId: 's', turnId: 'one', text: 'first' });
+  await adapter.sendTurn({ sessionId: 's', turnId: 'two', text: 'second' });
+  const prompt = await server.waitFor('session/prompt');
+  server.send({
+    id: 98,
+    method: 'session/request_permission',
+    params: {
+      sessionId: 'native',
+      toolCall: { title: 'Run', kind: 'execute', toolCallId: 'tool' },
+      options: [],
+    },
   });
-  // The grant is read at launch, so the running process cannot be told about it.
-  while (processes.length < 2) await flush();
-  processes[1]!.init('native-1');
-  await flush();
-  const args = spawns[1]!.args;
-  expect(args.join(' ')).toContain('--conversation native-1');
-  // cwd, the Switch session downloads root, and now the staging directory.
-  expect(args.filter((argument) => argument === '--add-dir')).toHaveLength(3);
-  expect(args).toContain(staging);
-  expect(JSON.stringify(processes[1]!.received[0])).toContain('report.txt');
-
-  // A second turn from the same directory reuses the process.
-  processes[1]!.result({ status: 'SUCCESS', response: 'ok' });
-  await flush();
-  await adapter.sendTurn({
-    sessionId: 's',
-    turnId: 'two',
-    text: 'again',
-    attachments: [{ path: join(staging, 'other.txt'), mimeType: 'text/plain' }],
-  });
-  await flush();
-  expect(processes).toHaveLength(2);
-
-  processes[1]!.result({
-    status: 'SUCCESS',
-    response: '',
-    denied_actions: [{ action: 'read_file', display_name: 'ViewFile' }],
-  });
-  await flush();
-  expect(
-    events.some((event) => event.type === 'runtime.warning' && event.message.includes('other.txt'))
-  ).toBe(true);
-});
-
-it('grants the Switch session downloads root unless the session has full access', async () => {
-  // `download_attachment` writes under ~/.switch/sessions/<runtime pid>/media,
-  // named after a process the adapter never sees, so the root is the grant.
-  const root = join(home, '.switch/sessions');
-  await setup({ runtimeMode: 'auto-accept-edits' });
-  expect(spawns[0]!.args).toContain(root);
-  expect(spawns[0]!.args.filter((argument) => argument === '--add-dir')).toHaveLength(2);
-
-  processes.length = 0;
-  spawns.length = 0;
-  await setup();
-  expect(spawns[0]!.args).not.toContain(root);
-  expect(spawns[0]!.args.filter((argument) => argument === '--add-dir')).toHaveLength(1);
-});
-
-it('does not widen access for attachments when the session already has full access', async () => {
-  const { adapter, agy } = await setup();
-  await adapter.sendTurn({
-    sessionId: 's',
-    turnId: 'one',
-    text: 'summarise',
-    attachments: [{ path: join(tmpdir(), 'switch-staging/report.txt'), mimeType: 'text/plain' }],
-  });
-  await flush();
-  expect(processes).toHaveLength(1);
-  expect(spawns[0]!.args.filter((argument) => argument === '--add-dir')).toHaveLength(1);
-  expect(JSON.stringify(agy().received[0])).toContain('report.txt');
-});
-
-it('interrupts by killing the process and resumes the conversation for the next turn', async () => {
-  const { adapter, events, agy } = await setup();
-  await adapter.sendTurn({ sessionId: 's', turnId: 'one', text: 'count' });
-  await flush();
-  const first = agy();
   await adapter.interruptTurn('s');
-  expect(first.signals).toEqual(['SIGINT']);
-  // The dying process still emits its own error result; it must not win the turn.
-  first.result({ status: 'ERROR', error: 'interrupted' });
   await flush();
-  expect(events.find((event) => event.type === 'turn.completed')).toMatchObject({
+  expect(server.received.find((m) => m.method === 'session/cancel')?.params).toEqual({
+    sessionId: 'native',
+  });
+  expect(server.received.find((m) => m.id === 98)?.result).toEqual({
+    outcome: { outcome: 'cancelled' },
+  });
+  expect(server.received.filter((m) => m.method === 'session/prompt')).toHaveLength(1);
+  server.send({ id: prompt.id, result: { stopReason: 'cancelled' } });
+  await flush();
+  expect(events.find((e) => e.type === 'turn.completed')).toMatchObject({
     turnId: 'one',
     outcome: 'interrupted',
   });
-  expect(adapter.hasSession('s')).toBe(true);
-  expect(events.some((event) => event.type === 'session.exited')).toBe(false);
-
-  await adapter.sendTurn({ sessionId: 's', turnId: 'two', text: 'again' });
-  await flush();
-  expect(processes).toHaveLength(2);
-  expect(spawns[1]!.args.join(' ')).toContain('--conversation native-1');
-  processes[1]!.init('native-1');
-  await flush();
-  processes[1]!.result({ status: 'SUCCESS', response: 'ok' });
-  await flush();
-  expect(
-    events.filter((event) => event.type === 'turn.completed').map((event) => event.turnId)
-  ).toEqual(['one', 'two']);
+  expect(server.received.filter((m) => m.method === 'session/prompt')).toHaveLength(2);
 });
 
-it('settles the running and queued turns when the CLI dies on its own', async () => {
-  const { adapter, events, agy } = await setup();
+it('settles active and queued turns on process exit without starting another prompt', async () => {
+  const { adapter, events, server } = await setup();
   await adapter.sendTurn({ sessionId: 's', turnId: 'one', text: 'first' });
   await adapter.sendTurn({ sessionId: 's', turnId: 'two', text: 'second' });
-  await flush();
-  agy().crash(1);
+  server.kill('SIGKILL');
   await flush();
   expect(adapter.hasSession('s')).toBe(false);
-  expect(
-    events.filter((event) => event.type === 'turn.completed').map((event) => event.outcome)
-  ).toEqual(['error', 'error']);
-  expect(events.at(-1)).toMatchObject({ type: 'session.exited' });
+  expect(events.filter((e) => e.type === 'turn.completed').map((e) => e.outcome)).toEqual([
+    'error',
+    'error',
+  ]);
+  expect(server.received.filter((m) => m.method === 'session/prompt')).toHaveLength(1);
 });
 
-it('runs queued turns one at a time, each with the caller turn id', async () => {
-  const { adapter, events, agy } = await setup();
-  await adapter.sendTurn({ sessionId: 's', turnId: 'one', text: 'first' });
-  await adapter.sendTurn({ sessionId: 's', turnId: 'two', text: 'second' });
+it('finishes streamed assistant messages so the transcript stops showing writing', async () => {
+  const { adapter, events, server } = await setup();
+  await adapter.sendTurn({ sessionId: 's', turnId: 't', text: 'hello' });
+  const prompt = await server.waitFor('session/prompt');
+  server.notify('session/update', {
+    sessionId: 'native',
+    update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'Hello' } },
+  });
+  server.send({ id: prompt.id, result: { stopReason: 'end_turn' } });
   await flush();
-  expect(agy().received).toHaveLength(1);
-  agy().result({ status: 'SUCCESS', response: 'a' });
-  await flush();
-  expect(agy().received).toHaveLength(2);
-  agy().result({ status: 'SUCCESS', response: 'b' });
-  await flush();
-  expect(
-    events.filter((event) => event.type === 'turn.completed').map((event) => event.turnId)
-  ).toEqual(['one', 'two']);
-  expect(
-    events.filter((event) => event.type === 'turn.started').map((event) => event.turnId)
-  ).toEqual(['one', 'two']);
-});
-
-it('prepends the system context to the first turn only', async () => {
-  const { adapter, agy } = await setup({ systemContext: 'ROOM CONTEXT' });
-  await adapter.sendTurn({ sessionId: 's', turnId: 'one', text: 'first' });
-  await flush();
-  expect(JSON.stringify(agy().received[0])).toContain('ROOM CONTEXT\\n\\nfirst');
-  agy().result({ status: 'SUCCESS', response: 'a' });
-  await flush();
-  await adapter.sendTurn({ sessionId: 's', turnId: 'two', text: 'second' });
-  await flush();
-  expect(JSON.stringify(agy().received[1])).not.toContain('ROOM CONTEXT');
-});
-
-it('refuses approvals and questions it can never carry instead of pretending to answer', async () => {
-  const { adapter } = await setup();
-  await expect(adapter.respondToRequest('s', 'r', 'accept')).rejects.toThrow(/headless/);
-  await expect(adapter.respondToUserInput('s', 'r', { q: 'a' })).rejects.toThrow(/ask_question/);
-  await expect(adapter.sendTurn({ sessionId: 'missing', turnId: 't', text: 'x' })).rejects.toThrow(
-    /not running/
+  const delta = events.find((e) => e.type === 'content.delta');
+  if (!delta || delta.type !== 'content.delta') throw new Error('missing delta');
+  const started = events.findIndex(
+    (event) => event.type === 'item.started' && event.item.id === delta.itemId
   );
+  expect(started).toBeGreaterThanOrEqual(0);
+  expect(started).toBeLessThan(events.indexOf(delta));
+  expect(events.find((e) => e.type === 'item.completed')).toMatchObject({
+    item: { id: delta.itemId, type: 'assistant_message', status: 'completed', text: 'Hello' },
+  });
+});
+
+it('serializes turns submitted synchronously by completion listeners', async () => {
+  const { adapter, server, events } = await setup();
+  adapter.subscribe((e) => {
+    if (e.type === 'turn.completed' && e.turnId === 'one') {
+      void adapter.sendTurn({ sessionId: 's', turnId: 'two', text: 'second' });
+      void adapter.sendTurn({ sessionId: 's', turnId: 'three', text: 'third' });
+    }
+  });
+  await adapter.sendTurn({ sessionId: 's', turnId: 'one', text: 'first' });
+  const prompt = server.received.find((m) => m.method === 'session/prompt')!;
+  server.send({ id: prompt.id, result: { stopReason: 'end_turn' } });
+  await flush();
+  expect(server.received.filter((m) => m.method === 'session/prompt')).toHaveLength(2);
+  expect(events.at(-1)).toMatchObject({ type: 'session.state.changed', status: 'running' });
+});
+
+it('authenticates once on the session process before creating the session', async () => {
+  const { server } = await setup();
+  expect(servers).toHaveLength(1);
+  expect(server.received.slice(0, 3).map((m) => m.method)).toEqual([
+    'initialize',
+    'authenticate',
+    'session/new',
+  ]);
+});
+it('refuses legacy CLI conversation IDs before starting a process', async () => {
+  await expect(
+    createAntigravityAdapter().startSession({
+      sessionId: 'legacy',
+      cwd: '/work',
+      runtimeMode: 'approval-required',
+      env: {},
+      mcpServers: {},
+      resume: { nativeSessionId: 'old-cli' },
+    })
+  ).rejects.toThrow('previous Antigravity CLI');
+  expect(servers).toHaveLength(0);
+});
+it('gets models from ACP initialization and uses native config selection', async () => {
+  const { adapter, server } = await setup();
+  expect(await adapter.listModels('s')).toMatchObject([{ id: 'model-a' }]);
+  await adapter.setModel('s', { id: 'model-a' });
+  expect(server.received.find((m) => m.method === 'session/set_config_option')?.params).toEqual({
+    sessionId: 'native',
+    configId: 'model',
+    value: 'model-a',
+  });
+});
+it('answers native questions with the offered option ID', async () => {
+  const { adapter, server, events } = await setup();
+  await adapter.sendTurn({ sessionId: 's', turnId: 't', text: 'question' });
+  server.send({
+    id: 99,
+    method: 'session/request_permission',
+    params: {
+      sessionId: 'native',
+      toolCall: { toolCallId: 'interaction_1', title: 'Choose' },
+      options: [{ optionId: 'yes', name: 'Yes', kind: 'allow_once' }],
+    },
+  });
+  const event = events.find((e) => e.type === 'user-input.requested');
+  if (!event || event.type !== 'user-input.requested') throw new Error('Missing question');
+  await expect(
+    adapter.respondToUserInput('s', event.requestId, { interaction_1: 'invented' })
+  ).rejects.toThrow('offered');
+  await adapter.respondToUserInput('s', event.requestId, { interaction_1: 'yes' });
+  await flush();
+  expect(server.received.find((m) => m.id === 99)?.result).toEqual({
+    outcome: { outcome: 'selected', optionId: 'yes' },
+  });
+});
+
+it('auto-approves Switch MCP calls with bypass off using provider metadata', async () => {
+  const { adapter, events, server } = await setup();
+  await adapter.sendTurn({ sessionId: 's', turnId: 't', text: 'connect' });
+  const options = [{ optionId: 'once', name: 'Allow once', kind: 'allow_once' }];
+  server.send({
+    id: 90,
+    method: 'session/request_permission',
+    params: {
+      sessionId: 'native',
+      toolCall: {
+        toolCallId: 'call',
+        kind: 'other',
+        _meta: { is_mcp_tool_call: true, mcp: { server: 'switch', tool: 'connect_to_room' } },
+      },
+      options,
+    },
+  });
+  await flush();
+  expect(server.received.find((m) => m.id === 90)?.result).toEqual({
+    outcome: { outcome: 'selected', optionId: 'once' },
+  });
+  expect(events.filter((e) => e.type === 'request.opened')).toHaveLength(0);
+  for (const [id, toolCall] of [
+    [91, { toolCallId: 'unidentified', title: 'switch_connect_to_room', kind: 'execute' }],
+    [
+      92,
+      {
+        toolCallId: 'other-server',
+        _meta: { is_mcp_tool_call: true, mcp: { server: 'other', tool: 'connect_to_room' } },
+      },
+    ],
+  ] as const) {
+    server.send({
+      id,
+      method: 'session/request_permission',
+      params: {
+        sessionId: 'native',
+        toolCall,
+        options,
+      },
+    });
+  }
+  expect(events.filter((e) => e.type === 'request.opened')).toHaveLength(2);
+});
+
+it('keeps approval for Switch metadata when Switch was not registered by the session', async () => {
+  const { adapter, events, server } = await setup(false, false);
+  await adapter.sendTurn({ sessionId: 's', turnId: 't', text: 'connect' });
+  server.send({
+    id: 93,
+    method: 'session/request_permission',
+    params: {
+      sessionId: 'native',
+      toolCall: {
+        toolCallId: 'call',
+        _meta: { is_mcp_tool_call: true, mcp: { server: 'switch', tool: 'connect_to_room' } },
+      },
+      options: [{ optionId: 'once', name: 'Allow once', kind: 'allow_once' }],
+    },
+  });
+  expect(events.filter((e) => e.type === 'request.opened')).toHaveLength(1);
 });

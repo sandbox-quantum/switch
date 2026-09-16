@@ -1,6 +1,7 @@
 import type { Session } from '@shared/core/sessions/sessions';
 
 export interface AgentRuntimeProvider {
+  startupStatus?(): { status: 'starting' | 'ready' | 'error'; message: string | null };
   restart(session: Session): Promise<void>;
   start(session: Session, isResuming?: boolean, initialPrompt?: string): Promise<void>;
   /**

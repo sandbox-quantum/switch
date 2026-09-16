@@ -512,6 +512,7 @@ it('validates native model choices and persists a confirmed choice across restar
   fixture.adapter.setModel = vi.fn(async () => {});
   const host = await HostedSession.start(root, fixture.config, fixture.adapter);
   hosts.push(host);
+  await vi.waitFor(() => expect(host.snapshot().session.models?.length).toBeGreaterThan(0));
   expect(host.snapshot().session.capabilities.modelChange).toBe(true);
   const command: Command = {
     ...message('model'),
@@ -556,6 +557,7 @@ it('leaves a lost model acknowledgement unknown and does not retry it', async ()
   });
   const host = await HostedSession.start(root, fixture.config, fixture.adapter);
   hosts.push(host);
+  await vi.waitFor(() => expect(host.snapshot().session.models?.length).toBeGreaterThan(0));
   const command: Command = {
     ...message('model'),
     body: { type: 'session.model.set', modelId: 'model-a', options: {} },
@@ -579,6 +581,7 @@ it('waits for native compaction and keeps history without sending a summarizatio
   );
   const host = await HostedSession.start(root, fixture.config, fixture.adapter);
   hosts.push(host);
+  await vi.waitFor(() => expect(host.snapshot().session.capabilities.compact).toBe(true));
   const command: Command = { ...message('compact'), body: { type: 'session.compact' } };
   const applied = host.command(command);
   await vi.waitFor(() => expect(fixture.adapter.compactSession).toHaveBeenCalledTimes(1));
@@ -612,6 +615,9 @@ it('stages attachments before dispatch and never executes after shutdown during 
   roots.push(root);
   const stageAttachments = vi.fn(() => transfer.promise);
   const host = await HostedSession.start(root, { ...config, stageAttachments }, adapter);
+  await vi.waitFor(() =>
+    expect(host.snapshot().session.capabilities.attachmentMimeTypes).toContain('text/plain')
+  );
   const command = message('with-file');
   if (command.body.type !== 'message.send') throw new Error('Expected message');
   command.body.attachments = [
@@ -635,6 +641,9 @@ it('delivers staged execution paths once and keeps durable attachment metadata',
   const staged = [{ path: '/execution-host/note.txt', mimeType: 'text/plain' }];
   const stageAttachments = vi.fn(async () => staged);
   const host = await HostedSession.start(root, { ...config, stageAttachments }, adapter);
+  await vi.waitFor(() =>
+    expect(host.snapshot().session.capabilities.attachmentMimeTypes).toContain('text/plain')
+  );
   hosts.push(host);
   const command = message('with-file');
   if (command.body.type !== 'message.send') throw new Error('Expected message');
@@ -670,6 +679,7 @@ it('updates attachment support after a confirmed native model change', async () 
     adapter
   );
   hosts.push(host);
+  await vi.waitFor(() => expect(host.snapshot().session.capabilities.modelChange).toBe(true));
   expect(host.snapshot().session.capabilities.attachmentMimeTypes).not.toContain('image/png');
   const image = message('image');
   if (image.body.type !== 'message.send') throw new Error('Expected message');
@@ -776,4 +786,95 @@ it('resumes a stopped native conversation only once per explicit operation witho
   hosts.push(stopped);
   expect(stopped.snapshot().session.status).toBe('stopped');
   expect(again.adapter.startSession).not.toHaveBeenCalled();
+});
+
+it.each(['claude', 'codex', 'opencode', 'antigravity', 'cursor'] as const)(
+  'starts %s without waiting for model discovery',
+  async (provider) => {
+    const root = await mkdtemp(join(tmpdir(), 'startup-models-'));
+    roots.push(root);
+    const fixture = setup(provider);
+    let resolveModels!: (models: []) => void;
+    fixture.adapter.listModels = vi.fn(
+      () =>
+        new Promise<[]>((resolve) => {
+          resolveModels = resolve;
+        })
+    );
+    const host = await HostedSession.start(root, fixture.config, fixture.adapter);
+    hosts.push(host);
+    expect(host.snapshot().session.status).toBe('ready');
+    expect(fixture.adapter.listModels).toHaveBeenCalledOnce();
+    expect((await host.command(message('before-models'))).status).toBe('applied');
+    resolveModels([]);
+  }
+);
+
+it('overlaps authentication with startup but waits for authentication before returning', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'startup-auth-'));
+  roots.push(root);
+  const fixture = setup('claude');
+  let authenticated!: () => void;
+  const authenticate = vi.fn(
+    () =>
+      new Promise<void>((resolve) => {
+        authenticated = resolve;
+      })
+  );
+  let returned = false;
+  const starting = HostedSession.start(
+    root,
+    { ...fixture.config, authenticate },
+    fixture.adapter
+  ).then((host) => {
+    returned = true;
+    hosts.push(host);
+    return host;
+  });
+  await vi.waitFor(() => expect(fixture.adapter.startSession).toHaveBeenCalledOnce());
+  expect(authenticate).toHaveBeenCalledOnce();
+  expect(returned).toBe(false);
+  authenticated();
+  expect((await starting).snapshot().session.status).toBe('ready');
+});
+
+it('cleans up the started provider when authentication fails', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'startup-auth-failed-'));
+  roots.push(root);
+  const fixture = setup('claude');
+  await expect(
+    HostedSession.start(
+      root,
+      {
+        ...fixture.config,
+        authenticate: async () => {
+          throw new Error('Sign in required');
+        },
+      },
+      fixture.adapter
+    )
+  ).rejects.toThrow('Sign in required');
+  expect(fixture.adapter.stopSession).toHaveBeenCalledOnce();
+  expect(fixture.adapter.sendTurn).not.toHaveBeenCalled();
+});
+
+it('reports model discovery failures without losing the usable session', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'startup-models-failed-'));
+  roots.push(root);
+  const fixture = setup('claude');
+  fixture.adapter.listModels = vi.fn(async () => {
+    throw new Error('Model service unavailable');
+  });
+  const host = await HostedSession.start(root, fixture.config, fixture.adapter);
+  hosts.push(host);
+  await vi.waitFor(() =>
+    expect(
+      host
+        .replay(0)
+        .events.some(
+          (event) => event.body.type === 'notice' && event.body.code === 'MODEL_CATALOG_UNAVAILABLE'
+        )
+    ).toBe(true)
+  );
+  expect(host.snapshot().session.status).toBe('ready');
 });

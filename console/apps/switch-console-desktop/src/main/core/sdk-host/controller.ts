@@ -3,6 +3,7 @@ import type { AttachmentUpload, ClientCommand } from '@switch-console/shared/ses
 import { z } from 'zod';
 import { getAgentById } from '@main/core/agents/getAgentById';
 import { remoteSessionReconciler } from '@main/core/agents/remote-session-reconciler';
+import { sessionRuntimeManager } from '@main/core/sessions/session-runtime-manager';
 import { createRPCController } from '@shared/lib/ipc/rpc';
 import {
   fetchSdkSessions,
@@ -23,6 +24,8 @@ async function sharedServer(serverId: string) {
   return server;
 }
 export const sdkHostController = createRPCController({
+  startupStatus: (sessionId: string) =>
+    sessionRuntimeManager.getAgent(sessionId)?.startupStatus?.() ?? null,
   discoveryErrors: () => remoteSessionReconciler.errors(),
   retryDiscovery: (agentId: string) => remoteSessionReconciler.refresh(agentId),
   retire: async (serverId: string, sessionId: string, epoch: string) =>

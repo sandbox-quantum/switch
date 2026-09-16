@@ -53,3 +53,24 @@ it('bounds an unterminated native protocol line and interrupts the process', asy
   });
   expect(await exited).toContain('exceeds 16 MiB');
 });
+
+it.each(['stdout', 'stderr'])(
+  'rejects sign-in output on %s and waits for process cleanup',
+  async (stream) => {
+    const warn = vi.fn();
+    client = new StdioJsonRpcClient({
+      command: process.execPath,
+      args: ['-e', `process.${stream}.write('LOGIN REQUIRED\\n'); setInterval(() => {}, 1000)`],
+      cwd: process.cwd(),
+      env: {},
+      logger: { ...noopLogger, warn },
+      onExit: () => {},
+      rejectOutputLine: (line) =>
+        line.includes('LOGIN REQUIRED') ? 'Sign in explicitly.' : undefined,
+    });
+    await expect(client.request('authenticate', {})).rejects.toThrow('Sign in explicitly.');
+    await client.dispose();
+    expect(client.isAlive).toBe(false);
+    expect(warn).not.toHaveBeenCalled();
+  }
+);

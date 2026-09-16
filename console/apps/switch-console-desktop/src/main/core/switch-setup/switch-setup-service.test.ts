@@ -271,14 +271,16 @@ describe('switchSetupService.listAgentTypeAvailability', () => {
       mocks.listPlugins.mockReturnValue([
         { metadata: { id: 'antigravity' }, capabilities: { switchSetup: { kind: 'none' } } },
       ]);
-      mocks.resolveCommandPath.mockResolvedValue(installed ? '/usr/local/bin/agy' : null);
+      mocks.resolveCommandPath.mockResolvedValue(
+        installed ? '/usr/local/bin/antigravity-acp' : null
+      );
       expect(await switchSetupService.listAgentTypeAvailability()).toEqual([
         {
           agentId: 'antigravity',
           available: installed,
           blockedReason: installed
             ? null
-            : 'Install Antigravity CLI on this computer to use SDK sessions.',
+            : 'Install Antigravity ACP on this computer to use SDK sessions.',
         },
       ]);
     }

@@ -186,14 +186,22 @@ export function SessionV1Chat({
             </Button>
           )}
           <span>
-            {available || (view.connected && session?.connectivity === 'online')
-              ? 'Connected'
-              : session?.status === 'stopped'
-                ? 'Stopped'
-                : 'Offline'}
+            {session?.status === 'starting'
+              ? 'Connecting…'
+              : available || (view.connected && session?.connectivity === 'online')
+                ? 'Connected'
+                : session?.status === 'stopped'
+                  ? 'Stopped'
+                  : 'Offline'}
           </span>
         </div>
       </div>
+      {session?.status === 'starting' && (
+        <p role="status" className="border-b border-border px-5 py-3 text-sm text-foreground-muted">
+          Connecting to the provider and checking authentication. You can write your message now;
+          sending becomes available when the session is ready.
+        </p>
+      )}
       {session?.status === 'stopped' && !session.retired && (
         <p role="status" className="border-b border-border px-5 py-3 text-sm text-foreground-muted">
           This session is stopped. Resume to continue the saved conversation. Interrupted work will

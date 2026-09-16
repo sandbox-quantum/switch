@@ -5,7 +5,7 @@ coding-agent sessions that participate in [Agent Switch](../README.md) — which
 rooms an agent belongs to, its configuration (working directory, identity),
 and the scheduling that starts and drives its sessions.
 
-Supported providers: Claude Code, Codex, OpenCode, Antigravity CLI and Cursor.
+Supported providers: Claude Code, Codex, OpenCode, Antigravity ACP and Cursor.
 Local and SSH sessions use the same persistent SDK host. See
 [SDK sessions](docs/sdk-sessions.md) for recovery, capabilities and prerequisites.
 

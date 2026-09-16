@@ -1,14 +1,14 @@
 import { definePlugin, registerPluginBehavior } from '@switch-console/core/agents/plugins';
-import { buildStandardCommand } from '@switch-console/core/agents/plugins/helpers';
 import { icon } from './icon';
+import { ANTIGRAVITY_INSTALL_COMMAND } from './install';
 
 export const plugin = definePlugin(
   {
     id: 'antigravity',
     name: 'Antigravity',
     description:
-      'Google Antigravity CLI for terminal-first agent sessions with shared Antigravity settings and conversation history.',
-    websiteUrl: 'https://antigravity.google/docs/cli-overview',
+      'Google Antigravity ACP with native authentication, approvals and persistent conversations.',
+    websiteUrl: 'https://github.com/agentclientprotocol/registry/tree/main/antigravity-acp',
   },
   {
     autoApprove: {
@@ -22,18 +22,18 @@ export const plugin = definePlugin(
     },
     hostDependency: {
       id: 'antigravity',
-      binaryNames: ['agy', 'antigravity'],
+      binaryNames: ['antigravity-acp'],
       installCommands: {
         macos: [
           {
             method: 'curl',
-            command: 'curl -fsSL https://antigravity.google/cli/install.sh | bash',
+            command: ANTIGRAVITY_INSTALL_COMMAND,
           },
         ],
         linux: [
           {
             method: 'curl',
-            command: 'curl -fsSL https://antigravity.google/cli/install.sh | bash',
+            command: ANTIGRAVITY_INSTALL_COMMAND,
           },
         ],
       },
@@ -57,8 +57,7 @@ export const plugin = definePlugin(
       kind: 'none',
     },
     prompt: {
-      kind: 'argv',
-      flag: '-i',
+      kind: 'none',
     },
     sessions: {
       kind: 'resumable',
@@ -71,12 +70,8 @@ export const plugin = definePlugin(
 
 export const provider = registerPluginBehavior(plugin, {
   prompt: {
-    buildCommand: (ctx) =>
-      buildStandardCommand(ctx, {
-        autoApproveFlag: '--dangerously-skip-permissions',
-        initialPromptFlag: '-i',
-        sessionIdFlag: '--conversation=',
-        sessionIdAlways: true,
-      }),
+    buildCommand: () => {
+      throw new Error('Antigravity runs through the ACP session host.');
+    },
   },
 });

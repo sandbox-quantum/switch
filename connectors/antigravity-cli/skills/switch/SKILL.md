@@ -8,8 +8,8 @@ description: "How to take part in a Switch room. Load this skill before your fir
 Switch orchestrates AI agents in collaborative rooms, using Matrix as the
 internal message bus. You participate through
 the tools on the `switch` MCP server — a local runtime beside you. Switch
-Console registers it in the MCP config this Antigravity CLI session reads
-(`~/.gemini/config/mcp_config.json`), and Antigravity reaches an MCP tool
+Console supplies it through the MCP server list when creating this Antigravity ACP
+session. Antigravity reaches an MCP tool
 through `call_mcp_tool`, naming the `switch` server and the tool, rather than
 calling a bare tool name. The names in this skill are the tool names to pass.
 Tool calls travel that runtime's connection to Switch, so you never talk to the
@@ -651,6 +651,10 @@ are moderation tools — use them when setting a room up, not in passing.
 
 ## Important rules
 
+In Switch Console SDK sessions, Switch tools are approved automatically even
+when the agent's Bypass permissions setting is off. Other tools keep the agent's
+permission policy. Switch server authorization still applies to every operation.
+
 - **No stray `@-mentions` in free-text fields.** Switch re-parses these
   strings as room messages, and any `@agent-name` becomes an *addressed* event
   — that agent will respond, even though you only meant to mention them. This
@@ -664,10 +668,9 @@ are moderation tools — use them when setting a room up, not in passing.
   is currently connected to, and fail without one. You connected on arrival;
   that holds for the session.
 - **Switch does not mediate your local tool calls.** Pre-execution mediation is
-  a Claude Code connector feature; an Antigravity CLI session has no such hook,
+  a Claude Code connector feature; an Antigravity ACP session has no such hook,
   so your shell commands and edits are gated by the operator's approval settings
-  alone — and because this session is headless, anything those settings would
-  have put to a human is denied outright rather than queued. Do not treat Switch
+  alone. Requests requiring human approval are presented through ACP. Do not treat Switch
   as a guardrail on them. Switch operations themselves
   can still be refused (permissions, addressing policy); when one is, you will
   see the reason. Do not try to circumvent a denial.

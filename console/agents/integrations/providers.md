@@ -17,7 +17,7 @@ Local and SSH locations use the same persistent SDK host.
 ## Native transports
 
 Claude uses the Claude Agent SDK; Codex uses app-server JSON-RPC; OpenCode uses
-its HTTP/SSE SDK; Antigravity uses headless stream-json; Cursor uses ACP.
+its HTTP/SSE SDK; Antigravity and Cursor use ACP.
 Cursor ACP is the native adapter transport. Native capability limits must be
 reported explicitly rather than replaced with synthetic prompts.
 

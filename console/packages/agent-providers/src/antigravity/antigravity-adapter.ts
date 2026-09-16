@@ -1,92 +1,76 @@
-import { type ChildProcess, execFile, spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { realpath } from 'node:fs/promises';
-import { homedir } from 'node:os';
-import { dirname, join } from 'node:path';
-import { createInterface } from 'node:readline';
-import { promisify } from 'node:util';
+import { readFile, realpath } from 'node:fs/promises';
+import { pathToFileURL } from 'node:url';
 import type { ModelChoice } from '@switch-console/shared/session-v1';
 import type {
-  McpServerSpec,
   ModelSelection,
   ProviderAdapter,
   ProviderSendTurnInput,
   ProviderSessionStartInput,
-  RuntimeMode,
-  TurnAttachment,
 } from '../adapter';
-import { ProviderSessionError } from '../adapter';
+import { ProviderSessionError, ProviderConversationUnavailableError } from '../adapter';
 import type {
   ApprovalDecision,
   ProviderItem,
   ProviderRuntimeEvent,
   UserInputAnswers,
 } from '../events';
-import { noopLogger, type ProviderLogger } from '../transport/stdio-json-rpc';
 import {
-  type AntigravityEvent,
-  itemTypeFor,
-  parseLine,
-  parseModels,
-  type StepUpdate,
-  titleFor,
-} from './protocol';
-import {
-  allowMcpServers,
-  registerWorkspaceMcpServers,
-  restoreFile,
-  revokeMcpAllowRules,
-  workspaceMcpConfigPath,
-} from './workspace-config';
+  type StdioJsonRpcClient,
+  JsonRpcError,
+  noopLogger,
+  type ProviderLogger,
+} from '../transport/stdio-json-rpc';
+import { modelsFromConfig, type ConfigOption } from './protocol';
+import { createAntigravityClient, initializeAntigravity } from './runtime';
 
-const execute = promisify(execFile);
-const PROVIDER = 'antigravity';
-const STDERR_TAIL_LIMIT = 8_000;
-
-/**
- * Where the Switch agent runtime writes a file fetched by the
- * `download_attachment` tool: `<root>/<runtime pid>/media/`. The per-session
- * directory is named after the runtime process, which the adapter never sees,
- * so the root is what can be granted.
- */
-function switchSessionsRoot(env: Record<string, string>): string {
-  return join(env.HOME || homedir(), '.switch', 'sessions');
+interface PermissionOption {
+  optionId: string;
+  name: string;
+  kind: string;
 }
-
-/** A single `agent_response` or `tool` step of the running turn. */
-interface Step {
-  item: ProviderItem;
-  started: boolean;
+interface ToolUpdate {
+  sessionUpdate: string;
+  _meta?: { is_mcp_tool_call?: boolean; mcp?: { server?: string; tool?: string } };
+  toolCallId: string;
+  title?: string;
+  kind?: string;
+  status?: string;
+  content?: Array<{
+    type: string;
+    content?: { type: string; text?: string };
+    path?: string;
+    oldText?: string;
+    newText?: string;
+  }>;
 }
-
+interface Update extends Omit<ToolUpdate, 'content'> {
+  configOptions?: ConfigOption[];
+  content?: ToolUpdate['content'] | { type: string; text?: string };
+}
 interface State {
   id: string;
   nativeId: string;
-  cwd: string;
-  /** Directories outside `cwd` the CLI was given access to, beyond `cwd` itself. */
-  readable: Set<string>;
-  env: Record<string, string>;
-  runtimeMode: RuntimeMode;
-  model?: ModelSelection;
-  agentName?: string;
-  context: string;
-  child: ChildProcess | null;
-  stderr: string;
+  models?: ModelChoice[];
+  configOptions: ConfigOption[];
+  questions: Map<
+    string,
+    { questionId: string; choices: string[]; settle: (value: unknown) => void }
+  >;
+  client: StdioJsonRpcClient;
   turn: string | null;
   queue: ProviderSendTurnInput[];
-  /** Keyed by the step's own key, so parallel subagents in one step stay apart. */
-  steps: Map<string, Step>;
+  items: Map<string, ProviderItem>;
+  approvals: Map<
+    string,
+    { options: Map<ApprovalDecision, string>; settle: (value: unknown) => void }
+  >;
+  messageId: string;
+  messageText: string;
   stopping: boolean;
-  /** The process was killed on purpose; its exit ends the turn, not the session. */
-  interrupting: boolean;
-  /** Attachment paths handed to the running turn, to explain a read that was denied. */
-  attachments: string[];
-  models?: ModelChoice[];
-  mcpServers: Record<string, McpServerSpec>;
-  mcpConfigOriginal: string | null;
-  mcpConfigPath: string;
-  allowRulesPath: string;
-  allowRules: string[];
+  interrupted: boolean;
+  context: string;
+  autoApproveSwitchTools: boolean;
 }
 
 type Emittable<T = ProviderRuntimeEvent> = T extends ProviderRuntimeEvent
@@ -96,35 +80,20 @@ type Emittable<T = ProviderRuntimeEvent> = T extends ProviderRuntimeEvent
 export interface AntigravityAdapterOptions {
   binaryPath?: string;
   logger?: ProviderLogger;
-  /** How long one `agy` turn may run before the CLI gives up. A Go duration. */
-  printTimeout?: string;
 }
 
-/**
- * Drives the Antigravity CLI (`agy`) in stream-json print mode: one NDJSON
- * message per line on stdin runs a turn, and the process stays alive between
- * turns so the conversation keeps its context.
- *
- * Headless `agy` has no channel for permission prompts or clarifying questions,
- * so this adapter never opens a `request.opened` or a `user-input.requested`.
- * It also has no in-process cancel, so an interrupt kills the process and the
- * next turn resumes the same conversation with `--conversation`.
- */
 export class AntigravityAdapter implements ProviderAdapter {
-  readonly provider = PROVIDER;
+  readonly provider = 'antigravity';
   readonly capabilities = {
     modelSwitchInSession: true,
     steering: false,
     resume: true,
-    approvals: false,
-    userInput: false,
+    approvals: true,
+    userInput: true,
   };
   private readonly sessions = new Map<string, State>();
   private readonly listeners = new Set<(event: ProviderRuntimeEvent) => void>();
   private readonly logger: ProviderLogger;
-  /** Serializes edits to the machine-wide settings file across sessions. */
-  private settingsWrites: Promise<unknown> = Promise.resolve();
-
   constructor(private readonly options: AntigravityAdapterOptions = {}) {
     this.logger = options.logger ?? noopLogger;
   }
@@ -133,331 +102,448 @@ export class AntigravityAdapter implements ProviderAdapter {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
   }
-
   hasSession(id: string): boolean {
     return this.sessions.has(id);
   }
 
   async startSession(input: ProviderSessionStartInput) {
     if (this.hasSession(input.sessionId))
-      throw new ProviderSessionError(PROVIDER, input.sessionId, 'session already started');
+      throw new ProviderSessionError('antigravity', input.sessionId, 'session already started');
     const cwd = await realpath(input.cwd);
+    if (input.resume && !input.resume.nativeSessionId.startsWith('acp:'))
+      throw new ProviderConversationUnavailableError(
+        'antigravity',
+        input.sessionId,
+        'This conversation belongs to the previous Antigravity CLI runtime. Start a fresh ACP conversation; the existing transcript is preserved.'
+      );
+    const client = await createAntigravityClient({
+      binaryPath: this.options.binaryPath ?? 'antigravity-acp',
+      cwd,
+      env: input.env,
+      logger: this.logger,
+      onExit: (reason) => this.exited(input.sessionId, reason),
+    });
     const state: State = {
       id: input.sessionId,
-      nativeId: input.resume?.nativeSessionId ?? '',
-      cwd,
-      // Outside `full-access` the CLI reads only what it was given at launch,
-      // and a Switch tool can put a file under the runtime's session directory
-      // at any point in the turn that asked for it — too late to grant then.
-      readable: new Set(
-        input.runtimeMode === 'full-access' ? [] : [switchSessionsRoot(input.env)]
-      ),
-      env: input.env,
-      runtimeMode: input.runtimeMode,
-      ...(input.model ? { model: input.model } : {}),
-      ...(input.agentName ? { agentName: input.agentName } : {}),
-      context: input.systemContext ?? '',
-      child: null,
-      stderr: '',
+      nativeId: '',
+      configOptions: [],
+      questions: new Map(),
+      client,
       turn: null,
       queue: [],
-      steps: new Map(),
+      items: new Map(),
+      approvals: new Map(),
+      messageId: '',
+      messageText: '',
       stopping: false,
-      interrupting: false,
-      attachments: [],
-      mcpServers: input.mcpServers,
-      mcpConfigOriginal: null,
-      mcpConfigPath: workspaceMcpConfigPath(cwd),
-      allowRulesPath: '',
-      allowRules: [],
+      interrupted: false,
+      context: input.systemContext ?? '',
+      autoApproveSwitchTools: Object.hasOwn(input.mcpServers, 'switch'),
     };
     this.sessions.set(state.id, state);
+    client.onNotification('session/update', (params) => {
+      const payload = params as { sessionId: string; update: Update };
+      if (payload.sessionId === state.nativeId) this.update(state, payload.update);
+    });
+    client.onServerRequest('session/request_permission', (params) =>
+      this.permission(
+        state,
+        params as { sessionId: string; toolCall: ToolUpdate; options: PermissionOption[] }
+      )
+    );
     this.emit(state, { type: 'session.state.changed', status: 'starting' });
     try {
-      await this.registerMcp(state);
-      await this.spawnProcess(state);
-      this.emit(state, { type: 'session.started', nativeSessionId: state.nativeId });
-      if (input.runtimeMode === 'approval-required')
-        this.emit(state, {
-          type: 'runtime.warning',
-          message:
-            'Antigravity cannot ask for approval without a terminal, so every tool that would need one is denied automatically. Switch to auto-accept edits or full access to let this session act.',
-        });
+      const initialized = await initializeAntigravity(client);
+      const mcpServers = Object.entries(input.mcpServers).map(([name, server]) =>
+        server.transport === 'stdio'
+          ? {
+              name,
+              command: server.command,
+              args: server.args,
+              env: Object.entries({
+                ...Object.fromEntries(
+                  (server.envVars ?? [])
+                    .filter((key) => input.env[key] !== undefined)
+                    .map((key) => [key, input.env[key]])
+                ),
+                ...server.env,
+              }).map(([name, value]) => ({ name, value })),
+            }
+          : {
+              name,
+              type: 'http',
+              url: server.url,
+              headers: Object.entries(server.headers ?? {}).map(([name, value]) => ({
+                name,
+                value,
+              })),
+            }
+      );
+      if (input.resume && !initialized.agentCapabilities?.sessionCapabilities?.resume)
+        throw new ProviderConversationUnavailableError(
+          'antigravity',
+          input.sessionId,
+          'This Antigravity ACP runtime cannot resume saved conversations.'
+        );
+      state.nativeId = input.resume?.nativeSessionId.slice(4) ?? '';
+      const result = await client.request<{
+        sessionId?: string;
+        configOptions?: ConfigOption[];
+      }>(input.resume ? 'session/resume' : 'session/new', {
+        cwd,
+        mcpServers,
+        ...(input.resume ? { sessionId: state.nativeId } : {}),
+      });
+      state.nativeId = result.sessionId ?? state.nativeId;
+      state.configOptions = result.configOptions ?? [];
+      state.models = modelsFromConfig(state.configOptions);
+      if (!state.nativeId) throw new Error('Antigravity returned no session ID.');
+      await client.request('session/set_mode', {
+        sessionId: state.nativeId,
+        modeId:
+          input.runtimeMode === 'full-access'
+            ? 'yolo'
+            : input.runtimeMode === 'auto-accept-edits'
+              ? 'auto_edit'
+              : 'default',
+      });
+      if (input.model) await this.setModel(state.id, input.model);
+      this.emit(state, { type: 'session.started', nativeSessionId: `acp:${state.nativeId}` });
       this.emit(state, { type: 'session.state.changed', status: 'ready' });
-      return { provider: PROVIDER, sessionId: state.id, nativeSessionId: state.nativeId };
+      return {
+        provider: 'antigravity',
+        sessionId: state.id,
+        nativeSessionId: `acp:${state.nativeId}`,
+      };
     } catch (cause) {
-      await this.releaseConfig(state);
-      state.child?.kill('SIGKILL');
+      await client.dispose();
       this.sessions.delete(state.id);
+      if (cause instanceof ProviderConversationUnavailableError) throw cause;
+      const details =
+        cause instanceof JsonRpcError &&
+        typeof cause.data === 'object' &&
+        cause.data !== null &&
+        'details' in cause.data
+          ? String(cause.data.details)
+          : '';
       throw new ProviderSessionError(
-        PROVIDER,
+        'antigravity',
         state.id,
-        `Could not start the Antigravity CLI: ${String(cause)}${state.stderr ? `\n${state.stderr}` : ''}`,
+        `Could not start Antigravity ACP: ${String(cause)}${details ? `: ${details}` : ''}${client.stderr ? `\n${client.stderr}` : ''}`,
         { cause }
       );
     }
   }
 
-  private argumentsFor(state: State): string[] {
-    const args = [
-      '--input-format',
-      'stream-json',
-      '--output-format',
-      'stream-json',
-      '--print-timeout',
-      this.options.printTimeout ?? '2h',
-      '--add-dir',
-      state.cwd,
-    ];
-    for (const directory of state.readable) args.push('--add-dir', directory);
-    if (state.runtimeMode === 'full-access') args.push('--dangerously-skip-permissions');
-    else if (state.runtimeMode === 'auto-accept-edits') args.push('--mode', 'accept-edits');
-    if (state.model) {
-      args.push('--model', state.model.id);
-      const effort = state.model.options?.effort;
-      if (effort) args.push('--effort', effort);
-    }
-    if (state.agentName) args.push('--agent', state.agentName);
-    if (state.nativeId) args.push('--conversation', state.nativeId);
-    return args;
-  }
-
-  /**
-   * Starts `agy` and resolves once its `init` line names the conversation. A
-   * respawn passes `--conversation`, so the same native id survives a kill.
-   */
-  private spawnProcess(state: State): Promise<void> {
-    const child = spawn(this.options.binaryPath ?? 'agy', this.argumentsFor(state), {
-      cwd: state.cwd,
-      env: state.env,
-      stdio: ['pipe', 'pipe', 'pipe'],
-    });
-    state.child = child;
-    state.stderr = '';
-    let settle: ((error?: Error) => void) | null = null;
-    const ready = new Promise<void>((resolve, reject) => {
-      settle = (error) => {
-        settle = null;
-        if (error) reject(error);
-        else resolve();
-      };
-    });
-    child.stderr?.setEncoding('utf8');
-    child.stderr?.on('data', (chunk: string) => {
-      state.stderr = `${state.stderr}${chunk}`.slice(-STDERR_TAIL_LIMIT);
-    });
-    const lines = createInterface({ input: child.stdout! });
-    lines.on('line', (line) => {
-      const event = parseLine(line);
-      if (!event) return;
-      if (event.event === 'init') {
-        if (event.conversation_id) state.nativeId = event.conversation_id;
-        settle?.();
-        return;
-      }
-      try {
-        this.handle(state, event);
-      } catch (cause) {
-        this.logger.error('Antigravity event handling failed', { error: String(cause) });
-      }
-    });
-    child.on('error', (error) => settle?.(error));
-    child.on('exit', (code, signal) => {
-      if (state.child !== child) return;
-      state.child = null;
-      const reason = signal
-        ? `The Antigravity CLI was terminated with ${signal}.`
-        : `The Antigravity CLI exited with code ${code}.`;
-      settle?.(new Error(`${reason}${state.stderr ? ` ${state.stderr.trim()}` : ''}`));
-      this.processGone(state, reason);
-    });
-    return ready;
-  }
-
-  /**
-   * An exit ends the running turn. It only ends the session when nobody asked
-   * for it — a deliberate interrupt leaves the session ready to respawn.
-   */
-  private processGone(state: State, reason: string): void {
-    if (state.interrupting) {
-      state.interrupting = false;
-      this.complete(state, 'interrupted', 'Interrupted.');
-      return;
-    }
-    if (state.stopping) return;
-    this.exited(state.id, reason);
-  }
-
   async sendTurn(input: ProviderSendTurnInput) {
     const state = this.require(input.sessionId);
     state.queue.push(input);
-    if (!state.turn) void this.drain(state);
+    if (!state.turn) this.drain(state);
     return { turnId: input.turnId };
   }
 
-  private async drain(state: State): Promise<void> {
+  private drain(state: State): void {
     if (state.turn || state.stopping || !this.hasSession(state.id)) return;
     const input = state.queue.shift();
     if (!input) return;
     state.turn = input.turnId;
-    state.steps.clear();
+    state.interrupted = false;
+    state.messageId = randomUUID();
+    state.items.clear();
     this.emit(state, { type: 'turn.started', turnId: input.turnId });
     this.emit(state, { type: 'session.state.changed', status: 'running' });
-    try {
-      if (input.model && input.model.id !== state.model?.id)
-        await this.setModel(state.id, input.model);
-      state.attachments = (input.attachments ?? []).map((attachment) => attachment.path);
-      await this.makeAttachmentsReadable(state, input.attachments ?? []);
-      if (!state.child) await this.spawnProcess(state);
-      const blocks: Array<{ type: string; text: string }> = [];
-      const prefix = state.context ? `${state.context}\n\n` : '';
-      state.context = '';
-      blocks.push({ type: 'text', text: `${prefix}${input.text}` });
-      for (const attachment of input.attachments ?? [])
-        blocks.push({
-          type: 'text',
-          text: `Attached file (${attachment.mimeType}): ${attachment.path}`,
-        });
-      state.child!.stdin!.write(
-        `${JSON.stringify({ event: 'user', message: { content: blocks } })}\n`
-      );
-    } catch (cause) {
-      if (state.turn === input.turnId) this.complete(state, 'error', String(cause));
-    }
-  }
-
-  /**
-   * Attachments are staged outside the working directory, and outside
-   * `full-access` the CLI denies reading a path it was not given. The grant is
-   * read at launch only — adding it to a live process changes nothing — so a
-   * turn that brings a new directory respawns onto the same conversation first.
-   */
-  private async makeAttachmentsReadable(
-    state: State,
-    attachments: readonly TurnAttachment[]
-  ): Promise<void> {
-    if (state.runtimeMode === 'full-access' || attachments.length === 0) return;
-    let added = false;
-    for (const attachment of attachments) {
-      let directory = dirname(attachment.path);
-      try {
-        directory = await realpath(directory);
-      } catch {
-        // A path the host staged but that is already gone stays as written; the
-        // read will fail loudly rather than silently widening access.
+    void this.run(state, input).then(
+      (reason) => {
+        if (state.turn !== input.turnId) return;
+        const interrupted = state.interrupted || reason === 'cancelled';
+        this.complete(
+          state,
+          interrupted ? 'interrupted' : reason === 'end_turn' ? 'completed' : 'error',
+          interrupted
+            ? 'Interrupted.'
+            : reason === 'end_turn'
+              ? undefined
+              : `Antigravity stopped: ${reason}`
+        );
+      },
+      (error: unknown) => {
+        if (state.turn !== input.turnId) return;
+        this.complete(
+          state,
+          state.interrupted ? 'interrupted' : 'error',
+          state.interrupted ? 'Interrupted.' : String(error)
+        );
       }
-      if (directory === state.cwd || state.readable.has(directory)) continue;
-      state.readable.add(directory);
-      added = true;
-    }
-    if (!added) return;
-    const child = state.child;
-    if (!child) return;
-    state.child = null;
-    child.kill('SIGKILL');
+    );
   }
 
-  private handle(state: State, event: AntigravityEvent): void {
-    // An interrupted turn is settled by the exit, so that the next turn is not
-    // written to the stdin of a process that is already going away.
-    if (state.interrupting) return;
-    if (event.step_update) this.step(state, event.step_update);
-    else if (event.event === 'result' && event.result) {
-      const denied = event.result.denied_actions ?? [];
-      if (denied.length > 0)
-        this.emit(state, {
-          type: 'runtime.warning',
-          message: `Antigravity denied ${denied.map((action) => action.display_name ?? action.action ?? 'a tool').join(', ')} because headless mode cannot ask for permission.`,
+  private async run(state: State, input: ProviderSendTurnInput): Promise<string> {
+    if (input.model) await this.setModel(state.id, input.model);
+    const prompt: Array<Record<string, unknown>> = [
+      { type: 'text', text: state.context ? `${state.context}\n\n${input.text}` : input.text },
+    ];
+    state.context = '';
+    for (const attachment of input.attachments ?? []) {
+      if (attachment.mimeType.startsWith('image/') || attachment.mimeType.startsWith('audio/')) {
+        prompt.push({
+          type: attachment.mimeType.startsWith('image/') ? 'image' : 'audio',
+          data: (await readFile(attachment.path)).toString('base64'),
+          mimeType: attachment.mimeType,
         });
-      if (state.attachments.length > 0 && denied.some((action) => action.action === 'read_file'))
-        this.emit(state, {
-          type: 'runtime.warning',
-          message: `Antigravity was refused a file read this turn, so it may not have opened ${state.attachments.join(', ')}.`,
+      } else {
+        prompt.push({
+          type: 'resource',
+          resource: {
+            uri: pathToFileURL(attachment.path).href,
+            mimeType: attachment.mimeType,
+            ...(attachment.mimeType.startsWith('text/') || /json|xml/.test(attachment.mimeType)
+              ? { text: await readFile(attachment.path, 'utf8') }
+              : { blob: (await readFile(attachment.path)).toString('base64') }),
+          },
         });
-      const failed = event.result.status === 'ERROR';
-      this.complete(
-        state,
-        failed ? 'error' : 'completed',
-        failed ? (event.result.error ?? 'Antigravity reported an error.') : undefined
-      );
+      }
+    }
+    return (
+      await state.client.request<{ stopReason: string }>('session/prompt', {
+        sessionId: state.nativeId,
+        prompt,
+      })
+    ).stopReason;
+  }
+
+  async interruptTurn(id: string): Promise<void> {
+    const state = this.require(id);
+    if (!state.turn) return;
+    state.interrupted = true;
+    state.client.notify('session/cancel', { sessionId: state.nativeId });
+    this.cancelApprovals(state);
+  }
+
+  async listModels(id: string): Promise<ModelChoice[]> {
+    return this.require(id).models ?? [];
+  }
+
+  async setModel(id: string, model: ModelSelection): Promise<void> {
+    const state = this.require(id);
+    if (!state.models?.some((choice) => choice.id === model.id))
+      throw new ProviderSessionError('antigravity', id, `Unavailable model: ${model.id}`);
+    const result = await state.client.request<{ configOptions?: ConfigOption[] }>(
+      'session/set_config_option',
+      {
+        sessionId: state.nativeId,
+        configId: 'model',
+        value: model.id,
+      }
+    );
+    if (result.configOptions) {
+      state.configOptions = result.configOptions;
+      state.models = modelsFromConfig(state.configOptions);
     }
   }
 
-  private step(state: State, update: StepUpdate): void {
-    const turnId = state.turn;
-    const index = update.step_index;
-    if (!turnId || index === undefined) return;
-    if (update.step_type === 'agent_response')
-      return this.assistantStep(state, turnId, index, update);
-    // Delegation is its own step type, not a tool call with a subagent name.
-    if (update.step_type === 'subagent') return this.subagentStep(state, turnId, index, update);
-    if (update.step_type !== 'tool') return;
-    const toolName = update.tool_name ?? update.tool_info?.name ?? 'tool';
-    const existing = state.steps.get(String(index));
-    const info = update.tool_info;
-    const failure = info?.error?.message;
-    const item: ProviderItem = {
-      id: existing?.item.id ?? `${turnId}-step-${index}`,
-      type: existing?.item.type ?? itemTypeFor(toolName),
-      status:
-        update.state === 'ERROR' ? 'failed' : update.state === 'DONE' ? 'completed' : 'in_progress',
-      title: titleFor(toolName, info?.parameters) || existing?.item.title || toolName,
-      toolName,
-      ...((failure ?? info?.output ?? existing?.item.text)
-        ? { text: failure ?? info?.output ?? existing?.item.text }
-        : {}),
-      ...(info?.parameters ? { payload: info.parameters } : {}),
-    };
-    state.steps.set(String(index), { item, started: true });
-    const terminal = update.state === 'DONE' || update.state === 'ERROR';
-    this.emit(state, {
-      type: terminal ? 'item.completed' : existing?.started ? 'item.updated' : 'item.started',
-      turnId,
-      item,
+  async respondToRequest(id: string, requestId: string, decision: ApprovalDecision): Promise<void> {
+    const state = this.require(id);
+    const pending = state.approvals.get(requestId);
+    if (!pending)
+      throw new ProviderSessionError('antigravity', id, `No pending approval ${requestId}`);
+    const optionId = pending.options.get(decision);
+    if (!optionId && decision !== 'cancel' && decision !== 'decline')
+      throw new ProviderSessionError('antigravity', id, `Decision ${decision} is not offered`);
+    state.approvals.delete(requestId);
+    pending.settle({
+      outcome: optionId ? { outcome: 'selected', optionId } : { outcome: 'cancelled' },
     });
+    this.emit(state, { type: 'request.resolved', requestId, decision });
   }
 
-  private subagentStep(state: State, turnId: string, index: number, update: StepUpdate): void {
-    const terminal = update.state === 'DONE' || update.state === 'ERROR';
-    const children = update.subagent_info?.subagents ?? [];
-    children.forEach((child, position) => {
-      const key = `${index}-${position}`;
-      const item: ProviderItem = {
-        id: `${turnId}-step-${key}`,
-        type: 'subagent',
-        status: update.state === 'ERROR' ? 'failed' : terminal ? 'completed' : 'in_progress',
-        title: child.role ?? child.type_name ?? 'Subagent',
-        toolName: child.type_name ?? update.tool_name ?? 'invoke_subagent',
-        ...(child.conversation_id ? { nativeChildId: child.conversation_id } : {}),
-        ...(child.initial_prompt ? { text: child.initial_prompt } : {}),
-      };
-      const existing = state.steps.get(key);
-      state.steps.set(key, { item, started: true });
+  async respondToUserInput(
+    id: string,
+    requestId: string,
+    answers: UserInputAnswers
+  ): Promise<void> {
+    const state = this.require(id);
+    const question = state.questions.get(requestId);
+    if (!question)
+      throw new ProviderSessionError('antigravity', id, 'Question is no longer pending.');
+    const answer = answers[question.questionId];
+    const choice =
+      typeof answer === 'string' ? answer : answer?.length === 1 ? answer[0] : undefined;
+    if (!choice || !question.choices.includes(choice))
+      throw new ProviderSessionError('antigravity', id, 'Choose one of the offered answers.');
+    state.questions.delete(requestId);
+    question.settle({ outcome: { outcome: 'selected', optionId: choice } });
+    this.emit(state, { type: 'user-input.resolved', requestId });
+  }
+
+  private async permission(
+    state: State,
+    params: { sessionId: string; toolCall: ToolUpdate; options: PermissionOption[] }
+  ): Promise<unknown> {
+    if (params.sessionId !== state.nativeId || !state.turn || state.interrupted)
+      return { outcome: { outcome: 'cancelled' } };
+    const turnId = state.turn;
+    const requestId = randomUUID();
+    if (params.toolCall.toolCallId.startsWith('interaction_')) {
+      if (!params.options.length) return { outcome: { outcome: 'cancelled' } };
+      return new Promise((settle) => {
+        state.questions.set(requestId, {
+          questionId: params.toolCall.toolCallId,
+          choices: params.options.map((option) => option.optionId),
+          settle,
+        });
+        this.emit(state, {
+          type: 'user-input.requested',
+          turnId,
+          requestId,
+          questions: [
+            {
+              id: params.toolCall.toolCallId,
+              question: params.toolCall.title ?? 'Choose an option.',
+              options: params.options.map((option) => ({
+                value: option.optionId,
+                label: option.name,
+              })),
+              multiSelect: false,
+              allowCustomAnswer: false,
+            },
+          ],
+        });
+      });
+    }
+    const once = params.options.find((option) => option.kind === 'allow_once');
+    if (
+      once &&
+      state.autoApproveSwitchTools &&
+      params.toolCall._meta?.is_mcp_tool_call === true &&
+      params.toolCall._meta.mcp?.server === 'switch'
+    )
+      return { outcome: { outcome: 'selected', optionId: once.optionId } };
+    const options = new Map<ApprovalDecision, string>();
+    const offered: Array<{ decision: ApprovalDecision; label: string }> = [];
+    for (const option of params.options) {
+      if (!['allow_once', 'allow_always', 'reject_once'].includes(option.kind)) continue;
+      const decision =
+        option.kind === 'allow_once'
+          ? 'accept'
+          : option.kind === 'allow_always'
+            ? 'acceptForSession'
+            : 'decline';
+      // Permanent policies are intentionally not offered by this session UI.
+      if (options.has(decision) || /future|permanent/i.test(option.name)) continue;
+      options.set(decision, option.optionId);
+      offered.push({ decision, label: option.name });
+    }
+    offered.push({ decision: 'cancel', label: 'Cancel' });
+    return new Promise((settle) => {
+      state.approvals.set(requestId, { options, settle });
       this.emit(state, {
-        type: terminal ? 'item.completed' : existing?.started ? 'item.updated' : 'item.started',
+        type: 'request.opened',
         turnId,
-        item,
+        requestId,
+        requestType:
+          params.toolCall.kind === 'execute'
+            ? 'command_execution_approval'
+            : params.toolCall.kind === 'edit'
+              ? 'file_change_approval'
+              : 'tool_approval',
+        title: params.toolCall.title ?? 'Antigravity needs permission',
+        options: offered,
       });
     });
   }
 
-  private assistantStep(state: State, turnId: string, index: number, update: StepUpdate): void {
-    const delta = update.text_delta ?? '';
-    const existing = state.steps.get(String(index));
-    if (!delta && !existing) return;
-    const id = existing?.item.id ?? `${turnId}-step-${index}`;
-    const text = `${existing?.item.text ?? ''}${delta}`;
-    const item: ProviderItem = {
-      id,
-      type: 'assistant_message',
-      status: update.state === 'DONE' ? 'completed' : 'in_progress',
-      title: 'Assistant',
-      text,
-    };
-    if (!existing) this.emit(state, { type: 'item.started', turnId, item: { ...item, text: '' } });
-    state.steps.set(String(index), { item, started: true });
-    if (delta) this.emit(state, { type: 'content.delta', turnId, itemId: id, delta });
-    if (update.state === 'DONE') this.emit(state, { type: 'item.completed', turnId, item });
+  private update(state: State, update: Update): void {
+    if (update.sessionUpdate === 'config_option_update' && update.configOptions) {
+      state.configOptions = update.configOptions;
+      state.models = modelsFromConfig(state.configOptions);
+      return;
+    }
+    if (!state.turn) return;
+    if (
+      update.sessionUpdate === 'agent_message_chunk' &&
+      update.content &&
+      !Array.isArray(update.content) &&
+      update.content.type === 'text'
+    ) {
+      if (!state.messageText)
+        this.emit(state, {
+          type: 'item.started',
+          turnId: state.turn,
+          item: {
+            id: state.messageId,
+            type: 'assistant_message',
+            status: 'in_progress',
+            title: '',
+            text: '',
+          },
+        });
+      state.messageText += update.content.text ?? '';
+      this.emit(state, {
+        type: 'content.delta',
+        turnId: state.turn,
+        itemId: state.messageId,
+        delta: update.content.text ?? '',
+      });
+      return;
+    }
+    if (update.sessionUpdate === 'tool_call' || update.sessionUpdate === 'tool_call_update') {
+      const old = state.items.get(update.toolCallId);
+      const content = Array.isArray(update.content) ? update.content : [];
+      const text = content
+        .map((part) =>
+          part.type === 'diff' ? `${part.path}\n${part.newText ?? ''}` : (part.content?.text ?? '')
+        )
+        .join('\n');
+      const item: ProviderItem = {
+        id: update.toolCallId,
+        type:
+          old?.type ??
+          (update.toolCallId.startsWith('mcp_')
+            ? 'mcp_tool_call'
+            : update.kind === 'execute'
+              ? 'command_execution'
+              : update.kind === 'edit'
+                ? 'file_change'
+                : 'tool_call'),
+        title: update.title ?? old?.title ?? 'Tool',
+        status:
+          update.status === 'completed'
+            ? 'completed'
+            : update.status === 'failed'
+              ? 'failed'
+              : (old?.status ?? 'in_progress'),
+        ...(text || old?.text ? { text: text || old?.text } : {}),
+      };
+      state.items.set(item.id, item);
+      this.emit(state, {
+        type:
+          item.status === 'completed' || item.status === 'failed'
+            ? 'item.completed'
+            : old
+              ? 'item.updated'
+              : 'item.started',
+        turnId: state.turn,
+        item,
+      });
+      this.finishMessage(state, 'completed');
+      state.messageId = randomUUID();
+    }
+  }
+
+  private finishMessage(state: State, status: 'completed' | 'failed'): void {
+    if (!state.turn || !state.messageText) return;
+    this.emit(state, {
+      type: 'item.completed',
+      turnId: state.turn,
+      item: {
+        id: state.messageId,
+        type: 'assistant_message',
+        title: 'Assistant',
+        status,
+        text: state.messageText,
+      },
+    });
+    state.messageText = '';
   }
 
   private complete(
@@ -465,162 +551,66 @@ export class AntigravityAdapter implements ProviderAdapter {
     outcome: 'completed' | 'interrupted' | 'error',
     message?: string
   ): void {
+    if (!state.turn) return;
     const turnId = state.turn;
-    if (!turnId) return;
-    state.turn = null;
-    for (const step of state.steps.values())
-      if (step.item.status === 'in_progress')
+    this.finishMessage(state, outcome === 'completed' ? 'completed' : 'failed');
+    for (const item of state.items.values())
+      if (item.status === 'in_progress') {
+        if (outcome === 'completed') {
+          outcome = 'error';
+          message = 'Antigravity ended the turn without confirming a pending tool result.';
+        }
         this.emit(state, {
           type: 'item.completed',
           turnId,
           item: {
-            ...step.item,
-            status: outcome === 'completed' ? 'completed' : 'failed',
+            ...item,
+            status: 'failed',
+            ...(message ? { text: [item.text, message].filter(Boolean).join('\n') } : {}),
           },
         });
-    state.steps.clear();
+      }
+    this.cancelApprovals(state);
+    state.turn = null;
     this.emit(state, { type: 'turn.completed', turnId, outcome, ...(message ? { message } : {}) });
-    this.emit(state, {
-      type: 'session.state.changed',
-      status: state.stopping ? 'stopped' : outcome === 'error' ? 'error' : 'ready',
-    });
-    void this.drain(state);
-  }
-
-  /**
-   * `agy` has no cancel message: SIGINT ends the process and the turn with it.
-   * The conversation id survives, so the next turn respawns onto it.
-   */
-  async interruptTurn(id: string): Promise<void> {
-    const state = this.require(id);
-    if (!state.turn) return;
-    if (!state.child) {
-      this.complete(state, 'interrupted', 'Interrupted.');
-      return;
-    }
-    state.interrupting = true;
-    state.child.kill('SIGINT');
-  }
-
-  async listModels(id: string): Promise<ModelChoice[]> {
-    const state = this.require(id);
-    if (state.models) return state.models;
-    const { stdout } = await execute(this.options.binaryPath ?? 'agy', ['models'], {
-      cwd: state.cwd,
-      env: state.env,
-      timeout: 30_000,
-      maxBuffer: 1024 * 1024,
-    });
-    state.models = parseModels(stdout).map((model) => ({ ...model, options: {} }));
-    return state.models;
-  }
-
-  /** The model is a launch flag, so a change takes effect on the next turn's process. */
-  async setModel(id: string, model: ModelSelection): Promise<void> {
-    const state = this.require(id);
-    if (state.model?.id === model.id && state.model?.options?.effort === model.options?.effort)
-      return;
-    state.model = model;
-    const child = state.child;
-    if (!child) return;
-    // Dropping the reference first tells the exit handler this was deliberate.
-    state.child = null;
-    child.kill('SIGKILL');
-  }
-
-  async respondToRequest(
-    id: string,
-    _requestId: string,
-    _decision: ApprovalDecision
-  ): Promise<void> {
-    throw new ProviderSessionError(
-      PROVIDER,
-      id,
-      'Antigravity cannot ask for approval in headless mode, so it never opens a request to answer.'
-    );
-  }
-
-  async respondToUserInput(
-    id: string,
-    _requestId: string,
-    _answers: UserInputAnswers
-  ): Promise<void> {
-    throw new ProviderSessionError(
-      PROVIDER,
-      id,
-      'Antigravity skips ask_question in headless mode; ask in the conversation instead.'
-    );
-  }
-
-  private async registerMcp(state: State): Promise<void> {
-    const names = Object.keys(state.mcpServers);
-    if (names.length === 0) return;
-    state.mcpConfigOriginal = await registerWorkspaceMcpServers({
-      cwd: state.cwd,
-      servers: state.mcpServers,
-      env: state.env,
-    });
-    if (state.runtimeMode === 'full-access') return;
-    const home = state.env.HOME;
-    if (!home) {
+    if (!state.turn)
       this.emit(state, {
-        type: 'runtime.warning',
-        message:
-          'No HOME in the session environment, so the MCP servers could not be allow-listed. Antigravity will deny them unless the session runs with full access.',
+        type: 'session.state.changed',
+        status: state.stopping ? 'stopped' : outcome === 'error' ? 'error' : 'ready',
       });
-      return;
+    this.drain(state);
+  }
+
+  private cancelApprovals(state: State): void {
+    for (const [requestId, question] of state.questions) {
+      question.settle({ outcome: { outcome: 'cancelled' } });
+      this.emit(state, { type: 'user-input.resolved', requestId });
     }
-    const granted = await this.queueSettings(() => allowMcpServers({ home, names }));
-    state.allowRulesPath = granted.path;
-    state.allowRules = granted.added;
-  }
-
-  private queueSettings<T>(work: () => Promise<T>): Promise<T> {
-    const next = this.settingsWrites.then(work, work);
-    this.settingsWrites = next.catch(() => {});
-    return next;
-  }
-
-  private async releaseConfig(state: State): Promise<void> {
-    if (Object.keys(state.mcpServers).length === 0) return;
-    const inUse = new Set<string>();
-    for (const other of this.sessions.values())
-      if (other !== state) for (const rule of other.allowRules) inUse.add(rule);
-    const drop = state.allowRules.filter((rule) => !inUse.has(rule));
-    state.allowRules = [];
-    try {
-      await restoreFile(state.mcpConfigPath, state.mcpConfigOriginal);
-      if (state.allowRulesPath)
-        await this.queueSettings(() => revokeMcpAllowRules(state.allowRulesPath, drop));
-    } catch (cause) {
-      this.logger.warn('Antigravity session configuration was not fully removed', {
-        error: String(cause),
-      });
+    state.questions.clear();
+    for (const [requestId, pending] of state.approvals) {
+      pending.settle({ outcome: { outcome: 'cancelled' } });
+      this.emit(state, { type: 'request.resolved', requestId, decision: 'cancel' });
     }
+    state.approvals.clear();
   }
-
   async stopSession(id: string): Promise<void> {
     const state = this.sessions.get(id);
     if (!state) return;
     state.stopping = true;
-    state.interrupting = false;
-    const child = state.child;
-    state.child = null;
-    child?.kill('SIGKILL');
-    await this.releaseConfig(state);
+    if (state.turn) await this.interruptTurn(id);
+    await state.client.dispose();
     this.exited(id, 'Session stopped');
   }
-
   async stopAll(): Promise<void> {
     await Promise.all([...this.sessions.keys()].map((id) => this.stopSession(id)));
   }
-
   private exited(id: string, reason: string): void {
     const state = this.sessions.get(id);
     if (!state) return;
     const stopping = state.stopping;
     state.stopping = true;
     this.complete(state, stopping ? 'interrupted' : 'error', reason);
+    this.cancelApprovals(state);
     for (const input of state.queue.splice(0))
       this.emit(state, {
         type: 'turn.completed',
@@ -629,23 +619,20 @@ export class AntigravityAdapter implements ProviderAdapter {
         message: reason,
       });
     this.sessions.delete(id);
-    if (!stopping) void this.releaseConfig(state);
     this.emit(state, { type: 'session.state.changed', status: 'stopped' });
     this.emit(state, { type: 'session.exited', reason });
   }
-
   private require(id: string): State {
     const state = this.sessions.get(id);
-    if (!state || state.stopping)
-      throw new ProviderSessionError(PROVIDER, id, 'Session is not running');
+    if (!state || !state.client.isAlive)
+      throw new ProviderSessionError('antigravity', id, 'Session is not running');
     return state;
   }
-
   private emit(state: State, event: Emittable): void {
     const full = {
       ...event,
       eventId: randomUUID(),
-      provider: PROVIDER,
+      provider: 'antigravity',
       sessionId: state.id,
       createdAt: new Date().toISOString(),
     } as ProviderRuntimeEvent;
@@ -658,7 +645,6 @@ export class AntigravityAdapter implements ProviderAdapter {
     }
   }
 }
-
 export function createAntigravityAdapter(
   options: AntigravityAdapterOptions = {}
 ): AntigravityAdapter {

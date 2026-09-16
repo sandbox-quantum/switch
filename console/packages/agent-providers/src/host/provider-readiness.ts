@@ -1,7 +1,7 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { z } from 'zod';
-import { parseModels } from '../antigravity/protocol';
+import { createAntigravityClient, initializeAntigravity } from '../antigravity/runtime';
 import { startOpencodeServer, stopOpencodeServer } from '../opencode/server';
 import { JsonRpcError, noopLogger, StdioJsonRpcClient } from '../transport/stdio-json-rpc';
 
@@ -16,7 +16,7 @@ const login: Record<string, string> = {
   claude: 'claude auth login',
   codex: 'codex login',
   cursor: 'agent login',
-  antigravity: 'agy',
+  antigravity: 'antigravity-acp --login',
   opencode: 'opencode auth login',
 };
 function result(status: ProviderReadiness['status'], message: string): ProviderReadiness {
@@ -47,43 +47,6 @@ export function parseAuthentication(provider: string, output: string): ProviderR
   }
   return result('unknown', 'Could not verify authentication. Check provider setup and try again.');
 }
-/**
- * `agy models` is the cheapest signal the CLI gives: it needs the login but
- * spends no tokens. Stdin is closed and the call is capped, so a CLI that would
- * rather print a sign-in URL and wait fails the probe instead of hanging.
- */
-async function checkAntigravity(input: {
-  binaryPath: string;
-  cwd: string;
-  env: Record<string, string>;
-}): Promise<ProviderReadiness> {
-  let output = '';
-  try {
-    const probe = await execute(input.binaryPath, ['models'], {
-      cwd: input.cwd,
-      env: input.env,
-      timeout: 15000,
-      killSignal: 'SIGKILL',
-      maxBuffer: 1024 * 1024,
-    });
-    output = probe.stdout;
-  } catch (error) {
-    const stdout = (error as { stdout?: unknown }).stdout;
-    const stderr = (error as { stderr?: unknown }).stderr;
-    output = `${typeof stdout === 'string' ? stdout : ''}\n${typeof stderr === 'string' ? stderr : ''}`;
-  }
-  const models = parseModels(output);
-  if (models.length > 0)
-    return {
-      status: 'authenticated',
-      message: 'Antigravity listed its models with the stored credentials.',
-      models: models.map((model) => ({ id: model.id, name: model.label })),
-    };
-  if (/authentication|sign.?in|log.?in|oauth|credential/i.test(output))
-    return result('unauthenticated', `Sign in on the execution machine with ${login.antigravity}.`);
-  return result('unknown', 'Could not verify authentication. Check provider setup and try again.');
-}
-
 export async function checkProviderReadiness(input: {
   provider: string;
   binaryPath: string;
@@ -136,7 +99,11 @@ export async function checkProviderReadiness(input: {
       }
       return parseAuthentication(input.provider, output);
     }
-    if (input.provider === 'antigravity') return await checkAntigravity(input);
+    if (input.provider === 'antigravity') {
+      client = await createAntigravityClient({ ...input, logger: noopLogger, onExit: () => {} });
+      await initializeAntigravity(client);
+      return result('authenticated', 'Signed in to Antigravity ACP.');
+    }
     if (input.provider !== 'codex')
       return result('unknown', 'This provider has no authentication check.');
     client = new StdioJsonRpcClient({
@@ -166,6 +133,14 @@ export async function checkProviderReadiness(input: {
       account.account ? 'Signed in.' : 'This Codex backend does not require OpenAI sign-in.'
     );
   } catch (error) {
+    if (
+      input.provider === 'antigravity' &&
+      /sign in|auth required|unauthenticated/i.test(String(error))
+    )
+      return result(
+        'unauthenticated',
+        'Sign in on the execution host with antigravity-acp --login.'
+      );
     if (
       error instanceof JsonRpcError &&
       error.code === -32000 &&

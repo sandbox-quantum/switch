@@ -1,7 +1,7 @@
 # SDK sessions
 
 Console uses a persistent shared SDK host for Claude Code, Codex, OpenCode,
-Antigravity CLI and Cursor. Local sessions and sessions reached through SSH use the
+Antigravity ACP and Cursor. Local sessions and sessions reached through SSH use the
 same host. SSH, ProxyCommand and ProxyJump carry deployment and management
 requests. They do not carry the lifetime of the provider process.
 
@@ -132,15 +132,14 @@ the native thread setting. Choose an explicit effort to replace it. Claude
 Compaction uses a native operation: Claude's `/compact` with a completed compaction
 boundary, Codex's `thread/compact/start` with turn completion, or OpenCode's
 `session.summarize` with native busy/idle completion. Console shows progress and the
-outcome. A timeout or interrupted completion remains unknown. Antigravity CLI's
-headless stream-json protocol exposes no compaction operation. The installed Cursor ACP command catalog also advertises no compaction operation. Neither receives a substitute summarization prompt.
+outcome. A timeout or interrupted completion remains unknown. The Antigravity ACP adapter does not expose compaction. The installed Cursor ACP command catalog also advertises no compaction operation. Neither receives a substitute summarization prompt.
 
 | Provider | Reset | Model selection | Native compaction | Attachments |
 | --- | --- | --- | --- | --- |
 | Claude Code | Yes | Native catalog and effort | When `/compact` is advertised | Images as bytes; other files staged |
 | Codex | Yes | Native catalog and reasoning effort | App-server compaction | Local images and staged file mentions |
 | OpenCode | Yes | Connected models and native variants | Native session compaction | Staged file URLs |
-| Antigravity CLI | Yes | Native model list | Unavailable | File paths in the prompt text only; the headless input rejects image blocks |
+| Antigravity ACP | Yes | Native ACP model catalog | Unavailable | Images as bytes; embedded file resources |
 | Cursor | Yes | ACP model catalog | Unavailable | Images as bytes; staged file references |
 
 Controls depend on the connected provider's reported support. OpenCode models
@@ -175,11 +174,13 @@ workspace permissions in Codex and restart the host before using file tools.
 
 ## Capability and deployment limits
 
-Antigravity CLI cannot prompt while headless: approval requests are auto-denied
-and clarifying questions are skipped, so neither reaches the room. Provide
-additional instructions in chat. Interrupting an Antigravity turn restarts the
-provider process and resumes by conversation id rather than stopping the turn in
-place. Other capability limits remain explicit
+Antigravity uses Google's standalone ACP runtime, installed as `antigravity-acp`.
+It requires a separate sign-in with `antigravity-acp --login` on the execution
+host; an existing `agy` login is not reused. The runtime supports Apple Silicon
+macOS and Linux x64/ARM64. Approvals, offered-answer questions and cancellation
+use ACP. Saved conversations from the older CLI runtime cannot be resumed by ACP;
+reset the conversation to start fresh while preserving its transcript.
+Other capability limits remain explicit
 in the session contract. Terminal sessions (tmux/PTY) were removed; SDK adapters
 are the only session runtime. Lifecycle scripts use noninteractive commands.
 
@@ -269,3 +270,13 @@ existing host catalogue.
 
 Complete sign-in in the provider CLI, then select
 Check again. Console does not capture passwords or OAuth tokens in this form.
+
+## Opening a session
+
+Console opens the conversation after the execution host has registered with Switch,
+while provider initialization and authentication continue in the background. The
+chat shows **Connecting** and accepts draft text; sending stays disabled until
+the provider is ready. The saved initial prompt is submitted only after readiness,
+using its durable command identity. Startup failures remain visible in the chat.
+This separates opening the conversation from provider readiness; it does not
+promise that a fresh provider process can authenticate in under 500 milliseconds.

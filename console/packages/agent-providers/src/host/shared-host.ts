@@ -20,6 +20,7 @@ import { SharedState } from './shared-state';
 export type SharedHostOptions = {
   root: string;
   resumeOperationId?: string;
+  authenticate?: () => Promise<void>;
   agentApiUrl: string;
   token: string;
   session: Session;
@@ -303,6 +304,7 @@ export async function runSharedHost(
         input: options.input,
         epochAuthority: 'server',
         resumeOperationId: options.resumeOperationId,
+        authenticate: options.authenticate,
         stageAttachments: (attachments) =>
           Promise.all(
             attachments.map((attachment) =>

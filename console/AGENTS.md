@@ -9,7 +9,7 @@ Switch Console is a cross-platform, local-first Electron app for orchestrating m
 coding agents in parallel. Each agent runs in its own session in its location's directory
 (there are no Git worktrees). An agent runs either locally or — when configured remote — on an
 SSH host — through a persistent SDK host. The supported providers are Claude Code,
-Codex, OpenCode, Antigravity CLI and Cursor. Local and SSH sessions use the same
+Codex, OpenCode, Antigravity ACP and Cursor. Local and SSH sessions use the same
 adapters, durable commands and transcript recovery. See [SDK sessions](docs/sdk-sessions.md).
 
 ## The name: display vs identity (CHOO-2008)

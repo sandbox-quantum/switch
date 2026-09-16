@@ -62,6 +62,19 @@ function launchSettled(snapshot: Snapshot): boolean {
 export class SharedAgentRuntime implements AgentRuntimeProvider {
   private server: SwitchServer | null = null;
   private starting: Promise<void> | null = null;
+  private opened: Promise<void> | null = null;
+  private startupError: string | null = null;
+
+  startupStatus() {
+    return {
+      status: this.startupError
+        ? ('error' as const)
+        : this.starting
+          ? ('starting' as const)
+          : ('ready' as const),
+      message: this.startupError,
+    };
+  }
   constructor(
     private readonly transport: LocationTransport,
     private readonly params: {
@@ -73,20 +86,36 @@ export class SharedAgentRuntime implements AgentRuntimeProvider {
   ) {}
 
   async start(session: Session, isResuming?: boolean, initialPrompt?: string): Promise<void> {
-    if (this.starting) return this.starting;
-    this.starting = this.open(session, initialPrompt, isResuming ?? false, false);
-    try {
-      await this.starting;
-    } finally {
-      this.starting = null;
-    }
+    if (this.starting) return this.opened ?? this.starting;
+    this.startupError = null;
+    let connected!: () => void;
+    let failed!: (error: unknown) => void;
+    this.opened = new Promise<void>((resolve, reject) => {
+      connected = resolve;
+      failed = reject;
+    });
+    this.starting = this.open(session, initialPrompt, isResuming ?? false, false, connected);
+    void this.starting
+      .then(connected, (error: unknown) => {
+        this.startupError = error instanceof Error ? error.message : String(error);
+        log.error('Background session startup failed', {
+          sessionId: session.id,
+          error: this.startupError,
+        });
+        failed(error);
+      })
+      .finally(() => {
+        this.starting = null;
+      });
+    return this.opened;
   }
 
   private async open(
     session: Session,
     initialPrompt: string | undefined,
     isResuming: boolean,
-    restart: boolean
+    restart: boolean,
+    connected: () => void
   ): Promise<void> {
     const agent = await getAgentById(session.agentId);
     if (!agent?.switchAgentId || !agent.serverId)
@@ -112,6 +141,20 @@ export class SharedAgentRuntime implements AgentRuntimeProvider {
       restart ? '--restart' : '--ensure',
       isResuming
     );
+    let roomBound = false;
+    const bindRoom = async () => {
+      if (roomBound) return;
+      const roomContext = {
+        sessionId: session.id,
+        providerId: session.providerId,
+        ptyId: makeHookSessionId(session.providerId, session.id),
+      };
+      if (intended.rooms[0])
+        switchRoomService.setSessionRoom(roomContext, intended.rooms[0], agent.switchAgentId, null);
+      else await switchRoomService.restoreConnection(roomContext);
+      switchNotificationPoller.clearSharedIntent(session.id);
+      roomBound = true;
+    };
     let snapshot;
     const deadline = Date.now() + 120000;
     let nextFailureCheck = 0;
@@ -132,13 +175,21 @@ export class SharedAgentRuntime implements AgentRuntimeProvider {
         if (
           snapshot.session.epoch !== previousEpoch &&
           snapshot.session.connectivity === 'online' &&
+          snapshot.session.status === 'starting'
+        ) {
+          await bindRoom();
+          connected();
+        }
+        if (
+          snapshot.session.epoch !== previousEpoch &&
+          snapshot.session.connectivity === 'online' &&
           launchSettled(snapshot)
         )
           break;
       } catch (error) {
         if (Date.now() + 500 >= deadline) throw error;
       }
-      await delay(500);
+      await delay(50);
     }
     if (
       !snapshot ||
@@ -149,15 +200,7 @@ export class SharedAgentRuntime implements AgentRuntimeProvider {
       throw new Error(
         `Shared SDK host did not become ready. Inspect ${root}/supervisor.log on the execution host.`
       );
-    const roomContext = {
-      sessionId: session.id,
-      providerId: session.providerId,
-      ptyId: makeHookSessionId(session.providerId, session.id),
-    };
-    if (intended.rooms[0])
-      switchRoomService.setSessionRoom(roomContext, intended.rooms[0], agent.switchAgentId, null);
-    else await switchRoomService.restoreConnection(roomContext);
-    switchNotificationPoller.clearSharedIntent(session.id);
+    await bindRoom();
     if (!awaitingResetDecision(snapshot))
       await this.deliverInitialPrompt(session, initialPrompt, snapshot, server);
   }
@@ -243,7 +286,17 @@ export class SharedAgentRuntime implements AgentRuntimeProvider {
 
   async restart(session: Session): Promise<void> {
     await this.resolveServer();
-    await this.open(session, undefined, true, true);
+    if (this.starting) await this.starting;
+    this.startupError = null;
+    this.starting = this.open(session, undefined, true, true, () => {});
+    try {
+      await this.starting;
+    } catch (error) {
+      this.startupError = error instanceof Error ? error.message : String(error);
+      throw error;
+    } finally {
+      this.starting = null;
+    }
   }
 
   async dehydrate(): Promise<void> {}
@@ -252,7 +305,7 @@ export class SharedAgentRuntime implements AgentRuntimeProvider {
     await this.stop();
   }
   async stop(): Promise<void> {
-    if (this.starting) await this.starting;
+    if (this.starting) await this.starting.catch(() => {});
     await this.resolveServer();
     await stopSharedSession(this.server!, this.params.sessionId);
   }
@@ -265,10 +318,7 @@ export class SharedAgentRuntime implements AgentRuntimeProvider {
 }
 
 export async function buildSharedHostConfig(
-  session: Pick<
-    Session,
-    'id' | 'agentId' | 'providerId' | 'agentName' | 'providerSessionId' | 'autoApprove'
-  >,
+  session: Pick<Session, 'id' | 'agentId' | 'providerId' | 'agentName' | 'providerSessionId'>,
   params: { sessionPath: string; sessionEnvVars: Record<string, string>; shellSetup?: string },
   transport: LocationTransport,
   intended: { rooms: string[]; startCursor?: number }
@@ -335,8 +385,7 @@ export async function buildSharedHostConfig(
       input: {
         sessionId: session.id,
         cwd: params.sessionPath,
-        runtimeMode:
-          (session.autoApprove ?? agent.autoApprove) ? 'full-access' : 'approval-required',
+        runtimeMode: agent.autoApprove ? 'full-access' : 'approval-required',
         env: params.sessionEnvVars,
         mcpServers: {},
         ...(session.providerSessionId

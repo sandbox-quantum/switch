@@ -325,7 +325,7 @@ class SwitchSetupService {
 
       if (agentId === 'antigravity' || agentId === 'cursor') {
         const cursor = agentId === 'cursor';
-        const installed = await resolveCommandPath(cursor ? 'agent' : 'agy', this.ctx);
+        const installed = await resolveCommandPath(cursor ? 'agent' : 'antigravity-acp', this.ctx);
         availability.push({
           agentId,
           available: Boolean(installed),
@@ -333,7 +333,7 @@ class SwitchSetupService {
             ? null
             : cursor
               ? 'Install Cursor CLI on this computer to use ACP sessions.'
-              : 'Install Antigravity CLI on this computer to use SDK sessions.',
+              : 'Install Antigravity ACP on this computer to use SDK sessions.',
         });
         continue;
       }
