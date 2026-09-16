@@ -1,8 +1,8 @@
-"""record when an approved request card was taken off the platform
+"""record when an answered request card was taken off the platform
 
 The row has to outlive the card it named: a typed answer still resolves
 against it, and without a mark saying the card is gone a restart reads the row
-as a card that merely needs redrawing and posts the granted question again.
+as a card that merely needs redrawing and posts the settled question again.
 
 Null for every card still standing, which is every card there is when this
 runs — so no backfill, and an older row is correctly read as not removed.

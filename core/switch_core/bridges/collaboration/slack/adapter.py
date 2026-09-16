@@ -178,7 +178,7 @@ class SlackAdapter(CollaborationAdapter):
     #: icon. Slack restricts deleting an *impersonated* message, which is a
     #: message sent as a real member; `chat:write.customize` is not that, and
     #: the typing indicator has always been posted and deleted this way.
-    removes_approved_cards: ClassVar[bool] = True
+    removes_answered_cards: ClassVar[bool] = True
 
     #: Every publication carries its token in `block_id` and in the message's
     #: metadata, so a status is as findable as a card despite printing no

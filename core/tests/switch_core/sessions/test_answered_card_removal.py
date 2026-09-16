@@ -1,13 +1,14 @@
-"""A permission card after the permission has been given.
+"""A permission card after somebody has answered it.
 
-A card that has been answered yes has nothing left to ask, and on a platform
-that can prove it took the message back it is removed rather than left as a
-settled notice. A refusal is not removed: it is the only durable record in the
-channel that someone said no.
+An answered card has nothing left to ask, whichever way it was answered, and
+on a platform that can prove it took the message back it is removed rather
+than left as a settled notice. What stays is a card nobody has decided:
+unanswered, still being submitted, or ended without an answer at all.
 
-The row outlives the card either way, because it is what a handle typed into
-the channel still resolves to, and because without it a restarted publisher
-would read the request as one whose card had never been drawn.
+The row outlives the card, because it is what a handle typed into the channel
+still resolves to, and because without it a restarted publisher would read the
+request as one whose card had never been drawn. The decision itself is in the
+session and in Console; the channel is not where it is kept.
 
 `test_publication.py` covers the same path up to settlement; this is what
 happens after it.
@@ -52,7 +53,7 @@ class Removing(Platform):
     there, which is the one thing no real platform does.
     """
 
-    removes_approved_cards = True
+    removes_answered_cards = True
 
     def __init__(self) -> None:
         super().__init__()
@@ -77,9 +78,7 @@ class Removing(Platform):
 
     async def update_rich(self, channel, agent, post, content, thread):
         if self.gone:
-            raise RichContentFailed(
-                f"No message at {post}.", text="Permission granted."
-            )
+            raise RichContentFailed(f"No message at {post}.", text="Allow once.")
         await super().update_rich(channel, agent, post, content, thread)
 
 
@@ -163,7 +162,9 @@ async def _removed_at(session_factory):
         return (await db.scalar(select(SessionRequestPost))).removed_at
 
 
-async def test_a_granted_card_is_taken_away_rather_than_drawn_settled(session_factory):
+async def test_an_answered_card_is_taken_away_rather_than_drawn_settled(
+    session_factory,
+):
     """Asked for first, drawn only if the platform still has it.
 
     The settled draw is the fallback for a removal that did not happen, not a
@@ -185,16 +186,36 @@ async def test_a_granted_card_is_taken_away_rather_than_drawn_settled(session_fa
     assert await _removed_at(session_factory) is not None
 
 
-async def test_a_refusal_keeps_its_card(session_factory):
-    """The channel's only record that permission was asked for and withheld.
-    Deleting it would leave the audit holding the one copy of that."""
+async def test_a_refusal_is_taken_away_too(session_factory):
+    """A card answered no is as finished as one answered yes.
+
+    The refusal is not lost with it: the request, its decision and who made it
+    are in the session and in Console, and the row the handle resolves to
+    stays. What goes is a message in a channel still showing buttons for a
+    question that has been settled.
+    """
     platform = Removing()
     service, epoch, posts, cards, post = await _card(session_factory, platform)
 
     await _answer(service, epoch, posts, post, session_factory, "deny")
     await refresh_cards(session_factory, "bridge", "session-demo", cards)
 
-    assert "Deny" in platform.edits[-1][2]
+    assert platform.removed == [("channel-demo", post.external_post_id)]
+    assert await _removed_at(session_factory) is not None
+
+
+async def test_a_card_nobody_has_answered_is_left_alone(session_factory):
+    """The line the removal stands on: a decision, not a settlement.
+
+    A request can end without anyone deciding it — it expires, the agent
+    withdraws it, the host reports an error — and the card is then the only
+    thing in the channel that says a question was asked at all.
+    """
+    platform = Removing()
+    service, epoch, posts, cards, post = await _card(session_factory, platform)
+
+    await refresh_cards(session_factory, "bridge", "session-demo", cards)
+
     assert platform.removed == []
     assert await _removed_at(session_factory) is None
 
@@ -425,8 +446,8 @@ async def test_a_transient_refusal_is_retried_without_another_redraw(session_fac
     assert await _removed_at(session_factory) is not None
 
 
-async def test_a_card_recovered_after_it_was_granted_is_taken_back(session_factory):
-    """Approved in Console while the send was still unconfirmed.
+async def test_a_card_recovered_after_it_was_answered_is_taken_back(session_factory):
+    """Answered in Console while the send was still unconfirmed.
 
     Recovery binds the reservation to the message it finds and draws it
     settled, and that is the only cycle in which anything about the card

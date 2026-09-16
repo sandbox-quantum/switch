@@ -1474,8 +1474,8 @@ class SessionRequestCards:
         return bool(getattr(self._adapter, "discloses_unconfirmed_posts", False))
 
     @property
-    def removes_approved_cards(self) -> bool:
-        """Whether a granted card can be taken off this platform, provably.
+    def removes_answered_cards(self) -> bool:
+        """Whether an answered card can be taken off this platform, provably.
 
         Two things have to hold, and a platform that manages only the first is
         False: the platform will delete a message posted under an agent's own
@@ -1483,7 +1483,7 @@ class SessionRequestCards:
         having been ignored. Where it is False the card is left settled, which
         is what every platform did before any of them could do better.
         """
-        return bool(getattr(self._adapter, "removes_approved_cards", False))
+        return bool(getattr(self._adapter, "removes_answered_cards", False))
 
     async def post(
         self,
@@ -1746,7 +1746,7 @@ class SessionRequestCards:
             )
 
     async def remove(self, post: SessionRequestPost) -> None:
-        """Take a card off the platform now that its approval has been given.
+        """Take a card off the platform now that it has been answered.
 
         Nothing is written until the platform has said the card is gone.
         `removed_at` is the publisher's evidence that there is no message left

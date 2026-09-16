@@ -865,7 +865,7 @@ class CollaborationAdapter(ABC):
         settled by simply asking again. `RichContentThrottled` where the
         platform named a wait, `RemovalFailed` for anything else.
 
-        Not reached unless the adapter also sets `removes_approved_cards`,
+        Not reached unless the adapter also sets `removes_answered_cards`,
         which is why this refuses rather than quietly doing nothing: a
         platform brought into the removal flow without an implementation
         should stop, not report success for a card still on the screen.

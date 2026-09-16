@@ -35,7 +35,7 @@ from switch_core.sessions.contract import (
     Command,
     Snapshot,
     TurnUpsert,
-    granted,
+    decided,
 )
 from switch_core.sessions.presentation import (
     activity_error_summary,
@@ -163,7 +163,7 @@ async def refresh_cards(
     against what is actually recorded for it, every time.
 
     `removal_allowed` / `removal_succeeded` / `removal_delayed` are the same
-    three-part gate as the post's, for taking a granted card back, and they
+    three-part gate as the post's, for taking an answered card back, and they
     are kept apart from `refresh_needed` on purpose: whether a card still owes
     a deletion is a fact about the record, not about whether anything has
     changed since it was last drawn. Sharing the redraw's gate meant one
@@ -341,7 +341,7 @@ async def refresh_cards(
                 post_succeeded(attempt)
                 refreshed(new_post.token, state)
             elif post.removed_at is not None:
-                # The card was taken back when its approval was granted. The
+                # The card was taken back once its question was answered. The
                 # row stays so a typed answer still resolves, but there is no
                 # longer a message at that address: redrawing it would fail,
                 # and recovering it would find whatever now sits where it was.
@@ -371,9 +371,9 @@ async def refresh_cards(
                 post = await cards.recover(post)
                 recovery_succeeded(post.token)
                 recovered = True
-            if post is not None and cards.removes_approved_cards and granted(request):
-                # A stage of its own, deliberately not a step of the redraw. A
-                # granted card with no removal recorded is one still owed, and
+            if post is not None and cards.removes_answered_cards and decided(request):
+                # A stage of its own, deliberately not a step of the redraw. An
+                # answered card with no removal recorded is one still owed, and
                 # that stays true on a cycle where nothing about the card
                 # changed — which is every cycle after the one that drew it
                 # settled. Hanging the removal off `refresh_needed` meant a
@@ -404,7 +404,7 @@ async def refresh_cards(
                     except RemovalFailed as refusal:
                         backed_off += 1
                         logger.warning(
-                            "Card %s for request %s was granted but %s would "
+                            "Card %s for request %s was answered but %s would "
                             "not take it back: %s. It stays in channel %s "
                             "showing the decision until a later attempt gets "
                             "through.",

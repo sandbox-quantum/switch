@@ -134,9 +134,9 @@ def test_a_disconnected_adapter_does_not_claim_the_card_was_removed() -> None:
 
 
 def test_slack_is_the_platform_that_says_it_can_do_this() -> None:
-    """The capability is what routes a granted card here at all, and the four
+    """The capability is what routes an answered card here at all, and the four
     platforms still to come are the ones that have not claimed it."""
-    assert SlackAdapter.removes_approved_cards is True
+    assert SlackAdapter.removes_answered_cards is True
 
 
 def test_a_platform_with_no_implementation_refuses_rather_than_pretends() -> None:
@@ -147,6 +147,6 @@ def test_a_platform_with_no_implementation_refuses_rather_than_pretends() -> Non
     class Unimplemented:
         remove_publication = CollaborationAdapter.remove_publication
 
-    assert getattr(Unimplemented(), "removes_approved_cards", False) is False
+    assert getattr(Unimplemented(), "removes_answered_cards", False) is False
     with pytest.raises(RemovalFailed):
         _run(Unimplemented().remove_publication("C123", CARD))  # type: ignore[arg-type]

@@ -466,26 +466,23 @@ def parse_command(payload: Any) -> Command:
     return Command.model_validate(payload)
 
 
-# The two decisions that grant what was asked for. `cancel` is not a refusal
-# and `decline` is the refusal, but neither is a grant, and the pair is named
-# once so that a third grant added to `ApprovalOption.decision` is added here.
-GRANTS = frozenset({"accept", "acceptForSession"})
+def decided(request: SnapshotRequest) -> bool:
+    """Whether the host confirmed which option a person chose on this card.
 
+    Not "has it finished". `answered` is equally the outcome of a request that
+    ended without anyone reading it, and `resolved` equally its state; what
+    this asks is narrower, and deliberately says nothing about *which* way the
+    answer went. Both directions end the card's usefulness — the decision is
+    in the session, in Console and in the row, not in a message still offering
+    buttons that no longer do anything.
 
-def granted(request: SnapshotRequest) -> bool:
-    """Whether the host confirmed that this approval was given.
-
-    Not "has it finished": `answered` is equally the outcome of a refusal, and
-    `resolved` equally its state, so neither says which way it went. The one
-    record of that is the decision carried by the option the result names, and
-    reaching it means matching the result back to the options the request was
-    asked with.
-
-    Everything short of that match is read as not granted, because the caller
-    is a caller that acts on a yes. An answer naming an option the request
-    never offered, an approval settled with no result at all, a questions
-    result on an approval: each is a host saying something this cannot
-    interpret, and none of them is evidence of consent.
+    Reaching that fact means matching the result back to the options the
+    request was asked with, and everything short of the match is read as
+    undecided, because the caller acts on it irreversibly. An answer naming an
+    option the request never offered, an approval settled with no result at
+    all, a questions result on an approval: each is a host saying something
+    this cannot interpret, and an unreadable answer leaves a card a person can
+    read by hand.
     """
     if request.state != "resolved":
         return False
@@ -498,7 +495,4 @@ def granted(request: SnapshotRequest) -> bool:
         content, ApprovalContent
     ):
         return False
-    return any(
-        option.option_id == answer.option_id and option.decision in GRANTS
-        for option in content.options
-    )
+    return any(option.option_id == answer.option_id for option in content.options)
