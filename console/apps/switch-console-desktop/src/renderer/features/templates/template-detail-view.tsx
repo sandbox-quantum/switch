@@ -13,7 +13,6 @@ import { useShowModal } from '@renderer/lib/modal/modal-provider';
 import { openExternalUrl } from '@renderer/lib/open-external';
 import { Badge } from '@renderer/lib/ui/badge';
 import { Button } from '@renderer/lib/ui/button';
-import { ConfirmButton } from '@renderer/lib/ui/confirm-button';
 import { type LoadedTemplate, loadTemplateById } from './agent-template-data';
 
 function useViewParams() {
@@ -145,6 +144,7 @@ const TemplateDetailPanel = observer(function TemplateDetailPanel() {
   const [loaded, setLoaded] = useState<LoadedTemplate | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<'save' | 'delete' | 'export' | null>(null);
+  const [confirmRemove, setConfirmRemove] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -279,16 +279,27 @@ const TemplateDetailPanel = observer(function TemplateDetailPanel() {
               </Button>
             )}
             {canDelete && (
-              <ConfirmButton
+              <Button
                 type="button"
                 variant="outline"
                 size="sm"
                 disabled={busy !== null}
-                onClick={() => void remove()}
+                onClick={() => {
+                  // Second click removes; the first only asks. A page action
+                  // has no dialog to hide behind, and the row is gone for
+                  // everyone on the server once it goes.
+                  if (confirmRemove) void remove();
+                  else setConfirmRemove(true);
+                }}
+                onBlur={() => setConfirmRemove(false)}
               >
                 <Trash2 className="size-3.5" />
-                {busy === 'delete' ? 'Removing…' : 'Remove from server'}
-              </ConfirmButton>
+                {busy === 'delete'
+                  ? 'Removing…'
+                  : confirmRemove
+                    ? 'Click again to remove'
+                    : 'Remove from server'}
+              </Button>
             )}
             <Button type="button" size="sm" onClick={use} disabled={busy !== null}>
               Use
