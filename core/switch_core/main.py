@@ -612,10 +612,15 @@ async def run(config: SwitchConfig) -> None:
     # and Discord installs stay inert until it recovers, rather than fatal.
     discord_gateway: DiscordGatewayClient | None = None
     if config.discord_app_bot_token:
+        # install_service is present whenever an installer is registered, and the
+        # Discord bot token being set means the Discord installer is — so this is
+        # not None here. Asserted rather than branched to say that out loud.
+        assert install_service is not None
         discord_gateway = DiscordGatewayClient(
             bot_token=config.discord_app_bot_token,
             message_content=config.discord_app_message_content,
             members=config.discord_app_members,
+            install_service=install_service,
         )
         try:
             await discord_gateway.start()

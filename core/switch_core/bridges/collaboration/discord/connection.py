@@ -58,6 +58,15 @@ class DiscordConnection:
         self._message_handlers: dict[
             int, Callable[[discord.Message], Awaitable[None]]
         ] = {}
+        # A single handler for *every* guild's messages, used by the shared
+        # multi-tenant connection: it routes each event by resolving the guild
+        # to its tenant fresh, rather than keeping a per-guild registry that
+        # would cache which tenant a guild belongs to on the connection. When
+        # set it takes precedence over the per-guild registry (a connection is
+        # only ever one shape or the other).
+        self._guild_message_handler: (
+            Callable[[discord.Message], Awaitable[None]] | None
+        ) = None
         self._dm_handler: Callable[[discord.Message], Awaitable[None]] | None = None
 
     def register_message_handler(
@@ -67,6 +76,11 @@ class DiscordConnection:
 
     def unregister_message_handler(self, guild_id: int) -> None:
         self._message_handlers.pop(guild_id, None)
+
+    def set_guild_message_handler(
+        self, handler: Callable[[discord.Message], Awaitable[None]] | None
+    ) -> None:
+        self._guild_message_handler = handler
 
     def set_dm_handler(
         self, handler: Callable[[discord.Message], Awaitable[None]] | None
@@ -202,6 +216,8 @@ class DiscordConnection:
             guild = message.guild
             if guild is None:
                 handler = self._dm_handler
+            elif self._guild_message_handler is not None:
+                handler = self._guild_message_handler
             else:
                 handler = self._message_handlers.get(guild.id)
             if handler is None:

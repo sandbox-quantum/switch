@@ -309,6 +309,27 @@ class DiscordAdapter(CollaborationAdapter):
         self._webhooks.clear()
         logger.info("Discord adapter stopped")
 
+    def ensure_shared_connection(self, connection: DiscordConnection) -> None:
+        """Attach the shared Gateway connection the first time this bridge is used.
+
+        A shared-delivery bridge is built inert (no connection of its own); the
+        deployment-level Gateway client injects its connection here so the
+        adapter's inbound handling and its outbound posting both run against it.
+        Idempotent and set-once: an own-connection bridge already has one and is
+        left alone, and repeated calls after the first are no-ops.
+        """
+        if self._connection is None:
+            self._connection = connection
+
+    async def dispatch_inbound(self, message: discord.Message) -> None:
+        """Handle one inbound Gateway message the shared client routed here.
+
+        The shared connection resolves a guild to this bridge and calls this;
+        the self-registered connection calls the same handler directly. Kept a
+        thin public entry so the shared client does not reach into the adapter.
+        """
+        await self._handle_message(message)
+
     def _require_connection(self) -> DiscordConnection:
         """The bridge's Gateway connection, or a loud error if it has none.
 

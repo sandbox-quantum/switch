@@ -8,16 +8,22 @@ later; this pins the foundation.
 
 from __future__ import annotations
 
+from typing import Any
+
 from switch_core.bridges.collaboration.discord.gateway import DiscordGatewayClient
 
 
 def _gateway(
     *, message_content: bool = False, members: bool = False
 ) -> DiscordGatewayClient:
+    # These tests only inspect the connection the client builds, so a bare
+    # stand-in for the install service (never called here) is enough.
+    install_service: Any = object()
     return DiscordGatewayClient(
         bot_token="bot-token",
         message_content=message_content,
         members=members,
+        install_service=install_service,
     )
 
 
