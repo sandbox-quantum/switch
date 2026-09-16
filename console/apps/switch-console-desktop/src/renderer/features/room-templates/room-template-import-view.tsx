@@ -1,10 +1,14 @@
 import Editor from '@monaco-editor/react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { ArrowRight, Check, FileText, Loader2, Upload } from 'lucide-react';
+import { ArrowRight, Check, Clock, FileText, Loader2, Save, Upload } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
-import { useCallback, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { toast } from 'sonner';
-import type { ParamSpec, ParsedTemplate } from '@main/core/room-templates/controller';
+import type {
+  ParamSpec,
+  ParsedTemplate,
+  RecentTemplate,
+} from '@main/core/room-templates/controller';
 import type { GuardResult, ViewDefinition } from '@renderer/app/view-registry';
 import { refreshSidebarRoomState } from '@renderer/features/sidebar/sidebar-tree-data';
 import { ServerPage } from '@renderer/features/switch-servers/server-page';
@@ -54,7 +58,124 @@ function readFileAsText(file: File, onText: (text: string) => void): void {
   reader.readAsText(file);
 }
 
+// ── Recents ────────────────────────────────────────────────────────────────
+
+function formatTimeAgo(ms: number): string {
+  const seconds = Math.floor((Date.now() - ms) / 1000);
+  if (seconds < 60) return 'just now';
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  return `${Math.floor(hours / 24)}d ago`;
+}
+
+/**
+ * Templates used from this Console before, to use again or to save to the
+ * server so everyone on it finds them; and, with none yet, the repository's
+ * example, so the first run has something to start from.
+ */
+function RecentsSection({
+  serverId,
+  onSelect,
+}: {
+  serverId: string;
+  onSelect: (yamlText: string, name: string) => void;
+}) {
+  const [recents, setRecents] = useState<RecentTemplate[] | null>(null);
+  const [saving, setSaving] = useState<string | null>(null);
+
+  useEffect(() => {
+    rpc.roomTemplates
+      .getRecents(serverId)
+      .then(setRecents)
+      .catch(() => setRecents([]));
+  }, [serverId]);
+
+  const loadExample = async () => {
+    onSelect(await rpc.roomTemplates.getExampleTemplate(), 'red-blue-workroom.template.yaml');
+  };
+
+  const saveToServer = async (recent: RecentTemplate) => {
+    setSaving(recent.yamlText);
+    try {
+      const name = recent.name.replace(/\.ya?ml$/i, '');
+      await rpc.switchServers.saveTemplate({
+        serverId,
+        name,
+        description: '',
+        kind: 'room',
+        content: recent.yamlText,
+      });
+      toast.success(`"${name}" is now on the server`);
+    } catch (error) {
+      toast.error(failureText(error, 'Could not save the template to the server.'));
+    } finally {
+      setSaving(null);
+    }
+  };
+
+  if (recents === null) return null;
+
+  return (
+    <div className="border-t border-border pt-4">
+      <h3 className="mb-3 flex items-center gap-1.5 text-sm font-medium">
+        <Clock className="size-3.5 text-foreground-muted" />
+        Recently used
+      </h3>
+      {recents.length === 0 ? (
+        <div className="rounded-lg border border-dashed border-border p-4 text-center">
+          <p className="text-sm text-foreground-muted">Nothing used from this Console yet.</p>
+          <p className="mt-1 text-sm text-foreground-muted">
+            Start from the{' '}
+            <button
+              type="button"
+              onClick={() => void loadExample()}
+              className="text-primary hover:text-primary/80 cursor-pointer underline underline-offset-2"
+            >
+              example template
+            </button>
+            .
+          </p>
+        </div>
+      ) : (
+        <div className="flex flex-col gap-1">
+          {recents.map((r) => (
+            <div key={r.yamlText} className="flex items-center gap-1">
+              <button
+                type="button"
+                onClick={() => onSelect(r.yamlText, r.name)}
+                className="flex flex-1 cursor-pointer items-center justify-between rounded-md border border-border px-3 py-2 text-left text-sm transition-colors hover:bg-[var(--sel-soft)]"
+              >
+                <span className="flex items-center gap-2 truncate">
+                  <FileText className="size-3.5 shrink-0 text-foreground-muted" />
+                  {r.name}
+                </span>
+                <span className="shrink-0 text-xs text-foreground-passive">
+                  {formatTimeAgo(r.usedAt)}
+                </span>
+              </button>
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                title="Save to the server, so everyone on it can use it"
+                disabled={saving === r.yamlText}
+                onClick={() => void saveToServer(r)}
+              >
+                <Save className="size-3.5" />
+                Save to server
+              </Button>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function SourceStep({
+  serverId,
   yamlText,
   onYamlChange,
   parseError,
@@ -62,6 +183,7 @@ function SourceStep({
   onFileSelect,
 }: {
   yamlText: string;
+  serverId: string;
   onYamlChange: (text: string) => void;
   parseError: string | null;
   onNext: () => void;
@@ -152,6 +274,14 @@ function SourceStep({
           or paste YAML above, or drag and drop
         </span>
       </div>
+
+      <RecentsSection
+        serverId={serverId}
+        onSelect={(yaml, name) => {
+          onFileSelect(name);
+          onYamlChange(yaml);
+        }}
+      />
 
       {parseError && (
         <Alert variant="destructive">
@@ -859,6 +989,15 @@ const TemplateImportPanel = observer(function TemplateImportPanel() {
         });
 
         const result = await rpc.switchServers.createRoomFromTemplate(serverId, finalYaml, inputs);
+        // Remembered here, after it worked: a document that failed is not
+        // one to offer again.
+        rpc.roomTemplates
+          .saveRecent({
+            serverId,
+            name: sourceName ?? t.roomName ?? 'Untitled template',
+            yamlText,
+          })
+          .catch(() => {});
         await refreshSidebarRoomState(true);
         if (result.failedAttachments.length > 0) {
           const names = result.failedAttachments.map((f) => `${f.id} (${f.error})`).join(', ');
@@ -945,6 +1084,7 @@ const TemplateImportPanel = observer(function TemplateImportPanel() {
     >
       {step === 'source' && (
         <SourceStep
+          serverId={serverId}
           yamlText={yamlText}
           onYamlChange={setYamlText}
           parseError={parseError}

@@ -1,5 +1,7 @@
 import Ajv from 'ajv';
 import { dump, load } from 'js-yaml';
+import type { KV } from '@main/db/kv';
+import exampleTemplateYaml from '@root/../../../examples/room-templates/red-blue-workroom.template.yaml?raw';
 import { PARAM_TYPES, type ParamType } from '@shared/core/switch-servers/room-template-params';
 import { createRPCController } from '@shared/lib/ipc/rpc';
 
@@ -89,7 +91,57 @@ function extractStringList(raw: unknown): string[] {
 
 const ajv = new Ajv({ allErrors: true, strict: false });
 
+// ── Recents ────────────────────────────────────────────────────────────────
+
+/** A template used from this Console, kept so it can be used again or saved. */
+export type RecentTemplate = {
+  name: string;
+  yamlText: string;
+  usedAt: number;
+};
+
+type RecentsKV = Record<string, RecentTemplate[]>;
+
+const MAX_RECENTS = 10;
+
+// Lazy: importing the KV module pulls in Electron's `app`, which the tests
+// that exercise `parse` run without.
+let _recentsKV: KV<RecentsKV> | null = null;
+async function recentsKV(): Promise<KV<RecentsKV>> {
+  if (!_recentsKV) {
+    const { KV: Store } = await import('@main/db/kv');
+    _recentsKV = new Store<RecentsKV>('template-recents');
+  }
+  return _recentsKV;
+}
+
 export const roomTemplatesController = createRPCController({
+  /** Templates used from this Console on `serverId`, newest first. */
+  getRecents: async (serverId: string): Promise<RecentTemplate[]> => {
+    const kv = await recentsKV();
+    return (await kv.get(serverId)) ?? [];
+  },
+
+  saveRecent: async (params: {
+    serverId: string;
+    name: string;
+    yamlText: string;
+  }): Promise<void> => {
+    const kv = await recentsKV();
+    const existing = (await kv.get(params.serverId)) ?? [];
+    // The same document used again moves to the top rather than repeating.
+    const rest = existing.filter((r) => r.yamlText !== params.yamlText);
+    const entry: RecentTemplate = {
+      name: params.name,
+      yamlText: params.yamlText,
+      usedAt: Date.now(),
+    };
+    await kv.set(params.serverId, [entry, ...rest].slice(0, MAX_RECENTS));
+  },
+
+  /** The repository's canonical example, for a first run with nothing to pick from. */
+  getExampleTemplate: (): string => exampleTemplateYaml,
+
   parse: (params: { yamlText: string; schema?: Record<string, unknown> }): ParsedTemplate => {
     const warnings: string[] = [];
     const doc = parseYaml(params.yamlText);
