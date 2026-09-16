@@ -112,7 +112,7 @@ async function main(): Promise<void> {
     const dispatcher =
       process.env.SWITCH_SDK_SESSION_DISPATCH === 'spawn'
         ? spawningDispatcher(process.argv[1])
-        : residentDispatcher(resolve(root));
+        : residentDispatcher(resolve(root), process.argv[1]);
     await runSharedWatcher(root, dispatcher, config, stop.signal);
     // A room session that outlived the drain, or a provider child still holding
     // a handle, would keep this process alive with nothing left to run it.

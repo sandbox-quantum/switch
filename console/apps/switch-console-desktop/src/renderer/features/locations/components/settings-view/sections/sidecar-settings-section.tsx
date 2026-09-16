@@ -41,6 +41,12 @@ export function SidecarSettingsSection({ agentId }: { agentId: string }) {
               <p className="mt-2 break-words">{watcher.failure}</p>
             </details>
           )}
+          {watcher.delegated.length > 0 && (
+            <p className="text-muted-foreground text-sm">
+              {watcher.delegated.length} room{watcher.delegated.length === 1 ? '' : 's'} run outside
+              the always-on host: {watcher.delegated[0]?.reason}.
+            </p>
+          )}
           {watcher.running && watcher.rooms.length > 0 && (
             <p className="text-muted-foreground text-sm">
               Running {watcher.rooms.length} room{' '}

@@ -1,7 +1,12 @@
 import { type ChildProcess, spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { Transform } from 'node:stream';
-import { GROUPED_CHILDREN, stopProcessTree } from '../process-tree';
+import {
+  forgetProcessGroup,
+  GROUPED_CHILDREN,
+  registerProcessGroup,
+  stopProcessTree,
+} from '../process-tree';
 
 export interface ProviderLogger {
   debug(message: string, context?: Record<string, unknown>): void;
@@ -22,6 +27,12 @@ export interface StdioJsonRpcClientOptions {
   /** Complete environment for the child; never merged with `process.env`. */
   env: Record<string, string>;
   logger: ProviderLogger;
+  /**
+   * The session this provider belongs to, so its process group can be swept by
+   * a later host if this one dies. Null for a spawn that outlives nothing — the
+   * readiness probe.
+   */
+  sessionId: string | null;
   /** Called once when the process goes away, whether or not it was asked to. */
   onExit: (reason: string) => void;
 }
@@ -70,6 +81,7 @@ export class StdioJsonRpcClient {
   private readonly serverRequestHandlers = new Map<string, ServerRequestHandler>();
   private readonly logger: ProviderLogger;
   private readonly onExit: (reason: string) => void;
+  private readonly sessionId: string | null;
   private stderrTail = '';
   private nextId = 0;
   private exited = false;
@@ -84,6 +96,9 @@ export class StdioJsonRpcClient {
       env: options.env,
       stdio: ['pipe', 'pipe', 'pipe'],
     });
+
+    this.sessionId = options.sessionId;
+    registerProcessGroup(this.sessionId, this.child.pid);
 
     const stdout = this.child.stdout;
     const stderr = this.child.stderr;
@@ -181,13 +196,19 @@ export class StdioJsonRpcClient {
 
   /** Stops the provider and every process it spawned; see `stopProcessTree`. */
   async dispose(): Promise<void> {
-    if (this.exited) return;
-    await stopProcessTree(this.child, {
-      grouped: GROUPED_CHILDREN,
-      escalateAfterMs: 2000,
-      deadlineMs: 5000,
-      description: 'Provider process group',
-    });
+    try {
+      // Even a provider that already exited is swept: its own children outlive
+      // it, and its group is the only handle left on them.
+      await stopProcessTree(this.child, {
+        grouped: GROUPED_CHILDREN,
+        escalateAfterMs: 2000,
+        deadlineMs: 5000,
+        description: 'Provider process group',
+        leaderExited: this.exited,
+      });
+    } finally {
+      forgetProcessGroup(this.sessionId, this.child.pid);
+    }
   }
 
   private write(message: Record<string, unknown>): void {

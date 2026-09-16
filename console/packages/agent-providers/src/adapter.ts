@@ -99,6 +99,16 @@ export interface ProviderCapabilities {
   approvals: boolean;
   /** Clarifying questions surface as `user-input.requested` and can be answered. */
   userInput: boolean;
+  /**
+   * The adapter spawns its provider into a process group this package controls,
+   * so teardown can reach every process the provider started.
+   *
+   * False means a provider whose descendants cannot be proven stopped. A host
+   * that runs many sessions in one process must not run such a provider: its
+   * own fence cannot reach them, and a replacement could tell the server this
+   * session quiesced while they are still executing.
+   */
+  fenceableDescendants: boolean;
 }
 
 /**

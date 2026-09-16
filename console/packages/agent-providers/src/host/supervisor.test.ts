@@ -207,3 +207,23 @@ it('fences a worker that will not stop, and the tools it left running', async ()
   await new Promise((resolve) => setTimeout(resolve, 200));
   expect(() => process.kill(childPid, 0)).toThrow();
 }, 90_000);
+
+it('returns promptly when the worker stops as soon as it is asked', async () => {
+  const root = await fixture();
+  const stop = new AbortController();
+  const supervising = superviseSharedHost({
+    root,
+    executable: process.execPath,
+    // Exits on SIGTERM, like a host with nothing left to drain.
+    args: ['-e', "process.on('SIGTERM', () => process.exit(0)); setInterval(() => {}, 1000);"],
+    env: process.env,
+    signal: stop.signal,
+  });
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  const startedAt = Date.now();
+  stop.abort();
+  await supervising;
+  // Well inside the launch restart's own 20s patience: an ordinary stop must
+  // not look like a hung one.
+  expect(Date.now() - startedAt).toBeLessThan(5_000);
+});

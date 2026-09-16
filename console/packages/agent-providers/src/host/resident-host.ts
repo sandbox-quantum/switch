@@ -1,12 +1,14 @@
 import { mkdir, readFile, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { EventStreamLogger } from '@sandboxaq/switch-agent-runtime';
+import { z } from 'zod';
 import type { ProviderAdapter } from '../adapter';
+import { onProcessGroupsChanged, processGroupsFor, sweepProcessGroups } from '../process-tree';
 import { ensureSharedProcess, launchLock, liveSessionOwner, sharedSessionRoot } from './launch';
 import { replaceOwner, withOwnershipLock } from './ownership-lock';
 import { checkProviderReadiness } from './provider-readiness';
 import { SharedRoomInbox } from './room-inbox';
-import { adapterFor } from './server';
+import { adapterCapabilities, adapterFor } from './server';
 import { prepareSharedConfig, type SharedHostConfig } from './shared-config';
 import { runSharedHost, SharedHostLeaseExpiredError } from './shared-host';
 
@@ -82,7 +84,8 @@ export interface SessionDispatcher {
    * against the room rather than raised at whoever was dispatching.
    */
   reject(roomId: string, config: SharedHostConfig, error: unknown): Promise<void>;
-  stop(sessionId: string): Promise<void>;
+  /** Resolves true when the session is proven stopped. */
+  stop(sessionId: string): Promise<boolean>;
   live(): RoomSessionContext[];
   failures(): RoomSessionFault[];
   stopAll(): Promise<void>;
@@ -223,6 +226,46 @@ export async function releaseSessionOwnership(root: string): Promise<void> {
   });
 }
 
+const GROUPS_FILE = 'groups.json';
+
+const recordedGroups = z.object({ pid: z.number(), groups: z.array(z.number()) });
+
+/** Makes this session's live provider groups readable by a later host. */
+async function saveProcessGroups(root: string, groups: number[]): Promise<void> {
+  const path = join(root, 'supervisor', GROUPS_FILE);
+  if (groups.length === 0) {
+    await unlinkIfPresent(path);
+    return;
+  }
+  await mkdir(join(root, 'supervisor'), { recursive: true, mode: 0o700 });
+  await replaceOwner(path, { pid: process.pid, groups });
+}
+
+/**
+ * Terminate provider groups a previous host left running for this session.
+ *
+ * A host that was SIGKILLed took no provider with it: those groups are not in
+ * its own group and outlive its fence. Sweeping them is what makes it safe to
+ * claim the session and tell Switch the old host quiesced. A group that cannot
+ * be proven gone fails the claim.
+ */
+async function sweepRecordedGroups(root: string): Promise<void> {
+  const path = join(root, 'supervisor', GROUPS_FILE);
+  let record: z.infer<typeof recordedGroups>;
+  try {
+    record = recordedGroups.parse(JSON.parse(await readFile(path, 'utf8')));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
+    throw error;
+  }
+  if (record.pid === process.pid) return;
+  await sweepProcessGroups(
+    record.groups,
+    `Providers left by SDK host ${record.pid} for this session`
+  );
+  await unlinkIfPresent(path);
+}
+
 async function unlinkIfPresent(path: string): Promise<void> {
   await unlink(path).catch((error: NodeJS.ErrnoException) => {
     if (error.code !== 'ENOENT') throw error;
@@ -253,6 +296,9 @@ async function claimResidentSession(root: string, config: SharedHostConfig): Pro
       throw new Error(
         `Room ${config.roomConnection?.rooms[0] ?? '(unbound)'} is owned by a live process (pid ${owner.pid}); the resident host will not take it over.`
       );
+    // Before anything here claims the session, whatever the last host left
+    // executing for it must be gone.
+    await sweepRecordedGroups(root);
     await unlinkIfPresent(join(directory, 'failure.json'));
     await replaceOwner(join(root, 'config.json'), config);
     await replaceOwner(join(directory, 'owner.json'), { pid: process.pid, resident: true });
@@ -377,11 +423,31 @@ export class ResidentSessions implements SessionDispatcher {
   private published: Promise<void> = Promise.resolve();
   private stopIncomplete = false;
 
+  /** Rooms whose provider runs in its own process tree, and why. */
+  private readonly delegated = new Map<string, { context: RoomSessionContext; reason: string }>();
+
   constructor(
     private readonly root: string,
     private readonly run: RoomSessionRun,
-    private readonly stopTimeoutMs: number
-  ) {}
+    private readonly stopTimeoutMs: number,
+    private readonly delegate: (roomId: string, config: SharedHostConfig) => Promise<void>
+  ) {
+    // One resident host per process, so one sink. Groups are written as they are
+    // spawned: a host that is killed between spawn and record leaves nothing to
+    // sweep by, which is why this is not deferred to teardown.
+    onProcessGroupsChanged((sessionId, groups) => {
+      this.groupWrites = this.groupWrites
+        .then(() => saveProcessGroups(sharedSessionRoot(sessionId), groups))
+        .catch((error: unknown) => {
+          console.error(
+            `Could not record session ${sessionId}'s provider process groups:`,
+            String(error)
+          );
+        });
+    });
+  }
+
+  private groupWrites: Promise<void> = Promise.resolve();
 
   live(): RoomSessionContext[] {
     return [...this.sessions.values()].map((entry) => entry.context);
@@ -396,22 +462,48 @@ export class ResidentSessions implements SessionDispatcher {
     return this.stopIncomplete;
   }
 
+  /**
+   * A room is admissible again only once its previous session is neither still
+   * running here nor still holding its state directory. Anything short of that
+   * is a session whose execution this host cannot account for.
+   */
+  private async admissible(roomId: string): Promise<void> {
+    const blocked = this.blocked.get(roomId);
+    if (!blocked) return;
+    const { sessionId } = blocked.context;
+    if (this.sessions.has(sessionId) || (await liveSessionOwner(sharedSessionRoot(sessionId))))
+      throw new Error(
+        `Room ${roomId} cannot start a session yet: ${blocked.message} Stop it or restart the agent's host once those processes are gone.`
+      );
+    this.blocked.delete(roomId);
+  }
+
   async dispatch(roomId: string, config: SharedHostConfig): Promise<void> {
     const context = roomSessionContext(roomId, config);
-    const blocked = this.blocked.get(roomId);
-    if (blocked) {
-      if (await liveSessionOwner(sharedSessionRoot(blocked.context.sessionId)))
-        throw new Error(
-          `Room ${roomId} cannot start a session yet: ${blocked.message} Stop it or restart the agent's host once those processes are gone.`
-        );
-      this.blocked.delete(roomId);
-    }
+    await this.admissible(roomId);
     const held = this.rooms.get(roomId);
-    if (held !== undefined && held !== context.sessionId) await this.reconcile(roomId, held);
-    if (this.rooms.get(roomId) !== undefined && this.rooms.get(roomId) !== context.sessionId)
+    if (held !== undefined && held !== context.sessionId) {
+      await this.reconcile(roomId, held);
+      // Stopping the old session can be what blocks the room.
+      await this.admissible(roomId);
+    }
+    const stillHeld = this.rooms.get(roomId);
+    if (stillHeld !== undefined && stillHeld !== context.sessionId)
       throw new Error(
-        `Room ${roomId} is already served by session ${this.rooms.get(roomId)}; refusing to admit ${context.sessionId}. One room has one conversation.`
+        `Room ${roomId} is already served by session ${stillHeld}; refusing to admit ${context.sessionId}. One room has one conversation.`
       );
+    const refusal = residentRefusal(config.start.provider);
+    if (refusal) {
+      console.warn(
+        `Room ${roomId} runs ${config.start.provider} in its own process tree, not the resident host: ${refusal}.`
+      );
+      this.delegated.set(roomId, { context, reason: refusal });
+      this.rooms.delete(roomId);
+      await this.delegate(roomId, config);
+      this.publish();
+      return;
+    }
+    this.delegated.delete(roomId);
     if (this.sessions.has(context.sessionId)) return;
     if (this.sessions.size >= ROOM_CONNECTION_BUDGET)
       console.warn(
@@ -473,15 +565,28 @@ export class ResidentSessions implements SessionDispatcher {
     console.warn(
       `Session ${sessionId} left room ${roomId} for ${saved.join(', ') || 'no room'}; stopping it so the room can be served again.`
     );
-    await this.stop(sessionId);
+    // The room is only free once that session is proven stopped. Handing it to a
+    // replacement while the old execution is unaccounted for is the thing this
+    // whole path exists to prevent.
+    if (!(await this.stop(sessionId))) {
+      const fault = {
+        context: this.sessions.get(sessionId)?.context ?? { roomId, sessionId, connectionId: '' },
+        message: `Session ${sessionId} left room ${roomId} but did not stop within ${this.stopTimeoutMs}ms; its execution is unaccounted for.`,
+      };
+      this.faults.set(roomId, fault);
+      this.blocked.set(roomId, fault);
+      this.publish();
+      return;
+    }
     if (this.rooms.get(roomId) === sessionId) this.rooms.delete(roomId);
   }
 
-  async stop(sessionId: string): Promise<void> {
+  /** Resolves true when the session is proven stopped. */
+  async stop(sessionId: string): Promise<boolean> {
     const entry = this.sessions.get(sessionId);
-    if (!entry) return;
+    if (!entry) return true;
     entry.controller.abort();
-    await this.drain([entry]);
+    return this.drain([entry]);
   }
 
   async stopAll(): Promise<void> {
@@ -489,6 +594,7 @@ export class ResidentSessions implements SessionDispatcher {
     for (const entry of entries) entry.controller.abort();
     await this.drain(entries);
     await this.published;
+    await this.groupWrites;
   }
 
   /**
@@ -498,8 +604,8 @@ export class ResidentSessions implements SessionDispatcher {
    */
   private async drain(
     entries: { context: RoomSessionContext; done: Promise<void> }[]
-  ): Promise<void> {
-    if (entries.length === 0) return;
+  ): Promise<boolean> {
+    if (entries.length === 0) return true;
     let timer: ReturnType<typeof setTimeout> | undefined;
     const expired = new Promise<'timeout'>((resolve) => {
       timer = setTimeout(() => resolve('timeout'), this.stopTimeoutMs);
@@ -509,15 +615,15 @@ export class ResidentSessions implements SessionDispatcher {
         Promise.all(entries.map((entry) => entry.done)).then(() => 'drained' as const),
         expired,
       ]);
-      if (outcome === 'timeout') {
-        const stuck = entries.filter((entry) => this.sessions.has(entry.context.sessionId));
-        this.stopIncomplete = true;
-        console.error(
-          `Room sessions did not stop within ${this.stopTimeoutMs}ms and were left running: ${stuck
-            .map((entry) => `${entry.context.roomId} (${entry.context.sessionId})`)
-            .join(', ')}.`
-        );
-      }
+      if (outcome !== 'timeout') return true;
+      const stuck = entries.filter((entry) => this.sessions.has(entry.context.sessionId));
+      this.stopIncomplete = true;
+      console.error(
+        `Room sessions did not stop within ${this.stopTimeoutMs}ms and were left running: ${stuck
+          .map((entry) => `${entry.context.roomId} (${entry.context.sessionId})`)
+          .join(', ')}.`
+      );
+      return false;
     } finally {
       if (timer) clearTimeout(timer);
     }
@@ -558,6 +664,11 @@ export class ResidentSessions implements SessionDispatcher {
         ...fault.context,
         message: fault.message,
       })),
+      delegated: [...this.delegated.values()].map((entry) => ({
+        ...entry.context,
+        dispatch: 'spawn',
+        reason: entry.reason,
+      })),
     };
     this.published = this.published
       .then(() => replaceOwner(join(this.root, 'resident.json'), state))
@@ -567,13 +678,36 @@ export class ResidentSessions implements SessionDispatcher {
   }
 }
 
-/** Every room session of this agent runs inside this process. */
-export function residentDispatcher(root: string): ResidentSessions {
+/**
+ * Why a provider may not run in the resident host.
+ *
+ * Returns the reason, or null when it may. A provider whose descendants cannot
+ * be fenced is the one case: the resident host stops a session by reaping that
+ * session's own children, and it cannot reap what it cannot reach. Run such a
+ * provider here and a later host could tell Switch the session quiesced while
+ * the old provider is still executing — the failure the ownership scheme exists
+ * to prevent. A process tree of its own, fenced by its own supervisor, is what
+ * that provider still needs.
+ */
+export function residentRefusal(provider: SharedHostConfig['start']['provider']): string | null {
+  return adapterCapabilities(provider).fenceableDescendants
+    ? null
+    : 'provider descendants cannot be process-group fenced';
+}
+
+/**
+ * Every room session of this agent runs inside this process, except those whose
+ * provider cannot be fenced: those fall back to a process tree of their own, and
+ * the fallback is recorded rather than quietly taken.
+ */
+export function residentDispatcher(root: string, entrypoint: string): ResidentSessions {
   const readiness = new Map<string, Promise<void>>();
+  const spawning = spawningDispatcher(entrypoint);
   return new ResidentSessions(
     root,
     (input) => runResidentRoomSession(input, readiness),
-    RESIDENT_STOP_TIMEOUT_MS
+    RESIDENT_STOP_TIMEOUT_MS,
+    (roomId, config) => spawning.dispatch(roomId, config)
   );
 }
 
@@ -598,7 +732,9 @@ export function spawningDispatcher(entrypoint: string): SessionDispatcher {
         String(error)
       );
     },
-    async stop() {},
+    async stop() {
+      return true;
+    },
     live: () => [],
     failures: () => [],
     async stopAll() {},

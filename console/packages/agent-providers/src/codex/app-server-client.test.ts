@@ -16,6 +16,7 @@ const { StdioJsonRpcClient, JsonRpcError, noopLogger } =
 
 function connect(onExit: (reason: string) => void = () => {}) {
   const client = new StdioJsonRpcClient({
+    sessionId: null,
     command: 'codex',
     args: ['app-server'],
     cwd: '/tmp',

@@ -33,6 +33,7 @@ function setup(provider: Session['provider']) {
       approvals: true,
       userInput: true,
       modelSwitchInSession: false,
+      fenceableDescendants: true,
     },
     startSession: vi.fn(async () => {
       live = true;

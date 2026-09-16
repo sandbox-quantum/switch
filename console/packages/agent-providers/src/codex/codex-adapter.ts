@@ -190,6 +190,7 @@ export class CodexAdapter implements ProviderAdapter {
     resume: true,
     approvals: true,
     userInput: false,
+    fenceableDescendants: true,
   };
 
   private readonly sessions = new Map<string, CodexSessionState>();
@@ -224,6 +225,7 @@ export class CodexAdapter implements ProviderAdapter {
       ...mcpServerConfigArgs(input.mcpServers),
     ];
     const client = new StdioJsonRpcClient({
+      sessionId: input.sessionId,
       command: this.binaryPath,
       args,
       cwd: input.cwd,

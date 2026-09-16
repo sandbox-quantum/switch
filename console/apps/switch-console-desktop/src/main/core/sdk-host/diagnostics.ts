@@ -18,7 +18,7 @@ if(fs.existsSync(directory))for(const name of fs.readdirSync(directory)){
  if(config?.session.agentId!==process.argv[1])continue;
  const running=live(read(path.join(root,'shared-owner.lock'))?.pid);
  const resident=read(path.join(root,'resident.json'));
- result.push({running,enabled:read(path.join(root,'watch.json'))?.enabled??false,failure:running?null:read(path.join(root,'supervisor','failure.json'))?.message??null,rooms:running&&resident?resident.sessions??[]:[],roomFailures:resident?.failures??[]});
+ result.push({running,enabled:read(path.join(root,'watch.json'))?.enabled??false,failure:running?null:read(path.join(root,'supervisor','failure.json'))?.message??null,rooms:running&&resident?resident.sessions??[]:[],roomFailures:resident?.failures??[],delegated:running&&resident?resident.delegated??[]:[]});
 }
 console.log(JSON.stringify(result));
 `;
@@ -48,6 +48,10 @@ export async function sharedAgentDiagnostics(agentId: string) {
           rooms: z.array(z.object({ roomId: z.string(), sessionId: z.string() })).default([]),
           roomFailures: z
             .array(z.object({ roomId: z.string(), sessionId: z.string(), message: z.string() }))
+            .default([]),
+          // Rooms whose provider runs in its own process tree instead.
+          delegated: z
+            .array(z.object({ roomId: z.string(), sessionId: z.string(), reason: z.string() }))
             .default([]),
         })
       )

@@ -272,6 +272,9 @@ export class ClaudeAdapter implements ProviderAdapter {
     resume: true,
     approvals: true,
     userInput: true,
+    // The Claude Agent SDK spawns the provider itself and takes no
+    // `detached` option, so its descendants are outside our reach.
+    fenceableDescendants: false,
   };
 
   private readonly sessions = new Map<string, SessionState>();

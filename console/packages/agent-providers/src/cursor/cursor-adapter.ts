@@ -101,6 +101,7 @@ export class CursorAdapter implements ProviderAdapter {
     resume: true,
     approvals: true,
     userInput: false,
+    fenceableDescendants: true,
   };
   private readonly sessions = new Map<string, State>();
   private readonly listeners = new Set<(event: ProviderRuntimeEvent) => void>();
@@ -122,6 +123,7 @@ export class CursorAdapter implements ProviderAdapter {
       throw new ProviderSessionError('cursor', input.sessionId, 'session already started');
     const cwd = await realpath(input.cwd);
     const client = new StdioJsonRpcClient({
+      sessionId: input.sessionId,
       command: this.options.binaryPath ?? 'agent',
       args: ['acp'],
       cwd,

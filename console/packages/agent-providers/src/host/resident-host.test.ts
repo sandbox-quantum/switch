@@ -27,6 +27,7 @@ vi.mock('./launch', async (importOriginal) => ({
 
 const roots: string[] = [];
 afterEach(async () => {
+  delegated.length = 0;
   for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true });
 });
 
@@ -37,19 +38,22 @@ async function workspace(): Promise<string> {
   return root;
 }
 
+/** Codex by default: its descendants can be fenced, so it runs in the host. */
 function configFor(input: {
   cwd: string;
   roomId: string;
   sessionId: string;
   connectionId: string;
+  provider?: 'codex' | 'claude';
 }): SharedHostConfig {
+  const provider = input.provider ?? 'codex';
   return sharedConfigSchema.parse({
     session: {
       sessionId: input.sessionId,
       agentId: 'agent',
       hostId: 'host',
       epoch: randomUUID(),
-      provider: 'claude',
+      provider,
       status: 'starting',
       connectivity: 'online',
       pendingRequestIds: [],
@@ -65,7 +69,7 @@ function configFor(input: {
       },
     },
     start: {
-      provider: 'claude',
+      provider,
       input: {
         sessionId: input.sessionId,
         cwd: input.cwd,
@@ -79,6 +83,13 @@ function configFor(input: {
       },
     },
     roomConnection: { connectionId: input.connectionId, rooms: [input.roomId], startCursor: 0 },
+  });
+}
+
+const delegated: { roomId: string; sessionId: string }[] = [];
+function hostFor(root: string, run: RoomSessionRun, stopTimeoutMs = RESIDENT_STOP_TIMEOUT_MS) {
+  return new ResidentSessions(root, run, stopTimeoutMs, async (roomId, config) => {
+    delegated.push({ roomId, sessionId: config.session.sessionId });
   });
 }
 
@@ -108,7 +119,7 @@ function recordingRunner() {
 it('dispatches two rooms into one host as two isolated sessions', async () => {
   const root = await workspace();
   const runner = recordingRunner();
-  const host = new ResidentSessions(root, runner.run, RESIDENT_STOP_TIMEOUT_MS);
+  const host = hostFor(root, runner.run);
   const first = configFor({
     cwd: root,
     roomId: 'room-a',
@@ -142,7 +153,7 @@ it('dispatches two rooms into one host as two isolated sessions', async () => {
 it('keeps the other room running when one room session is stopped', async () => {
   const root = await workspace();
   const runner = recordingRunner();
-  const host = new ResidentSessions(root, runner.run, RESIDENT_STOP_TIMEOUT_MS);
+  const host = hostFor(root, runner.run);
   await host.dispatch(
     'room-a',
     configFor({ cwd: root, roomId: 'room-a', sessionId: 'session-a', connectionId: 'a' })
@@ -171,7 +182,7 @@ it('contains a faulting room session instead of taking the host down', async () 
   const root = await workspace();
   const runner = recordingRunner();
   runner.faults.set('session-a', new Error('provider exploded'));
-  const host = new ResidentSessions(root, runner.run, RESIDENT_STOP_TIMEOUT_MS);
+  const host = hostFor(root, runner.run);
   const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
   try {
     await host.dispatch(
@@ -207,7 +218,7 @@ it('contains a faulting room session instead of taking the host down', async () 
 it('gives every room session its own immutable provider environment', async () => {
   const root = await workspace();
   const runner = recordingRunner();
-  const host = new ResidentSessions(root, runner.run, RESIDENT_STOP_TIMEOUT_MS);
+  const host = hostFor(root, runner.run);
   await host.dispatch(
     'room-a',
     configFor({ cwd: root, roomId: 'room-a', sessionId: 'session-a', connectionId: 'connection-a' })
@@ -254,7 +265,7 @@ it('gives every room session its own immutable provider environment', async () =
 it('refuses a room that already has a live session rather than guessing', async () => {
   const root = await workspace();
   const runner = recordingRunner();
-  const host = new ResidentSessions(root, runner.run, RESIDENT_STOP_TIMEOUT_MS);
+  const host = hostFor(root, runner.run);
   await host.dispatch(
     'room-a',
     configFor({ cwd: root, roomId: 'room-a', sessionId: 'session-a', connectionId: 'a' })
@@ -319,7 +330,7 @@ it('stops waiting on a room session that will not drain, and still lets the host
       signal.addEventListener('abort', () => resolve(), { once: true });
     });
   };
-  const host = new ResidentSessions(root, run, 20);
+  const host = hostFor(root, run, 20);
   const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
   try {
     await host.dispatch(
@@ -345,7 +356,7 @@ it('replaces a room fault rather than accumulating one per retry, and clears it 
   const root = await workspace();
   const runner = recordingRunner();
   runner.faults.set('session-a', new Error('first failure'));
-  const host = new ResidentSessions(root, runner.run, RESIDENT_STOP_TIMEOUT_MS);
+  const host = hostFor(root, runner.run);
   const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
   try {
     const failing = configFor({
@@ -392,7 +403,7 @@ it('refuses a room whose session could not be proven stopped', async () => {
   const run: RoomSessionRun = async ({ context }) => {
     throw new ResidentTeardownError(context, new Error('provider child would not exit'), null);
   };
-  const host = new ResidentSessions(root, run, RESIDENT_STOP_TIMEOUT_MS);
+  const host = hostFor(root, run);
   const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
   try {
     // A session that could not be torn down keeps its ownership record; the
@@ -427,7 +438,7 @@ it('refuses a room whose session could not be proven stopped', async () => {
 it('admits a replacement once the old session has left the room', async () => {
   const root = await workspace();
   const runner = recordingRunner();
-  const host = new ResidentSessions(root, runner.run, RESIDENT_STOP_TIMEOUT_MS);
+  const host = hostFor(root, runner.run);
   const first = configFor({
     cwd: root,
     roomId: 'room-a',
@@ -459,6 +470,102 @@ it('admits a replacement once the old session has left the room', async () => {
       { roomId: 'room-a', sessionId: 'session-a2', connectionId: 'a2' },
     ]);
     expect(runner.finished.map((context) => context.sessionId)).toEqual(['session-a']);
+  } finally {
+    warnings.mockRestore();
+  }
+  await host.stopAll();
+});
+
+it('refuses a replacement when stopping the session that left the room times out', async () => {
+  const root = await workspace();
+  const started: string[] = [];
+  const host = hostFor(
+    root,
+    async ({ context, signal }) => {
+      started.push(context.sessionId);
+      // The old session never drains: its execution stays unaccounted for.
+      if (context.sessionId === 'old') return new Promise<void>(() => {});
+      await new Promise<void>((resolve) =>
+        signal.addEventListener('abort', () => resolve(), { once: true })
+      );
+    },
+    10
+  );
+  const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+  const warnings = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  try {
+    await host.dispatch(
+      'room-a',
+      configFor({ cwd: root, roomId: 'room-a', sessionId: 'old', connectionId: 'a' })
+    );
+    await mkdir(join(root, 'old'), { recursive: true });
+    await writeFile(
+      join(root, 'old', 'room-inbox.jsonl'),
+      JSON.stringify({ type: 'rooms', rooms: ['room-b'] }) + '\n'
+    );
+
+    const replacement = configFor({
+      cwd: root,
+      roomId: 'room-a',
+      sessionId: 'new',
+      connectionId: 'b',
+    });
+    await expect(host.dispatch('room-a', replacement)).rejects.toThrow('did not stop within 10ms');
+    expect(started).toEqual(['old']);
+    // The room is still mapped to the session nobody can account for.
+    expect(host.live().map((context) => context.sessionId)).toEqual(['old']);
+    // And it stays refused on a retry.
+    await expect(host.dispatch('room-a', replacement)).rejects.toThrow('cannot start a session');
+    expect(started).toEqual(['old']);
+  } finally {
+    errors.mockRestore();
+    warnings.mockRestore();
+  }
+  await host.stopAll();
+});
+
+it('sends a provider it cannot fence to its own process tree, and says so', async () => {
+  const root = await workspace();
+  const runner = recordingRunner();
+  const host = hostFor(root, runner.run);
+  const warnings = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  try {
+    // Claude's SDK spawns the provider itself and takes no `detached` option,
+    // so the resident host could never reap what that session started.
+    await host.dispatch(
+      'room-claude',
+      configFor({
+        cwd: root,
+        roomId: 'room-claude',
+        sessionId: 'session-claude',
+        connectionId: 'c',
+        provider: 'claude',
+      })
+    );
+    expect(delegated).toEqual([{ roomId: 'room-claude', sessionId: 'session-claude' }]);
+    expect(runner.started).toEqual([]);
+    expect(host.live()).toEqual([]);
+    // Disclosed, not quiet: the warning names the provider and the reason.
+    expect(warnings.mock.calls.flat().join(' ')).toContain('runs claude in its own process tree');
+    await vi.waitFor(async () =>
+      expect(JSON.parse(await readFile(join(root, 'resident.json'), 'utf8')).delegated).toEqual([
+        {
+          roomId: 'room-claude',
+          sessionId: 'session-claude',
+          connectionId: 'c',
+          dispatch: 'spawn',
+          reason: 'provider descendants cannot be process-group fenced',
+        },
+      ])
+    );
+
+    // A fenceable provider still runs in the host.
+    await host.dispatch(
+      'room-codex',
+      configFor({ cwd: root, roomId: 'room-codex', sessionId: 'session-codex', connectionId: 'x' })
+    );
+    expect(runner.started.map((context) => context.sessionId)).toEqual(['session-codex']);
+    expect(delegated).toHaveLength(1);
   } finally {
     warnings.mockRestore();
   }

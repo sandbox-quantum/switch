@@ -62,6 +62,7 @@ export function createHttpTransport(options: HttpTransportOptions): OpencodeTran
   return {
     async open(input) {
       const server = await startOpencodeServer({
+        sessionId: input.sessionId,
         binaryPath: options.binaryPath,
         cwd: input.cwd,
         env: input.env,

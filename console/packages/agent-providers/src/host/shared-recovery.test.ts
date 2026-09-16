@@ -60,6 +60,7 @@ async function fixture() {
       approvals: true,
       userInput: true,
       modelSwitchInSession: false,
+      fenceableDescendants: true,
     },
     startSession: vi.fn(async () => {
       live = true;

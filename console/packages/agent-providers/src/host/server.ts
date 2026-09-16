@@ -48,6 +48,11 @@ export interface HostEndpoint {
 const folder = (root: string, sessionId: string) =>
   join(root, 'sessions', createHash('sha256').update(sessionId).digest('hex'));
 
+/** What a provider's adapter can do, without starting one. */
+export function adapterCapabilities(provider: Session['provider']) {
+  return adapterFor(provider).capabilities;
+}
+
 export function adapterFor(provider: Session['provider'], binaryPath?: string): ProviderAdapter {
   switch (provider) {
     case 'claude':

@@ -57,6 +57,8 @@ export async function checkProviderReadiness(input: {
   try {
     if (input.provider === 'opencode') {
       const server = await startOpencodeServer({
+        // A probe that is torn down inside this call outlives no host.
+        sessionId: null,
         ...input,
         startupTimeoutMs: 15000,
         skills: [],
@@ -101,6 +103,7 @@ export async function checkProviderReadiness(input: {
     if (input.provider !== 'codex' && input.provider !== 'gemini')
       return result('unknown', 'This provider has no authentication check.');
     client = new StdioJsonRpcClient({
+      sessionId: null,
       command: input.binaryPath,
       args: input.provider === 'codex' ? ['app-server'] : ['--acp'],
       cwd: input.cwd,

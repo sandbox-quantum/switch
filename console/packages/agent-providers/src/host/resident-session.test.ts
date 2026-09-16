@@ -1,3 +1,4 @@
+import { spawn } from 'node:child_process';
 import { mkdtemp, readFile, rm, writeFile, mkdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -148,4 +149,70 @@ it('leaves a live foreign owner of the state directory untouched', async () => {
   });
   // It never reached the work, so nothing of this session's was prepared.
   expect(seen.owner).toBe('');
+});
+
+it('sweeps provider groups a dead host left running before claiming the session', async () => {
+  const workspace = await mkdtemp(join(tmpdir(), 'resident-groups-test-'));
+  roots.push(workspace);
+  const root = join(workspace, 'session');
+  await mkdir(join(root, 'supervisor'), { recursive: true });
+
+  // A provider group the previous host left behind: detached, so it survived
+  // that host's own fence exactly as a real one would.
+  const leftover = spawn('sleep', ['1000'], { detached: true, stdio: 'ignore' });
+  leftover.unref();
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  expect(() => process.kill(leftover.pid!, 0)).not.toThrow();
+  await writeFile(
+    join(root, 'supervisor', 'groups.json'),
+    JSON.stringify({ pid: leftover.pid! + 100000, groups: [leftover.pid] })
+  );
+
+  await expect(
+    runResidentRoomSession(
+      {
+        context: { roomId: 'room-a', sessionId: 'session-a', connectionId: 'a' },
+        root,
+        config: configFor(workspace),
+        signal: new AbortController().signal,
+      },
+      new Map()
+    )
+  ).rejects.toThrow('stop before the provider probe');
+
+  // Gone before the claim proceeded, and the record with it.
+  expect(() => process.kill(leftover.pid!, 0)).toThrow();
+  await expect(readFile(join(root, 'supervisor', 'groups.json'), 'utf8')).rejects.toThrow('ENOENT');
+  // The claim did reach the work: sweeping is a precondition, not a refusal.
+  expect(JSON.parse(seen.owner)).toEqual({ pid: process.pid, resident: true });
+}, 20_000);
+
+it('refuses to act on a recorded group it cannot have spawned', async () => {
+  const workspace = await mkdtemp(join(tmpdir(), 'resident-groups-refused-'));
+  roots.push(workspace);
+  const root = join(workspace, 'session');
+  await mkdir(join(root, 'supervisor'), { recursive: true });
+  // `kill(-1, ...)` is every process this user owns, not "no group". A record
+  // naming it is corrupt, and acting on it would take the session down.
+  await writeFile(
+    join(root, 'supervisor', 'groups.json'),
+    JSON.stringify({ pid: 999999, groups: [1] })
+  );
+
+  await expect(
+    runResidentRoomSession(
+      {
+        context: { roomId: 'room-a', sessionId: 'session-a', connectionId: 'a' },
+        root,
+        config: configFor(workspace),
+        signal: new AbortController().signal,
+      },
+      new Map()
+    )
+  ).rejects.toThrow('refusing to signal process group 1');
+  // It never reached the work, and the record was left for a human to look at.
+  expect(seen.owner).toBe('');
+  expect(
+    JSON.parse(await readFile(join(root, 'supervisor', 'groups.json'), 'utf8')).groups
+  ).toEqual([1]);
 });

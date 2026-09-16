@@ -3,7 +3,12 @@ import { randomBytes } from 'node:crypto';
 import { rm } from 'node:fs/promises';
 import { createServer } from 'node:net';
 import { ProviderUnavailableError } from '../adapter';
-import { GROUPED_CHILDREN, stopProcessTree } from '../process-tree';
+import {
+  forgetProcessGroup,
+  GROUPED_CHILDREN,
+  registerProcessGroup,
+  stopProcessTree,
+} from '../process-tree';
 import type { OpencodeConfigFile } from './config';
 import { prepareOpencodeHome } from './home';
 
@@ -15,6 +20,8 @@ export interface OpencodeServerHandle {
   authorization: string;
   process: ChildProcess;
   configHome: string;
+  /** The session whose process group this server's pid records. */
+  sessionId: string | null;
 }
 
 /**
@@ -38,6 +45,8 @@ export interface StartServerInput {
    * Managed skills to load in addition to the execution host's native skills.
    */
   skills: OpencodeSkill[];
+  /** The session this server belongs to; null for a spawn that outlives nothing. */
+  sessionId: string | null;
 }
 
 async function findFreePort(): Promise<number> {
@@ -72,6 +81,7 @@ export async function startOpencodeServer(input: StartServerInput): Promise<Open
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
+  registerProcessGroup(input.sessionId, child.pid);
 
   try {
     const url = await new Promise<string>((resolve, reject) => {
@@ -127,7 +137,7 @@ export async function startOpencodeServer(input: StartServerInput): Promise<Open
 
     const authorization = `Basic ${Buffer.from(`opencode:${password}`).toString('base64')}`;
     await waitForHealth(url, authorization, input.startupTimeoutMs);
-    return { url, authorization, process: child, configHome };
+    return { url, authorization, process: child, configHome, sessionId: input.sessionId };
   } catch (error) {
     await stopOpencodeServer({ process: child, configHome });
     throw error;
@@ -135,16 +145,22 @@ export async function startOpencodeServer(input: StartServerInput): Promise<Open
 }
 
 export async function stopOpencodeServer(
-  server: Pick<OpencodeServerHandle, 'process' | 'configHome'>
+  server: Pick<OpencodeServerHandle, 'process' | 'configHome'> & { sessionId?: string | null }
 ): Promise<void> {
   const child = server.process;
-  if (child.pid && child.exitCode === null && child.signalCode === null)
-    await stopProcessTree(child, {
-      grouped: GROUPED_CHILDREN,
-      escalateAfterMs: 2000,
-      deadlineMs: 5000,
-      description: 'OpenCode server process group',
-    });
+  try {
+    if (child.pid)
+      // A server that already exited still leaves its group behind.
+      await stopProcessTree(child, {
+        grouped: GROUPED_CHILDREN,
+        escalateAfterMs: 2000,
+        deadlineMs: 5000,
+        description: 'OpenCode server process group',
+        leaderExited: child.exitCode !== null || child.signalCode !== null,
+      });
+  } finally {
+    forgetProcessGroup(server.sessionId ?? null, child.pid);
+  }
   await rm(server.configHome, { recursive: true, force: true });
 }
 

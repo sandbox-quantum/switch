@@ -112,7 +112,7 @@ it('records a room it cannot admit instead of stopping the agent', async () => {
     reject: vi.fn(async (roomId: string, _config: SharedHostConfig, error: unknown) => {
       rejected.push({ roomId, message: String(error) });
     }),
-    stop: vi.fn(async () => {}),
+    stop: vi.fn(async () => true),
     live: () => [],
     failures: () => [],
     stopAll: vi.fn(async () => {}),

@@ -76,11 +76,19 @@ export async function superviseSharedHost(input: {
       const exited = once(child, 'exit');
       await log.close();
       let escalation: Promise<void> | null = null;
+      // A worker that stops when asked must cost nothing: the grace period is
+      // abandoned the moment it exits, because a caller waiting on the full
+      // delay makes an ordinary stop indistinguishable from a hung one.
+      const gone = new AbortController();
+      void exited.then(() => gone.abort());
       const stop = () => {
         child.kill('SIGTERM');
         escalation ??= (async () => {
-          await delay(STOP_GRACE_MS);
-          if (child.exitCode !== null || child.signalCode !== null) return;
+          try {
+            await delay(STOP_GRACE_MS, undefined, { signal: gone.signal });
+          } catch {
+            return;
+          }
           console.warn(
             `The SDK host has not exited ${STOP_GRACE_MS}ms after being asked to stop; fencing its process group.`
           );

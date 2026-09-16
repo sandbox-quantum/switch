@@ -106,6 +106,7 @@ export class OpencodeAdapter implements ProviderAdapter {
     resume: true,
     approvals: true,
     userInput: true,
+    fenceableDescendants: true,
   };
 
   private readonly sessions = new Map<string, SessionRecord>();
