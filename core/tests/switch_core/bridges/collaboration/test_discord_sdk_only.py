@@ -102,10 +102,12 @@ class _Message:
         self.author = _Author(0)
         self.webhook_id: int | None = None
         self.edited: str | None = None
+        self.edits: list[dict[str, Any]] = []
         self.deleted = False
 
     async def edit(self, *, content: str, **kwargs: Any) -> None:
         self.edited = content
+        self.edits.append({"content": content, **kwargs})
 
     async def delete(self) -> None:
         self.deleted = True
@@ -251,10 +253,13 @@ _WEBHOOK_IDS = {
 
 
 class _Webhook:
-    def __init__(self, name: str) -> None:
+    def __init__(self, name: str, *, creator: int | None = BOT_USER_ID) -> None:
         self.id = _WEBHOOK_IDS[name]
         self.name = name
         self.token = "tok"
+        # Who Discord says made it. The bridge reads this to decide whether
+        # its cards may carry buttons — see `_application_owns`.
+        self.user = None if creator is None else _Author(creator)
         self.sent: list[dict[str, Any]] = []
         self.edits: list[dict[str, Any]] = []
         self.deletes: list[dict[str, Any]] = []

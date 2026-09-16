@@ -7,6 +7,7 @@ import logging
 import re
 from collections import OrderedDict
 from collections.abc import Awaitable, Callable, Coroutine
+from contextvars import ContextVar
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from typing import Any, ClassVar
@@ -47,11 +48,18 @@ from switch_core.bridges.collaboration.models import (
     InboundAgentJoin,
     InboundAppJoin,
     InboundCommand,
+    InboundInteraction,
     InboundMessage,
     InboundUserJoin,
 )
+from switch_core.bridges.collaboration.session.renderers import (
+    Control,
+    Drawn,
+    offered_controls,
+    position_action,
+)
 from switch_core.bridges.collaboration.session.renderers.neutral import (
-    request_summary,
+    render_request,
     turn_status,
 )
 
@@ -98,6 +106,69 @@ _ZERO_WIDTH_SPACE = "\u200b"
 # Switch writing the reservation and Discord stamping the message it is looking
 # for; the limit stops a busy channel turning one lookup into a history crawl.
 _RECOVERY_SKEW = timedelta(seconds=30)
+
+# What a press hands back, and what it may cost. Discord allows 100 characters
+# in a component's id and 80 on its label; the label's budget is what is left
+# once the option's number and its separator are in front of it.
+_CUSTOM_ID_PREFIX = "sw"
+_MAX_CUSTOM_ID = 100
+_MAX_BUTTON_LABEL = 76
+
+# Five buttons to a row and five rows to a message. A card with more options
+# than that gets none of them rather than some.
+_MAX_BUTTONS = 25
+
+# The notice a press is owed, collected while the press is being handled.
+#
+# A refusal is raised deep inside the shared inbound path, which knows the
+# person and the reason and nothing about Discord; the only private way to tell
+# them is a follow-up on the press itself, addressed by a token that belongs to
+# the press rather than to the person. A context variable is what joins the
+# two: `tell_actor` leaves the notice here and the press carries it, so nothing
+# has to be looked up by actor — two people pressing at once are two tasks with
+# a context each, and the same person pressing twice is two presses rather than
+# one notice overwriting another.
+_PRESS_NOTICE: ContextVar[list[str] | None] = ContextVar(
+    "switch_discord_press_notice", default=None
+)
+
+
+def _custom_id(token: str, position: int) -> str:
+    return f"{_CUSTOM_ID_PREFIX}:{token}:{position}"
+
+
+def _parse_custom_id(custom_id: str) -> tuple[str, int] | None:
+    """The card and the option a press names, or None if it is not ours.
+
+    Read as strictly as it is written. Discord hands back whatever was put in
+    the button and nothing else, so neither half is trusted past its shape: the
+    token is resolved against the stored card and the position against the form
+    that card was drawn from.
+    """
+    parts = custom_id.split(":")
+    if len(parts) != 3 or parts[0] != _CUSTOM_ID_PREFIX:
+        return None
+    token, digits = parts[1], parts[2]
+    if not token or not digits.isascii() or not digits.isdecimal():
+        return None
+    position = int(digits)
+    return (token, position) if position > 0 else None
+
+
+def _button_label(control: Control) -> str:
+    """What the button says: the option's number, and as much of it as fits.
+
+    Numbered because the body numbers it. A card is answerable by typing
+    whether or not it has buttons, and a reader looking at "2" in the text and
+    "Decline" on a button should not have to work out that they are the same
+    thing.
+    """
+    label = control.label.strip() or f"Option {control.position}"
+    if len(label) > _MAX_BUTTON_LABEL:
+        label = label[: _MAX_BUTTON_LABEL - 1].rstrip() + "…"
+    return f"{control.position}. {label}"
+
+
 _RECOVERY_LIMIT = 100
 
 # Waited when Discord says it is rate limiting but does not say for how long.
@@ -329,6 +400,9 @@ class DiscordAdapter(CollaborationAdapter):
         self._webhooks: dict[tuple[int, str], discord.Webhook] = {}
         # Ids of webhooks the bridge has minted/adopted, for echo dropping.
         self._webhook_ids: set[int] = set()
+        # Of those, the ones this application created — the only ones Discord
+        # will let carry buttons. See `_application_owns`.
+        self._owned_webhooks: set[int] = set()
         self._seen_ids: OrderedDict[int, None] = OrderedDict()
         self._seen_ids_max = 1000
         # Discord user id ↔ username caches, for mention translation both ways.
@@ -378,6 +452,11 @@ class DiscordAdapter(CollaborationAdapter):
 
         client = discord.Client(intents=intents)
         client.event(self._make_on_message())
+        # Presses on a card's buttons. Registered alongside the command tree
+        # rather than through it: the tree is handed application-command
+        # interactions only, and a component interaction is dispatched as the
+        # plain `interaction` event whether or not anything is listening.
+        client.event(self._make_on_interaction())
         self._tree = app_commands.CommandTree(client)
         guild = discord.Object(id=self._guild_id)
         for app_command in build_app_commands(self._handle_slash_command):
@@ -463,6 +542,17 @@ class DiscordAdapter(CollaborationAdapter):
 
         return on_message
 
+    def _make_on_interaction(
+        self,
+    ) -> Callable[[discord.Interaction], Coroutine[Any, Any, None]]:
+        async def on_interaction(interaction: discord.Interaction) -> None:
+            try:
+                await self._handle_interaction(interaction)
+            except Exception:
+                logger.exception("Failed to handle a press on a Discord card")
+
+        return on_interaction
+
     async def stop(self) -> None:
         if self._client:
             try:
@@ -480,6 +570,7 @@ class DiscordAdapter(CollaborationAdapter):
         self._client = None
         self._tree = None
         self._webhooks.clear()
+        self._owned_webhooks.clear()
         logger.info("Discord adapter stopped")
 
     def _require_client(self) -> discord.Client:
@@ -849,7 +940,9 @@ class DiscordAdapter(CollaborationAdapter):
         `RichContentFailed`, where the lookups would be decorating a message
         nobody is going to see.
         """
-        return self._draw(content, mention=None, responder=None, prefix="")
+        return self._draw(
+            content, mention=None, responder=None, prefix="", controls=False
+        ).text
 
     def _draw(
         self,
@@ -858,7 +951,8 @@ class DiscordAdapter(CollaborationAdapter):
         mention: str | None,
         responder: str | None,
         prefix: str,
-    ) -> str:
+        controls: bool,
+    ) -> Drawn:
         escape = self._rich_escape
         limit = max(1, self.rich_fallback_limit() - len(prefix))
         markup = self.rich_markup()
@@ -882,13 +976,13 @@ class DiscordAdapter(CollaborationAdapter):
                 )
                 + tail
             )
-            return f"{prefix}{body}"
+            return Drawn(text=f"{prefix}{body}", answerable=False)
         # The mention goes on its own line rather than in front of the heading:
         # a card is a block, and a handle wedged before "**Permission needed**"
         # reads as part of the heading.
         lead = f"{mention}\n" if mention else ""
         tail = f"\n{self.unnotified_notice()}" if content.notify_unreachable else ""
-        body = request_summary(
+        drawn = render_request(
             content.request,
             content.reference,
             escape=escape,
@@ -896,29 +990,116 @@ class DiscordAdapter(CollaborationAdapter):
             markup=markup,
             responder=responder,
             unavailable_reason=content.unavailable_reason,
+            control_label_limit=_MAX_BUTTON_LABEL if controls else None,
         )
-        return f"{prefix}{lead}{body}{tail}"
+        return replace(drawn, text=f"{prefix}{lead}{drawn.text}{tail}")
 
-    def _render_rich(self, content: RichContent, *, prefix: str) -> str:
-        """Draw `content` for one place on Discord.
+    def _render_rich(
+        self, content: RichContent, *, prefix: str, controls: bool
+    ) -> tuple[str, discord.ui.View | None]:
+        """Draw `content` for one place on Discord, with the buttons it earns.
 
         `prefix` is the inlined agent name a DM needs and a guild channel does
         not: a webhook message carries its sender's name and face, and a bot
         post in a DM carries the bot's, so there the name goes in the body the
         way `send_message` puts it there, charged to the same 2,000 characters
         as everything else.
+
+        `controls` is whether buttons are possible where this is going at all —
+        false for a channel whose publication webhook this application does not
+        own, since Discord drops components from one it does not. Whether this
+        particular drawing gets any is decided below.
         """
         responder = (
             self._mention(content.responder_external_id)
             if isinstance(content, RequestCard)
             else None
         )
-        return self._draw(
+        offered = self._offered(content) if controls else []
+        drawn = self._draw(
             content,
             mention=self._mention(content.notify_external_id),
             responder=responder,
             prefix=prefix,
+            controls=bool(offered),
         )
+        return drawn.text, self._controls(content, drawn, offered)
+
+    def _offered(self, content: RichContent) -> list[Control]:
+        """The options this card would put on buttons, before it is drawn.
+
+        Asked first because the answer changes the body: an option a button
+        says in full is one the body stops repeating, and a card with no
+        buttons has to print them all. A card with more options than Discord's
+        five-by-five grid holds gets none of them rather than the first
+        twenty-five, since a reader offered some of the choices would take the
+        absence of the rest for the whole list.
+        """
+        if not isinstance(content, RequestCard) or self._on_interaction is None:
+            return []
+        offered = offered_controls(content.request)
+        if len(offered) > _MAX_BUTTONS:
+            logger.warning(
+                "Request %s offers %d options, more than the %d Discord will "
+                "show as buttons, so its card is answerable by typing only.",
+                content.request.request_id,
+                len(offered),
+                _MAX_BUTTONS,
+            )
+            return []
+        return offered
+
+    def _controls(
+        self, content: RichContent, drawn: Drawn, offered: list[Control]
+    ) -> discord.ui.View | None:
+        """The card's options as buttons, or nothing where a press cannot land.
+
+        Nothing at all is the ordinary answer: a status has no options, a
+        settled card has none left, and a card that cannot be answered where it
+        is showing says so — a live control under that sentence is an
+        invitation to the refusal it just explained. Since every redraw builds
+        this again, the buttons come off a card at the moment it stops being
+        pressable, without anything having to remember that it once had them.
+
+        Whether the drawing earned them comes from `drawn`, not from reading
+        the request a second time. A long detail or a clipped option leaves a
+        body the reader cannot decide from, and only the renderer that cut it
+        knows that. A press would still resolve against the saved form and
+        settle the request — so the whole of the protection is not offering the
+        button.
+
+        A truncated *label* is not that case. `_MAX_BUTTON_LABEL` is what the
+        renderer was given too, so an option the button says in full is one the
+        body left to it and an option the button had to cut is one the body
+        kept whole.
+
+        The view is stopped before it is returned. Nothing here waits on
+        discord.py's own dispatch — a press arrives as a gateway interaction
+        and is resolved against the stored card, which is what makes it survive
+        a restart — and an unstopped view is filed in the client's view store
+        for the life of the process, one per card ever posted.
+        """
+        if not isinstance(content, RequestCard) or not offered or not drawn.answerable:
+            return None
+        view = discord.ui.View(timeout=None)
+        for control in offered:
+            custom_id = _custom_id(content.reference.token, control.position)
+            if len(custom_id) > _MAX_CUSTOM_ID:
+                raise RichContentFailed(
+                    f"Cannot put a button on request {content.request.request_id} "
+                    f"in Discord: its press would carry {len(custom_id)} "
+                    f"characters and Discord allows {_MAX_CUSTOM_ID}.",
+                    text=drawn.text,
+                )
+            view.add_item(
+                discord.ui.Button(
+                    label=_button_label(control),
+                    custom_id=custom_id,
+                    style=discord.ButtonStyle.secondary,
+                )
+            )
+        view.stop()
+        return view
 
     def _mention(self, external_user_id: str | None) -> str | None:
         """`<@id>` for a Discord user id, or None where there is nothing to name.
@@ -983,19 +1164,36 @@ class DiscordAdapter(CollaborationAdapter):
 
         lobby = self._channel_type_of(target) == "lobby"
         prefix = f"**{await self.agent_label_for_body(agent_name)}**: " if lobby else ""
-        text = self._render_rich(content, prefix=prefix)
         if lobby:
+            # A DM card is the bot's own message, and a bot may always put
+            # components on one — there is no webhook here to own or not own.
+            text, view = self._render_rich(content, prefix=prefix, controls=True)
+            kwargs: dict[str, Any] = {} if view is None else {"view": view}
             try:
                 sent = await target.send(
                     text,
                     suppress_embeds=True,
                     allowed_mentions=_NO_MASS_MENTIONS,
+                    **kwargs,
                 )
             except Exception as error:
                 raise self._rich_failure(
                     error, f"Discord refused the post in DM {channel_id}", text
                 ) from error
             return f"{sent.channel.id}:{sent.id}"
+
+        try:
+            webhook = await self._publication_webhook(int(channel_id))
+        except Exception as error:
+            raise self._rich_failure(
+                error,
+                f"Discord could not resolve the publication webhook for channel "
+                f"{channel_id}",
+                fallback,
+            ) from error
+        text, view = self._render_rich(
+            content, prefix=prefix, controls=self._offers_buttons(int(channel_id))
+        )
 
         thread: Any = None
         if thread_root_id:
@@ -1004,7 +1202,6 @@ class DiscordAdapter(CollaborationAdapter):
             )
 
         try:
-            webhook = await self._publication_webhook(int(channel_id))
             agent = await self.agent_rendering(agent_name)
             payload: dict[str, Any] = {
                 "content": text,
@@ -1015,6 +1212,8 @@ class DiscordAdapter(CollaborationAdapter):
             }
             if thread is not None:
                 payload["thread"] = thread
+            if view is not None:
+                payload["view"] = view
             sent = await _WebhookIdentity(agent.field_label, agent_name).send(
                 webhook, payload
             )
@@ -1142,23 +1341,51 @@ class DiscordAdapter(CollaborationAdapter):
 
         lobby = self._channel_type_of(target) == "lobby"
         prefix = f"**{await self.agent_label_for_body(agent_name)}**: " if lobby else ""
+        if lobby:
+            controls = True
+        else:
+            try:
+                await self._publication_webhook(int(channel_id))
+            except Exception as error:
+                raise self._rich_failure(
+                    error,
+                    f"Discord could not resolve the publication webhook for "
+                    f"channel {channel_id}",
+                    self.rich_fallback_text(content),
+                ) from error
+            controls = self._offers_buttons(int(channel_id))
         # A post notifies; an edit does not. Repeating the mention on every
         # redraw would be a handle in the channel that never reaches anybody
         # it has not already reached.
-        text = self._render_rich(
-            replace(content, notify_external_id=None), prefix=prefix
+        text, view = self._render_rich(
+            replace(content, notify_external_id=None), prefix=prefix, controls=controls
         )
-        await self._edit_rich(channel_id, message_ref, text, lobby=lobby)
+        await self._edit_rich(channel_id, message_ref, text, view, lobby=lobby)
 
     async def _edit_rich(
-        self, channel_id: str, message_ref: str, text: str, *, lobby: bool
+        self,
+        channel_id: str,
+        message_ref: str,
+        text: str,
+        view: discord.ui.View | None,
+        *,
+        lobby: bool,
     ) -> None:
+        """Redraw a publication, including the buttons it does or does not keep.
+
+        `view` is passed on every edit rather than only when there is one,
+        because leaving it out leaves the components alone: a settled card
+        would keep the buttons it was posted with and go on inviting a press
+        that can no longer land. `None` is what takes them off.
+        """
         location_id, message_id = self._parse_message_ref(message_ref)
         try:
             if lobby:
                 target = await self._get_channel(int(location_id or channel_id))
                 message = await target.fetch_message(int(message_id))
-                await message.edit(content=text, allowed_mentions=_NO_MASS_MENTIONS)
+                await message.edit(
+                    content=text, view=view, allowed_mentions=_NO_MASS_MENTIONS
+                )
                 return
             kwargs: dict[str, Any] = {}
             if location_id and location_id != channel_id:
@@ -1167,6 +1394,7 @@ class DiscordAdapter(CollaborationAdapter):
             await webhook.edit_message(
                 int(message_id),
                 content=text,
+                view=view,
                 allowed_mentions=_NO_MASS_MENTIONS,
                 **kwargs,
             )
@@ -2172,6 +2400,153 @@ class DiscordAdapter(CollaborationAdapter):
             )
         )
 
+    # ── Card presses ─────────────────────────────────────────────────────────
+
+    async def _handle_interaction(self, interaction: discord.Interaction) -> None:
+        """Someone pressed a button on a card this bridge posted.
+
+        Who pressed comes from the interaction's own `user`, which Discord
+        fills in and the payload cannot: the id in the button says which
+        request and which option, never who. So a press replayed from someone
+        else's client is still attributed to whoever actually sent it, and the
+        identity check downstream is against a real account rather than a
+        claim.
+
+        Which card comes from the message the press arrived on, addressed the
+        same way `post_rich` addressed it when it wrote the reference down —
+        thread or channel, then message. That is what makes a press work after
+        a restart: nothing is remembered between the two, and the button is
+        read against the stored card rather than against a view still in
+        memory.
+
+        The press is acknowledged before any Switch work, because Discord
+        allows three seconds and the authority check is not bounded by them.
+        The acknowledgement changes nothing on the screen: the card's own
+        redraw is what says an answer was taken, and claiming it here would be
+        claiming it before the redraw that proves it. A refusal reaches the
+        presser through `tell_actor`, which leaves it in `_PRESS_NOTICE` for
+        the follow-up below — private to them, so a channel does not watch
+        somebody be told no.
+
+        Nothing here dedupes. The same press twice is the same option, by the
+        same person, against the same revision — which the shared layer derives
+        one command id from, so the second is the first rather than a second
+        answer.
+        """
+        if interaction.type is not discord.InteractionType.component:
+            return
+        if interaction.guild_id is not None and interaction.guild_id != self._guild_id:
+            return
+        data: dict[str, Any] = dict(interaction.data or {})
+        press = _parse_custom_id(str(data.get("custom_id") or ""))
+        if press is None:
+            return
+        channel = interaction.channel
+        message = interaction.message
+        if channel is None or message is None:
+            logger.warning(
+                "A press on a Switch card carried no message to answer against, "
+                "so there is nothing to resolve it to."
+            )
+            return
+        if self._on_interaction is None:
+            logger.warning(
+                "A press on a Switch card in Discord channel %s has nowhere to "
+                "go: this bridge handles no interactions, so the card should "
+                "not have been drawn with buttons.",
+                channel.id,
+            )
+            return
+
+        try:
+            await interaction.response.defer()
+        except discord.HTTPException:
+            logger.exception(
+                "Discord would not accept the acknowledgement of a press in "
+                "channel %s, so the answer is not attempted: a press that is "
+                "not acknowledged in time is one the presser is told failed.",
+                channel.id,
+            )
+            return
+
+        token, position = press
+        user = interaction.user
+        name = str(user.name)
+        # A press is a sighting of that account in this channel, and the same
+        # thing a message teaches: the name a mention needs, and the id a
+        # handle resolves to.
+        self._user_names[user.id] = name
+        self._username_to_id[name] = user.id
+
+        # A card in a thread belongs to the parent channel's room, exactly as
+        # a message in that thread does — and that is the channel the card was
+        # recorded against.
+        parent_id = getattr(channel, "parent_id", None)
+        channel_id = str(parent_id if parent_id is not None else channel.id)
+
+        notices: list[str] = []
+        held = _PRESS_NOTICE.set(notices)
+        try:
+            await self._on_interaction(
+                InboundInteraction(
+                    channel_id=channel_id,
+                    sender_id=str(user.id),
+                    sender_name=name,
+                    action_id=position_action(position),
+                    value=token,
+                    message_ref=f"{channel.id}:{message.id}",
+                )
+            )
+        finally:
+            _PRESS_NOTICE.reset(held)
+        if notices:
+            await self._tell_presser(interaction, notices[0])
+
+    async def _tell_presser(
+        self, interaction: discord.Interaction, notice: str
+    ) -> None:
+        """Say why an answer did not land, to the person who pressed and no one else.
+
+        A refusal from Discord is logged and left. Nothing downstream waits on
+        this, and the answer it would have explained has already been decided
+        either way.
+        """
+        try:
+            await interaction.followup.send(notice, ephemeral=True)
+        except discord.HTTPException as error:
+            logger.warning(
+                "Discord would not carry the reply to a press (%s). The notice "
+                "went unsaid: %s",
+                error,
+                notice,
+            )
+
+    async def tell_actor(
+        self,
+        channel_id: str,
+        actor_ref: str,
+        actor_name: str,
+        thread_ref: str | None,
+        text: str,
+    ) -> None:
+        """Tell one person their answer did not land, where they can see it.
+
+        A press is told in a follow-up to the press itself: visible to them
+        alone, which costs the channel nothing and reaches them without the bot
+        having to be able to open a DM with them.
+
+        A typed answer has no press to follow up, so it falls back to the base:
+        said in the card's own thread, where everyone reading it sees a notice
+        addressed to someone else. That is the platform's limit rather than a
+        choice — nothing but an interaction gives a bot a private reply in a
+        channel.
+        """
+        notices = _PRESS_NOTICE.get()
+        if notices is not None:
+            notices.append(text)
+            return
+        await super().tell_actor(channel_id, actor_ref, actor_name, thread_ref, text)
+
     # ── Slash commands ───────────────────────────────────────────────────────
 
     async def _handle_slash_command(
@@ -2422,11 +2797,60 @@ class DiscordAdapter(CollaborationAdapter):
                 webhook = existing
                 break
         if webhook is None:
+            # Minted here, so it is this application's by construction.
             webhook = await channel.create_webhook(name=name)
+            owned = True
+        else:
+            owned = self._application_owns(webhook)
 
         self._webhooks[(channel_id, name)] = webhook
         self._webhook_ids.add(webhook.id)
+        if owned:
+            self._owned_webhooks.add(webhook.id)
+        elif name == _PUBLICATION_WEBHOOK_NAME:
+            logger.warning(
+                "The %r webhook in Discord channel %s was made by somebody "
+                "other than this application, so Discord will not let it carry "
+                "buttons: a request card posted there can only be answered by "
+                "typing. It is used anyway, because a webhook may only edit and "
+                "delete the messages it sent itself and swapping it would strand "
+                "every card already posted through it. Deleting it in the "
+                "channel's settings lets the bridge mint its own.",
+                name,
+                channel_id,
+            )
         return webhook
+
+    def _application_owns(self, webhook: discord.Webhook) -> bool:
+        """Whether Discord will let this webhook carry interactive components.
+
+        Only a webhook an application owns may send them; one a person made in
+        the channel's settings has its components dropped on the way out, so a
+        card posted through it would arrive with the question and no buttons.
+        Finding a webhook by name is no evidence either way — the name is
+        whatever it was called.
+
+        Discord names the owner twice over: as `application_id`, which
+        discord.py does not carry onto the object, and as the account that
+        created it, which it does. For a webhook a bot created those are the
+        same application, so the creator is the probe. It is only filled in on
+        a webhook read through the channel, which is how this bridge reads
+        them; one fetched by its token says nothing about who made it.
+        """
+        creator = getattr(webhook, "user", None)
+        return creator is not None and bool(
+            self._bot_user_id and creator.id == self._bot_user_id
+        )
+
+    def _offers_buttons(self, channel_id: int) -> bool:
+        """Whether a card published in this guild channel may have buttons.
+
+        Answered from what `_publication_webhook` already resolved, so this
+        stays synchronous and costs nothing: the caller has resolved the
+        webhook by the time it draws.
+        """
+        webhook = self._webhooks.get((channel_id, _PUBLICATION_WEBHOOK_NAME))
+        return webhook is not None and webhook.id in self._owned_webhooks
 
     async def _ensure_thread(self, channel_id: int, thread_root_ref: str) -> Any:
         """Resolve (creating if needed) the Discord thread rooted at the given
