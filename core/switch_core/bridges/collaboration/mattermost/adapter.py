@@ -1046,9 +1046,11 @@ class MattermostAdapter(CollaborationAdapter):
         All three have to hold and they are settled at different moments: an
         address the Mattermost server can reach, a place on the shared listener
         for a press to arrive at, and something to route it to once it has.
-        Asked on the redraw path as well as the drawing one, so a deployment
-        that draws no buttons never rewrites a post's props to remove them
-        either.
+
+        A question about offering a button, and only that. Taking one off asks
+        the post instead: a deployment that has withdrawn its callback address
+        is exactly the one whose old buttons most need removing, and it is the
+        one this answers None for.
         """
         url = self.callback_url
         endpoint = self._callback
@@ -1204,9 +1206,12 @@ class MattermostAdapter(CollaborationAdapter):
         whose outcome is unknown may well have landed, and reporting it as a
         refusal buys a fallback reply about a card that is already correct.
 
-        A card's buttons are carried in the post's props, so where this bridge
-        draws any the props are part of the edit — which is what takes them off
-        a card the moment it stops being answerable.
+        A card's buttons are carried in the post's props, so the props are part
+        of the edit — which is what takes them off a card the moment it stops
+        being answerable. Part of every card's edit, not just the edits of a
+        bridge that could put a button on: a deployment that has since dropped
+        its callback address can offer no new button and has old ones still
+        inviting a press at a route that has gone.
         """
         # A post notifies; an edit does not. Repeating the mention on every
         # redraw would be a handle in the channel that never resolves to
@@ -1223,7 +1228,7 @@ class MattermostAdapter(CollaborationAdapter):
             )
         try:
             patch: dict[str, Any] = {"message": rendered.text}
-            if isinstance(content, RequestCard) and self._button_address() is not None:
+            if isinstance(content, RequestCard):
                 patch["props"] = await self._props_with_actions(
                     driver, loop, message_ref, rendered.actions
                 )
