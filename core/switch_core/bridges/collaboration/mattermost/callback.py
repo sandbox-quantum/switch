@@ -19,6 +19,12 @@ CONTEXT_KEY = "switch"
 # never be replayed as another if a second kind of button is ever added.
 _PURPOSE = "answer"
 
+# How much of an option a button shows. Not a server limit — Mattermost
+# documents none — but a width past which a control stops reading as a control
+# and starts reading as a paragraph with a border. The body keeps the line of
+# any option too long to survive it, so nothing is lost by cutting here.
+MAX_BUTTON_LABEL = 76
+
 
 @dataclass(frozen=True)
 class Press:
@@ -92,12 +98,18 @@ def answer_actions(
 def _button_name(control: Control) -> str:
     """What the button says: the option's number, then the option.
 
-    Numbered because the body numbers it, and a reader looking at "2." in the
-    text and "Decline" on a button should not have to work out that they are
-    the same choice. Not cut to a width, because Mattermost documents no limit
-    on how long a name may be.
+    Numbered because the number is what a typed answer names, and the card
+    still invites one: where the buttons carry the options the body stops
+    listing them, so the controls become the only place the reader can see
+    which number means what.
+
+    The number is therefore the part that must survive, and the label is cut to
+    fit around it. An option too long for `MAX_BUTTON_LABEL` keeps its line in
+    the body, where the whole of it is still readable.
     """
     label = control.label.strip() or f"Option {control.position}"
+    if len(label) > MAX_BUTTON_LABEL:
+        label = label[: MAX_BUTTON_LABEL - 1].rstrip() + "…"
     return f"{control.position}. {label}"
 
 

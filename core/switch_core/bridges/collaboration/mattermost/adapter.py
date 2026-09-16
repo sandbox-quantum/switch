@@ -44,6 +44,7 @@ from switch_core.bridges.collaboration.ingress import (
     CallbackRefused,
 )
 from switch_core.bridges.collaboration.mattermost.callback import (
+    MAX_BUTTON_LABEL,
     answer_actions,
     read_press,
 )
@@ -266,11 +267,13 @@ class MattermostAdapter(CollaborationAdapter):
     #: handle of its own.
     carries_publication_marker: ClassVar[bool] = True
 
-    #: The bridge connects as a system admin, which may delete any post in the
-    #: team, so an answered card comes back whichever bot posted it. Mattermost
-    #: leaves a "(message deleted)" placeholder for clients with the channel
-    #: already open; it goes on the next load.
-    removes_answered_cards: ClassVar[bool] = True
+    #: An answered card is edited down to its outcome rather than taken back.
+    #: The bridge could delete it — it connects as a system admin, so it may
+    #: remove any post in the team — but Mattermost is alone in leaving a
+    #: "(message deleted)" placeholder behind one removed while a client has
+    #: the channel open. A settled card reads better than that tombstone and
+    #: keeps the channel a record of what was asked and what was decided.
+    removes_answered_cards: ClassVar[bool] = False
 
     def __init__(self, *, config: MattermostConnectionConfig) -> None:
         super().__init__()
@@ -812,11 +815,21 @@ class MattermostAdapter(CollaborationAdapter):
         Switch holds and a call to Mattermost to turn it into a name. This is
         the string that goes in a `RichContentFailed`, where a failed lookup
         on top of a failed post would say nothing useful anyway.
+
+        Drawn without controls because nothing carries them here. A card that
+        dropped an option from its body on the promise of a button, and then
+        went out as the text of a failure, would ask for a choice it had
+        stopped printing.
         """
-        return self._draw(content, mention=None, responder=None).text
+        return self._draw(content, mention=None, responder=None, controls=False).text
 
     def _draw(
-        self, content: RichContent, *, mention: str | None, responder: str | None
+        self,
+        content: RichContent,
+        *,
+        mention: str | None,
+        responder: str | None,
+        controls: bool,
     ) -> Drawn:
         escape = self._rich_escape
         limit = self.rich_fallback_limit()
@@ -858,11 +871,7 @@ class MattermostAdapter(CollaborationAdapter):
             markup=markup,
             responder=responder,
             unavailable_reason=content.unavailable_reason,
-            # The body prints every option even where buttons are drawn.
-            # Mattermost documents no budget for a button's label, so there is
-            # no width at which an option can be called fully shown by the
-            # control — and a numbered list is what a typed answer names.
-            control_label_limit=None,
+            control_label_limit=MAX_BUTTON_LABEL if controls else None,
         )
         return replace(drawn, text=f"{lead}{drawn.text}{tail}")
 
@@ -920,8 +929,22 @@ class MattermostAdapter(CollaborationAdapter):
             if isinstance(content, RequestCard)
             else None
         )
-        drawn = self._draw(content, mention=mention, responder=responder)
-        return drawn.text, self._controls(content, drawn)
+        controls = (
+            isinstance(content, RequestCard) and self._button_address() is not None
+        )
+        drawn = self._draw(
+            content, mention=mention, responder=responder, controls=controls
+        )
+        actions = self._controls(content, drawn)
+        if controls and not actions:
+            # The body drops an option only where a button carries it, and
+            # whether one does is not known until the card has been drawn: a
+            # form too big to show faithfully earns no controls, and the
+            # drawing that discovered that had already left the options out.
+            drawn = self._draw(
+                content, mention=mention, responder=responder, controls=False
+            )
+        return drawn.text, actions
 
     async def post_rich(
         self,

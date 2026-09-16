@@ -1,13 +1,20 @@
 """Taking a Mattermost card back, and being able to say whether it worked.
 
 The bridge connects as a system admin, so it may delete a post written by an
-agent's bot — which every card is, and the reference does not say whose. What a
-reader with the channel already open sees in its place is Mattermost's own
-"(message deleted)" placeholder; it goes on the next load.
+agent's bot — which every card is, and the reference does not say whose.
 
-The other half is that a caller acting on the result — writing down that a card
-is gone — must not be told success where none was established. That is why this
-is not `delete_message`, which logs and returns either way.
+Answering a request no longer removes its card: Mattermost is the one platform
+that leaves a "(message deleted)" line behind a post taken down while a reader
+has the channel open, and a card edited down to its outcome reads better than
+that placeholder. So `removes_answered_cards` is off and nothing in the
+publication loop reaches the seam below. It is kept, and kept honest here,
+because the flag is the whole of the decision and the seam is what a reversal
+would need — the port's default raises rather than pretending.
+
+The half that has always mattered is that a caller acting on the result —
+writing down that a card is gone — must not be told success where none was
+established. That is why this is not `delete_message`, which logs and returns
+either way.
 """
 
 from __future__ import annotations
@@ -146,6 +153,11 @@ async def test_a_disconnected_adapter_does_not_claim_the_card_was_removed() -> N
         await adapter.remove_publication(CHANNEL, CARD)
 
 
-def test_mattermost_is_a_platform_that_says_it_can_do_this() -> None:
-    """The capability is what routes an answered card here at all."""
-    assert MattermostAdapter.removes_answered_cards is True
+def test_an_answered_mattermost_card_is_not_taken_back() -> None:
+    """The capability is what routes an answered card into removal at all, and
+    Mattermost declines it: a deleted post leaves a "(message deleted)" line
+    for anyone with the channel open, and a card edited down to its outcome
+    says more than that tombstone does. The machinery above reads this flag, so
+    turning it off is the whole of what keeps an answered card on the screen.
+    """
+    assert MattermostAdapter.removes_answered_cards is False

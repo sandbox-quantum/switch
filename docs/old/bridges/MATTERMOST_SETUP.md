@@ -130,12 +130,24 @@ Two consequences:
   by typing. New cards work immediately.
 
 **What a reader sees.** An open permission card gains one button per option,
-numbered the way the card's own text numbers them, so pressing and typing name
-the same choice. The buttons disappear when the request is answered, cancelled
-or expires. A press by somebody who may not answer, or on a card that has
-already settled, is explained to that person alone — nobody else in the channel
-sees it. A card that says it is too long to answer from Mattermost carries no
-buttons, because the reader has not been shown what they would be deciding.
+numbered the way a typed answer numbers them, so pressing and typing name the
+same choice. The card's body does not then list those options again — the
+buttons are carrying them. An option too long to fit on a button keeps its line
+in the body, and a card that carries no buttons at all lists everything, so the
+choices are always written somewhere.
+
+The buttons disappear when the request is answered, cancelled or expires, and
+the card is **edited down to its outcome** rather than deleted: it keeps the
+question and gains the decision, so the channel stays a record of what was
+asked and what was chosen. Mattermost is the only platform Switch bridges to
+where an answered card behaves this way — the others take it off the screen —
+because it is the only one that leaves a "(message deleted)" line behind a post
+removed while somebody has the channel open.
+
+A press by somebody who may not answer, or on a card that has already settled,
+is explained to that person alone — nobody else in the channel sees it. A card
+that says it is too long to answer from Mattermost carries no buttons, because
+the reader has not been shown what they would be deciding.
 
 Buttons ride in the post's props, which an edit replaces wholesale, so a redraw
 reads the post back and merges rather than overwriting what the Mattermost
