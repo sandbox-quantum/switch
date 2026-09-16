@@ -755,6 +755,7 @@ async def run(config: SwitchConfig) -> None:
         discord_gateway = DiscordGatewayClient(
             bot_token=config.discord_app_bot_token,
             message_content=config.discord_app_message_content,
+            members=config.discord_app_members,
         )
         try:
             await discord_gateway.start()
