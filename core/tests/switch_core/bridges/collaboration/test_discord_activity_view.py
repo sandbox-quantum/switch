@@ -41,8 +41,10 @@ from switch_core.bridges.collaboration.discord.adapter import (
     _refresh_id,
 )
 from switch_core.bridges.collaboration.session.renderers.neutral import (
+    ACTIVITY_AUDIENCE_UNKNOWN,
     ACTIVITY_FAILED,
     ACTIVITY_GONE,
+    ACTIVITY_NOT_A_MEMBER,
     ACTIVITY_UNREADABLE,
 )
 
@@ -104,12 +106,17 @@ class _PeopledGuild(_Guild):
         super().__init__()
         self.members = members
         self.fetched: list[int] = []
+        # What Discord says instead of answering. "Not found" is an answer and
+        # is the default below; this is everything else.
+        self.fetch_error: Exception | None = None
 
     def get_member(self, user_id: int) -> _Member | None:
         return _Member(user_id) if user_id in self.members else None
 
     async def fetch_member(self, user_id: int) -> _Member:
         self.fetched.append(user_id)
+        if self.fetch_error is not None:
+            raise self.fetch_error
         if user_id in self.members:
             return _Member(user_id)
         raise discord.NotFound(_HTTPResponse(), "no such member")  # type: ignore[arg-type]
@@ -525,13 +532,37 @@ async def test_a_reader_who_cannot_read_the_history_is_refused_too() -> None:
 
 
 async def test_someone_who_has_left_the_guild_is_refused() -> None:
+    """Discord answers "no such member", which is a fact about them rather
+    than a failure to find one, so that is the refusal they get."""
     adapter, channel = _guild_with(set())
     _resolving(adapter, _snapshot())
     press = _status_press(channel)
 
     await adapter._handle_interaction(press)  # type: ignore[arg-type]
 
-    assert _shown(press) == ACTIVITY_UNREADABLE
+    assert _shown(press) == ACTIVITY_NOT_A_MEMBER
+
+
+async def test_a_guild_lookup_that_failed_does_not_say_the_reader_is_outside_it(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The sibling of the case above, and the reason they are two branches.
+    "Not found" is Discord saying this person is not here; a 500 is Discord
+    not saying anything, and the reader must not be told they left a guild on
+    the strength of a request that fell over."""
+    adapter, channel = _guild_with({READER_ID})
+    guild: Any = channel.guild
+    guild.members = set()
+    guild.fetch_error = discord.HTTPException(_HTTPResponse(), "upstream")  # type: ignore[arg-type]
+    asked = _resolving(adapter, _snapshot())
+    press = _status_press(channel)
+
+    with caplog.at_level(logging.WARNING):
+        await adapter._handle_interaction(press)  # type: ignore[arg-type]
+
+    assert asked == []
+    assert _shown(press) == ACTIVITY_AUDIENCE_UNKNOWN
+    assert any("would not say whether" in r.getMessage() for r in caplog.records)
 
 
 async def test_a_private_thread_asks_for_membership_not_visibility() -> None:
@@ -549,7 +580,7 @@ async def test_a_private_thread_asks_for_membership_not_visibility() -> None:
     await adapter._handle_interaction(press)  # type: ignore[arg-type]
 
     assert asked == []
-    assert _shown(press) == ACTIVITY_UNREADABLE
+    assert _shown(press) == ACTIVITY_NOT_A_MEMBER
 
 
 async def test_a_member_of_that_thread_is_shown_it() -> None:
@@ -585,7 +616,7 @@ async def test_a_refresh_is_authorised_against_the_thread_its_reference_names() 
     await adapter._handle_interaction(press)  # type: ignore[arg-type]
 
     assert asked == []
-    assert _shown(press) == ACTIVITY_UNREADABLE
+    assert _shown(press) == ACTIVITY_NOT_A_MEMBER
 
 
 async def test_a_destination_nobody_can_ask_about_is_refused_not_assumed(
@@ -601,7 +632,7 @@ async def test_a_destination_nobody_can_ask_about_is_refused_not_assumed(
     with caplog.at_level(logging.WARNING):
         await adapter._handle_interaction(press)  # type: ignore[arg-type]
 
-    assert _shown(press) == ACTIVITY_UNREADABLE
+    assert _shown(press) == ACTIVITY_AUDIENCE_UNKNOWN
     assert any(
         "Cannot establish who may read" in r.getMessage() for r in caplog.records
     )
@@ -631,7 +662,7 @@ async def test_someone_not_in_that_channel_is_refused_it() -> None:
     await adapter._handle_interaction(press)  # type: ignore[arg-type]
 
     assert asked == []
-    assert _shown(press) == ACTIVITY_UNREADABLE
+    assert _shown(press) == ACTIVITY_NOT_A_MEMBER
 
 
 async def test_a_channel_that_cannot_say_who_is_in_it_is_refused(
@@ -645,7 +676,7 @@ async def test_a_channel_that_cannot_say_who_is_in_it_is_refused(
     with caplog.at_level(logging.WARNING):
         await adapter._handle_interaction(press)  # type: ignore[arg-type]
 
-    assert _shown(press) == ACTIVITY_UNREADABLE
+    assert _shown(press) == ACTIVITY_AUDIENCE_UNKNOWN
     assert any("Cannot establish who is in" in r.getMessage() for r in caplog.records)
 
 

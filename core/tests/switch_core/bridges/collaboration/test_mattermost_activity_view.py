@@ -41,9 +41,10 @@ from switch_core.bridges.collaboration.mattermost.callback import (
     activity_action,
 )
 from switch_core.bridges.collaboration.session.renderers.neutral import (
+    ACTIVITY_AUDIENCE_UNKNOWN,
     ACTIVITY_FAILED,
     ACTIVITY_GONE,
-    ACTIVITY_UNREADABLE,
+    ACTIVITY_NOT_A_MEMBER,
 )
 
 from .test_mattermost_press import (
@@ -456,11 +457,14 @@ async def test_what_a_host_called_a_tool_cannot_address_the_channel() -> None:
 
 
 async def test_someone_who_is_not_in_the_channel_is_told_rather_than_shown() -> None:
+    """And told the fact that was established. Mattermost answered "not a
+    member", which on an open channel is not the same as "cannot read" — a
+    reader who has never joined one can still read every word in it."""
     adapter, asked = _viewer(member_of=None)
 
     answer = await adapter._handle_callback(_press())
 
-    assert _shown(answer) == ACTIVITY_UNREADABLE
+    assert _shown(answer) == ACTIVITY_NOT_A_MEMBER
     assert asked == []
 
 
@@ -478,14 +482,16 @@ async def test_the_question_is_asked_of_mattermost_on_every_press() -> None:
 async def test_a_membership_lookup_that_cannot_answer_refuses(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """ "Mattermost did not say" is not "yes"."""
+    """ "Mattermost did not say" is not "yes" — and it is not "you cannot read
+    this" either. Nothing was established about the reader, so the refusal
+    stands without telling them it was their doing."""
     adapter, asked = _viewer()
     _channels(adapter).error = RuntimeError("the server is down")
 
     with caplog.at_level(logging.WARNING):
         answer = await adapter._handle_callback(_press())
 
-    assert _shown(answer) == ACTIVITY_UNREADABLE
+    assert _shown(answer) == ACTIVITY_AUDIENCE_UNKNOWN
     assert asked == []
     assert "would not say whether" in caplog.text
 
@@ -494,23 +500,28 @@ async def test_a_channel_this_bridge_may_not_inspect_is_one_it_will_not_disclose
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     """An audience that cannot be established is not an empty one, but it is
-    not one anything should be shown to either — and it is an answer rather
-    than a fault, so it is not logged as one."""
+    not one anything should be shown to either.
+
+    It says nothing about the presser — the bridge's own admin account is what
+    was refused — so the reader is not told they are outside a channel nobody
+    checked them against, and the operator is told, because a bridge that
+    cannot see its own channels is misconfigured rather than idle.
+    """
     adapter, _ = _viewer()
     _channels(adapter).error = NotEnoughPermissions("not allowed")
 
     with caplog.at_level(logging.WARNING):
         answer = await adapter._handle_callback(_press())
 
-    assert _shown(answer) == ACTIVITY_UNREADABLE
-    assert "would not say whether" not in caplog.text
+    assert _shown(answer) == ACTIVITY_AUDIENCE_UNKNOWN
+    assert "will not let this bridge see who is in channel" in caplog.text
 
 
 async def test_a_bridge_that_is_not_connected_shows_nobody_anything() -> None:
     adapter, _ = _viewer()
     adapter._admin_driver = None
 
-    assert _shown(await adapter._handle_callback(_press())) == ACTIVITY_UNREADABLE
+    assert _shown(await adapter._handle_callback(_press())) == ACTIVITY_AUDIENCE_UNKNOWN
 
 
 # ── When there is nothing to show ────────────────────────────────────────────

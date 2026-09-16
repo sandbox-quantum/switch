@@ -60,8 +60,10 @@ from switch_core.bridges.collaboration.session.renderers import (
     position_action,
 )
 from switch_core.bridges.collaboration.session.renderers.neutral import (
+    ACTIVITY_AUDIENCE_UNKNOWN,
     ACTIVITY_FAILED,
     ACTIVITY_GONE,
+    ACTIVITY_NOT_A_MEMBER,
     ACTIVITY_UNREADABLE,
     activity_log,
     render_request,
@@ -2712,8 +2714,9 @@ class DiscordAdapter(CollaborationAdapter):
             )
             await self._privately(interaction, ACTIVITY_GONE, ref)
             return
-        if not await self._still_reads(location, interaction.user):
-            await self._privately(interaction, ACTIVITY_UNREADABLE, ref)
+        refusal = await self._still_reads(location, interaction.user)
+        if refusal is not None:
+            await self._privately(interaction, refusal, ref)
             return
         parent_id = getattr(location, "parent_id", None)
         channel_id = str(parent_id if parent_id is not None else location.id)
@@ -2797,8 +2800,8 @@ class DiscordAdapter(CollaborationAdapter):
                 error,
             )
 
-    async def _still_reads(self, channel: Any, user: Any) -> bool:
-        """Whether this reader can still read the conversation a turn is in.
+    async def _still_reads(self, channel: Any, user: Any) -> str | None:
+        """Why this reader may not see the conversation a turn is in, or None.
 
         A channel outside any guild has no permissions to consult: who may
         read it is exactly who is in it, so that is what is asked. A private
@@ -2810,6 +2813,13 @@ class DiscordAdapter(CollaborationAdapter):
         cannot ask about is one nothing here can say a reader may see, and the
         reader is told that rather than shown the log on the strength of not
         having been able to check.
+
+        Which refusal is returned is the fact that was actually established.
+        Discord distinguishes "not found" from every other error, so a reader
+        the guild or the thread does not have is a reader who is not in it,
+        while a request that failed some other way establishes nothing about
+        them at all — and telling somebody they cannot read a conversation, on
+        the strength of a call that never came back, is a claim nothing checked.
         """
         guild = getattr(channel, "guild", None)
         if guild is None:
@@ -2821,29 +2831,48 @@ class DiscordAdapter(CollaborationAdapter):
                 "activity view of it is refused.",
                 getattr(channel, "id", "?"),
             )
-            return False
+            return ACTIVITY_AUDIENCE_UNKNOWN
         member = guild.get_member(user.id)
         if member is None:
             try:
                 member = await guild.fetch_member(user.id)
-            except discord.HTTPException:
-                return False
+            except discord.NotFound:
+                return ACTIVITY_NOT_A_MEMBER
+            except discord.HTTPException as error:
+                logger.warning(
+                    "Discord would not say whether user %s is in guild %s (%s), "
+                    "so an activity view of channel %s is refused.",
+                    user.id,
+                    getattr(guild, "id", "?"),
+                    error,
+                    getattr(channel, "id", "?"),
+                )
+                return ACTIVITY_AUDIENCE_UNKNOWN
         allowed = permissions_for(member)
         if not (allowed.view_channel and allowed.read_message_history):
-            return False
+            return ACTIVITY_UNREADABLE
         is_private = getattr(channel, "is_private", None)
         if is_private is None or not is_private():
-            return True
+            return None
         if allowed.manage_threads:
-            return True
+            return None
         try:
             await channel.fetch_member(user.id)
-        except discord.HTTPException:
-            return False
-        return True
+        except discord.NotFound:
+            return ACTIVITY_NOT_A_MEMBER
+        except discord.HTTPException as error:
+            logger.warning(
+                "Discord would not say whether user %s is in thread %s (%s), so "
+                "an activity view of it is refused.",
+                user.id,
+                getattr(channel, "id", "?"),
+                error,
+            )
+            return ACTIVITY_AUDIENCE_UNKNOWN
+        return None
 
-    def _is_recipient(self, channel: Any, user: Any) -> bool:
-        """Whether this reader is one of the people a guildless channel is between.
+    def _is_recipient(self, channel: Any, user: Any) -> str | None:
+        """Why this reader is not one of the people a guildless channel is between.
 
         Asked rather than taken as read. The address that named this channel
         came off a press, and the whole point of checking here is that an
@@ -2861,8 +2890,10 @@ class DiscordAdapter(CollaborationAdapter):
                 "activity view of it is refused.",
                 getattr(channel, "id", "?"),
             )
-            return False
-        return any(getattr(person, "id", None) == user.id for person in recipients)
+            return ACTIVITY_AUDIENCE_UNKNOWN
+        if any(getattr(person, "id", None) == user.id for person in recipients):
+            return None
+        return ACTIVITY_NOT_A_MEMBER
 
     async def _tell_presser(
         self, interaction: discord.Interaction, notice: str

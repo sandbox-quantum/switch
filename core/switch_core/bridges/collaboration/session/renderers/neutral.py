@@ -126,19 +126,41 @@ _LOG_SAID_TEXT = _LOG_TITLE + _LOG_DETAIL
 #
 # Here rather than in each adapter because a reader on two platforms is one
 # reader, and the same refusal worded two ways reads as two different problems.
-# Which of the three applies is the adapter's to decide — only it knows who
-# pressed and what the platform would say about them.
+# Which of these applies is the adapter's to decide — only it knows who pressed
+# and what the platform would say about them.
 ACTIVITY_GONE = (
     "There is no activity behind this message any more. It may belong to a "
     "session that has since been removed."
 )
-# Not "no longer": on one platform this is access that was taken away, on
-# another it is a reader who never had it — an open channel they can read
-# without having joined, which is not membership and is all Mattermost will
-# vouch for. The sentence has to be true of both.
+# Two refusals rather than one, because a refused press has two quite different
+# causes and the reader can act on only one of them. They are separate
+# constants and not one parameterised sentence so that a site has to choose
+# which fact it established: the whole defect this replaced was a single string
+# asserting the stronger of the two wherever either had happened.
+#
+# Not "no longer": this is as often a reader who never had access as one whose
+# access was taken away.
+ACTIVITY_NOT_A_MEMBER = (
+    "You are not in the conversation this turn was published into, so its "
+    "activity is not shown."
+)
+# What a platform's permissions establish, where it has them to consult. Kept
+# apart from membership because they are not the same claim: an open Mattermost
+# channel is readable by people who have not joined it, so membership is the
+# narrower fact and saying "cannot read" on the strength of it is a claim
+# nothing checked.
 ACTIVITY_UNREADABLE = (
     "You cannot read the conversation this turn was published into, so its "
     "activity is not shown."
+)
+# Nothing was established at all — the bridge is disconnected, the platform
+# would not answer, or the destination has no audience this can consult. The
+# refusal stands either way, since an audience that cannot be established is
+# one nothing should be disclosed to, but it is not the reader's doing and the
+# sentence must not blame them for it.
+ACTIVITY_AUDIENCE_UNKNOWN = (
+    "Switch could not establish who may read the conversation this turn was "
+    "published into, so its activity is not shown."
 )
 ACTIVITY_FAILED = (
     "Switch could not read this turn's activity just now. Try again, or open "

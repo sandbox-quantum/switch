@@ -71,9 +71,10 @@ from switch_core.bridges.collaboration.session.renderers import (
     position_action,
 )
 from switch_core.bridges.collaboration.session.renderers.neutral import (
+    ACTIVITY_AUDIENCE_UNKNOWN,
     ACTIVITY_FAILED,
     ACTIVITY_GONE,
-    ACTIVITY_UNREADABLE,
+    ACTIVITY_NOT_A_MEMBER,
     activity_log,
     render_request,
     turn_status,
@@ -559,8 +560,9 @@ class MattermostAdapter(CollaborationAdapter):
         resolve = self._resolve_activity
         if resolve is None:
             return _ephemeral(ACTIVITY_GONE)
-        if not await self._reads_channel(press.channel_id, press.user_id):
-            return _ephemeral(ACTIVITY_UNREADABLE)
+        refusal = await self._reads_channel(press.channel_id, press.user_id)
+        if refusal is not None:
+            return _ephemeral(refusal)
         try:
             snapshot = await resolve(press.channel_id, press.post_id)
         except Exception:
@@ -575,19 +577,24 @@ class MattermostAdapter(CollaborationAdapter):
             return _ephemeral(ACTIVITY_GONE)
         return _ephemeral(self._activity_text(snapshot))
 
-    async def _reads_channel(self, channel_id: str, user_id: str) -> bool:
-        """Whether this person is in the channel a turn was published into.
+    async def _reads_channel(self, channel_id: str, user_id: str) -> str | None:
+        """Why this person may not see the channel's activity, or None if they may.
 
         Membership, because that is the audience Mattermost actually holds, and
         it holds it the same way for an open channel, a private one and a
         direct message. It is narrower than readability on an open channel,
         where any member of the team may read without having joined; a reader
         in that position is refused and told so, which is the side to be wrong
-        on for a disclosure this message does not already make.
+        on for a disclosure this message does not already make. That is also
+        why the refusal says they are not in the channel rather than that they
+        cannot read it — membership is the fact this establishes, and
+        readability is not.
 
         A lookup that cannot answer refuses too. "Mattermost did not say" is
         not "yes", and an audience that cannot be established is one nothing
-        should be disclosed to.
+        should be disclosed to. It is a different sentence, though: a reader
+        told they cannot read something goes and asks to be let in, and this
+        one has nothing to ask for.
         """
         driver = self._admin_driver
         loop = self._main_loop
@@ -597,16 +604,25 @@ class MattermostAdapter(CollaborationAdapter):
                 "is not connected, so no activity is shown.",
                 channel_id,
             )
-            return False
+            return ACTIVITY_AUDIENCE_UNKNOWN
         try:
             member = await loop.run_in_executor(
                 None, driver.channels.get_channel_member, channel_id, user_id
             )
-        except (ResourceNotFound, NotEnoughPermissions):
-            # Both are answers rather than failures: Mattermost says "not a
-            # member" with a 404, and a channel this bridge may not inspect is
-            # one whose audience it cannot vouch for either.
-            return False
+        except ResourceNotFound:
+            # An answer rather than a failure: Mattermost says "not a member"
+            # with a 404.
+            return ACTIVITY_NOT_A_MEMBER
+        except NotEnoughPermissions as error:
+            # A channel this bridge may not inspect is one whose audience it
+            # cannot vouch for — which says nothing about the reader.
+            logger.warning(
+                "Mattermost will not let this bridge see who is in channel %s "
+                "(%s), so no activity is shown.",
+                channel_id,
+                error,
+            )
+            return ACTIVITY_AUDIENCE_UNKNOWN
         except Exception as error:
             logger.warning(
                 "Mattermost would not say whether user %s is in channel %s "
@@ -615,8 +631,10 @@ class MattermostAdapter(CollaborationAdapter):
                 channel_id,
                 error,
             )
-            return False
-        return bool(member) and member.get("user_id") == user_id
+            return ACTIVITY_AUDIENCE_UNKNOWN
+        if bool(member) and member.get("user_id") == user_id:
+            return None
+        return ACTIVITY_NOT_A_MEMBER
 
     def _activity_text(self, snapshot: ActivitySnapshot) -> str:
         """The tool calls, and the time the read behind them was taken.
