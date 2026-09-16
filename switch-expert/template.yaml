@@ -31,6 +31,20 @@
 #                 when a message addresses them, so mention the agent here;
 #                 this is what turns "created" into "answering".
 #
+#   agents:       The plural form: a list of `agent` blocks, each created by
+#                 Switch Console, for a template that makes a team. The room
+#                 names them the way the template spells them, `{param}`s
+#                 included, and on the Use page each one can be created new
+#                 or pointed at an agent the server already has. An agent may
+#                 carry `provider: "{provider}"` to read a `type: provider`
+#                 param, which the Console answers and never sends to the
+#                 server. See examples/agent-templates/triage-pair.template.yaml.
+#
+#   group:        Instead of `room:`, a room group in the server's own group
+#   rooms:        shape: `group:` (name, description, color), a `rooms:` list
+#   links:        of room blocks (each with its own `kickoff:`), and optional
+#                 `links:` between them by name.
+#
 # Switch Console bundles this template and fills `agent.instructions` from
 # AGENT.md next to this file, so the persona is written once. A template
 # uploaded to a server's registry carries its instructions inline instead.

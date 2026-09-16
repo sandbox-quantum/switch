@@ -1,17 +1,27 @@
 import { load } from 'js-yaml';
 
 /**
- * What a template document creates, counted for a listing card: "Creates 1
- * room and 1 agent · 4 inputs". Three shapes are known: an agent template
- * (`agent:` with an optional `room:`), a room template (`room:` with
- * `params:`), and a group template (`rooms:`), which another branch is
- * adding; counting it here means its cards read right the day it lands.
+ * What a template document creates, for a listing card ("Creates 1 room and
+ * 1 agent · 4 inputs") and a page's "What it creates" list. Three shapes:
+ * an agent template (`agent:` with an optional `room:`), a room template
+ * (`room:` with `params:`), and a group (`agents:` and/or `group:` +
+ * `rooms:`), which makes several things at once.
  */
 export type TemplateSummary = {
   kind: 'agent' | 'room' | 'group';
   rooms: number;
   agents: number;
   inputs: number;
+  /** Each thing it creates, in the order the page lists them: rooms, then agents. */
+  creates: CreatedThing[];
+};
+
+export type CreatedThing = {
+  kind: 'room' | 'agent';
+  /** The name as the template spells it, placeholders and all. */
+  label: string;
+  /** Its description, or a line about it when the template gives none. */
+  note: string;
 };
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -20,8 +30,8 @@ function asRecord(value: unknown): Record<string, unknown> | null {
     : null;
 }
 
-function countList(value: unknown): number {
-  return Array.isArray(value) ? value.length : 0;
+function str(value: unknown): string {
+  return typeof value === 'string' ? value.trim() : '';
 }
 
 function agentsOf(room: Record<string, unknown> | null): string[] {
@@ -34,6 +44,14 @@ function agentsOf(room: Record<string, unknown> | null): string[] {
   });
 }
 
+function roomThing(room: Record<string, unknown>): CreatedThing {
+  const members = agentsOf(room);
+  const note =
+    str(room.description) ||
+    (members.length > 0 ? `With ${members.join(', ')}` : 'A room with nobody in it yet');
+  return { kind: 'room', label: str(room.name) || 'Unnamed room', note };
+}
+
 export function summarizeTemplate(yamlText: string): TemplateSummary {
   let doc: unknown;
   try {
@@ -44,27 +62,49 @@ export function summarizeTemplate(yamlText: string): TemplateSummary {
   const root = asRecord(doc) ?? {};
   const inputs = Object.keys(asRecord(root.params) ?? {}).length;
 
-  if (root.agent !== undefined) {
-    const room = asRecord(root.room);
-    // The template's own agent is the `{agent}` entry in its room; other
-    // agents it names are ones the server must already have, not created.
-    return { kind: 'agent', rooms: room ? 1 : 0, agents: 1, inputs };
-  }
-  if (Array.isArray(root.rooms)) {
-    const names = new Set<string>();
-    for (const r of root.rooms) for (const a of agentsOf(asRecord(r))) names.add(a);
+  const agentEntries: Record<string, unknown>[] = Array.isArray(root.agents)
+    ? root.agents.map(asRecord).filter((a): a is Record<string, unknown> => !!a)
+    : asRecord(root.agent)
+      ? [asRecord(root.agent) as Record<string, unknown>]
+      : [];
+  const roomEntries: Record<string, unknown>[] = Array.isArray(root.rooms)
+    ? root.rooms.map(asRecord).filter((r): r is Record<string, unknown> => !!r)
+    : asRecord(root.room)
+      ? [asRecord(root.room) as Record<string, unknown>]
+      : [];
+  const isGroup = root.group !== undefined || Array.isArray(root.rooms) || agentEntries.length > 1;
+
+  const creates: CreatedThing[] = [
+    ...roomEntries.map(roomThing),
+    ...agentEntries.map((a) => ({
+      kind: 'agent' as const,
+      label: str(a.name) || 'Named when created',
+      note: str(a.description) || 'An agent with its own instructions',
+    })),
+  ];
+
+  if (agentEntries.length > 0) {
+    // The agents a room lists are the ones the template makes; other names
+    // are agents the server must already have, not created.
     return {
-      kind: 'group',
-      rooms: countList(root.rooms),
-      agents: names.size,
+      kind: isGroup ? 'group' : 'agent',
+      rooms: roomEntries.length,
+      agents: agentEntries.length,
       inputs,
+      creates,
     };
+  }
+  if (isGroup) {
+    const names = new Set<string>();
+    for (const r of roomEntries) for (const a of agentsOf(r)) names.add(a);
+    return { kind: 'group', rooms: roomEntries.length, agents: names.size, inputs, creates };
   }
   return {
     kind: 'room',
     rooms: 1,
-    agents: agentsOf(asRecord(root.room)).length,
+    agents: agentsOf(roomEntries[0] ?? null).length,
     inputs,
+    creates: roomEntries.length > 0 ? creates : [],
   };
 }
 
@@ -73,10 +113,7 @@ function plural(n: number, noun: string): string {
 }
 
 /** The card line: "Creates 1 room and 2 agents · 4 inputs". */
-export function describeSummary(s: TemplateSummary): {
-  creates: string;
-  inputs: string;
-} {
+export function describeSummary(s: TemplateSummary): { creates: string; inputs: string } {
   const parts: string[] = [];
   if (s.rooms > 0) parts.push(plural(s.rooms, 'room'));
   if (s.agents > 0) parts.push(plural(s.agents, 'agent'));

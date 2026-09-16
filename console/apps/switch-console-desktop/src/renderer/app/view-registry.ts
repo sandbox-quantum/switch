@@ -11,6 +11,7 @@ import { serverAgentsView } from '@renderer/features/switch-servers/server-agent
 import { serverRoomsView } from '@renderer/features/switch-servers/server-rooms-view';
 import { serverView } from '@renderer/features/switch-servers/view';
 import { templateDetailView } from '@renderer/features/templates/template-detail-view';
+import { templateUseView } from '@renderer/features/templates/template-use-view';
 import { templatesView } from '@renderer/features/templates/templates-view';
 import type { CommandProvider } from '@renderer/lib/commands/types';
 import { appState } from '@renderer/lib/stores/app-state';
@@ -33,6 +34,7 @@ export const views = {
   templateImport: templateImportView,
   templates: templatesView,
   templateDetail: templateDetailView,
+  templateUse: templateUseView,
   // oxlint-disable-next-line typescript/no-explicit-any
 } satisfies Record<string, ViewDefinition<any>>;
 

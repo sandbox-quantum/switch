@@ -115,7 +115,7 @@ import {
   removeRoomAgent,
   type StoredTemplateDetail,
   type StoredTemplateSummary,
-  type TemplateProvisionResult,
+  type ProvisionFromTemplateResult,
   updateAddressingPolicy,
   updateAgentIcon,
   updateRoom,
@@ -561,7 +561,7 @@ export const switchServersController = createRPCController({
     serverId: string,
     yamlText: string,
     inputs: Record<string, string | number | boolean>
-  ): Promise<TemplateProvisionResult> =>
+  ): Promise<ProvisionFromTemplateResult> =>
     createRoomFromTemplate(await requireServer(serverId), yamlText, inputs),
 
   listTemplates: async (params: {

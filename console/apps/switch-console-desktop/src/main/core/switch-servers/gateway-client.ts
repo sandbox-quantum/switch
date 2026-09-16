@@ -1050,11 +1050,39 @@ export type TemplateProvisionResult = {
   failedAttachments: Array<{ kind: string; id: string; error: string }>;
 };
 
+/** The result of provisioning a room group from a YAML template. */
+export type GroupProvisionResult = {
+  groupId: string;
+  groupName: string;
+  rooms: TemplateProvisionResult[];
+  /** Rooms or links that could not be made; the rest still were. */
+  errors: Array<Record<string, unknown> & { error: string }>;
+};
+
+export type ProvisionFromTemplateResult =
+  | ({ kind: 'room' } & TemplateProvisionResult)
+  | ({ kind: 'group' } & GroupProvisionResult);
+
+type RoomJson = {
+  room_id: string;
+  room_name: string;
+  failed_attachments?: Array<{ kind: string; id: string; error: string }>;
+};
+
+function toRoomResult(json: RoomJson): TemplateProvisionResult {
+  return {
+    roomId: json.room_id,
+    roomName: json.room_name,
+    failedAttachments: json.failed_attachments ?? [],
+  };
+}
+
 /**
- * Create a room from a YAML template (`POST /rooms/from-yaml`). Sends the
- * template as a JSON body with the YAML text and any user-supplied inputs.
- * The server parses the template, interpolates inputs, and provisions
- * everything in one call.
+ * Create a room, or a group of rooms, from a YAML template
+ * (`POST /rooms/from-yaml`). Sends the template as a JSON body with the YAML
+ * text and any user-supplied inputs. The server parses the template,
+ * interpolates inputs, and provisions everything in one call; the document's
+ * shape decides which result comes back.
  *
  * A 400 carries a `detail` naming the bad input; the caller maps it back to
  * the form field.
@@ -1063,22 +1091,30 @@ export async function createRoomFromTemplate(
   server: SwitchServer,
   yamlText: string,
   inputs: Record<string, string | number | boolean>
-): Promise<TemplateProvisionResult> {
+): Promise<ProvisionFromTemplateResult> {
   const res = await gatewayFetch(server, '/rooms/from-yaml', {
     authenticated: true,
     method: 'POST',
     body: { yaml: yamlText, inputs },
   });
-  const json = (await res.json()) as {
-    room_id: string;
-    room_name: string;
-    failed_attachments?: Array<{ kind: string; id: string; error: string }>;
-  };
-  return {
-    roomId: json.room_id,
-    roomName: json.room_name,
-    failedAttachments: json.failed_attachments ?? [],
-  };
+  const json = (await res.json()) as
+    | RoomJson
+    | {
+        group_id: string;
+        group_name: string;
+        rooms?: RoomJson[];
+        errors?: Array<Record<string, unknown> & { error: string }>;
+      };
+  if ('group_id' in json) {
+    return {
+      kind: 'group',
+      groupId: json.group_id,
+      groupName: json.group_name,
+      rooms: (json.rooms ?? []).map(toRoomResult),
+      errors: json.errors ?? [],
+    };
+  }
+  return { kind: 'room', ...toRoomResult(json) };
 }
 
 // ── Stored templates (template registry) ────────────────────────────────────

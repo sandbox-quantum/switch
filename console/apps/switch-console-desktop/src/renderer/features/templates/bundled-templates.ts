@@ -1,3 +1,4 @@
+import triagePairTemplate from '@root/../../../examples/agent-templates/triage-pair.template.yaml?raw';
 import switchExpertInstructions from '@root/../../../switch-expert/AGENT.md?raw';
 import switchExpertTemplate from '@root/../../../switch-expert/template.yaml?raw';
 
@@ -9,7 +10,8 @@ import switchExpertTemplate from '@root/../../../switch-expert/template.yaml?raw
  * The Switch expert is read straight from `switch-expert/` at the repository
  * root: the template document from `template.yaml`, the persona from
  * `AGENT.md`. One source, so the expert the Console offers is the one the
- * repository documents.
+ * repository documents. The triage pair is the repository's worked example
+ * of a group: two agents and the room they share.
  */
 export type BundledTemplate = {
   id: string;
@@ -33,6 +35,16 @@ export const bundledTemplates: BundledTemplate[] = [
     creator: 'Switch',
     content: switchExpertTemplate,
     instructions: switchExpertInstructions,
+  },
+  {
+    id: 'bundled:triage-pair',
+    name: 'Triage pair',
+    description:
+      'Two agents and a room: one triages incoming reports, one reproduces them. A worked example of a group template.',
+    kind: 'group',
+    creator: 'Switch',
+    content: triagePairTemplate,
+    instructions: null,
   },
 ];
 

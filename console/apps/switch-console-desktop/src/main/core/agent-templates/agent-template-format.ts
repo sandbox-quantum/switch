@@ -1,5 +1,6 @@
 import { basename, join } from 'node:path';
-import { dump, load } from 'js-yaml';
+import { load } from 'js-yaml';
+import { composeTemplateDocument, coreDocumentFor } from './template-document';
 
 /**
  * An agent template is a YAML document with an `agent:` block and, optionally,
@@ -24,6 +25,8 @@ export type ParsedAgentTemplate = {
   sources: AgentTemplateSource[];
   /** The room the agent is dispatched into once it exists, when the template has one. */
   room: { name: string | null; kickoff: string | null } | null;
+  /** A provider id or a `{param}` naming one; null leaves the choice to the person. */
+  provider: string | null;
   warnings: string[];
 };
 
@@ -40,7 +43,7 @@ function parseYaml(yamlText: string): Record<string, unknown> {
   return doc as Record<string, unknown>;
 }
 
-function asRecord(value: unknown): Record<string, unknown> | null {
+export function asRecord(value: unknown): Record<string, unknown> | null {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : null;
@@ -48,11 +51,11 @@ function asRecord(value: unknown): Record<string, unknown> | null {
 
 const ADDRESSING_VALUES: ReadonlySet<string> = new Set(['owner', 'owner-agents', 'anyone']);
 
-function optionalString(value: unknown): string | null {
+export function optionalString(value: unknown): string | null {
   return typeof value === 'string' && value.trim().length > 0 ? value.trim() : null;
 }
 
-function extractSources(raw: unknown): AgentTemplateSource[] {
+export function extractSources(raw: unknown): AgentTemplateSource[] {
   if (!Array.isArray(raw)) return [];
   return raw.flatMap((entry) => {
     if (typeof entry === 'string')
@@ -124,44 +127,23 @@ export function parseAgentTemplate(
     repoUrl: optionalString(agent.repo),
     sources: extractSources(agent.sources),
     room: room ? { name: optionalString(room.name), kickoff } : null,
+    provider: optionalString(agent.provider),
     warnings,
   };
 }
 
 /**
  * The room half of an agent template as a room template of its own, ready for
- * `POST /rooms/from-yaml`. `{agent}` becomes a declared param the server fills
- * from the inputs, so the room block can name the agent the same way it names
- * `{$creator}`. Null when the template has no room.
+ * `POST /rooms/from-yaml`. See `coreDocumentFor`; kept under its old name for
+ * the single-agent callers.
  */
 export function agentTemplateRoomDocument(yamlText: string): string | null {
-  const doc = parseYaml(yamlText);
-  const room = asRecord(doc.room);
-  if (!room) return null;
-  const declared = asRecord(doc.params) ?? {};
-  const params = {
-    agent: { type: 'string', description: 'The agent this room is for' },
-    ...declared,
-  };
-  const out: Record<string, unknown> = { params, room };
-  if (typeof doc.kickoff === 'string') out.kickoff = doc.kickoff;
-  return dump(out, { lineWidth: -1 });
+  return coreDocumentFor(yamlText);
 }
 
-/**
- * The document with `agent.instructions` filled in, for a template whose
- * persona lives beside it rather than inline (the bundled Switch expert). A
- * copy stored on a server has to carry everything, so this is what gets sent.
- * Comments do not survive the round trip through the parser; the fields do.
- */
+/** See `composeTemplateDocument`; kept under its old name for the single-agent callers. */
 export function composeAgentTemplateDocument(yamlText: string, instructions: string): string {
-  const doc = parseYaml(yamlText);
-  const agent = asRecord(doc.agent);
-  if (!agent) throw new Error('Template must have an "agent:" block.');
-  if (typeof agent.instructions !== 'string' || agent.instructions.trim().length === 0) {
-    agent.instructions = stripFrontMatter(instructions);
-  }
-  return dump(doc, { lineWidth: -1 });
+  return composeTemplateDocument(yamlText, instructions);
 }
 
 /** The directory a clone of `repoUrl` lands in: the repository's name, inside `dir`. */

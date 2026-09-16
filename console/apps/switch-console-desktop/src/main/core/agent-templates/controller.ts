@@ -19,10 +19,19 @@ import {
   parseAgentTemplate,
   type ParsedAgentTemplate,
 } from './agent-template-format';
+import {
+  coreDocumentFor,
+  parseTemplateAgents,
+  substituteAgentSlots,
+  type TemplateAgents,
+  templateKind,
+  type TemplateKind,
+} from './template-document';
 import { summarizeTemplate, type TemplateSummary } from './template-summary';
 
 export type { AgentTemplateSource, ParsedAgentTemplate } from './agent-template-format';
-export type { TemplateSummary } from './template-summary';
+export type { ParsedAgentEntry, TemplateAgents, TemplateKind } from './template-document';
+export type { CreatedThing, TemplateSummary } from './template-summary';
 
 const execFileAsync = promisify(execFile);
 
@@ -118,6 +127,20 @@ export const agentTemplatesController = createRPCController({
 
   /** What a document of any known shape creates, for a listing card. */
   summarize: (params: { yamlText: string }): TemplateSummary => summarizeTemplate(params.yamlText),
+
+  /** Which page a document opens on: agent, room, or group. */
+  kind: (params: { yamlText: string }): TemplateKind => templateKind(params.yamlText),
+
+  /** Every agent the Console would create for a document (none for a room template). */
+  parseAgents: (params: { yamlText: string; instructions?: string | null }): TemplateAgents =>
+    parseTemplateAgents(params.yamlText, params.instructions ?? null),
+
+  /** The server's half of a document, or null when there is none. */
+  coreDocument: (params: { yamlText: string }): string | null => coreDocumentFor(params.yamlText),
+
+  /** The server's half with agent slots renamed (an existing agent, or a taken name). */
+  substituteSlots: (params: { coreYaml: string; replacements: Record<string, string> }): string =>
+    substituteAgentSlots(params.coreYaml, params.replacements),
 
   /** The document with its persona inlined, ready to store on a server. */
   compose: (params: { yamlText: string; instructions: string }): string =>

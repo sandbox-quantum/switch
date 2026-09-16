@@ -1,4 +1,9 @@
-import type { ParsedAgentTemplate } from '@main/core/agent-templates/controller';
+import type {
+  ParsedAgentEntry,
+  ParsedAgentTemplate,
+  TemplateKind,
+  TemplateSummary,
+} from '@main/core/agent-templates/controller';
 import type { AgentTemplateOrigin } from '@main/core/agents/agent-config-file';
 import type { ParsedTemplate } from '@main/core/room-templates/controller';
 import type { StoredTemplateSummary } from '@main/core/switch-servers/gateway-client';
@@ -100,21 +105,27 @@ export async function loadAgentTemplateData(
 export type LoadedTemplate = {
   name: string;
   description: string;
-  kind: 'agent' | 'room';
+  kind: TemplateKind;
   /** The Console-bundled copy, when this is (or shadows) one. */
   bundled: BundledTemplate | null;
   /** The registry row, when the template is on the server. */
   server: StoredTemplateSummary | null;
-  /** Parsed, for an agent template. */
-  agent: AgentTemplateData | null;
-  /** Parsed, for a room template. */
+  /** The agents the Console creates for it, in order; none for a room template. */
+  agents: ParsedAgentEntry[];
+  /** The server's half, parsed: the room(s) and the params. Null without one. */
   room: ParsedTemplate | null;
+  /** What it creates, counted and listed. */
+  summary: TemplateSummary;
   /** The full document, persona inlined, as it is or would be stored. */
   document: string;
 };
 
-function isAgentDocument(yamlText: string): boolean {
-  return /^agent:\s*$/m.test(yamlText) || /^agent:\s+\S/m.test(yamlText);
+/** Which page a document opens on, read from its top-level keys without a parse. */
+export function documentKind(yamlText: string): TemplateKind {
+  if (/^group:/m.test(yamlText) || /^rooms:/m.test(yamlText)) return 'group';
+  if (/^agents:/m.test(yamlText)) return 'group';
+  if (/^agent:\s*$/m.test(yamlText) || /^agent:\s+\S/m.test(yamlText)) return 'agent';
+  return 'room';
 }
 
 /**
@@ -128,60 +139,35 @@ export async function loadTemplateById(
   templateId: string
 ): Promise<LoadedTemplate> {
   const bundled = findBundledTemplate(templateId);
+  let name: string;
+  let description: string;
+  let document: string;
+  let server: StoredTemplateSummary | null = null;
+  let shadowOf: BundledTemplate | null = bundled ?? null;
   if (bundled) {
-    const document = await rpc.agentTemplates.compose({
-      yamlText: bundled.content,
-      instructions: bundled.instructions ?? '',
-    });
-    const agent = await agentTemplateDataFromContent(bundled.name, document, null, {
-      id: bundled.id,
-      name: bundled.name,
-      source: 'bundled',
-    });
-    return {
-      name: bundled.name,
-      description: bundled.description,
-      kind: 'agent',
-      bundled,
-      server: null,
-      agent,
-      room: null,
-      document,
-    };
+    name = bundled.name;
+    description = bundled.description;
+    document = bundled.instructions
+      ? await rpc.agentTemplates.compose({
+          yamlText: bundled.content,
+          instructions: bundled.instructions,
+        })
+      : bundled.content;
+  } else {
+    const detail = await rpc.switchServers.getTemplateDetail({ serverId, templateId });
+    const { definition, ...summary } = detail;
+    name = detail.name;
+    description = detail.description;
+    document = definition;
+    server = summary;
+    shadowOf = bundledTemplates.find((b) => b.name === detail.name) ?? null;
   }
-  const detail = await rpc.switchServers.getTemplateDetail({ serverId, templateId });
-  const { definition, ...summary } = detail;
-  const shadowOf =
-    bundledTemplates.find((b) => b.kind === 'agent' && b.name === detail.name) ?? null;
-  if (detail.kind === 'agent' || (detail.kind !== 'room' && isAgentDocument(definition))) {
-    const agent = await agentTemplateDataFromContent(detail.name, definition, null, {
-      id: detail.id,
-      name: detail.name,
-      source: 'server',
-      serverId,
-    });
-    return {
-      name: detail.name,
-      description: detail.description,
-      kind: 'agent',
-      bundled: shadowOf,
-      server: summary,
-      agent,
-      room: null,
-      document: definition,
-    };
-  }
-  const room = await rpc.roomTemplates.parse({ yamlText: definition });
-  return {
-    name: detail.name,
-    description: detail.description,
-    kind: 'room',
-    bundled: null,
-    server: summary,
-    agent: null,
-    room,
-    document: definition,
-  };
+  const kind = await rpc.agentTemplates.kind({ yamlText: document });
+  const { agents } = await rpc.agentTemplates.parseAgents({ yamlText: document });
+  const coreYaml = await rpc.agentTemplates.coreDocument({ yamlText: document });
+  const room = coreYaml ? await rpc.roomTemplates.parse({ yamlText: coreYaml }) : null;
+  const summary = await rpc.agentTemplates.summarize({ yamlText: document });
+  return { name, description, kind, bundled: shadowOf, server, agents, room, summary, document };
 }
 
 /** A readable listing name from a file name: no extension, no `.template`, words not dashes. */
@@ -197,21 +183,27 @@ export function templateNameFromFile(fileName: string): string {
 export async function prefillForSave(
   content: string,
   sourceName: string | null
-): Promise<{ kind: 'agent' | 'room'; name: string; description: string }> {
+): Promise<{ kind: TemplateKind; name: string; description: string }> {
   const fromFile = sourceName ? templateNameFromFile(sourceName) : '';
-  if (/^agent:\s*$/m.test(content) || /^agent:\s+\S/m.test(content)) {
+  const kind = await rpc.agentTemplates.kind({ yamlText: content });
+  if (kind === 'agent') {
     const t = await agentTemplateDataFromContent(fromFile || 'Agent template', content, null, null);
     return {
-      kind: 'agent',
+      kind,
       name: fromFile || t.agentName || 'Agent template',
       description: t.description,
     };
   }
-  const t = await rpc.roomTemplates.parse({ yamlText: content });
-  const roomName = t.roomName && !/\{[^}]+\}/.test(t.roomName) ? t.roomName : null;
+  const coreYaml = await rpc.agentTemplates.coreDocument({ yamlText: content });
+  const t = coreYaml ? await rpc.roomTemplates.parse({ yamlText: coreYaml }) : null;
+  const literal = (s: string | null) => (s && !/\{[^}]+\}/.test(s) ? s : null);
   return {
-    kind: 'room',
-    name: fromFile || roomName || 'Room template',
-    description: t.roomDescription ?? '',
+    kind,
+    name:
+      fromFile ||
+      literal(t?.groupName ?? null) ||
+      literal(t?.roomName ?? null) ||
+      (kind === 'group' ? 'Group template' : 'Room template'),
+    description: t?.roomDescription ?? '',
   };
 }

@@ -32,7 +32,7 @@ import { Button } from '@renderer/lib/ui/button';
 import { SearchInput } from '@renderer/lib/ui/search-input';
 import { SegmentedControl } from '@renderer/lib/ui/segmented-control';
 import { Toggle } from '@renderer/lib/ui/toggle';
-import { loadAgentTemplateData, prefillForSave } from './agent-template-data';
+import { documentKind, prefillForSave } from './agent-template-data';
 import { bundledTemplates } from './bundled-templates';
 
 function useServerId(): string {
@@ -83,10 +83,6 @@ type Listed = {
 
 function kindOf(kind: string): Kind {
   return kind === 'agent' || kind === 'group' ? kind : 'room';
-}
-
-function isAgentDocument(yamlText: string): boolean {
-  return /^agent:\s*$/m.test(yamlText) || /^agent:\s+\S/m.test(yamlText);
 }
 
 function readFileAsText(file: File): Promise<string> {
@@ -340,11 +336,10 @@ function RecentsSection({
               className="flex flex-1 cursor-pointer items-center justify-between rounded-md border border-border px-3 py-2 text-left text-sm transition-colors hover:bg-[var(--sel-soft)]"
             >
               <span className="flex items-center gap-2 truncate">
-                {isAgentDocument(r.yamlText) ? (
-                  <Bot className="size-3.5 shrink-0 text-foreground-muted" />
-                ) : (
-                  <DoorOpen className="size-3.5 shrink-0 text-foreground-muted" />
-                )}
+                {(() => {
+                  const Icon = KIND_ICON[documentKind(r.yamlText)];
+                  return <Icon className="size-3.5 shrink-0 text-foreground-muted" />;
+                })()}
                 {r.name}
               </span>
               <span className="shrink-0 text-xs text-foreground-passive">
@@ -374,11 +369,9 @@ const TemplatesPanel = observer(function TemplatesPanel() {
   const server = switchServersStore.servers.find((s) => s.id === serverId);
   const meId = switchServersStore.statusFor(serverId)?.user?.id ?? null;
   const { navigate } = useNavigate();
-  const showAddAgentModal = useShowModal('addAgentModal');
 
   const [templates, setTemplates] = useState<StoredTemplateSummary[]>([]);
   const [loading, setLoading] = useState(true);
-  const [opening, setOpening] = useState<string | null>(null);
   const [query, setQuery] = useState('');
   const [kind, setKind] = useState<KindFilter>('all');
   const [onlyMine, setOnlyMine] = useState(false);
@@ -455,35 +448,9 @@ const TemplatesPanel = observer(function TemplatesPanel() {
     };
   }, [templates, query, kind, onlyMine, meId]);
 
-  // An agent template's second step is the add-agent dialog, prefilled; a
-  // room template's is the import view's inputs step, with the document loaded.
-  const handleUse = async (item: Listed) => {
-    if (item.kind !== 'agent') {
-      navigate('templateImport', { serverId, templateId: item.id });
-      return;
-    }
-    setOpening(item.id);
-    try {
-      const summary: StoredTemplateSummary = item.server ?? {
-        id: item.id,
-        name: item.name,
-        description: item.description,
-        kind: 'agent',
-        creator: 'Switch',
-        ownerId: null,
-      };
-      const data = await loadAgentTemplateData(serverId, summary);
-      showAddAgentModal({ entryPoint: 'server_page', template: data });
-    } catch (error) {
-      toast({
-        title: `Could not use "${item.name}"`,
-        description: failureText(error, 'Check the server connection and try again.'),
-        variant: 'destructive',
-      });
-    } finally {
-      setOpening(null);
-    }
-  };
+  // Every kind goes to the same page: inputs on the left, what it creates
+  // on the right, one button.
+  const handleUse = (item: Listed) => navigate('templateUse', { serverId, templateId: item.id });
 
   const importFile = async (file: File) => {
     try {
@@ -507,9 +474,9 @@ const TemplatesPanel = observer(function TemplatesPanel() {
       serverId={serverId}
       item={item}
       meId={meId}
-      busy={opening === item.id}
+      busy={false}
       onOpen={() => open(item)}
-      onUse={() => void handleUse(item)}
+      onUse={() => handleUse(item)}
     />
   );
 

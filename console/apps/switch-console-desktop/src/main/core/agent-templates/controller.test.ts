@@ -110,7 +110,7 @@ describe('agentTemplateRoomDocument', () => {
     const yaml = agentTemplateRoomDocument(SWITCH_EXPERT);
     expect(yaml).not.toBeNull();
     const doc = load(yaml!) as Record<string, unknown>;
-    expect(Object.keys(doc).sort()).toEqual(['kickoff', 'params', 'room']);
+    expect(Object.keys(doc).sort()).toEqual(['kickoff', 'params', 'room', 'version']);
     expect((doc.params as Record<string, unknown>).agent).toMatchObject({ type: 'string' });
     expect(doc.room).toEqual({
       name: 'Ask {agent}',

@@ -16,8 +16,22 @@ export type ParamSpec = {
   multiline: boolean;
 };
 
+/** One room of a template, as the form and the summary show it. */
+export type ParsedRoom = {
+  name: string | null;
+  description: string | null;
+  agents: string[];
+  users: string[];
+  bridge: string | null;
+  kickoff: string | null;
+};
+
 export type ParsedTemplate = {
   params: ParamSpec[];
+  /** Every room the document makes: one for `room:`, each of `rooms:` for a group. */
+  rooms: ParsedRoom[];
+  /** The group's name when the document is a group, else null. */
+  groupName: string | null;
   roomName: string | null;
   /** The room's description as the template spells it, for a listing. */
   roomDescription: string | null;
@@ -93,6 +107,27 @@ function extractStringList(raw: unknown): string[] {
 
 const ajv = new Ajv({ allErrors: true, strict: false });
 
+/**
+ * The server's schema is one of two shapes (`oneOf`: a room document, a
+ * group document). Validating against the union reports both branches'
+ * complaints at once; picking the branch the document is for keeps the
+ * message about the one mistake that was made.
+ */
+function schemaBranchFor(
+  schema: Record<string, unknown>,
+  doc: Record<string, unknown>
+): Record<string, unknown> {
+  const branches = (schema.oneOf ?? schema.anyOf) as Array<{ $ref?: string }> | undefined;
+  if (!Array.isArray(branches)) return schema;
+  const isGroup = doc.group !== undefined || Array.isArray(doc.rooms);
+  const branch = branches.find((b) =>
+    isGroup ? /Group/.test(b.$ref ?? '') : !/Group/.test(b.$ref ?? '')
+  );
+  if (!branch?.$ref) return schema;
+  const { oneOf: _one, anyOf: _any, ...rest } = schema;
+  return { ...rest, $ref: branch.$ref };
+}
+
 // ── Recents ────────────────────────────────────────────────────────────────
 
 /** A template used from this Console, kept so it can be used again or saved. */
@@ -150,7 +185,7 @@ export const roomTemplatesController = createRPCController({
 
     // Validate against server schema if provided
     if (params.schema) {
-      const validate = ajv.compile(params.schema);
+      const validate = ajv.compile(schemaBranchFor(params.schema, doc));
       if (!validate(doc)) {
         const errors = (validate.errors ?? [])
           .map((err) => {
@@ -160,41 +195,58 @@ export const roomTemplatesController = createRPCController({
           .slice(0, 5);
         throw new Error(errors.join('\n'));
       }
-    } else if (!doc.room) {
-      throw new Error('Template must have a "room:" block.');
+    } else if (!doc.room && !Array.isArray(doc.rooms)) {
+      throw new Error('Template must have a "room:" block, or "group:" with "rooms:".');
     }
 
-    const room = doc.room as Record<string, unknown> | undefined;
-    const roomName = room && typeof room.name === 'string' ? room.name : null;
-    const roomDescription =
-      room && typeof room.description === 'string' ? room.description.trim() : null;
-    const allAgents = extractStringList(room?.agents);
-    const allUsers = extractStringList(room?.users);
+    const isGroup = doc.group !== undefined || Array.isArray(doc.rooms);
+    const rawRooms: Record<string, unknown>[] = isGroup
+      ? (Array.isArray(doc.rooms) ? doc.rooms : []).filter(
+          (r): r is Record<string, unknown> => r !== null && typeof r === 'object'
+        )
+      : doc.room && typeof doc.room === 'object'
+        ? [doc.room as Record<string, unknown>]
+        : [];
+    const rooms: ParsedRoom[] = rawRooms.map((room) => ({
+      name: typeof room.name === 'string' ? room.name : null,
+      description: typeof room.description === 'string' ? room.description.trim() : null,
+      agents: extractStringList(room.agents),
+      users: extractStringList(room.users),
+      bridge:
+        typeof room.bridge === 'string' && !hasInterpolation(room.bridge) ? room.bridge : null,
+      kickoff: typeof room.kickoff === 'string' ? room.kickoff : null,
+    }));
+    const first = rooms[0] ?? null;
+    const allAgents = [...new Set(rooms.flatMap((r) => r.agents))];
+    const allUsers = [...new Set(rooms.flatMap((r) => r.users))];
     const paramSpecs = extractParams(doc.params);
     const kickoff = typeof doc.kickoff === 'string' ? doc.kickoff : null;
-    if (room && typeof room.kickoff === 'string') {
+    if (!isGroup && first?.kickoff) {
       warnings.push(
         '`kickoff:` belongs at the top level, beside `room:`. Inside `room:` the server ignores it.'
       );
     }
-    const bridge =
-      room && typeof room.bridge === 'string' && !hasInterpolation(room.bridge)
-        ? room.bridge
-        : null;
-
-    if (!room) {
+    if (isGroup && kickoff) {
+      warnings.push(
+        "A group's `kickoff:` goes inside the room it is for; at the top level the server refuses it."
+      );
+    }
+    if (rooms.length === 0) {
       warnings.push('Template has no "room:" block, so the server may reject it.');
     }
+    const group = doc.group as Record<string, unknown> | undefined;
 
     return {
       params: paramSpecs,
-      roomName,
-      roomDescription,
+      rooms,
+      groupName: group && typeof group.name === 'string' ? group.name : null,
+      roomName: first?.name ?? null,
+      roomDescription: first?.description ?? null,
       agents: allAgents,
       hardcodedAgents: allAgents.filter((a) => !hasInterpolation(a)),
       hardcodedUsers: allUsers.filter((u) => !hasInterpolation(u)),
       users: allUsers,
-      bridge,
+      bridge: first?.bridge ?? null,
       kickoff,
       usesCreator: usesCreator(params.yamlText),
       warnings,
@@ -205,7 +257,8 @@ export const roomTemplatesController = createRPCController({
   rewriteYaml: (params: { yamlText: string; agents: string[]; users: string[] }): string => {
     const doc = parseYaml(params.yamlText);
     const room = doc.room as Record<string, unknown> | undefined;
-    if (!room) return params.yamlText;
+    // A group's rooms each carry their own lists; the form does not edit those.
+    if (!room || Array.isArray(doc.rooms)) return params.yamlText;
     room.agents = params.agents;
     if (params.users.length > 0) {
       room.users = params.users;

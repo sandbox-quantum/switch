@@ -19,7 +19,7 @@ import { ModalLayout } from '@renderer/lib/ui/modal-layout';
 export type SaveTemplateArgs = {
   serverId: string;
   serverName?: string | null;
-  kind: 'agent' | 'room';
+  kind: 'agent' | 'room' | 'group';
   content: string;
   /** Prefilled from the document; the person can change both. */
   name: string;

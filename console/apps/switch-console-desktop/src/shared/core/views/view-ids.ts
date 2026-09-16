@@ -21,6 +21,7 @@ export const VIEW_IDS = [
   'templateImport',
   'templates',
   'templateDetail',
+  'templateUse',
 ] as const;
 
 export type ViewIdName = (typeof VIEW_IDS)[number];

@@ -4,14 +4,13 @@ import { useCallback, useEffect, useState } from 'react';
 import type { StoredTemplateSummary } from '@main/core/switch-servers/gateway-client';
 import { agentsStore } from '@renderer/features/locations/stores/agents-store';
 import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
-import { loadAgentTemplateData } from '@renderer/features/templates/agent-template-data';
 import { bundledTemplates } from '@renderer/features/templates/bundled-templates';
 import { agentProviderLabel } from '@renderer/lib/components/agent-mark';
 import { AgentPickerRow, ChosenAgentTile } from '@renderer/lib/components/agent-picker';
 import { PickerCombobox } from '@renderer/lib/components/picker-combobox';
 import { failureText } from '@renderer/lib/errors/describe-failure';
-import { toast } from '@renderer/lib/hooks/use-toast';
 import { rpc } from '@renderer/lib/ipc';
+import { useNavigate } from '@renderer/lib/layout/navigation-provider';
 import { type BaseModalProps, useModalContext } from '@renderer/lib/modal/modal-provider';
 import { useRemoteAgents } from '@renderer/lib/stores/use-remote-agents';
 import { Button } from '@renderer/lib/ui/button';
@@ -39,7 +38,8 @@ export const AddAgentsToRoomModal = observer(function AddAgentsToRoomModal({
   onSuccess,
   onClose,
 }: Props) {
-  const { setCloseGuard, transitionModal } = useModalContext();
+  const { setCloseGuard } = useModalContext();
+  const { navigate } = useNavigate();
   const serverId = switchRoomsStore.roomServerId(roomId);
   const roomName = switchRoomsStore.roomNameById(roomId);
 
@@ -61,9 +61,12 @@ export const AddAgentsToRoomModal = observer(function AddAgentsToRoomModal({
       cancelled = true;
     };
   }, [serverId]);
+  // One entry per template: a built-in one that is also saved on the
+  // workspace shows once, as the workspace copy.
+  const onWorkspace = serverTemplates.filter((t) => t.kind === 'agent');
   const templates: StoredTemplateSummary[] = [
     ...bundledTemplates
-      .filter((b) => b.kind === 'agent')
+      .filter((b) => b.kind === 'agent' && !onWorkspace.some((t) => t.name === b.name))
       .map(({ id, name, description, kind, creator }) => ({
         id,
         name,
@@ -72,29 +75,14 @@ export const AddAgentsToRoomModal = observer(function AddAgentsToRoomModal({
         creator,
         ownerId: null,
       })),
-    ...serverTemplates.filter((t) => t.kind === 'agent'),
+    ...onWorkspace,
   ];
-  const [openingTemplate, setOpeningTemplate] = useState<string | null>(null);
-  const createFromTemplate = async (template: StoredTemplateSummary) => {
+  // The Use page does the creating; it puts the agent in this room rather
+  // than making the template's own.
+  const createFromTemplate = (template: StoredTemplateSummary) => {
     if (!serverId) return;
-    setOpeningTemplate(template.id);
-    try {
-      const data = await loadAgentTemplateData(serverId, template);
-      transitionModal('addAgentModal', {
-        entryPoint: 'server_page',
-        template: data,
-        intoRoomId: roomId,
-        onClose,
-      });
-    } catch (error) {
-      toast({
-        title: `Could not use "${template.name}"`,
-        description: failureText(error, 'Check the server connection and try again.'),
-        variant: 'destructive',
-      });
-    } finally {
-      setOpeningTemplate(null);
-    }
+    onClose();
+    navigate('templateUse', { serverId, templateId: template.id, intoRoomId: roomId });
   };
 
   const [selected, setSelected] = useState<Candidate[]>([]);
@@ -171,11 +159,11 @@ export const AddAgentsToRoomModal = observer(function AddAgentsToRoomModal({
                     type="button"
                     variant="outline"
                     size="sm"
-                    disabled={openingTemplate !== null || isSubmitting}
+                    disabled={isSubmitting}
                     onClick={() => void createFromTemplate(t)}
                   >
                     <FileText className="size-3.5" />
-                    {openingTemplate === t.id ? 'Opening…' : t.name}
+                    {t.name}
                   </Button>
                 ))}
               </div>

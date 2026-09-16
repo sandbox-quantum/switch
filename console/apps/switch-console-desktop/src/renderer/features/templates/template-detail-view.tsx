@@ -1,4 +1,14 @@
-import { ArrowLeft, Check, Copy, Download, FileText, Loader2, Trash2 } from 'lucide-react';
+import {
+  ArrowLeft,
+  Bot,
+  Check,
+  Copy,
+  DoorOpen,
+  Download,
+  FileText,
+  Loader2,
+  Trash2,
+} from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useEffect, useState } from 'react';
 import type { GuardResult, ViewDefinition } from '@renderer/app/view-registry';
@@ -9,11 +19,13 @@ import { failureText } from '@renderer/lib/errors/describe-failure';
 import { toast } from '@renderer/lib/hooks/use-toast';
 import { rpc } from '@renderer/lib/ipc';
 import { useNavigate, useParams } from '@renderer/lib/layout/navigation-provider';
-import { useShowModal } from '@renderer/lib/modal/modal-provider';
 import { openExternalUrl } from '@renderer/lib/open-external';
 import { Badge } from '@renderer/lib/ui/badge';
 import { Button } from '@renderer/lib/ui/button';
+import { DisclosureRow } from '@renderer/lib/ui/disclosure-row';
+import { cn } from '@renderer/utils/utils';
 import { type LoadedTemplate, loadTemplateById } from './agent-template-data';
+import { typeLabel } from './use/use-template-model';
 
 function useViewParams() {
   return useParams('templateDetail').params;
@@ -134,10 +146,15 @@ function CopyButton({ text }: { text: string }) {
   );
 }
 
+const KIND_LABEL: Record<LoadedTemplate['kind'], string> = {
+  agent: 'Agent',
+  room: 'Room',
+  group: 'Group',
+};
+
 const TemplateDetailPanel = observer(function TemplateDetailPanel() {
   const { serverId, templateId } = useViewParams();
   const { navigate } = useNavigate();
-  const showAddAgentModal = useShowModal('addAgentModal');
   const server = switchServersStore.servers.find((s) => s.id === serverId);
   const me = switchServersStore.statusFor(serverId)?.user ?? null;
 
@@ -145,6 +162,8 @@ const TemplateDetailPanel = observer(function TemplateDetailPanel() {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<'save' | 'delete' | 'export' | null>(null);
   const [confirmRemove, setConfirmRemove] = useState(false);
+  const [showDocument, setShowDocument] = useState(false);
+  const [showInstructions, setShowInstructions] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -196,13 +215,12 @@ const TemplateDetailPanel = observer(function TemplateDetailPanel() {
 
   const mine = loaded.server !== null && me !== null && loaded.server.ownerId === me.id;
   const canDelete = loaded.server !== null && (mine || me?.role === 'admin');
+  const lone = loaded.kind === 'agent' ? (loaded.agents[0] ?? null) : null;
+  // A lone `agent:` room names it `{agent}`; that is filled in on use, not asked for.
+  const params = (loaded.room?.params ?? []).filter((p) => !(lone && p.name === 'agent'));
+  const slug = (lone?.name ?? loaded.name).toLowerCase().replace(/[^a-z0-9]+/g, '-');
 
-  // An agent template's second step is the add-agent dialog; a room
-  // template's is the import view's inputs step, with the document loaded.
-  const use = () => {
-    if (loaded.agent) showAddAgentModal({ entryPoint: 'server_page', template: loaded.agent });
-    else navigate('templateImport', { serverId, templateId });
-  };
+  const use = () => navigate('templateUse', { serverId, templateId });
 
   const saveToServer = async () => {
     if (!loaded.bundled) return;
@@ -215,13 +233,11 @@ const TemplateDetailPanel = observer(function TemplateDetailPanel() {
         kind: loaded.bundled.kind,
         content: loaded.document,
       });
-      toast({
-        title: `"${loaded.name}" is now on ${server?.name ?? 'the server'}`,
-      });
+      toast({ title: `"${loaded.name}" is now on ${server?.name ?? 'the workspace'}` });
       navigate('templateDetail', { serverId, templateId: saved.id });
     } catch (e) {
       toast({
-        title: 'Could not save the template to the server',
+        title: 'Could not save the template to the workspace',
         description: failureText(e, 'Check the server connection and try again.'),
         variant: 'destructive',
       });
@@ -234,13 +250,8 @@ const TemplateDetailPanel = observer(function TemplateDetailPanel() {
     if (!loaded.server) return;
     setBusy('delete');
     try {
-      await rpc.switchServers.deleteTemplate({
-        serverId,
-        templateId: loaded.server.id,
-      });
-      toast({
-        title: `"${loaded.name}" removed from ${server?.name ?? 'the server'}`,
-      });
+      await rpc.switchServers.deleteTemplate({ serverId, templateId: loaded.server.id });
+      toast({ title: `"${loaded.name}" removed from ${server?.name ?? 'the workspace'}` });
       navigate('templates', { serverId });
     } catch (e) {
       toast({
@@ -255,9 +266,6 @@ const TemplateDetailPanel = observer(function TemplateDetailPanel() {
   const exportYaml = async () => {
     setBusy('export');
     try {
-      const slug = (loaded.agent?.agentName ?? loaded.name)
-        .toLowerCase()
-        .replace(/[^a-z0-9]+/g, '-');
       const path = await rpc.app.saveTextFile({
         title: 'Export template',
         defaultPath: `${slug}.template.yaml`,
@@ -275,11 +283,48 @@ const TemplateDetailPanel = observer(function TemplateDetailPanel() {
     }
   };
 
+  const ownerLine =
+    loaded.bundled && !loaded.server
+      ? 'Shipped with Switch'
+      : mine
+        ? 'Yours'
+        : loaded.server
+          ? `Uploaded by ${loaded.server.creator}`
+          : 'Shipped with Switch';
+  const visibilityLine = loaded.server ? 'Shared with the workspace' : 'Shared with everyone';
+
   return (
     <div className="relative z-10 flex min-h-0 flex-1 flex-col overflow-auto bg-background">
-      <div className="space-y-8 px-8 pb-10">
-        <PageHeader sticky title={loaded.name} description={loaded.description} back={back}>
-          <div className="flex items-center gap-2">
+      <div className="mx-auto w-full max-w-4xl space-y-7 px-8 pb-10">
+        <PageHeader
+          sticky
+          title={loaded.name}
+          description={
+            <span className="flex flex-col gap-1.5">
+              <span>{loaded.description || 'No description.'}</span>
+              <span className="flex items-center gap-2 text-xs text-foreground-passive">
+                <span>{ownerLine}</span>
+                <span>·</span>
+                <span>{visibilityLine}</span>
+                {loaded.bundled && loaded.server && (
+                  <>
+                    <span>·</span>
+                    <span>A copy of the built-in one</span>
+                  </>
+                )}
+              </span>
+            </span>
+          }
+          back={back}
+        >
+          <div className="flex flex-wrap items-center gap-2">
+            <Badge variant="secondary">{KIND_LABEL[loaded.kind]}</Badge>
+            {loaded.bundled && (
+              <Badge variant="outline" title="Shipped with Switch">
+                Official
+              </Badge>
+            )}
+            <span className="flex-1" />
             {loaded.bundled && !loaded.server && (
               <Button
                 type="button"
@@ -315,139 +360,152 @@ const TemplateDetailPanel = observer(function TemplateDetailPanel() {
               </Button>
             )}
             <Button type="button" size="sm" onClick={use} disabled={busy !== null}>
-              Use
+              Use template
             </Button>
           </div>
         </PageHeader>
 
-        <div className="flex flex-wrap items-center gap-2">
-          {loaded.bundled && (
-            <Badge variant="outline" title="Shipped with Switch">
-              Official
-            </Badge>
-          )}
-          {loaded.server && (
-            <Badge variant="secondary">
-              {mine
-                ? 'On this workspace · yours'
-                : `On this workspace · by ${loaded.server.creator}`}
-            </Badge>
-          )}
-          <Badge variant="outline">
-            {loaded.kind === 'agent' ? 'agent template' : 'room template'}
-          </Badge>
-        </div>
-
-        {loaded.agent && (
-          <section className="flex flex-col gap-3">
-            <h2 className="text-sm font-semibold text-foreground">What it creates</h2>
-            <Row label="Agent">
-              {loaded.agent.agentName ? (
-                <span className="font-mono">{loaded.agent.agentName}</span>
-              ) : (
-                <span className="text-foreground-muted">Named when created</span>
-              )}
-            </Row>
-            {loaded.agent.repoUrl && (
-              <Row label="Repository">
-                <Link url={loaded.agent.repoUrl} />
-                <span className="text-foreground-muted">, cloned into its directory</span>
-              </Row>
-            )}
-            {loaded.agent.sources.length > 0 && (
-              <Row label="Sources">
-                <span className="flex flex-wrap gap-x-1.5">
-                  {loaded.agent.sources.map((src, i) => (
-                    <span key={src.url}>
-                      {i > 0 && <span className="text-foreground-muted">· </span>}
-                      <Link url={src.url} label={src.label} />
+        <section className="flex flex-col gap-2.5">
+          <h2 className="text-sm font-semibold text-foreground">What it creates</h2>
+          {loaded.summary.creates.length > 0 ? (
+            <div className="flex flex-col divide-y divide-border overflow-hidden rounded-[11px] border border-border bg-background-1">
+              {loaded.summary.creates.map((c, i) => {
+                const Icon = c.kind === 'room' ? DoorOpen : Bot;
+                return (
+                  <div key={i} className="flex items-center gap-3 px-3.5 py-3">
+                    <span className="flex size-6 shrink-0 items-center justify-center rounded-lg bg-background-2 text-foreground-muted">
+                      <Icon className="size-3.5" />
                     </span>
-                  ))}
-                </span>
-              </Row>
-            )}
-            <Row label="Room">
-              {loaded.agent.roomName ? (
-                <>
-                  <span>
-                    &quot;
-                    {loaded.agent.roomName.replace('{agent}', loaded.agent.agentName ?? 'it')}
-                    &quot;
-                  </span>
-                  <span className="text-foreground-muted">, with you, kickoff sent as you</span>
-                </>
-              ) : (
-                <span className="text-foreground-muted">None. Add it to a room to start it.</span>
-              )}
-            </Row>
-            <Row label="Answers">{ADDRESSING_LABEL[loaded.agent.addressing ?? 'owner']}</Row>
-          </section>
-        )}
-
-        {loaded.room && (
-          <section className="flex flex-col gap-3">
-            <h2 className="text-sm font-semibold text-foreground">What it creates</h2>
-            <Row label="Room">
-              {loaded.room.roomName ?? (
-                <span className="text-foreground-muted">Named on create</span>
-              )}
-            </Row>
-            <Row label="Agents">
-              {loaded.room.agents.length > 0 ? (
-                <span className="font-mono">{loaded.room.agents.join(', ')}</span>
-              ) : (
-                <span className="text-foreground-muted">None</span>
-              )}
-            </Row>
-            <Row label="People">
-              {loaded.room.users.length > 0 ? (
-                loaded.room.users.join(', ')
-              ) : (
-                <span className="text-foreground-muted">None</span>
-              )}
-            </Row>
-            <Row label="Inputs">
-              {loaded.room.params.length > 0 ? (
-                loaded.room.params.map((p) => p.name).join(', ')
-              ) : (
-                <span className="text-foreground-muted">None</span>
-              )}
-            </Row>
-            <Row label="Kickoff">
-              {loaded.room.kickoff ? (
-                <span className="whitespace-pre-wrap">{loaded.room.kickoff.trim()}</span>
-              ) : (
-                <span className="text-foreground-muted">None</span>
-              )}
-            </Row>
-          </section>
-        )}
-
-        {loaded.agent && (
-          <section className="flex flex-col gap-3">
-            <h2 className="text-sm font-semibold text-foreground">Instructions</h2>
-            <TextBlock text={loaded.agent.instructions} />
-          </section>
-        )}
-
-        <section className="flex flex-col gap-3">
-          <div className="flex items-center justify-between gap-3">
-            <h2 className="text-sm font-semibold text-foreground">Document</h2>
-            <div className="flex items-center gap-2">
-              <CopyButton text={loaded.document} />
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                disabled={busy !== null}
-                onClick={() => void exportYaml()}
-              >
-                <Download className="size-3.5" />
-                Export YAML
-              </Button>
+                    <div className="min-w-0 flex-1">
+                      <div className="truncate font-mono text-[13px] font-medium">{c.label}</div>
+                      <div className="mt-0.5 text-xs leading-snug text-foreground-muted">
+                        {c.note}
+                      </div>
+                    </div>
+                    <span className="shrink-0 text-[11px] text-foreground-passive">
+                      {c.kind === 'room' ? 'Room' : 'Agent'}
+                    </span>
+                  </div>
+                );
+              })}
             </div>
-          </div>
-          <TextBlock text={loaded.document} collapsedHeight="max-h-72" />
+          ) : (
+            <p className="text-sm text-foreground-muted">Nothing yet: the document is empty.</p>
+          )}
+          {lone && (
+            <div className="flex flex-col gap-2 pt-1">
+              {lone.repoUrl && (
+                <Row label="Repository">
+                  <Link url={lone.repoUrl} />
+                  <span className="text-foreground-muted">, cloned into its directory</span>
+                </Row>
+              )}
+              {lone.sources.length > 0 && (
+                <Row label="Sources">
+                  <span className="flex flex-wrap gap-x-1.5">
+                    {lone.sources.map((src, i) => (
+                      <span key={src.url}>
+                        {i > 0 && <span className="text-foreground-muted">· </span>}
+                        <Link url={src.url} label={src.label} />
+                      </span>
+                    ))}
+                  </span>
+                </Row>
+              )}
+              <Row label="Answers">{ADDRESSING_LABEL[lone.addressing ?? 'owner']}</Row>
+              {loaded.room?.kickoff && (
+                <Row label="Kickoff">
+                  <span className="text-foreground-muted">Posted as you once the room exists</span>
+                </Row>
+              )}
+            </div>
+          )}
+          {!lone && loaded.room?.kickoff && (
+            <Row label="Kickoff">
+              <span className="whitespace-pre-wrap">{loaded.room.kickoff.trim()}</span>
+            </Row>
+          )}
+        </section>
+
+        {params.length > 0 && (
+          <section className="flex flex-col gap-2.5">
+            <div className="flex items-baseline gap-2">
+              <h2 className="text-sm font-semibold text-foreground">Inputs</h2>
+              <span className="text-xs text-foreground-passive">
+                You fill these in when you use it.
+              </span>
+            </div>
+            <div className="flex flex-col divide-y divide-border overflow-hidden rounded-[11px] border border-border bg-background-1">
+              {params.map((p) => (
+                <div key={p.name} className="flex items-start gap-3 px-3.5 py-2.5 text-[12.5px]">
+                  <span className="w-36 shrink-0 truncate font-mono">{p.name}</span>
+                  <span className="w-16 shrink-0 text-[11.5px] text-foreground-passive">
+                    {typeLabel(p.type)}
+                  </span>
+                  <span className="min-w-0 flex-1 leading-snug text-foreground-muted">
+                    {p.description ??
+                      (p.default !== null ? `Defaults to ${String(p.default)}` : '')}
+                  </span>
+                  <span
+                    className={cn(
+                      'shrink-0 text-[11.5px]',
+                      p.default === null
+                        ? 'text-amber-600 dark:text-amber-400'
+                        : 'text-foreground-passive'
+                    )}
+                  >
+                    {p.default === null ? 'Required' : 'Optional'}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </section>
+        )}
+
+        {lone && (
+          <section className="flex flex-col gap-2.5">
+            <DisclosureRow
+              open={showInstructions}
+              title={showInstructions ? 'Hide the instructions' : 'Show the instructions'}
+              meta={`${lone.instructions.split('\n').length} lines`}
+              onToggle={() => setShowInstructions((o) => !o)}
+            />
+            {showInstructions && (
+              <TextBlock text={lone.instructions} collapsedHeight="max-h-none" />
+            )}
+          </section>
+        )}
+
+        <section className="flex flex-col gap-2.5">
+          <DisclosureRow
+            open={showDocument}
+            title={showDocument ? 'Hide the document' : 'Show the document'}
+            onToggle={() => setShowDocument((o) => !o)}
+          />
+          {showDocument && (
+            <div className="overflow-hidden rounded-[11px] border border-border bg-background-1">
+              <div className="flex items-center gap-2 border-b border-border px-3 py-2 text-[11.5px] text-foreground-passive">
+                <span className="min-w-0 flex-1 truncate font-mono">{slug}.template.yaml</span>
+                <span className="shrink-0">
+                  {loaded.server ? 'Stored exactly as uploaded' : 'Bundled with the Console'}
+                </span>
+                <CopyButton text={loaded.document} />
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="xs"
+                  disabled={busy !== null}
+                  onClick={() => void exportYaml()}
+                >
+                  <Download className="size-3.5" />
+                  Export YAML
+                </Button>
+              </div>
+              <pre className="overflow-x-auto p-3 font-mono text-xs leading-relaxed whitespace-pre-wrap text-foreground-muted">
+                {loaded.document}
+              </pre>
+            </div>
+          )}
         </section>
       </div>
     </div>
