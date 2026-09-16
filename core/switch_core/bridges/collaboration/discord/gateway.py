@@ -28,38 +28,38 @@ logger = logging.getLogger(__name__)
 
 
 class DiscordGatewayClient:
-    def __init__(self, *, bot_token: str, message_content: bool) -> None:
+    def __init__(self, *, bot_token: str, message_content: bool, members: bool) -> None:
         self._message_content = message_content
+        self._members = members
         # command_guild_id=None → commands register globally, once for the
         # application across every guild (decision #7); guild-scoped registration
         # is the self-registered adapter's, which serves one guild.
         self._connection = DiscordConnection(
             bot_token=bot_token,
-            intents=self._build_intents(message_content),
+            intents=self._build_intents(message_content, members),
             command_guild_id=None,
         )
 
     @staticmethod
-    def _build_intents(message_content: bool) -> discord.Intents:
+    def _build_intents(message_content: bool, members: bool) -> discord.Intents:
         """The least intents a multi-tenant shared connection needs.
 
         No `dm_messages`: a DM carries no guild, so it cannot be attributed to a
         tenant, and the connection leaves its DM handler unset so any that
-        arrive are dropped (guard G4). No `members` either: it is a *privileged*
-        intent like message content, so requesting it unapproved would close the
-        connection past Discord's ~100-guild verification threshold — which the
-        distributed app crosses quickly — and member lookups fall back to API
-        fetches without it.
+        arrive are dropped (guard G4).
 
-        `message_content` is privileged and defaults off (mention-only): the
-        connection still opens, and the bot still sees messages that mention it
-        and its own — turning it on (once verified) is what gives agents full
-        message text.
+        `message_content` and `members` are both *privileged* and default off:
+        requesting either unapproved closes the connection past Discord's
+        ~100-guild verification threshold, which the distributed app crosses
+        quickly. Off, the connection still opens — the bot sees messages that
+        mention it and its own, and member lookups fall back to API fetches;
+        each is turned on independently once the app is verified for it.
         """
         intents = discord.Intents.none()
         intents.guilds = True
         intents.guild_messages = True
         intents.message_content = message_content
+        intents.members = members
         return intents
 
     @property

@@ -11,26 +11,36 @@ from __future__ import annotations
 from switch_core.bridges.collaboration.discord.gateway import DiscordGatewayClient
 
 
-def _gateway(*, message_content: bool = False) -> DiscordGatewayClient:
-    return DiscordGatewayClient(bot_token="bot-token", message_content=message_content)
+def _gateway(
+    *, message_content: bool = False, members: bool = False
+) -> DiscordGatewayClient:
+    return DiscordGatewayClient(
+        bot_token="bot-token",
+        message_content=message_content,
+        members=members,
+    )
 
 
-def test_it_requests_no_dm_or_members_intent() -> None:
-    """G4 starts here (no DM intent), and members is privileged, so a shared
-    multi-tenant connection does not request it either."""
+def test_it_requests_no_dm_intent_and_privileged_intents_default_off() -> None:
+    """G4 starts here (no DM intent). message_content and members are both
+    privileged and off by default so the connection opens unapproved."""
     intents = _gateway().connection._intents
     assert intents.guilds is True
     assert intents.guild_messages is True
     assert intents.dm_messages is False
+    assert intents.message_content is False
     assert intents.members is False
-
-
-def test_message_content_is_off_by_default() -> None:
-    assert _gateway().connection._intents.message_content is False
 
 
 def test_message_content_can_be_turned_on() -> None:
     assert _gateway(message_content=True).connection._intents.message_content is True
+
+
+def test_members_can_be_turned_on_independently() -> None:
+    """Its own flag, approved separately from message content."""
+    intents = _gateway(members=True).connection._intents
+    assert intents.members is True
+    assert intents.message_content is False
 
 
 def test_commands_register_globally_not_per_guild() -> None:

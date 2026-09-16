@@ -217,6 +217,14 @@ class SwitchConfig(BaseSettings):
     # the app is verified — not something inferred (decision #5).
     discord_app_message_content: bool = False
 
+    # Whether the shared Gateway connection requests the privileged server-
+    # members intent. Off by default, and privileged the same way message
+    # content is: requesting it unapproved closes the connection past the
+    # ~100-guild threshold. Off, member lookups fall back to API fetches; on
+    # (once verified), the bot fills its member cache. Its own flag rather than
+    # riding message content's, because the two are approved independently.
+    discord_app_members: bool = False
+
     # Public origin (scheme + host, no path) that a messaging platform reaches
     # Switch on: the base of the OAuth redirect and of the three event URLs
     # under `/messaging`, and the one registered with the app.
