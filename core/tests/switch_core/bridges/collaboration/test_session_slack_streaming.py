@@ -306,6 +306,47 @@ async def test_a_detail_takes_the_shape_of_the_place_it_is_sent_to() -> None:
     }
 
 
+async def test_the_link_is_the_card_rather_than_a_line_under_a_label() -> None:
+    """A row reading "Switch session" above one reading "Open in Console app"
+    says the same thing twice.
+
+    The link names what it opens, so the title above it is a row of nothing —
+    and it is a row a reader has to look past to reach the one control the
+    stream offers them.
+    """
+    client = FakeWebClient()
+    adapter = _adapter(client)
+
+    await adapter.post_rich(
+        CHANNEL,
+        "Agent",
+        TurnActivity(
+            [_tool("t1", "Read")],
+            _turn(),
+            session_url="https://switch.example/session",
+        ),
+        THREAD,
+    )
+
+    assert _cards(client)[0]["hide_title"] is True
+
+
+async def test_a_card_with_no_link_in_it_still_says_what_it_is() -> None:
+    """Hiding the title is the link earning the row. With no link there is no
+    second row to earn it, and a card hiding the only thing it holds is blank —
+    in a plan that exists to keep the status line above it drawn."""
+    client = FakeWebClient()
+    adapter = _adapter(client)
+
+    await adapter.post_rich(
+        CHANNEL, "Agent", TurnActivity([_tool("t1", "Read")], _turn()), THREAD
+    )
+
+    card = _cards(client)[0]
+    assert "hide_title" not in card
+    assert card["title"] == "Switch session"
+
+
 @pytest.mark.parametrize("renders_custom_schemes", [True, False])
 async def test_a_real_console_link_arrives_whole(renders_custom_schemes: bool) -> None:
     """Built by the code that builds it in production, not by hand.

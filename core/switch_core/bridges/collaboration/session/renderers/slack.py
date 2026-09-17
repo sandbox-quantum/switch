@@ -1294,6 +1294,12 @@ def _session_card(session_url: str | None, turn: TurnUpsert) -> dict[str, Any]:
     agent, so its length is the deployment's, not something to defend against —
     and half a url is not a link, it is a line of text that looks like one and
     goes nowhere.
+
+    With the link there, the title is hidden and the link is the whole card: a
+    row reading "Switch session" above a row reading "Open in Console app" says
+    the same thing twice, and the second row says it better. Without the link
+    the title is all there is, so it stays — the card still has to hold the
+    plan open for the status line above it.
     """
     card: dict[str, Any] = {
         "type": "task_update",
@@ -1307,7 +1313,11 @@ def _session_card(session_url: str | None, turn: TurnUpsert) -> dict[str, Any]:
         "switchdash",
     }:
         return card
-    return {**card, "details": f"<{session_url}|Open in Console app>"}
+    return {
+        **card,
+        "hide_title": True,
+        "details": f"<{session_url}|Open in Console app>",
+    }
 
 
 def _step_blocks(
