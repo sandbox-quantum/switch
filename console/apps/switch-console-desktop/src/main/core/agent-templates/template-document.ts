@@ -34,8 +34,8 @@ export type ParsedAgentEntry = {
   addressing: AgentTemplateAddressing | null;
   /**
    * Which coding agent runs it. Either a provider id (`claude`, `codex`,
-   * `opencode`) or a `{param}` whose value is one. Null means the template
-   * does not say, and the Use page asks.
+   * `opencode`) or a `{param}` whose value is one. Null when the template
+   * has no `provider` field; the Use page asks for one.
    */
   provider: string | null;
 };
@@ -205,7 +205,7 @@ export function coreDocumentFor(
     out.room = room;
   }
   // A top-level kickoff on a group document is a mistake the server reports
-  // with a clear message. Passing it through lets the person see that message.
+  // with a clear message. Passing it through lets the deployer see that message.
   if (doc.kickoff !== undefined) out.kickoff = doc.kickoff;
   return dump(out, { lineWidth: -1 });
 }
@@ -214,7 +214,7 @@ export function coreDocumentFor(
  * Replace agent names in the server document.
  *
  * `replacements` maps a name as written in the template (`{team}-triager`)
- * to the name the agent has. Two situations need this: the person
+ * to the name the agent has. Two situations need this: the deployer
  * chose an existing agent for that slot instead of creating one, or the
  * intended name was taken and the agent was created as `name-2`.
  *
@@ -251,7 +251,7 @@ export function substituteAgentSlots(
 }
 
 /**
- * Remove params the person left empty from the server document, both the
+ * Remove params the deployer left empty from the server document, both the
  * declaration under `params:` and every room field set to `{name}`.
  *
  * This exists for `bridge` params. The server treats a missing `bridge:` as

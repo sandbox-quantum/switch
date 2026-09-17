@@ -21,7 +21,7 @@ export type SaveTemplateArgs = {
   serverName?: string | null;
   kind: 'agent' | 'room' | 'group';
   content: string;
-  /** Name and description, prefilled from the document. The person can change both. */
+  /** Name and description, prefilled from the document. The user can change both. */
   name: string;
   description: string;
 };

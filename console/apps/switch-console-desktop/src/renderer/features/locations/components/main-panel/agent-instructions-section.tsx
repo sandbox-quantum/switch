@@ -42,7 +42,7 @@ export function AgentInstructionsSection({
   // instructions change over time (the Switch expert's are maintained in the
   // repository) while the agent keeps the copy it was created with, so the
   // page offers to load the current version into the editor. Nothing is
-  // saved until the person saves the edit.
+  // saved until the user saves the edit.
   const { data: origin } = useQuery({
     queryKey: ['agent-template-origin', agentId],
     queryFn: () => (agentId ? rpc.agents.readTemplateOrigin({ agentId }) : Promise.resolve(null)),

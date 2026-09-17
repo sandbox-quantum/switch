@@ -273,7 +273,7 @@ function RecentsSection({
   serverName: string | null;
   /** Names of templates saved on the workspace. A recent with one of these names gets no Save button. */
   onWorkspace: ReadonlySet<string>;
-  /** The listing's kind filter and search text. They apply to the recents too. Only mine does not: every recent is the person's own. */
+  /** The listing's kind filter and search text. They apply to the recents too. Only mine does not: every recent is the user's own. */
   kind: KindFilter;
   query: string;
   onSaved: () => void;
@@ -430,7 +430,7 @@ const TemplatesPanel = observer(function TemplatesPanel() {
 
   const { builtIn, onWorkspace } = useMemo(() => {
     // A bundled card is always the bundled document. Saving it creates a
-    // workspace template, listed below as the person's own; the bundled card
+    // workspace template, listed below as the user's own; the bundled card
     // only marks that a copy exists.
     const byName = new Map(templates.map((t) => [t.name, t]));
     const builtIn: Listed[] = bundledTemplates.map((b) => ({

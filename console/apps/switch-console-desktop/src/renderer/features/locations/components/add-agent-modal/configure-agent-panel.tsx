@@ -239,7 +239,7 @@ export function AgentIdentityFields({
   form: ConfigureAgentFormState;
   /** The name of the template the instructions were prefilled from. When
    * set, the instructions start folded to a one-line summary with an Edit
-   * button: the person did not write them and does not need to read a page
+   * button: the user did not write them and does not need to read a page
    * of text to confirm the agent. */
   instructionsFrom?: string | null;
 }) {

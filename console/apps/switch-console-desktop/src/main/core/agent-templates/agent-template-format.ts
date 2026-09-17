@@ -9,23 +9,23 @@ import { composeTemplateDocument, coreDocumentFor } from './template-document';
  */
 export type AgentTemplateSource = { url: string; label: string | null };
 
-/** Who may address the agent, as declared in the template. Null means the
- * template does not say, and the Console's default applies (only its owner). */
+/** Who may address the agent, as declared in the template. Null when the
+ * template has no `addressing` field; the Console's default applies (only its owner). */
 export type AgentTemplateAddressing = 'owner' | 'owner-agents' | 'anyone';
 
 export type ParsedAgentTemplate = {
-  /** The agent name the template suggests. The person can change it before creating. */
+  /** The agent name from the template's `name` field. The deployer can change it before creating. */
   name: string | null;
   addressing: AgentTemplateAddressing | null;
   description: string;
   instructions: string;
   /** Repository the agent works from. Cloned into its working directory before it first runs. */
   repoUrl: string | null;
-  /** Pages the agent should read. Shown to the person creating it; the agent fetches them itself. */
+  /** Pages the agent should read. Shown to the deployer; the agent fetches them itself. */
   sources: AgentTemplateSource[];
   /** The room the agent is put in once it exists, when the template declares one. */
   room: { name: string | null; kickoff: string | null } | null;
-  /** A provider id (`claude`, `codex`, `opencode`) or a `{param}` whose value is one. Null means the template does not say. */
+  /** A provider id (`claude`, `codex`, `opencode`) or a `{param}` whose value is one. Null when the template has no `provider` field. */
   provider: string | null;
   warnings: string[];
 };

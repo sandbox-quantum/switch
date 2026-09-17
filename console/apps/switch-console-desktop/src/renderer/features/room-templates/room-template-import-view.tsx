@@ -247,7 +247,7 @@ const TemplateImportPanel = observer(function TemplateImportPanel() {
       appState.navigation.navigate('templateUse', { serverId, templateId: initialTemplateId });
       return;
     }
-    // `edit` is set when the person came back from the Use page to change
+    // `edit` is set when the deployer came back from the Use page to change
     // the document, so it must not be sent on again.
     if (initialYaml && initialYaml.trim().length > 0 && !editing) {
       advancedOnce.current = true;

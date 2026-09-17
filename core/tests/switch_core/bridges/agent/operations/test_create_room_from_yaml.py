@@ -1,4 +1,4 @@
-"""Behavioural tests for the create_room_from_yaml operation (CHOO-2657).
+"""Behavioural tests for the create_room_from_yaml operation.
 
 The full operation path: YAML in, room or group provisioned as the calling
 agent's owner, with the error cases for missing inputs and an ownerless agent.

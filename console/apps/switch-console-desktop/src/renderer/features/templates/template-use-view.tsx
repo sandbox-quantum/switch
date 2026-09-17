@@ -277,7 +277,7 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
     return identities[0]?.externalUsername ?? null;
   }, [identities, templateBridge]);
   // A linked account is needed only when the room is on a messaging app. On
-  // a server without one, the server uses the person's gateway name.
+  // a server without one, the server uses the deployer's gateway name.
   const creatorBlocked =
     parsed?.usesCreator === true &&
     templateBridge !== null &&
@@ -382,7 +382,7 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
 
   // Suggest a working directory for each new agent, named after it, under the
   // Console's locations directory or the host's home. The suggestion follows
-  // the agent name until the person picks a directory.
+  // the agent name until the deployer picks a directory.
   const suggestSeq = useRef(0);
   useEffect(() => {
     if (!hostReachable || phase !== 'form') return;
@@ -781,7 +781,7 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
           ? 'Create agent'
           : 'Create room';
   const intoRoomName = intoRoomId ? switchRoomsStore.roomNameById(intoRoomId) : null;
-  // Cancel returns to where the person came from: the room, the editor with
+  // Cancel returns to where the deployer came from: the room, the editor with
   // the document still loaded, the template's page, or the listing.
   const cancel = () =>
     intoRoomId

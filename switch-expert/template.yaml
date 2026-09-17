@@ -13,7 +13,7 @@
 #                 Console clones it (shallow) into a subdirectory of the
 #                 agent's working directory before the agent first runs.
 #                 `sources` are the pages it should read; they are shown to
-#                 the person creating the agent and are the agent's to fetch.
+#                 the deployer and are the agent's to fetch.
 #                 `addressing` is who may talk to it: `owner` (the default, the
 #                 person who created it), `owner-agents` (them and their other
 #                 agents), or `anyone` (anyone in the rooms it is in). An expert
@@ -22,12 +22,12 @@
 #
 #   room:         Optional. A room to put the agent in as soon as it exists,
 #                 in the same shape as a room template. `{agent}` is the name
-#                 the agent was given; `{$creator}` is the person
+#                 the agent was given; `{$creator}` is the deployer
 #                 creating it. A template with no `room:` creates the agent
 #                 and stops there.
 #
 #   kickoff:      Optional, needs `room:`. Posted into the room on behalf of
-#                 the person creating it, once the room exists. An agent
+#                 the deployer, once the room exists. An agent
 #                 starts working when a message addresses it, so mention the
 #                 agent here or it will sit in the room without answering.
 #

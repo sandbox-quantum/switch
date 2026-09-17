@@ -19,7 +19,7 @@ export function LocalDirectorySelector({
   placeholder = 'Select a directory',
 }: LocalDirectorySelectorProps) {
   const [path, setPath] = useState<string>(initialPath || '');
-  // The parent can change the path (a template suggests one), so a new prop
+  // The parent can change the path (a template can provide one), so a new prop
   // value replaces the local state. The local state exists only to hold the
   // result of the directory dialog until the parent receives it.
   useEffect(() => {

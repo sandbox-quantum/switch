@@ -22,7 +22,7 @@ export type AgentTemplateData = {
    * page can load the template again and offer its current instructions.
    * Null for a pasted document, which cannot be loaded again. */
   origin: AgentTemplateOrigin | null;
-  /** The agent name the template suggests. The person can change it before creating. */
+  /** The agent name from the template's `name` field. The deployer can change it before creating. */
   agentName: string | null;
   description: string;
   instructions: string;
@@ -227,7 +227,7 @@ export async function prefillForSave(
       (kind === 'group' ? 'Group template' : 'Room template'),
     // A room's description often contains a placeholder ("Workroom for
     // {task}"), which reads badly on a listing card. Leave the description
-    // empty and let the person write one in the dialog.
+    // empty and let the user write one in the dialog.
     description: literal(t?.roomDescription ?? null) ?? '',
   };
 }

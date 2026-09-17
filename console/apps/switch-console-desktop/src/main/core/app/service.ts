@@ -309,7 +309,7 @@ class AppService implements IInitializable, IDisposable {
     return result.filePaths[0];
   }
 
-  /** Write `content` where the person picks in the OS save dialog. Null when they cancel. */
+  /** Write `content` to the path the user picks in the OS save dialog. Null when the user cancels. */
   async saveTextFile(args: {
     title: string;
     defaultPath?: string;

@@ -115,7 +115,7 @@ const ajv = new Ajv({ allErrors: true, strict: false });
  * whole `oneOf` reports the group branch's errors too, which reads as
  * noise. Validating against the matching branch reports only the mistake.
  */
-function schemaForDocument(
+function documentSchema(
   schema: Record<string, unknown>,
   doc: Record<string, unknown>
 ): Record<string, unknown> {
@@ -192,7 +192,7 @@ export const roomTemplatesController = createRPCController({
 
     // Validate against server schema if provided
     if (params.schema) {
-      const validate = ajv.compile(schemaForDocument(params.schema, doc));
+      const validate = ajv.compile(documentSchema(params.schema, doc));
       if (!validate(doc)) {
         const errors = (validate.errors ?? [])
           .map((err) => {

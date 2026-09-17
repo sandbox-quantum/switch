@@ -26,7 +26,7 @@ export type AgentSlot = {
   existingName: string;
   /** The working directory for a new agent: a local path, or a path on the host. */
   dir: string;
-  /** Whether the person chose the directory themselves; a chosen path stays put when the name changes. */
+  /** Whether the deployer chose the directory; a chosen path stays put when the name changes. */
   dirPicked: boolean;
   cloneRepo: boolean;
   status: SlotStatus;
@@ -51,7 +51,7 @@ export function newSlot(entry: ParsedAgentEntry): AgentSlot {
   };
 }
 
-/** The name the template asks for, with the inputs filled in, or the override typed in the name field. */
+/** The name from the template's `name` field with the inputs filled in, or the name typed in the name field. */
 export function slotWantedName(slot: AgentSlot, values: Values, override: string | null): string {
   if (override !== null) return override;
   return interpolate(slot.entry.name ?? '', values);
@@ -163,7 +163,7 @@ export function AgentSlotCard({
   busy,
 }: {
   slot: AgentSlot;
-  /** The name the template asks for, with the inputs filled in. */
+  /** The name from the template's `name` field, with the inputs filled in. */
   wantedName: string;
   /** The name the agent will be created under: `wantedName`, or `wantedName-2`, `-3`, … when it is taken. */
   finalName: string;

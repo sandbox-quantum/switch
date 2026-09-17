@@ -42,7 +42,7 @@ const CLONEABLE_URL = /^(https?:\/\/|git@|ssh:\/\/)[^\s-]/;
 
 export type PrepareWorkspaceResult = {
   dir: string;
-  /** The outcome of the clone, when the template names a repository. */
+  /** The outcome of the clone, when the template has a `repo` field. */
   repo: {
     target: string;
     outcome: 'cloned' | 'present' | 'failed';
@@ -189,7 +189,7 @@ export const agentTemplatesController = createRPCController({
   },
 
   /**
-   * Create the working directory and, when the template names a repository,
+   * Create the working directory and, when the template has a `repo` field,
    * put a shallow clone of it inside. A failed clone is reported in the
    * result rather than thrown: the agent's instructions tell it to clone the
    * repository itself when the clone is missing.

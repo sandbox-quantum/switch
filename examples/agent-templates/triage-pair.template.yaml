@@ -50,7 +50,7 @@ agents:
 
 # The room is created on the messaging app chosen by the `bridge` input, or
 # on the server's default app when the input is left empty. `{$creator}`
-# puts the person creating the room in it, so the agents' answers reach them.
+# puts the deployer in it, so the agents' answers reach them.
 room:
   name: "{team}-triage"
   description: Both agents and you, the triager routing to the reproducer
