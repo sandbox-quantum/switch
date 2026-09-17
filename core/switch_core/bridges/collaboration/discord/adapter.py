@@ -60,8 +60,10 @@ from switch_core.bridges.collaboration.session.renderers import (
     position_action,
 )
 from switch_core.bridges.collaboration.session.renderers.neutral import (
+    ACTIVITY_AUDIENCE_UNKNOWN,
     ACTIVITY_FAILED,
     ACTIVITY_GONE,
+    ACTIVITY_NOT_A_MEMBER,
     ACTIVITY_UNREADABLE,
     activity_log,
     render_request,
@@ -92,6 +94,13 @@ _MAX_GUILD_ROLES_CODE = 30005
 # with the same status, and reading that as a card that is gone retires a card
 # still on the screen.
 _UNKNOWN_MESSAGE_CODE = 10008
+
+# "Unknown Member". The 404 that is about the person asked after, as against
+# 10004 "Unknown Guild" and 10003 "Unknown Channel" on the same routes and with
+# the same status. Only this one says a reader is not in a conversation; the
+# other two say the conversation could not be found, which is the bot's problem
+# and not the reader's.
+_UNKNOWN_MEMBER_CODE = 10007
 
 # Applied to the bot posts that inline an agent's name into the body — the DM
 # path, which has no webhook identity to carry it. Escaping the text is not
@@ -998,6 +1007,13 @@ class DiscordAdapter(CollaborationAdapter):
         something looked up. This is the string that travels in a
         `RichContentFailed`, where the lookups would be decorating a message
         nobody is going to see.
+
+        It is also drawn as if no buttons were possible, and that half is not
+        cosmetic. A card whose options are carried by buttons stops listing
+        them in its body; the caller forwards a failure's text as an ordinary
+        message, which has no buttons under it. Reporting a refusal with the
+        drawing that went on the post would ask for a choice it had stopped
+        printing.
         """
         return self._draw(
             content, mention=None, responder=None, prefix="", controls=False
@@ -1155,7 +1171,7 @@ class DiscordAdapter(CollaborationAdapter):
                     f"Cannot put a button on request {content.request.request_id} "
                     f"in Discord: its press would carry {len(custom_id)} "
                     f"characters and Discord allows {_MAX_CUSTOM_ID}.",
-                    text=drawn.text,
+                    text=self.rich_fallback_text(content),
                 )
             view.add_item(
                 discord.ui.Button(
@@ -1276,7 +1292,7 @@ class DiscordAdapter(CollaborationAdapter):
                 )
             except Exception as error:
                 raise self._rich_failure(
-                    error, f"Discord refused the post in DM {channel_id}", text
+                    error, f"Discord refused the post in DM {channel_id}", fallback
                 ) from error
             return f"{sent.channel.id}:{sent.id}"
 
@@ -1296,7 +1312,7 @@ class DiscordAdapter(CollaborationAdapter):
         thread: Any = None
         if thread_root_id:
             thread = await self._publication_thread(
-                int(channel_id), thread_root_id, text
+                int(channel_id), thread_root_id, fallback
             )
 
         try:
@@ -1317,12 +1333,12 @@ class DiscordAdapter(CollaborationAdapter):
             )
         except Exception as error:
             raise self._rich_failure(
-                error, f"Discord refused the post in channel {channel_id}", text
+                error, f"Discord refused the post in channel {channel_id}", fallback
             ) from error
         return f"{sent.channel.id}:{sent.id}"
 
     async def _publication_thread(
-        self, channel_id: int, thread_root_id: str, text: str
+        self, channel_id: int, thread_root_id: str, fallback: str
     ) -> Any:
         """The thread this publication goes in. Never the channel instead.
 
@@ -1337,7 +1353,7 @@ class DiscordAdapter(CollaborationAdapter):
         the channel" is then the difference between a conversation and an
         audience.
         """
-        existing = await self._reachable_thread(channel_id, thread_root_id, text)
+        existing = await self._reachable_thread(channel_id, thread_root_id, fallback)
         if existing is not None:
             return existing
         try:
@@ -1346,17 +1362,17 @@ class DiscordAdapter(CollaborationAdapter):
             # The create may have been refused because the thread is already
             # there — the one failure that means the opposite of what it looks
             # like. Ask again before reporting that there is none.
-            settled = await self._reachable_thread(channel_id, thread_root_id, text)
+            settled = await self._reachable_thread(channel_id, thread_root_id, fallback)
             if settled is not None:
                 return settled
             raise ThreadUnavailable(
                 f"Discord has no thread under {thread_root_id} in channel "
                 f"{channel_id} and would not make one: {error}",
-                text=text,
+                text=fallback,
             ) from error
 
     async def _reachable_thread(
-        self, channel_id: int, thread_root_id: str, text: str
+        self, channel_id: int, thread_root_id: str, fallback: str
     ) -> Any:
         """The thread already hanging from this message, if there is one.
 
@@ -1389,7 +1405,7 @@ class DiscordAdapter(CollaborationAdapter):
                 f"{channel_id}, so this publication has nowhere it is known to "
                 f"belong. The channel is not a substitute: a thread this bridge "
                 f"cannot open may be one the channel cannot read either. {error}",
-                text=text,
+                text=fallback,
             ) from error
 
     async def update_rich(
@@ -1458,7 +1474,14 @@ class DiscordAdapter(CollaborationAdapter):
         text, view = self._render_rich(
             replace(content, notify_external_id=None), prefix=prefix, controls=controls
         )
-        await self._edit_rich(channel_id, message_ref, text, view, lobby=lobby)
+        await self._edit_rich(
+            channel_id,
+            message_ref,
+            text,
+            view,
+            lobby=lobby,
+            fallback=self.rich_fallback_text(content),
+        )
 
     async def _edit_rich(
         self,
@@ -1468,6 +1491,7 @@ class DiscordAdapter(CollaborationAdapter):
         view: discord.ui.View | None,
         *,
         lobby: bool,
+        fallback: str,
     ) -> None:
         """Redraw a publication, including the buttons it does or does not keep.
 
@@ -1475,6 +1499,10 @@ class DiscordAdapter(CollaborationAdapter):
         because leaving it out leaves the components alone: a settled card
         would keep the buttons it was posted with and go on inviting a press
         that can no longer land. `None` is what takes them off.
+
+        `fallback` is what a refused edit is reported with, in place of `text`:
+        the drawing that was going on the message assumes the buttons beside
+        it, and a failure notice carries none.
         """
         location_id, message_id = self._parse_message_ref(message_ref)
         try:
@@ -1500,7 +1528,7 @@ class DiscordAdapter(CollaborationAdapter):
             raise self._rich_failure(
                 error,
                 f"Discord refused the edit to {message_ref} in channel {channel_id}",
-                text,
+                fallback,
             ) from error
 
     def _rich_failure(self, error: Exception, description: str, text: str) -> Exception:
@@ -1619,6 +1647,12 @@ class DiscordAdapter(CollaborationAdapter):
 
         The channel route answers about the message, so it is the one that can
         settle it.
+
+        Classified like any other failed removal, so a channel read that is
+        throttled still arrives as a wait. Discord rate-limits per route, and
+        this route is reached only after the webhook route has already
+        answered: a 429 here is the likeliest one on the whole path, and the
+        delay it carries is the only thing that makes the retry useful.
         """
         try:
             location = await self._get_channel(location_id)
@@ -1627,10 +1661,11 @@ class DiscordAdapter(CollaborationAdapter):
             self._say_already_gone(message_ref, error)
             return
         except Exception as failure:
-            raise RemovalFailed(
+            raise self._removal_failure(
+                failure,
                 f"Discord said the webhook does not know message {message_ref}, "
                 f"and reading the channel to find out whether the card is still "
-                f"there did not work either: {failure}"
+                f"there did not work either",
             ) from failure
         raise RemovalFailed(
             f"Discord card {message_ref} is still in the channel: the "
@@ -2676,25 +2711,44 @@ class DiscordAdapter(CollaborationAdapter):
         Everything that can go wrong is said rather than left silent. A button
         that answers with nothing reads as Discord having dropped the press,
         and the reader would go on pressing it.
+
+        Said as what it is, too. Only a reference that names no conversation,
+        and a conversation Discord answers 404 for, are gone; a bridge that
+        cannot reach the log, or cannot resolve a channel it was given, has a
+        problem of its own and the turn is still there. Retiring it in the
+        reader's mind is the one answer they cannot come back from.
         """
         resolve = self._resolve_activity
         location_id = _conversation_in(ref)
-        if resolve is None or location_id is None:
+        if location_id is None:
             await self._privately(interaction, ACTIVITY_GONE, ref)
+            return
+        if resolve is None:
+            logger.warning(
+                "A Discord activity view was pressed on message %s, but this "
+                "bridge has nothing to read the log with, so it is refused.",
+                ref,
+            )
+            await self._privately(interaction, ACTIVITY_FAILED, ref)
             return
         try:
             location = await self._get_channel(location_id)
-        except (discord.HTTPException, RuntimeError):
-            logger.warning(
-                "Discord would not say what channel %s is, so the activity "
-                "behind message %s is not shown.",
-                location_id,
-                ref,
-            )
+        except discord.NotFound:
             await self._privately(interaction, ACTIVITY_GONE, ref)
             return
-        if not await self._still_reads(location, interaction.user):
-            await self._privately(interaction, ACTIVITY_UNREADABLE, ref)
+        except (discord.HTTPException, RuntimeError) as error:
+            logger.warning(
+                "Discord would not say what channel %s is (%s), so the activity "
+                "behind message %s is not shown.",
+                location_id,
+                error,
+                ref,
+            )
+            await self._privately(interaction, ACTIVITY_FAILED, ref)
+            return
+        refusal = await self._still_reads(location, interaction.user)
+        if refusal is not None:
+            await self._privately(interaction, refusal, ref)
             return
         parent_id = getattr(location, "parent_id", None)
         channel_id = str(parent_id if parent_id is not None else location.id)
@@ -2778,8 +2832,8 @@ class DiscordAdapter(CollaborationAdapter):
                 error,
             )
 
-    async def _still_reads(self, channel: Any, user: Any) -> bool:
-        """Whether this reader can still read the conversation a turn is in.
+    async def _still_reads(self, channel: Any, user: Any) -> str | None:
+        """Why this reader may not see the conversation a turn is in, or None.
 
         A channel outside any guild has no permissions to consult: who may
         read it is exactly who is in it, so that is what is asked. A private
@@ -2791,6 +2845,15 @@ class DiscordAdapter(CollaborationAdapter):
         cannot ask about is one nothing here can say a reader may see, and the
         reader is told that rather than shown the log on the strength of not
         having been able to check.
+
+        Which refusal is returned is the fact that was actually established. A
+        request that failed establishes nothing about the reader at all, and
+        telling somebody they cannot read a conversation on the strength of a
+        call that never came back is a claim nothing checked. Nor is the status
+        enough on its own: a 404 on these routes is about the member, the guild
+        or the channel, and only the first is about the reader. It is read for
+        which, because "you are not in it" and "the bot cannot find it" are the
+        reader's problem and ours respectively.
         """
         guild = getattr(channel, "guild", None)
         if guild is None:
@@ -2802,29 +2865,68 @@ class DiscordAdapter(CollaborationAdapter):
                 "activity view of it is refused.",
                 getattr(channel, "id", "?"),
             )
-            return False
+            return ACTIVITY_AUDIENCE_UNKNOWN
         member = guild.get_member(user.id)
         if member is None:
             try:
                 member = await guild.fetch_member(user.id)
-            except discord.HTTPException:
-                return False
+            except discord.NotFound as error:
+                if error.code == _UNKNOWN_MEMBER_CODE:
+                    return ACTIVITY_NOT_A_MEMBER
+                logger.warning(
+                    "Discord answered 404 %s for user %s in guild %s, which is "
+                    "not an answer about the user, so an activity view of "
+                    "channel %s is refused.",
+                    error.code,
+                    user.id,
+                    getattr(guild, "id", "?"),
+                    getattr(channel, "id", "?"),
+                )
+                return ACTIVITY_AUDIENCE_UNKNOWN
+            except discord.HTTPException as error:
+                logger.warning(
+                    "Discord would not say whether user %s is in guild %s (%s), "
+                    "so an activity view of channel %s is refused.",
+                    user.id,
+                    getattr(guild, "id", "?"),
+                    error,
+                    getattr(channel, "id", "?"),
+                )
+                return ACTIVITY_AUDIENCE_UNKNOWN
         allowed = permissions_for(member)
         if not (allowed.view_channel and allowed.read_message_history):
-            return False
+            return ACTIVITY_UNREADABLE
         is_private = getattr(channel, "is_private", None)
         if is_private is None or not is_private():
-            return True
+            return None
         if allowed.manage_threads:
-            return True
+            return None
         try:
             await channel.fetch_member(user.id)
-        except discord.HTTPException:
-            return False
-        return True
+        except discord.NotFound as error:
+            if error.code == _UNKNOWN_MEMBER_CODE:
+                return ACTIVITY_NOT_A_MEMBER
+            logger.warning(
+                "Discord answered 404 %s for user %s in thread %s, which is not "
+                "an answer about the user, so an activity view of it is refused.",
+                error.code,
+                user.id,
+                getattr(channel, "id", "?"),
+            )
+            return ACTIVITY_AUDIENCE_UNKNOWN
+        except discord.HTTPException as error:
+            logger.warning(
+                "Discord would not say whether user %s is in thread %s (%s), so "
+                "an activity view of it is refused.",
+                user.id,
+                getattr(channel, "id", "?"),
+                error,
+            )
+            return ACTIVITY_AUDIENCE_UNKNOWN
+        return None
 
-    def _is_recipient(self, channel: Any, user: Any) -> bool:
-        """Whether this reader is one of the people a guildless channel is between.
+    def _is_recipient(self, channel: Any, user: Any) -> str | None:
+        """Why this reader is not one of the people a guildless channel is between.
 
         Asked rather than taken as read. The address that named this channel
         came off a press, and the whole point of checking here is that an
@@ -2842,8 +2944,10 @@ class DiscordAdapter(CollaborationAdapter):
                 "activity view of it is refused.",
                 getattr(channel, "id", "?"),
             )
-            return False
-        return any(getattr(person, "id", None) == user.id for person in recipients)
+            return ACTIVITY_AUDIENCE_UNKNOWN
+        if any(getattr(person, "id", None) == user.id for person in recipients):
+            return None
+        return ACTIVITY_NOT_A_MEMBER
 
     async def _tell_presser(
         self, interaction: discord.Interaction, notice: str

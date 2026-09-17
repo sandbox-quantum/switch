@@ -167,9 +167,10 @@ def test_a_platform_with_no_way_to_read_a_thread_never_says_first(
 ) -> None:
     """The default every adapter inherits until it can actually check.
 
-    Slack is the only platform posting cards today. The next one to grow them
-    must not silently turn every "yes" in a card's thread into an answer by
-    saying nothing about threads at all — so the base refuses, and says why.
+    Slack, Discord and Mattermost can read a thread and answer the question;
+    the rest inherit this. A platform that says nothing about threads must not
+    silently turn every "yes" in a card's thread into an answer, so the base
+    refuses, and says why.
     """
     adapter = TelegramAdapter.__new__(TelegramAdapter)
 

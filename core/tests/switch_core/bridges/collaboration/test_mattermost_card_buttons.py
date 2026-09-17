@@ -436,18 +436,23 @@ async def test_a_bridge_that_takes_no_presses_draws_no_buttons() -> None:
     assert _buttons(_created(adapter)) == []
 
 
-async def test_a_bridge_that_draws_no_buttons_does_not_read_a_post_back() -> None:
-    """The read is what keeps a props rewrite from dropping the server's own
-    marks. Where there is nothing to rewrite there is nothing to protect, and a
-    deployment without buttons behaves exactly as it did before them."""
-    adapter, _ = _handled(callback_base_url=None)
+async def test_a_bridge_that_draws_no_buttons_still_takes_the_old_ones_off() -> None:
+    """A deployment that has withdrawn its callback address is not a deployment
+    that never had one. Cards posted while it had one are still in the channel
+    with buttons on them, pointing at a route that has gone, and this is the
+    only pass that can take them off. Removing a control cannot be conditional
+    on being able to offer one."""
+    adapter, _ = _handled()
     card = await _card()
     ref = await adapter.post_rich(CHANNEL, "worker", card, "root-1")
-    _posts(adapter).read_error = AssertionError("the post was read back")
+    assert _buttons(_created(adapter)) != []
+    adapter._config = adapter._config.model_copy(update={"callback_base_url": None})
 
     await adapter.update_rich(CHANNEL, "worker", ref, card, "root-1")
 
-    assert set(_patched(adapter)) == {"message"}
+    props = _patched(adapter)["props"]
+    assert "attachments" not in props
+    assert props["from_bot"] == "true"
 
 
 # ── The press that comes back ────────────────────────────────────────────────

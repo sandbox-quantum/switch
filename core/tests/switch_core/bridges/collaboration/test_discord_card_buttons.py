@@ -27,7 +27,11 @@ from typing import Any
 import discord
 import pytest
 
-from switch_core.bridges.collaboration.adapter import RequestCard
+from switch_core.bridges.collaboration.adapter import (
+    RequestCard,
+    RichContentFailed,
+    ThreadUnavailable,
+)
 from switch_core.bridges.collaboration.discord.adapter import (
     _MAX_BUTTONS,
     _PUBLICATION_WEBHOOK_NAME,
@@ -57,6 +61,8 @@ from .test_discord_sdk_only import (
     _Channel,
     _DMChannel,
     _guild_setup,
+    _http_error,
+    _no_thread_yet,
     _Thread,
     _Webhook,
 )
@@ -248,6 +254,80 @@ async def test_an_option_too_long_for_its_button_is_kept_whole_in_the_body() -> 
     assert len(label) <= 80
     assert label.endswith("…")
     assert "very very very" in webhook.sent[0]["content"]
+
+
+# ── What a refusal is reported with ──────────────────────────────────────────
+
+
+async def test_a_refused_edit_reports_the_options_the_card_stopped_printing() -> None:
+    """The one that actually reaches a reader.
+
+    A card whose redraw is refused travels as the text of a
+    `RichContentFailed`, and the publisher forwards that as an ordinary
+    message — where there are no buttons to carry the options. The drawing that
+    was going on the card is the wrong one to report with, because it left out
+    every option a button was going to say in full.
+    """
+    adapter, _channel, _thread, webhook, _seen = _answering()
+    card = await _post_card(adapter)
+    webhook.edit_error = _http_error(403)
+
+    with pytest.raises(RichContentFailed) as raised:
+        await adapter.update_rich(
+            str(CHANNEL_ID),
+            "my-agent",
+            f"{ROOT_MESSAGE_ID}:{CARD_MESSAGE_ID}",
+            card,
+            f"{CHANNEL_ID}:{ROOT_MESSAGE_ID}",
+        )
+
+    label = offered_controls(card.request)[0].label
+    assert label in raised.value.text
+    assert label not in webhook.sent[0]["content"]
+
+
+async def test_a_refused_post_reports_the_options_its_buttons_never_got() -> None:
+    """Nothing was posted, so the reported text is the only place the options
+    appear at all."""
+    adapter, _channel, _thread, webhook, _seen = _answering()
+    card = await _card()
+    webhook.send_error = _http_error(403)
+
+    with pytest.raises(RichContentFailed) as raised:
+        await adapter.post_rich(str(CHANNEL_ID), "my-agent", card, None)
+
+    assert offered_controls(card.request)[0].label in raised.value.text
+
+
+async def test_a_refused_dm_card_reports_the_options_the_bot_could_not_send() -> None:
+    """A DM card is the bot's own message and always earns buttons, so this is
+    the path where the body most reliably has the options left out of it."""
+    dm = _DMChannel()
+    adapter = _adapter({DM_CHANNEL_ID: dm})
+    _handled(adapter)
+    card = await _card()
+    dm.send_error = _http_error(403)
+
+    with pytest.raises(RichContentFailed) as raised:
+        await adapter.post_rich(str(DM_CHANNEL_ID), "my-agent", card, None)
+
+    assert offered_controls(card.request)[0].label in raised.value.text
+
+
+async def test_a_card_with_nowhere_to_go_says_what_it_was_asking() -> None:
+    """`ThreadUnavailable` carries a text too, and the caller posts it at the
+    channel root when the thread it was meant for has gone."""
+    adapter, channel, _webhook = _no_thread_yet()
+    _handled(adapter)
+    channel.thread_error = _http_error(403)
+    card = await _card()
+
+    with pytest.raises(ThreadUnavailable) as raised:
+        await adapter.post_rich(
+            str(CHANNEL_ID), "my-agent", card, f"{CHANNEL_ID}:{ROOT_MESSAGE_ID}"
+        )
+
+    assert offered_controls(card.request)[0].label in raised.value.text
 
 
 async def test_a_settled_card_is_redrawn_with_its_buttons_taken_off() -> None:

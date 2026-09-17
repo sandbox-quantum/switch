@@ -226,6 +226,36 @@ switchCore:
         # Secret holding the cert; cert-manager creates it from the annotation
         # above, or reference a pre-created TLS Secret.
         secretName: ""
+  # Collaboration callback listener. Mattermost's buttons are delivered by the
+  # Mattermost *server*, which POSTs a press to an address Switch hands it when
+  # it draws the card — so unlike Slack, Discord and Telegram, Mattermost's half
+  # of the conversation is not all on the outbound WebSocket. switch-core serves
+  # those presses from a third HTTP server, separate from the API on
+  # service.port and from the Teams listener above.
+  #
+  # Off by default for the same reason the Teams block is: bridges are created
+  # at runtime in the gateway, not in Helm values, so the chart cannot tell
+  # whether you have a Mattermost bridge. Leaving it off is a reduced service
+  # rather than a broken one, PROVIDED the bridge's callback_base_url is also
+  # unset: that is what the adapter checks before drawing a button, and it says
+  # so at startup. A bridge configured with an address whose port is not
+  # published here is the bad case — the cards carry buttons, and every press
+  # fails. Enable this, or clear the address; do not leave the two disagreeing.
+  #
+  # Any Mattermost inside the cluster needs only the Service port below, and
+  # the one this chart deploys is also told to accept that address when this is
+  # enabled — Mattermost refuses to call a private host it has not been given,
+  # so a server you manage yourself needs that entry adding even in-cluster.
+  # `helm install` prints the callback_base_url to configure on the bridge. A
+  # Mattermost OUTSIDE the cluster needs a route you own as well: this is a
+  # port switch-core binds, not necessarily a published host port, and the
+  # chart renders no Ingress for it.
+  collaborationCallback:
+    enabled: false
+    # Bind port inside the container. The chart sets no environment variable
+    # for it, so this must match switch-core's own COLLABORATION_CALLBACK_PORT
+    # default.
+    port: 8081
   # switch-core MUST run as a single replica. Four things live in the process
   # rather than the database: the per-agent event buffer, the invite bus, the
   # ephemeral (presence) bus, and the message listener's subscriber registry. A

@@ -18,11 +18,14 @@ ANSWER_VERB = "switch/answerRequest"
 # collision waiting for the first card here to grow an input.
 _ANSWER_DATA = "switchAnswer"
 
-# The schema version that introduced Action.Execute, which is the only card
-# action that reaches a bot with a reply the presser alone sees. A card with
-# nothing to press stays at 1.4: a client too old for the newer schema falls
-# back to `fallbackText` for the whole card, which is a cost worth paying only
-# where there is something to gain.
+# The schema version a card declares once it has something to press.
+# Action.Execute — the only card action that reaches a bot with a reply the
+# presser alone sees — arrived in 1.4, so this is a version above what the
+# action itself requires; lowering it would widen the set of clients that can
+# render the card, which is a question for a real client rather than for the
+# schema. A card with nothing to press stays at 1.4: a client too old for the
+# declared version falls back to `fallbackText` for the whole card, which is a
+# cost worth paying only where there is something to gain.
 _ACTION_VERSION = "1.5"
 _BASE_VERSION = "1.4"
 
