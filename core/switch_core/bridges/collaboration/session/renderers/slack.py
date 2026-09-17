@@ -27,6 +27,7 @@ them can reach a limit.
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 from dataclasses import dataclass
 from html import unescape
@@ -131,14 +132,53 @@ _MAX_PLAN_TASK_TITLE = 200
 _MAX_PLAN_TASK_DETAILS = 200
 # Prose gets more room than a tool result because it is read rather than
 # scanned, and because a card's detail is the one part of this block Slack will
-# expand on request. Measured rather than reasoned about: Slack took a single
-# card's detail to 99,999 characters without complaint, took fifty cards of
-# 4,743 each and refused the message above that with `msg_blocks_too_long`, and
-# showed all 12,000 characters of an expanded card rather than cutting the text
-# itself. So the binding constraint is the whole message, and fifty cards at
-# this budget leave a margin of more than two under where it was refused —
-# worth keeping, because Slack documents none of this and can tighten it.
-_MAX_SAID_DETAILS = 2000
+# expand on request.
+#
+# Where the ceiling is, observed against a real workspace because Slack
+# documents none of it. A streamed turn draws up to two fifty-card pages into
+# one message, and a hundred cards of ASCII detail were pushed at it two ways:
+# sent as one append it took 2,180 characters a card, 257,715 bytes, and refused
+# 2,181; delivered a chunk at a time, the way a turn that is still running
+# arrives, it took 2,179 and refused 2,180. So the binding figure is the second,
+# 257,615 bytes — and the two arms landing 100 bytes apart say the ceiling is on
+# what the message now holds rather than on how much was sent to build it.
+#
+# That is a boundary someone watched, not a published contract: it sits near
+# 256 KiB, and nothing says it is exactly that or that it will hold. The unit is
+# bytes on the wire rather than characters, because the payload is serialised
+# with `ensure_ascii=True` — a non-ASCII character leaves as a six-byte
+# `\uXXXX` escape, so the same message would tolerate only about 200 characters
+# a card in Japanese.
+#
+# Why this number is not sized against that worst case: it does not occur. Over
+# 445 real turns the largest message reached a tenth of the ceiling, and
+# removing this cap altogether left that figure unchanged, because no turn has
+# both many cards and long remarks. 3,000 truncated none of the 1,625 remarks
+# measured, where 750 truncated a tenth of them. A turn unlike any of those is
+# still possible, and the thing that would catch it is a check on the assembled
+# message rather than a smaller number here.
+_MAX_SAID_DETAILS = 3000
+# That check's budgets: what a whole drawn message may weigh. This is the bound
+# the per-card numbers cannot enforce between them, because how many cards carry
+# a detail is not known until a turn is drawn. A hundred cards at 3,000 is
+# 300,000 characters, and nearly two million bytes of it in Japanese — no
+# per-card budget both leaves prose room to breathe and holds that, so the worst
+# case is caught on the assembled message instead.
+#
+# Two numbers because the two paths refuse differently, and both are boundaries
+# someone watched rather than published contracts. A stream grown a chunk at a
+# time took a hundred cards at 257,615 bytes and refused a hundred bytes more
+# with `msg_too_long`; an ordinary post took fifty cards of 4,743 characters
+# each and refused the message above that with `msg_blocks_too_long`. Each
+# budget sits under its measurement, which buys room for the request envelope
+# weighed nowhere here — channel, timestamp, chunk wrappers — and for Slack
+# tightening a limit it never published in the first place.
+_MAX_STREAM_BYTES = 250_000
+_MAX_POST_BYTES = 220_000
+# How far a detail is pulled back when the assembled message is too big, in
+# order. The last step is small rather than absent: a card that quietly lost its
+# expansion looks exactly like a remark that never had more to say.
+_DETAIL_RETREAT = (1500, 750, 300, 120)
 # A local display budget, not a claimed Slack rich_text protocol limit.
 # Preserve the decision/answer before spending the remainder on context.
 _MAX_RESOLVED_DETAILS = 2800
@@ -148,6 +188,10 @@ _MAX_RESOLVED_DETAILS = 2800
 _MAX_TEXT = 39000
 
 _MAX_TASK_ID = 64
+
+# What a cut detail ends with. Words the reader will not get to see are worth a
+# few characters saying so, in language no agent would have written itself.
+_TRUNCATED = " […truncated]"
 
 # The three blocks a stream draws its steps in, top to bottom. Slack fixes a
 # block at the position it was first written and has no call that removes one,
@@ -175,6 +219,14 @@ _TASK_STATUS = {
     "failed": "error",
     "declined": "error",
 }
+
+# What a card draws in its own glyph slot. Not an emoji field: Slack takes a
+# closed set of 54 names here and refuses anything outside it — `bolt`, `wrench`
+# and `terminal` are all rejected as invalid enum values — so these two are
+# chosen from what exists rather than from what a speech bubble or a shell
+# prompt would ideally be.
+_SAID_ICON = "comment"
+_TOOL_ICON = "code"
 
 _DANGEROUS = {"decline", "cancel"}
 
@@ -1164,6 +1216,7 @@ def render_activity_plan(
         blocks.append(_context(title))
     if session_url and urlsplit(session_url).scheme in {"https", "http", "switchdash"}:
         blocks.append(_context(f"<{session_url}|Open in Console app>"))
+    _fit_details(blocks, _MAX_POST_BYTES)
     return SlackMessage(text=title, blocks=blocks)
 
 
@@ -1209,17 +1262,19 @@ def render_activity_stream(
     glyph beside it is already the thing that says work is happening there.
     """
     shown = [item for item in items if in_activity_log(item)]
-    return StreamedActivity(
-        title=_truncate(
-            turn_state(items, turn, tool_detail=True, elapsed_seconds=elapsed_seconds),
-            _MAX_PLAN_TITLE,
-        ),
-        session=_session_card(session_url, turn),
-        blocks=_step_blocks(
-            [_settled(_plan_task(item), item, turn) for item in shown],
-            _running(shown, turn),
-        ),
+    title = _truncate(
+        turn_state(items, turn, tool_detail=True, elapsed_seconds=elapsed_seconds),
+        _MAX_PLAN_TITLE,
     )
+    session = _session_card(session_url, turn)
+    blocks = _step_blocks(
+        [_settled(_plan_task(item), item, turn) for item in shown],
+        _running(shown, turn),
+    )
+    # The message the steps accumulate into carries the header and the session
+    # card too, so what they weigh is not available to the steps to spend.
+    _fit_details(blocks, _MAX_STREAM_BYTES - _weigh([title, session]))
+    return StreamedActivity(title=title, session=session, blocks=blocks)
 
 
 def _session_card(session_url: str | None, turn: TurnUpsert) -> dict[str, Any]:
@@ -1474,39 +1529,43 @@ def _plan_task(item: Item) -> dict[str, Any]:
     Slack draws a settled card with a check, which beside a sentence is the one
     thing the marker exists to deny. There is no fourth status to reach for —
     Slack has three and the other two are a spinner and an error, both of which
-    say something worse — so the marker carries the distinction alone here,
-    where on every other platform the glyph column carries it.
+    say something worse — so a remark carries a `comment` glyph and a call
+    carries `code`, which is what the glyph column does on every other platform.
+    The marker stays in the title behind it as the same distinction in text.
 
-    A remark longer than its title keeps the rest in the card's detail, which is
-    the part Slack offers to expand. The title is a one-line preview and folds
-    the paragraph breaks out, because four lines of sentence in a list of calls
-    reads as four things happening; the detail keeps them, because that is where
-    the remark is read rather than scanned. A remark that fits its title gets no
-    detail at all — an expansion holding what is already on the line is a
-    control that does nothing.
+    A remark is drawn as its detail rather than as its title: the title is
+    hidden, and the prose sits at the top of the card where a reader meets it
+    whole instead of meeting a one-line preview of it. The title is still
+    written, because hiding it is the card's choice and a client that does not
+    honour that should find a sentence there rather than nothing.
+
+    The prose keeps the markdown the agent wrote. Slack renders none of it in
+    this slot, so asterisks and backticks arrive literally — which is readable,
+    and is less lossy than stripping the marks out and leaving a reader unable
+    to tell a code span from a word.
     """
     if item.kind == "assistant-message":
-        said = plain_text(item.text)
-        line = f"{SAID_MARKER} {' '.join(said.split())}"
-        card: dict[str, Any] = {
+        preview = f"{SAID_MARKER} {' '.join(plain_text(item.text).split())}"
+        return {
             "task_id": _task_id(item.item_id),
-            "title": _truncate(line, _MAX_PLAN_TASK_TITLE),
+            "title": _truncate(preview, _MAX_PLAN_TASK_TITLE),
+            "hide_title": True,
+            "icon": {"type": "icon", "name": _SAID_ICON},
             "status": "complete",
+            "details": _rich_text(_truncate_prose(item.text, _MAX_SAID_DETAILS)),
         }
-        if len(line) > _MAX_PLAN_TASK_TITLE:
-            card["details"] = _rich_text(_truncate(said, _MAX_SAID_DETAILS))
-        return card
     title = plain_text(item.title) if item.title else ""
     if item.status in ("failed", "declined"):
         title = f"{_ACTIVITY[item.status]} {title}".strip()
     task: dict[str, Any] = {
         "task_id": _task_id(item.item_id),
         "title": _truncate(title, _MAX_PLAN_TASK_TITLE) or "(untitled)",
+        "icon": {"type": "icon", "name": _TOOL_ICON},
         "status": _TASK_STATUS[item.status],
     }
     details = plain_text(item.text) if item.text else ""
     if details:
-        task["details"] = _rich_text(_truncate(details, _MAX_PLAN_TASK_DETAILS))
+        task["details"] = _rich_text(_truncate_prose(details, _MAX_PLAN_TASK_DETAILS))
     return task
 
 
@@ -1544,6 +1603,68 @@ def _truncate(text: str, limit: int) -> str:
     if limit <= 0:
         return ""
     return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+def _truncate_prose(text: str, limit: int) -> str:
+    """`text` inside `limit`, saying plainly when some of it did not fit.
+
+    `_truncate` marks a cut with an ellipsis, which is right for a title: the
+    full text sits in the detail directly below it, so nothing is lost and a
+    trailing `…` reads as the preview it is. A detail has nothing below it. A
+    cut there loses words, and an ellipsis on the end of a sentence is
+    indistinguishable from the author's own punctuation — the reader is left
+    with prose that looks complete and is not.
+    """
+    keep = limit - len(_TRUNCATED)
+    if keep <= 0:
+        return _truncate(text, limit)
+    return text if len(text) <= limit else text[:keep] + _TRUNCATED
+
+
+def _weigh(payload: object) -> int:
+    """What `payload` costs Slack, in the bytes its own serialisation produces.
+
+    Characters are the wrong unit and the difference is not small. The request
+    body goes out with `ensure_ascii=True`, so a character outside ASCII leaves
+    as a six-byte `\\uXXXX` escape: a Japanese remark costs six times what its
+    length suggests, and an emoji twelve.
+    """
+    return len(json.dumps(payload).encode())
+
+
+def _fit_details(blocks: list[dict[str, Any]], limit: int) -> None:
+    """Pull card details back until `blocks` weighs less than `limit`.
+
+    Nothing is dropped. A detail is shortened, and a shortened detail says so in
+    the place the missing words would have been, so a reader who opens one is
+    told rather than left with prose that looks whole. Removing the expansion
+    outright is the one outcome that would say nothing at all.
+
+    Titles are left alone. They are bounded already, they are what a reader sees
+    without opening anything, and between them they cannot reach the budget —
+    which is why running out of retreat here is an exception rather than a
+    smaller cut: it would mean cards arriving from somewhere this was not
+    written to bound.
+    """
+    if _weigh(blocks) <= limit:
+        return
+    details = [
+        task["details"]["elements"][0]["elements"][0]
+        for block in blocks
+        if block.get("type") == "plan"
+        for task in block["tasks"]
+        if "details" in task
+    ]
+    for budget in _DETAIL_RETREAT:
+        for element in details:
+            element["text"] = _truncate_prose(element["text"], budget)
+        if _weigh(blocks) <= limit:
+            return
+    raise ValueError(
+        f"A turn drew {len(details)} card details into {_weigh(blocks)} bytes, over "
+        f"the {limit} Slack will take even with every one cut to "
+        f"{_DETAIL_RETREAT[-1]} characters."
+    )
 
 
 def _fit(text: str, limit: int) -> str:
