@@ -8,30 +8,46 @@ import {
 } from './agent-template-format';
 
 /**
- * One template document, both halves. The Console creates what `agents:` (or
- * the singular `agent:`) describes; the server creates what `room:` or
- * `group:` + `rooms:` describes. The two are joined by name: a room lists the
- * agents the Console is about to make, spelled the way the template spells
- * them, `{param}`s included. The format is described field by field in
- * `switch-expert/template.yaml` at the repository root.
+ * A template document has two parts, created by two different things.
+ *
+ * - `agent:` or `agents:` describe agents. The Console creates those, because
+ *   an agent runs on a machine the Console can reach and the server cannot.
+ * - `room:`, or `group:` with `rooms:`, describe rooms. The server creates
+ *   those through `POST /rooms/from-yaml`.
+ *
+ * The two parts refer to each other by agent name. A room's `agents:` list
+ * names the agents from the first part with the same text the template uses
+ * for them, `{team}-triager` for example, before any `{param}` is filled in.
+ * That is why the helpers here work on the raw names: to match a room's
+ * entry with the agent it means, they compare the unfilled text.
+ *
+ * `switch-expert/template.yaml` at the repository root documents every field.
  */
 export type TemplateKind = 'agent' | 'room' | 'group';
 
 export type ParsedAgentEntry = {
-  /** The name as the template spells it, placeholders and all. */
+  /** The name exactly as written in the template, with any `{param}` still unfilled. */
   name: string | null;
   description: string;
   instructions: string;
   repoUrl: string | null;
   sources: AgentTemplateSource[];
   addressing: AgentTemplateAddressing | null;
-  /** A provider id or a `{param}` naming one; null leaves the choice to the page. */
+  /**
+   * Which coding agent runs it. Either a provider id (`claude`, `codex`,
+   * `opencode`) or a `{param}` whose value is one. Null means the template
+   * does not say, and the Use page asks.
+   */
   provider: string | null;
 };
 
 export type TemplateAgents = {
   agents: ParsedAgentEntry[];
-  /** Written as a lone `agent:` block, whose room names it `{agent}`. */
+  /**
+   * True when the document uses the singular `agent:` form. That form has
+   * one extra convention: its room refers to the agent as `{agent}`, and the
+   * Console fills that in with the agent's final name.
+   */
   singular: boolean;
   warnings: string[];
 };
@@ -57,7 +73,7 @@ function asRecord(value: unknown): Record<string, unknown> | null {
     : null;
 }
 
-/** The raw agent entries of a document: `agents:` list, or `agent:` alone. */
+/** The agent entries as parsed YAML objects, from `agents:` (a list) or `agent:` (a single entry). */
 function rawAgents(doc: Record<string, unknown>): Record<string, unknown>[] {
   if (Array.isArray(doc.agents)) {
     return doc.agents.map((a) => asRecord(a)).filter((a): a is Record<string, unknown> => !!a);
@@ -66,7 +82,11 @@ function rawAgents(doc: Record<string, unknown>): Record<string, unknown>[] {
   return one ? [one] : [];
 }
 
-/** Which page a document opens on, decided by what it creates. */
+/**
+ * Classify a document by what it creates. `agent` is one agent (with or
+ * without a room), `room` is one room and no agents, `group` is anything
+ * bigger: several agents, or several rooms.
+ */
 export function templateKind(yamlText: string): TemplateKind {
   return kindOf(parseYaml(yamlText));
 }
@@ -80,9 +100,12 @@ export function kindOf(doc: Record<string, unknown>): TemplateKind {
 }
 
 /**
- * `fallbackInstructions` fills a lone agent's `instructions:` when the
- * document leaves it out: the bundled Switch expert keeps its persona in
- * `AGENT.md` rather than inline, so the Console hands it in from there.
+ * Parse every agent entry of a document.
+ *
+ * `fallbackInstructions` is used when a single `agent:` has no
+ * `instructions:` of its own. The bundled Switch expert is the case: its
+ * instructions live in `AGENT.md` next to the template rather than inside
+ * it, and the Console passes that file's content here.
  */
 export function parseTemplateAgents(
   yamlText: string,
@@ -140,12 +163,16 @@ function isProviderParam(spec: unknown): boolean {
 }
 
 /**
- * The half of a document the server provisions, as a template of its own,
- * ready for `POST /rooms/from-yaml`: `room:` or `group:` + `rooms:` + `links:`,
- * the params the server can resolve, and a single room's `kickoff:`. Agents
- * and `type: provider` params are the Console's and are left out. A lone
- * `agent:` gets `{agent}` declared as a param, so its room can name it the
- * way it names `{$creator}`. Null when there is nothing for the server.
+ * Build the document the server receives: the room part only, as a valid
+ * room template for `POST /rooms/from-yaml`.
+ *
+ * Kept: `room:` (or `group:`, `rooms:`, `links:`), `params:`, `kickoff:`,
+ * `version:`. Dropped: the agent entries, which the server does not
+ * understand, and any `type: provider` param, which only the Console can
+ * answer. For the singular `agent:` form, an `agent` param is added so the
+ * room's `{agent}` reference resolves on the server.
+ *
+ * Returns null when the document has no room part.
  */
 export function coreDocumentFor(
   yamlText: string,
@@ -156,8 +183,8 @@ export function coreDocumentFor(
   const isGroup = doc.group !== undefined || Array.isArray(doc.rooms);
   if (!room && !isGroup) return null;
 
-  // The form reads the params off this document too, and it has to see the
-  // Console's own ones; only what goes to the server leaves them out.
+  // The Use page also parses this document to build its form, and the form
+  // must show provider params. Only the copy sent to the server drops them.
   const declared = Object.fromEntries(
     Object.entries(asRecord(doc.params) ?? {}).filter(
       ([, spec]) => options.keepConsoleParams || !isProviderParam(spec)
@@ -178,18 +205,22 @@ export function coreDocumentFor(
   } else {
     out.room = room;
   }
-  // Kept even on a group document, where the server refuses it with a
-  // message saying where it goes; dropping it here would hide that.
+  // A top-level kickoff on a group document is a mistake the server reports
+  // with a clear message. Passing it through lets the person see that message.
   if (doc.kickoff !== undefined) out.kickoff = doc.kickoff;
   return dump(out, { lineWidth: -1 });
 }
 
 /**
- * Rename agents in the server half: every room's `agents:` entry and
- * `aliases:` key that reads exactly `from` becomes `to`, and a kickoff that
- * mentions `from` mentions `to`. Used when a slot the template meant to
- * create is filled by an existing agent instead, or the name it wanted was
- * taken and the agent was made under another.
+ * Replace agent names in the server document.
+ *
+ * `replacements` maps a name as written in the template (`{team}-triager`)
+ * to the name the agent actually has. Two situations need this: the person
+ * chose an existing agent for that slot instead of creating one, or the
+ * intended name was taken and the agent was created as `name-2`.
+ *
+ * Every place a room refers to an agent is updated: the `agents:` list, the
+ * keys of `aliases:`, and mentions inside `kickoff:` text.
  */
 export function substituteAgentSlots(
   coreYaml: string,
@@ -221,10 +252,12 @@ export function substituteAgentSlots(
 }
 
 /**
- * Take declared params the person left unset out of the server half: the
- * declaration itself, and every room field that is exactly `{name}`. A
- * `bridge` input with no default is the case: empty means the server's
- * default messaging app, which is what a room with no `bridge:` gets.
+ * Remove params the person left empty from the server document, both the
+ * declaration under `params:` and every room field set to `{name}`.
+ *
+ * This exists for `bridge` params. The server treats a missing `bridge:` as
+ * "use the default messaging app", so leaving the input empty should produce
+ * a room with no `bridge:` field rather than a validation error.
  */
 export function dropUnsetParams(coreYaml: string, names: string[]): string {
   if (names.length === 0) return coreYaml;
@@ -246,10 +279,12 @@ export function dropUnsetParams(coreYaml: string, names: string[]): string {
 }
 
 /**
- * The document with every agent's `instructions:` filled in, for a template
- * whose persona lives beside it rather than inline (the bundled Switch
- * expert). A copy stored on a server has to carry everything, so this is
- * what gets sent. Comments do not survive the round trip; the fields do.
+ * Inline `instructions` into every agent entry that lacks them.
+ *
+ * Used when saving a bundled template to a server. The bundled Switch expert
+ * keeps its instructions in a separate file; a copy stored on the server
+ * must be self-contained. YAML comments are lost in the process, field
+ * values are kept.
  */
 export function composeTemplateDocument(yamlText: string, instructions: string): string {
   const doc = parseYaml(yamlText);

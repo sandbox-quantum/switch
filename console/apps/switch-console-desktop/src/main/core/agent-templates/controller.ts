@@ -136,15 +136,15 @@ export const agentTemplatesController = createRPCController({
   parseAgents: (params: { yamlText: string; instructions?: string | null }): TemplateAgents =>
     parseTemplateAgents(params.yamlText, params.instructions ?? null),
 
-  /** The server's half of a document, or null when there is none. */
+  /** The room part of a document as the server receives it, or null when the document has no rooms. */
   coreDocument: (params: { yamlText: string; keepConsoleParams?: boolean }): string | null =>
     coreDocumentFor(params.yamlText, { keepConsoleParams: params.keepConsoleParams }),
 
-  /** The server's half without params the person left unset (a bridge, for the default app). */
+  /** The server document with the named params removed (see `dropUnsetParams`). */
   dropParams: (params: { coreYaml: string; names: string[] }): string =>
     dropUnsetParams(params.coreYaml, params.names),
 
-  /** The server's half with agent slots renamed (an existing agent, or a taken name). */
+  /** The server document with agent names replaced (see `substituteAgentSlots`). */
   substituteSlots: (params: { coreYaml: string; replacements: Record<string, string> }): string =>
     substituteAgentSlots(params.coreYaml, params.replacements),
 

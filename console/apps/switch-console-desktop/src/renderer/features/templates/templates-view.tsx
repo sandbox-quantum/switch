@@ -102,7 +102,7 @@ function plural(n: number, noun: string): string {
   return `${n} ${noun}${n === 1 ? '' : 's'}`;
 }
 
-/** "Creates 1 room and 2 agents · 4 inputs", the way the card reads it. */
+/** The card's summary line, for example "Creates 1 room and 2 agents · 4 inputs". */
 function summaryLine(s: TemplateSummary): string {
   const parts: string[] = [];
   if (s.rooms > 0) parts.push(plural(s.rooms, 'room'));

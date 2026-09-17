@@ -18,7 +18,7 @@ export type TemplateSummary = {
 
 export type CreatedThing = {
   kind: 'room' | 'agent';
-  /** The name as the template spells it, placeholders and all. */
+  /** The name exactly as written in the template, with any `{param}` still unfilled. */
   label: string;
   /** Its description, or a line about it when the template gives none. */
   note: string;

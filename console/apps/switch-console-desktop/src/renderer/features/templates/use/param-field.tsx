@@ -16,9 +16,9 @@ import { isEntityParamType } from '@shared/core/switch-servers/room-template-par
 import { isRequired, typeLabel } from './use-template-model';
 
 /**
- * One input of a template, the way the Use page lays it out: the name as
- * the template spells it, its type in words, whether it is required, what
- * it is for, the control, and what it falls back to when left alone.
+ * One input of a template on the Use page: its name as written in the
+ * template, its type in plain words, whether it is required, its
+ * description, the control to fill it, and its default if it has one.
  */
 export function ParamField({
   param,

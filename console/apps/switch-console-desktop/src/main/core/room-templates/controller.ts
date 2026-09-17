@@ -33,7 +33,7 @@ export type ParsedTemplate = {
   /** The group's name when the document is a group, else null. */
   groupName: string | null;
   roomName: string | null;
-  /** The room's description as the template spells it, for a listing. */
+  /** The room's description as written in the template, for a listing card. */
   roomDescription: string | null;
   /** All agents from the template (both interpolated and hardcoded). */
   agents: string[];
@@ -179,7 +179,7 @@ export const roomTemplatesController = createRPCController({
   /** The repository's canonical example, for a first run with nothing to pick from. */
   getExampleTemplate: (): string => exampleTemplateYaml,
 
-  /** Just the `params:` of any document, for a form with no room half to parse. */
+  /** Only the `params:` of a document. For agent-only documents, which have no room to parse. */
   params: (params: { yamlText: string }): ParamSpec[] =>
     extractParams(parseYaml(params.yamlText).params),
 

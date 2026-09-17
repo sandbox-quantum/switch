@@ -33,9 +33,9 @@
 #
 #   agents:       The plural form: a list of `agent` blocks, each created by
 #                 Switch Console, for a template that makes a team. The room
-#                 names them the way the template spells them, `{param}`s
-#                 included, and on the Use page each one can be created new
-#                 or pointed at an agent the server already has. An agent may
+#                 lists them by the same names, `{team}-triager` for example,
+#                 and on the Use page each one can be created new or pointed
+#                 at an agent the server already has. An agent may
 #                 carry `provider: "{provider}"` to read a `type: provider`
 #                 param, which the Console answers and never sends to the
 #                 server. See examples/agent-templates/triage-pair.template.yaml.

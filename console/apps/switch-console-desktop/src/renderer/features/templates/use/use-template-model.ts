@@ -51,8 +51,7 @@ export function isEmpty(value: string | number | boolean | undefined): boolean {
   return value === undefined || value === '';
 }
 
-/** Declared params the person left empty with nothing to fall back on; the
- * server half is sent without them. */
+/** Params left empty that have no default. The server document is sent without them. */
 export function unsetParams(params: ParamSpec[], values: Values): string[] {
   return params
     .filter((p) => p.type === 'bridge' && p.default === null && isEmpty(values[p.name]))

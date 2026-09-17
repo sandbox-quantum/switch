@@ -94,7 +94,7 @@ export function RoomCard({
 }: {
   room: ParsedRoom;
   values: Values;
-  /** Agent slots as the template spells them → the name they will actually have. */
+  /** Agent name as written in the template → the name the agent will actually have. */
   renames: Record<string, string>;
   bridgeName: string | null;
   creatorIdentity: string | null;

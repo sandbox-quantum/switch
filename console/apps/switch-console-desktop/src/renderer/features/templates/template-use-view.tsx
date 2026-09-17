@@ -91,7 +91,7 @@ type Loaded = {
   origin: AgentTemplateOrigin | null;
   kind: TemplateKind;
   agents: ParsedAgentEntry[];
-  /** A lone `agent:` block: its room names it `{agent}` and the page fills that in. */
+  /** True for the singular `agent:` form, whose room refers to the agent as `{agent}`. */
   singular: boolean;
   /** The declared inputs, Console-only ones included. */
   params: ParamSpec[];
@@ -132,8 +132,8 @@ async function loadForUse(serverId: string, params: Params): Promise<Loaded> {
     yamlText,
     instructions,
   });
-  // Two cuts of the server half: one with the Console's own params still in,
-  // which the form reads, and the one the server gets.
+  // Two versions of the room document: one that keeps the provider params, for
+  // building the form, and one without them, for the server.
   const forForm = await rpc.agentTemplates.coreDocument({ yamlText, keepConsoleParams: true });
   const coreYaml = await rpc.agentTemplates.coreDocument({ yamlText });
   const schema = await rpc.switchServers.fetchTemplateSchema(serverId).catch(() => null);
@@ -231,7 +231,8 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
   }, [serverId, templateId, givenYaml, sourceName]);
 
   const parsed = loaded?.parsed ?? null;
-  // A lone `agent:` room names it `{agent}`; the page fills that in itself.
+  // In the singular `agent:` form the room refers to the agent as `{agent}`.
+  // The page fills that in with the agent's name, so it is not an input.
   const templateParams = useMemo(
     () => (loaded?.params ?? []).filter((p) => !(loaded?.singular && p.name === 'agent')),
     [loaded]
@@ -638,7 +639,8 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
       return;
     }
 
-    // Then the room half, with every slot spelled the way the server will find it.
+    // Then the rooms. Agent names in the document are replaced with the names
+    // the agents actually got, so the server finds them.
     setRoomStatus('creating');
     try {
       const replacements: Record<string, string> = {};
@@ -672,7 +674,7 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
       }
       const inputs = serverInputs(templateParams, values);
       if (loaded.singular && slots.length === 1) {
-        // A lone `agent:` room names it `{agent}`; the server fills that in.
+        // The singular `agent:` form: the server fills `{agent}` from this input.
         const slot = slots[0];
         inputs.agent =
           slot.mode === 'existing' ? slot.existingName : (slot.createdName ?? finalNames[0] ?? '');
@@ -745,8 +747,8 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
     }
   };
 
-  // What the rail shows: the inputs, plus the lone agent's name where the room
-  // says `{agent}`, and every slot as it will actually be named.
+  // Values for the preview cards: the inputs, plus the agent's name where a
+  // single-agent room says `{agent}`, plus every agent's final name.
   const railValues: Values =
     loaded?.singular && slotNames[0]
       ? { ...values, agent: slotNames[0].final || '{agent}' }

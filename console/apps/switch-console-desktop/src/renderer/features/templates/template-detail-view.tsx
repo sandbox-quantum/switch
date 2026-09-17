@@ -215,10 +215,11 @@ const TemplateDetailPanel = observer(function TemplateDetailPanel() {
 
   const mine = loaded.server !== null && me !== null && loaded.server.ownerId === me.id;
   const canDelete = loaded.server !== null && (mine || me?.role === 'admin');
-  const lone = loaded.kind === 'agent' ? (loaded.agents[0] ?? null) : null;
-  // A lone `agent:` room names it `{agent}`; that is filled in on use, not asked for.
-  const params = (loaded.room?.params ?? []).filter((p) => !(lone && p.name === 'agent'));
-  const slug = (lone?.name ?? loaded.name).toLowerCase().replace(/[^a-z0-9]+/g, '-');
+  const singleAgent = loaded.kind === 'agent' ? (loaded.agents[0] ?? null) : null;
+  // In a single-agent document the room refers to the agent as `{agent}`. The
+  // Console fills that in with the agent's name, so it is not an input to list.
+  const params = (loaded.room?.params ?? []).filter((p) => !(singleAgent && p.name === 'agent'));
+  const slug = (singleAgent?.name ?? loaded.name).toLowerCase().replace(/[^a-z0-9]+/g, '-');
 
   const use = () => navigate('templateUse', { serverId, templateId });
 
@@ -403,18 +404,18 @@ const TemplateDetailPanel = observer(function TemplateDetailPanel() {
           ) : (
             <p className="text-sm text-foreground-muted">Nothing yet: the document is empty.</p>
           )}
-          {lone && (
+          {singleAgent && (
             <div className="flex flex-col gap-2 pt-1">
-              {lone.repoUrl && (
+              {singleAgent.repoUrl && (
                 <Row label="Repository">
-                  <Link url={lone.repoUrl} />
+                  <Link url={singleAgent.repoUrl} />
                   <span className="text-foreground-muted">, cloned into its directory</span>
                 </Row>
               )}
-              {lone.sources.length > 0 && (
+              {singleAgent.sources.length > 0 && (
                 <Row label="Sources">
                   <span className="flex flex-wrap gap-x-1.5">
-                    {lone.sources.map((src, i) => (
+                    {singleAgent.sources.map((src, i) => (
                       <span key={src.url}>
                         {i > 0 && <span className="text-foreground-muted">· </span>}
                         <Link url={src.url} label={src.label} />
@@ -423,7 +424,7 @@ const TemplateDetailPanel = observer(function TemplateDetailPanel() {
                   </span>
                 </Row>
               )}
-              <Row label="Answers">{ADDRESSING_LABEL[lone.addressing ?? 'owner']}</Row>
+              <Row label="Answers">{ADDRESSING_LABEL[singleAgent.addressing ?? 'owner']}</Row>
               {loaded.room?.kickoff && (
                 <Row label="Kickoff">
                   <span className="text-foreground-muted">Posted as you once the room exists</span>
@@ -431,7 +432,7 @@ const TemplateDetailPanel = observer(function TemplateDetailPanel() {
               )}
             </div>
           )}
-          {!lone && loaded.room?.kickoff && (
+          {!singleAgent && loaded.room?.kickoff && (
             <Row label="Kickoff">
               <span className="whitespace-pre-wrap">{loaded.room.kickoff.trim()}</span>
             </Row>
@@ -473,16 +474,16 @@ const TemplateDetailPanel = observer(function TemplateDetailPanel() {
           </section>
         )}
 
-        {lone && (
+        {singleAgent && (
           <section className="flex flex-col gap-2.5">
             <DisclosureRow
               open={showInstructions}
               title={showInstructions ? 'Hide the instructions' : 'Show the instructions'}
-              meta={`${lone.instructions.split('\n').length} lines`}
+              meta={`${singleAgent.instructions.split('\n').length} lines`}
               onToggle={() => setShowInstructions((o) => !o)}
             />
             {showInstructions && (
-              <TextBlock text={lone.instructions} collapsedHeight="max-h-none" />
+              <TextBlock text={singleAgent.instructions} collapsedHeight="max-h-none" />
             )}
           </section>
         )}

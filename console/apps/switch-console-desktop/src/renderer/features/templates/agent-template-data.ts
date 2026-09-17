@@ -11,9 +11,9 @@ import { rpc } from '@renderer/lib/ipc';
 import { type BundledTemplate, bundledTemplates, findBundledTemplate } from './bundled-templates';
 
 /**
- * One agent as a template describes it: the parsed document plus the room
- * half re-cut as a room template, so a caller can provision the room the
- * moment the agent exists without parsing YAML itself.
+ * One agent as a template describes it, plus its room part already converted
+ * to a room template. A caller can create the room as soon as the agent
+ * exists, without parsing YAML itself.
  */
 export type AgentTemplateData = {
   /** The template's own name, for a heading. */
@@ -116,7 +116,7 @@ export type LoadedTemplate = {
   server: StoredTemplateSummary | null;
   /** The agents the Console creates for it, in order; none for a room template. */
   agents: ParsedAgentEntry[];
-  /** The server's half, parsed: the room(s) and the params. Null without one. */
+  /** The room part, parsed: the rooms and the params. Null when the document has no rooms. */
   room: ParsedTemplate | null;
   /** What it creates, counted and listed. */
   summary: TemplateSummary;
@@ -134,9 +134,9 @@ export function documentKind(yamlText: string): TemplateKind {
 
 /**
  * Load one template by the id the listing gave it: a bundled id, or a registry
- * row id. A bundled template that has also been saved to the server is loaded
- * from the server copy, which is the one admins can maintain, and the bundled
- * half is kept so the page can say so.
+ * row id. A bundled template also records whether a copy of it is saved on
+ * the workspace, and a workspace row records which built-in it copies, so
+ * the page can say either.
  */
 export async function loadTemplateById(
   serverId: string,

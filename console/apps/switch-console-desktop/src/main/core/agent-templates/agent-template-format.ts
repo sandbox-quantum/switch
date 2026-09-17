@@ -132,15 +132,12 @@ export function parseAgentTemplate(
   };
 }
 
-/**
- * The room half of an agent template as a room template of its own, ready for
- * `POST /rooms/from-yaml`. The single-agent spelling of `coreDocumentFor`.
- */
+/** Same as `coreDocumentFor`, for callers that only handle a single `agent:` document. */
 export function agentTemplateRoomDocument(yamlText: string): string | null {
   return coreDocumentFor(yamlText);
 }
 
-/** The single-agent spelling of `composeTemplateDocument`. */
+/** Same as `composeTemplateDocument`, for callers that only handle a single `agent:` document. */
 export function composeAgentTemplateDocument(yamlText: string, instructions: string): string {
   return composeTemplateDocument(yamlText, instructions);
 }
