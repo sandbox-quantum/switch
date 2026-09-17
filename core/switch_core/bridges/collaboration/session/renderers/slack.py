@@ -129,6 +129,12 @@ _MAX_PLAN_TASKS = 50
 _MAX_PLAN_TITLE = 150
 _MAX_PLAN_TASK_TITLE = 200
 _MAX_PLAN_TASK_DETAILS = 200
+# Prose gets more room than a tool result because it is read rather than
+# scanned, and because a card's detail is the one part of this block Slack will
+# expand on request. Fifty cards at this budget stay inside the same 39,000 the
+# text fallback is held to, so a talkative turn cannot be what makes a post too
+# large to send.
+_MAX_SAID_DETAILS = 750
 # A local display budget, not a claimed Slack rich_text protocol limit.
 # Preserve the decision/answer before spending the remainder on context.
 _MAX_RESOLVED_DETAILS = 2800
@@ -1489,16 +1495,26 @@ def _plan_task(item: Item) -> dict[str, Any]:
     Slack has three and the other two are a spinner and an error, both of which
     say something worse — so the marker carries the distinction alone here,
     where on every other platform the glyph column carries it.
+
+    A remark longer than its title keeps the rest in the card's detail, which is
+    the part Slack offers to expand. The title is a one-line preview and folds
+    the paragraph breaks out, because four lines of sentence in a list of calls
+    reads as four things happening; the detail keeps them, because that is where
+    the remark is read rather than scanned. A remark that fits its title gets no
+    detail at all — an expansion holding what is already on the line is a
+    control that does nothing.
     """
     if item.kind == "assistant-message":
-        return {
+        said = plain_text(item.text)
+        line = f"{SAID_MARKER} {' '.join(said.split())}"
+        card: dict[str, Any] = {
             "task_id": _task_id(item.item_id),
-            "title": _truncate(
-                f"{SAID_MARKER} {plain_text(' '.join(item.text.split()))}",
-                _MAX_PLAN_TASK_TITLE,
-            ),
+            "title": _truncate(line, _MAX_PLAN_TASK_TITLE),
             "status": "complete",
         }
+        if len(line) > _MAX_PLAN_TASK_TITLE:
+            card["details"] = _rich_text(_truncate(said, _MAX_SAID_DETAILS))
+        return card
     title = plain_text(item.title) if item.title else ""
     if item.status in ("failed", "declined"):
         title = f"{_ACTIVITY[item.status]} {title}".strip()

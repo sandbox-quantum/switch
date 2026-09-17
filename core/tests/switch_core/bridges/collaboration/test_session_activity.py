@@ -848,6 +848,59 @@ async def test_a_paragraph_is_folded_onto_the_one_line_its_card_gives_it() -> No
     assert drawn.blocks[0]["tasks"][0]["title"] == "» First thought. Second thought."
 
 
+def _detail(card: dict[str, object]) -> str:
+    """What Slack shows when a reader expands the card."""
+    rich = card["details"]
+    assert isinstance(rich, dict)
+    section = rich["elements"][0]
+    return str(section["elements"][0]["text"])
+
+
+async def test_a_remark_too_long_for_its_line_keeps_the_rest_where_it_expands() -> None:
+    """A card title is one line and a remark is not bounded by one. Cutting it
+    there threw the rest away, which is the part a reader opened the block for
+    — the detail is the one place in this block Slack offers to expand."""
+    said = "Right. " + "The failure is in the retry path. " * 12
+    drawn = render_activity_plan([_said(said)], _turn("completed"))
+
+    card = drawn.blocks[0]["tasks"][0]
+    assert card["title"].endswith("…")
+    assert len(card["title"]) <= 200
+    assert _detail(card).startswith("Right. The failure is in the retry path.")
+    assert len(_detail(card)) > len(card["title"])
+
+
+async def test_a_remark_that_fits_its_line_is_not_given_an_expansion() -> None:
+    """An expansion holding what is already on the line is a control that does
+    nothing, and a reader who opens one learns that the hard way."""
+    drawn = render_activity_plan([_said("All green.")], _turn("completed"))
+
+    assert "details" not in drawn.blocks[0]["tasks"][0]
+
+
+async def test_the_expansion_keeps_the_breaks_the_line_had_to_fold_out() -> None:
+    """Folding is what stops a paragraph reading as four separate steps in a
+    list of calls. That reason is about the line; it does not apply to the body
+    behind it, where the breaks are how the remark was written."""
+    said = "First thought.\n\nSecond thought. " + "More on that. " * 20
+    drawn = render_activity_plan([_said(said)], _turn("completed"))
+
+    card = drawn.blocks[0]["tasks"][0]
+    assert "\n" not in card["title"]
+    assert "First thought.\n\nSecond thought." in _detail(card)
+
+
+async def test_a_remark_longer_than_the_expansion_is_still_cut_somewhere() -> None:
+    """Fifty cards on one message, and a host that can write without limit. The
+    budget is what keeps a talkative turn from being the thing that makes a post
+    too large for Slack to accept at all."""
+    drawn = render_activity_plan([_said("word " * 4000)], _turn("completed"))
+
+    detail = _detail(drawn.blocks[0]["tasks"][0])
+    assert len(detail) <= 750
+    assert detail.endswith("…")
+
+
 async def test_the_header_still_counts_calls_rather_than_everything_drawn() -> None:
     """The collapsed header is the whole message for most readers. Counting
     remarks in "N tool calls" would inflate every turn the agent talked in."""
