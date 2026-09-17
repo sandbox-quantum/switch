@@ -7,7 +7,6 @@ import { promisify } from 'node:util';
 import { sessionSchema } from '@switch-console/shared/session-v1';
 import { z } from 'zod';
 import { prepareCodexSessionHome } from '../codex/home';
-import { prepareGeminiHome } from '../gemini/home';
 import { roomConnectionSchema } from './room-inbox';
 import { startSchema } from './server';
 
@@ -82,16 +81,7 @@ export async function prepareSharedConfig(root: string, config: SharedHostConfig
         config: execution.codexConfig,
         skill: execution.skill,
       });
-    if (config.start.provider === 'gemini')
-      input.env.GEMINI_CLI_HOME = await prepareGeminiHome({
-        root: join(root, 'provider-home'),
-        sessionId: config.session.sessionId,
-        sourceHome: join(input.env.GEMINI_CLI_HOME || homedir(), '.gemini'),
-        context: execution.context,
-        mcpServerNames: Object.keys(input.mcpServers),
-      });
-    if (config.start.provider === 'cursor' || config.start.provider === 'opencode')
-      input.systemContext = execution.context;
+    if (config.start.provider !== 'codex') input.systemContext = execution.context;
   }
   if (!agentApiUrl || !token)
     throw new Error('Shared SDK host requires execution-host Switch credentials.');

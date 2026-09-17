@@ -6,6 +6,7 @@ import { locationTransport } from '@main/core/locations/location-transport';
 import { adoptSubagent } from './adopt-subagent';
 import { buildSharedHostConfig } from './shared-agent-runtime';
 import { deploySharedHost, runSharedHostCommand } from './shared-host-deployment';
+import { waitForWatcherStop } from './watcher-inspection';
 
 export async function configureSharedWatcher(
   agentId: string,
@@ -66,11 +67,7 @@ export async function configureSharedWatcher(
     String(enabled),
   ]);
   if (!enabled) {
-    await ctx.exec('node', [
-      '-e',
-      "const fs=require('node:fs'); const p=require('node:path').join(process.argv[1],'shared-owner.lock'); (async()=>{for(let i=0;i<100;i++){try{process.kill(JSON.parse(fs.readFileSync(p,'utf8')).pid,0)}catch(e){if(['ENOENT','ESRCH'].includes(e.code))return;throw e} await new Promise(r=>setTimeout(r,200))} throw new Error('The shared watcher has not stopped; retry after checking its log.');})().catch(e=>{console.error(e.message);process.exitCode=1})",
-      root,
-    ]);
+    await ctx.exec('node', ['-e', waitForWatcherStop, root]);
     return;
   }
   await runSharedHostCommand(transport, { ctx, root, entrypoint }, config, '--ensure-watch', false);

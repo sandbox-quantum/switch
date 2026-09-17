@@ -32,7 +32,7 @@ export const SidecarPanel = observer(function SidecarPanel() {
 
   return (
     <section className="flex flex-col gap-4">
-      <SectionLabel>SDK hosts</SectionLabel>
+      <SectionLabel>Sidecar</SectionLabel>
       <SidecarSettingsSection agentId={agent.id} />
     </section>
   );

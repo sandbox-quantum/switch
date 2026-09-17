@@ -271,10 +271,7 @@ export class SessionService implements Hookable<SessionLifecycleHooks> {
   }
 
   /**
-   * Stop a session's agent for good without deleting the session row. Routes
-   * through the agent runtime so the PTY leaves respawn tracking and stays
-   * stopped (a bare `pty.kill` would be respawned by the supervisor ~500ms
-   * later). No-op when the session has no live runtime.
+   * Stop the SDK session without deleting its row. No-op without a live runtime.
    */
   async stopAgent(sessionId: string): Promise<void> {
     const agent = sessionRuntimeManager.getAgent(sessionId);

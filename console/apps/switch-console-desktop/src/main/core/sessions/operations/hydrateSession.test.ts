@@ -12,5 +12,5 @@ vi.mock('../session-join', () => ({
 vi.mock('../utils/utils', () => ({ mapSessionRowToSession: () => ({ id: 'session' }) }));
 it('reopens saved execution without replaying the initial prompt', async () => {
   await hydrateSession('session');
-  expect(start).toHaveBeenCalledWith({ id: 'session' }, undefined, true);
+  expect(start).toHaveBeenCalledWith({ id: 'session' }, true);
 });

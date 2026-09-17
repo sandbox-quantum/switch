@@ -43,3 +43,10 @@ describe('provider authentication', () => {
     ).toBe('unknown');
   });
 });
+
+it.each(['Not logged in. Run agent login.', 'Authentication required', 'Not signed in'])(
+  'recognizes signed-out Cursor without an account row: %s',
+  (output) => {
+    expect(parseAuthentication('cursor', output).status).toBe('unauthenticated');
+  }
+);

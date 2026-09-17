@@ -1,5 +1,5 @@
 import type { Command, SessionChatClient } from '@switch-console/shared/session-v1';
-import { Loader2, Paperclip, Wrench } from 'lucide-react';
+import { Check, Loader2, Paperclip, RotateCw, Square, Wrench } from 'lucide-react';
 import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { Button } from '@renderer/lib/ui/button';
 import { MarkdownRenderer } from '@renderer/lib/ui/markdown-renderer';
@@ -13,12 +13,16 @@ import { SessionV1Request } from './session-v1-request';
 export function SessionV1Chat({
   client,
   restartHost,
+  stopHost,
+  startup,
   retireHost,
   initialPromptDelivery,
 }: {
   client: SessionChatClient;
   initialPromptDelivery?: InitialPromptDelivery;
   restartHost?: () => Promise<void>;
+  stopHost?: () => Promise<void>;
+  startup?: { status: 'starting' | 'ready' | 'error'; message: string | null } | null;
   retireHost?: (epoch: string) => Promise<void>;
 }) {
   const view = useSyncExternalStore(client.subscribe, client.getSnapshot);
@@ -39,6 +43,48 @@ export function SessionV1Chat({
     observer.observe(content);
     return () => observer.disconnect();
   }, [client]);
+  const [action, setAction] = useState<'restart' | 'resume' | 'stop' | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [completed, setCompleted] = useState<string | null>(null);
+  const [elapsed, setElapsed] = useState(0);
+  const actionLock = useRef(false);
+  const busy = action !== null || startup?.status === 'starting';
+  useEffect(() => {
+    if (!busy) return;
+    const started = Date.now();
+    setElapsed(0);
+    const timer = setInterval(() => setElapsed(Math.floor((Date.now() - started) / 1000)), 1000);
+    return () => clearInterval(timer);
+  }, [busy]);
+  useEffect(() => {
+    if (!completed) return;
+    const timer = setTimeout(() => setCompleted(null), 5000);
+    return () => clearTimeout(timer);
+  }, [completed]);
+  const runAction = async (kind: 'restart' | 'resume' | 'stop', run: () => Promise<void>) => {
+    if (actionLock.current) return;
+    actionLock.current = true;
+    setAction(kind);
+    setActionError(null);
+    setCompleted(null);
+    setRetireConfirm(false);
+    try {
+      await run();
+      await client.connect();
+      setCompleted(
+        kind === 'stop'
+          ? 'Session stopped. Your conversation is saved.'
+          : 'Session connected. You can continue your conversation.'
+      );
+    } catch (error) {
+      setActionError(
+        `${kind === 'stop' ? 'Stop was not confirmed' : 'Could not reconnect the session'}: ${String(error)}`
+      );
+    } finally {
+      actionLock.current = false;
+      setAction(null);
+    }
+  };
   const [draft, setDraft] = useState('');
   const [pendingId, setPendingId] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
@@ -52,6 +98,7 @@ export function SessionV1Chat({
   const uploads = useSessionAttachments(client, session?.capabilities.attachmentMimeTypes ?? []);
   const picker = useRef<HTMLInputElement>(null);
   const available =
+    !busy &&
     view.connected &&
     session?.connectivity === 'online' &&
     (session.status === 'ready' || session.status === 'running');
@@ -131,33 +178,61 @@ export function SessionV1Chat({
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-background text-foreground">
-      <div className="flex items-center justify-between border-b border-border px-5 py-3 text-xs">
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-5 py-3 text-xs">
         <span>
           {session?.provider ?? 'Session'} ·{' '}
-          {session?.retired ? 'Retired' : (session?.status ?? 'Loading')}
+          {busy
+            ? action === 'stop'
+              ? 'Stopping'
+              : action === 'resume'
+                ? 'Resuming'
+                : action === 'restart'
+                  ? 'Restarting'
+                  : 'Starting'
+            : session?.retired
+              ? 'Retired'
+              : (session?.status ?? 'Loading')}
         </span>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           {restartHost && !session?.retired && (
             <Button
               size="sm"
               variant="outline"
               disabled={
+                busy ||
+                !session ||
                 sending ||
                 client.hasPendingCommand() ||
                 Boolean(runningTurn) ||
                 Boolean(view.snapshot?.turns.some((turn) => turn.status === 'queued')) ||
                 Boolean(session?.pendingRequestIds.length)
               }
-              onClick={() => {
-                setSending(true);
-                setSendError(null);
-                void restartHost()
-                  .then(() => client.connect())
-                  .catch((error: unknown) => setSendError(String(error)))
-                  .finally(() => setSending(false));
-              }}
+              className={
+                action === 'restart' || action === 'resume' ? 'disabled:opacity-100' : undefined
+              }
+              title={
+                runningTurn || view.snapshot?.turns.some((turn) => turn.status === 'queued')
+                  ? 'Finish or interrupt the current work before restarting.'
+                  : session?.pendingRequestIds.length
+                    ? 'Answer the pending request before restarting.'
+                    : 'Reconnect the provider and keep this conversation.'
+              }
+              onClick={() =>
+                void runAction(session?.status === 'stopped' ? 'resume' : 'restart', restartHost)
+              }
             >
-              {session?.status === 'stopped' ? 'Resume session' : 'Restart session process'}
+              {action === 'restart' || action === 'resume' ? (
+                <Loader2 className="size-3.5 animate-spin" />
+              ) : (
+                <RotateCw className="size-3.5" />
+              )}
+              {action === 'restart'
+                ? 'Restarting…'
+                : action === 'resume'
+                  ? 'Resuming…'
+                  : session?.status === 'stopped'
+                    ? 'Resume session'
+                    : 'Restart session'}
             </Button>
           )}
           {runningTurn && session?.capabilities.interrupt && (
@@ -175,26 +250,105 @@ export function SessionV1Chat({
               size="sm"
               variant="outline"
               disabled={
+                busy ||
                 !view.connected ||
                 session.connectivity !== 'online' ||
                 sending ||
                 client.hasPendingCommand()
               }
-              onClick={() => void control({ type: 'session.stop' })}
+              className={action === 'stop' ? 'disabled:opacity-100' : undefined}
+              title="Stop the provider. The conversation stays available to resume."
+              onClick={() =>
+                stopHost ? void runAction('stop', stopHost) : void control({ type: 'session.stop' })
+              }
             >
-              Stop session
+              {action === 'stop' ? (
+                <Loader2 className="size-3.5 animate-spin" />
+              ) : (
+                <Square className="size-3.5" />
+              )}
+              {action === 'stop' ? 'Stopping…' : 'Stop session'}
             </Button>
           )}
-          <span>
-            {available || (view.connected && session?.connectivity === 'online')
-              ? 'Connected'
-              : session?.status === 'stopped'
-                ? 'Stopped'
-                : 'Offline'}
+          <span className="flex items-center gap-1.5 text-foreground-muted">
+            {busy ? (
+              <>
+                <Loader2 className="size-3 animate-spin" />
+                {elapsed}s
+              </>
+            ) : actionError || startup?.status === 'error' ? (
+              'Connection failed'
+            ) : session?.status === 'starting' && session.connectivity === 'online' ? (
+              'Connecting…'
+            ) : available || (view.connected && session?.connectivity === 'online') ? (
+              'Connected'
+            ) : session?.status === 'stopped' ? (
+              'Stopped'
+            ) : (
+              'Offline'
+            )}
           </span>
         </div>
       </div>
-      {session?.status === 'stopped' && !session.retired && (
+      {(busy ||
+        (session?.status === 'starting' &&
+          session.connectivity === 'online' &&
+          !actionError &&
+          startup?.status !== 'error')) && (
+        <div
+          role="status"
+          aria-live="polite"
+          className="flex gap-3 border-b border-border bg-background-1 px-5 py-3 text-sm"
+        >
+          <Loader2 className="mt-0.5 size-4 shrink-0 animate-spin text-foreground-muted" />
+          <div className="space-y-1">
+            <p className="font-medium">
+              {action === 'stop'
+                ? 'Stopping the session…'
+                : startup?.status === 'starting'
+                  ? (startup.message ?? 'Connecting to the provider…')
+                  : action === 'restart'
+                    ? 'Preparing to restart…'
+                    : 'Connecting to the provider…'}
+            </p>
+            <p className="text-foreground-muted">
+              {action === 'stop'
+                ? 'Waiting for the host to confirm it has stopped. Your conversation will stay here.'
+                : 'Your conversation and draft stay here. You can keep writing while the session reconnects.'}
+            </p>
+            {elapsed >= 10 && (
+              <p className="text-foreground-muted">
+                This is taking longer than usual.{' '}
+                {action === 'stop'
+                  ? 'Still waiting for confirmation from the host.'
+                  : 'The host is still reconnecting; authentication and remote startup can take a little longer.'}
+              </p>
+            )}
+          </div>
+        </div>
+      )}
+      {!busy && completed && !actionError && startup?.status !== 'error' && (
+        <p
+          role="status"
+          className="flex items-center gap-2 border-b border-border px-5 py-3 text-sm"
+        >
+          <Check className="size-4" />
+          {completed}
+        </p>
+      )}
+      {!busy && (actionError || startup?.status === 'error') && (
+        <div
+          role="alert"
+          className="space-y-1 border-b border-border px-5 py-3 text-sm text-foreground-destructive"
+        >
+          <p>{actionError ?? startup?.message}</p>
+          <p className="text-foreground-muted">
+            Your conversation and draft are preserved. Check the connection or sign-in details
+            above, then retry using the session controls.
+          </p>
+        </div>
+      )}
+      {!busy && session?.status === 'stopped' && !session.retired && (
         <p role="status" className="border-b border-border px-5 py-3 text-sm text-foreground-muted">
           This session is stopped. Resume to continue the saved conversation. Interrupted work will
           not be repeated.
@@ -255,11 +409,17 @@ export function SessionV1Chat({
         </div>
       )}
       {retireHost &&
+        !busy &&
         session &&
         !session.retired &&
         session.connectivity === 'offline' &&
         session.status !== 'stopped' && (
-          <div className="px-5 py-3 text-sm">
+          <details className="border-b border-border px-5 py-3 text-sm text-foreground-muted">
+            <summary className="cursor-pointer">Session recovery options</summary>
+            <p className="my-2">
+              The host is offline. Try restarting to reconnect to this conversation. Retire it only
+              if you no longer want to recover it.
+            </p>
             {retireConfirm ? (
               <>
                 Retire this session permanently? Recovery will be disabled. This does not confirm
@@ -287,18 +447,12 @@ export function SessionV1Chat({
               </>
             ) : (
               <Button variant="outline" onClick={() => setRetireConfirm(true)}>
-                Retire unrecoverable session…
+                Retire session…
               </Button>
             )}
-          </div>
+          </details>
         )}
-      {session && !session.capabilities.questions && (
-        <div className="px-5 py-2 text-xs text-foreground-muted">
-          This provider does not support interactive questions. Supply additional instructions in
-          chat.
-        </div>
-      )}
-      {(view.error || !view.connected) && (
+      {!busy && (view.error || !view.connected) && (
         <div
           role="status"
           className="flex items-center justify-between gap-3 bg-background-1 px-5 py-2 text-sm"
@@ -324,9 +478,11 @@ export function SessionV1Chat({
             <div key={item.itemId}>
               {item.kind === 'user-message' ? (
                 <div className="flex flex-col items-end gap-1">
-                  <span className="ml-auto hidden text-tiny text-foreground-passive xl:inline">
-                    {item.origin?.surface}
-                  </span>
+                  {item.origin?.surface && item.origin.surface !== 'console' && (
+                    <span className="ml-auto hidden text-tiny text-foreground-passive xl:inline">
+                      {item.origin.surface}
+                    </span>
+                  )}
                   <div className="max-w-[85%] rounded-2xl bg-background-1 px-4 py-3 text-sm leading-relaxed break-words whitespace-pre-wrap">
                     {item.text}
                   </div>
@@ -380,11 +536,28 @@ export function SessionV1Chat({
             </div>
           ))}
           {view.snapshot?.commandStatuses
-            .filter((command) => command.status !== 'applied')
+            .filter((command) => command.status === 'rejected' || command.status === 'unknown')
             .map((command) => (
               <p key={command.commandId} className="text-xs text-foreground-muted">
-                Command {command.status}
-                {command.message ? `: ${command.message}` : ''}
+                {command.status === 'unknown' ? (
+                  <>
+                    {command.code === 'HOST_RESTARTED'
+                      ? "Switch couldn't confirm an earlier action before the session restarted."
+                      : command.code === 'SESSION_RETIRED'
+                        ? "Switch couldn't confirm an earlier action before the session was retired."
+                        : "Switch couldn't confirm whether an earlier action finished."}{' '}
+                    It won't run that action again automatically.
+                    {command.message &&
+                      !['HOST_RESTARTED', 'SESSION_RETIRED'].includes(command.code ?? '') && (
+                        <span className="block">{command.message}</span>
+                      )}
+                  </>
+                ) : (
+                  <>
+                    Command {command.status}
+                    {command.message ? `: ${command.message}` : ''}
+                  </>
+                )}
               </p>
             ))}
           {(waitingTurn || (sending && pendingId)) && (
@@ -479,45 +652,44 @@ export function SessionV1Chat({
             placeholder="Message the agent…"
             className="min-h-16 border-0 bg-transparent shadow-none focus-visible:ring-0"
           />
-          <div className="flex flex-wrap items-center gap-1 px-1 pt-2">
-            {session && (
-              <SessionV1Controls
-                key={`${session.epoch}:${JSON.stringify(session.model)}`}
-                session={session}
-                disabled={
-                  !available ||
-                  sending ||
-                  client.hasPendingCommand() ||
-                  session.status !== 'ready' ||
-                  Boolean(
-                    view.snapshot?.turns.some(
-                      (turn) => turn.status === 'queued' || turn.status === 'running'
-                    )
-                  ) ||
-                  session.pendingRequestIds.length > 0
-                }
-                execute={control}
-              />
-            )}
+          <div className="flex items-end gap-2 px-1 pt-2">
+            <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1">
+              {session && (
+                <SessionV1Controls
+                  key={`${session.epoch}:${JSON.stringify(session.model)}`}
+                  session={session}
+                  disabled={
+                    !available ||
+                    sending ||
+                    client.hasPendingCommand() ||
+                    session.status !== 'ready' ||
+                    Boolean(
+                      view.snapshot?.turns.some(
+                        (turn) => turn.status === 'queued' || turn.status === 'running'
+                      )
+                    ) ||
+                    session.pendingRequestIds.length > 0
+                  }
+                  execute={control}
+                />
+              )}
 
-            {Boolean(session?.capabilities.attachmentMimeTypes.length) && (
-              <Button
-                size="sm"
-                variant="ghost"
-                disabled={sending || pendingId !== null}
-                aria-label="Attach files"
-                title="Attach files"
-                onClick={() => picker.current?.click()}
-              >
-                <Paperclip className="size-3.5" />
-              </Button>
-            )}
-            <span className="ml-auto hidden text-tiny text-foreground-passive xl:inline">
-              Enter to send · Shift + Enter for a new line
-            </span>
+              {Boolean(session?.capabilities.attachmentMimeTypes.length) && (
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  disabled={sending || pendingId !== null}
+                  aria-label="Attach files"
+                  title="Attach files"
+                  onClick={() => picker.current?.click()}
+                >
+                  <Paperclip className="size-3.5" />
+                </Button>
+              )}
+            </div>
             <Button
               size="sm"
-              className="ml-auto xl:ml-1"
+              className="ml-auto shrink-0"
               disabled={
                 !available ||
                 sending ||
@@ -530,6 +702,9 @@ export function SessionV1Chat({
             </Button>
           </div>
         </div>
+        <p className="mt-1.5 px-1 text-right text-tiny text-foreground-passive">
+          Enter to send · Shift + Enter for a new line
+        </p>
       </div>
     </div>
   );

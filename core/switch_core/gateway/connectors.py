@@ -12,7 +12,7 @@ from switch_core.bridges.agent.server_connectors.lifecycle import (
 from switch_core.db.models import User
 from switch_core.db.stores.api_key_store import ApiKeyStore
 from switch_core.db.stores.server_connector_store import ServerConnectorStore
-from switch_core.gateway.auth import get_current_user
+from switch_core.gateway.auth import get_current_user, get_tenant_is_admin
 from switch_core.gateway.dependencies import (
     get_api_key_store,
     get_connector_lifecycle,
@@ -131,16 +131,18 @@ async def delete_connector(
         ServerSideConnectorLifecycleService, Depends(get_connector_lifecycle)
     ],
     user: Annotated[User, Depends(get_current_user)],
+    is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> dict[str, bool]:
     record = await connector_store.get(session, connector_id)
     if record is None:
         raise HTTPException(status_code=404, detail="Connector not found")
 
     reg_key = await api_key_store.get(session, record.api_key_id)
-    if (reg_key is None or reg_key.user_id != user.id) and user.role != "admin":
-        raise HTTPException(
-            status_code=403, detail="Not authorized to delete this connector"
-        )
+    if reg_key is None or reg_key.user_id != user.id:
+        if not is_admin:
+            raise HTTPException(
+                status_code=403, detail="Not authorized to delete this connector"
+            )
 
     try:
         await connector_lifecycle.remove(connector_id)

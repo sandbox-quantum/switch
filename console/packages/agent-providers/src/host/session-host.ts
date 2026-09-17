@@ -40,6 +40,7 @@ type RecordEntry = z.infer<typeof recordSchema>;
 export type HostSessionStart = {
   session: Session;
   resumeOperationId?: string;
+  authenticate?: () => Promise<void>;
   input: ProviderSessionStartInput;
   epochAuthority?: 'server';
   resetEpoch?: () => Promise<string>;
@@ -64,6 +65,7 @@ export class HostedSession {
   private nativeId: string | null = null;
   private fault: Error | null = null;
   private shuttingDown = false;
+  private modelGeneration = 0;
   private stopped = false;
   private resetting = false;
   private resetPending = false;
@@ -218,14 +220,25 @@ export class HostedSession {
         host.replica = new SessionReplica(next);
       }
       await host.publish({ type: 'session.upsert', session: structuredClone(config.session) });
-      const native = await adapter.startSession({
+      const native = await host.startProvider({
         ...config.input,
         ...(host.nativeId ? { resume: { nativeSessionId: host.nativeId } } : {}),
       });
       await host.inbox.append({ type: 'native', nativeSessionId: native.nativeSessionId });
       host.nativeId = native.nativeSessionId;
       await host.eventSerial;
-      await host.refreshModels();
+      void host
+        .refreshModels()
+        .catch(async (error: unknown) => {
+          if (host.shuttingDown) return;
+          await host.publish({
+            type: 'notice',
+            level: 'warning',
+            code: 'MODEL_CATALOG_UNAVAILABLE',
+            message: `Could not load provider models: ${String(error)}`,
+          });
+        })
+        .catch((error: unknown) => host.fail(error));
       return host;
     } catch (error) {
       if (error instanceof ProviderConversationUnavailableError && host.nativeId) {
@@ -237,6 +250,16 @@ export class HostedSession {
       await host.shutdown();
       throw error;
     }
+  }
+
+  private async startProvider(input: ProviderSessionStartInput) {
+    const [authentication, provider] = await Promise.allSettled([
+      Promise.resolve().then(() => this.config.authenticate?.()),
+      this.adapter.startSession(input),
+    ]);
+    if (authentication.status === 'rejected') throw authentication.reason;
+    if (provider.status === 'rejected') throw provider.reason;
+    return provider.value;
   }
 
   private async awaitResetDecision(code: string, message: string): Promise<void> {
@@ -260,15 +283,21 @@ export class HostedSession {
   }
 
   private async refreshModels(): Promise<void> {
-    this.config.session.capabilities.compact =
+    const generation = ++this.modelGeneration;
+    const compact =
       Boolean(this.adapter.compactSession) &&
       (!this.adapter.canCompact || (await this.adapter.canCompact(this.config.session.sessionId)));
-    if (!this.adapter.listModels) {
+    const modelsResult = this.adapter.listModels
+      ? await this.adapter.listModels(this.config.session.sessionId)
+      : undefined;
+    if (this.shuttingDown || generation !== this.modelGeneration) return;
+    this.config.session.capabilities.compact = compact;
+    if (!modelsResult) {
       this.updateAttachmentCapabilities();
       await this.publish({ type: 'session.upsert', session: structuredClone(this.config.session) });
       return;
     }
-    let models = await this.adapter.listModels(this.config.session.sessionId);
+    let models = modelsResult;
     const previousModels = this.replica.snapshot().session.models;
     if (!models.length && previousModels?.length) {
       models = previousModels;
@@ -525,6 +554,7 @@ export class HostedSession {
         this.nativeId = null;
         this.resetPending = true;
         this.resetting = true;
+        this.modelGeneration++;
         try {
           if (this.adapter.hasSession(session.sessionId))
             await this.adapter.stopSession(session.sessionId);
@@ -540,7 +570,7 @@ export class HostedSession {
             session: structuredClone(this.config.session),
           });
           const { resume: _resume, ...fresh } = this.config.input;
-          const native = await this.adapter.startSession(fresh);
+          const native = await this.startProvider(fresh);
           await this.inbox.append({ type: 'native', nativeSessionId: native.nativeSessionId });
           this.nativeId = native.nativeSessionId;
           await this.eventSerial;

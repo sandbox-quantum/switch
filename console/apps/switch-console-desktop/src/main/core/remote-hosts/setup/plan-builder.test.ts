@@ -11,10 +11,9 @@ const NOW = '2026-02-02T00:00:00.000Z';
 const CORE = [
   { id: 'git', name: 'Git' },
   { id: 'node', name: 'Node.js' },
-  { id: 'tmux', name: 'tmux' },
   { id: 'gh', name: 'GitHub CLI' },
 ];
-const AGENTS = [{ agentId: 'claude-code', name: 'Claude Code' }];
+const AGENTS = [{ agentId: 'claude-code', name: 'Claude Code', connectorRequired: true }];
 
 function build(existing: HostSetupPlan | null = null) {
   return buildSetupPlan({
@@ -31,7 +30,6 @@ describe('buildSetupPlan', () => {
     expect(build().steps.map((s) => s.id)).toEqual([
       'git',
       'node',
-      'tmux',
       'gh',
       'claude-code',
       agentPluginStepId('claude-code'),
@@ -41,7 +39,7 @@ describe('buildSetupPlan', () => {
   it('leaves every core tool required, so none can strand a host silently', () => {
     const plan = build();
     const optional = plan.steps.filter((s) => s.optional).map((s) => s.id);
-    expect(optional).toEqual(['tmux']);
+    expect(optional).toEqual([]);
   });
 
   it('keeps the required core tools required', () => {
@@ -141,13 +139,8 @@ describe('buildSetupPlan — rebuilding onto an existing plan', () => {
   });
 
   it('re-imposes canonical order even if the stored order differed', () => {
-    const plan = build(
-      existingPlan([
-        { id: 'tmux', state: 'satisfied' },
-        { id: 'git', state: 'satisfied' },
-      ])
-    );
-    expect(plan.steps.map((s) => s.id).slice(0, 3)).toEqual(['git', 'node', 'tmux']);
+    const plan = build(existingPlan([{ id: 'git', state: 'satisfied' }]));
+    expect(plan.steps.map((s) => s.id).slice(0, 2)).toEqual(['git', 'node']);
   });
 });
 
@@ -246,7 +239,11 @@ describe('buildSetupPlan — against the real registry', () => {
   const switchSupported = () =>
     listPlugins()
       .filter((plugin) => plugin.capabilities.switchSetup.kind === 'cli')
-      .map((plugin) => ({ agentId: plugin.metadata.id, name: plugin.metadata.id }));
+      .map((plugin) => ({
+        agentId: plugin.metadata.id,
+        name: plugin.metadata.id,
+        connectorRequired: true,
+      }));
 
   const realPlan = () =>
     buildSetupPlan({
@@ -291,4 +288,26 @@ describe('buildSetupPlan — against the real registry', () => {
 
     expect(deriveHostStatus(reachable, plan).kind).toBe('setup-required');
   });
+});
+
+it('offers ACP providers without requiring a separate connector installation', () => {
+  const plan = buildSetupPlan({
+    sshHost: 'example-host',
+    coreDependencies: CORE,
+    agentTypes: [
+      { agentId: 'cursor', name: 'Cursor', connectorRequired: false },
+      { agentId: 'antigravity', name: 'Antigravity', connectorRequired: false },
+      { agentId: 'claude', name: 'Claude', connectorRequired: true },
+    ],
+    existing: null,
+    now: NOW,
+  });
+  expect(plan.steps.filter((step) => step.kind === 'agent-cli').map((step) => step.id)).toEqual([
+    'cursor',
+    'antigravity',
+    'claude',
+  ]);
+  expect(plan.steps.filter((step) => step.kind === 'agent-plugin').map((step) => step.id)).toEqual([
+    'claude:plugin',
+  ]);
 });

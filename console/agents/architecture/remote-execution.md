@@ -1,10 +1,10 @@
-# Remote Execution: Hosts, Reachability, and the Sidecar
+# Remote Execution: Hosts, Reachability, and the SDK Host
 
 All paths are relative to `apps/switch-console-desktop/` unless noted.
 
 **Switch Console is not local-only.** An agent runs either on the local machine or on an SSH
 host. That choice reaches almost every layer — execution context, agent runtime,
-dependency detection, PTY — so a change that only handles the local case is a change that
+dependency detection, SDK deployment — so a change that only handles the local case is a change that
 silently does less on a remote host. This page is the map of the remote half.
 
 ## The pieces
@@ -15,9 +15,9 @@ silently does less on a remote host. This page is the map of the remote half.
 | Reachability state machine | `remote-hosts/host-reachability-service.ts`, `src/shared/core/remote-hosts/reachability.ts`, table `remote_host_reachability` |
 | SSH config, connection, transport | `src/main/core/ssh/` |
 | Where a command runs | `src/main/core/execution-context/` — `local-execution-context.ts` / `ssh-execution-context.ts` |
-| How a session is launched | `src/main/core/agent-runtime/impl/` — `local-agent-runtime.ts` / `ssh-agent-runtime.ts` |
+| How a session is launched | `src/main/core/sdk-host/shared-agent-runtime.ts` |
 | Remote dependency detection and install | `dependencies/remote-dependency-manager.ts`, `dependencies/ssh-install-runner.ts` |
-| The on-host sidecar | `src/sidecar/` (implementation), `src/main/core/sidecar/` (desktop-side diagnostics) |
+| The persistent SDK host | `packages/agent-providers/src/host/`, `src/main/core/sdk-host/` |
 | A Switch Console-managed Switch server | `src/main/core/managed-switch-server/` |
 | Renderer surfaces | `src/renderer/features/remote-hosts/` |
 
@@ -55,10 +55,6 @@ first-class answer all the way to the surface.
 
 ## Host setup is a persisted plan (CHOO-1809)
 
-> This section describes `feature-request/remote-host-onboarding-rewrite`. If you are
-> reading it on a checkout where `src/main/core/remote-hosts/setup/` does not exist, that
-> branch has not merged yet.
-
 Onboarding a host used to be a single boolean — a row existed or it didn't — with every
 prerequisite probed independently by whichever component happened to render. There was no
 notion of *where a host got to*, so nothing could be resumed or ordered, and a failure
@@ -83,23 +79,18 @@ Two properties worth preserving:
   you nothing about whether `dockerd` is up, and running an installer over a stopped
   service would misreport the cause.
 
-## The sidecar
+## Persistent execution
 
-A remote agent runs inside tmux next to a Switch Console-deployed **sidecar**, so it keeps
-working and listening to its Switch rooms while Switch Console is closed (CHOO-1059).
+The same SDK host implementation serves local and SSH sessions. SSH carries
+bundle deployment and management commands; it does not own provider process
+lifetime. Closing Console leaves SDK execution running. A reconnect reads the
+saved transcript and never repeats an uncertain command.
 
-`src/sidecar/` is a second, headless implementation of what the desktop does for a
-session — it starts sessions, keeps them connected to their room, and injects messages into
-their pane — with no Electron, no database and no renderer.
+The execution machine needs Node 20.3 or newer, Git, the selected provider,
+its own authentication and network access. Setup plans list only supported
+SDK providers. Installer commands use pipes with closed input and report
+failures in the setup log.
 
-**Read the sidecar section of `AGENTS.md` before changing session launch behaviour.** It
-lists the desktop/sidecar pairs that must stay in step, and the sharpest edge: anything
-reaching a session through its **environment** is built separately on each side.
-
-## When editing here
-
-- Check the reachability state before adding a host-dependent code path.
-- Ask whether a change to local session launch needs the same change in `src/sidecar/`.
-- Remote dependency detection and install are separate implementations from the local
-  ones — see `dependencies/remote-dependency-manager.ts`.
-- See `agents/architecture/switch-rooms.md` for how a session binds to a Switch room.
+See [SDK sessions](../../docs/sdk-sessions.md) for recovery fencing and remote
+integration-test requirements. Check reachability before host-dependent work,
+and verify changes against both local and SSH execution.

@@ -24,7 +24,6 @@ export async function runLifecycleScript({
     shellSetup,
     origin: 'manual',
     policy: {
-      respawnAfterExit: true,
       logFailure: true,
       surfaceFailure: true,
       continueOnFailure: false,

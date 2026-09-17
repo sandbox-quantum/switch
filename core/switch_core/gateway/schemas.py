@@ -658,6 +658,73 @@ class ChangePasswordRequest(BaseModel):
     new_password: str = Field(min_length=8)
 
 
+class TenantMembershipResponse(BaseModel):
+    """One tenant the caller belongs to, and their role in it.
+
+    The body of `GET /tenants`, and — as a list — the body of the 409
+    `_resolve_tenant_id` raises when there is no tenant claim to bind and
+    several memberships to choose from: the same question asked at a
+    different moment (`docs/old/multi-tenancy-phase2-tenants.md`, §4 and §7).
+    """
+
+    id: str
+    slug: str
+    name: str
+    role: str
+
+
+class TenantCreateRequest(BaseModel):
+    name: str
+
+
+class InvitationCreateRequest(BaseModel):
+    role: str = "member"
+    # None mints a shareable link; set, the invitation is addressed to one
+    # email and accepting it with any other is refused.
+    email: str | None = None
+    # Bounded above as well as below: `timedelta` raises `OverflowError` past
+    # roughly 2.4e9 hours, so an unbounded value turns a bad request into a 500.
+    # A year is well beyond any legitimate invitation's life.
+    expires_in_hours: int = Field(default=168, gt=0, le=8760)
+    uses_remaining: int = Field(default=1, ge=1)
+
+
+class InvitationAcceptRequest(BaseModel):
+    # In the body rather than the path: a URL travels through proxy logs,
+    # browser history and `Referer` headers, and this one is a bearer
+    # credential.
+    token: str
+
+
+class InvitationDetail(BaseModel):
+    id: str
+    role: str
+    email: str | None
+    expires_at: str
+    uses_remaining: int
+    revoked_at: str | None
+    created_by: str
+    created_at: str
+
+
+class InvitationCreateResponse(InvitationDetail):
+    # The plaintext token. Present only here — see
+    # `InvitationStore.create`, which is the one call that can hand it back.
+    token: str
+
+
+class MemberDetail(BaseModel):
+    user_id: str
+    name: str
+    email: str
+    role: str
+    created_at: str
+
+
+class MemberUpdateRequest(BaseModel):
+    role: str
+
+
 class AuthConfigResponse(BaseModel):
     # Read unauthenticated by the login page to decide which login methods to
     # show. `oidc_provider_label` is the button text (e.g. "Okta").
@@ -1006,3 +1073,93 @@ class PackageMemberRemoveResponse(BaseModel):
     member_id: str
     affected_room_ids: list[str]
     affected_room_names: list[str]
+
+
+# ── Templates ─────────────────────────────────────────────────────────────────
+
+
+class TemplateSummary(BaseModel):
+    """A template as it appears in the catalogue.
+
+    Deliberately without `content`: a listing is a browse, and shipping every
+    stored document to render a list of names would grow with the registry.
+    Fetch one to get its content.
+    """
+
+    id: str
+    owner_id: str
+    owner_name: str | None = None
+    name: str
+    description: str
+    kind: str
+    version: int
+    size_bytes: int
+    created_at: str
+    updated_at: str
+
+
+class TemplateDetail(TemplateSummary):
+    content: str
+
+
+# The document has its own budget (TEMPLATE_MAX_BYTES); these are the labels
+# around it. Bounded because the columns are unbounded `Text` and nothing else
+# in the request path caps a field — without these, a name is as big as the
+# body someone is willing to send.
+TEMPLATE_NAME_MAX = 200
+TEMPLATE_DESCRIPTION_MAX = 2000
+TEMPLATE_KIND_MAX = 64
+
+
+class TemplateCreateRequest(BaseModel):
+    # Same stance as the update request: a body naming a field this does not
+    # have is a caller expecting something, and ignoring it silently answers
+    # 201 to a request that did not do what was asked.
+    model_config = {"extra": "forbid"}
+
+    name: str = Field(min_length=1, max_length=TEMPLATE_NAME_MAX)
+    description: str = Field(default="", max_length=TEMPLATE_DESCRIPTION_MAX)
+    kind: str = Field(default="room", min_length=1, max_length=TEMPLATE_KIND_MAX)
+    content: str = Field(min_length=1)
+
+
+class TemplateUpdateRequest(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    name: str | None = Field(default=None, min_length=1, max_length=TEMPLATE_NAME_MAX)
+    description: str | None = Field(default=None, max_length=TEMPLATE_DESCRIPTION_MAX)
+    kind: str | None = Field(default=None, min_length=1, max_length=TEMPLATE_KIND_MAX)
+    content: str | None = Field(default=None, min_length=1)
+
+
+class TemplateDeleteResponse(BaseModel):
+    deleted_id: str
+
+
+class TemplateValidateRequest(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    content: str
+
+
+class TemplateFinding(BaseModel):
+    code: str
+    message: str
+    subject: str | None = None
+    # Whether this one is a refusal rather than a remark.
+    blocking: bool = False
+
+
+class TemplateValidateResponse(BaseModel):
+    """What the checker made of a document, and whether it bars the door.
+
+    `blocked` is the only part an upload consults: a document that is not YAML
+    at all is refused, everything else is said and then allowed. `ok` is the
+    wider question of whether anything is wrong, which a form shows without
+    acting on.
+    """
+
+    ok: bool
+    blocked: bool
+    errors: list[TemplateFinding]
+    warnings: list[TemplateFinding]

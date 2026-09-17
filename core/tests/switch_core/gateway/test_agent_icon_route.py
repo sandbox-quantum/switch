@@ -15,7 +15,11 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.gateway.agents import update_agent_icon
 from switch_core.gateway.schemas import UpdateAgentIconRequest
-from tests.switch_core.gateway.agent_route_harness import add_agent, add_user
+from tests.switch_core.gateway.agent_route_harness import (
+    add_agent,
+    add_user,
+    is_admin,
+)
 
 _AGENT_STORE = AgentStore()
 
@@ -37,6 +41,7 @@ class TestUpdateAgentIcon:
                 session,
                 _AGENT_STORE,
                 owner,
+                await is_admin(session, owner),
             )
 
             assert summary.icon_url == _ICON
@@ -59,6 +64,7 @@ class TestUpdateAgentIcon:
                 session,
                 _AGENT_STORE,
                 owner,
+                await is_admin(session, owner),
             )
 
             assert summary.icon_url == _OTHER_ICON
@@ -80,6 +86,7 @@ class TestUpdateAgentIcon:
                 session,
                 _AGENT_STORE,
                 owner,
+                await is_admin(session, owner),
             )
 
             assert summary.icon_url is None
@@ -102,6 +109,7 @@ class TestUpdateAgentIcon:
                 session,
                 _AGENT_STORE,
                 owner,
+                await is_admin(session, owner),
             )
 
             assert summary.icon_url is None
@@ -121,6 +129,7 @@ class TestUpdateAgentIcon:
                     session,
                     _AGENT_STORE,
                     other,
+                    await is_admin(session, other),
                 )
 
             assert exc.value.status_code == 403
@@ -142,6 +151,7 @@ class TestUpdateAgentIcon:
                 session,
                 _AGENT_STORE,
                 admin,
+                await is_admin(session, admin),
             )
 
             assert summary.icon_url == _ICON
@@ -159,6 +169,7 @@ class TestUpdateAgentIcon:
                     session,
                     _AGENT_STORE,
                     owner,
+                    await is_admin(session, owner),
                 )
 
             assert exc.value.status_code == 404
@@ -192,6 +203,7 @@ class TestUpdateAgentIcon:
                     session,
                     _AGENT_STORE,
                     owner,
+                    await is_admin(session, owner),
                 )
 
             assert exc.value.status_code == 400
@@ -215,6 +227,7 @@ class TestUpdateAgentIcon:
                     session,
                     _AGENT_STORE,
                     owner,
+                    await is_admin(session, owner),
                 )
 
             stored = await _AGENT_STORE.get(session, agent.id)

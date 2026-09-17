@@ -13,6 +13,7 @@ import {
 } from '@renderer/features/remote-hosts/host-readiness-notice';
 import { policyHasDeadRule } from '@renderer/features/switch-servers/addressing-policy-editor';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
+import { ProviderConnectionStatus } from '@renderer/lib/components/provider-connection-status';
 import { describeFailure } from '@renderer/lib/errors/describe-failure';
 import { toast } from '@renderer/lib/hooks/use-toast';
 import { rpc } from '@renderer/lib/ipc';
@@ -513,6 +514,14 @@ export const AddAgentModal = observer(function AddAgentModal({
             onChange={pickState.setProviderId}
             sshHost={isRemoteRun ? runHost : undefined}
             onNavigateAway={onClose}
+          />
+        )}
+
+        {canChooseAgentType && pickState.providerId && (
+          <ProviderConnectionStatus
+            providerId={pickState.providerId}
+            sshHost={isRemoteRun ? runHost : null}
+            dir={dir}
           />
         )}
 

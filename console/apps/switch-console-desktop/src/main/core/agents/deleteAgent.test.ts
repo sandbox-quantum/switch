@@ -55,7 +55,6 @@ vi.mock('./stop-shared-agent-sessions', () => ({ stopSharedAgentSessions: vi.fn(
 vi.mock('./remote-watcher', () => ({ stopRemoteWatcher: vi.fn(async () => {}) }));
 vi.mock('./connect-remote-agent', () => ({ connectRemoteAgent: vi.fn() }));
 vi.mock('@main/core/agent-runtime/impl/remote-sidecar-launcher', () => ({
-  agentSidecarTmuxName: vi.fn(() => 'tmux'),
   killSidecarSession: vi.fn(async () => {}),
 }));
 vi.mock('@main/core/switch-rooms/auto-session-store', () => ({

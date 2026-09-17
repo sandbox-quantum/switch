@@ -1,6 +1,6 @@
 # Persistent local SDK host
 
-The host runs Claude, Codex, OpenCode, Gemini and Cursor outside Electron.
+The host runs Claude, Codex, OpenCode, Antigravity and Cursor outside Electron.
 It owns provider processes, a durable command inbox and a replayable chat journal.
 Closing a client leaves execution running. Restarting the host resumes the native
 provider conversation and retains the transcript. Interrupted work is reported;
@@ -19,7 +19,7 @@ stored there so the host can recover sessions independently of the desktop app.
 
 The production Console path uses the shared daemon and server authority described
 below. The private local daemon is retained for isolated provider testing and
-rejects Switch identity credentials. Neither path uses tmux.
+rejects Switch identity credentials. Both paths use native provider adapters.
 
 ## Current boundary
 

@@ -58,9 +58,7 @@ export class LocationProvider implements IDisposable {
   }
 
   async dispose(): Promise<void> {
-    const settings = await this.settings.get();
-    const mode = settings.tmux || this.transport.kind === 'ssh' ? 'detach' : 'terminate';
     await sessionRuntimeManager.teardownAllForLocation(this.location.id, 'detach');
-    await locationRuntimeRegistry.releaseAll(this.location.id, mode);
+    await locationRuntimeRegistry.releaseAll(this.location.id, 'detach');
   }
 }

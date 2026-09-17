@@ -11,8 +11,6 @@ import { type LocationRuntimeFactoryResult } from '@main/core/locations/location
 import { SharedAgentRuntime } from '@main/core/sdk-host/shared-agent-runtime';
 import { ensureSshConnected } from '@main/core/ssh/connect/connect-agent-ssh';
 import type { SshClientProxy } from '@main/core/ssh/lifecycle/ssh-client-proxy';
-import { LocalTerminalProvider } from '@main/core/terminals/impl/local-terminal-provider';
-import { SshTerminalProvider } from '@main/core/terminals/impl/ssh-terminal-provider';
 import { runLifecycleScriptWithPolicy } from '@main/core/terminals/lifecycle-script-coordinator';
 import type { Session } from '@shared/core/sessions/sessions';
 import { getEffectiveSessionSettings } from '../locations/settings/effective-session-settings';
@@ -61,7 +59,7 @@ export function createLocationRuntimeFactory(
       ctx = new SshExecutionContext(proxy, { root: transport.dir });
       runtimeFs = new SshFileSystem(proxy, transport.dir);
     } else {
-      ctx = new LocalExecutionContext();
+      ctx = new LocalExecutionContext({ root: workDir });
       runtimeFs = new LocalFileSystem(workDir);
     }
 
@@ -74,7 +72,6 @@ export function createLocationRuntimeFactory(
       rootPath: workDir,
       portSeed: workDir,
     });
-    const tmuxEnabled = locationSettings.tmux ?? false;
     const sessionLevelSettings = await getEffectiveSessionSettings({
       locationSettings: context.settings,
       sessionFs: runtimeFs,
@@ -82,26 +79,10 @@ export function createLocationRuntimeFactory(
     const shellSetup = sessionLevelSettings.shellSetup ?? locationSettings.shellSetup;
     const scripts = sessionLevelSettings.scripts;
 
-    // Location terminal provider (used only by lifecycle scripts)
-    const terminalOpts = {
-      sessionPath: workDir,
-      tmux: tmuxEnabled,
-      shellSetup,
+    const lifecycleService = new LifecycleScriptService({
       ctx,
       sessionEnvVars: bootstrapSessionEnvVars,
-    };
-    const runtimeTerminals =
-      transport.kind === 'ssh'
-        ? new SshTerminalProvider({
-            ...terminalOpts,
-            scopeId: locationId,
-            proxy: await connectSshTransport(transport),
-          })
-        : new LocalTerminalProvider(terminalOpts);
-
-    const lifecycleService = new LifecycleScriptService({
-      locationId,
-      terminals: runtimeTerminals,
+      windows: transport.kind === 'local' && process.platform === 'win32',
     });
 
     const runtime: LocationRuntime = {
@@ -129,7 +110,6 @@ export function createLocationRuntimeFactory(
               shellSetup,
               origin: 'auto-setup',
               policy: {
-                respawnAfterExit: true,
                 logFailure: true,
                 surfaceFailure: true,
                 continueOnFailure: true,
@@ -149,7 +129,6 @@ export function createLocationRuntimeFactory(
               shellSetup,
               origin: 'auto-run',
               policy: {
-                respawnAfterExit: true,
                 logFailure: true,
                 surfaceFailure: true,
                 continueOnFailure: true,

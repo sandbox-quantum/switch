@@ -4,12 +4,17 @@ import type { ProviderRuntimeEvent, ProviderRuntimeEventType } from '../events';
 import { FakeAppServer, type FakeJsonRpcMessage } from './fake-app-server';
 
 const servers: FakeAppServer[] = [];
+let authenticated = true;
 
 vi.mock('node:child_process', () => ({
   spawn: (_command: string, args: string[]) => {
     const server = new FakeAppServer();
     Object.assign(server, { spawnArgs: args });
     server.replyAlways('initialize', () => ({ userAgent: 'fake' }));
+    server.replyAlways('account/read', () => ({
+      account: authenticated ? { type: 'apiKey' } : null,
+      requiresOpenaiAuth: true,
+    }));
     server.replyAlways('thread/start', () => ({ thread: { id: 'thread-1' } }));
     servers.push(server);
     return server;
@@ -52,6 +57,22 @@ function turnNotification(id: string, status: string) {
 describe('CodexAdapter', () => {
   beforeEach(() => {
     servers.length = 0;
+    authenticated = true;
+  });
+
+  it('checks authentication on the session process before opening a thread', async () => {
+    const { adapter, server } = await start();
+    expect(servers).toHaveLength(1);
+    expect(server.received.findIndex((m) => m.method === 'account/read')).toBeLessThan(
+      server.received.findIndex((m) => m.method === 'thread/start')
+    );
+    await adapter.stopAll();
+  });
+
+  it('rejects signed-out startup without opening a thread', async () => {
+    authenticated = false;
+    await expect(start()).rejects.toThrow('codex login');
+    expect(servers[0].received.some((m) => m.method === 'thread/start')).toBe(false);
   });
 
   it('initializes, opens a thread and reports the thread id as the native session', async () => {

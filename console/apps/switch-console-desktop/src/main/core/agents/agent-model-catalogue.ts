@@ -1,5 +1,7 @@
+import { homedir } from 'node:os';
 import { providerReadinessSchema } from '@switch-console/agent-providers';
 import type { LaunchProfileModel } from '@switch-console/core/agents/plugins';
+import { resolveCommandPath } from '@switch-console/core/deps/runtime';
 import { isTransportFailure } from '@switch-console/core/exec';
 import { resolveAgentExecutable } from '@main/core/agent-runtime/impl/resolve-agent-executable';
 import { localDependencyManager } from '@main/core/dependencies/dependency-managers';
@@ -45,7 +47,7 @@ export async function getAgentModelCatalogue(params: {
   sshHost: string | null;
   dir: string;
 }): Promise<AgentModelCatalogue> {
-  if (['claude', 'codex', 'cursor', 'gemini'].includes(params.providerId)) {
+  if (['claude', 'codex', 'cursor', 'antigravity'].includes(params.providerId)) {
     const readiness = await getProviderReadiness(params, true);
     return readiness.models.length
       ? { kind: 'available', models: readiness.models.map((model) => ({ ...model, variants: [] })) }
@@ -138,6 +140,8 @@ export async function getProviderReadiness(
   },
   models: boolean
 ) {
+  params = { ...params, dir: params.dir.trim() || (params.sshHost ? '.' : homedir()) };
+  let installed: boolean | null = null;
   let ctx: IExecutionContext | undefined;
   try {
     const transport = locationTransport(params);
@@ -151,6 +155,14 @@ export async function getProviderReadiness(
       hostDependencyStore,
       connectionId: host.connectionId,
     });
+    installed = Boolean(await resolveCommandPath(cli, ctx));
+    if (!installed)
+      return {
+        installed: false,
+        status: 'unknown' as const,
+        message: `${plugin.metadata.name} is not installed or its selected executable cannot be found.`,
+        models: [],
+      };
     const deployed = await deploySharedHost(transport, params.dir, 'provider-readiness', false);
     try {
       const { stdout } = await deployed.ctx.exec(
@@ -158,12 +170,13 @@ export async function getProviderReadiness(
         [deployed.entrypoint, models ? '--models' : '--probe', params.providerId, params.dir, cli],
         { timeout: models ? 90000 : 35000 }
       );
-      return providerReadinessSchema.parse(JSON.parse(stdout));
+      return { ...providerReadinessSchema.parse(JSON.parse(stdout)), installed: true };
     } finally {
       deployed.ctx.dispose();
     }
   } catch {
     return {
+      installed,
       status: 'unknown' as const,
       message: 'Could not check this execution machine. Check provider setup and retry.',
       models: [],

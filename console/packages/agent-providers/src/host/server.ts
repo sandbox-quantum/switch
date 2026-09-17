@@ -6,10 +6,10 @@ import { commandSchema } from '@switch-console/shared/session-v1';
 import type { Command, Session } from '@switch-console/shared/session-v1';
 import { z } from 'zod';
 import type { ProviderAdapter, ProviderSessionStartInput } from '../adapter';
+import { createAntigravityAdapter } from '../antigravity/antigravity-adapter';
 import { createClaudeAdapter } from '../claude/claude-adapter';
 import { createCodexAdapter } from '../codex/codex-adapter';
 import { createCursorAdapter } from '../cursor/cursor-adapter';
-import { createGeminiAdapter } from '../gemini/gemini-adapter';
 import { createOpencodeAdapter } from '../opencode/opencode-adapter';
 import { HostedSession } from './session-host';
 
@@ -26,7 +26,7 @@ const mcp = z.discriminatedUnion('transport', [
   z.object({ transport: z.literal('http'), url: z.string(), headers: env.optional() }),
 ]);
 export const startSchema = z.strictObject({
-  provider: z.enum(['claude', 'codex', 'opencode', 'gemini', 'cursor']),
+  provider: z.enum(['claude', 'codex', 'opencode', 'antigravity', 'cursor']),
   input: z.strictObject({
     sessionId: id,
     cwd: z.string().min(1),
@@ -56,8 +56,8 @@ export function adapterFor(provider: Session['provider'], binaryPath?: string): 
       return createCodexAdapter({ binaryPath });
     case 'opencode':
       return createOpencodeAdapter({ binaryPath });
-    case 'gemini':
-      return createGeminiAdapter({ binaryPath });
+    case 'antigravity':
+      return createAntigravityAdapter({ binaryPath });
     case 'cursor':
       return createCursorAdapter({ binaryPath });
   }

@@ -8,11 +8,17 @@
 {{- $caOverride = printf "%s-db-ca-migrate" (include "switch.fullname" .) }}
 {{- end }}
 {{- $ctx := merge (dict "secretNameOverride" $secretOverride "dbCaConfigMapOverride" $caOverride) . }}
-# Runs `alembic upgrade head` before an upgrade rolls the new switch-core pods,
-# so a failed migration blocks the release instead of crash-looping the new
-# pods. pre-upgrade only: on a fresh install the managed Postgres does not exist
-# yet when pre-install hooks run, and switch-core self-migrates on startup
-# anyway (the same idempotent upgrade), so install is covered without a hook.
+# Migrates before an upgrade rolls the new switch-core pods, so a failed
+# migration blocks the release instead of crash-looping the new pods.
+# pre-upgrade only: on a fresh install the managed Postgres does not exist yet
+# when pre-install hooks run, and switch-core self-migrates on startup anyway
+# (the same idempotent upgrade), so install is covered without a hook.
+#
+# `switch-migrate` rather than `alembic upgrade head`: it is the same code the
+# server runs at boot, so the job takes the boot advisory lock — without which
+# it and a still-running old replica restarting could apply DDL at the same
+# time — and reissues the runtime role's grants, without which a table this
+# migration created is unreadable by the pods that follow it.
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -42,7 +48,7 @@ spec:
         - name: migrate
           image: {{ include "switch.image" (dict "global" .Values.global "image" .Values.switchCore.image) }}
           imagePullPolicy: {{ .Values.switchCore.imagePullPolicy }}
-          command: ["alembic", "upgrade", "head"]
+          command: ["switch-migrate"]
           env:
             {{- include "switch.coreEnv" $ctx | nindent 12 }}
           {{- if include "switch.dbCaBundleConfigMap" $ctx }}

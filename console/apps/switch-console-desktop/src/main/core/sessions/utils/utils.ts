@@ -27,7 +27,7 @@ export function mapSessionRowToSession(
     agentId: row.agentId,
     providerId,
     title: row.title,
-    shellId: row.shellId,
+
     status: (row.status as SessionLifecycleStatus) ?? 'in_progress',
     statusChangedAt: row.statusChangedAt,
     agentStatus: (row.agentStatus as AgentStatus | null) ?? null,

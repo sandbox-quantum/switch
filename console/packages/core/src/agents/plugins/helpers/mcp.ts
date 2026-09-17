@@ -226,51 +226,6 @@ export function codexMcpAdapter(configPath = '.codex/config.toml') {
 }
 
 /**
- * Gemini adapter — HTTP servers use httpUrl instead of url; Accept header is injected.
- * Config: ~/.gemini/settings.json, key: mcpServers, JSON.
- */
-export function geminiMcpAdapter(configPath = '.gemini/settings.json') {
-  return createMcpAdapter({
-    configPath,
-    format: 'json',
-    serversKey: 'mcpServers',
-    toNative(s) {
-      const entry = deepClone(s) as Record<string, unknown>;
-      delete entry.name;
-      if (entry.type === 'http') {
-        const url = (entry.url as string) ?? '';
-        const baseHeaders = (entry.headers as Record<string, string>) ?? {};
-        const headers: Record<string, string> = { ...baseHeaders };
-        ensureHeader(headers, 'Accept', INJECTED_ACCEPT);
-        const result: Record<string, unknown> = { httpUrl: url, headers };
-        if (entry.env) result.env = entry.env;
-        return result;
-      }
-      delete entry.type;
-      return entry;
-    },
-    fromNative(name, raw) {
-      const entry = deepClone(raw) as Record<string, unknown>;
-      if ('httpUrl' in entry) {
-        const { httpUrl, ...rest } = entry;
-        const result = { ...rest, type: 'http', url: httpUrl } as Record<string, unknown>;
-        stripInjectedHeaders(result);
-        return { name, ...result } as McpServerRegistration;
-      }
-      return { name, ...entry } as McpServerRegistration;
-    },
-  });
-}
-
-/**
- * Qwen adapter — same as Gemini (httpUrl ↔ url, Accept header).
- * Config: ~/.qwen/settings.json, key: mcpServers, JSON.
- */
-export function qwenMcpAdapter(configPath = '.qwen/settings.json') {
-  return geminiMcpAdapter(configPath);
-}
-
-/**
  * OpenCode adapter — type:'remote'/httpUrl for HTTP; type:'local'/command[] for stdio.
  * Write: ~/.config/opencode/opencode.json; legacy read: ~/.opencode/config.json.
  */
@@ -328,55 +283,4 @@ export function opencodeMcpAdapter(
       return { name, ...entry } as McpServerRegistration;
     },
   });
-}
-
-/**
- * Copilot adapter — injects `tools: ['*']` on write; strips it on read.
- * Write: ~/.copilot/mcp-config.json; legacy read: ~/.config/github-copilot/mcp.json.
- */
-export function copilotMcpAdapter(
-  configPath = '.copilot/mcp-config.json',
-  legacyReadPaths = ['.config/github-copilot/mcp.json']
-) {
-  return createMcpAdapter({
-    configPath,
-    legacyReadPaths,
-    format: 'json',
-    serversKey: 'mcpServers',
-    toNative(s) {
-      const { name: _n, ...rest } = s;
-      const entry = deepClone(rest) as Record<string, unknown>;
-      if (!('tools' in entry)) entry.tools = ['*'];
-      return entry;
-    },
-    fromNative(name, raw) {
-      const entry = deepClone(raw) as Record<string, unknown>;
-      if (Array.isArray(entry.tools) && entry.tools.length === 1 && entry.tools[0] === '*') {
-        delete entry.tools;
-      }
-      return { name, ...entry } as McpServerRegistration;
-    },
-  });
-}
-
-/**
- * Droid (Factory AI) adapter — passthrough, uses mcpServers JSON key.
- * Write: ~/.droid/settings.json; legacy read: ~/.factory/config.json.
- */
-export function droidMcpAdapter(
-  configPath = '.droid/settings.json',
-  legacyReadPaths = ['.factory/config.json']
-) {
-  return passthroughMcpAdapter(configPath, legacyReadPaths);
-}
-
-/**
- * Amp adapter — passthrough, uses mcpServers JSON key.
- * Write: ~/.config/amp/settings.json; legacy read: ~/.amp/config.json.
- */
-export function ampMcpAdapter(
-  configPath = '.config/amp/settings.json',
-  legacyReadPaths = ['.amp/config.json']
-) {
-  return passthroughMcpAdapter(configPath, legacyReadPaths);
 }

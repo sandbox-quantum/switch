@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { sessionConfig, isDroidProviderSessionId } from './session-config';
+import { sessionConfig } from './session-config';
 
 describe('session-config', () => {
   it('parses autoApprove and providerSessionId', () => {
@@ -33,11 +33,5 @@ describe('session-config', () => {
 
   it('parseJson returns null for null input', () => {
     expect(sessionConfig.parseJson(null)).toBeNull();
-  });
-
-  it('validates Droid session ids as UUIDs', () => {
-    expect(isDroidProviderSessionId('31477a03-961a-4451-82d4-efded56947fc')).toBe(true);
-    expect(isDroidProviderSessionId('session-1')).toBe(false);
-    expect(isDroidProviderSessionId('')).toBe(false);
   });
 });

@@ -24,7 +24,7 @@ function cacheKey(providerId: string, connectionId?: string): string {
  * Resolution order:
  * 1. selection.kind === 'pinned': use selection.realpath if it exists on disk; otherwise fall through.
  * 2. selection.kind === 'path': use selection.path if it exists on disk; otherwise fall through.
- * 3. selection.kind === 'cli': return selection.command as-is (PTY resolves on PATH).
+ * 3. selection.kind === 'cli': return selection.command as-is (the execution host resolves PATH).
  * 4. selection.kind === 'method' or 'auto' (no override): fall through to cachedStatePath.
  * 5. auto:
  *    a. In-memory cached path from dependency probe (cachedStatePath).

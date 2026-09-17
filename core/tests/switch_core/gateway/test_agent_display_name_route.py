@@ -15,7 +15,11 @@ from switch_core.agent_display_name import MAX_DISPLAY_NAME_LENGTH
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.gateway.agents import update_agent_display_name
 from switch_core.gateway.schemas import UpdateAgentDisplayNameRequest
-from tests.switch_core.gateway.agent_route_harness import add_agent, add_user
+from tests.switch_core.gateway.agent_route_harness import (
+    add_agent,
+    add_user,
+    is_admin,
+)
 
 _AGENT_STORE = AgentStore()
 
@@ -37,6 +41,7 @@ class TestUpdateAgentDisplayName:
                 session,
                 _AGENT_STORE,
                 owner,
+                await is_admin(session, owner),
             )
 
             assert summary.display_name == _NAME
@@ -59,6 +64,7 @@ class TestUpdateAgentDisplayName:
                 session,
                 _AGENT_STORE,
                 owner,
+                await is_admin(session, owner),
             )
 
             assert summary.display_name == _NAME
@@ -78,6 +84,7 @@ class TestUpdateAgentDisplayName:
                 session,
                 _AGENT_STORE,
                 owner,
+                await is_admin(session, owner),
             )
 
             assert summary.display_name == _OTHER_NAME
@@ -100,6 +107,7 @@ class TestUpdateAgentDisplayName:
                 session,
                 _AGENT_STORE,
                 owner,
+                await is_admin(session, owner),
             )
 
             assert summary.display_name is None
@@ -122,6 +130,7 @@ class TestUpdateAgentDisplayName:
                     session,
                     _AGENT_STORE,
                     other,
+                    await is_admin(session, other),
                 )
 
             assert exc.value.status_code == 403
@@ -143,6 +152,7 @@ class TestUpdateAgentDisplayName:
                 session,
                 _AGENT_STORE,
                 admin,
+                await is_admin(session, admin),
             )
 
             assert summary.display_name == _NAME
@@ -160,6 +170,7 @@ class TestUpdateAgentDisplayName:
                     session,
                     _AGENT_STORE,
                     owner,
+                    await is_admin(session, owner),
                 )
 
             assert exc.value.status_code == 404
@@ -189,6 +200,7 @@ class TestUpdateAgentDisplayName:
                     session,
                     _AGENT_STORE,
                     owner,
+                    await is_admin(session, owner),
                 )
 
             assert exc.value.status_code == 400

@@ -122,6 +122,27 @@ def app_connect_args(config: SwitchConfig) -> dict[str, object]:
     return connect_args
 
 
+def migration_connect_args(config: SwitchConfig) -> dict[str, object]:
+    """asyncpg connect args for the engine Alembic runs migrations on.
+
+    The counterpart to `app_connect_args`: both start from
+    `config.db_connect_args` and each adds the one server setting that is right
+    for its side only. `lock_timeout` bounds how long a DDL statement waits for
+    the lock it needs, which the application engine must not have — a request
+    that waits a little for a busy row is normal there, and a query killed
+    because it did is a user-visible error for no gain.
+
+    Set on the connection rather than issued as a statement inside the
+    migration because `migrations/env.py` runs the whole upgrade in one
+    transaction: a `SET` there would be scoped to that transaction, which is
+    fine, but it would also have to be re-issued by every other path that opens
+    a migration connection. The connection is the one place all of them share.
+    """
+    connect_args = dict(config.db_connect_args)
+    connect_args["server_settings"] = {"lock_timeout": config.db_migration_lock_timeout}
+    return connect_args
+
+
 def create_engine_from_config(
     config: SwitchConfig, **engine_kwargs: object
 ) -> AsyncEngine:

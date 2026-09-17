@@ -647,6 +647,10 @@ are moderation tools — use them when setting a room up, not in passing.
 
 ## Important rules
 
+In Switch Console SDK sessions, Switch tools are approved automatically even
+when the agent's Bypass permissions setting is off. Other tools keep the agent's
+permission policy. Switch server authorization still applies to every operation.
+
 - **No stray `@-mentions` in free-text fields.** Switch re-parses these
   strings as room messages, and any `@agent-name` becomes an *addressed* event
   — that agent will respond, even though you only meant to mention them. This
@@ -739,6 +743,10 @@ use server-authorized durable commands. The agent owner must issue these control
 from a verified account. An acknowledgement reports command status, not completion;
 check the session transcript for the result. Unsupported controls fail explicitly.
 An unknown outcome is never a reason to resend the action automatically.
+After a confirmed reset or compaction, Switch queues a follow-up to reconnect,
+read context, re-assume the previous role if one was held, and confirm the result
+to the requester in the original thread. If the role cannot be restored, report
+that limitation. Failed or unknown controls do not queue a success announcement.
 
 ## Tool index
 

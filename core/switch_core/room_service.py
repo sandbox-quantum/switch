@@ -678,13 +678,14 @@ class RoomService:
         logger.info("Deleted room %s", room_id)
 
     async def _resolve_names_to_ids(self, agent_names: list[str]) -> list[str]:
+        unique_names = list(dict.fromkeys(agent_names))
         async with self._session_factory() as session:
-            agents = await self._agent_store.get_by_names(session, agent_names)
+            agents = await self._agent_store.get_by_names(session, unique_names)
         name_to_id = {a.name: a.id for a in agents}
-        missing = [n for n in agent_names if n not in name_to_id]
+        missing = [n for n in unique_names if n not in name_to_id]
         if missing:
             raise ValueError(f"Unknown agents: {', '.join(missing)}")
-        return [name_to_id[n] for n in agent_names]
+        return [name_to_id[n] for n in unique_names]
 
     async def add_agents_to_room(
         self,
@@ -1235,6 +1236,22 @@ class RoomService:
                     await self._room_store.add_client(session, client_id, room.id)
                 await session.commit()
             logger.info("Reconciled %d client(s) into room %s", len(missing), room.id)
+
+    async def resolve_bridge_users(
+        self, bridge_id: str, names: list[str]
+    ) -> dict[str, str]:
+        """Which of ``names`` are people on the bridge, as name to external id.
+
+        The same resolution room creation applies to a template's ``users:``
+        (known users first, then an exact directory match), exposed so a
+        ``user``-typed template param can be checked before the room exists.
+        Raises when the bridge is not running, since nothing can be looked up
+        on it then.
+        """
+        bridge_core = self._collab_lifecycle.get(bridge_id)
+        if bridge_core is None:
+            raise ValueError("the room's messaging app is not running")
+        return await bridge_core.resolve_external_user_id_map(names)
 
     async def ensure_client_in_room(self, room_id: str, client_id: str) -> None:
         """Invite a single running client to the room (it auto-joins) and record

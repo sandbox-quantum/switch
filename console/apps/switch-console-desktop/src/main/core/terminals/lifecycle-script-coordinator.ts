@@ -1,21 +1,16 @@
+import type { LifecycleScriptService } from '@main/core/locations/lifecycle-service';
 import type { LocationRuntime } from '@main/core/locations/location-runtime';
-import { ptySessionRegistry } from '@main/core/pty/pty-session-registry';
 import { events } from '@main/lib/events';
 import { redactDiagnosticLog } from '@main/lib/file-logger';
 import { log } from '@main/lib/logger';
-import { makePtySessionId } from '@shared/core/pty/ptySessionId';
 import {
   lifecycleScriptStatusChannel,
   type LifecycleScriptOrigin,
   type LifecycleScriptType,
 } from '@shared/core/sessions/sessionEvents';
-import { createLifecycleScriptTerminalId } from '@shared/core/terminals/terminals';
 import type { LifecycleScriptExecutionResult } from '../locations/lifecycle-service';
 
 export type LifecycleScriptPolicy = {
-  exit?: boolean;
-  waitForExit?: boolean;
-  respawnAfterExit?: boolean;
   timeoutMs?: number;
   logFailure: boolean;
   surfaceFailure: boolean;
@@ -28,7 +23,7 @@ export type LifecycleScriptCoordinatorResult =
   | { kind: 'stopped' }
   | { kind: 'already-running' };
 
-const activeSessions = new Set<string>();
+const activeSessions = new Map<string, LifecycleScriptService>();
 const stoppedSessions = new Set<string>();
 
 class LifecycleScriptTimeout extends Error {
@@ -52,7 +47,7 @@ function lifecycleScriptSessionId({
   locationId: string;
   type: LifecycleScriptType;
 }): string {
-  return makePtySessionId(locationId, locationId, createLifecycleScriptTerminalId(type));
+  return `${locationId}:${type}`;
 }
 
 export function stopLifecycleScriptSession({
@@ -66,14 +61,14 @@ export function stopLifecycleScriptSession({
   type: LifecycleScriptType;
   origin: LifecycleScriptOrigin;
 }): boolean {
-  const ptySessionId = lifecycleScriptSessionId({ locationId, type });
-  const pty = ptySessionRegistry.get(ptySessionId);
-  if (!pty) return false;
-  if (!activeSessions.has(ptySessionId)) return false;
-  if (stoppedSessions.has(ptySessionId)) return false;
-
-  stoppedSessions.add(ptySessionId);
-  pty.kill();
+  const executionId = lifecycleScriptSessionId({ locationId, type });
+  const service = activeSessions.get(executionId);
+  if (!service || stoppedSessions.has(executionId)) return false;
+  stoppedSessions.add(executionId);
+  if (!service.stop(type)) {
+    stoppedSessions.delete(executionId);
+    return false;
+  }
   events.emit(lifecycleScriptStatusChannel, {
     locationId,
     sessionId,
@@ -89,13 +84,12 @@ function labelFor(type: LifecycleScriptType): string {
 }
 
 function isSuccessfulResult(result: LifecycleScriptExecutionResult): boolean {
-  if (result.kind === 'started' || result.kind === 'already-running') return true;
+  if (result.kind === 'already-running') return true;
   return result.signal === undefined && (result.exitCode === 0 || result.exitCode === undefined);
 }
 
 function failureMessage(type: LifecycleScriptType, result: LifecycleScriptExecutionResult): string {
   const label = labelFor(type);
-  if (result.kind === 'started') return `${label} script did not report an exit status.`;
   if (result.kind === 'already-running') return `${label} script is already running.`;
   if (result.signal !== undefined) return `${label} script exited with signal ${result.signal}.`;
   return `${label} script exited with code ${result.exitCode ?? 'unknown'}.`;
@@ -122,12 +116,12 @@ export async function runLifecycleScriptWithPolicy({
   policy: LifecycleScriptPolicy;
   logPrefix: string;
 }): Promise<LifecycleScriptCoordinatorResult> {
-  const ptySessionId = lifecycleScriptSessionId({ locationId, type });
-  if (activeSessions.has(ptySessionId)) {
+  const executionId = lifecycleScriptSessionId({ locationId, type });
+  if (activeSessions.has(executionId)) {
     return { kind: 'already-running' };
   }
 
-  activeSessions.add(ptySessionId);
+  activeSessions.set(executionId, runtime.lifecycleService);
   events.emit(lifecycleScriptStatusChannel, {
     locationId,
     sessionId,
@@ -138,14 +132,7 @@ export async function runLifecycleScriptWithPolicy({
 
   let result: LifecycleScriptExecutionResult | undefined;
   try {
-    const execution = runtime.lifecycleService.runLifecycleScript(
-      { type, script, shellSetup },
-      {
-        exit: policy.exit ?? true,
-        waitForExit: policy.waitForExit ?? true,
-        respawnAfterExit: policy.respawnAfterExit ?? false,
-      }
-    );
+    const execution = runtime.lifecycleService.runLifecycleScript({ type, script, shellSetup });
     result =
       policy.timeoutMs === undefined
         ? await execution
@@ -155,7 +142,7 @@ export async function runLifecycleScriptWithPolicy({
       return { kind: 'already-running' };
     }
 
-    if (stoppedSessions.delete(ptySessionId)) {
+    if (stoppedSessions.delete(executionId)) {
       return { kind: 'stopped' };
     }
 
@@ -182,7 +169,8 @@ export async function runLifecycleScriptWithPolicy({
       result,
     });
   } catch (error: unknown) {
-    if (stoppedSessions.delete(ptySessionId)) {
+    if (error instanceof LifecycleScriptTimeout) runtime.lifecycleService.stop(type);
+    if (stoppedSessions.delete(executionId)) {
       return { kind: 'stopped' };
     }
 
@@ -205,8 +193,8 @@ export async function runLifecycleScriptWithPolicy({
       error,
     });
   } finally {
-    activeSessions.delete(ptySessionId);
-    stoppedSessions.delete(ptySessionId);
+    activeSessions.delete(executionId);
+    stoppedSessions.delete(executionId);
   }
 }
 

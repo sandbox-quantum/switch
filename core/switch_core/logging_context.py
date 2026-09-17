@@ -30,7 +30,7 @@ row the way the two bindings could.
 from __future__ import annotations
 
 import logging
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar, Token
 from dataclasses import dataclass, replace
@@ -80,12 +80,41 @@ def unbind_log_context(token: Token[LogContext]) -> None:
 
 
 @contextmanager
-def log_context(**fields: str | None) -> Iterator[None]:
-    token = bind_log_context(**fields)
+def restore_unless_finalising(restore: Callable[[], None]) -> Iterator[None]:
+    """Run `restore` on the way out of the block, except when it is unwound by
+    `GeneratorExit`.
+
+    `GeneratorExit` here means the frame is being *finalised* rather than
+    resumed — a coroutine dropped while suspended and later closed by the
+    garbage collector — and the collector runs that close in whatever context
+    it happens to be in, not the one that entered the block. A `restore` built
+    on a `contextvars.Token.reset` refuses to cross contexts, correctly:
+    running it there would stamp this scope's state onto an unrelated one.
+    There is also nothing left to restore, since the context the token
+    belongs to is unreachable, which is why the frame is being finalised at
+    all.
+
+    Shared by every scope built on a context-variable token — `log_context`
+    below, and the call context in `bridges/agent/operations/callctx.py`,
+    which restores both a call token and a log token together — so the
+    finalisation check is written once rather than duplicated per token type.
+    """
+    finalising = False
     try:
         yield
+    except GeneratorExit:
+        finalising = True
+        raise
     finally:
-        unbind_log_context(token)
+        if not finalising:
+            restore()
+
+
+@contextmanager
+def log_context(**fields: str | None) -> Iterator[None]:
+    token = bind_log_context(**fields)
+    with restore_unless_finalising(lambda: unbind_log_context(token)):
+        yield
 
 
 class LogContextFilter(logging.Filter):

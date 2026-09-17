@@ -54,7 +54,7 @@ function makeSession(overrides: Partial<Session> = {}): Session {
     agentId: 'agent-1',
     providerId: 'claude',
     title: 'Session 1',
-    shellId: 'system',
+
     status: 'todo',
 
     isInitialSession: false,

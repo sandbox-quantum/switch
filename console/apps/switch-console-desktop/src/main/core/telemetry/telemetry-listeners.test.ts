@@ -188,42 +188,10 @@ describe('a session ending', () => {
     });
   });
 
-  it('reports an exhausted crash as failed, with what the session was', async () => {
-    onLocation('remote');
-    await startSession('s-crash');
-
-    await emit('sessionHooks', 'session:agent-exited', {
-      sessionId: 's-crash',
-      decision: 'failed',
-    });
-
-    expect(trackEvent).toHaveBeenCalledWith('session_ended', {
-      agent_type: 'claude',
-      location: 'remote',
-      outcome: 'failed',
-    });
-  });
-
-  it('counts a crash that is about to be respawned as no ending at all', async () => {
-    onLocation('local');
-    await startSession('s-respawn');
-    vi.mocked(trackEvent).mockClear();
-
-    await emit('sessionHooks', 'session:agent-exited', {
-      sessionId: 's-respawn',
-      decision: 'respawnResume',
-    });
-
-    expect(trackEvent).not.toHaveBeenCalled();
-  });
-
   it('ends a session once, not once per way of ending', async () => {
     onLocation('local');
     await startSession('s-twice');
-    await emit('sessionHooks', 'session:agent-exited', {
-      sessionId: 's-twice',
-      decision: 'failed',
-    });
+    await emit('sessionService', 'session:deleted', 's-twice');
     vi.mocked(trackEvent).mockClear();
 
     await emit('sessionService', 'session:deleted', 's-twice');
@@ -346,10 +314,7 @@ describe('a session that dies before we know what it was', () => {
       agentId: 'agent',
       providerId: 'claude',
     });
-    await emit('sessionHooks', 'session:agent-exited', {
-      sessionId: 's-fast-crash',
-      decision: 'failed',
-    });
+    await emit('sessionService', 'session:deleted', 's-fast-crash');
     releaseLookup();
     await created;
 
@@ -357,7 +322,7 @@ describe('a session that dies before we know what it was', () => {
     expect(trackEvent).toHaveBeenCalledWith('session_ended', {
       agent_type: 'unknown',
       location: 'unknown',
-      outcome: 'failed',
+      outcome: 'normal',
     });
   });
 

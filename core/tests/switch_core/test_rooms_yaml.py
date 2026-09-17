@@ -11,6 +11,7 @@ for real.
 from __future__ import annotations
 
 import uuid
+from typing import Any
 
 import pytest
 import pytest_asyncio
@@ -18,6 +19,8 @@ from sqlalchemy import insert, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.bridges.resource.service import ResourceService
+from switch_core.clients.admin_client import AdminClient
+from switch_core.clients.admin_messages import OnBehalfOf
 from switch_core.db.models import (
     Agent,
     ApiKey,
@@ -25,6 +28,7 @@ from switch_core.db.models import (
     ClientRoom,
     CollaborationBridge,
     ExternalUser,
+    ExternalUserClaim,
     Reference,
     ReferenceType,
     Room,
@@ -53,6 +57,17 @@ from switch_core.rooms_yaml import (
 )
 
 
+class _AnyStr:
+    def __eq__(self, other: object) -> bool:
+        return isinstance(other, str)
+
+    def __repr__(self) -> str:
+        return "<any str>"
+
+
+ANY_ROOM = _AnyStr()
+
+
 class FakeRoomService:
     """DB-only stand-in for RoomService.create_room.
 
@@ -68,6 +83,15 @@ class FakeRoomService:
     ) -> None:
         self._sf = session_factory
         self._agents = agent_store
+        #: username → external id, the people a bridge would resolve.
+        self.bridge_users: dict[str, str] = {}
+        self.bridge_user_lookups: list[tuple[str, list[str]]] = []
+
+    async def resolve_bridge_users(
+        self, bridge_id: str, names: list[str]
+    ) -> dict[str, str]:
+        self.bridge_user_lookups.append((bridge_id, names))
+        return {n: self.bridge_users[n] for n in names if n in self.bridge_users}
 
     async def create_room(self, config: RoomCreateConfig) -> RoomCreateResult:
         async with self._sf() as session:
@@ -156,8 +180,9 @@ async def env(session_factory: async_sessionmaker[AsyncSession]):
         session_factory=session_factory,
     )
     agent_store = AgentStore()
+    fake_rooms = FakeRoomService(session_factory, agent_store)
     svc = RoomYamlService(
-        room_service=FakeRoomService(session_factory, agent_store),  # type: ignore[arg-type]
+        room_service=fake_rooms,  # type: ignore[arg-type]
         resource_service=resource_service,
         room_store=RoomStore(),
         agent_store=agent_store,
@@ -178,6 +203,7 @@ async def env(session_factory: async_sessionmaker[AsyncSession]):
 
     return {
         "svc": svc,
+        "rooms": fake_rooms,
         "resource_service": resource_service,
         "session_factory": session_factory,
         "user_id": user_id,
@@ -192,7 +218,7 @@ def _svc(env) -> RoomYamlService:
 
 
 def test_parse_minimal(env):
-    spec = _svc(env).parse(
+    spec, _ = _svc(env).parse(
         """
         room:
           name: "Room A"
@@ -202,6 +228,57 @@ def test_parse_minimal(env):
     assert spec.name == "Room A"
     assert spec.channel_type == "channel_public"
     assert spec.references == []
+
+
+def test_parse_returns_kickoff(env):
+    spec, kickoff = _svc(env).parse(
+        """
+        room:
+          name: "Room K"
+          description: "desc"
+        kickoff: "Start working now."
+        """
+    )
+    assert spec.name == "Room K"
+    assert kickoff == "Start working now."
+
+
+def test_parse_no_kickoff_returns_none(env):
+    _, kickoff = _svc(env).parse(
+        """
+        room:
+          name: "Room N"
+          description: "desc"
+        """
+    )
+    assert kickoff is None
+
+
+def test_parse_kickoff_interpolates_builtins(env):
+    _, kickoff = _svc(env).parse(
+        """
+        room:
+          name: "Room B"
+          description: "desc"
+        kickoff: "Welcome {$creator}, today is {$date}."
+        """,
+        builtins={"$creator": "alice", "$date": "2026-09-11"},
+    )
+    assert kickoff == "Welcome alice, today is 2026-09-11."
+
+
+def test_parse_builtins_resolve_in_room(env):
+    spec, _ = _svc(env).parse(
+        """
+        room:
+          name: "{$creator}'s room"
+          description: "desc"
+          users: ["{$creator_email}"]
+        """,
+        builtins={"$creator": "alice", "$creator_email": "alice@example.com"},
+    )
+    assert spec.name == "alice's room"
+    assert spec.users == ["alice@example.com"]
 
 
 def test_parse_rejects_missing_room_key(env):
@@ -266,7 +343,7 @@ def test_parse_reference_entry_requires_one_form(env):
 
 @pytest.mark.asyncio
 async def test_provision_basic_with_agents_roles_and_inline_ref(env):
-    spec = _svc(env).parse(
+    spec, _ = _svc(env).parse(
         """
         room:
           name: "Pilot"
@@ -299,7 +376,7 @@ async def test_provision_basic_with_agents_roles_and_inline_ref(env):
 
 @pytest.mark.asyncio
 async def test_provision_no_agents_or_users(env):
-    spec = _svc(env).parse(
+    spec, _ = _svc(env).parse(
         """
         room:
           name: "Agentless"
@@ -316,7 +393,7 @@ async def test_provision_no_agents_or_users(env):
 
 @pytest.mark.asyncio
 async def test_provision_unknown_agent_fails_loud(env):
-    spec = _svc(env).parse(
+    spec, _ = _svc(env).parse(
         """
         room:
           name: "R"
@@ -336,7 +413,7 @@ async def test_provision_unknown_reference_type_fails_before_the_room_exists(env
     nor a principal — so the check lives in ``_resolve_references``, which runs
     before ``create_room``. Nothing may be created.
     """
-    spec = _svc(env).parse(
+    spec, _ = _svc(env).parse(
         """
         room:
           name: "Bad type"
@@ -388,7 +465,7 @@ async def test_provision_inline_ref_of_a_user_defined_type(env):
         )
         await session.commit()
 
-    spec = _svc(env).parse(
+    spec, _ = _svc(env).parse(
         """
         room:
           name: "Custom type"
@@ -425,7 +502,7 @@ async def test_provision_attach_reference_by_name(env):
         await session.commit()
         ref_id = ref.id
 
-    spec = _svc(env).parse(
+    spec, _ = _svc(env).parse(
         """
         room:
           name: "R"
@@ -441,7 +518,7 @@ async def test_provision_attach_reference_by_name(env):
 
 @pytest.mark.asyncio
 async def test_provision_attach_reference_by_name_unknown_fails(env):
-    spec = _svc(env).parse(
+    spec, _ = _svc(env).parse(
         """
         room:
           name: "R"
@@ -472,7 +549,7 @@ async def test_provision_ambiguous_reference_name_fails(env):
             )
         await session.commit()
 
-    spec = _svc(env).parse(
+    spec, _ = _svc(env).parse(
         """
         room:
           name: "R"
@@ -487,7 +564,7 @@ async def test_provision_ambiguous_reference_name_fails(env):
 
 @pytest.mark.asyncio
 async def test_provision_duplicate_doc_name_is_best_effort(env):
-    spec = _svc(env).parse(
+    spec, _ = _svc(env).parse(
         """
         room:
           name: "R"
@@ -507,7 +584,7 @@ async def test_provision_duplicate_doc_name_is_best_effort(env):
 
 @pytest.mark.asyncio
 async def test_provision_users_without_bridge_fails(env):
-    spec = _svc(env).parse(
+    spec, _ = _svc(env).parse(
         """
         room:
           name: "R"
@@ -524,7 +601,7 @@ async def test_provision_users_without_bridge_fails(env):
 
 @pytest.mark.asyncio
 async def test_export_round_trips_within_import_surface(env):
-    spec = _svc(env).parse(
+    spec, _ = _svc(env).parse(
         """
         room:
           name: "Export me"
@@ -549,7 +626,7 @@ async def test_export_round_trips_within_import_surface(env):
     result = await _svc(env).provision(spec, user_id=env["user_id"], is_admin=False)
 
     yaml_text = await _svc(env).export(result.room_id)
-    reparsed = _svc(env).parse(yaml_text)
+    reparsed, _ = _svc(env).parse(yaml_text)
 
     assert reparsed.name == "Export me"
     assert reparsed.instructions == "instr"
@@ -567,7 +644,7 @@ async def test_export_round_trips_within_import_surface(env):
 
 @pytest.mark.asyncio
 async def test_export_toggles_drop_sections(env):
-    spec = _svc(env).parse(
+    spec, _ = _svc(env).parse(
         """
         room:
           name: "Toggle"
@@ -584,7 +661,7 @@ async def test_export_toggles_drop_sections(env):
     yaml_text = await _svc(env).export(
         result.room_id, agents=False, roles=False, docs=False
     )
-    reparsed = _svc(env).parse(yaml_text)
+    reparsed, _ = _svc(env).parse(yaml_text)
     assert reparsed.agents == []
     assert reparsed.roles == []
     assert reparsed.docs == []
@@ -646,7 +723,7 @@ async def test_export_includes_users_from_bridge(env):
         room_id = room.id
 
     yaml_text = await _svc(env).export(room_id)
-    reparsed = _svc(env).parse(yaml_text)
+    reparsed, _ = _svc(env).parse(yaml_text)
     # The "Mattermost: " display-name prefix is stripped on export.
     assert reparsed.name == "Bridged"
     assert reparsed.bridge == "Mattermost"
@@ -780,7 +857,7 @@ def test_interpolate_non_string_passthrough():
 
 
 def test_parse_with_params_defaults_only(env):
-    spec = _svc(env).parse(
+    spec, _ = _svc(env).parse(
         """
         params:
           owner:
@@ -796,7 +873,7 @@ def test_parse_with_params_defaults_only(env):
 
 
 def test_parse_with_params_override(env):
-    spec = _svc(env).parse(
+    spec, _ = _svc(env).parse(
         """
         params:
           owner:
@@ -853,7 +930,7 @@ def test_parse_inputs_against_paramless_file_raises(env):
 
 
 def test_parse_unknown_placeholder_left_intact(env):
-    spec = _svc(env).parse(
+    spec, _ = _svc(env).parse(
         """
         params:
           owner:
@@ -869,7 +946,7 @@ def test_parse_unknown_placeholder_left_intact(env):
 
 def test_parse_whole_field_typed_substitution(env):
     """An enum param used as the whole value of channel_type stays valid."""
-    spec = _svc(env).parse(
+    spec, _ = _svc(env).parse(
         """
         params:
           visibility:
@@ -886,7 +963,7 @@ def test_parse_whole_field_typed_substitution(env):
 
 
 def test_parse_interpolation_into_docs_content(env):
-    spec = _svc(env).parse(
+    spec, _ = _svc(env).parse(
         """
         params:
           owner:
@@ -906,7 +983,7 @@ def test_parse_interpolation_into_docs_content(env):
 
 
 def test_parse_interpolation_into_references_value(env):
-    spec = _svc(env).parse(
+    spec, _ = _svc(env).parse(
         """
         params:
           repo:
@@ -928,7 +1005,7 @@ def test_parse_interpolation_into_references_value(env):
 
 
 def test_parse_version_key_accepted(env):
-    spec = _svc(env).parse(
+    spec, _ = _svc(env).parse(
         """
         version: 0
         room:
@@ -995,18 +1072,14 @@ room:
 async def test_provision_template_two_owners(env):
     """The same template instantiates twice with different owners."""
     svc = _svc(env)
-    r1 = await svc.provision(
-        svc.parse(
-            TEMPLATE, inputs={"owner": "alice", "deploy_agent": "claude-code.alice"}
-        ),
-        user_id=env["user_id"],
-        is_admin=False,
+    spec1, _ = svc.parse(
+        TEMPLATE, inputs={"owner": "alice", "deploy_agent": "claude-code.alice"}
     )
-    r2 = await svc.provision(
-        svc.parse(TEMPLATE, inputs={"owner": "bob", "deploy_agent": "claude-code.bob"}),
-        user_id=env["user_id"],
-        is_admin=False,
+    r1 = await svc.provision(spec1, user_id=env["user_id"], is_admin=False)
+    spec2, _ = svc.parse(
+        TEMPLATE, inputs={"owner": "bob", "deploy_agent": "claude-code.bob"}
     )
+    r2 = await svc.provision(spec2, user_id=env["user_id"], is_admin=False)
     assert r1.room_name == "alice local-deploy"
     assert r2.room_name == "bob local-deploy"
     assert r1.room_id != r2.room_id
@@ -1056,6 +1129,9 @@ async def test_endpoint_json_body(env):
 
     svc = _svc(env)
     user_id = env["user_id"]
+    # Not an administrator of anything: this exercises body parsing, and the
+    # caller owns the room it creates.
+    is_admin = False
     user = User(name="alice", email="alice@example.com", role="member")
     # Poke the id to match the seeded user so provision works.
     object.__setattr__(user, "id", user_id)
@@ -1071,12 +1147,540 @@ async def test_endpoint_json_body(env):
     request.headers = {"content-type": "application/json"}
     request.body.return_value = body
 
-    result = await create_room_from_yaml(request, svc, user)
+    async with env["session_factory"]() as session:
+        result = await create_room_from_yaml(request, session, svc, user, is_admin)
     assert result.room_name == "carol local-deploy"
 
     # Non-string yaml value → 400.
     bad_body = json.dumps({"yaml": 123}).encode()
     request.body.return_value = bad_body
-    with pytest.raises(HTTPException) as exc_info:
-        await create_room_from_yaml(request, svc, user)
+    async with env["session_factory"]() as session:
+        with pytest.raises(HTTPException) as exc_info:
+            await create_room_from_yaml(request, session, svc, user, is_admin)
     assert exc_info.value.status_code == 400
+
+
+# ── kickoff ─────────────────────────────────────────────────────────────────
+
+
+class FakeAdminClient(AdminClient):
+    """Records platform sends; never touches a transport."""
+
+    def __init__(self) -> None:  # noqa: D107 - test double, no super().__init__
+        self.sent: list[dict[str, Any]] = []
+        self.joined = True
+        self.send_error: Exception | None = None
+        self.send_returns: str | None = "$kickoff"
+
+    async def wait_joined(self, room_id: str, timeout: float) -> bool:
+        return self.joined
+
+    async def send_platform_message(  # type: ignore[override]
+        self,
+        room_id: str,
+        body: str,
+        *,
+        thread_root_id=None,
+        on_behalf_of=None,
+        reply_in_channel=False,
+    ) -> str | None:
+        if self.send_error is not None:
+            raise self.send_error
+        self.sent.append(
+            {
+                "room_id": room_id,
+                "body": body,
+                "on_behalf_of": on_behalf_of,
+                "thread_root_id": thread_root_id,
+                "reply_in_channel": reply_in_channel,
+            }
+        )
+        return self.send_returns
+
+
+class FakeAgentClient:
+    def __init__(self, joined: bool = True) -> None:
+        self.joined = joined
+
+    async def wait_joined(self, room_id: str, timeout: float) -> bool:
+        return self.joined
+
+
+class FakeLifecycle:
+    def __init__(self, admin: AdminClient | None) -> None:
+        self.admin = admin
+        self.agent_clients: dict[str, FakeAgentClient] = {}
+
+    def get_by_type(self, client_type: str, tenant_id: str) -> list:
+        if self.admin is not None and client_type == "admin":
+            return [self.admin]
+        return []
+
+    def get_by_agent_id(self, agent_id: str):
+        return self.agent_clients.get(agent_id)
+
+
+def _with_kickoff(
+    env, admin: AdminClient | None
+) -> tuple[RoomYamlService, FakeLifecycle]:
+    lifecycle = FakeLifecycle(admin)
+    svc = _svc(env)
+    svc._client_lifecycle = lifecycle  # type: ignore[assignment]
+    return svc, lifecycle
+
+
+KICKOFF_TEMPLATE = """
+params:
+  coder:
+    type: agent
+room:
+  name: "kick"
+  description: "d"
+  agents: ["{coder}"]
+kickoff: |
+  @{coder} start on the brief.
+"""
+
+
+@pytest.mark.asyncio
+async def test_provision_kickoff_posts_as_platform_on_behalf_of_creator(env):
+    """The kickoff goes out through the admin client with the creator named
+    in the marker, after interpolation, and the room reports no failure."""
+    admin = FakeAdminClient()
+    svc, _ = _with_kickoff(env, admin)
+    spec, kickoff = svc.parse(KICKOFF_TEMPLATE, inputs={"coder": "claude-code.alice"})
+    result = await svc.provision(
+        spec,
+        kickoff=kickoff,
+        user_id=env["user_id"],
+        is_admin=False,
+        creator_name="alice",
+    )
+    assert result.failed_attachments == []
+    person = OnBehalfOf(env["user_id"], "alice")
+    assert admin.sent == [
+        {
+            "room_id": ANY_ROOM,
+            "body": "Template kickoff on behalf of @alice",
+            "on_behalf_of": person,
+            "thread_root_id": None,
+            "reply_in_channel": False,
+        },
+        {
+            "room_id": ANY_ROOM,
+            "body": "@claude-code.alice start on the brief.\n",
+            "on_behalf_of": person,
+            "thread_root_id": "$kickoff",
+            "reply_in_channel": True,
+        },
+    ]
+
+
+@pytest.mark.asyncio
+async def test_provision_kickoff_send_failure_is_reported_not_fatal(env):
+    admin = FakeAdminClient()
+    admin.send_error = RuntimeError("transport down")
+    svc, _ = _with_kickoff(env, admin)
+    spec, kickoff = svc.parse(KICKOFF_TEMPLATE, inputs={"coder": "claude-code.alice"})
+    result = await svc.provision(
+        spec, kickoff=kickoff, user_id=env["user_id"], is_admin=False
+    )
+    assert result.room_id
+    assert result.failed_attachments == [
+        {"kind": "kickoff", "id": "kickoff", "error": "transport down"}
+    ]
+
+
+@pytest.mark.asyncio
+async def test_provision_kickoff_none_event_id_is_a_failure(env):
+    """The admin client answers None when the send did not happen; that is a
+    failure, not a silent success."""
+    admin = FakeAdminClient()
+    admin.send_returns = None
+    svc, _ = _with_kickoff(env, admin)
+    spec, kickoff = svc.parse(KICKOFF_TEMPLATE, inputs={"coder": "claude-code.alice"})
+    result = await svc.provision(
+        spec, kickoff=kickoff, user_id=env["user_id"], is_admin=False
+    )
+    assert [f["error"] for f in result.failed_attachments] == [
+        "the platform could not post the kickoff"
+    ]
+
+
+@pytest.mark.asyncio
+async def test_provision_kickoff_waits_for_agents_and_reports_the_late(env):
+    """An agent whose client has not joined by the timeout is named in the
+    failure; the kickoff is still posted for the ones that did."""
+    admin = FakeAdminClient()
+    svc, lifecycle = _with_kickoff(env, admin)
+    async with env["session_factory"]() as session:
+        agent = await AgentStore().get_by_name(session, "claude-code.alice")
+    lifecycle.agent_clients[agent.id] = FakeAgentClient(joined=False)
+    spec, kickoff = svc.parse(KICKOFF_TEMPLATE, inputs={"coder": "claude-code.alice"})
+    result = await svc.provision(
+        spec, kickoff=kickoff, user_id=env["user_id"], is_admin=False
+    )
+    assert [f["error"] for f in result.failed_attachments] == [
+        "did not join the room in time to see the kickoff: claude-code.alice"
+    ]
+    assert len(admin.sent) == 2
+
+
+@pytest.mark.asyncio
+async def test_provision_kickoff_not_posted_when_platform_never_joins(env):
+    admin = FakeAdminClient()
+    admin.joined = False
+    svc, _ = _with_kickoff(env, admin)
+    spec, kickoff = svc.parse(KICKOFF_TEMPLATE, inputs={"coder": "claude-code.alice"})
+    result = await svc.provision(
+        spec, kickoff=kickoff, user_id=env["user_id"], is_admin=False
+    )
+    assert admin.sent == []
+    assert result.failed_attachments[0]["error"].startswith("did not join")
+
+
+@pytest.mark.asyncio
+async def test_provision_kickoff_without_admin_client_is_reported(env):
+    svc, _ = _with_kickoff(env, None)
+    spec, kickoff = svc.parse(KICKOFF_TEMPLATE, inputs={"coder": "claude-code.alice"})
+    result = await svc.provision(
+        spec, kickoff=kickoff, user_id=env["user_id"], is_admin=False
+    )
+    assert result.failed_attachments == [
+        {
+            "kind": "kickoff",
+            "id": "kickoff",
+            "error": "the platform has no client to post with",
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_provision_without_kickoff_posts_nothing(env):
+    admin = FakeAdminClient()
+    svc, _ = _with_kickoff(env, admin)
+    spec, kickoff = svc.parse("room:\n  name: quiet\n  description: d\n")
+    assert kickoff is None
+    await svc.provision(spec, kickoff=kickoff, user_id=env["user_id"], is_admin=False)
+    assert admin.sent == []
+
+
+# ── builtins_for ────────────────────────────────────────────────────────────
+
+
+async def _seed_bridge_with_claim(
+    session_factory,
+    *,
+    display_name: str,
+    is_default: bool,
+    claimed_by: str | None,
+    external_username: str,
+) -> str:
+    """A bridge, an external user on it, and optionally a claim. Returns the
+    bridge id."""
+    async with session_factory() as session:
+        bridge_client = Client(
+            matrix_user_id=f"@bridge-{display_name.lower()}:test.local",
+            display_name=display_name,
+            type="collaboration_bridge",
+        )
+        user_client = Client(
+            matrix_user_id=f"@{external_username}-{display_name.lower()}:test.local",
+            display_name=external_username,
+            type="external_user",
+        )
+        session.add_all([bridge_client, user_client])
+        await session.flush()
+        bridge = CollaborationBridge(
+            type="slack",
+            display_name=display_name,
+            client_id=bridge_client.id,
+            status="active",
+            is_default=is_default,
+        )
+        session.add(bridge)
+        await session.flush()
+        ext = ExternalUser(
+            bridge_id=bridge.id,
+            external_user_id=f"U-{external_username}",
+            external_username=external_username,
+            client_id=user_client.id,
+        )
+        session.add(ext)
+        await session.flush()
+        if claimed_by is not None:
+            session.add(ExternalUserClaim(external_user_id=ext.id, user_id=claimed_by))
+        await session.commit()
+        return bridge.id
+
+
+@pytest.mark.asyncio
+async def test_builtins_creator_falls_back_to_gateway_name(env):
+    """No bridge at all: $creator is the gateway account name."""
+    builtins = await _svc(env).builtins_for(
+        user_id=env["user_id"],
+        name="alice",
+        email="alice@example.com",
+        text="room:\n  name: n\n  description: d\n",
+    )
+    assert builtins["$creator"] == "alice"
+    assert builtins["$creator_email"] == "alice@example.com"
+    assert "$date" in builtins and "$timestamp" in builtins
+
+
+@pytest.mark.asyncio
+async def test_builtins_creator_uses_claimed_identity_on_default_bridge(env):
+    """A claim on the template's (default) bridge wins over the gateway name."""
+    await _seed_bridge_with_claim(
+        env["session_factory"],
+        display_name="Slack",
+        is_default=True,
+        claimed_by=env["user_id"],
+        external_username="abel.dantas",
+    )
+    builtins = await _svc(env).builtins_for(
+        user_id=env["user_id"],
+        name="alice",
+        email="alice@example.com",
+        text="room:\n  name: n\n  description: d\n",
+    )
+    assert builtins["$creator"] == "abel.dantas"
+
+
+@pytest.mark.asyncio
+async def test_builtins_creator_ignores_unclaimed_identity(env):
+    """An external user nobody claimed does not become $creator."""
+    await _seed_bridge_with_claim(
+        env["session_factory"],
+        display_name="Slack",
+        is_default=True,
+        claimed_by=None,
+        external_username="abel.dantas",
+    )
+    builtins = await _svc(env).builtins_for(
+        user_id=env["user_id"],
+        name="alice",
+        email="alice@example.com",
+        text="room:\n  name: n\n  description: d\n",
+    )
+    assert builtins["$creator"] == "alice"
+
+
+@pytest.mark.asyncio
+async def test_builtins_refuses_unclaimed_creator_when_the_template_needs_one(env):
+    """A bridged template that uses {$creator} needs a linked account: the
+    gateway name is not a platform handle, and guessing produced private
+    channels the creator could not enter."""
+    await _seed_bridge_with_claim(
+        env["session_factory"],
+        display_name="Slack",
+        is_default=True,
+        claimed_by=None,
+        external_username="abel.dantas",
+    )
+    with pytest.raises(ValueError, match=r"no linked account on Slack"):
+        await _svc(env).builtins_for(
+            user_id=env["user_id"],
+            name="alice",
+            email="alice@example.com",
+            text='room:\n  name: n\n  description: d\n  users: ["{$creator}"]\n',
+        )
+
+
+@pytest.mark.asyncio
+async def test_builtins_creator_resolves_named_bridge(env):
+    """A template naming a non-default bridge resolves the claim on THAT
+    bridge."""
+    await _seed_bridge_with_claim(
+        env["session_factory"],
+        display_name="Mattermost",
+        is_default=True,
+        claimed_by=env["user_id"],
+        external_username="abel.mm",
+    )
+    await _seed_bridge_with_claim(
+        env["session_factory"],
+        display_name="Slack",
+        is_default=False,
+        claimed_by=env["user_id"],
+        external_username="abel.slack",
+    )
+    builtins = await _svc(env).builtins_for(
+        user_id=env["user_id"],
+        name="alice",
+        email="alice@example.com",
+        text='room:\n  name: n\n  description: d\n  bridge: "Slack"\n',
+    )
+    assert builtins["$creator"] == "abel.slack"
+
+
+def test_parse_multiline_param_option(env):
+    """`multiline: true` is a valid param option and rides into the schema."""
+    spec, _ = _svc(env).parse(
+        "params:\n"
+        "  brief:\n"
+        "    type: string\n"
+        "    multiline: true\n"
+        "room:\n"
+        "  name: n\n"
+        "  description: d\n"
+        "  instructions: |\n"
+        "    {brief}\n",
+        inputs={"brief": "line one\nline two\n## Acceptance\n- item"},
+    )
+    assert spec.instructions == "line one\nline two\n## Acceptance\n- item\n"
+
+    from switch_core.rooms_yaml import TemplateDocument
+
+    schema = TemplateDocument.model_json_schema()
+    assert "multiline" in schema["$defs"]["ParamSpec"]["properties"]
+
+
+# ── entity params ───────────────────────────────────────────────────────────
+
+
+def test_resolve_params_entity_types_coerce_to_string():
+    """agent/bridge/room/user are string-valued: the entity's name."""
+    declared = {
+        "coder": ParamSpec(type="agent"),
+        "app": ParamSpec(type="bridge"),
+        "escalate_to": ParamSpec(type="room"),
+        "owner": ParamSpec(type="user"),
+    }
+    resolved = resolve_params(
+        declared,
+        {
+            "coder": "claude-code.alice",
+            "app": "Slack",
+            "escalate_to": "ops",
+            "owner": 7,
+        },
+    )
+    assert resolved == {
+        "coder": "claude-code.alice",
+        "app": "Slack",
+        "escalate_to": "ops",
+        "owner": "7",
+    }
+
+
+def test_template_schema_advertises_entity_types():
+    """The Console reads the allowed types off the schema, so the new ones
+    must be in it or every typed template is rejected client-side."""
+    from switch_core.rooms_yaml import TemplateDocument
+
+    schema = TemplateDocument.model_json_schema()
+    allowed = schema["$defs"]["ParamSpec"]["properties"]["type"]["enum"]
+    assert {"agent", "bridge", "room", "user"} <= set(allowed)
+
+
+def _entity_template(param_type: str, extra_room: str = "") -> str:
+    return (
+        "params:\n"
+        "  pick:\n"
+        f"    type: {param_type}\n"
+        "room:\n"
+        "  name: n\n"
+        "  description: d\n"
+        f"{extra_room}"
+        "  instructions: 'uses {pick}'\n"
+    )
+
+
+@pytest.mark.asyncio
+async def test_check_entity_params_agent_must_exist(env):
+    svc = _svc(env)
+    ok = svc.parse_template(
+        _entity_template("agent"), inputs={"pick": "claude-code.alice"}
+    )
+    await svc.check_entity_params(ok)
+
+    bad = svc.parse_template(_entity_template("agent"), inputs={"pick": "nobody"})
+    with pytest.raises(ValueError, match=r"param 'pick': no agent named 'nobody'"):
+        await svc.check_entity_params(bad)
+
+
+@pytest.mark.asyncio
+async def test_check_entity_params_bridge_must_exist_and_run(env):
+    svc = _svc(env)
+    await _seed_bridge_with_claim(
+        env["session_factory"],
+        display_name="Slack",
+        is_default=True,
+        claimed_by=None,
+        external_username="someone",
+    )
+    ok = svc.parse_template(_entity_template("bridge"), inputs={"pick": "Slack"})
+    await svc.check_entity_params(ok)
+
+    bad = svc.parse_template(_entity_template("bridge"), inputs={"pick": "Teams"})
+    with pytest.raises(
+        ValueError, match=r"param 'pick': no messaging app named 'Teams'"
+    ):
+        await svc.check_entity_params(bad)
+
+    async with env["session_factory"]() as session:
+        bridge = (await session.execute(select(CollaborationBridge))).scalar_one()
+        bridge.status = "stopped"
+        await session.commit()
+    stopped = svc.parse_template(_entity_template("bridge"), inputs={"pick": "Slack"})
+    with pytest.raises(
+        ValueError, match=r"param 'pick': messaging app 'Slack' is not running"
+    ):
+        await svc.check_entity_params(stopped)
+
+
+@pytest.mark.asyncio
+async def test_check_entity_params_room_must_exist(env):
+    svc = _svc(env)
+    spec, _ = svc.parse("room:\n  name: ops\n  description: d\n")
+    await svc.provision(spec, user_id=env["user_id"], is_admin=False)
+
+    ok = svc.parse_template(_entity_template("room"), inputs={"pick": "ops"})
+    await svc.check_entity_params(ok)
+
+    bad = svc.parse_template(_entity_template("room"), inputs={"pick": "nowhere"})
+    with pytest.raises(ValueError, match=r"param 'pick': no room named 'nowhere'"):
+        await svc.check_entity_params(bad)
+
+
+@pytest.mark.asyncio
+async def test_check_entity_params_user_resolves_on_the_rooms_bridge(env):
+    svc = _svc(env)
+    bridge_id = await _seed_bridge_with_claim(
+        env["session_factory"],
+        display_name="Slack",
+        is_default=False,
+        claimed_by=None,
+        external_username="someone",
+    )
+    env["rooms"].bridge_users = {"bob": "U-bob"}
+    text = _entity_template("user", extra_room='  bridge: "Slack"\n')
+
+    ok = svc.parse_template(text, inputs={"pick": "bob"})
+    await svc.check_entity_params(ok)
+    assert env["rooms"].bridge_user_lookups == [(bridge_id, ["bob"])]
+
+    bad = svc.parse_template(text, inputs={"pick": "eve"})
+    with pytest.raises(ValueError, match=r"param 'pick': no user named 'eve'"):
+        await svc.check_entity_params(bad)
+
+
+@pytest.mark.asyncio
+async def test_check_entity_params_user_needs_a_bridge(env):
+    """No bridge named and no default: a user param has nowhere to look."""
+    svc = _svc(env)
+    parsed = svc.parse_template(_entity_template("user"), inputs={"pick": "bob"})
+    with pytest.raises(ValueError, match=r"param 'pick': a user can only be looked up"):
+        await svc.check_entity_params(parsed)
+
+
+@pytest.mark.asyncio
+async def test_check_entity_params_ignores_plain_params(env):
+    """Nothing to check means no store access and no error."""
+    svc = _svc(env)
+    parsed = svc.parse_template(
+        "params:\n  label:\n    type: string\nroom:\n  name: '{label}'\n  description: d\n",
+        inputs={"label": "anything"},
+    )
+    await svc.check_entity_params(parsed)

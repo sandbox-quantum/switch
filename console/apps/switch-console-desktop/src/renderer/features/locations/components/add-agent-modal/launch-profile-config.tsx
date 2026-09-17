@@ -1,7 +1,6 @@
 import { useQuery } from '@tanstack/react-query';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { rpc } from '@renderer/lib/ipc';
-import { Button } from '@renderer/lib/ui/button';
 import { DisclosureRow } from '@renderer/lib/ui/disclosure-row';
 import { Field, FieldDescription, FieldLabel } from '@renderer/lib/ui/field';
 import {
@@ -46,13 +45,6 @@ export function LaunchProfileConfig({
   onChange: (config: AgentProviderConfig | null) => void;
 }) {
   const [open, setOpen] = useState(false);
-  const readiness = useQuery({
-    queryKey: ['provider-readiness', providerId, sshHost, dir],
-    queryFn: () => rpc.agents.providerReadiness({ providerId: providerId!, sshHost, dir }),
-    enabled: !!providerId && !!dir.trim(),
-    staleTime: 30_000,
-    retry: false,
-  });
 
   // Which surface this provider actually keeps its settings in. `advancedFields`
   // below answers "the fields, from wherever they live" and falls back to the
@@ -112,22 +104,6 @@ export function LaunchProfileConfig({
 
   return (
     <div>
-      <div role="status" className="mb-3 text-sm text-foreground-muted">
-        {readiness.isFetching
-          ? 'Checking provider sign-in on the execution machine…'
-          : (readiness.data?.message ?? 'Choose a directory to check provider sign-in.')}
-        {readiness.data?.status !== 'authenticated' && dir.trim() && (
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => {
-              void readiness.refetch();
-            }}
-          >
-            Check again
-          </Button>
-        )}
-      </div>
       {fields.length > 0 && (
         <DisclosureRow
           open={open}

@@ -10,6 +10,7 @@ from switch_core.db import (
     models as _models,  # noqa: F401 — registers tables with Base.metadata
 )
 from switch_core.db.base import Base
+from switch_core.db.engine import migration_connect_args
 from switch_core.logging_config import logging_is_configured
 
 config = context.config
@@ -58,7 +59,7 @@ async def run_async_migrations() -> None:
         config.get_section(config.config_ini_section, {}),
         prefix="sqlalchemy.",
         poolclass=pool.NullPool,
-        connect_args=switch_config.db_connect_args,
+        connect_args=migration_connect_args(switch_config),
     )
     async with connectable.connect() as connection:
         await connection.run_sync(do_run_migrations)

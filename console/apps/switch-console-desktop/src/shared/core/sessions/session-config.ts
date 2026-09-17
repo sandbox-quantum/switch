@@ -1,12 +1,6 @@
 import z from 'zod';
 import { defineVersionedSchema } from '@shared/lib/versioned-schema/versioned-schema';
 
-const DROID_SESSION_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
-export function isDroidProviderSessionId(value: string): boolean {
-  return DROID_SESSION_ID_PATTERN.test(value);
-}
-
 const initialPromptDeliverySchema = z.object({
   /** The command id this attempt owns. Minted once and kept, because the server
    *  treats an id it has answered as immutable. */
@@ -28,7 +22,7 @@ export type InitialPromptDelivery = z.infer<typeof initialPromptDeliverySchema>;
 
 const sessionConfigV0Schema = z.object({
   autoApprove: z.boolean().optional(),
-  /** Provider-native session id (e.g. Droid UUID) for resuming the correct chat. */
+  /** Provider-native session id for resuming the correct chat. */
   providerSessionId: z.string().optional(),
   /** Initial prompt to deliver on the first spawn; cleared from config after the session starts. */
   initialPrompt: z.string().optional(),

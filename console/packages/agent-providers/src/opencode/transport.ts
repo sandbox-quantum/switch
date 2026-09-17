@@ -94,6 +94,14 @@ export function createHttpTransport(options: HttpTransportOptions): OpencodeTran
 
       let nativeSessionId: string;
       try {
+        const { data: providers } = await client.provider.list<true>(
+          { directory: input.cwd },
+          { signal: AbortSignal.timeout(15000) }
+        );
+        if (!providers.connected.length)
+          console.warn(
+            'No connected OpenCode backends were reported. Configure a backend; local models may need no sign-in.'
+          );
         nativeSessionId = await resolveSession(client, input);
       } catch (error) {
         abortController.abort();

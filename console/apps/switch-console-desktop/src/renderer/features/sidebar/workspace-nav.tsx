@@ -1,4 +1,4 @@
-import { Bot, DoorOpen, House } from 'lucide-react';
+import { Bot, DoorOpen, FileText, House } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
 import { isCurrentView, useNavigate, useParams } from '@renderer/lib/layout/navigation-provider';
@@ -18,6 +18,7 @@ export const WorkspaceNav = observer(function WorkspaceNav() {
   const { params: homeParams } = useParams('server');
   const { params: agentsParams } = useParams('serverAgents');
   const { params: roomsParams } = useParams('serverRooms');
+  const { params: templatesParams } = useParams('roomTemplateImport');
   const active = switchServersStore.activeServer;
   if (!active) return null;
 
@@ -25,6 +26,7 @@ export const WorkspaceNav = observer(function WorkspaceNav() {
     { view: 'server', icon: House, label: 'Home', params: homeParams },
     { view: 'serverAgents', icon: Bot, label: 'Your Agents', params: agentsParams },
     { view: 'serverRooms', icon: DoorOpen, label: 'Your Rooms', params: roomsParams },
+    { view: 'roomTemplateImport', icon: FileText, label: 'Templates', params: templatesParams },
   ] as const;
 
   return (

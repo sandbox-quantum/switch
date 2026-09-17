@@ -92,12 +92,14 @@ describe('deleteAgentsForServer', () => {
     await seedAgent('agent-a', 'managed-1');
     await seedAgent('agent-b', 'managed-1');
     mocks.deleteAgent.mockImplementation(async (agentId: string) => {
-      if (agentId === 'agent-a') throw new Error('pty teardown exploded');
+      if (agentId === 'agent-a') throw new Error('runtime teardown exploded');
     });
 
     const result = await deleteAgentsForServer('managed-1');
 
-    expect(result.failed).toEqual([{ agentId: 'agent-a', error: 'Error: pty teardown exploded' }]);
+    expect(result.failed).toEqual([
+      { agentId: 'agent-a', error: 'Error: runtime teardown exploded' },
+    ]);
     expect(result.deleted).toEqual(['agent-b']);
   });
 

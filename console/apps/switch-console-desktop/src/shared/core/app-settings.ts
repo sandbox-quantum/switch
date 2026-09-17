@@ -6,20 +6,16 @@ import {
   type interfaceSettingsSchema,
   type localLocationSettingsSchema,
   type notificationSettingsSchema,
-  type locationSettingsSchema,
   type providerCustomConfigEntrySchema,
   type sessionSettingsSchema,
   type telemetrySettingsSchema,
-  type terminalSettingsSchema,
   type themeSchema,
 } from '@main/core/settings/schema';
 
 export type LocalLocationSettings = z.infer<typeof localLocationSettingsSchema>;
-export type LocationSettings = z.infer<typeof locationSettingsSchema>;
 export type NotificationSettings = z.infer<typeof notificationSettingsSchema>;
 export type SessionSettings = z.infer<typeof sessionSettingsSchema>;
 export type TelemetrySettings = z.infer<typeof telemetrySettingsSchema>;
-export type TerminalSettings = z.infer<typeof terminalSettingsSchema>;
 export type Theme = z.infer<typeof themeSchema>;
 
 export type InterfaceSettings = z.infer<typeof interfaceSettingsSchema>;
