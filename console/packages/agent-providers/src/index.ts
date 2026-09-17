@@ -47,6 +47,8 @@ export type { HostEndpoint, HostStartRequest } from './host/server';
 export { connectHost } from './host/launcher';
 export { runSharedHost } from './host/shared-host';
 export type { SharedHostOptions } from './host/shared-host';
+export { buildSharedHostConfig } from './host/build-shared-config';
+export type { BuildSharedHostConfigInput, SharedHostProvider } from './host/build-shared-config';
 
 export { prepareCodexSessionHome } from './codex/home';
 export { sharedConfigSchema } from './host/shared-config';

@@ -109,3 +109,86 @@ without compaction in this experimental implementation.
 
 Shared commands currently support queued text and request answers. SSH deployment
 and production session routing remain outside this experimental path.
+
+## Hosted bootstrap (phase 1)
+
+switch-hosted-bootstrap is a POSIX operator entry point for one pre-provisioned
+Claude session. It builds the same shared-host configuration used by Console,
+persists its generated host, epoch and room-connection identities, and runs the
+shared host daemon under the existing supervisor in the foreground:
+
+    switch-hosted-bootstrap /srv/switch/session-state /run/switch/deployment.json
+
+The state directory must be absolute, private to the current user and disjoint
+from the workspace. The workspace, Claude executable and both credential files
+must already exist. A version 1 deployment file has this shape:
+
+    {
+      "version": 1,
+      "session": {
+        "sessionId": "assigned-session-id",
+        "agentId": "server-issued-agent-id"
+      },
+      "provider": {
+        "kind": "claude",
+        "credential": {
+          "kind": "api-key",
+          "path": "/run/secrets/claude"
+        },
+        "binaryPath": "/opt/claude/bin/claude",
+        "context": "Operator-supplied non-secret session context"
+      },
+      "workspacePath": "/srv/workspaces/agent",
+      "room": {
+        "roomId": "server-issued-room-id",
+        "startCursor": 0
+      },
+      "runtimeMode": "approval-required",
+      "switchCredentialsPath": "/run/secrets/switch-agent.json",
+      "mcpRuntime": "@sandboxaq/switch-agent-runtime@<published-version>"
+    }
+
+The Claude credential file contains only the raw credential plus an optional
+trailing newline. The api-key kind supplies it to the worker as
+ANTHROPIC_API_KEY; setup-token supplies it as CLAUDE_CODE_OAUTH_TOKEN. This is
+pass-through wiring only. Phase 1 has not established through a live provider
+call that a setup token is accepted, nor that any supplied credential has model
+access or quota.
+
+switchCredentialsPath uses the existing Switch agent credential JSON shape.
+Both files must be mounted outside the state directory and workspace. The
+bootstrap stores their file references, never their values. The provider value
+is loaded into the supervisor's in-memory child environment; the Switch worker
+reads its mounted file. The worker inherits only a fixed set of ordinary process
+variables. HOME, CLAUDE_CONFIG_DIR, TMPDIR and the XDG directories point inside
+the private state directory, and ambient provider, cloud and Node startup
+credentials are not inherited.
+
+The resolved Switch credential file and Claude executable are pinned into the
+saved launch configuration. Treat mounted files as immutable while the bootstrap
+is running. To rotate a credential in phase 1, confirm the foreground bootstrap
+and its worker have stopped, replace the contents at the same resolved file path,
+then restart the bootstrap. Versioned symlink-target rotation and live credential
+replacement need controller support and are not part of this entry point.
+
+On restart, the complete non-secret deployment specification must match the saved
+plan. The bootstrap rebuilds and checks the launch configuration while retaining
+the saved identity IDs; a changed assignment or added environment entry fails
+before launch. Known provider and Switch credential values are redacted from the
+hosted worker log across output chunk boundaries. Hosted failure.json records a fixed
+message rather than a provider error. These exact-value guards do not classify
+arbitrary sensitive text produced by agent work.
+
+The process owns the supervisor it starts. SIGINT and SIGTERM request graceful
+worker shutdown; a worker that does not exit within 30 seconds receives SIGKILL,
+then the existing process-group fence verifies the worker process group has exited. A
+fencing or cleanup failure is returned as a failure. The bootstrap refuses to
+adopt an already-running worker because it could not account for that worker's
+foreground shutdown.
+
+This phase does not provision compute, clone repositories, validate provider
+authentication, isolate tenants, manage credentials, expose hosted Console UI or
+run the room watcher. It starts exactly one already-authorized session bound to
+one room. Room-triggered session creation, pause/enable coordination, capacity,
+cloud assignment, managed secret rotation and deletion require a hosted
+controller in a later phase.

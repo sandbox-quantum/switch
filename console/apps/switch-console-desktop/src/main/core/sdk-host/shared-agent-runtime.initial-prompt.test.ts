@@ -13,6 +13,9 @@ const mocks = vi.hoisted(() => ({
   runHost: vi.fn(),
   exec: vi.fn(),
   specialization: vi.fn(),
+  capabilities: vi.fn(),
+  selection: vi.fn(),
+  plugin: vi.fn(),
 }));
 
 class FakeGatewayError extends Error {
@@ -63,16 +66,16 @@ vi.mock('@main/core/switch-rooms/switch-room-service', () => ({
 vi.mock('@main/core/agent-runtime/impl/provider-adapter-registry', () => ({
   providerAdapterRegistry: {
     supports: () => true,
-    get: () => ({ capabilities: { approvals: true, userInput: true } }),
+    get: mocks.capabilities,
   },
 }));
 vi.mock('@main/core/agents/agent-launch-config', () => ({
   agentLaunchSpecialization: mocks.specialization,
 }));
 vi.mock('@main/core/dependencies/host-dependency-store', () => ({
-  hostDependencyStore: { getSelection: async () => undefined },
+  hostDependencyStore: { getSelection: mocks.selection },
 }));
-vi.mock('@main/core/providers/plugin-registry', () => ({ getPlugin: () => ({ behavior: {} }) }));
+vi.mock('@main/core/providers/plugin-registry', () => ({ getPlugin: mocks.plugin }));
 vi.mock('@main/lib/logger', () => ({ log: { warn: vi.fn(), error: vi.fn() } }));
 
 const { SharedAgentRuntime, buildSharedHostConfig } = await import('./shared-agent-runtime');
@@ -94,6 +97,9 @@ function runtime() {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mocks.capabilities.mockReturnValue({ capabilities: { approvals: true, userInput: true } });
+  mocks.selection.mockResolvedValue(undefined);
+  mocks.plugin.mockReturnValue({ behavior: {} });
   mocks.specialization.mockResolvedValue({});
   mocks.agent.mockResolvedValue({
     id: 'agent-1',
@@ -255,6 +261,83 @@ it('reads updated model, effort and instructions for each launch', async () => {
   expect(second.start.input.model).toEqual({ id: 'second-model', options: { effort: 'high' } });
   expect(second.execution?.context).toContain('Updated instructions');
   expect(second.execution?.context).not.toContain('First instructions');
+});
+it.each([
+  ['claude', 'effort', 'high'],
+  ['codex', 'effort', 'high'],
+  ['opencode', 'variant', 'fast'],
+] as const)(
+  'maps %s model specialization to the provider option key',
+  async (provider, optionKey, optionValue) => {
+    mocks.specialization.mockResolvedValue({
+      model: `${provider}-model`,
+      effort: 'high',
+      variant: 'fast',
+      instructions: `${provider} instructions`,
+    });
+
+    const config = await buildSharedHostConfig(
+      { ...session, providerId: provider as Session['providerId'] },
+      { sessionPath: '/work', sessionEnvVars: { CUSTOM_ENV: provider } },
+      { kind: 'local' },
+      { rooms: ['room-1'] }
+    );
+
+    expect(config.start.provider).toBe(provider);
+    expect(config.start.input.model).toEqual({
+      id: `${provider}-model`,
+      options: { [optionKey]: optionValue },
+    });
+    expect(config.start.input.env).toEqual({ CUSTOM_ENV: provider });
+    expect(config.execution?.context).toContain(`${provider} instructions`);
+  }
+);
+
+it('forwards resolved SSH paths, profile, binary, environment and context', async () => {
+  const launchProfile = vi.fn(() => ({
+    files: [{ content: 'profile = "one"' }, { content: 'profile = "two"' }],
+  }));
+  mocks.plugin.mockReturnValue({ behavior: { mcp: { launchProfile } } });
+  mocks.selection.mockResolvedValue({ kind: 'path', path: '/opt/codex' });
+  mocks.specialization.mockResolvedValue({
+    model: 'codex-model',
+    effort: 'medium',
+    instructions: 'Hosted instructions',
+  });
+  const env = { CUSTOM_ENV: 'configured' };
+
+  const config = await buildSharedHostConfig(
+    { ...session, providerId: 'codex' },
+    { sessionPath: '/work', sessionEnvVars: env, shellSetup: 'export EXTRA=1' },
+    {
+      kind: 'ssh',
+      host: 'example.test',
+      dir: '/work',
+      connectionId: 'ssh-1',
+    },
+    { rooms: ['room-1'], startCursor: 9 }
+  );
+
+  expect(mocks.selection).toHaveBeenCalledWith('ssh-1', 'codex');
+  expect(launchProfile).toHaveBeenCalledWith({
+    slug: 'scout',
+    workingDir: '/work',
+    values: {
+      model: 'codex-model',
+      effort: 'medium',
+      instructions: 'Hosted instructions',
+    },
+  });
+  expect(config.start.input.env).toEqual(env);
+  expect(config.execution).toMatchObject({
+    credentialsPath: '/work/.switch/agents/scout.json',
+    binaryPath: '/opt/codex',
+    shellSetup: 'export EXTRA=1',
+    codexConfig: 'profile = "one"\nprofile = "two"',
+    context: 'Hosted instructions',
+  });
+  expect(config.execution?.skill.length).toBeGreaterThan(0);
+  expect(config.roomConnection).toMatchObject({ rooms: ['room-1'], startCursor: 9 });
 });
 
 it('opens the session while auth is pending and submits the initial prompt only after readiness', async () => {
