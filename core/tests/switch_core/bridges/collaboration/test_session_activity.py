@@ -883,12 +883,51 @@ async def test_a_remark_too_long_for_its_line_keeps_the_rest_where_it_expands() 
     assert len(_detail(card)) > len(card["title"])
 
 
-async def test_a_remark_that_fits_its_line_is_not_given_an_expansion() -> None:
-    """An expansion holding what is already on the line is a control that does
-    nothing, and a reader who opens one learns that the hard way."""
+async def test_even_a_remark_that_would_fit_a_line_is_drawn_in_the_detail() -> None:
+    """The detail used to be the overflow and is now the whole card: the title
+    is hidden, so a remark left out of the detail is a remark nobody sees."""
     drawn = render_activity_plan([_said("All green.")], _turn("completed"))
 
-    assert "details" not in drawn.blocks[0]["tasks"][0]
+    card = drawn.blocks[0]["tasks"][0]
+    assert card["hide_title"] is True
+    assert _detail(card) == "All green."
+
+
+async def test_a_hidden_title_still_says_what_the_card_is() -> None:
+    """Hiding is the card asking; a client that does not honour it falls back to
+    the title, and an empty one would leave the remark showing as nothing."""
+    drawn = render_activity_plan([_said("All green.")], _turn("completed"))
+
+    assert drawn.blocks[0]["tasks"][0]["title"] == "» All green."
+
+
+async def test_prose_and_calls_are_told_apart_by_the_glyph_not_by_the_status() -> None:
+    """Slack settles both with the same check, and a check beside a sentence
+    claims an outcome the sentence never had. The glyph is what separates them,
+    now that the marker carrying it sits in a title nobody is shown."""
+    drawn = render_activity_plan(
+        [_said("Looking now."), _item(status="completed", title="Read backoff.py")],
+        _turn("completed"),
+    )
+
+    said, call = drawn.blocks[0]["tasks"]
+    assert said["icon"] == {"type": "icon", "name": "comment"}
+    assert call["icon"] == {"type": "icon", "name": "code"}
+
+
+async def test_the_markdown_an_agent_wrote_reaches_the_reader_unstripped() -> None:
+    """Slack renders none of it in this slot, so it arrives literally. Stripping
+    it instead loses the distinction between a code span and a word, which is
+    worse than a reader seeing the backticks that were always there."""
+    drawn = render_activity_plan(
+        [_said("The failure is in **retry** — see `backoff.reset()`.")],
+        _turn("completed"),
+    )
+
+    assert (
+        _detail(drawn.blocks[0]["tasks"][0])
+        == "The failure is in **retry** — see `backoff.reset()`."
+    )
 
 
 async def test_the_expansion_keeps_the_breaks_the_line_had_to_fold_out() -> None:

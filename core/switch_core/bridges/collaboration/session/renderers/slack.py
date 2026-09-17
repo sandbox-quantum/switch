@@ -220,6 +220,14 @@ _TASK_STATUS = {
     "declined": "error",
 }
 
+# What a card draws in its own glyph slot. Not an emoji field: Slack takes a
+# closed set of 54 names here and refuses anything outside it — `bolt`, `wrench`
+# and `terminal` are all rejected as invalid enum values — so these two are
+# chosen from what exists rather than from what a speech bubble or a shell
+# prompt would ideally be.
+_SAID_ICON = "comment"
+_TOOL_ICON = "code"
+
 _DANGEROUS = {"decline", "cancel"}
 
 # How a tool call went, in one character, because it is read at a glance and
@@ -1521,34 +1529,38 @@ def _plan_task(item: Item) -> dict[str, Any]:
     Slack draws a settled card with a check, which beside a sentence is the one
     thing the marker exists to deny. There is no fourth status to reach for —
     Slack has three and the other two are a spinner and an error, both of which
-    say something worse — so the marker carries the distinction alone here,
-    where on every other platform the glyph column carries it.
+    say something worse — so a remark carries a `comment` glyph and a call
+    carries `code`, which is what the glyph column does on every other platform.
+    The marker stays in the title behind it as the same distinction in text.
 
-    A remark longer than its title keeps the rest in the card's detail, which is
-    the part Slack offers to expand. The title is a one-line preview and folds
-    the paragraph breaks out, because four lines of sentence in a list of calls
-    reads as four things happening; the detail keeps them, because that is where
-    the remark is read rather than scanned. A remark that fits its title gets no
-    detail at all — an expansion holding what is already on the line is a
-    control that does nothing.
+    A remark is drawn as its detail rather than as its title: the title is
+    hidden, and the prose sits at the top of the card where a reader meets it
+    whole instead of meeting a one-line preview of it. The title is still
+    written, because hiding it is the card's choice and a client that does not
+    honour that should find a sentence there rather than nothing.
+
+    The prose keeps the markdown the agent wrote. Slack renders none of it in
+    this slot, so asterisks and backticks arrive literally — which is readable,
+    and is less lossy than stripping the marks out and leaving a reader unable
+    to tell a code span from a word.
     """
     if item.kind == "assistant-message":
-        said = plain_text(item.text)
-        line = f"{SAID_MARKER} {' '.join(said.split())}"
-        card: dict[str, Any] = {
+        preview = f"{SAID_MARKER} {' '.join(plain_text(item.text).split())}"
+        return {
             "task_id": _task_id(item.item_id),
-            "title": _truncate(line, _MAX_PLAN_TASK_TITLE),
+            "title": _truncate(preview, _MAX_PLAN_TASK_TITLE),
+            "hide_title": True,
+            "icon": {"type": "icon", "name": _SAID_ICON},
             "status": "complete",
+            "details": _rich_text(_truncate_prose(item.text, _MAX_SAID_DETAILS)),
         }
-        if len(line) > _MAX_PLAN_TASK_TITLE:
-            card["details"] = _rich_text(_truncate_prose(said, _MAX_SAID_DETAILS))
-        return card
     title = plain_text(item.title) if item.title else ""
     if item.status in ("failed", "declined"):
         title = f"{_ACTIVITY[item.status]} {title}".strip()
     task: dict[str, Any] = {
         "task_id": _task_id(item.item_id),
         "title": _truncate(title, _MAX_PLAN_TASK_TITLE) or "(untitled)",
+        "icon": {"type": "icon", "name": _TOOL_ICON},
         "status": _TASK_STATUS[item.status],
     }
     details = plain_text(item.text) if item.text else ""
