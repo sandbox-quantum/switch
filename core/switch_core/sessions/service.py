@@ -1544,9 +1544,25 @@ class SessionAuthority:
 
     @staticmethod
     def _command_identity(payload: dict) -> dict:
-        payload = Command.model_validate(payload).model_dump(by_alias=True)
+        """What a repeated command id has to still mean to be the same command.
+
+        Everything the command says, less the parts of its origin that describe
+        how it got here rather than what was decided. The message it arrived on
+        is one of those. For an interrupt so is the actor: it names a turn and
+        nothing about who wants it stopped, so two people pressing one rendered
+        stop control are one request and the second is answered with the
+        first's receipt rather than refused as a contradiction of it. Whether
+        each of them may press it at all is settled before acceptance, against
+        their own identity. Everywhere else the actor is part of what makes a
+        command that command — two people answering a question differently are
+        two answers, and the session has to be able to tell them apart.
+        """
+        command = Command.model_validate(payload)
+        payload = command.model_dump(by_alias=True)
+        anonymous = isinstance(command.body, TurnInterrupt)
+        opaque = {"messageId", "actorId"} if anonymous else {"messageId"}
         origin = {
-            key: value for key, value in payload["origin"].items() if key != "messageId"
+            key: value for key, value in payload["origin"].items() if key not in opaque
         }
         return {**payload, "origin": origin}
 

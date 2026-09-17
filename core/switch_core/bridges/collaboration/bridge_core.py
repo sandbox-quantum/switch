@@ -1372,6 +1372,7 @@ class BridgeCore:
             interaction,
             thread_ref=None,
             refusal="Your answer was not accepted",
+            accepted=None,
         )
 
     async def _handle_interrupt_press(self, interaction: InboundInteraction) -> None:
@@ -1435,6 +1436,7 @@ class BridgeCore:
         command = interrupt_command(
             target,
             turn_id=interaction.value,
+            message_ref=interaction.message_ref,
             origin=Origin(
                 surface=cast(Surface, self._bridge_type),
                 actor_id=actor_id,
@@ -1448,6 +1450,10 @@ class BridgeCore:
             interaction,
             thread_ref=None,
             refusal="The agent was not stopped",
+            accepted=(
+                "Switch has asked the agent to stop its current work. The "
+                "activity message will say when it has."
+            ),
         )
 
     async def _activity_control_at(
@@ -1518,6 +1524,7 @@ class BridgeCore:
             msg,
             thread_ref=msg.root_id or msg.message_ref,
             refusal="Your answer was not accepted",
+            accepted=None,
         )
 
     async def _tell_refused(
@@ -1587,6 +1594,7 @@ class BridgeCore:
         actor: InboundActor,
         thread_ref: str | None,
         refusal: str,
+        accepted: str | None,
     ) -> None:
         """Give the session the answer, and tell the answerer if it bounced.
 
@@ -1599,18 +1607,30 @@ class BridgeCore:
         reply it still lands in the card's thread, which is where this used to
         post anyway.
 
+        A refusal arrives two ways and reads the same either way. Authority
+        raises the ones that are about the sender — not linked, not allowed,
+        an id already spent on something else — and hands back the ones that
+        are about the session, a turn that has already ended or a host that
+        cannot be interrupted at all, as a rejected receipt. The second kind is
+        the one a stale control produces, so a receipt that is not read is a
+        press that answers nothing.
+
         `thread_ref` is None for a press: the reply to a press is addressed by
         the press itself, and the channel root would be a wider audience than
         the card's own thread rather than a narrower one.
 
         `refusal` opens that sentence, because not every control is an answer:
         a stop button turned down has to say the agent is still running, not
-        that an answer did not land.
+        that an answer did not land. `accepted` is the counterpart for a
+        control whose success the channel does not otherwise show, and it is
+        None where a redrawn card is the acknowledgement. It can only ever say
+        that Switch took the request; whether the agent has stopped is the
+        provider's to report, and it reports it by ending the turn.
         """
         if command is None:
             return
         try:
-            await self._session_authority.submit(
+            receipt = await self._session_authority.submit(
                 command, user_id=None, bridge_id=self._bridge_id
             )
         except SessionError as error:
@@ -1622,6 +1642,23 @@ class BridgeCore:
                 f"{refusal} ({error.code}): {error}",
             )
             return
+        if receipt.status == "rejected":
+            await self._adapter.tell_actor(
+                actor.channel_id,
+                actor.sender_id,
+                actor.sender_name,
+                thread_ref,
+                f"{refusal} ({receipt.code}): {receipt.message}",
+            )
+            return
+        if accepted is not None:
+            await self._adapter.tell_actor(
+                actor.channel_id,
+                actor.sender_id,
+                actor.sender_name,
+                thread_ref,
+                accepted,
+            )
         await self.refresh_sdk_session(command.session_id)
 
     async def _identify_actor(self, actor: InboundActor) -> str | None:

@@ -49,9 +49,9 @@ from switch_core.bridges.collaboration.slack.adapter import (
     SlackAdapter,
     SlackConnectionConfig,
 )
-from switch_core.sessions.contract import Item, Origin, TurnUpsert
+from switch_core.sessions.contract import CommandStatus, Item, Origin, TurnUpsert
 from switch_core.sessions.publication import ActivityControlTarget
-from switch_core.sessions.service import SessionError
+from switch_core.sessions.service import SessionAuthority, SessionError
 
 from .slack_fakes import FakeWebClient
 from .test_session_answers import _run
@@ -373,16 +373,22 @@ TARGET = ActivityControlTarget(
 )
 
 
-def _command(turn_id: str = RUNNING_TURN, actor: str = "@alice:example.test") -> Any:
+def _command(
+    turn_id: str = RUNNING_TURN,
+    actor: str = "@alice:example.test",
+    message_ref: str = "C1:9.9",
+    thread_id: str | None = TARGET.thread_id,
+) -> Any:
     return interrupt_command(
         TARGET,
         turn_id=turn_id,
+        message_ref=message_ref,
         origin=Origin(
             surface="slack",
             actor_id=actor,
             room_id=TARGET.room_id,
-            thread_id=TARGET.thread_id,
-            message_id="C1:9.9",
+            thread_id=thread_id,
+            message_id=message_ref,
         ),
     )
 
@@ -407,12 +413,44 @@ def test_the_same_person_pressing_twice_is_one_command() -> None:
     assert _command().command_id == _command().command_id
 
 
-def test_two_people_stopping_the_same_turn_are_two_commands() -> None:
-    """Not a conflict. The session compares everything about a command except
-    the message it arrived on, so a shared id would have the second press
-    refused as a contradiction of the first rather than settled as agreement.
+def test_two_people_pressing_one_control_are_one_command() -> None:
+    """One button, one turn, one request to stop it — whoever reaches it.
+
+    The second presser is answered with the first one's receipt rather than
+    submitting a second interrupt, which is what the session would otherwise
+    have to reconcile against a turn that is already stopping.
     """
-    assert _command().command_id != _command(actor="@bob:example.test").command_id
+    assert _command().command_id == _command(actor="@bob:example.test").command_id
+
+
+def test_the_session_does_not_read_two_pressers_as_a_contradiction() -> None:
+    """The id alone does not settle it: a repeat is compared against the origin
+    of the command already stored, and for anything else a different actor
+    there is a different command wearing a borrowed id. An interrupt names a
+    turn and nothing about who wants it stopped, so the two agree.
+    """
+    identity = SessionAuthority._command_identity
+
+    assert identity(_command().model_dump(by_alias=True)) == identity(
+        _command(actor="@bob:example.test").model_dump(by_alias=True)
+    )
+
+
+def test_one_turn_shown_in_two_threads_gives_two_controls() -> None:
+    """A turn gets an activity message per thread it was asked from, and each
+    carries its own stop button. Keyed on the turn alone both presses would
+    share an id while arriving from different threads, and the session reads
+    that as one id used for two different commands — so the second reader's
+    press is refused for contradicting a press they never made.
+    """
+    first = _command()
+    second = _command(message_ref="C1:8.8", thread_id="thread-other")
+    identity = SessionAuthority._command_identity
+
+    assert first.command_id != second.command_id
+    assert identity(first.model_dump(by_alias=True)) != identity(
+        second.model_dump(by_alias=True)
+    )
 
 
 def test_a_press_naming_a_different_turn_is_a_different_command() -> None:
@@ -437,6 +475,16 @@ class _Notices:
         text: str,
     ) -> None:
         self.told.append((channel_id, actor_ref, actor_name, thread_ref, text))
+
+
+def _receipt(status: str, code: str | None = None, message: str | None = None) -> Any:
+    return CommandStatus(
+        type="command.status",
+        command_id="command-demo",
+        status=status,
+        code=code,
+        message=message,
+    )
 
 
 def _bridge(
@@ -464,7 +512,9 @@ def _bridge(
     bridge._bridge_type = "slack"
     bridge._session_interactions = None
     bridge._session_publisher = SimpleNamespace(activity_control_at=_control_at)
-    bridge._session_authority = SimpleNamespace(submit=submit or AsyncMock())
+    bridge._session_authority = SimpleNamespace(
+        submit=submit or AsyncMock(return_value=_receipt("accepted"))
+    )
     bridge._activity_control_at = _control_at  # type: ignore[assignment]
     bridge._identify_actor = _identify  # type: ignore[assignment]
     bridge.refresh_sdk_session = AsyncMock()  # type: ignore[method-assign]
@@ -483,7 +533,7 @@ def _press(action_id: str = INTERRUPT_ACTION, value: str = RUNNING_TURN) -> Any:
 
 
 def test_a_stop_press_is_submitted_to_the_session() -> None:
-    submit = AsyncMock()
+    submit = AsyncMock(return_value=_receipt("accepted"))
     bridge = _bridge(submit=submit)
 
     _run(bridge._handle_inbound_interaction(_press()))
@@ -493,7 +543,65 @@ def test_a_stop_press_is_submitted_to_the_session() -> None:
     assert command.body.turn_id == RUNNING_TURN
     assert command.origin.room_id == "room-demo"
     assert command.origin.actor_id == "@alice:example.test"
-    assert bridge._adapter.told == []
+
+
+def test_an_accepted_press_says_switch_took_it_and_not_that_work_stopped() -> None:
+    """A press that lands changes nothing the reader can see for a while: the
+    provider has to finish the turn before the activity message says so. So it
+    is acknowledged — and the acknowledgement has to be about Switch, because
+    claiming the agent has stopped is a claim only the provider can make.
+    """
+    bridge = _bridge()
+
+    _run(bridge._handle_inbound_interaction(_press()))
+
+    told = bridge._adapter.told[0][4]
+    assert "Switch has asked the agent to stop" in told
+    assert "has stopped" not in told
+
+
+def test_a_stale_press_is_told_so_even_though_nothing_was_raised() -> None:
+    """A turn that ended between the render and the press is the ordinary way
+    this control fails, and authority answers it with a rejected receipt
+    rather than an error. Read only the errors and the commonest refusal there
+    is becomes silence — on a button the reader expects to have done something.
+    """
+    submit = AsyncMock(
+        return_value=_receipt(
+            "rejected", "TURN_NOT_ACTIVE", "The turn is no longer running."
+        )
+    )
+    bridge = _bridge(submit=submit)
+
+    _run(bridge._handle_inbound_interaction(_press()))
+
+    assert bridge._adapter.told[0][4] == (
+        "The agent was not stopped (TURN_NOT_ACTIVE): The turn is no longer running."
+    )
+
+
+def test_a_host_that_cannot_be_interrupted_is_reported_to_the_presser() -> None:
+    submit = AsyncMock(
+        return_value=_receipt(
+            "rejected", "UNSUPPORTED_CAPABILITY", "Interrupt is unavailable."
+        )
+    )
+    bridge = _bridge(submit=submit)
+
+    _run(bridge._handle_inbound_interaction(_press()))
+
+    assert bridge._adapter.told[0][4] == (
+        "The agent was not stopped (UNSUPPORTED_CAPABILITY): Interrupt is unavailable."
+    )
+
+
+def test_a_rejected_press_is_not_also_reported_as_accepted() -> None:
+    submit = AsyncMock(return_value=_receipt("rejected", "TURN_NOT_ACTIVE", "Gone."))
+    bridge = _bridge(submit=submit)
+
+    _run(bridge._handle_inbound_interaction(_press()))
+
+    assert len(bridge._adapter.told) == 1
 
 
 def test_the_turn_comes_off_the_button_and_not_from_a_fresh_read() -> None:

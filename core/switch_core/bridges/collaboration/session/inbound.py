@@ -97,7 +97,7 @@ def answer_command(
 
 
 def interrupt_command(
-    target: ActivityControlTarget, *, turn_id: str, origin: Origin
+    target: ActivityControlTarget, *, turn_id: str, message_ref: str, origin: Origin
 ) -> Command:
     """The `turn.interrupt` a press on a stop control amounts to.
 
@@ -112,9 +112,7 @@ def interrupt_command(
     """
     return Command(
         contract_version=1,
-        command_id=_interrupt_command_id(
-            target, turn_id=turn_id, actor_id=origin.actor_id
-        ),
+        command_id=_interrupt_command_id(message_ref, turn_id=turn_id),
         session_id=target.session_id,
         epoch=target.epoch,
         origin=origin,
@@ -122,22 +120,22 @@ def interrupt_command(
     )
 
 
-def _interrupt_command_id(
-    target: ActivityControlTarget, *, turn_id: str, actor_id: str
-) -> str:
-    """Derived, so that one person pressing stop twice is one command.
+def _interrupt_command_id(message_ref: str, *, turn_id: str) -> str:
+    """Derived from the control pressed, so pressing it twice is one command.
 
-    A second press while the first is still in flight is the same command
-    again, which is what someone pressing a button that has not visibly done
-    anything yet will do. The actor is part of the key because two people
-    stopping the same turn are two commands, not a conflict: the session
-    compares everything about a command but the message it arrived on, so a
-    shared id would have the second press refused as a contradiction of the
-    first rather than settled as the same intent.
+    The rendered control, not the turn: one turn can be shown by an activity
+    message per thread it was asked from, and a press on each of those is a
+    press on a different control. Keying on the turn alone would make the
+    second a contradiction of the first, because the session compares a
+    repeated id against the origin of the one it already holds and those two
+    presses carry different threads.
+
+    The presser is deliberately not in the key. Who pressed decides whether the
+    press is allowed, which is settled before the command is accepted, but it
+    does not make it a different command: two people pressing one button are
+    one request to stop one turn, and the second gets the first one's receipt.
     """
-    key = "|".join(
-        [target.session_id, target.epoch, "turn.interrupt", turn_id, actor_id]
-    )
+    key = "|".join([message_ref, "turn.interrupt", turn_id])
     return str(uuid.uuid5(_COMMAND_NAMESPACE, key))
 
 
