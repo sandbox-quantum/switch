@@ -49,7 +49,7 @@ Fields (`MattermostConnectionConfig`):
 | `admin_password` | yes | Admin password. |
 | `team_name` | yes | Team slug that bridged channels are created under. |
 | `public_url` | no | User-facing base URL when it differs from `url`; used for channel deeplinks so they open in the user's client. Falls back to `url`. |
-| `callback_base_url` | no | Base URL (scheme + host + port, no path) the **Mattermost server** reaches switch-core's callback listener on. Unset means cards carry no buttons. See [step 3](#3-optional-let-mattermost-deliver-button-presses). |
+| `callback_base_url` | no | Base URL (scheme + host + port, no path) the **Mattermost server** reaches switch-core's callback listener on. Unset means Switch's posts carry no buttons. See [step 3](#3-optional-let-mattermost-deliver-button-presses). |
 
 On success the bridge logs in as the admin, resolves the team, and starts its
 WebSocket. Per-agent bot accounts are created as agents are used.
@@ -60,7 +60,8 @@ Everything else Switch hears from Mattermost comes down the WebSocket the bridge
 dialled out on. A **button press does not**: the Mattermost server POSTs it to a
 URL, so switch-core has to be reachable *from the Mattermost server*. Skip this
 section and nothing breaks — cards arrive without buttons and stay answerable by
-typing a reply, and the bridge logs one warning saying so at startup.
+typing a reply, an agent is stopped with `!interrupt` instead of a button, and
+the bridge logs one warning saying so at startup.
 
 **The listener.** switch-core takes callbacks on a socket of its own, separate
 from the agent API on `SERVER_PORT` (8000), which also carries the MCP server and
@@ -152,10 +153,23 @@ is explained to that person alone — nobody else in the channel sees it. A card
 that says it is too long to answer from Mattermost carries no buttons, because
 the reader has not been shown what they would be deciding.
 
+**Stopping an agent.** The message showing what an agent is doing carries a
+**Stop current work** button while there is something to stop. Pressing it asks
+the agent to end its current turn; the agent decides how quickly it can, and the
+same message says when it has. The control names the turn it was drawn for, so a
+press on a message that has not been redrawn since a new turn started is refused
+rather than stopping the newer one. It disappears when the turn ends. On a queued
+message the button stops the work in front of it, not the queued message, and the
+message says so. Whoever presses it must be allowed to stop that agent — the same
+check a typed `!interrupt` goes through — and a refusal is shown to them alone.
+
 Buttons ride in the post's props, which an edit replaces wholesale, so a redraw
 reads the post back and merges rather than overwriting what the Mattermost
-server itself put there. It is one extra API call, made only for request cards
-on bridges that take callbacks.
+server itself put there. That is one extra API call, and a status message is
+redrawn on every tool call, so it is made only when a redraw actually changes the
+buttons — twice over a turn rather than once per redraw. A bridge that has just
+restarted does not know what is on a post it did not write, so its first redraw
+of each one pays the call.
 
 **Kubernetes.** The chart publishes the callback port when
 `switchCore.collaborationCallback.enabled` is set, which it is not by default:

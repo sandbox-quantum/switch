@@ -47,8 +47,10 @@ from switch_core.bridges.collaboration.ingress import (
 from switch_core.bridges.collaboration.mattermost.callback import (
     MAX_BUTTON_LABEL,
     ActivityPress,
+    InterruptPress,
     activity_action,
     answer_actions,
+    interrupt_action,
     read_press,
 )
 from switch_core.bridges.collaboration.models import (
@@ -66,6 +68,8 @@ from switch_core.bridges.collaboration.models import (
     OutboundAttachment,
 )
 from switch_core.bridges.collaboration.session.renderers import (
+    INTERRUPT_ACTION,
+    INTERRUPT_QUEUED_NOTE,
     Drawn,
     offered_controls,
     position_action,
@@ -79,6 +83,7 @@ from switch_core.bridges.collaboration.session.renderers.neutral import (
     render_request,
     turn_status,
 )
+from switch_core.sessions.contract import TURN_ENDED
 
 logger = logging.getLogger(__name__)
 
@@ -340,6 +345,16 @@ class MattermostAdapter(CollaborationAdapter):
         self._usernames: OrderedDict[str, str] = OrderedDict()
         self._usernames_max = 1000
 
+        # post id -> the buttons last written onto it. A status post is redrawn
+        # on every tool call and its buttons change at most twice in a turn, so
+        # a redraw compares against this and leaves the props alone when there
+        # is nothing to say — patching them means reading the post back first,
+        # which is a round trip this bridge's hottest path cannot afford. A
+        # post missing from here is treated as changed, so a restart costs one
+        # read per post rather than leaving a dead control on it.
+        self._post_actions: OrderedDict[str, list[dict[str, Any]]] = OrderedDict()
+        self._post_actions_max = 1000
+
         self._main_loop: asyncio.AbstractEventLoop | None = None
 
         # channel id -> channel name (URL slug), for building channel deeplinks.
@@ -476,10 +491,16 @@ class MattermostAdapter(CollaborationAdapter):
         raised while the answer is being judged reaches `tell_actor`, which
         leaves it here rather than posting it where the channel would read it.
 
-        Two kinds of button arrive here. An answer to a request card goes
-        inwards as an interaction and is judged by the shared layer; a request
-        to see a turn's tool calls is a read, answered in the reply itself and
-        going no further than the person who asked.
+        Three kinds of button arrive here. An answer to a request card and a
+        press on a turn's stop control both go inwards as interactions and are
+        judged by the shared layer; a request to see a turn's tool calls is a
+        read, answered in the reply itself and going no further than the person
+        who asked.
+
+        The stop control's action id is rebuilt on the way in rather than read
+        off the wire. Mattermost allows letters and digits in an id, and the id
+        the shared layer routes on is neither — so what identifies the press is
+        the shape of the context it carried, which is signed.
         """
         if self._callback is None:
             raise CallbackRefused("This bridge takes no callbacks.", status=404)
@@ -511,6 +532,11 @@ class MattermostAdapter(CollaborationAdapter):
             )
             raise CallbackRefused("Switch could not identify you.", status=500)
 
+        if isinstance(press, InterruptPress):
+            action_id, value = INTERRUPT_ACTION, press.turn_id
+        else:
+            action_id, value = position_action(press.position), press.token
+
         notices: list[str] = []
         held = _PRESS_NOTICE.set(notices)
         try:
@@ -519,8 +545,8 @@ class MattermostAdapter(CollaborationAdapter):
                     channel_id=press.channel_id,
                     sender_id=press.user_id,
                     sender_name=name,
-                    action_id=position_action(press.position),
-                    value=press.token,
+                    action_id=action_id,
+                    value=value,
                     message_ref=press.post_id,
                 )
             )
@@ -1003,8 +1029,14 @@ class MattermostAdapter(CollaborationAdapter):
         if isinstance(content, TurnActivity):
             # Charged to the same budget as the status it follows: a post that
             # just fits, plus a line saying it reached nobody, is a post
-            # Mattermost refuses.
-            tail = f"\n{self.unnotified_notice()}" if content.notify_unreachable else ""
+            # Mattermost refuses. The note under a queued turn's stop control
+            # is charged the same way, and for the same reason.
+            lines = []
+            if self._offers_interrupt(content) and content.turn.status == "queued":
+                lines.append(INTERRUPT_QUEUED_NOTE)
+            if content.notify_unreachable:
+                lines.append(self.unnotified_notice())
+            tail = "".join(f"\n{line}" for line in lines)
             return Drawn(
                 text=turn_status(
                     content.items,
@@ -1059,6 +1091,25 @@ class MattermostAdapter(CollaborationAdapter):
             return None
         return url, endpoint.key
 
+    def _offers_interrupt(self, content: RichContent) -> bool:
+        """Whether this post gets a control that stops the agent's current work.
+
+        Three things, each removing it on its own: something running to stop,
+        named by the caller when the message was drawn; this message's own turn
+        still unfinished, so that scrolling back to yesterday's turn does not
+        offer a control over today's work; and somewhere for a press to go.
+
+        Asked before the text is drawn as well as when the buttons are built,
+        because a queued turn's control needs a line saying what it stops and
+        that line is part of the post's body.
+        """
+        return (
+            isinstance(content, TurnActivity)
+            and content.interrupt_turn_id is not None
+            and content.turn.status not in TURN_ENDED
+            and self._button_address() is not None
+        )
+
     def _controls(
         self, channel_id: str, content: RichContent, drawn: Drawn
     ) -> list[dict[str, Any]]:
@@ -1072,10 +1123,15 @@ class MattermostAdapter(CollaborationAdapter):
         a card at the moment it stops being pressable, without anything having
         to remember that it once had them.
 
-        A turn's status earns one button whatever state it is in. The log it
-        opens is read when the press arrives rather than drawn into the post,
+        A turn's status earns the button into its log whatever state it is in.
+        The log is read when the press arrives rather than drawn into the post,
         so a running turn's is as current as an ended turn's and neither goes
         stale on the channel.
+
+        The stop control beside it is the one button here that does go stale,
+        because what it offers depends on there being work to stop. It comes
+        and goes over a turn's life, which is why a redraw has to be able to
+        rewrite a status post's buttons at all.
 
         Whether the drawing earned the option buttons comes from `drawn` rather
         than from reading the request a second time. A body cut short of the
@@ -1089,9 +1145,13 @@ class MattermostAdapter(CollaborationAdapter):
             return []
         url, key = address
         if isinstance(content, TurnActivity):
-            if self._resolve_activity is None or content.error_summary:
-                return []
-            return [activity_action(key, url, channel_id)]
+            actions = []
+            if self._resolve_activity is not None and not content.error_summary:
+                actions.append(activity_action(key, url, channel_id))
+            turn_id = content.interrupt_turn_id
+            if turn_id is not None and self._offers_interrupt(content):
+                actions.append(interrupt_action(key, url, channel_id, turn_id))
+            return actions
         if not isinstance(content, RequestCard) or not drawn.answerable:
             return []
         controls = offered_controls(content.request)
@@ -1180,6 +1240,7 @@ class MattermostAdapter(CollaborationAdapter):
             if failure is None:
                 raise
             raise failure from error
+        self._remember_actions(ref, rendered.actions)
         return ref
 
     async def update_rich(
@@ -1207,12 +1268,19 @@ class MattermostAdapter(CollaborationAdapter):
         whose outcome is unknown may well have landed, and reporting it as a
         refusal buys a fallback reply about a card that is already correct.
 
-        A card's buttons are carried in the post's props, so the props are part
-        of the edit — which is what takes them off a card the moment it stops
-        being answerable. Part of every card's edit, not just the edits of a
-        bridge that could put a button on: a deployment that has since dropped
-        its callback address can offer no new button and has old ones still
-        inviting a press at a route that has gone.
+        A post's buttons are carried in its props, so the props are part of the
+        edit — which is what takes them off a card the moment it stops being
+        answerable, and off a status post the moment its turn ends. Part of
+        every card's edit, not just the edits of a bridge that could put a
+        button on: a deployment that has since dropped its callback address can
+        offer no new button and has old ones still inviting a press at a route
+        that has gone.
+
+        A status post's props are rewritten only when its buttons have actually
+        changed, which over a turn is at most twice. Writing props means reading
+        the post back first, and a status post is redrawn on every tool call —
+        the round trip belongs on the edit that has something to say, not on the
+        hundred that are redrawing the same two buttons under new text.
         """
         # A post notifies; an edit does not. Repeating the mention on every
         # redraw would be a handle in the channel that never resolves to
@@ -1229,7 +1297,9 @@ class MattermostAdapter(CollaborationAdapter):
             )
         try:
             patch: dict[str, Any] = {"message": rendered.text}
-            if isinstance(content, RequestCard):
+            if isinstance(content, RequestCard) or self._actions_changed(
+                message_ref, rendered.actions
+            ):
                 patch["props"] = await self._props_with_actions(
                     driver, loop, message_ref, rendered.actions
                 )
@@ -1248,6 +1318,32 @@ class MattermostAdapter(CollaborationAdapter):
             if failure is None:
                 raise
             raise failure from error
+        self._remember_actions(message_ref, rendered.actions)
+
+    def _actions_changed(self, message_ref: str, actions: list[dict[str, Any]]) -> bool:
+        """Whether this post's buttons need rewriting, or already say this.
+
+        A post nothing is remembered about counts as changed. Its buttons are
+        unknown rather than known to be right, and the two cases this arises in
+        both want the write: a bridge that has restarted since the post was
+        made, and one whose memory of it has aged out under a thousand newer
+        posts. The cost is one read-back per post once, against leaving a
+        control on screen that no longer matches the turn behind it.
+
+        Compared by value, which works because a button is derived entirely
+        from what it is for — the same turn in the same state signs to the same
+        context every time, so equality here means the post already carries
+        exactly these buttons.
+        """
+        return self._post_actions.get(message_ref) != actions
+
+    def _remember_actions(
+        self, message_ref: str, actions: list[dict[str, Any]]
+    ) -> None:
+        self._post_actions.pop(message_ref, None)
+        self._post_actions[message_ref] = actions
+        while len(self._post_actions) > self._post_actions_max:
+            self._post_actions.popitem(last=False)
 
     async def _props_with_actions(
         self,

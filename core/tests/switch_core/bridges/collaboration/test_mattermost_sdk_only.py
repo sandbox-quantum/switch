@@ -252,6 +252,21 @@ def _posts(adapter: MattermostAdapter) -> _FakePosts:
     return driver.posts._posts
 
 
+def _restarted(adapter: MattermostAdapter, *agents: str) -> MattermostAdapter:
+    """A second bridge talking to the same Mattermost as the first.
+
+    A restart loses what this process remembered about its posts. It does not
+    lose the posts, so a fake that started empty would be testing a server
+    outage rather than a restart.
+    """
+    restarted = _adapter(*agents)
+    server = _posts(adapter)
+    drivers: list[Any] = [*restarted._bot_drivers.values(), restarted._admin_driver]
+    for driver in drivers:
+        driver.posts._posts = server
+    return restarted
+
+
 def _users(adapter: MattermostAdapter) -> _FakeUsers:
     driver: Any = adapter._admin_driver
     return driver.users
@@ -417,7 +432,7 @@ async def test_a_redraw_is_still_the_agents_own_bot_after_a_restart() -> None:
     adapter = _adapter("worker", "other")
     ref = await adapter.post_rich("chan-1", "worker", _activity())
 
-    restarted = _adapter("worker", "other")
+    restarted = _restarted(adapter, "worker", "other")
     await restarted.update_rich("chan-1", "worker", ref, _activity(), None)
 
     assert _posts(restarted).patched_by == ["worker"]
