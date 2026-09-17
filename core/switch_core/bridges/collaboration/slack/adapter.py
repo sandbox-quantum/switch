@@ -1444,6 +1444,14 @@ class SlackAdapter(CollaborationAdapter):
         keeps the other, and a message can carry another turn's working mark
         while this one is still waiting. A message Slack says does not exist is
         not per reaction — there is nothing there to carry either.
+
+        Not finding the message is only good news one way round. Nothing was
+        put on a message that is not there, so an addition it refuses has
+        nothing left over; a removal it refuses is indistinguishable from one
+        against a message that is there, which would leave a mark the caller
+        has been told is gone. Neither the caller nor this cache can tell those
+        apart, so the removal is said out loud rather than passed over in
+        silence.
         """
         ts = thread_ts
         if not ts or not self._web_client:
@@ -1453,6 +1461,15 @@ class SlackAdapter(CollaborationAdapter):
         if not force and on == (key in self._marked):
             return
         if message in self._unmarkable:
+            if not on:
+                logger.warning(
+                    "Not asking Slack to take the %s reaction off %s in %s: it "
+                    "could not find that message earlier. A reaction still on a "
+                    "message that does exist will stay there.",
+                    mark,
+                    ts,
+                    channel_id,
+                )
             return
 
         try:
@@ -1475,6 +1492,15 @@ class SlackAdapter(CollaborationAdapter):
                 return
             if error == "message_not_found":
                 # There is no message to mark, and there will not be one later.
+                if not on:
+                    logger.warning(
+                        "Slack could not find %s in %s to take the %s reaction "
+                        "off. A reaction still on a message that does exist "
+                        "will stay there.",
+                        ts,
+                        channel_id,
+                        mark,
+                    )
                 self._unmarkable[message] = None
                 if len(self._unmarkable) > self._unmarkable_max:
                     self._unmarkable.popitem(last=False)

@@ -60,6 +60,46 @@ async def test_reaction_cache_handles_expected_slack_refusals_quietly(error, cap
     assert not caplog.records
 
 
+async def test_a_removal_slack_will_not_make_is_said_out_loud(caplog):
+    """A mark that does not come off is the one failure a reader can see.
+
+    Slack answering `message_not_found` to a removal is taken as the mark
+    having gone with the message, and the caller is told it succeeded. When the
+    message is in fact there that is a reaction left on it for good — the
+    caller has been told there is nothing left to take off, so nothing tries
+    again. Silently is the one way this must not happen.
+    """
+    slack, client = adapter()
+    client.reaction_error = "message_not_found"
+    await slack.mark_activity(
+        "C1", "C1:1.0", agent_name="worker", mark="queued", on=False, force=True
+    )
+
+    assert "could not find 1.0 in C1 to take the queued reaction off" in caplog.text
+
+
+async def test_a_removal_skipped_for_a_message_slack_lost_earlier_says_so(caplog):
+    """The message goes in the cache once and every later mark reads it.
+
+    So the addition that put it there is not the only removal that never
+    reaches Slack, and a turn whose mark is stranded this way is one that never
+    called Slack at all — there is nothing for a request log to show.
+    """
+    slack, client = adapter()
+    client.reaction_error = "message_not_found"
+    await slack.mark_activity(
+        "C1", "C1:1.0", agent_name="worker", mark="queued", on=True
+    )
+    client.reaction_error = None
+    caplog.clear()
+    await slack.mark_activity(
+        "C1", "C1:1.0", agent_name="worker", mark="queued", on=False, force=True
+    )
+
+    assert not client.reactions
+    assert "Not asking Slack to take the queued reaction off 1.0 in C1" in caplog.text
+
+
 async def test_reaction_force_reconciles_after_restart():
     slack, client = adapter()
     await slack.mark_activity(
