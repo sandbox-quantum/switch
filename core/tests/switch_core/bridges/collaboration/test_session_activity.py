@@ -848,14 +848,6 @@ async def test_a_paragraph_is_folded_onto_the_one_line_its_card_gives_it() -> No
     assert drawn.blocks[0]["tasks"][0]["title"] == "» First thought. Second thought."
 
 
-def _detail(card: dict[str, object]) -> str:
-    """What Slack shows when a reader expands the card."""
-    rich = card["details"]
-    assert isinstance(rich, dict)
-    section = rich["elements"][0]
-    return str(section["elements"][0]["text"])
-
-
 async def test_a_remark_too_long_for_its_line_keeps_the_rest_where_it_expands() -> None:
     """A card title is one line and a remark is not bounded by one. Cutting it
     there threw the rest away, which is the part a reader opened the block for
