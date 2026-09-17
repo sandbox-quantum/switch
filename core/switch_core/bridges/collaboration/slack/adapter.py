@@ -192,7 +192,7 @@ class _ActivityStream:
 
     A stream is a conversation, not a document: Slack keeps the message and
     each append moves part of it. So the adapter has to remember what it last
-    said to work out what is worth saying next — resending a page of fifty
+    said to work out what is worth saying next — resending a section of fifty
     cards that has not changed costs an append and risks nothing useful.
 
     `blocks` is the last thing written to each section, by `block_id`, so a
@@ -260,6 +260,10 @@ class SlackAdapter(CollaborationAdapter):
         # Open activity streams by message ref, holding what has already been
         # appended so a redraw can send only what changed.
         self._streams: OrderedDict[str, _ActivityStream] = OrderedDict()
+        # Messages a stream drew in more than one section, which nothing can
+        # redraw. The value records whether that has already been reported, so
+        # a turn asked for repeatedly says it once. See `_forget_stream`.
+        self._unredrawable: OrderedDict[str, bool] = OrderedDict()
         # Folded Slack username → user id, for resolving outbound @mentions to
         # real Slack mentions. Primed from the bridge's known external users and
         # topped up as new ones are resolved.
@@ -622,6 +626,18 @@ class SlackAdapter(CollaborationAdapter):
         if stream is not None and isinstance(content, TurnActivity):
             await self._extend_stream(stream, message_ref, content)
             return
+        if message_ref in self._unredrawable:
+            if not self._unredrawable[message_ref]:
+                self._unredrawable[message_ref] = True
+                logger.warning(
+                    "Leaving the activity message %s as its stream drew it: it "
+                    "holds two sections and Slack takes only one in an edit, so "
+                    "redrawing it would replace the turn with its last few "
+                    "dozen lines. Anything that changed since the stream closed "
+                    "is not shown.",
+                    message_ref,
+                )
+            return
         responder_name = None
         if isinstance(content, RequestCard) and content.responder_external_id:
             user = await self._resolve_user_name(content.responder_external_id)
@@ -777,7 +793,8 @@ class SlackAdapter(CollaborationAdapter):
         stream = _ActivityStream(channel_id=channel_id, ts=str(ts))
         self._streams[ref] = stream
         while len(self._streams) > _MAX_OPEN_STREAMS:
-            abandoned, _ = self._streams.popitem(last=False)
+            abandoned = next(iter(self._streams))
+            self._forget_stream(abandoned)
             logger.warning(
                 "Forgetting the activity stream %s to make room; its turn never "
                 "ended, so the message is left in its streaming state.",
@@ -785,6 +802,33 @@ class SlackAdapter(CollaborationAdapter):
             )
         await self._extend_stream(stream, ref, content)
         return ref
+
+    def _forget_stream(self, message_ref: str) -> None:
+        """Drop a stream, and note whether its message can still be redrawn.
+
+        A message a stream drew in two sections cannot be redrawn by anything.
+        Measured: `chat.update` refuses a message carrying two plan blocks
+        exactly as `chat.postMessage` does, and it refuses it on a message a
+        stream itself built — so once the stream has gone, an edit can only
+        offer the single section the fallback draws, which is the turn's
+        history replaced by its last forty-nine lines.
+
+        Remembering which messages those are is what lets a later publication
+        be declined rather than drawn. The message is already showing the turn
+        as the stream finally left it, so there is nothing owed to a reader in
+        the ordinary case — only a revision that landed after the turn ended
+        goes unshown, which is why it is said out loud rather than passed over.
+        """
+        stream = self._streams.pop(message_ref, None)
+        if stream is None:
+            return
+        sections = sum(block.get("type") == "plan" for block in stream.blocks.values())
+        if sections < 2:
+            return
+        self._unredrawable[message_ref] = False
+        self._unredrawable.move_to_end(message_ref)
+        while len(self._unredrawable) > _MAX_OPEN_STREAMS:
+            self._unredrawable.popitem(last=False)
 
     async def _extend_stream(
         self, stream: _ActivityStream, message_ref: str, content: TurnActivity
@@ -846,7 +890,7 @@ class SlackAdapter(CollaborationAdapter):
         The turn is over and the plan is the record of what it did, so unlike
         the old progress card there is nothing here to delete.
         """
-        self._streams.pop(message_ref, None)
+        self._forget_stream(message_ref)
         try:
             await client.chat_stopStream(channel=stream.channel_id, ts=stream.ts)
         except SlackApiError as error:
@@ -871,7 +915,7 @@ class SlackAdapter(CollaborationAdapter):
         """
         code = error.response.get("error")
         if code in _STREAM_CLOSED_ERRORS:
-            self._streams.pop(message_ref, None)
+            self._forget_stream(message_ref)
             logger.warning(
                 "The activity stream %s is no longer accepting appends (%s); "
                 "later updates will be drawn as an ordinary message.",

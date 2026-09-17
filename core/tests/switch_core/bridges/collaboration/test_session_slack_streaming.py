@@ -865,6 +865,100 @@ async def test_a_closed_stream_is_forgotten_so_later_updates_are_edits(
     assert [call["ts"] for call in client.updated] == ["1.0"]
 
 
+async def test_a_turn_of_two_sections_is_left_as_the_stream_drew_it(
+    caplog: Any,
+) -> None:
+    """The one thing an edit cannot take back.
+
+    Measured, not read: `chat.update` refuses a message carrying two plan
+    blocks exactly as `chat.postMessage` does, and refuses it on a message a
+    stream itself built. So a turn long enough to have overflowed its first
+    section can only be redrawn as the single section the fallback draws — the
+    whole turn replaced by its last forty-nine lines, under a reader who
+    watched it run. Once the stream has closed, the message stands.
+    """
+    client = FakeWebClient()
+    adapter = _adapter(client)
+    many = [_tool(f"t{n}", f"Tool {n}", status="completed") for n in range(60)]
+
+    ref = await adapter.post_rich(
+        CHANNEL, "Agent", TurnActivity(many, _turn(), 1.0), THREAD
+    )
+    await adapter.update_rich(
+        CHANNEL, "Agent", ref, TurnActivity(many, _turn("completed"), 9.0), THREAD
+    )
+    with caplog.at_level(logging.WARNING):
+        await adapter.update_rich(
+            CHANNEL, "Agent", ref, TurnActivity(many, _turn("completed"), 9.0), THREAD
+        )
+
+    assert client.updated == []
+    assert "holds two sections" in caplog.text
+    assert [page["title"] for page in _pages(client)] == [
+        "Activity 1–49",
+        "Worked for 9s. 60 tool calls.",
+    ]
+
+
+async def test_a_message_that_says_it_cannot_be_redrawn_says_it_once(
+    caplog: Any,
+) -> None:
+    """A turn that has ended is still published for as long as anything about
+    it moves, and a line of log on each of those would bury the one that
+    matters."""
+    client = FakeWebClient()
+    adapter = _adapter(client)
+    many = [_tool(f"t{n}", f"Tool {n}", status="completed") for n in range(60)]
+
+    ref = await adapter.post_rich(
+        CHANNEL, "Agent", TurnActivity(many, _turn(), 1.0), THREAD
+    )
+    with caplog.at_level(logging.WARNING):
+        for elapsed in (9.0, 10.0, 11.0, 12.0):
+            await adapter.update_rich(
+                CHANNEL,
+                "Agent",
+                ref,
+                TurnActivity(many, _turn("completed"), elapsed),
+                THREAD,
+            )
+
+    said = [
+        record for record in caplog.records if "holds two sections" in record.message
+    ]
+    assert len(said) == 1
+
+
+async def test_a_turn_that_never_left_one_section_is_still_redrawn() -> None:
+    """The guard is about what an edit cannot carry, not about having streamed.
+
+    A turn that fits one section draws the same single block either way, so the
+    message is still the whole turn after an edit and a revision that lands
+    late is still worth showing.
+    """
+    client = FakeWebClient()
+    adapter = _adapter(client)
+    tool = _tool("t1", "Read", status="completed")
+    url = "https://switch.example/session"
+
+    ref = await adapter.post_rich(
+        CHANNEL, "Agent", TurnActivity([tool], _turn(), 1.0), THREAD
+    )
+    await adapter.update_rich(
+        CHANNEL, "Agent", ref, TurnActivity([tool], _turn("completed"), 9.0), THREAD
+    )
+    await adapter.update_rich(
+        CHANNEL,
+        "Agent",
+        ref,
+        TurnActivity([tool], _turn("completed"), 9.0, session_url=url),
+        THREAD,
+    )
+
+    assert [call["ts"] for call in client.updated] == ["1.0"]
+    assert adapter._unredrawable == {}
+
+
 async def test_a_throttled_append_asks_the_caller_to_wait_and_keeps_the_stream(
     monkeypatch: Any,
 ) -> None:
