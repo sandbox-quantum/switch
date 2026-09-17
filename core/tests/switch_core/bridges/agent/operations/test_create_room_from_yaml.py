@@ -24,6 +24,7 @@ from switch_core.bridges.agent.operations.callctx import (
 )
 from switch_core.bridges.agent.operations.definitions import create_room_from_yaml
 from switch_core.bridges.resource.service import ResourceService
+from switch_core.clients.admin_client import AdminClient
 from switch_core.db.models import (
     Agent,
     ApiKey,
@@ -125,6 +126,39 @@ async def _make_agent(
     return agent
 
 
+class RecordingAdminClient(AdminClient):
+    """Records the platform messages a kickoff sends; has no transport."""
+
+    def __init__(self) -> None:  # noqa: D107 - test double, no super().__init__
+        self.sent: list[dict[str, Any]] = []
+
+    async def wait_joined(self, room_id: str, timeout: float) -> bool:
+        return True
+
+    async def send_platform_message(  # type: ignore[override]
+        self,
+        room_id: str,
+        body: str,
+        *,
+        thread_root_id=None,
+        on_behalf_of=None,
+        reply_in_channel=False,
+    ) -> str | None:
+        self.sent.append({"body": body, "on_behalf_of": on_behalf_of})
+        return "$kickoff"
+
+
+class FakeLifecycle:
+    def __init__(self, admin: AdminClient) -> None:
+        self.admin = admin
+
+    def get_by_type(self, client_type: str, tenant_id: str) -> list[Any]:
+        return [self.admin] if client_type == "admin" else []
+
+    def get_by_agent_id(self, agent_id: str) -> None:
+        return None
+
+
 @pytest_asyncio.fixture
 async def env(session_factory: async_sessionmaker[AsyncSession]):
     """Seed a user and two agents, and wire a fake protocol for the operation."""
@@ -137,7 +171,9 @@ async def env(session_factory: async_sessionmaker[AsyncSession]):
         room_link_store=RoomLinkStore(),
         session_factory=session_factory,
     )
+    admin = RecordingAdminClient()
     fake_protocol = SimpleNamespace(
+        client_lifecycle=FakeLifecycle(admin),
         session_factory=session_factory,
         agent_store=agent_store,
         room_service=FakeRoomService(session_factory, agent_store),
@@ -169,6 +205,7 @@ async def env(session_factory: async_sessionmaker[AsyncSession]):
             "orphan_id": orphan_id,
             "user_id": user_id,
             "session_factory": session_factory,
+            "admin": admin,
         }
     finally:
         op_context._protocol = old_protocol
@@ -255,6 +292,26 @@ async def test_group_provisioned_with_links(env):
         assert group is not None
         links = (await session.execute(select(RoomLink))).scalars().all()
         assert [link.label for link in links] == ["support"]
+
+
+KICKOFF_YAML = """\
+version: 0
+room:
+  name: "Kickoff Room"
+  description: "A room with a kickoff"
+  agents: ["claude-code.alice"]
+kickoff: "Start on the brief."
+"""
+
+
+@pytest.mark.asyncio
+async def test_kickoff_is_posted_on_behalf_of_the_owner(env):
+    result = await _call(env["agent_id"], yaml=KICKOFF_YAML)
+
+    assert result["failed_attachments"] == []
+    sent = env["admin"].sent
+    assert [m["body"] for m in sent][-1] == "Start on the brief."
+    assert all(m["on_behalf_of"].name == "alice" for m in sent)
 
 
 @pytest.mark.asyncio
