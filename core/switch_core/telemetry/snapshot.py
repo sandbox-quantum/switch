@@ -64,6 +64,9 @@ AGENT_CLIENT_TYPE = "agent"
 PLATFORMS = ("slack", "mattermost", "discord", "teams", "telegram")
 
 _DAY = timedelta(days=1)
+# How far back the turn pairing looks for a message's predecessor. See
+# `_collect_turns`.
+_TURN_LOOKBACK = timedelta(days=2)
 _WEEK = timedelta(days=7)
 
 
@@ -445,6 +448,19 @@ async def _collect_turns(
             Message.tenant_id == tenant_id,
             Client.tenant_id == tenant_id,
             Message.seq > 0,
+            # Bounded, or the window is computed over the tenant's entire
+            # history on every pass while the answer stays a day wide — a cost
+            # that grows forever for a figure that does not. The outer
+            # `sent_at >= since` cannot be pushed in here: the window
+            # partitions by room, so narrowing the input would change which
+            # message counts as the predecessor.
+            #
+            # The lookback is wider than the window so that a reply to
+            # yesterday's question still finds what it answered. A turn whose
+            # two halves are further apart than this is counted as the first
+            # message in its room, which is to say not counted — the right
+            # trade for a conversation that paused for a day.
+            Message.sent_at >= since - _TURN_LOOKBACK,
         )
         .subquery()
     )

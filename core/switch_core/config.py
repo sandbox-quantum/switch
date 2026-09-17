@@ -410,10 +410,42 @@ class SwitchConfig(BaseSettings):
             # Checked only when telemetry is on: a deployment that never
             # reports should not be refused boot over the shape of a setting
             # it does not use.
-            endpoint = urlsplit(self.telemetry_endpoint)
-            if endpoint.scheme not in ("http", "https") or not endpoint.netloc:
+            # The same checks `_validate_observability` applies to
+            # OTLP_ENDPOINT, and for the same reasons: both are base URLs with
+            # the signal path appended, and the relay answers a misdirected
+            # post with a 404 that is logged once per event and read by nobody.
+            if self.telemetry_endpoint != self.telemetry_endpoint.strip():
                 raise ValueError(
-                    "TELEMETRY_ENDPOINT must be an absolute http(s) URL, got "
+                    "TELEMETRY_ENDPOINT has leading or trailing whitespace: "
+                    f"{self.telemetry_endpoint!r}."
+                )
+            endpoint = urlsplit(self.telemetry_endpoint)
+            if endpoint.scheme not in ("http", "https"):
+                raise ValueError(
+                    "TELEMETRY_ENDPOINT must be an http(s) URL, got "
+                    f"{self.telemetry_endpoint!r}."
+                )
+            if not endpoint.netloc:
+                raise ValueError(
+                    "TELEMETRY_ENDPOINT must include a host, got "
+                    f"{self.telemetry_endpoint!r}."
+                )
+            if endpoint.path.strip("/"):
+                # `/v1/logs` is appended, so a value already carrying it posts
+                # to `/v1/logs/v1/logs`. The full logs URL is the form most
+                # people have seen written down, which makes pasting it here
+                # the obvious mistake rather than an unlikely one.
+                raise ValueError(
+                    "TELEMETRY_ENDPOINT is the relay's base URL and the signal "
+                    "path is appended to it, so it must have no path of its "
+                    f"own. Got {self.telemetry_endpoint!r} — drop the "
+                    f"{endpoint.path!r}."
+                )
+            if endpoint.query or endpoint.fragment:
+                raise ValueError(
+                    "TELEMETRY_ENDPOINT must be a bare base URL: a query or "
+                    "fragment is dropped when the signal path is appended, so "
+                    "it would silently never be sent. Got "
                     f"{self.telemetry_endpoint!r}."
                 )
             if self.telemetry_timeout_seconds <= 0:
@@ -426,6 +458,29 @@ class SwitchConfig(BaseSettings):
             raise ValueError(
                 f"TEMPLATE_MAX_BYTES must be at least 1, got {self.template_max_bytes}."
             )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_deployment_id(self) -> "SwitchConfig":
+        """The id's shape, checked wherever it is set.
+
+        Separate from `_validate_observability` because both streams now use
+        this value: product telemetry prefers it over the id generated into the
+        database, so a malformed one reaches the relay on a deployment that has
+        named no collector at all and would never run that validator. The relay
+        requires a canonical UUID and drops what arrives without one — with a
+        200, in silence — so the wrong shape here is not a degraded send, it is
+        no send at all.
+        """
+        if self.deployment_id is None:
+            return self
+        try:
+            uuid.UUID(self.deployment_id)
+        except ValueError as error:
+            raise ValueError(
+                f"DEPLOYMENT_ID must be a UUID, got {self.deployment_id!r}. "
+                "The relay's guard rejects anything else, silently."
+            ) from error
         return self
 
     @model_validator(mode="after")
@@ -486,14 +541,6 @@ class SwitchConfig(BaseSettings):
                 "does so silently, so without one this server would report "
                 "nothing while looking correctly configured."
             )
-        try:
-            uuid.UUID(self.deployment_id)
-        except ValueError as error:
-            raise ValueError(
-                f"DEPLOYMENT_ID must be a UUID, got {self.deployment_id!r}. "
-                "The collector's guard rejects anything else."
-            ) from error
-
         for name, value in (
             ("OTLP_TIMEOUT_SECONDS", self.otlp_timeout_seconds),
             ("OTLP_EXPORT_INTERVAL_SECONDS", self.otlp_export_interval_seconds),

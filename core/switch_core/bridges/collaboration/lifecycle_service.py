@@ -26,7 +26,11 @@ from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.tenant_lookup import all_tenant_ids, tenant_of_collaboration_bridge
 from switch_core.provisioning import Provisioning
 from switch_core.telemetry import TelemetryService, emit_safely
-from switch_core.telemetry.deployment import claim_milestone, seconds_since_install
+from switch_core.telemetry.deployment import (
+    claim_milestone,
+    milestone_claimed,
+    seconds_since_install,
+)
 from switch_core.telemetry.snapshot import normalise_platform
 from switch_core.tenant_context import current_tenant_id, no_tenant
 
@@ -767,7 +771,15 @@ class CollaborationBridgeLifecycleService:
             },
         )
 
-        if self._telemetry is None:
+        # `enabled`, not just `is not None`: telemetry off is a real service
+        # holding a sink that discards, so testing for None alone would take
+        # the once-ever claim below on a deployment that is reporting nothing.
+        # The claim would then be spent, and when that deployment later opted
+        # in, its original bridge could never report `connector_added` and
+        # `first_connector_added` would fire for whichever connector happened
+        # to be added next — naming the wrong platform and timing the wrong
+        # setup. Off is the default, so that is the ordinary install.
+        if self._telemetry is None or not self._telemetry.enabled:
             return
         # The first successful connect for this bridge, ever. Claimed against
         # the bridge id so restarting a working bridge does not re-report a
@@ -775,6 +787,13 @@ class CollaborationBridgeLifecycleService:
         if not await claim_milestone(
             self._session_factory, f"connector_added:{bridge_id}"
         ):
+            # This bridge has reported before, but the deployment-wide
+            # milestone may not have — a deployment that opted in after its
+            # first connector still has a first connector to report, and
+            # `emit_milestone` is itself once-ever.
+            await self._telemetry.emit_milestone(
+                "first_connector_added", bridge_platform=normalise_platform(platform)
+            )
             return
 
         elapsed_since_install = seconds_since_install(self._telemetry.installed_at)
@@ -863,8 +882,16 @@ class CollaborationBridgeLifecycleService:
         external-user rows point at them, so those go first or the foreign keys
         refuse.
         """
-        # Read before `stop`, which clears the connected set this reports from.
-        was_connected = bridge_id in self._connected
+        # The durable answer, not `bridge_id in self._connected`: that set is
+        # empty until a connect succeeds *in this process* and is cleared by
+        # every stop and crash. A connector that worked for eight months and
+        # then failed to come up after a token was revoked would be removed
+        # reporting "never connected" — filing it as a failed setup, which is
+        # the one population the property exists to separate out. The
+        # `connector_added` claim is the record that it once worked.
+        was_connected = await milestone_claimed(
+            self._session_factory, f"connector_added:{bridge_id}"
+        )
         await self.stop(bridge_id)
         async with self._session_factory() as session:
             bridge = await self._bridge_store.get(session, bridge_id)

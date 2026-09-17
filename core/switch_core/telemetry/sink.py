@@ -139,9 +139,10 @@ class OtlpRelaySink:
             )
 
     async def aclose(self) -> None:
-        # The HTTP client belongs to the observability bootstrap, which is what
-        # opened it and what closes it. Closing it here would take the
-        # operational export down with the last product event.
+        # Nothing to do: `telemetry/setup.py` opens the HTTP client and
+        # `main._drain_telemetry` closes it, under a timeout that shutdown
+        # depends on. Closing it here as well would be a second close on the
+        # same object and would move the work out from under that budget.
         return None
 
 

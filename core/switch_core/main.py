@@ -10,6 +10,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+import httpx
 import uvicorn
 from alembic import command as alembic_command
 from alembic.config import Config as AlembicConfig
@@ -22,7 +23,7 @@ from sqlalchemy.ext.asyncio import (
 )
 from sqlalchemy.pool import NullPool
 
-from switch_core.bridges.agent.api.handlers import report_session_ended
+from switch_core.bridges.agent.api.handlers import session_end_reporter
 from switch_core.bridges.agent.app import create_agent_bridge_app
 from switch_core.bridges.agent.protocol.connections import (
     HEARTBEAT_TTL_SECONDS,
@@ -129,6 +130,7 @@ from switch_core.provisioning import Provisioning
 from switch_core.provisioning.postgres import PostgresProvisioning
 from switch_core.room_service import RoomService
 from switch_core.telemetry.reporter import SnapshotReporter
+from switch_core.telemetry.service import TelemetryService
 from switch_core.telemetry.setup import build_telemetry
 from switch_core.tenant_context import no_tenant
 from switch_core.transport.ephemeral import EphemeralBus
@@ -205,13 +207,42 @@ async def _connection_sweep_loop(protocol: ProtocolService, lag: EventLoopLag) -
                     conn.agent_id,
                     conn.beats,
                 )
-                # The ordinary way a session ends: nothing calls close() on a
-                # clean client disconnect, the socket just goes away and the
-                # sweep reaps it. Reported here rather than inside the registry
-                # so the registry stays free of anything but connection state.
-                report_session_ended(protocol, conn)
         except Exception:
             logger.exception("Connection sweep failed")
+
+
+# What shutdown will spend on in-flight product events before giving up. Well
+# under `observability.logs.SHUTDOWN_FLUSH_SECONDS`, which is itself under
+# `_FORCED_EXIT_GRACE_SECONDS`: the three budgets nest, and this is the
+# innermost because a lost usage count matters least of the three.
+_TELEMETRY_DRAIN_SECONDS = 1.0
+
+
+async def _drain_telemetry(
+    telemetry: TelemetryService, http_client: httpx.AsyncClient | None
+) -> None:
+    """Let in-flight product events finish, then close their client.
+
+    Never raises and never overruns: a relay that has stopped answering must
+    not be able to hold the process past the point where it is killed, taking
+    the operational flush with it.
+    """
+    try:
+        async with asyncio.timeout(_TELEMETRY_DRAIN_SECONDS):
+            await telemetry.aclose()
+    except TimeoutError:
+        logger.warning(
+            "Gave up waiting for in-flight telemetry after %.1fs; those events "
+            "are lost.",
+            _TELEMETRY_DRAIN_SECONDS,
+        )
+    except Exception:
+        logger.warning("Telemetry shutdown failed; continuing.", exc_info=True)
+    if http_client is not None:
+        try:
+            await http_client.aclose()
+        except Exception:
+            logger.warning("Telemetry HTTP client did not close.", exc_info=True)
 
 
 async def _snapshot_loop(reporter: SnapshotReporter) -> None:
@@ -400,6 +431,10 @@ async def run(config: SwitchConfig) -> None:
     # presence from it — an agent is reachable if it has a live connection OR a
     # fresh heartbeat row (CHOO-1857 stage B).
     connections = ConnectionRegistry()
+    # Every connection this registry closes reports the session that ended,
+    # whichever of the five paths closed it. Installed here because this is the
+    # one registry the whole process shares.
+    connections.set_close_listener(session_end_reporter(telemetry))
 
     # ── Client factory ───────────────────────────────────────────────────────
     client_factory = ClientFactory(
@@ -639,9 +674,15 @@ async def run(config: SwitchConfig) -> None:
                 if snapshot_task is not None:
                     snapshot_task.cancel()
                 await message_listener.stop()
-                await telemetry.aclose()
-                if telemetry_http is not None:
-                    await telemetry_http.aclose()
+                # Bounded, and *before* the operational flush rather than
+                # after. The whole teardown runs inside
+                # `_FORCED_EXIT_GRACE_SECONDS`, and the log exporter's own
+                # budget is deliberately sized to fit under it — so an
+                # unbounded drain here, ahead of that, spends the grace period
+                # on analytics and takes the "N log record(s) never exported"
+                # line down with it. A product event is the least valuable
+                # thing in this block; it must be the first to be given up.
+                await _drain_telemetry(telemetry, telemetry_http)
                 await observability.aclose()
                 # Cleared so a probe landing during teardown gets the honest
                 # "no health check has completed" 503 rather than the last

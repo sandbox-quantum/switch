@@ -48,9 +48,7 @@ _INDEX = "ix_messages_tenant_sent_at"
 def upgrade() -> None:
     # `IF NOT EXISTS` so the escape hatch above works: an operator who built it
     # concurrently ahead of the upgrade meets a no-op rather than a collision.
-    op.execute(
-        f"CREATE INDEX IF NOT EXISTS {_INDEX} ON messages (tenant_id, sent_at)"
-    )
+    op.execute(f"CREATE INDEX IF NOT EXISTS {_INDEX} ON messages (tenant_id, sent_at)")
 
 
 def downgrade() -> None:

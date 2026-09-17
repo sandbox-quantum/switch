@@ -536,14 +536,20 @@ one below it.
 development server at it:
 
 ```
-just telemetry-listen
+python scripts/otlp_sink.py
 # then, in the server's environment:
 TELEMETRY_ENABLED=true
-TELEMETRY_ENDPOINT=http://localhost:4318/v1/logs
+TELEMETRY_ENDPOINT=http://localhost:4318
 TELEMETRY_SNAPSHOT_INTERVAL_HOURS=0.02
 ```
 
-Every event is printed as it arrives, decoded. Create a room, register an
+The endpoint is the **base** URL — `/v1/logs` is appended, the same convention
+the operational export follows. A value carrying the signal path is refused at
+startup, because posting to `/v1/logs/v1/logs` would be a 404 the relay reports
+once per event into a log nobody is reading.
+
+The same sink serves the operational export, so one process shows both streams. Every event is printed as it arrives, decoded, with all of its
+properties. Create a room, register an
 agent, connect a bridge, send a message, and watch. The first snapshot lands
 about a minute after boot, so the whole catalogue is exercisable in a few
 minutes without anything leaving the machine.
@@ -556,11 +562,11 @@ answer without complaint.
 
 **That the relay accepts it.** This is the layer that fails silently, and the
 only one that cannot be checked locally. A 200 does not mean a record was
-kept: OTLP reports partial success in the response body, so `just
-telemetry-listen --reject 1` is how to check Switch notices — it should log a
-warning naming the event. `--fail 503` checks the other direction, that a
-refused send is logged and dropped rather than raising into whatever was
-happening at the time.
+kept: OTLP reports partial success in the response body, so
+`python scripts/otlp_sink.py --reject 1` is how to check Switch notices — it
+should log a warning naming the event. `--fail 503` checks the other
+direction, that a refused send is logged and dropped rather than raising into
+whatever was happening at the time.
 
 Against the real relay, the only proof is a staging deployment with reporting
 on for one interval, and the events appearing downstream. Nothing short of

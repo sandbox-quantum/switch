@@ -88,6 +88,34 @@ def seconds_since_install(installed_at: datetime | None) -> float | None:
     return max((datetime.now(UTC) - installed_at).total_seconds(), 0.0)
 
 
+async def milestone_claimed(
+    session_factory: async_sessionmaker[AsyncSession], name: str
+) -> bool:
+    """Whether `name` has already been reported, without claiming it.
+
+    The read half of :func:`claim_milestone`, for the places that need to know
+    a thing once happened rather than to report that it is happening now — a
+    connector's removal asking whether it ever connected, which no in-process
+    set can answer across a restart.
+
+    False on failure, like its sibling: this labels an analytics event, and a
+    removal must not fail because a lookup did.
+    """
+    try:
+        async with session_factory() as session:
+            found = await session.execute(
+                select(TelemetryMilestone.name).where(TelemetryMilestone.name == name)
+            )
+            return found.scalar_one_or_none() is not None
+    except Exception:
+        logger.warning(
+            "Could not read the %s telemetry milestone; treating it as unreported.",
+            name,
+            exc_info=True,
+        )
+        return False
+
+
 async def claim_milestone(
     session_factory: async_sessionmaker[AsyncSession], name: str
 ) -> bool:
