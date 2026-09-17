@@ -25,6 +25,7 @@ from switch_core.bridges.collaboration.session.renderers import (
 from switch_core.bridges.collaboration.session.renderers.slack import (
     _MAX_PLAN_TASKS,
     _MAX_SAID_DETAILS,
+    StreamedActivity,
     render_activity,
     render_activity_plan,
     render_activity_stream,
@@ -57,11 +58,20 @@ EXAMPLES_PATH = REPO_ROOT / "console/packages/shared/src/session-v1/examples.jso
 
 TURN = "turn-activity"
 
-# Detail per card, with fifty cards in the message, at which Slack stopped
-# accepting the post: measured against a real workspace, not documented by
-# Slack. A single card was taken to 99,999 characters, and an expanded card
-# showed all 12,000 it was given, so this is the one number that binds.
-REFUSED_ABOVE = 4743
+# What a whole streamed message may weigh, measured against a real workspace
+# and documented by Slack nowhere. A hundred cards — the two fifty-card pages a
+# stream draws — carrying 2,180 ASCII characters of detail each was accepted at
+# 257,615 bytes on the wire, and a hundred bytes more was refused. Bytes rather
+# than characters: the payload is serialised with `ensure_ascii=True`, so a
+# non-ASCII character leaves as a six-byte escape.
+ACCEPTED_BYTES = 257_615
+
+# The same question asked of an ordinary post, which refuses with a different
+# error — `msg_blocks_too_long` — and so is a separate measurement. Fifty cards
+# of 4,743 ASCII characters of detail were accepted and the message above that
+# was not, so this many bytes of detail is known to have gone through on that
+# path while the blocks around it did too.
+POST_ACCEPTED_BYTES = 50 * 4_743
 
 
 async def _projection(*streams: str) -> SessionProjection:
@@ -890,29 +900,116 @@ async def test_the_expansion_keeps_the_breaks_the_line_had_to_fold_out() -> None
     assert "First thought.\n\nSecond thought." in _detail(card)
 
 
-async def test_a_remark_longer_than_the_expansion_is_still_cut_somewhere() -> None:
-    """Fifty cards on one message, and a host that can write without limit. The
-    budget is what keeps a talkative turn from being the thing that makes a post
-    too large for Slack to accept at all."""
+async def test_a_remark_longer_than_the_expansion_is_says_so_where_it_was_cut() -> None:
+    """A detail has nothing below it, so a cut there loses words for good.
+
+    An ellipsis would not tell the reader that: agents write them, and one on
+    the end of a sentence reads as punctuation rather than as a warning. The
+    notice has to be something no agent would have typed.
+    """
     drawn = render_activity_plan([_said("word " * 4000)], _turn("completed"))
 
     detail = _detail(drawn.blocks[0]["tasks"][0])
     assert len(detail) <= _MAX_SAID_DETAILS
-    assert detail.endswith("…")
+    assert detail.endswith("[…truncated]")
 
 
-async def test_fifty_talkative_cards_stay_clear_of_what_slack_refused() -> None:
-    """Nothing bounds the plan as a whole, so the per-card budget is what has to
-    hold the worst case: every one of the fifty cards a remark at the budget.
+async def test_a_remark_that_fits_is_not_accused_of_being_cut() -> None:
+    """The notice is a claim about missing text, so it has to be false silently."""
+    drawn = render_activity_plan([_said("A short remark. " * 30)], _turn("completed"))
 
-    Slack accepted fifty cards carrying `REFUSED_ABOVE` characters of detail
-    each and refused the message above that. It documents neither number and
-    can revoke both, so the worst case has to clear the measurement with room
-    to spare rather than merely fit inside it.
+    assert "truncated" not in _detail(drawn.blocks[0]["tasks"][0])
+
+
+def _talkative(count: int, text: str) -> list[Item]:
+    """`count` remarks, every one of them at the per-card budget."""
+    return [_said(text, item_id=f"said-{index}") for index in range(count)]
+
+
+def _streamed_bytes(drawn: StreamedActivity) -> int:
+    """The turn as the adapter sends it, weighed the way Slack weighs it."""
+    return len(
+        json.dumps(
+            [
+                {"type": "plan_update", "title": drawn.title},
+                drawn.session,
+                *({"type": "blocks", "blocks": [block]} for block in drawn.blocks),
+            ]
+        ).encode()
+    )
+
+
+async def test_the_worst_streamed_message_is_one_slack_would_accept() -> None:
+    """A hundred cards, all at the budget, in the language that costs the most.
+
+    No per-card number holds this. A stream draws two fifty-card pages, and a
+    hundred details at 3,000 characters is nearly two million bytes once the
+    serialiser has escaped them — so the budget that has to bind is the one on
+    the assembled message, applied after the turn is drawn and the card count
+    is finally known.
+
+    CJK rather than English because the escaping is what makes the arithmetic
+    counter-intuitive: six bytes a character is the worst any prose can cost,
+    and a margin that only survives ASCII is not a margin.
     """
-    worst_case = _MAX_PLAN_TASKS * _MAX_SAID_DETAILS
+    drawn = render_activity_stream(
+        _talkative(2 * _MAX_PLAN_TASKS, "漢" * _MAX_SAID_DETAILS),
+        _turn("completed"),
+        elapsed_seconds=90,
+        session_url="switchdash://session?server=https%3A%2F%2Fswitch.example&session=s",
+    )
 
-    assert worst_case * 2 < _MAX_PLAN_TASKS * REFUSED_ABOVE
+    assert sum(len(block["tasks"]) for block in drawn.blocks) == 2 * _MAX_PLAN_TASKS
+    assert _streamed_bytes(drawn) < ACCEPTED_BYTES
+
+
+async def test_the_worst_ordinary_post_is_one_slack_would_accept() -> None:
+    """The same defect on the path a thread without a stream falls back to.
+
+    Half the cards, so it is the easier case — but it is refused by a different
+    guard with a different error, so it is a separate measurement and gets a
+    separate check. Fifty cards of 3,000-character details is 900,000 bytes in
+    CJK; the post that was seen to go through carried a quarter of that.
+    """
+    drawn = render_activity_plan(
+        _talkative(_MAX_PLAN_TASKS, "漢" * _MAX_SAID_DETAILS),
+        _turn("completed"),
+        elapsed_seconds=90,
+    )
+
+    assert len(drawn.blocks[0]["tasks"]) == _MAX_PLAN_TASKS
+    assert len(json.dumps(drawn.blocks).encode()) < POST_ACCEPTED_BYTES
+
+
+async def test_a_message_cut_down_to_fit_says_so_on_every_card_it_cut() -> None:
+    """Shrinking to fit is still losing words, so it is still disclosed.
+
+    The alternative is a card that quietly dropped its expansion, or one whose
+    remark simply stops — either reads as a remark that had no more to say.
+    """
+    drawn = render_activity_stream(
+        _talkative(2 * _MAX_PLAN_TASKS, "漢" * _MAX_SAID_DETAILS),
+        _turn("completed"),
+        elapsed_seconds=90,
+    )
+
+    details = [_detail(task) for block in drawn.blocks for task in block["tasks"]]
+    assert len(details) == 2 * _MAX_PLAN_TASKS
+    assert all(detail.endswith("[…truncated]") for detail in details)
+
+
+async def test_a_turn_that_fits_keeps_every_word_the_per_card_budget_allows() -> None:
+    """The message-wide budget is a backstop, not a second cap on every turn.
+
+    A hundred cards is the shape that breaks it; one talkative card is not, and
+    a reader of that card should get the whole 3,000 characters the per-card
+    budget was widened to give them.
+    """
+    drawn = render_activity_stream(
+        [_said("漢" * 10_000)], _turn("completed"), elapsed_seconds=90
+    )
+
+    assert len(_detail(drawn.blocks[0]["tasks"][0])) == _MAX_SAID_DETAILS
 
 
 async def test_the_header_still_counts_calls_rather_than_everything_drawn() -> None:
