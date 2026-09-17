@@ -143,11 +143,10 @@ export function parseAskUserQuestionInput(input: Record<string, unknown>): Parse
 }
 
 /**
- * Claude's MCP stdio transport spawns the server with
- * `{...getDefaultEnvironment(), ...env}` — a sudo-style allowlist, with no
- * inheritance from the process registering it. A spec that only names the
- * variables to forward has to be resolved against `env` here, or the server
- * starts with none of them.
+ * Claude expands `${NAME}` references in MCP configuration against the CLI's
+ * environment before starting a stdio server. Keep forwarded values in that
+ * environment: the Agent SDK serializes this configuration into `--mcp-config`,
+ * where resolving them here would expose credentials in the process argv.
  */
 export function toMcpServerConfig(
   spec: McpServerSpec,
@@ -156,8 +155,7 @@ export function toMcpServerConfig(
   if (spec.transport === 'stdio') {
     const forwarded: Record<string, string> = {};
     for (const name of spec.envVars ?? []) {
-      const value = env[name];
-      if (value !== undefined) forwarded[name] = value;
+      if (env[name] !== undefined) forwarded[name] = `\${${name}}`;
     }
     const resolved = { ...forwarded, ...spec.env };
     return {
