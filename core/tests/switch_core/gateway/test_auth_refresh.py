@@ -15,7 +15,7 @@ from types import SimpleNamespace
 from fastapi import Response
 
 from switch_core.db.models import User
-from switch_core.gateway.auth import decode_jwt
+from switch_core.gateway.auth import JWT_EXPIRY_HOURS, decode_jwt
 from switch_core.gateway.auth_routes import refresh
 
 # Dummy HS256 signing key for these unit tests only — not a real secret.
@@ -72,6 +72,22 @@ async def test_refresh_carries_the_selected_tenant_forward() -> None:
     token = _extract_cookie(response)
     payload = decode_jwt(token, _SECRET)
     assert payload["tenant_id"] == "tenant-b"
+
+
+async def test_refresh_cookie_max_age_tracks_token_expiry() -> None:
+    """The cookie must outlive the token by exactly as long as the token is
+    valid — a hardcoded max_age silently drifts from JWT_EXPIRY_HOURS."""
+    user = User(id="u-4", name="Di", email="di@example.com", role="user")
+    response = Response()
+
+    await refresh(_request(tenant_id="tenant-0"), response, user, _config())
+
+    header = response.headers.get("set-cookie") or ""
+    attrs = {
+        k.strip().lower(): v.strip()
+        for k, _, v in (part.partition("=") for part in header.split(";"))
+    }
+    assert attrs["max-age"] == str(JWT_EXPIRY_HOURS * 3600)
 
 
 async def test_refresh_cookie_is_httponly_and_respects_secure_flag() -> None:
