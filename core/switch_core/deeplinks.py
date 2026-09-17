@@ -28,8 +28,6 @@ def switchdash_to_gateway(deeplink_url: str, gateway_public_url: str) -> str | N
     session deeplink, so callers leave unrecognised links untouched.
     """
     parts = urlsplit(deeplink_url)
-    # urlsplit lower-cases the scheme but leaves netloc as written; hosts are
-    # case-insensitive, so fold netloc before comparing.
     if parts.scheme != _DEEPLINK_SCHEME or parts.netloc.casefold() != _DEEPLINK_HOST:
         return None
     # Only the query is carried across — Switch Console session deeplinks never carry
