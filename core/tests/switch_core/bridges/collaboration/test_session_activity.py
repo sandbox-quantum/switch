@@ -23,6 +23,8 @@ from switch_core.bridges.collaboration.session.renderers import (
     turn_state,
 )
 from switch_core.bridges.collaboration.session.renderers.slack import (
+    _MAX_PLAN_TASKS,
+    _MAX_SAID_DETAILS,
     render_activity,
     render_activity_plan,
     render_activity_stream,
@@ -54,6 +56,12 @@ ACTIVITY_PATH = (
 EXAMPLES_PATH = REPO_ROOT / "console/packages/shared/src/session-v1/examples.json"
 
 TURN = "turn-activity"
+
+# Detail per card, with fifty cards in the message, at which Slack stopped
+# accepting the post: measured against a real workspace, not documented by
+# Slack. A single card was taken to 99,999 characters, and an expanded card
+# showed all 12,000 it was given, so this is the one number that binds.
+REFUSED_ABOVE = 4743
 
 
 async def _projection(*streams: str) -> SessionProjection:
@@ -889,8 +897,22 @@ async def test_a_remark_longer_than_the_expansion_is_still_cut_somewhere() -> No
     drawn = render_activity_plan([_said("word " * 4000)], _turn("completed"))
 
     detail = _detail(drawn.blocks[0]["tasks"][0])
-    assert len(detail) <= 750
+    assert len(detail) <= _MAX_SAID_DETAILS
     assert detail.endswith("…")
+
+
+async def test_fifty_talkative_cards_stay_clear_of_what_slack_refused() -> None:
+    """Nothing bounds the plan as a whole, so the per-card budget is what has to
+    hold the worst case: every one of the fifty cards a remark at the budget.
+
+    Slack accepted fifty cards carrying `REFUSED_ABOVE` characters of detail
+    each and refused the message above that. It documents neither number and
+    can revoke both, so the worst case has to clear the measurement with room
+    to spare rather than merely fit inside it.
+    """
+    worst_case = _MAX_PLAN_TASKS * _MAX_SAID_DETAILS
+
+    assert worst_case * 2 < _MAX_PLAN_TASKS * REFUSED_ABOVE
 
 
 async def test_the_header_still_counts_calls_rather_than_everything_drawn() -> None:

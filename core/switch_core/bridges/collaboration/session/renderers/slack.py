@@ -131,10 +131,14 @@ _MAX_PLAN_TASK_TITLE = 200
 _MAX_PLAN_TASK_DETAILS = 200
 # Prose gets more room than a tool result because it is read rather than
 # scanned, and because a card's detail is the one part of this block Slack will
-# expand on request. Fifty cards at this budget stay inside the same 39,000 the
-# text fallback is held to, so a talkative turn cannot be what makes a post too
-# large to send.
-_MAX_SAID_DETAILS = 750
+# expand on request. Measured rather than reasoned about: Slack took a single
+# card's detail to 99,999 characters without complaint, took fifty cards of
+# 4,743 each and refused the message above that with `msg_blocks_too_long`, and
+# showed all 12,000 characters of an expanded card rather than cutting the text
+# itself. So the binding constraint is the whole message, and fifty cards at
+# this budget leave a margin of more than two under where it was refused —
+# worth keeping, because Slack documents none of this and can tighten it.
+_MAX_SAID_DETAILS = 2000
 # A local display budget, not a claimed Slack rich_text protocol limit.
 # Preserve the decision/answer before spending the remainder on context.
 _MAX_RESOLVED_DETAILS = 2800
