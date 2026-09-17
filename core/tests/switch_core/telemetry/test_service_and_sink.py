@@ -8,6 +8,7 @@ import json
 import httpx
 import pytest
 
+from switch_core.observability.otlp import OtlpClient
 from switch_core.telemetry.catalogue import TelemetryCatalogueError
 from switch_core.telemetry.service import TelemetryService, emit_safely
 from switch_core.telemetry.sink import NullSink, OtlpRelaySink, TelemetryRecord
@@ -129,7 +130,13 @@ class TestFailuresDoNotReachTheCaller:
 
 
 class TestTheWireFormat:
-    """The relay's expectations, which fail silently rather than loudly."""
+    """The relay's expectations, which fail silently rather than loudly.
+
+    The encoding itself belongs to `observability/otlp.py` and is tested
+    there; what is pinned here is the part specific to a product event — that
+    the name reaches both places the relay needs it, and that the shared
+    encoder is being handed what it expects.
+    """
 
     async def _capture(self, handler: object) -> dict:
         captured: dict = {}
@@ -138,26 +145,29 @@ class TestTheWireFormat:
             captured.update(json.loads(request.content))
             return handler(request)  # type: ignore[operator]
 
-        sink = OtlpRelaySink(
-            endpoint="https://relay.example/v1/logs", timeout_seconds=5
-        )
-        sink._client = httpx.AsyncClient(transport=httpx.MockTransport(_handle))
+        http = httpx.AsyncClient(transport=httpx.MockTransport(_handle))
+        sink = OtlpRelaySink(client=OtlpClient("https://relay.example", 5, {}, http))
         await sink.send(
             TelemetryRecord(
                 name="switch_core.usage_snapshot",
                 properties={"room_count": 7, "from_template": True, "kind": "user"},
-                resource={"service.name": "switch-core"},
+                resource={
+                    "service.name": "switch-core",
+                    "flint.client_id": "deployment-uuid",
+                },
                 timestamp_ns=1_700_000_000_000_000_000,
             )
         )
-        await sink.aclose()
+        await http.aclose()
         return captured
+
+    def _record(self, body: dict) -> dict:
+        return body["resourceLogs"][0]["scopeLogs"][0]["logRecords"][0]
 
     async def test_the_event_name_is_sent_in_both_required_places(self) -> None:
         """The relay filters on the attribute and the exporter reads the field.
         Sending only one is accepted with a 200 and silently discarded."""
-        body = await self._capture(lambda request: httpx.Response(200))
-        record = body["resourceLogs"][0]["scopeLogs"][0]["logRecords"][0]
+        record = self._record(await self._capture(lambda r: httpx.Response(200)))
 
         assert record["eventName"] == "switch_core.usage_snapshot"
         attributes = {a["key"]: a["value"] for a in record["attributes"]}
@@ -166,15 +176,13 @@ class TestTheWireFormat:
     async def test_a_count_is_a_number_not_a_string(self) -> None:
         """OTLP renders `intValue` as a JSON string, which arrives in analytics
         as text and cannot be summed."""
-        body = await self._capture(lambda request: httpx.Response(200))
-        record = body["resourceLogs"][0]["scopeLogs"][0]["logRecords"][0]
+        record = self._record(await self._capture(lambda r: httpx.Response(200)))
         attributes = {a["key"]: a["value"] for a in record["attributes"]}
 
         assert attributes["room_count"] == {"doubleValue": 7.0}
 
     async def test_a_boolean_stays_a_boolean(self) -> None:
-        body = await self._capture(lambda request: httpx.Response(200))
-        record = body["resourceLogs"][0]["scopeLogs"][0]["logRecords"][0]
+        record = self._record(await self._capture(lambda r: httpx.Response(200)))
         attributes = {a["key"]: a["value"] for a in record["attributes"]}
 
         assert attributes["from_template"] == {"boolValue": True}
@@ -182,10 +190,35 @@ class TestTheWireFormat:
     async def test_the_body_carries_the_name_so_the_log_line_is_not_blank(
         self,
     ) -> None:
-        body = await self._capture(lambda request: httpx.Response(200))
-        record = body["resourceLogs"][0]["scopeLogs"][0]["logRecords"][0]
+        record = self._record(await self._capture(lambda r: httpx.Response(200)))
 
         assert record["body"] == {"stringValue": "switch_core.usage_snapshot"}
+
+    async def test_the_deployment_is_identified_on_the_resource(self) -> None:
+        body = await self._capture(lambda r: httpx.Response(200))
+        resource = {
+            a["key"]: a["value"]
+            for a in body["resourceLogs"][0]["resource"]["attributes"]
+        }
+
+        assert resource["flint.client_id"] == {"stringValue": "deployment-uuid"}
+        assert resource["service.name"] == {"stringValue": "switch-core"}
+
+    async def test_it_posts_to_the_logs_signal(self) -> None:
+        """Not `/v1/metrics`: the relay routes on log records, and a metric
+        would be dropped without complaint."""
+        seen: list[str] = []
+
+        def _handle(request: httpx.Request) -> httpx.Response:
+            seen.append(str(request.url))
+            return httpx.Response(200)
+
+        http = httpx.AsyncClient(transport=httpx.MockTransport(_handle))
+        sink = OtlpRelaySink(client=OtlpClient("https://relay.example", 5, {}, http))
+        await sink.send(_a_record())
+        await http.aclose()
+
+        assert seen == ["https://relay.example/v1/logs"]
 
     async def test_no_credential_is_sent(self) -> None:
         """The relay takes none, and holds the vendor keys itself."""
@@ -195,30 +228,28 @@ class TestTheWireFormat:
             seen.update(request.headers)
             return httpx.Response(200)
 
-        sink = OtlpRelaySink(
-            endpoint="https://relay.example/v1/logs", timeout_seconds=5
-        )
-        sink._client = httpx.AsyncClient(transport=httpx.MockTransport(_handle))
-        await sink.send(TelemetryRecord("switch_core.x", {}, {"service.name": "s"}, 1))
-        await sink.aclose()
+        http = httpx.AsyncClient(transport=httpx.MockTransport(_handle))
+        sink = OtlpRelaySink(client=OtlpClient("https://relay.example", 5, {}, http))
+        await sink.send(_a_record())
+        await http.aclose()
 
         assert "authorization" not in seen
         assert "x-api-key" not in seen
 
 
 class TestTheRelayMisbehaving:
+    """Every failure is logged and dropped. None reaches the caller."""
+
     async def _send_against(self, handler: object) -> None:
-        sink = OtlpRelaySink(
-            endpoint="https://relay.example/v1/logs", timeout_seconds=5
-        )
-        sink._client = httpx.AsyncClient(
+        http = httpx.AsyncClient(
             transport=httpx.MockTransport(handler)  # type: ignore[arg-type]
         )
-        await sink.send(TelemetryRecord("switch_core.x", {}, {"service.name": "s"}, 1))
-        await sink.aclose()
+        sink = OtlpRelaySink(client=OtlpClient("https://relay.example", 5, {}, http))
+        await sink.send(_a_record())
+        await http.aclose()
 
     async def test_a_refusal_is_swallowed(self) -> None:
-        await self._send_against(lambda request: httpx.Response(503))
+        await self._send_against(lambda r: httpx.Response(503))
 
     async def test_a_network_error_is_swallowed(self) -> None:
         def _boom(request: httpx.Request) -> httpx.Response:
@@ -235,19 +266,33 @@ class TestTheRelayMisbehaving:
     async def test_a_partial_success_inside_a_200_is_noticed(
         self, caplog: pytest.LogCaptureFixture
     ) -> None:
-        """A 200 does not mean the record was kept. Without reading the body a
+        """A 200 does not mean the record was kept. Without this a
         misconfigured deployment reports nothing and looks healthy doing it."""
         with caplog.at_level("WARNING"):
             await self._send_against(
-                lambda request: httpx.Response(
+                lambda r: httpx.Response(
                     200, json={"partialSuccess": {"rejectedLogRecords": "3"}}
                 )
             )
 
-        assert "rejected 3 record(s)" in caplog.text
+        assert "was not sent" in caplog.text
 
-    async def test_an_empty_200_is_not_treated_as_a_rejection(self) -> None:
-        await self._send_against(lambda request: httpx.Response(200))
+    async def test_an_empty_200_is_not_treated_as_a_rejection(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        with caplog.at_level("WARNING"):
+            await self._send_against(lambda r: httpx.Response(200))
+
+        assert "was not sent" not in caplog.text
+
+
+def _a_record() -> TelemetryRecord:
+    return TelemetryRecord(
+        name="switch_core.deployment_started",
+        properties={"tenant_count": 1},
+        resource={"service.name": "switch-core", "flint.client_id": "deployment-uuid"},
+        timestamp_ns=1,
+    )
 
 
 class TestNullSink:

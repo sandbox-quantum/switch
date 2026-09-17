@@ -138,6 +138,7 @@ def _fake_bridge(
         return "tenant-1"
 
     ns = SimpleNamespace(
+        _bridge_type="slack",
         _adapter=adapter,
         _puppet_matrix_ids={"@puppet:s"},
         _bridge_client_matrix_user_id="@bridge:s",
@@ -164,6 +165,7 @@ def _fake_bridge(
     )
     ns._relay_outbound_group = BridgeCore._relay_outbound_group.__get__(ns)
     ns._relay_outbound_media = BridgeCore._relay_outbound_media.__get__(ns)
+    ns._counted_outbound = BridgeCore._counted_outbound.__get__(ns)
     ns._move_indicator_for_sender = BridgeCore._move_indicator_for_sender.__get__(ns)
     ns._schedule_indicator_move = BridgeCore._schedule_indicator_move.__get__(ns)
     ns._flush_incomplete_outbound_group = (

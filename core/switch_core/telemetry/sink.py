@@ -2,27 +2,42 @@
 
 One narrow seam, with the relay behind it. Everything above this file — the
 catalogue, the snapshot, the call sites — is about *what* Switch reports;
-everything below is about the wire. Keeping the two apart is what lets the
-operational-observability work (`CHOO-2807`) replace the transport without
-touching a single call site: the sink is the only thing that knows there is an
-HTTP request involved at all.
+everything below is about the wire. The sink is the only thing that knows there
+is an HTTP request involved at all.
 
-The wire format is not ours to choose. The relay is already serving Switch
-Console, and its expectations are exacting in ways that fail silently rather
-than loudly — see :class:`OtlpRelaySink` for the two that bite.
+**The wire format is not ours.** `switch_core.observability.otlp` owns it, for
+both this and the operational export: one encoder, one client, one set of
+resource attributes, and one place where the protobuf-JSON rules that nothing
+else would catch are written down and tested. A second copy here would be a
+second thing to keep correct, and the failure would be invisible — the relay
+answers 200 to a malformed payload and drops it.
+
+What this file adds is the two things that are specific to a product event:
+the `eventName` field the relay's exporter reads, and a failure policy that
+never lets a reporting problem reach the caller.
 """
 
 from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Any, Protocol
 
-import httpx
-
+from switch_core.observability.otlp import (
+    LogRecord,
+    OtlpClient,
+    OtlpResource,
+    OtlpSendError,
+    build_logs_payload,
+)
 from switch_core.telemetry.catalogue import PropertyValue
 
 logger = logging.getLogger(__name__)
+
+# OTLP's severity number for INFO. A product event is not a log line, but the
+# relay carries it as one, and a record with no severity is rendered by some
+# receivers as an error.
+_SEVERITY_INFO = 9
 
 
 @dataclass(frozen=True)
@@ -66,146 +81,94 @@ class NullSink:
 class OtlpRelaySink:
     """Posts one OTLP log record per event to the relay.
 
-    **Log records, not metrics or spans.** The relay routes on log records and
-    the downstream product-analytics exporter reads them as events; a metric
-    would be dropped without complaint.
+    **Log records, not metrics.** The relay routes on log records and the
+    product-analytics exporter beyond it reads them as events; a metric would
+    be dropped without complaint. That is why this does not go through the
+    operational export's metric path even though both end at the same relay by
+    default — and why the two endpoints stay separately configurable, since a
+    deployment pointing its metrics at its own collector must not thereby send
+    its usage analytics there too.
 
     **The event name goes in two places** — the log record's own `eventName`
     field and an `event.name` attribute. The relay's filter reads the
     attribute; the exporter reads the field. Sending only one is accepted with
     a 200 at every hop and then quietly discarded, which is the single easiest
-    way to believe this is working when it is not.
+    way to believe this is working when it is not. `build_logs_payload` writes
+    the attribute; the field is added here, because it is meaningful for a
+    product event and not for an operational log line.
 
-    No batching and no retry, matching the Console. A dropped event is a lost
-    row in an analytics chart, and the alternative — a queue that grows while
-    the relay is unreachable, on a process that is already the deployment's
-    single point of failure — costs more than it saves. Failures are logged
-    with a reason so a deployment reporting nothing is diagnosable rather than
-    merely silent.
+    No batching and no retry, matching both the Console and the operational
+    exporter. A dropped event is a lost row in a chart, and the alternative —
+    a queue growing while the relay is unreachable, in the process that is
+    already this deployment's single point of failure — costs more than it
+    saves.
     """
 
-    def __init__(self, *, endpoint: str, timeout_seconds: float) -> None:
-        self._endpoint = endpoint
-        self._client = httpx.AsyncClient(
-            timeout=timeout_seconds,
-            headers={"User-Agent": "switch-core"},
-        )
+    def __init__(self, *, client: OtlpClient) -> None:
+        self._client = client
 
     async def send(self, record: TelemetryRecord) -> None:
+        payload = build_logs_payload(
+            [
+                LogRecord(
+                    # Datadog renders this as the log message, and a blank one
+                    # makes the event unreadable there.
+                    body=record.name,
+                    severity_text="INFO",
+                    severity_number=_SEVERITY_INFO,
+                    time_nanos=record.timestamp_ns,
+                    attributes={"event.name": record.name, **record.properties},
+                )
+            ],
+            _resource_from(record),
+        )
+        _add_event_name(payload, record.name)
+
         try:
-            response = await self._client.post(self._endpoint, json=_payload(record))
-        except httpx.TimeoutException:
+            await self._client.post("logs", payload)
+        except OtlpSendError as exc:
+            # Logged and dropped. The relay being slow, unreachable or unhappy
+            # is an operational condition with nothing to do with whatever was
+            # being reported, and Switch working while analytics is down is the
+            # only acceptable behaviour.
             logger.warning(
-                "Telemetry event %s was not sent: the relay did not answer in "
-                "time. The event is dropped; there is no retry.",
+                "Telemetry event %s was not sent: %s. The event is dropped; "
+                "there is no retry.",
                 record.name,
-            )
-            return
-        except httpx.HTTPError as exc:
-            logger.warning(
-                "Telemetry event %s was not sent: %s. The event is dropped.",
-                record.name,
-                type(exc).__name__,
-            )
-            return
-
-        if response.status_code >= 400:
-            logger.warning(
-                "Telemetry event %s was refused by the relay with HTTP %d.",
-                record.name,
-                response.status_code,
-            )
-            return
-
-        # A 200 does not mean the record was kept: OTLP answers partial
-        # success in the body. Without this a misconfigured deployment reports
-        # nothing and looks perfectly healthy doing it.
-        rejected = _rejected_count(response)
-        if rejected:
-            logger.warning(
-                "The relay accepted the request for telemetry event %s but "
-                "rejected %d record(s) in it.",
-                record.name,
-                rejected,
+                exc,
             )
 
     async def aclose(self) -> None:
-        await self._client.aclose()
+        # The HTTP client belongs to the observability bootstrap, which is what
+        # opened it and what closes it. Closing it here would take the
+        # operational export down with the last product event.
+        return None
 
 
-def _rejected_count(response: httpx.Response) -> int:
-    """How many records the relay rejected inside a 2xx, best effort.
+def _resource_from(record: TelemetryRecord) -> OtlpResource:
+    """The record's resource attributes, as the shared encoder wants them.
 
-    A body that is absent, empty, or not JSON is the ordinary success case for
-    some collectors, so none of those are worth a warning of their own.
+    The service builds the map (it is the same map on every event of a run);
+    this turns it back into the dataclass rather than having the service depend
+    on the observability package, so the seam stays one file wide.
     """
-    if not response.content:
-        return 0
-    try:
-        body = response.json()
-    except ValueError:
-        return 0
-    if not isinstance(body, dict):
-        return 0
-    partial = body.get("partialSuccess")
-    if not isinstance(partial, dict):
-        return 0
-    rejected = partial.get("rejectedLogRecords", 0)
-    # OTLP/JSON renders 64-bit integers as strings.
-    try:
-        return int(rejected)
-    except (TypeError, ValueError):
-        return 0
+    return OtlpResource(
+        service_name=record.resource["service.name"],
+        service_version=record.resource.get("service.version"),
+        environment=record.resource.get("deployment.environment"),
+        deployment_id=record.resource["flint.client_id"],
+    )
 
 
-def _attribute(key: str, value: PropertyValue) -> dict[str, object]:
-    """One OTLP key/value.
+def _add_event_name(payload: dict[str, Any], name: str) -> None:
+    """Set the log record's own `eventName` field.
 
-    Numbers go as `doubleValue` rather than `intValue`, whose OTLP/JSON
-    encoding is a *string* — which arrives in analytics as text and cannot be
-    summed or averaged. `bool` is checked before `int` because it is a
-    subclass of it and would otherwise be reported as 0 and 1.
+    Not part of `build_logs_payload`, because an operational log line has no
+    event name and a field that is sometimes absent is worse than one this
+    caller adds deliberately. Reaching into the payload keeps the shared
+    encoder unaware of product events; the test pins that both places carry it.
     """
-    if isinstance(value, bool):
-        return {"key": key, "value": {"boolValue": value}}
-    if isinstance(value, int | float):
-        return {"key": key, "value": {"doubleValue": float(value)}}
-    return {"key": key, "value": {"stringValue": value}}
-
-
-def _payload(record: TelemetryRecord) -> dict[str, object]:
-    attributes = [
-        _attribute("event.name", record.name),
-        *(_attribute(key, value) for key, value in record.properties.items()),
-    ]
-    return {
-        "resourceLogs": [
-            {
-                "resource": {
-                    "attributes": [
-                        _attribute(key, value) for key, value in record.resource.items()
-                    ]
-                },
-                "scopeLogs": [
-                    {
-                        "scope": {"name": "switch-core"},
-                        "logRecords": [
-                            {
-                                "timeUnixNano": str(record.timestamp_ns),
-                                "observedTimeUnixNano": str(record.timestamp_ns),
-                                "severityNumber": 9,
-                                "severityText": "INFO",
-                                # The name again, as the record's own field.
-                                # Both are required; see the class docstring.
-                                "eventName": record.name,
-                                # Datadog renders this as the log message, and
-                                # a blank one makes the event unreadable there.
-                                "body": {"stringValue": record.name},
-                                "attributes": attributes,
-                            }
-                        ],
-                    }
-                ],
-            }
-        ]
-    }
+    for resource_log in payload["resourceLogs"]:
+        for scope_log in resource_log["scopeLogs"]:
+            for record in scope_log["logRecords"]:
+                record["eventName"] = name

@@ -87,14 +87,6 @@ check:
     uv run --project core ruff format --check .
     uv run --project core ruff check .
 
-# ── Watch what telemetry the server would send ────────────────────────────────
-# A local stand-in for the relay. Start it, point a dev server at it with
-# TELEMETRY_ENABLED=true and TELEMETRY_ENDPOINT=http://localhost:4318/v1/logs,
-# then use Switch and watch the events arrive decoded. Nothing leaves the
-# machine. `--reject N` and `--fail CODE` exercise the two failure paths.
-telemetry-listen *ARGS:
-    uv run --project core python -u scripts/telemetry_listener.py {{ARGS}}
-
 # ── Run mypy type checks ──────────────────────────────────────────────────────
 typecheck:
     uv run --project core mypy --config-file core/pyproject.toml core/switch_core/ connectors/
