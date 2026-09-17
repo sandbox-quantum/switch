@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import time
 from datetime import UTC, datetime
 from typing import Annotated, Any, cast
 
@@ -79,6 +80,7 @@ from switch_core.bridges.agent.dependencies import (
 )
 from switch_core.bridges.agent.protocol.connections import (
     ClientDeclaration,
+    Connection,
     ConnectionError_,
     DeliveryFilter,
     NoStreamAttachedError,
@@ -99,6 +101,8 @@ from switch_core.db.stores.api_key_store import ApiKeyStore
 from switch_core.db.stores.feature_flag_store import FeatureFlagStore
 from switch_core.feature_flags import is_known_flag
 from switch_core.gateway.known_agents import KNOWN_AGENTS
+from switch_core.telemetry import emit_safely
+from switch_core.telemetry.snapshot import normalise_known_agent_type
 from switch_core.version import switch_core_version
 
 logger = logging.getLogger(__name__)
@@ -734,6 +738,47 @@ def _resolve_start_cursor(
         ) from exc
 
 
+def report_session_ended(
+    protocol: ProtocolService, conn: Connection | None, *, reason: str | None = None
+) -> None:
+    """Report a session closing, wherever it was closed.
+
+    Takes the `Connection` the registry hands back rather than an id, so the
+    duration and the reason come from the row that just closed and a caller
+    cannot disagree with the registry about either. `None` — the connection was
+    already gone — reports nothing: something else closed it and reported it.
+
+    The reason is mapped from the registry's own free-text string into the
+    catalogue's closed set, here rather than at each call site, so a new reason
+    added in the registry becomes `error` instead of failing validation at the
+    moment a session drops.
+    """
+    if conn is None:
+        return
+    emit_safely(
+        protocol.telemetry,
+        "agent_session_ended",
+        {
+            "duration_seconds": max(time.monotonic() - conn.opened_at, 0.0),
+            "reason": _SESSION_END_REASONS.get(
+                reason or conn.closed_reason or "", "error"
+            ),
+        },
+    )
+
+
+# The registry records why it closed a connection as prose. These are the
+# strings it actually uses; anything else is reported as `error` rather than
+# rejected, because a lost session event is worse than an imprecise one.
+_SESSION_END_REASONS = {
+    "heartbeat lapsed": "heartbeat_lapsed",
+    "room already claimed": "room_claimed",
+    "invalid room subscription": "error",
+    "replaced": "replaced",
+    "shutdown": "normal",
+}
+
+
 async def _open_event_stream(
     *,
     agent: Agent,
@@ -802,6 +847,21 @@ async def _open_event_stream(
     # reason an agent could not connect.
     await protocol.record_client_declaration(agent.id, connection_id, declaration)
 
+    # A fresh connection, not a supervisor reattaching to one it already had —
+    # `open()` hands back the existing Connection in that case, and counting it
+    # would turn one long session into a session per reconnect.
+    if conn.stream_generation == 0:
+        runtime = normalise_known_agent_type(agent.metadata_)
+        emit_safely(
+            protocol.telemetry,
+            "agent_session_started",
+            {"known_agent_type": runtime},
+        )
+        if protocol.telemetry is not None:
+            await protocol.telemetry.emit_milestone(
+                "first_session_started", known_agent_type=runtime
+            )
+
     # Rooms are claimed before the stream starts, not after it opens. A client
     # reconnecting already knows which room it was in; making it re-subscribe
     # afterwards would race the catch-up, and buffered events for that room
@@ -823,10 +883,15 @@ async def _open_event_stream(
             # stream 409s and retries forever.
             protocol.connections.claim_room(conn, room_id, takeover=True)
         except (ValueError, PermissionError) as exc:
-            protocol.connections.close(conn.id, "invalid room subscription")
+            report_session_ended(
+                protocol,
+                protocol.connections.close(conn.id, "invalid room subscription"),
+            )
             raise HTTPException(status_code=403, detail=str(exc)) from exc
         except ConnectionError_ as exc:
-            protocol.connections.close(conn.id, "room already claimed")
+            report_session_ended(
+                protocol, protocol.connections.close(conn.id, "room already claimed")
+            )
             raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     return StreamingResponse(

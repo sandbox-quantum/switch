@@ -32,6 +32,7 @@ from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.task_store import TaskStore
 from switch_core.request_context import RequestContextMiddleware
 from switch_core.room_service import RoomService
+from switch_core.telemetry import TelemetryService
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +54,7 @@ def create_agent_bridge_app(
     session_factory: object,
     config: SwitchConfig,
     connections: ConnectionRegistry | None = None,
+    telemetry: TelemetryService | None = None,
 ) -> tuple[FastAPI, ProtocolService]:
     # One registry for the whole process: the live connection set is the source
     # of truth for reachability, so every service must see the same one. The
@@ -105,6 +107,7 @@ def create_agent_bridge_app(
         bridge_store=bridge_store,
         session_factory=session_factory,  # type: ignore[arg-type]
         config=config,
+        telemetry=telemetry,
     )
 
     app = FastAPI(title="Switch Agent Bridge API")

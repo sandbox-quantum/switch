@@ -247,12 +247,22 @@ CATALOGUE: Mapping[str, Mapping[str, PropertyType]] = {
         "registration_path": one_of("bootstrap", "personal_key", "console", "other"),
         "has_parent": BOOLEAN,
     },
-    "agent_session_started": {
-        "known_agent_type": KNOWN_AGENT_TYPE,
-        "start_source": one_of("auto", "manual", "api"),
-    },
+    # Deliberately only the runtime. How a session was *started* — a person
+    # launching it against one Switch Console spawned automatically — is not
+    # visible from here: the server sees an authenticated connection either
+    # way. A property that is the same value on every emission is a dimension
+    # that cannot segment anything, which is worse than not having it, so if
+    # that distinction is wanted it belongs on a Console-side event that knows
+    # the answer.
+    "agent_session_started": {"known_agent_type": KNOWN_AGENT_TYPE},
+    # Duration and cause, and deliberately not the runtime. The connection
+    # registry is the only thing that knows a session has ended, and it holds
+    # no runtime — the client's self-declared `artifact` is free text, which
+    # may not be sent, and looking the agent up would put a database query on
+    # a path that runs from the connection sweep. Session *starts* carry the
+    # runtime, so the mix is available from those; what this answers is how
+    # long sessions last and why they stop.
     "agent_session_ended": {
-        "known_agent_type": KNOWN_AGENT_TYPE,
         "duration_seconds": NUMBER,
         "reason": one_of(
             "normal", "heartbeat_lapsed", "replaced", "room_claimed", "error"

@@ -22,6 +22,7 @@ from sqlalchemy.ext.asyncio import (
 )
 from sqlalchemy.pool import NullPool
 
+from switch_core.bridges.agent.api.handlers import report_session_ended
 from switch_core.bridges.agent.app import create_agent_bridge_app
 from switch_core.bridges.agent.protocol.connections import (
     HEARTBEAT_TTL_SECONDS,
@@ -186,6 +187,11 @@ async def _connection_sweep_loop(protocol: ProtocolService) -> None:
                     conn.agent_id,
                     conn.beats,
                 )
+                # The ordinary way a session ends: nothing calls close() on a
+                # clean client disconnect, the socket just goes away and the
+                # sweep reaps it. Reported here rather than inside the registry
+                # so the registry stays free of anything but connection state.
+                report_session_ended(protocol, conn)
         except Exception:
             logger.exception("Connection sweep failed")
 
@@ -482,6 +488,7 @@ async def run(config: SwitchConfig) -> None:
         session_factory=session_factory,
         config=config,
         connections=connections,
+        telemetry=telemetry,
     )
     # ── Server-side connector lifecycle ─────────────────────────────────────
     connector_lifecycle = ServerSideConnectorLifecycleService(

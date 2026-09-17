@@ -98,6 +98,8 @@ from switch_core.events import (
     ToolCallReport as MatrixToolCallReport,
 )
 from switch_core.messages.recorded_types import MEMBERSHIP_EVENT_TYPE
+from switch_core.telemetry import TelemetryService, emit_safely
+from switch_core.telemetry.snapshot import normalise_known_agent_type
 from switch_core.tenant_context import current_tenant_id, tenant_scope
 from switch_core.transport import (
     TransportError,
@@ -237,6 +239,10 @@ def _describe_room(room: Room) -> RoomDescriptor:
 
 
 class ProtocolService:
+    # Class-level default: several tests assemble a minimal instance without
+    # `__init__`, and `emit_safely` treats None as "report nothing".
+    telemetry: TelemetryService | None = None
+
     def __init__(
         self,
         *,
@@ -256,7 +262,9 @@ class ProtocolService:
         bridge_store: CollaborationBridgeStore,
         session_factory: async_sessionmaker[AsyncSession],
         config: SwitchConfig,
+        telemetry: TelemetryService | None = None,
     ) -> None:
+        self.telemetry = telemetry
         self.agent_store = agent_store
         self.agent_session_store = agent_session_store
         self.agent_runtime_state_store = AgentRuntimeStateStore()
@@ -309,6 +317,7 @@ class ProtocolService:
         overwrite: bool = False,
         addressable_by_agent_ids: list[str] | None = None,
         owner_only: bool = True,
+        registration_path: str = "other",
     ) -> RegistrationResult:
         """Register or re-register an agent.
 
@@ -378,6 +387,11 @@ class ProtocolService:
         api_key_hash = hashlib.sha256(api_key.encode()).hexdigest()
         encrypted_key = encrypt_token(api_key, self.config.jwt_secret_key)
 
+        # Reported only for a genuinely new agent: a re-registration rotates a
+        # key on an agent that already existed, and counting it would make a
+        # CLI that re-registers on every launch look like adoption.
+        newly_registered = False
+
         async with self.session_factory() as session:
             existing = await self.agent_store.get_by_name(session, name)
             if existing and not overwrite:
@@ -444,6 +458,24 @@ class ProtocolService:
                     ),
                 )
                 logger.info("Registered agent: %s (%s)", name, agent_id)
+                newly_registered = True
+
+        if newly_registered:
+            runtime = normalise_known_agent_type(metadata)
+            emit_safely(
+                self.telemetry,
+                "agent_registered",
+                {
+                    "agent_type": agent_type,
+                    "known_agent_type": runtime,
+                    "registration_path": registration_path,
+                    "has_parent": parent_agent_id is not None,
+                },
+            )
+            if self.telemetry is not None:
+                await self.telemetry.emit_milestone(
+                    "first_agent_registered", known_agent_type=runtime
+                )
 
         await self._create_bridge_identities(tenant_id, name, description)
 
@@ -537,6 +569,7 @@ class ProtocolService:
                 overwrite=overwrite,
                 addressable_by_agent_ids=addressable_by_agent_ids,
                 owner_only=owner_only,
+                registration_path="bootstrap",
             )
 
     async def _create_agent(
