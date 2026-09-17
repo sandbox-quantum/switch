@@ -82,9 +82,9 @@ function rawAgents(doc: Record<string, unknown>): Record<string, unknown>[] {
 }
 
 /**
- * Classify a document by what it creates. `agent` is one agent (with or
- * without a room), `room` is one room and no agents, `group` is anything
- * bigger: several agents, or several rooms.
+ * Classify a document. `group`: it has `group:` or `rooms:`, or more than
+ * one agent. `agent`: one agent, with or without a room. `room`: a room and
+ * no agents.
  */
 export function templateKind(yamlText: string): TemplateKind {
   return kindOf(parseYaml(yamlText));
@@ -162,8 +162,8 @@ function isProviderParam(spec: unknown): boolean {
 }
 
 /**
- * Build the document the server receives: the room part only, as a valid
- * room template for `POST /rooms/from-yaml`.
+ * Build the document the server receives: the room part only, in the shape
+ * `POST /rooms/from-yaml` validates.
  *
  * Kept: `room:` (or `group:`, `rooms:`, `links:`), `params:`, `kickoff:`,
  * `version:`. Dropped: the agent entries, which the server does not
@@ -173,7 +173,7 @@ function isProviderParam(spec: unknown): boolean {
  *
  * Returns null when the document has no room part.
  */
-export function coreDocumentFor(
+export function serverDocument(
   yamlText: string,
   options: { keepConsoleParams?: boolean } = {}
 ): string | null {
@@ -219,7 +219,9 @@ export function coreDocumentFor(
  * intended name was taken and the agent was created as `name-2`.
  *
  * Every place a room refers to an agent is updated: the `agents:` list, the
- * keys of `aliases:`, and mentions inside `kickoff:` text.
+ * keys of `aliases:`, and mentions inside `kickoff:` text. In kickoff text
+ * the name is replaced wherever it occurs, with or without a leading `@`,
+ * so a mention still names an agent that exists.
  */
 export function substituteAgentSlots(
   coreYaml: string,

@@ -20,7 +20,7 @@ export type SlotStatus = 'idle' | 'creating' | 'created' | 'failed';
  */
 export type AgentSlot = {
   entry: ParsedAgentEntry;
-  /** Create a new agent, or use an agent the server already has. */
+
   mode: 'new' | 'existing';
   /** The existing agent's name, when `mode` is `existing`. */
   existingName: string;
@@ -31,7 +31,7 @@ export type AgentSlot = {
   cloneRepo: boolean;
   status: SlotStatus;
   error: string | null;
-  /** The name it was created under, once it was. */
+  /** Null until the agent is created, then the name it was created under. */
   createdName: string | null;
   createdSwitchAgentId: string | null;
 };
@@ -103,7 +103,7 @@ export function RoomCard({
   bridgeName: string | null;
   creatorIdentity: string | null;
   status: SlotStatus;
-  /** For an agent template, whether to create the room. Null when the room is not optional. */
+  /** For an agent template, whether to create the room. Null hides the toggle: the room is not optional, or creation has started. */
   toggle: { checked: boolean; onChange: (checked: boolean) => void } | null;
 }) {
   const fill = (s: string) =>
@@ -163,7 +163,7 @@ export function AgentSlotCard({
   busy,
 }: {
   slot: AgentSlot;
-  /** The name from the template's `name` field, with the inputs filled in. */
+  /** The name the deployer asked for; see `slotWantedName`. */
   wantedName: string;
   /** The name the agent will be created under: `wantedName`, or `wantedName-2`, `-3`, … when it is taken. */
   finalName: string;

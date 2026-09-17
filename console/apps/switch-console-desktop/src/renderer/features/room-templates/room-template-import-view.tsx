@@ -200,7 +200,7 @@ const TemplateImportPanel = observer(function TemplateImportPanel() {
     setParseError(null);
     try {
       await rpc.agentTemplates.parseAgents({ yamlText });
-      const coreYaml = await rpc.agentTemplates.coreDocument({ yamlText });
+      const coreYaml = await rpc.agentTemplates.serverDocument({ yamlText });
       if (coreYaml) await rpc.roomTemplates.parse({ yamlText: coreYaml });
       else if ((await rpc.agentTemplates.parseAgents({ yamlText })).agents.length === 0) {
         throw new Error('Template must have a "room:", "group:" or "agent:" block.');

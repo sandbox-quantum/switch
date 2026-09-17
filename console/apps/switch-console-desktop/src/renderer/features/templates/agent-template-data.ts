@@ -15,7 +15,7 @@ import { type BundledTemplate, bundledTemplates, findBundledTemplate } from './b
  * to a room template. A caller can create the room as soon as the agent
  * exists, without parsing YAML itself.
  */
-export type AgentTemplateData = {
+export type AgentTemplate = {
   /** The template's own name, for a heading. */
   name: string;
   /** Where the template came from. Recorded on the agent so its settings
@@ -36,12 +36,12 @@ export type AgentTemplateData = {
 };
 
 /** Parse a document into the agent it describes. */
-export async function agentTemplateDataFromContent(
+export async function agentTemplateFromContent(
   templateName: string,
   content: string,
   instructions: string | null,
   origin: AgentTemplateOrigin | null
-): Promise<AgentTemplateData> {
+): Promise<AgentTemplate> {
   const parsed = await rpc.agentTemplates.parse({ yamlText: content, instructions });
   const roomYaml = parsed.room
     ? await rpc.agentTemplates.roomDocument({ yamlText: content })
@@ -61,14 +61,14 @@ export async function agentTemplateDataFromContent(
   };
 }
 
-/** Load a template again from where an agent's config says it came from. */
+/** Load the template recorded on an agent's config. */
 export async function loadAgentTemplateByOrigin(
   origin: AgentTemplateOrigin
-): Promise<AgentTemplateData> {
+): Promise<AgentTemplate> {
   if (origin.source === 'bundled') {
     const bundled = findBundledTemplate(origin.id);
     if (!bundled) throw new Error(`This Console no longer bundles "${origin.name}".`);
-    return agentTemplateDataFromContent(origin.name, bundled.content, bundled.instructions, origin);
+    return agentTemplateFromContent(origin.name, bundled.yamlText, bundled.instructions, origin);
   }
   if (!origin.serverId)
     throw new Error(`"${origin.name}" came from a server this Console does not know.`);
@@ -76,24 +76,24 @@ export async function loadAgentTemplateByOrigin(
     serverId: origin.serverId,
     templateId: origin.id,
   });
-  return agentTemplateDataFromContent(origin.name, detail.definition, null, origin);
+  return agentTemplateFromContent(origin.name, detail.definition, null, origin);
 }
 
 /** Resolve a listing entry (bundled or from the server's registry) into the agent it describes. */
-export async function loadAgentTemplateData(
+export async function loadAgentTemplate(
   serverId: string,
   template: StoredTemplateSummary
-): Promise<AgentTemplateData> {
+): Promise<AgentTemplate> {
   const bundled = findBundledTemplate(template.id);
   if (bundled) {
-    return agentTemplateDataFromContent(bundled.name, bundled.content, bundled.instructions, {
+    return agentTemplateFromContent(bundled.name, bundled.yamlText, bundled.instructions, {
       id: bundled.id,
       name: bundled.name,
       source: 'bundled',
     });
   }
   const detail = await rpc.switchServers.getTemplateDetail({ serverId, templateId: template.id });
-  return agentTemplateDataFromContent(detail.name, detail.definition, null, {
+  return agentTemplateFromContent(detail.name, detail.definition, null, {
     id: detail.id,
     name: detail.name,
     source: 'server',
@@ -158,10 +158,10 @@ export async function loadTemplateById(
     description = bundled.description;
     document = bundled.instructions
       ? await rpc.agentTemplates.compose({
-          yamlText: bundled.content,
+          yamlText: bundled.yamlText,
           instructions: bundled.instructions,
         })
-      : bundled.content;
+      : bundled.yamlText;
   } else {
     const detail = await rpc.switchServers.getTemplateDetail({ serverId, templateId });
     const { definition, ...summary } = detail;
@@ -173,7 +173,7 @@ export async function loadTemplateById(
   }
   const kind = await rpc.agentTemplates.kind({ yamlText: document });
   const { agents } = await rpc.agentTemplates.parseAgents({ yamlText: document });
-  const coreYaml = await rpc.agentTemplates.coreDocument({ yamlText: document });
+  const coreYaml = await rpc.agentTemplates.serverDocument({ yamlText: document });
   const room = coreYaml ? await rpc.roomTemplates.parse({ yamlText: coreYaml }) : null;
   const summary = await rpc.agentTemplates.summarize({ yamlText: document });
   return {
@@ -208,14 +208,14 @@ export async function prefillForSave(
   const fromFile = sourceName ? templateNameFromFile(sourceName) : '';
   const kind = await rpc.agentTemplates.kind({ yamlText: content });
   if (kind === 'agent') {
-    const t = await agentTemplateDataFromContent(fromFile || 'Agent template', content, null, null);
+    const t = await agentTemplateFromContent(fromFile || 'Agent template', content, null, null);
     return {
       kind,
       name: fromFile || t.agentName || 'Agent template',
       description: t.description,
     };
   }
-  const coreYaml = await rpc.agentTemplates.coreDocument({ yamlText: content });
+  const coreYaml = await rpc.agentTemplates.serverDocument({ yamlText: content });
   const t = coreYaml ? await rpc.roomTemplates.parse({ yamlText: coreYaml }) : null;
   const literal = (s: string | null) => (s && !/\{[^}]+\}/.test(s) ? s : null);
   return {

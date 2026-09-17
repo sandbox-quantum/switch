@@ -1125,7 +1125,7 @@ export type StoredTemplateSummary = {
   description: string;
   kind: string;
   creator: string;
-  /** The owner's user id, so the Console can mark the signed-in person's own templates. */
+  /** The owner's user id, so the Console can mark the signed-in user's own templates. */
   ownerId: string | null;
 };
 

@@ -114,6 +114,9 @@ const ajv = new Ajv({ allErrors: true, strict: false });
  * document shape (room, group). Validating a room document against the
  * whole `oneOf` reports the group branch's errors too, which reads as
  * noise. Validating against the matching branch reports only the mistake.
+ *
+ * The group branch is found by `Group` in its `$ref`, the server's model
+ * name for it; the other branch is the room one.
  */
 function documentSchema(
   schema: Record<string, unknown>,

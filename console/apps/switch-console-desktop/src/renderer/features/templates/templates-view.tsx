@@ -64,7 +64,7 @@ const KIND_ICON: Record<Kind, typeof Bot> = {
 };
 
 /** One card in the listing: a bundled template, or a template saved on the workspace. */
-type Listed = {
+type TemplateListEntry = {
   /** The id the card opens: a bundled id, or a workspace template id. */
   id: string;
   kind: Kind;
@@ -109,10 +109,10 @@ function summaryLine(s: TemplateSummary): string {
 
 // The listing endpoint returns no document text, and the summary line
 // needs the document. Each card fetches its own once and keeps it for the
-// session. A listing has few rows, so this costs little.
+// session.
 const summaryCache = new Map<string, Promise<TemplateSummary>>();
 
-function fetchSummary(serverId: string, item: Listed): Promise<TemplateSummary> {
+function fetchSummary(serverId: string, item: TemplateListEntry): Promise<TemplateSummary> {
   const key = `${serverId}:${item.id}`;
   let pending = summaryCache.get(key);
   if (!pending) {
@@ -133,7 +133,7 @@ function fetchSummary(serverId: string, item: Listed): Promise<TemplateSummary> 
   return pending;
 }
 
-function useTemplateSummary(serverId: string, item: Listed): TemplateSummary | null {
+function useTemplateSummary(serverId: string, item: TemplateListEntry): TemplateSummary | null {
   const [summary, setSummary] = useState<TemplateSummary | null>(null);
   useEffect(() => {
     let cancelled = false;
@@ -175,7 +175,7 @@ function TemplateCard({
   onUse,
 }: {
   serverId: string;
-  item: Listed;
+  item: TemplateListEntry;
   meId: string | null;
   busy: boolean;
   onOpen: () => void;
@@ -397,9 +397,10 @@ const TemplatesPanel = observer(function TemplatesPanel() {
   const [reloadKey, setReloadKey] = useState(0);
   const reload = useCallback(() => setReloadKey((k) => k + 1), []);
 
-  // Agent templates create agents that run on this computer, which needs a
-  // usable provider. Without one, say so at the top of the listing rather than
-  // at the end of the Use page.
+  // An agent template needs a coding agent where its agents will run, and
+  // this computer is the default run location. Say at the top of the listing
+  // when it has none, rather than at the end of the Use page; a host gets
+  // its own check there.
   const { data: availability } = useAgentTypeAvailability();
   const noProvider = availability !== undefined && !availability.some((a) => a.available);
 
@@ -433,16 +434,16 @@ const TemplatesPanel = observer(function TemplatesPanel() {
     // workspace template, listed below as the user's own; the bundled card
     // only marks that a copy exists.
     const byName = new Map(templates.map((t) => [t.name, t]));
-    const builtIn: Listed[] = bundledTemplates.map((b) => ({
+    const builtIn: TemplateListEntry[] = bundledTemplates.map((b) => ({
       id: b.id,
       kind: kindOf(b.kind),
       name: b.name,
       description: b.description,
       bundled: true,
       server: byName.get(b.name) ?? null,
-      content: b.content,
+      content: b.yamlText,
     }));
-    const onWorkspace: Listed[] = templates.map((t) => ({
+    const onWorkspace: TemplateListEntry[] = templates.map((t) => ({
       id: t.id,
       kind: kindOf(t.kind),
       name: t.name,
@@ -452,21 +453,21 @@ const TemplatesPanel = observer(function TemplatesPanel() {
       content: null,
     }));
     const needle = query.trim().toLowerCase();
-    const matches = (t: Listed) =>
+    const matches = (t: TemplateListEntry) =>
       (kind === 'all' || t.kind === kind) &&
       (needle.length === 0 ||
         t.name.toLowerCase().includes(needle) ||
         t.description.toLowerCase().includes(needle) ||
         (t.server?.creator ?? '').toLowerCase().includes(needle));
-    const mine = (t: Listed) => meId !== null && t.server?.ownerId === meId;
+    const mine = (t: TemplateListEntry) => meId !== null && t.server?.ownerId === meId;
     return {
       builtIn: onlyMine ? [] : builtIn.filter(matches),
       onWorkspace: onWorkspace.filter((t) => matches(t) && (!onlyMine || mine(t))),
     };
   }, [templates, query, kind, onlyMine, meId]);
 
-  // Every kind of template opens the same Use page.
-  const handleUse = (item: Listed) => navigate('templateUse', { serverId, templateId: item.id });
+  const handleUse = (item: TemplateListEntry) =>
+    navigate('templateUse', { serverId, templateId: item.id });
 
   const importFile = async (file: File) => {
     try {
@@ -483,8 +484,9 @@ const TemplatesPanel = observer(function TemplatesPanel() {
 
   const grid = 'grid grid-cols-[repeat(auto-fill,minmax(280px,1fr))] gap-[14px]';
   const filtering = query.trim().length > 0 || kind !== 'all' || onlyMine;
-  const open = (item: Listed) => navigate('templateDetail', { serverId, templateId: item.id });
-  const card = (item: Listed) => (
+  const open = (item: TemplateListEntry) =>
+    navigate('templateDetail', { serverId, templateId: item.id });
+  const card = (item: TemplateListEntry) => (
     <TemplateCard
       key={item.id}
       serverId={serverId}

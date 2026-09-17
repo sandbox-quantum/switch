@@ -11,7 +11,6 @@ import {
   SelectValue,
 } from '@renderer/lib/ui/select';
 
-/** The select value for running on this computer rather than on an SSH host. */
 export const LOCAL_RUN_LOCATION = 'local';
 
 /**
@@ -45,7 +44,6 @@ export function runLocationLabel(
   return hosts.find((h) => h.sshHost === value)?.name ?? value;
 }
 
-/** A select between this computer and the onboarded SSH hosts. */
 export function RunLocationSelect({
   value,
   onChange,

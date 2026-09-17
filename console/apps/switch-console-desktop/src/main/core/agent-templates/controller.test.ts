@@ -2,7 +2,7 @@ import { load } from 'js-yaml';
 import { describe, expect, it } from 'vitest';
 import {
   agentTemplateRoomDocument,
-  cloneTargetFor,
+  cloneDirectory,
   composeAgentTemplateDocument,
   firstFreeDirectory,
   parseAgentTemplate,
@@ -153,14 +153,14 @@ describe('composeAgentTemplateDocument', () => {
   });
 });
 
-describe('cloneTargetFor', () => {
+describe('cloneDirectory', () => {
   it('names the clone after the repository', () => {
-    expect(cloneTargetFor('/w/switch-expert', 'https://github.com/sandbox-quantum/switch')).toBe(
+    expect(cloneDirectory('/w/switch-expert', 'https://github.com/sandbox-quantum/switch')).toBe(
       '/w/switch-expert/switch'
     );
-    expect(cloneTargetFor('/w', 'https://github.com/jqlang/jq.git')).toBe('/w/jq');
-    expect(cloneTargetFor('/w', 'git@github.com:jqlang/jq.git')).toBe('/w/jq');
-    expect(cloneTargetFor('/w', 'https://example.com/repo/')).toBe('/w/repo');
+    expect(cloneDirectory('/w', 'https://github.com/jqlang/jq.git')).toBe('/w/jq');
+    expect(cloneDirectory('/w', 'git@github.com:jqlang/jq.git')).toBe('/w/jq');
+    expect(cloneDirectory('/w', 'https://example.com/repo/')).toBe('/w/repo');
   });
 });
 

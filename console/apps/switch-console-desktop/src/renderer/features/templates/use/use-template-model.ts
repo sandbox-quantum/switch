@@ -15,7 +15,6 @@ export function hasPlaceholder(text: string): boolean {
   return /\{\$?\w+\}/.test(text);
 }
 
-/** The type label shown beside an input: plain words instead of the schema's type names. */
 export function typeLabel(type: ParamType): string {
   switch (type) {
     case 'string':
@@ -35,7 +34,7 @@ export function isRequired(param: ParamSpec): boolean {
   return param.default === null && param.type !== 'bridge';
 }
 
-/** The form's initial values: each param's default, or empty. */
+/** Each param's default; without one, `false` for a boolean and empty for the rest. */
 export function defaultsFor(params: ParamSpec[]): Values {
   const defaults: Values = {};
   for (const param of params) {
@@ -50,14 +49,13 @@ export function isEmpty(value: string | number | boolean | undefined): boolean {
   return value === undefined || value === '';
 }
 
-/** Params left empty that have no default. The server document is sent without them. */
-export function unsetParams(params: ParamSpec[], values: Values): string[] {
+/** Bridge params left empty with no default. The server document is sent without them. */
+export function unsetBridgeParams(params: ParamSpec[], values: Values): string[] {
   return params
     .filter((p) => p.type === 'bridge' && p.default === null && isEmpty(values[p.name]))
     .map((p) => p.name);
 }
 
-/** The required params still without a value. */
 export function missingParams(params: ParamSpec[], values: Values): ParamSpec[] {
   return params.filter((p) => isRequired(p) && isEmpty(values[p.name]));
 }

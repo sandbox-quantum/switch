@@ -1,6 +1,6 @@
 import { basename, join } from 'node:path';
 import { load } from 'js-yaml';
-import { composeTemplateDocument, coreDocumentFor } from './template-document';
+import { composeTemplateDocument, serverDocument } from './template-document';
 
 /**
  * An agent template is a YAML document with an `agent:` block and, optionally,
@@ -9,17 +9,18 @@ import { composeTemplateDocument, coreDocumentFor } from './template-document';
  */
 export type AgentTemplateSource = { url: string; label: string | null };
 
-/** Who may address the agent, as declared in the template. Null when the
- * template has no `addressing` field; the Console's default applies (only its owner). */
+/** Who may address the agent: only its owner, its owner and their agents, or anyone in its rooms. */
 export type AgentTemplateAddressing = 'owner' | 'owner-agents' | 'anyone';
 
 export type ParsedAgentTemplate = {
   /** The agent name from the template's `name` field. The deployer can change it before creating. */
   name: string | null;
+  /** Null when the template has no `addressing` field; the Console's default applies (only its owner). */
   addressing: AgentTemplateAddressing | null;
   description: string;
   instructions: string;
-  /** Repository the agent works from. Cloned into its working directory before it first runs. */
+  /** Repository the agent works from. The Console offers to clone it into the
+   * agent's directory; when that is off or fails, the agent clones it itself. */
   repoUrl: string | null;
   /** Pages the agent should read. Shown to the deployer; the agent fetches them itself. */
   sources: AgentTemplateSource[];
@@ -135,18 +136,16 @@ export function parseAgentTemplate(
   };
 }
 
-/** Same as `coreDocumentFor`, for callers that only handle a single `agent:` document. */
 export function agentTemplateRoomDocument(yamlText: string): string | null {
-  return coreDocumentFor(yamlText);
+  return serverDocument(yamlText);
 }
 
-/** Same as `composeTemplateDocument`, for callers that only handle a single `agent:` document. */
 export function composeAgentTemplateDocument(yamlText: string, instructions: string): string {
   return composeTemplateDocument(yamlText, instructions);
 }
 
-/** The directory a clone of `repoUrl` goes in: a folder named after the repository, inside `dir`. */
-export function cloneTargetFor(dir: string, repoUrl: string): string {
+/** A folder named after the repository, inside `dir`. */
+export function cloneDirectory(dir: string, repoUrl: string): string {
   const name = basename(repoUrl.replace(/\/+$/, '')).replace(/\.git$/, '');
   return join(dir, name || 'repo');
 }

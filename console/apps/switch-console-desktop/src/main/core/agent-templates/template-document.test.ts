@@ -2,7 +2,7 @@ import { load } from 'js-yaml';
 import { describe, expect, it } from 'vitest';
 import {
   composeTemplateDocument,
-  coreDocumentFor,
+  serverDocument,
   dropUnsetParams,
   parseTemplateAgents,
   substituteAgentSlots,
@@ -88,48 +88,48 @@ describe('parseTemplateAgents', () => {
   });
 });
 
-describe('coreDocumentFor', () => {
+describe('serverDocument', () => {
   it('keeps the server half and drops agents and provider params', () => {
-    const doc = load(coreDocumentFor(TRIAGE_PAIR) ?? '') as Record<string, unknown>;
+    const doc = load(serverDocument(TRIAGE_PAIR) ?? '') as Record<string, unknown>;
     expect(Object.keys(doc).sort()).toEqual(['kickoff', 'params', 'room', 'version']);
     expect(Object.keys(doc.params as object)).toEqual(['team', 'bridge']);
     expect((doc.room as { agents: string[] }).agents).toEqual(['{team}-triager', '{team}-repro']);
   });
 
   it('keeps provider params when asked, for the form', () => {
-    const doc = load(coreDocumentFor(TRIAGE_PAIR, { keepConsoleParams: true }) ?? '') as {
+    const doc = load(serverDocument(TRIAGE_PAIR, { keepConsoleParams: true }) ?? '') as {
       params: Record<string, unknown>;
     };
     expect(Object.keys(doc.params)).toEqual(['team', 'provider', 'bridge']);
   });
 
   it('declares {agent} for a lone agent', () => {
-    const doc = load(coreDocumentFor(SOLO) ?? '') as { params: Record<string, unknown> };
+    const doc = load(serverDocument(SOLO) ?? '') as { params: Record<string, unknown> };
     expect(Object.keys(doc.params)).toEqual(['agent']);
   });
 
   it('keeps a group document whole', () => {
     const text =
       'group:\n  name: g\nrooms:\n  - name: a\n    kickoff: hi\nlinks: []\nagents:\n  - name: x\n    instructions: i\n';
-    const doc = load(coreDocumentFor(text) ?? '') as Record<string, unknown>;
+    const doc = load(serverDocument(text) ?? '') as Record<string, unknown>;
     expect(Object.keys(doc).sort()).toEqual(['group', 'links', 'rooms']);
   });
 
   it('keeps a misplaced group kickoff for the server to refuse', () => {
     const doc = load(
-      coreDocumentFor('group:\n  name: g\nrooms:\n  - name: a\nkickoff: hi\n') ?? ''
+      serverDocument('group:\n  name: g\nrooms:\n  - name: a\nkickoff: hi\n') ?? ''
     ) as Record<string, unknown>;
     expect(doc.kickoff).toBe('hi');
   });
 
   it('is null without a room half', () => {
-    expect(coreDocumentFor('agent:\n  name: a\n  instructions: i\n')).toBeNull();
+    expect(serverDocument('agent:\n  name: a\n  instructions: i\n')).toBeNull();
   });
 });
 
 describe('substituteAgentSlots', () => {
   it('renames agents in every room, aliases included', () => {
-    const core = coreDocumentFor(TRIAGE_PAIR) ?? '';
+    const core = serverDocument(TRIAGE_PAIR) ?? '';
     const out = load(substituteAgentSlots(core, { '{team}-triager': 'claude-code.alice' })) as {
       room: { agents: string[]; aliases: Record<string, string> };
     };

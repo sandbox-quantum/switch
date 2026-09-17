@@ -620,8 +620,10 @@ class RoomYamlService:
                         )
 
         if "user" in wanted:
-            # Users are looked up on the first room's messaging app. A group
-            # whose rooms are on different apps is not supported.
+            # TODO: look users up on each room's messaging app. Only the first
+            # room's app is checked, so a group whose rooms are on different
+            # apps passes here and gets a failed attachment when the other
+            # rooms are provisioned.
             first = (
                 parsed.spec.rooms[0]
                 if isinstance(parsed.spec, GroupSpec)

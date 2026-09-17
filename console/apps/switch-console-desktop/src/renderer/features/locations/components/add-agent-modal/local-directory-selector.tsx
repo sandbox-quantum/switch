@@ -15,16 +15,16 @@ export function LocalDirectorySelector({
   title,
   message,
   onPathChange,
-  path: initialPath,
+  path: pathProp,
   placeholder = 'Select a directory',
 }: LocalDirectorySelectorProps) {
-  const [path, setPath] = useState<string>(initialPath || '');
+  const [path, setPath] = useState<string>(pathProp || '');
   // The parent can change the path (a template can provide one), so a new prop
   // value replaces the local state. The local state exists only to hold the
   // result of the directory dialog until the parent receives it.
   useEffect(() => {
-    setPath(initialPath || '');
-  }, [initialPath]);
+    setPath(pathProp || '');
+  }, [pathProp]);
 
   const handleOpenFileDialog = async () => {
     const result = await rpc.app.openSelectDirectoryDialog({

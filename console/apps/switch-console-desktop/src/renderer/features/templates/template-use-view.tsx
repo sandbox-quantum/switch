@@ -64,7 +64,7 @@ import {
   interpolate,
   missingParams,
   serverInputs,
-  unsetParams,
+  unsetBridgeParams,
   type Values,
 } from './use/use-template-model';
 
@@ -84,7 +84,7 @@ function useViewParams(): Params {
 }
 
 /** A template loaded for the Use page: its document, its origin, and everything parsed from it. */
-type Loaded = {
+type UsePageTemplate = {
   name: string;
   yamlText: string;
   instructions: string | null;
@@ -100,7 +100,7 @@ type Loaded = {
   warnings: string[];
 };
 
-async function loadForUse(serverId: string, params: Params): Promise<Loaded> {
+async function loadUsePageTemplate(serverId: string, params: Params): Promise<UsePageTemplate> {
   let name: string;
   let yamlText: string;
   let instructions: string | null = null;
@@ -109,7 +109,7 @@ async function loadForUse(serverId: string, params: Params): Promise<Loaded> {
     const bundled = findBundledTemplate(params.templateId);
     if (bundled) {
       name = bundled.name;
-      yamlText = bundled.content;
+      yamlText = bundled.yamlText;
       instructions = bundled.instructions;
       origin = { id: bundled.id, name: bundled.name, source: 'bundled' };
     } else {
@@ -134,8 +134,11 @@ async function loadForUse(serverId: string, params: Params): Promise<Loaded> {
   });
   // Two versions of the room document: one that keeps the provider params, for
   // building the form, and one without them, for the server.
-  const forForm = await rpc.agentTemplates.coreDocument({ yamlText, keepConsoleParams: true });
-  const coreYaml = await rpc.agentTemplates.coreDocument({ yamlText });
+  const forForm = await rpc.agentTemplates.serverDocument({ yamlText, keepConsoleParams: true });
+  const coreYaml = await rpc.agentTemplates.serverDocument({ yamlText });
+  // Without the schema the form is built from the Console's own parse and
+  // the server validates on create, so an older server without the schema
+  // endpoint still gets a working page.
   const schema = await rpc.switchServers.fetchTemplateSchema(serverId).catch(() => null);
   const parsed = forForm
     ? await rpc.roomTemplates.parse({ yamlText: forForm, schema: schema ?? undefined })
@@ -186,7 +189,7 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
   const { navigate } = useNavigate();
   const { showModal } = useModalContext();
   const queryClient = useQueryClient();
-  const [loaded, setLoaded] = useState<Loaded | null>(null);
+  const [loaded, setLoaded] = useState<UsePageTemplate | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [values, setValues] = useState<Values>({});
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
@@ -209,7 +212,7 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
     let cancelled = false;
     setLoaded(null);
     setLoadError(null);
-    loadForUse(serverId, { serverId, templateId, yamlText: givenYaml, sourceName })
+    loadUsePageTemplate(serverId, { serverId, templateId, yamlText: givenYaml, sourceName })
       .then((result) => {
         if (cancelled) return;
         setLoaded(result);
@@ -294,7 +297,7 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
   const noMessagingApp = parsed !== null && bridgesQuery.data !== undefined && bridges.length === 0;
 
   // The existing-agent picker lists agents that run on the chosen location.
-  // This Console's own records say which host each of its agents runs on.
+  // The Console records the host of every agent it created.
   const locationsQuery = useQuery({
     queryKey: ['locations'],
     queryFn: () => rpc.locations.getLocations(),
@@ -343,7 +346,7 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
     }
   }, [allowedHosts, isRemoteRun, runHost]);
   // Provider availability differs per machine, so changing the run location
-  // clears the provider choice.
+  // clears the provider picked on the page. A `provider` param keeps its value.
   useEffect(() => {
     setPickedProvider(null);
     setSlots((prev) => prev.map((s) => (s.dirPicked ? s : { ...s, dir: '' })));
@@ -519,7 +522,6 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
     const finalNames = slotNames.map((n) => n.final);
     const created: { slotIndex: number; name: string; switchAgentId: string | null }[] = [];
 
-    // Create the agents first, one at a time, updating each card's status.
     for (let i = 0; i < slots.length; i++) {
       const slot = slots[i];
       if (slot.mode !== 'new' || slot.status === 'created') continue;
@@ -553,6 +555,7 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
             displayName: null,
             iconUrl: null,
             autoSession: true,
+            // Nobody sits at a host's terminal to approve tool calls.
             autoApprove: isRemoteRun,
             instructions: slot.entry.instructions,
             definitionAttributes: {},
@@ -600,7 +603,6 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
       .saveRecent({ serverId, name: loaded.name, yamlText: loaded.yamlText })
       .catch(() => {});
 
-    // With `intoRoomId`, the agents are added to that room and no room is created.
     if (intoRoomId) {
       const byName = new Map((agents.data ?? []).map((a) => [a.name, a.id]));
       const ids = slots
@@ -660,7 +662,7 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
       });
       coreYaml = await rpc.agentTemplates.dropParams({
         coreYaml,
-        names: unsetParams(templateParams, values),
+        names: unsetBridgeParams(templateParams, values),
       });
       if (!isGroupDoc) {
         // The member lists are rebuilt from the parsed template, so the renamed
@@ -751,8 +753,8 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
     }
   };
 
-  // Values for the preview cards: the inputs, plus the agent's name where a
-  // single-agent room says `{agent}`, plus every agent's final name.
+  // Values for the preview cards: the inputs, `{agent}` for a single-agent
+  // template, and every agent's final name.
   const railValues: Values =
     loaded?.singular && slotNames[0]
       ? { ...values, agent: slotNames[0].final || '{agent}' }
@@ -781,8 +783,7 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
           ? 'Create agent'
           : 'Create room';
   const intoRoomName = intoRoomId ? switchRoomsStore.roomNameById(intoRoomId) : null;
-  // Cancel returns to where the deployer came from: the room, the editor with
-  // the document still loaded, the template's page, or the listing.
+
   const cancel = () =>
     intoRoomId
       ? navigate('room', { roomId: intoRoomId })

@@ -71,8 +71,7 @@ function useTemplateName(): string | null {
   return name;
 }
 
-/** One row of the facts list: a fixed-width label and its value. */
-function Row({ label, children }: { label: string; children: React.ReactNode }) {
+function FactRow({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div className="flex items-start gap-3 text-sm">
       <span className="w-28 shrink-0 text-foreground-muted">{label}</span>
@@ -93,8 +92,7 @@ function Link({ url, label }: { url: string; label?: string | null }) {
   );
 }
 
-/** A read-only block of text, collapsed to a fixed height with an Expand button when it is long. */
-function TextBlock({
+function ExpandableTextBlock({
   text,
   collapsedHeight = 'max-h-56',
 }: {
@@ -390,9 +388,9 @@ const TemplateDetailPanel = observer(function TemplateDetailPanel() {
                       <Icon className="size-3.5" />
                     </span>
                     <div className="min-w-0 flex-1">
-                      <div className="truncate font-mono text-[13px] font-medium">{c.label}</div>
+                      <div className="truncate font-mono text-[13px] font-medium">{c.name}</div>
                       <div className="mt-0.5 text-xs leading-snug text-foreground-muted">
-                        {c.note}
+                        {c.description}
                       </div>
                     </div>
                     <span className="shrink-0 text-[11px] text-foreground-passive">
@@ -408,13 +406,13 @@ const TemplateDetailPanel = observer(function TemplateDetailPanel() {
           {singleAgent && (
             <div className="flex flex-col gap-2 pt-1">
               {singleAgent.repoUrl && (
-                <Row label="Repository">
+                <FactRow label="Repository">
                   <Link url={singleAgent.repoUrl} />
                   <span className="text-foreground-muted">, cloned into its directory</span>
-                </Row>
+                </FactRow>
               )}
               {singleAgent.sources.length > 0 && (
-                <Row label="Sources">
+                <FactRow label="Sources">
                   <span className="flex flex-wrap gap-x-1.5">
                     {singleAgent.sources.map((src, i) => (
                       <span key={src.url}>
@@ -423,20 +421,22 @@ const TemplateDetailPanel = observer(function TemplateDetailPanel() {
                       </span>
                     ))}
                   </span>
-                </Row>
+                </FactRow>
               )}
-              <Row label="Answers">{ADDRESSING_LABEL[singleAgent.addressing ?? 'owner']}</Row>
+              <FactRow label="Answers">
+                {ADDRESSING_LABEL[singleAgent.addressing ?? 'owner']}
+              </FactRow>
               {loaded.room?.kickoff && (
-                <Row label="Kickoff">
+                <FactRow label="Kickoff">
                   <span className="text-foreground-muted">Posted as you once the room exists</span>
-                </Row>
+                </FactRow>
               )}
             </div>
           )}
           {!singleAgent && loaded.room?.kickoff && (
-            <Row label="Kickoff">
+            <FactRow label="Kickoff">
               <span className="whitespace-pre-wrap">{loaded.room.kickoff.trim()}</span>
-            </Row>
+            </FactRow>
           )}
         </section>
 
@@ -484,7 +484,7 @@ const TemplateDetailPanel = observer(function TemplateDetailPanel() {
               onToggle={() => setShowInstructions((o) => !o)}
             />
             {showInstructions && (
-              <TextBlock text={singleAgent.instructions} collapsedHeight="max-h-none" />
+              <ExpandableTextBlock text={singleAgent.instructions} collapsedHeight="max-h-none" />
             )}
           </section>
         )}

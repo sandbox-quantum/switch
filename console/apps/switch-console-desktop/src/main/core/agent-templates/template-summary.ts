@@ -16,10 +16,10 @@ export type TemplateSummary = {
 
 export type TemplateEntity = {
   kind: 'room' | 'agent';
-  /** The name as written in the template, with any `{param}` still unfilled. */
-  label: string;
-  /** Its description from the template, or a generated line when it has none. */
-  note: string;
+  /** As written in the template, with any `{param}` still unfilled. */
+  name: string;
+  /** From the template, or a generated line when it has none. */
+  description: string;
 };
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -44,13 +44,15 @@ function agentsOf(room: Record<string, unknown> | null): string[] {
 
 function roomThing(room: Record<string, unknown>): TemplateEntity {
   const members = agentsOf(room);
-  const note =
+  const description =
     str(room.description) ||
     (members.length > 0 ? `With ${members.join(', ')}` : 'A room with nobody in it yet');
-  return { kind: 'room', label: str(room.name) || 'Unnamed room', note };
+  return { kind: 'room', name: str(room.name) || 'Unnamed room', description };
 }
 
 export function summarizeTemplate(yamlText: string): TemplateSummary {
+  // Text that is not YAML is summarized as one empty room, so the listing
+  // card still renders; the Use page reports the parse error.
   let doc: unknown;
   try {
     doc = load(yamlText);
@@ -76,14 +78,14 @@ export function summarizeTemplate(yamlText: string): TemplateSummary {
     ...roomEntries.map(roomThing),
     ...agentEntries.map((a) => ({
       kind: 'agent' as const,
-      label: str(a.name) || 'Named when created',
-      note: str(a.description) || 'An agent with its own instructions',
+      name: str(a.name) || 'Named when created',
+      description: str(a.description) || 'An agent with its own instructions',
     })),
   ];
 
   if (agentEntries.length > 0) {
-    // Only the entries under `agents:` are created. Other names in a room's
-    // list refer to agents the server must already have.
+    // Only the entries under `agent:` or `agents:` are created. Other names in
+    // a room's list refer to agents the server must already have.
     return {
       kind: isGroup ? 'group' : 'agent',
       rooms: roomEntries.length,

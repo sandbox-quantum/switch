@@ -13,14 +13,14 @@ import { buildExternalToolEnv } from '@main/utils/childProcessEnv';
 import { createRPCController } from '@shared/lib/ipc/rpc';
 import {
   agentTemplateRoomDocument,
-  cloneTargetFor,
+  cloneDirectory,
   composeAgentTemplateDocument,
   firstFreeDirectory,
   parseAgentTemplate,
   type ParsedAgentTemplate,
 } from './agent-template-format';
 import {
-  coreDocumentFor,
+  serverDocument,
   dropUnsetParams,
   parseTemplateAgents,
   substituteAgentSlots,
@@ -89,7 +89,7 @@ async function prepareRemoteWorkspace(
   try {
     await ctx.exec('mkdir', ['-p', dir]);
     if (!repoUrl) return { dir, repo: null };
-    const target = cloneTargetFor(dir, repoUrl);
+    const target = cloneDirectory(dir, repoUrl);
     const probe = await ctx.exec('sh', [
       '-c',
       `test -d "$1" && echo present || echo absent`,
@@ -130,7 +130,7 @@ export const agentTemplatesController = createRPCController({
   /** What a document of any known shape creates, for a listing card. */
   summarize: (params: { yamlText: string }): TemplateSummary => summarizeTemplate(params.yamlText),
 
-  /** Which page a document opens on: agent, room, or group. */
+  /** Classify a document as an agent, room or group template. */
   kind: (params: { yamlText: string }): TemplateKind => templateKind(params.yamlText),
 
   /** The agents a document creates. Empty for a room template. */
@@ -138,8 +138,8 @@ export const agentTemplatesController = createRPCController({
     parseTemplateAgents(params.yamlText, params.instructions ?? null),
 
   /** The room part of a document as the server receives it, or null when the document has no rooms. */
-  coreDocument: (params: { yamlText: string; keepConsoleParams?: boolean }): string | null =>
-    coreDocumentFor(params.yamlText, { keepConsoleParams: params.keepConsoleParams }),
+  serverDocument: (params: { yamlText: string; keepConsoleParams?: boolean }): string | null =>
+    serverDocument(params.yamlText, { keepConsoleParams: params.keepConsoleParams }),
 
   /** The server document with the named params removed (see `dropUnsetParams`). */
   dropParams: (params: { coreYaml: string; names: string[] }): string =>
@@ -191,8 +191,8 @@ export const agentTemplatesController = createRPCController({
   /**
    * Create the working directory and, when the template has a `repo` field,
    * put a shallow clone of it inside. A failed clone is reported in the
-   * result rather than thrown: the agent's instructions tell it to clone the
-   * repository itself when the clone is missing.
+   * result rather than thrown, so the agent is still created and clones the
+   * repository itself.
    */
   prepareWorkspace: async (params: {
     dir: string;
@@ -202,7 +202,7 @@ export const agentTemplatesController = createRPCController({
     if (params.sshHost) return prepareRemoteWorkspace(params.sshHost, params.dir, params.repoUrl);
     await mkdir(params.dir, { recursive: true });
     if (!params.repoUrl) return { dir: params.dir, repo: null };
-    const target = cloneTargetFor(params.dir, params.repoUrl);
+    const target = cloneDirectory(params.dir, params.repoUrl);
     if (await isDirectory(target)) {
       return {
         dir: params.dir,

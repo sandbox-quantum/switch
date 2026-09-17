@@ -15,11 +15,7 @@ import type { AgentProviderId } from '@shared/core/providers/agent-provider-regi
 import { isEntityParamType } from '@shared/core/switch-servers/room-template-params';
 import { isRequired, typeLabel } from './use-template-model';
 
-/**
- * One input of a template on the Use page: its name as written in the
- * template, its type in plain words, whether it is required, its
- * description, the control to fill it, and its default if it has one.
- */
+/** One input of a template on the Use page, with the control its type calls for. */
 export function ParamField({
   param,
   value,

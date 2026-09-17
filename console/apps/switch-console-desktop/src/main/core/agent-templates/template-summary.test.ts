@@ -78,12 +78,12 @@ room:
   agents: ["{team}-triager", "{team}-repro"]
 `);
     expect(s.kind).toBe('group');
-    expect(s.creates.map((c) => [c.kind, c.label])).toEqual([
+    expect(s.creates.map((c) => [c.kind, c.name])).toEqual([
       ['room', '{team}-triage'],
       ['agent', '{team}-triager'],
       ['agent', '{team}-repro'],
     ]);
-    expect(s.creates[0].note).toBe('With {team}-triager, {team}-repro');
-    expect(s.creates[1].note).toBe('Reads reports');
+    expect(s.creates[0].description).toBe('With {team}-triager, {team}-repro');
+    expect(s.creates[1].description).toBe('Reads reports');
   });
 });

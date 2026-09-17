@@ -9,7 +9,7 @@
 export const ENTITY_PARAM_TYPES = ['agent', 'bridge', 'room', 'user'] as const;
 export type EntityParamType = (typeof ENTITY_PARAM_TYPES)[number];
 
-/** Param types the Console answers itself and never sends to the server.
+/** Param types the Console answers itself and leaves out of the request to the server.
  * `provider` chooses the coding agent that runs the agents a template creates. */
 export const CONSOLE_PARAM_TYPES = ['provider'] as const;
 export type ConsoleParamType = (typeof CONSOLE_PARAM_TYPES)[number];
