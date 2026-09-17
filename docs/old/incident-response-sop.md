@@ -131,6 +131,17 @@ declaration, dead after the postmortem. Public, per the SOP's own resolution of
 that question: a war room stakeholders cannot read generates a second, worse war
 room in DMs.
 
+**One room per incident, and the postmortem happens in it.** This was a live
+question — a second, linked postmortem room is defensible, and it is what a
+group template would naturally produce — and the answer is no. The postmortem's
+raw material is the war room's own timeline, so moving the write-up to a second
+room separates the evidence from the analysis at exactly the moment you want
+them together, and asks people to follow a link days after they stopped caring.
+The war room simply stays open until the write-up is done, with the postmortem
+skeleton already attached as a document from the moment it was created. This is
+also the cheaper design: it needs no group template, no room links between the
+two, and nothing to keep them in step.
+
 ### What is a thread
 
 Everything that would otherwise fragment a room. In the war room: one thread per
@@ -269,7 +280,7 @@ Its `instructions` carry three things:
 - On-call lookup: the schedule attached to the escalation policy above
 
 **Rooms / bridge**
-- War rooms: new PUBLIC Slack channel — bridge_id=<...>,
+- War rooms: new channel on the INTERNAL workspace bridge — bridge_id=<...>,
   channel_type="channel_public", named `<product> incident <id>`
 - Room group: <product> incidents
 - Every war room is linked back to this hub
@@ -281,6 +292,27 @@ Its `instructions` carry three things:
   owner, the stream lead, support
 - Escalation contacts by tier: <role names, not people>
 ```
+
+**"Public" and "not external-facing" are two different axes, and only one of
+them is `channel_type`.** A war room should be a public channel — readable by
+anyone inside the company, per the SOP's own resolution, because a war room
+stakeholders cannot read grows a second, worse war room in DMs. It should also
+never be visible outside the company.
+
+The second of those is the **bridge**, not the channel type. A deployment with
+more than one workspace connected — an internal one and a partner or
+customer-facing one — has a bridge id for each, and `create_room` will happily
+provision on whichever it is given. Nothing in Switch knows that one of them
+faces outward. So the internal bridge id is pinned in the bindings above, and
+the agent's instructions should say to use that one and never to take a bridge
+id from the request that declared the incident. Getting this wrong publishes an
+outage to people outside the company, and it would be a plausible mistake at
+03:00.
+
+This is also why the bindings block exists at all. Everything that is specific
+to the company — channel ids, service ids, owner names, which workspace is the
+internal one — lives in one block of room configuration. The agent definition,
+the room shape and this document stay generic and carry none of it.
 
 And one **exclusive `responder` role**, the same thin shell: the lease plus
 `@responder` addressing, so anyone in the channel reaches whoever is currently
